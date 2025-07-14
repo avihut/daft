@@ -70,8 +70,14 @@ head_ref_line=""
 
 
 # --- Step 1: Extract Repository Name ---
-repo_name=$(basename "$repo_url" .git)
-repo_name=$(basename "$repo_name")
+if [[ "$repo_url" == *:* ]]; then
+  # Shorthand format: user/org:repo-name
+  repo_name=$(basename "${repo_url##*:}" .git)
+else
+  # Full URL format: git@github.com:user/repo.git or https://github.com/user/repo.git
+  repo_name=$(basename "$repo_url" .git)
+  repo_name=$(basename "$repo_name")
+fi
 
 if [[ -z "$repo_name" ]]; then
    echo "Error: Could not extract repository name from URL: '$repo_url'" >&2
