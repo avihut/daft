@@ -41,7 +41,7 @@ else
   echo "--> Base branch not specified, using current branch..."
   # Get the short symbolic name of the current HEAD (current branch)
   base_branch=$(git symbolic-ref --short HEAD 2>/dev/null)
-  local exit_code=$?
+  exit_code=$?
 
   if [[ $exit_code -ne 0 ]] || [[ -z "$base_branch" ]]; then
     # Could fail if in detached HEAD state or other git issues
@@ -126,7 +126,7 @@ if git worktree add "$worktree_path" -b "$new_branch_name" "$base_branch"; then
 
       else
           # Push failed
-          local push_exit_code=$?
+          push_exit_code=$?
           echo "---"
           echo "Error: Failed to push branch '${new_branch_name}' to '${remote_name}' or set upstream (Exit code: ${push_exit_code})." >&2
           echo "Worktree was created at '$(pwd)', but push/tracking failed." >&2
@@ -136,7 +136,7 @@ if git worktree add "$worktree_path" -b "$new_branch_name" "$base_branch"; then
       fi
   else
       # cd failed
-      local cd_exit_code=$?
+      cd_exit_code=$?
       echo "---"
       echo "Error: Failed to change directory to the new worktree path '${real_worktree_path}' (Exit code: ${cd_exit_code})." >&2
       echo "Worktree *may* have been created, but subsequent steps were skipped." >&2
@@ -147,7 +147,7 @@ if git worktree add "$worktree_path" -b "$new_branch_name" "$base_branch"; then
   fi
 else
   # git worktree add failed
-  local wt_exit_code=$?
+  wt_exit_code=$?
   echo "---"
   echo "Error: Failed to create git worktree (Exit code: ${wt_exit_code})." >&2
   echo "Check path permissions, if base branch '$base_branch' exists locally and is valid,"

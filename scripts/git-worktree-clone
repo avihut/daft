@@ -113,109 +113,94 @@ echo "Default branch detected: '$default_branch'"
 
 # --- Step 3: Define and Create Directory Structure ---
 parent_dir="$repo_name"
-# Use relative path based on original directory for creation logic
-clone_target_dir="${original_dir}/${parent_dir}/${default_branch}"
-# Store relative path for user messages if realpath fails later
-relative_clone_target_dir="${parent_dir}/${default_branch}"
+worktree_dir="${parent_dir}/${default_branch}"
 
-echo "Target clone directory: './${relative_clone_target_dir}'"
+echo "Target repository directory: './${parent_dir}'"
+echo "Initial worktree will be in: './${worktree_dir}'"
 
-# Check for potential conflicts before creating directories (using full path)
-if [[ -e "${original_dir}/${parent_dir}" && ! -d "${original_dir}/${parent_dir}" ]]; then
-    echo "Error: A file (not a directory) already exists at '${original_dir}/${parent_dir}'." >&2
-    cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
-    exit 1
-fi
- if [[ -e "$clone_target_dir" ]]; then
-    echo "Error: Target path '$clone_target_dir' already exists." >&2
+# Check for potential conflicts before creating directories
+if [[ -e "$parent_dir" ]]; then
+    echo "Error: Target path './${parent_dir}' already exists." >&2
     cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
     exit 1
 fi
 
-echo "Creating directory structure..."
-# Create using the full path for robustness if called from subdirs
-if ! mkdir -p "$clone_target_dir"; then
-   echo "Error: Failed to create directory structure '$clone_target_dir'." >&2
+echo "Creating repository directory..."
+if ! mkdir -p "$parent_dir"; then
+   echo "Error: Failed to create directory './${parent_dir}'." >&2
    cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
    exit 1
 fi
-echo "Directory structure created successfully."
 # --- End Step 3 ---
 
 
 # --- Step 4: Clone the Repository ---
-echo "Cloning '$repo_url' into '$clone_target_dir'..."
-# Clone using the full path
-if ! git clone "$repo_url" "$clone_target_dir"; then
-    echo "Error: 'git clone' failed." >&2
-    echo "Cleaning up created directories..." >&2
-    # Clean up using full paths
-    rmdir "$clone_target_dir" 2>/dev/null
-    # Try removing parent only if it's likely the one we created
-    # Check if parent dir relative to original_dir exists and is empty
-    if [[ -d "${original_dir}/${parent_dir}" ]] && [[ -z "$(ls -A "${original_dir}/${parent_dir}")" ]]; then
-         rmdir "${original_dir}/${parent_dir}" 2>/dev/null
-    fi
-    # Or more simply, remove the whole structure if clone fails:
-    # rm -rf "${original_dir}/${parent_dir}"
+echo "Cloning bare repository into './${parent_dir}/.git'..."
+# Clone a bare repo, which contains only the git data, into the .git directory
+if ! git clone --bare "$repo_url" "${parent_dir}/.git"; then
+    echo "Error: 'git clone --bare' failed." >&2
+    echo "Cleaning up created directory..." >&2
+    rm -rf "$parent_dir"
     cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
     exit 1
 fi
 # --- End Step 4 ---
 
 
-# --- Step 5: Post-Clone Actions (cd & direnv) ---
-echo "--> Changing directory to clone target: '$clone_target_dir'"
-# Use -- to handle potential paths starting with a hyphen
-if cd -- "$clone_target_dir"; then
-    # Now we are inside the target directory
+# --- Step 5: Create Initial Worktree ---
+echo "--> Changing directory to './${parent_dir}'"
+if ! cd -- "$parent_dir"; then
+    echo "Error: Failed to change directory to './${parent_dir}'." >&2
+    echo "You may need to manually complete the setup." >&2
+    cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+    exit 1
+fi
+
+echo "Creating initial worktree for branch '${default_branch}'..."
+# We are inside the repo_name dir, so .git is found automatically
+if ! git worktree add "$default_branch"; then
+    echo "Error: 'git worktree add' failed for branch '${default_branch}'." >&2
+    echo "Cleaning up..." >&2
+    cd ..
+    rm -rf "$repo_name"
+    exit 1
+fi
+# --- End Step 5 ---
+
+
+# --- Step 6: Post-Clone Actions (cd & direnv) ---
+echo "--> Changing directory to worktree: './${default_branch}'"
+if cd -- "$default_branch"; then
     current_dir=$(pwd)
     echo "--> Successfully changed directory to $current_dir"
 
-    # Step 5a: Run direnv allow if available
-    echo "--> Running 'direnv allow' in $current_dir..."
+    # Run direnv allow if available
     if command -v direnv &> /dev/null; then
-        # Check if .envrc exists before running allow
         if [[ -f ".envrc" ]]; then
+            echo "--> Running 'direnv allow'..."
             if direnv allow .; then
                 echo "--> 'direnv allow .' completed successfully."
             else
-                echo "Warning: 'direnv allow .' failed in $current_dir. You may need to run it manually." >&2
-                # Continue even if direnv fails, as clone and cd succeeded
+                echo "Warning: 'direnv allow .' failed. You may need to run it manually." >&2
             fi
         else
-            echo "--> No .envrc file found in $current_dir. Skipping 'direnv allow'."
+            echo "--> No .envrc file found. Skipping 'direnv allow'."
         fi
-    else
-        echo "--> 'direnv' command not found. Skipping 'direnv allow'."
     fi
 
-    # Step 5b: Final Success Message (already in the correct directory)
     echo "---"
     echo "Success!"
-    # Use pwd for the most accurate current directory path
-    abs_clone_dir="$current_dir"
-    # Try to get absolute path for parent for clarity
-    abs_parent_dir
-    abs_parent_dir=$(realpath -- "$current_dir/.." 2>/dev/null || echo "${original_dir}/${parent_dir}") # Fallback
-
-    echo "Repository '$repo_name' cloned into '$abs_clone_dir'"
-    echo "Parent directory structure created at '$abs_parent_dir'"
-    echo "You are now inside the cloned repository directory."
-
-    # Since we successfully cd'd, we just exit 0 and the shell stays here.
-    exit 0 # Indicate success
+    echo "Repository '$repo_name' cloned successfully."
+    echo "The main Git directory is at: '$(git rev-parse --git-dir)'"
+    echo "Your initial worktree for branch '${default_branch}' is ready at: '$(pwd)'"
+    echo "You are now inside the initial worktree."
+    exit 0
 
 else
-    # cd failed!
     local cd_exit_code=$?
     echo "---"
-    echo "Error: Clone succeeded, but failed to change directory to '$clone_target_dir' (Exit code: ${cd_exit_code})." >&2
-    echo "You are still in the original directory: ${original_dir}" >&2
-    echo "Please check permissions for the target directory." >&2
-    # No direnv attempted because cd failed
-    # Attempt to cd back just in case something intermediate happened, though unlikely
-    cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
-    exit 1 # Indicate failure
+    echo "Error: Failed to change directory into the new worktree at './${default_branch}' (Exit code: ${cd_exit_code})." >&2
+    echo "The repository and worktree have been created, but you are still in the parent directory: $(pwd)" >&2
+    exit 1
 fi
-# --- End Step 5 ---
+# --- End Step 6 ---
