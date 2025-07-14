@@ -147,3 +147,5 @@ gcw() {
     return 1
   fi
 }
+
+gcw

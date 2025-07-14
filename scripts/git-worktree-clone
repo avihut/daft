@@ -213,3 +213,5 @@ gclone() {
   fi
   # --- End Step 5 ---
 }
+
+gclone
