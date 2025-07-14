@@ -1,0 +1,140 @@
+
+# Function to prune local Git branches whose remote counterparts have been deleted,
+# ensuring any associated worktrees are removed first.
+gprune() {
+  # --- Configuration ---
+  local REMOTE_NAME="origin"
+  local branch_name # Declare loop variables as local
+  local worktree_path
+  local branches_deleted=0
+  local worktrees_removed=0
+  local gone_branches=() # Array to hold branches to prune
+  local line branch_ref tracking_status # Variables for reading loop
+  local target_branch_ref current_path # Variables for porcelain parsing
+
+  # Ensure we are in a git repository
+  if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    echo "Error: Not inside a Git repository." >&2
+    return 1 # Use return instead of exit in functions
+  fi
+
+  echo "Fetching from remote '$REMOTE_NAME' and pruning stale remote-tracking branches..."
+  if ! git fetch "$REMOTE_NAME" --prune; then
+    echo "Error: 'git fetch $REMOTE_NAME --prune' failed. Aborting." >&2
+    return 1
+  fi
+
+  echo "Identifying local branches whose upstream branch is gone..."
+  # Only process local head refs that are tracking a remote branch which is now gone
+  while IFS= read -r line; do
+      branch_ref=$(echo "$line" | awk '{print $1}')
+      tracking_status=$(echo "$line" | awk '{print $2}') # Assumes simple format
+
+      if [[ "$tracking_status" == "[gone]" ]]; then
+          branch_name=${branch_ref#refs/heads/}
+          gone_branches+=("$branch_name")
+      fi
+  done < <(git for-each-ref --format='%(refname) %(upstream:track)' refs/heads | grep '\[gone\]')
+
+
+  if [[ ${#gone_branches[@]} -eq 0 ]]; then
+    echo "No local branches found tracking deleted remote branches. Nothing to do."
+    return 0
+  fi
+
+  echo "Found ${#gone_branches[@]} branches to potentially prune:"
+  printf -- " - %s\n" "${gone_branches[@]}"
+  echo ""
+
+  # Iterate over the branches identified as 'gone'
+  for branch_name in "${gone_branches[@]}"; do
+    echo "--- Processing branch: '$branch_name' ---"
+
+    # --- Check for Worktree using --porcelain (More Robust) ---
+    # echo "Checking for associated worktree using porcelain format..." # Optional debug msg
+    target_branch_ref="refs/heads/$branch_name"
+    worktree_path="" # Reset for each branch
+    current_path=""  # Track path for the current block
+
+    # Use process substitution to feed porcelain output to the loop
+    # Process last line even if no newline using || [[ -n "$line" ]]
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      # Check if line starts with "worktree "
+      if [[ "$line" == worktree* ]]; then
+        # Extract path after "worktree "
+        current_path="${line#worktree }"
+        # Reset found path for the *next* block unless branch matches this block
+        worktree_path=""
+      # Check if line starts with "branch " and matches the target ref for the *current* block
+      elif [[ -n "$current_path" && "$line" == "branch $target_branch_ref" ]]; then
+        # Found the matching branch line for the worktree block defined by current_path
+        worktree_path="$current_path"
+        # Found the worktree for this branch, exit the sub-shell reading porcelain output
+        break
+      # Reset current_path at the end of a block (empty line) - Helps if break isn't used/fails
+      elif [[ -z "$line" ]]; then
+         current_path=""
+      fi
+    done < <(git worktree list --porcelain)
+    # --- End Worktree Check ---
+
+
+    if [[ -n "$worktree_path" ]]; then
+      echo "Found associated worktree for '$branch_name' at: '$worktree_path'"
+
+      # Check if the path *directory* exists (more reliable than -e for worktree path)
+      # Quoting is crucial here for paths with spaces
+      if [[ -d "$worktree_path" ]]; then
+        echo "Attempting to remove worktree..."
+        # Use --force because the associated branch is about to be deleted anyway
+        # Quote the path variable to handle spaces
+        if git worktree remove --force "$worktree_path"; then
+          echo "Worktree at '$worktree_path' removed successfully."
+          ((worktrees_removed++))
+        else
+          echo "Error: Failed to remove worktree '$worktree_path'. Skipping deletion of branch '$branch_name'." >&2
+          continue # Skip to next branch
+        fi
+      else
+        # Path doesn't exist, maybe manually deleted? Git command might still be needed.
+        echo "Warning: Worktree directory '$worktree_path' not found. Attempting 'git worktree prune' might be needed separately." >&2
+        echo "Attempting to force remove the worktree record anyway..."
+        # Try removing the possibly orphaned record, still skip branch deletion on failure
+        if git worktree remove --force "$worktree_path"; then
+           echo "Worktree record for '$worktree_path' removed successfully."
+           ((worktrees_removed++))
+        else
+           echo "Error: Failed to remove potentially orphaned worktree record '$worktree_path'. Skipping deletion of branch '$branch_name'." >&2
+           continue # Skip to next branch
+        fi
+      fi
+    else
+      echo "No associated worktree found for '$branch_name'."
+    fi
+
+    # Now, attempt to delete the local branch
+    echo "Attempting to delete local branch '$branch_name'..."
+    # Quote the branch name variable to handle spaces/special chars
+    if git branch -D "$branch_name"; then
+      echo "Local branch '$branch_name' deleted successfully."
+      ((branches_deleted++))
+    else
+      echo "Error: Failed to delete branch '$branch_name'." >&2
+    fi
+    echo "----------------------------------------" # Separator
+  done
+
+  echo ""
+  echo "--- Summary ---"
+  echo "Branches deleted: $branches_deleted"
+  echo "Worktrees removed: $worktrees_removed"
+  echo "Pruning process complete."
+
+  # Check if any worktrees might need manual pruning
+  if git worktree list | grep -q 'prunable'; then
+     echo ""
+     echo "Note: Some prunable worktree data may exist. Run 'git worktree prune' to clean up."
+  fi
+
+  return 0 # Indicate success
+}

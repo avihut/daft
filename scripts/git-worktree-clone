@@ -1,0 +1,215 @@
+
+# Function to clone a Git repository into a specific directory structure:
+# <repository_name>/<default_branch_name>
+#
+# It determines the repository name from the URL and queries the remote
+# to find the default branch (e.g., main, master, develop) *before* cloning.
+# After cloning, it runs 'direnv allow' in the new directory and cds into it.
+#
+# Usage: gclone <repository-url>
+#
+# Example:
+#   gclone git@github.com:someuser/my-cool-project.git
+#   -> Determines default branch (e.g., 'main')
+#   -> Creates directory ./my-cool-project/main
+#   -> Clones the repo into ./my-cool-project/main
+#   -> Runs 'direnv allow .' in ./my-cool-project/main
+#   -> Changes current directory to ./my-cool-project/main
+#
+gclone() {
+  # --- Store Original Directory ---
+  local original_dir=$(pwd)
+  # --- End Store ---
+
+  # --- Input ---
+  local repo_url=$1
+  # --- End Input ---
+
+  # --- Tool Dependencies Check ---
+  local missing_deps=0
+  if ! command -v git &> /dev/null; then
+    echo "Error: 'git' command not found. Please install Git." >&2
+    missing_deps=1
+  fi
+  if ! command -v basename &> /dev/null; then
+    echo "Error: 'basename' command not found. Cannot extract repository name." >&2
+    missing_deps=1
+  fi
+   if ! command -v awk &> /dev/null; then
+    echo "Error: 'awk' command not found. Cannot determine default branch." >&2
+    missing_deps=1
+  fi
+  # We'll check for direnv later, only if needed
+  if [[ "$missing_deps" -ne 0 ]]; then
+    # Go back to original dir in case something went wrong before this point
+    # (though unlikely with current structure)
+    cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+    return 1 # Return error if dependencies are missing
+  fi
+  # --- End Tool Check ---
+
+
+  # --- Input Validation ---
+  if [[ -z "$repo_url" ]]; then
+    echo "Error: Repository URL is required." >&2
+    echo "Usage: gclone <repository-url>" >&2
+    cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+    return 1
+  fi
+  # --- End Validation ---
+
+
+  # --- Variable Declaration ---
+  local repo_name
+  local default_branch
+  local parent_dir
+  local clone_target_dir
+  local head_ref_line
+  # --- End Variable Declaration ---
+
+
+  # --- Step 1: Extract Repository Name ---
+  repo_name=$(basename "$repo_url" .git)
+  repo_name=$(basename "$repo_name")
+
+  if [[ -z "$repo_name" ]]; then
+     echo "Error: Could not extract repository name from URL: '$repo_url'" >&2
+     cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+     return 1
+  fi
+  echo "Repository name detected: '$repo_name'"
+  # --- End Step 1 ---
+
+
+  # --- Step 2: Determine Default Branch Remotely ---
+  echo "Querying remote '$repo_url' for default branch..."
+  head_ref_line=$(git ls-remote --symref "$repo_url" HEAD 2>/dev/null)
+
+  if [[ -z "$head_ref_line" ]]; then
+      echo "Error: Could not query remote HEAD ref for '$repo_url'." >&2
+      echo "Please check the URL, network connectivity, and repository permissions." >&2
+      cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+      return 1
+  fi
+
+  default_branch=$(echo "$head_ref_line" | awk '/^ref:/ {sub("refs/heads/", ""); print $2}')
+
+  if [[ -z "$default_branch" ]]; then
+      echo "Error: Could not parse default branch name from ls-remote output:" >&2
+      echo "$head_ref_line" >&2
+      cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+      return 1
+  fi
+  echo "Default branch detected: '$default_branch'"
+  # --- End Step 2 ---
+
+
+  # --- Step 3: Define and Create Directory Structure ---
+  parent_dir="$repo_name"
+  # Use relative path based on original directory for creation logic
+  clone_target_dir="${original_dir}/${parent_dir}/${default_branch}"
+  # Store relative path for user messages if realpath fails later
+  local relative_clone_target_dir="${parent_dir}/${default_branch}"
+
+  echo "Target clone directory: './${relative_clone_target_dir}'"
+
+  # Check for potential conflicts before creating directories (using full path)
+  if [[ -e "${original_dir}/${parent_dir}" && ! -d "${original_dir}/${parent_dir}" ]]; then
+      echo "Error: A file (not a directory) already exists at '${original_dir}/${parent_dir}'." >&2
+      cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+      return 1
+  fi
+   if [[ -e "$clone_target_dir" ]]; then
+      echo "Error: Target path '$clone_target_dir' already exists." >&2
+      cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+      return 1
+  fi
+
+  echo "Creating directory structure..."
+  # Create using the full path for robustness if called from subdirs
+  if ! mkdir -p "$clone_target_dir"; then
+     echo "Error: Failed to create directory structure '$clone_target_dir'." >&2
+     cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+     return 1
+  fi
+  echo "Directory structure created successfully."
+  # --- End Step 3 ---
+
+
+  # --- Step 4: Clone the Repository ---
+  echo "Cloning '$repo_url' into '$clone_target_dir'..."
+  # Clone using the full path
+  if ! git clone "$repo_url" "$clone_target_dir"; then
+      echo "Error: 'git clone' failed." >&2
+      echo "Cleaning up created directories..." >&2
+      # Clean up using full paths
+      rmdir "$clone_target_dir" 2>/dev/null
+      # Try removing parent only if it's likely the one we created
+      # Check if parent dir relative to original_dir exists and is empty
+      if [[ -d "${original_dir}/${parent_dir}" ]] && [[ -z "$(ls -A "${original_dir}/${parent_dir}")" ]]; then
+           rmdir "${original_dir}/${parent_dir}" 2>/dev/null
+      fi
+      # Or more simply, remove the whole structure if clone fails:
+      # rm -rf "${original_dir}/${parent_dir}"
+      cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+      return 1
+  fi
+  # --- End Step 4 ---
+
+
+  # --- Step 5: Post-Clone Actions (cd & direnv) ---
+  echo "--> Changing directory to clone target: '$clone_target_dir'"
+  # Use -- to handle potential paths starting with a hyphen
+  if cd -- "$clone_target_dir"; then
+      # Now we are inside the target directory
+      local current_dir=$(pwd)
+      echo "--> Successfully changed directory to $current_dir"
+
+      # Step 5a: Run direnv allow if available
+      echo "--> Running 'direnv allow' in $current_dir..."
+      if command -v direnv &> /dev/null; then
+          # Check if .envrc exists before running allow
+          if [[ -f ".envrc" ]]; then
+              if direnv allow .; then
+                  echo "--> 'direnv allow .' completed successfully."
+              else
+                  echo "Warning: 'direnv allow .' failed in $current_dir. You may need to run it manually." >&2
+                  # Continue even if direnv fails, as clone and cd succeeded
+              fi
+          else
+              echo "--> No .envrc file found in $current_dir. Skipping 'direnv allow'."
+          fi
+      else
+          echo "--> 'direnv' command not found. Skipping 'direnv allow'."
+      fi
+
+      # Step 5b: Final Success Message (already in the correct directory)
+      echo "---"
+      echo "Success!"
+      # Use pwd for the most accurate current directory path
+      local abs_clone_dir="$current_dir"
+      # Try to get absolute path for parent for clarity
+      local abs_parent_dir
+      abs_parent_dir=$(realpath -- "$current_dir/.." 2>/dev/null || echo "${original_dir}/${parent_dir}") # Fallback
+
+      echo "Repository '$repo_name' cloned into '$abs_clone_dir'"
+      echo "Parent directory structure created at '$abs_parent_dir'"
+      echo "You are now inside the cloned repository directory."
+
+      # Since we successfully cd'd, we just return 0 and the shell stays here.
+      return 0 # Indicate success
+
+  else
+      # cd failed!
+      local cd_exit_code=$?
+      echo "---"
+      echo "Error: Clone succeeded, but failed to change directory to '$clone_target_dir' (Exit code: ${cd_exit_code})." >&2
+      echo "You are still in the original directory: ${original_dir}" >&2
+      echo "Please check permissions for the target directory." >&2
+      # No direnv attempted because cd failed
+      # Attempt to cd back just in case something intermediate happened, though unlikely
+      cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+      return 1 # Indicate failure
+  fi
+  # --- End Step 5 ---
+}
