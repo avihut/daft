@@ -155,3 +155,5 @@ gcbw() {
     return 1
   fi
 }
+
+gcbw

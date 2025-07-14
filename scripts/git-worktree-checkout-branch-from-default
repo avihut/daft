@@ -90,3 +90,5 @@ gcbdw() {
   gcbw "$new_branch_name" "$default_branch"
   return $?
 }
+
+gcbdw
