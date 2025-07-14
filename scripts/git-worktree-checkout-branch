@@ -1,0 +1,157 @@
+
+# Function to create a git worktree one directory level up, create a new branch based on either
+# the CURRENT branch or a specified base branch, push the new branch to origin, set upstream tracking,
+# run 'direnv allow' (if direnv exists), and finally cd into the new worktree.
+#
+# !! Assumes you run this command from *within* an existing repository/worktree directory !!
+#    The new worktree will be created alongside it (e.g., ../<new-branch-name>).
+#
+# Usage: gcbw <new-branch-name> [base-branch-name]
+# (gcbw = Git New Worktree Branch)
+#
+# Arguments:
+#    $1: new-branch-name    - The name for the new branch and the worktree directory. Required.
+#    $2: base-branch-name   - The branch to base the new branch on. Optional.
+#                             If omitted, defaults to the CURRENTLY CHECKED OUT branch.
+#
+# Example 1 (run from ~/projects/my-repo/main):
+#    gcbw feature/new-login
+#    -> Creates worktree at ~/projects/feature/new-login based on 'main', pushes & tracks, runs direnv, then cds into it.
+#
+# Example 2 (run from ~/projects/my-repo/main):
+#    gcbw bugfix/hotfix-123 develop
+#    -> Creates worktree at ~/projects/bugfix/hotfix-123 based on 'develop', pushes & tracks, runs direnv, then cds into it.
+#
+gcbw() {
+  # Use local variables
+  local new_branch_name=$1
+  local base_branch # Will be set based on $2 or current branch
+
+  # --- Configuration ---
+  local remote_name="origin" # Remote for push/upstream
+  # --- End Configuration ---
+
+  # --- Determine Base Branch ---
+  if [[ -n "$2" ]]; then
+    # Use the explicitly provided base branch name
+    base_branch="$2"
+    echo "--> Using explicitly provided base branch: '$base_branch'"
+  else
+    # Base branch not specified, use the current branch
+    echo "--> Base branch not specified, using current branch..."
+    # Get the short symbolic name of the current HEAD (current branch)
+    base_branch=$(git symbolic-ref --short HEAD 2>/dev/null)
+    local exit_code=$?
+
+    if [[ $exit_code -ne 0 ]] || [[ -z "$base_branch" ]]; then
+      # Could fail if in detached HEAD state or other git issues
+      echo "Error: Could not determine current branch (maybe detached HEAD?)." >&2
+      echo "Please checkout a branch or specify the base branch explicitly:" >&2
+      echo "Usage: gcbw <new-branch-name> [base-branch-name]" >&2
+      return 1
+    fi
+    echo "--> Using current branch as base: '$base_branch'"
+  fi
+  # --- End Determine Base Branch ---
+
+  # --- Define the worktree path ---
+  local worktree_path="../${new_branch_name}"
+  # --- End Path Definition ---
+
+  # --- Input Validation ---
+  if [[ -z "$new_branch_name" ]]; then
+    echo "Error: New branch name is required." >&2
+    echo "Usage: gcbw <new-branch-name> [base-branch-name (defaults to current branch)]" >&2
+    echo "(Remember to run this from within your repository directory)" >&2
+    return 1
+  fi
+
+  local original_dir=$(pwd)
+  local real_worktree_path
+
+  # --- Execution ---
+  echo "Attempting to create Git worktree:"
+  echo "  Path:         ${worktree_path} (relative to CWD: ${original_dir})"
+  echo "  New Branch:   ${new_branch_name}"
+  echo "  From Branch:  ${base_branch}" # Shows specified or current branch
+  echo "---"
+
+  # Step 1: Create the worktree and the local branch
+  # Use base_branch variable here
+  if git worktree add "$worktree_path" -b "$new_branch_name" "$base_branch"; then
+    echo "---"
+    # Get absolute path
+    if command -v realpath &> /dev/null; then
+      real_worktree_path=$(realpath -- "$worktree_path" 2>/dev/null || echo "$worktree_path")
+    elif [[ "$worktree_path" = /* ]]; then
+      real_worktree_path="$worktree_path"
+    else
+      real_worktree_path="$(\cd "$original_dir/.." && pwd)/${new_branch_name}"
+    fi
+    if [[ -z "$real_worktree_path" ]] || [[ ! -d "$real_worktree_path" ]]; then
+       echo "Warning: Could not reliably determine absolute path for '${worktree_path}'. Using relative path." >&2
+       real_worktree_path="$worktree_path"
+    fi
+    echo "Git worktree created successfully at '${real_worktree_path}'."
+
+    # Step 2: Change directory into the new worktree
+    echo "--> Changing directory to worktree: ${real_worktree_path}"
+    if cd -- "$real_worktree_path"; then
+        echo "--> Successfully changed directory to $(pwd)"
+
+        # Step 3: Push, set upstream
+        echo "--> Attempting: git push --set-upstream $remote_name \"$new_branch_name\""
+        if git push --set-upstream "$remote_name" "$new_branch_name"; then
+            echo "--> Push to '${remote_name}' and upstream tracking set successfully."
+
+            # Step 4: Handle direnv (silently skip if not found)
+            # Only proceed if direnv command exists
+            if command -v direnv &> /dev/null; then
+                echo "--> Running 'direnv allow'..."
+                if [[ -f ".envrc" ]]; then
+                    if direnv allow .; then
+                        echo "--> 'direnv allow .' completed successfully."
+                    else
+                        # Still report failure if direnv exists but allow fails
+                        echo "Warning: 'direnv allow .' failed. You may need to run it manually." >&2
+                    fi
+                else
+                    echo "--> No .envrc file found in $(pwd). Skipping 'direnv allow'."
+                fi
+            # --- NO ELSE block here: Silently skip if direnv is not found ---
+            fi
+            echo "---"
+            echo "Overall Success: Worktree created, branch pushed/tracked, direnv handled (if present), and CD'd into worktree."
+            return 0 # Success
+
+        else
+            # Push failed
+            local push_exit_code=$?
+            echo "---"
+            echo "Error: Failed to push branch '${new_branch_name}' to '${remote_name}' or set upstream (Exit code: ${push_exit_code})." >&2
+            echo "Worktree was created at '$(pwd)', but push/tracking failed." >&2
+            echo "You ARE currently in the new worktree directory: $(pwd)"
+            echo "You may need to resolve the push issue manually." >&2
+            return 1
+        fi
+    else
+        # cd failed
+        local cd_exit_code=$?
+        echo "---"
+        echo "Error: Failed to change directory to the new worktree path '${real_worktree_path}' (Exit code: ${cd_exit_code})." >&2
+        echo "Worktree *may* have been created, but subsequent steps were skipped." >&2
+        echo "You are still in the original directory: ${original_dir}"
+        echo "Please check permissions and path." >&2
+        cd -- "$original_dir" || echo "Warning: Could not return to original directory ${original_dir}" >&2
+        return 1
+    fi
+  else
+    # git worktree add failed
+    local wt_exit_code=$?
+    echo "---"
+    echo "Error: Failed to create git worktree (Exit code: ${wt_exit_code})." >&2
+    echo "Check path permissions, if base branch '$base_branch' exists locally and is valid," >&2
+    echo "or if the target path '${worktree_path}' (relative to ${original_dir}) already exists." >&2
+    return 1
+  fi
+}
