@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Creates a git worktree one directory level up, checking out an EXISTING branch,
+# Creates a git worktree at the project root level, checking out an EXISTING branch,
 # set upstream tracking to the corresponding remote branch (if it exists),
 # run 'direnv allow' (if direnv exists), and finally cd into the new worktree.
 #
-# !! Assumes you run this command from *within* an existing repository/worktree directory !!
-#    The new worktree will be created alongside it (e.g., ../<existing-branch-name>).
+# Can be run from anywhere within the Git repository (including deep subdirectories).
+# The new worktree will be created at the project root level (alongside .git directory).
 #
 # Usage: git worktree-checkout <existing-branch-name>
 #
@@ -15,9 +15,9 @@
 #                               If only a remote branch exists (e.g., origin/feature/abc),
 #                               Git usually creates the local branch automatically.
 #
-# Example (run from ~/projects/my-repo/main):
+# Example (run from anywhere in ~/projects/my-repo/):
 #    git worktree-checkout feature/existing-feature
-#    -> Creates worktree at ~/projects/feature/existing-feature checking out 'feature/existing-feature',
+#    -> Creates worktree at ~/projects/my-repo/feature/existing-feature checking out 'feature/existing-feature',
 #       sets upstream to 'origin/feature/existing-feature', runs direnv, then cds into it.
 #
 
@@ -29,8 +29,22 @@ remote_name="origin" # Remote for upstream tracking
 # --- End Configuration ---
 
 # --- Define the worktree path ---
-# Use the provided branch name for the directory name
-worktree_path="../${branch_name}"
+# Find the project root directory (where .git is located)
+git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+if [[ -z "$git_common_dir" ]]; then
+  echo "Error: Could not determine Git common directory." >&2
+  exit 1
+fi
+
+# Get the absolute path to the project root (parent of .git directory)
+project_root=$(dirname "$git_common_dir")
+if [[ ! -d "$project_root" ]]; then
+  echo "Error: Could not determine project root directory." >&2
+  exit 1
+fi
+
+# Create worktree path at project root level
+worktree_path="${project_root}/${branch_name}"
 # --- End Path Definition ---
 
 # --- Input Validation ---
@@ -52,8 +66,9 @@ real_worktree_path=""
 
 # --- Execution ---
 echo "Attempting to create Git worktree and checkout branch:"
-echo "  Path:         ${worktree_path} (relative to CWD: ${original_dir})"
+echo "  Path:         ${worktree_path}"
 echo "  Branch:       ${branch_name}"
+echo "  Project Root: ${project_root}"
 echo "---"
 
 # Step 1: Create the worktree and checkout the existing branch
@@ -62,21 +77,12 @@ echo "---"
 # If it only exists on 'remote_name', Git typically creates a local tracking branch.
 if git worktree add "$worktree_path" "$branch_name"; then
   echo "---"
-  # Get absolute path
-  if command -v realpath &> /dev/null; then
-    real_worktree_path=$(realpath -- "$worktree_path" 2>/dev/null || echo "$worktree_path")
-  elif [[ "$worktree_path" = /* ]]; then
-    real_worktree_path="$worktree_path"
-  else
-    # Attempt to construct absolute path robustly
-    # Handle potential '..' in branch_name (though unlikely/bad practice)
-    target_dir_name=$(basename -- "$worktree_path")
-    real_worktree_path="$(\cd "$original_dir/.." && pwd)/${target_dir_name}"
+  # Use absolute path (worktree_path is already absolute)
+  real_worktree_path="$worktree_path"
+  if [[ ! -d "$real_worktree_path" ]]; then
+    echo "Error: Worktree directory was not created at '${real_worktree_path}'." >&2
+    exit 1
   fi
-   if [[ -z "$real_worktree_path" ]] || [[ ! -d "$real_worktree_path" ]]; then
-     echo "Warning: Could not reliably determine absolute path for '${worktree_path}'. Using relative path." >&2
-     real_worktree_path="$worktree_path"
-   fi
   echo "Git worktree created successfully at '${real_worktree_path}' checking out branch '${branch_name}'."
 
   # Step 2: Change directory into the new worktree
@@ -143,6 +149,6 @@ else
   echo "---"
   echo "Error: Failed to create git worktree (Exit code: ${wt_exit_code})." >&2
   echo "Check if branch '$branch_name' exists locally or remotely ('$remote_name/$branch_name')," >&2
-  echo "check path permissions, or if the target path '${worktree_path}' (relative to ${original_dir}) already exists." >&2
+  echo "check path permissions, or if the target path '${worktree_path}' already exists." >&2
   exit 1
 fi

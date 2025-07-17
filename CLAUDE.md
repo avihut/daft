@@ -47,8 +47,9 @@ git worktree-prune
 
 ## Development Notes
 
-- Scripts assume execution from within an existing worktree directory (except `git-worktree-clone`)
-- New worktrees are created as siblings using relative paths (`../<branch-name>`)
+- Scripts can be executed from anywhere within the Git repository (including deep subdirectories)
+- New worktrees are always created at the project root level (alongside the `.git` directory)
+- Scripts use `git rev-parse --git-common-dir` to locate the project root regardless of execution location
 - Scripts include optional `direnv` integration but silently skip if not available
 - Error handling includes cleanup of partially created worktrees on failure
 - All scripts include detailed usage documentation and examples in their headers
@@ -78,26 +79,28 @@ You're automatically placed in `my-project/main/` and ready to work.
 
 **Working on a new feature:**
 ```bash
-# From inside my-project/main/
+# From anywhere in the repository (main/, subdirectories, etc.)
 git worktree-checkout-branch feature/user-auth
 
-# Creates: my-project/feature/user-auth/ alongside main/
+# Creates: my-project/feature/user-auth/ at project root level
 # Automatically: creates branch, pushes to origin, sets upstream, runs direnv
 ```
 
 **Switching to existing branch:**
 ```bash
+# From anywhere in the repository
 git worktree-checkout bugfix/login-issue
 
-# Creates: my-project/bugfix/login-issue/
+# Creates: my-project/bugfix/login-issue/ at project root level
 # Checks out existing branch, sets upstream if remote exists
 ```
 
 **Branching from default branch (not current):**
 ```bash
-# From any worktree
+# From anywhere in the repository
 git worktree-checkout-branch-from-default hotfix/critical-fix
 
+# Creates: my-project/hotfix/critical-fix/ at project root level
 # Always branches from origin's default branch (main/master/develop)
 # Useful when current branch isn't what you want to base on
 ```

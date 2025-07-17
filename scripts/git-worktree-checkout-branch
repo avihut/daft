@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Creates a git worktree one directory level up, create a new branch based on either
+# Creates a git worktree at the project root level, create a new branch based on either
 # the CURRENT branch or a specified base branch, push the new branch to origin, set upstream tracking,
 # run 'direnv allow' (if direnv exists), and finally cd into the new worktree.
 #
-# !! Assumes you run this command from *within* an existing repository/worktree directory !!
-#    The new worktree will be created alongside it (e.g., ../<new-branch-name>).
+# Can be run from anywhere within the Git repository (including deep subdirectories).
+# The new worktree will be created at the project root level (alongside .git directory).
 #
 # Usage: git worktree-checkout-branch <new-branch-name> [base-branch-name]
 #
@@ -14,13 +14,13 @@
 #    $2: base-branch-name   - The branch to base the new branch on. Optional.
 #                             If omitted, defaults to the CURRENTLY CHECKED OUT branch.
 #
-# Example 1 (run from ~/projects/my-repo/main):
+# Example 1 (run from anywhere in ~/projects/my-repo/):
 #    git worktree-checkout-branch feature/new-login
-#    -> Creates worktree at ~/projects/feature/new-login based on 'main', pushes & tracks, runs direnv, then cds into it.
+#    -> Creates worktree at ~/projects/my-repo/feature/new-login based on current branch, pushes & tracks, runs direnv, then cds into it.
 #
-# Example 2 (run from ~/projects/my-repo/main):
+# Example 2 (run from anywhere in ~/projects/my-repo/):
 #    git worktree-checkout-branch bugfix/hotfix-123 develop
-#    -> Creates worktree at ~/projects/bugfix/hotfix-123 based on 'develop', pushes & tracks, runs direnv, then cds into it.
+#    -> Creates worktree at ~/projects/my-repo/bugfix/hotfix-123 based on 'develop', pushes & tracks, runs direnv, then cds into it.
 #
 
 # Use local variables
@@ -55,7 +55,22 @@ fi
 # --- End Determine Base Branch ---
 
 # --- Define the worktree path ---
-worktree_path="../${new_branch_name}"
+# Find the project root directory (where .git is located)
+git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+if [[ -z "$git_common_dir" ]]; then
+  echo "Error: Could not determine Git common directory." >&2
+  exit 1
+fi
+
+# Get the absolute path to the project root (parent of .git directory)
+project_root=$(dirname "$git_common_dir")
+if [[ ! -d "$project_root" ]]; then
+  echo "Error: Could not determine project root directory." >&2
+  exit 1
+fi
+
+# Create worktree path at project root level
+worktree_path="${project_root}/${new_branch_name}"
 # --- End Path Definition ---
 
 # --- Input Validation ---
@@ -71,26 +86,21 @@ real_worktree_path=""
 
 # --- Execution ---
 echo "Attempting to create Git worktree:"
-echo "  Path:         ${worktree_path} (relative to CWD: ${original_dir})"
+echo "  Path:         ${worktree_path}"
 echo "  New Branch:   ${new_branch_name}"
 echo "  From Branch:  ${base_branch}" # Shows specified or current branch
+echo "  Project Root: ${project_root}"
 echo "---"
 
 # Step 1: Create the worktree and the local branch
 # Use base_branch variable here
 if git worktree add "$worktree_path" -b "$new_branch_name" "$base_branch"; then
   echo "---"
-  # Get absolute path
-  if command -v realpath &> /dev/null; then
-    real_worktree_path=$(realpath -- "$worktree_path" 2>/dev/null || echo "$worktree_path")
-  elif [[ "$worktree_path" = /* ]]; then
-    real_worktree_path="$worktree_path"
-  else
-    real_worktree_path="$(\cd "$original_dir/.." && pwd)/${new_branch_name}"
-  fi
-  if [[ -z "$real_worktree_path" ]] || [[ ! -d "$real_worktree_path" ]]; then
-     echo "Warning: Could not reliably determine absolute path for '${worktree_path}'. Using relative path." >&2
-     real_worktree_path="$worktree_path"
+  # Use absolute path (worktree_path is already absolute)
+  real_worktree_path="$worktree_path"
+  if [[ ! -d "$real_worktree_path" ]]; then
+    echo "Error: Worktree directory was not created at '${real_worktree_path}'." >&2
+    exit 1
   fi
   echo "Git worktree created successfully at '${real_worktree_path}'."
 
@@ -151,6 +161,6 @@ else
   echo "---"
   echo "Error: Failed to create git worktree (Exit code: ${wt_exit_code})." >&2
   echo "Check path permissions, if base branch '$base_branch' exists locally and is valid,"
-  echo "or if the target path '${worktree_path}' (relative to ${original_dir}) already exists." >&2
+  echo "or if the target path '${worktree_path}' already exists." >&2
   exit 1
 fi
