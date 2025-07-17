@@ -53,6 +53,116 @@ git worktree-prune
 - Error handling includes cleanup of partially created worktrees on failure
 - All scripts include detailed usage documentation and examples in their headers
 
+## Worktree Workflow
+
+These scripts enable a complete worktree-based development workflow that eliminates traditional Git branch switching friction:
+
+### Initial Setup
+
+**Start with any Git repository:**
+```bash
+git worktree-clone git@github.com:user/my-project.git
+```
+
+This creates a structured layout:
+```
+my-project/
+├── .git/           # Shared Git metadata
+└── main/          # First worktree (default branch)
+    └── ... (project files)
+```
+
+You're automatically placed in `my-project/main/` and ready to work.
+
+### Daily Development Workflow
+
+**Working on a new feature:**
+```bash
+# From inside my-project/main/
+git worktree-checkout-branch feature/user-auth
+
+# Creates: my-project/feature/user-auth/ alongside main/
+# Automatically: creates branch, pushes to origin, sets upstream, runs direnv
+```
+
+**Switching to existing branch:**
+```bash
+git worktree-checkout bugfix/login-issue
+
+# Creates: my-project/bugfix/login-issue/
+# Checks out existing branch, sets upstream if remote exists
+```
+
+**Branching from default branch (not current):**
+```bash
+# From any worktree
+git worktree-checkout-branch-from-default hotfix/critical-fix
+
+# Always branches from origin's default branch (main/master/develop)
+# Useful when current branch isn't what you want to base on
+```
+
+### The Resulting Workflow
+
+Your directory structure becomes:
+```
+my-project/
+├── .git/                    # Shared Git metadata
+├── main/                    # Default branch worktree
+├── feature/user-auth/       # Feature branch worktree
+├── bugfix/login-issue/      # Bugfix branch worktree
+└── hotfix/critical-fix/     # Hotfix branch worktree
+```
+
+**Key Benefits:**
+- **No branch switching**: Each branch has its own directory
+- **No stashing**: Work persists across branches
+- **Parallel development**: Multiple branches can be worked on simultaneously
+- **IDE context**: Each worktree maintains its own IDE settings/context
+- **Environment isolation**: Each worktree can have its own `.envrc` file
+
+### Cleanup Workflow
+
+**When branches are merged and deleted remotely:**
+```bash
+git worktree-prune
+```
+
+This automatically:
+- Fetches from origin and prunes stale remote branches
+- Identifies local branches tracking deleted remotes
+- Removes associated worktrees
+- Deletes local branches
+
+### Advanced Scenarios
+
+**Working on multiple features simultaneously:**
+```bash
+# Terminal 1: working on authentication
+cd my-project/feature/user-auth/
+npm run dev
+
+# Terminal 2: working on UI components  
+cd my-project/feature/new-ui/
+npm run storybook
+
+# Terminal 3: testing a bugfix
+cd my-project/bugfix/payment-error/
+npm test
+```
+
+**Code reviews and testing:**
+```bash
+# Quickly check out a PR branch for review
+git worktree-checkout feature/teammate-work
+
+# Test runs in isolation without affecting your current work
+cd my-project/feature/teammate-work/
+npm test
+```
+
+This workflow eliminates the traditional friction of Git branch switching, stashing, and context loss, making it particularly powerful for projects where you frequently work on multiple branches or need to maintain different development environments per branch.
+
 ## Testing
 
 This repository contains only shell scripts with no traditional build, test, or lint commands. Testing should be done manually by executing the scripts in various Git repository scenarios.
