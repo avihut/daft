@@ -25,10 +25,17 @@ jobs:
       run: chmod +x tests/*.sh scripts/*
     
     - name: Add scripts to PATH
-      run: echo "${{ github.workspace }}/scripts" >> $GITHUB_PATH
+      run: |
+        echo "${{ github.workspace }}/scripts" >> $GITHUB_PATH
+        echo "PATH=${{ github.workspace }}/scripts:$PATH" >> $GITHUB_ENV
     
     - name: Run simple validation tests
-      run: make test-simple
+      run: |
+        echo "Current PATH: $PATH"
+        echo "Scripts in PATH:"
+        ls -la ${{ github.workspace }}/scripts/
+        which git-worktree-init || echo "git-worktree-init not in PATH"
+        make test-simple
     
     - name: Run clone tests
       run: make test-clone
