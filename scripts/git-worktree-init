@@ -1,0 +1,254 @@
+#!/bin/bash
+
+# Initializes a new Git repository in the worktree workflow structure:
+# <repository_name>/.git (bare repository)
+# <repository_name>/<initial_branch> (initial worktree)
+#
+# This command creates a new repository following the same structured layout
+# used by git-worktree-clone, making it suitable for the worktree workflow.
+#
+# Usage: git worktree-init [--bare|-b] [--quiet|-q] [--initial-branch <branch>] <repository-name>
+#
+# Options:
+#   -b, --bare              Only create the bare repository structure
+#                           but do not create the initial worktree
+#   -q, --quiet             Suppress all output and run silently
+#   --initial-branch <name> Set the initial branch name (default: main)
+#
+# Examples:
+#   git worktree-init my-new-project
+#   -> Creates directory ./my-new-project/.git (bare repository)
+#   -> Creates directory ./my-new-project/main (initial worktree)
+#   -> Runs 'direnv allow' in ./my-new-project/main
+#   -> Changes current directory to ./my-new-project/main
+#
+#   git worktree-init --bare my-new-project
+#   -> Creates directory ./my-new-project/.git (bare repository)
+#   -> Stays in current directory (no worktree created)
+#
+#   git worktree-init --quiet my-new-project
+#   -> Runs completely silently, no output to terminal
+#   -> Same behavior as default but with all output suppressed
+#
+#   git worktree-init --initial-branch develop my-new-project
+#   -> Creates initial worktree with 'develop' branch instead of 'main'
+
+# --- Store Original Directory ---
+original_dir=$(pwd)
+# --- End Store ---
+
+# --- Input ---
+bare=false
+quiet=false
+initial_branch="main"
+repo_name=""
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -b|--bare)
+            bare=true
+            shift
+            ;;
+        -q|--quiet)
+            quiet=true
+            shift
+            ;;
+        --initial-branch)
+            if [[ -n "$2" && "$2" != -* ]]; then
+                initial_branch="$2"
+                shift 2
+            else
+                echo "Error: --initial-branch requires a branch name" >&2
+                echo "Usage: git worktree-init [--bare|-b] [--quiet|-q] [--initial-branch <branch>] <repository-name>" >&2
+                cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+                exit 1
+            fi
+            ;;
+        -*)
+            echo "Error: Unknown option '$1'" >&2
+            echo "Usage: git worktree-init [--bare|-b] [--quiet|-q] [--initial-branch <branch>] <repository-name>" >&2
+            cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+            exit 1
+            ;;
+        *)
+            if [[ -z "$repo_name" ]]; then
+                repo_name="$1"
+            else
+                echo "Error: Multiple repository names provided" >&2
+                echo "Usage: git worktree-init [--bare|-b] [--quiet|-q] [--initial-branch <branch>] <repository-name>" >&2
+                cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+# --- End Input ---
+
+# --- Tool Dependencies Check ---
+missing_deps=0
+if ! command -v git &> /dev/null; then
+  echo "Error: 'git' command not found. Please install Git." >&2
+  missing_deps=1
+fi
+# We'll check for direnv later, only if needed
+if [[ "$missing_deps" -ne 0 ]]; then
+  cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+  exit 1
+fi
+# --- End Tool Check ---
+
+# --- Input Validation ---
+if [[ -z "$repo_name" ]]; then
+  echo "Error: Repository name is required." >&2
+  echo "Usage: git worktree-init [--bare|-b] [--quiet|-q] [--initial-branch <branch>] <repository-name>" >&2
+  cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+  exit 1
+fi
+
+# Validate repository name (no path separators, no special characters)
+if [[ "$repo_name" =~ [/\\] ]]; then
+  echo "Error: Repository name cannot contain path separators" >&2
+  echo "Use a simple name like 'my-project', not 'path/to/my-project'" >&2
+  cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+  exit 1
+fi
+
+# Validate initial branch name
+if [[ -z "$initial_branch" ]]; then
+  echo "Error: Initial branch name cannot be empty" >&2
+  cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+  exit 1
+fi
+# --- End Validation ---
+
+# --- Variable Declaration ---
+parent_dir="$repo_name"
+worktree_dir="${parent_dir}/${initial_branch}"
+# --- End Variable Declaration ---
+
+# --- Helper Functions ---
+quiet_echo() {
+    if [[ "$quiet" == "false" ]]; then
+        echo "$@"
+    fi
+}
+# --- End Helper Functions ---
+
+# --- Step 1: Check for potential conflicts ---
+if [[ -e "$parent_dir" ]]; then
+    echo "Error: Target path './${parent_dir}' already exists." >&2
+    cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+    exit 1
+fi
+
+quiet_echo "Target repository directory: './${parent_dir}'"
+if [[ "$bare" == "false" ]]; then
+    quiet_echo "Initial worktree will be in: './${worktree_dir}'"
+else
+    quiet_echo "Bare mode: Only bare repository will be created"
+fi
+# --- End Step 1 ---
+
+# --- Step 2: Create Directory Structure ---
+quiet_echo "Creating repository directory..."
+if ! mkdir -p "$parent_dir"; then
+   echo "Error: Failed to create directory './${parent_dir}'." >&2
+   cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+   exit 1
+fi
+# --- End Step 2 ---
+
+# --- Step 3: Initialize the Repository ---
+quiet_echo "Initializing bare repository in './${parent_dir}/.git'..."
+if [[ "$quiet" == "true" ]]; then
+    git_init_cmd="git init --bare --quiet"
+else
+    git_init_cmd="git init --bare"
+fi
+
+if ! $git_init_cmd --initial-branch="$initial_branch" "${parent_dir}/.git"; then
+    echo "Error: 'git init --bare' failed." >&2
+    echo "Cleaning up created directory..." >&2
+    rm -rf "$parent_dir"
+    cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+    exit 1
+fi
+# --- End Step 3 ---
+
+# --- Step 4: Create Initial Worktree (unless bare) ---
+if [[ "$bare" == "false" ]]; then
+    quiet_echo "--> Changing directory to './${parent_dir}'"
+    if ! cd -- "$parent_dir"; then
+        echo "Error: Failed to change directory to './${parent_dir}'." >&2
+        echo "You may need to manually complete the setup." >&2
+        cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+        exit 1
+    fi
+
+    # Set up git worktree command based on quiet mode
+    if [[ "$quiet" == "true" ]]; then
+        git_worktree_cmd="git worktree add --quiet"
+    else
+        git_worktree_cmd="git worktree add"
+    fi
+
+    # Create initial worktree
+    quiet_echo "Creating initial worktree for branch '${initial_branch}'..."
+    if ! $git_worktree_cmd "$initial_branch"; then
+        echo "Error: 'git worktree add' failed for branch '${initial_branch}'." >&2
+        echo "Cleaning up..." >&2
+        cd ..
+        rm -rf "$repo_name"
+        cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+        exit 1
+    fi
+    
+    # --- Step 5: Post-Init Actions (cd & direnv) ---
+    quiet_echo "--> Changing directory to worktree: './${initial_branch}'"
+    if cd -- "$initial_branch"; then
+        current_dir=$(pwd)
+        quiet_echo "--> Successfully changed directory to $current_dir"
+
+        # Run direnv allow if available
+        if command -v direnv &> /dev/null; then
+            if [[ -f ".envrc" ]]; then
+                quiet_echo "--> Running 'direnv allow'..."
+                if direnv allow .; then
+                    quiet_echo "--> 'direnv allow .' completed successfully."
+                else
+                    echo "Warning: 'direnv allow .' failed. You may need to run it manually." >&2
+                fi
+            else
+                quiet_echo "--> No .envrc file found. Skipping 'direnv allow'."
+            fi
+        fi
+
+        quiet_echo "---"
+        quiet_echo "Success!"
+        quiet_echo "Repository '$repo_name' initialized successfully."
+        quiet_echo "The main Git directory is at: '$(git rev-parse --git-dir)'"
+        quiet_echo "Your initial worktree for branch '${initial_branch}' is ready at: '$(pwd)'"
+        quiet_echo "You are now inside the initial worktree."
+        exit 0
+
+    else
+        local cd_exit_code=$?
+        echo "---"
+        echo "Error: Failed to change directory into the new worktree at './${initial_branch}' (Exit code: ${cd_exit_code})." >&2
+        echo "The repository and worktree have been created, but you are still in the parent directory: $(pwd)" >&2
+        exit 1
+    fi
+    # --- End Step 5 ---
+else
+    # Bare mode: just report success and stay in original directory
+    quiet_echo "---"
+    quiet_echo "Success!"
+    quiet_echo "Repository '$repo_name' initialized successfully (bare mode)."
+    quiet_echo "The bare Git repository is at: '$(realpath "${parent_dir}/.git")'"
+    quiet_echo "No worktree was created. You can create worktrees using 'git worktree add' from within the repository directory."
+    quiet_echo "You are still in the original directory: $(pwd)"
+    exit 0
+fi
+# --- End Step 4 ---

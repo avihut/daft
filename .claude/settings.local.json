@@ -19,7 +19,11 @@
       "Bash(/Users/avihu/Projects/git-worktree-workflow/scripts/git-worktree-clone avihut:tax-analyzer)",
       "Bash(gh pr view:*)",
       "Bash(gh issue list:*)",
-      "Bash(gh issue view:*)"
+      "Bash(gh issue view:*)",
+      "Bash(chmod:*)",
+      "Bash(mkdir:*)",
+      "Bash(/Users/avihu/Projects/git-worktree-workflow/scripts/git-worktree-init test-repo)",
+      "Bash(./scripts/git-worktree-init test-repo)"
     ],
     "deny": []
   }
