@@ -7,9 +7,13 @@
 # to find the default branch (e.g., main, master, develop) *before* cloning.
 # After cloning, it runs 'direnv allow' in the new directory and cds into it.
 #
-# Usage: git worktree-clone <repository-url>
+# Usage: git worktree-clone [-n|--no-checkout] <repository-url>
 #
-# Example:
+# Options:
+#   -n, --no-checkout   Only clone the repository and create the .git folder
+#                       but do not checkout the default branch worktree
+#
+# Examples:
 #   git worktree-clone git@github.com:someuser/my-cool-project.git
 #   -> Determines default branch (e.g., 'main')
 #   -> Creates directory ./my-cool-project/main
@@ -17,13 +21,46 @@
 #   -> Runs 'direnv allow .' in ./my-cool-project/main
 #   -> Changes current directory to ./my-cool-project/main
 #
+#   git worktree-clone -n git@github.com:someuser/my-cool-project.git
+#   -> Creates directory ./my-cool-project/.git
+#   -> Clones the repo as bare repository into ./my-cool-project/.git
+#   -> Stays in current directory (no worktree created)
+#
 
 # --- Store Original Directory ---
 original_dir=$(pwd)
 # --- End Store ---
 
 # --- Input ---
-repo_url=$1
+no_checkout=false
+repo_url=""
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -n|--no-checkout)
+            no_checkout=true
+            shift
+            ;;
+        -*)
+            echo "Error: Unknown option '$1'" >&2
+            echo "Usage: git worktree-clone [-n|--no-checkout] <repository-url>" >&2
+            cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+            exit 1
+            ;;
+        *)
+            if [[ -z "$repo_url" ]]; then
+                repo_url="$1"
+            else
+                echo "Error: Multiple repository URLs provided" >&2
+                echo "Usage: git worktree-clone [-n|--no-checkout] <repository-url>" >&2
+                cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
 # --- End Input ---
 
 # --- Tool Dependencies Check ---
@@ -53,7 +90,7 @@ fi
 # --- Input Validation ---
 if [[ -z "$repo_url" ]]; then
   echo "Error: Repository URL is required." >&2
-  echo "Usage: git worktree-clone <repository-url>" >&2
+  echo "Usage: git worktree-clone [-n|--no-checkout] <repository-url>" >&2
   cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
   exit 1
 fi
@@ -116,7 +153,11 @@ parent_dir="$repo_name"
 worktree_dir="${parent_dir}/${default_branch}"
 
 echo "Target repository directory: './${parent_dir}'"
-echo "Initial worktree will be in: './${worktree_dir}'"
+if [[ "$no_checkout" == "false" ]]; then
+    echo "Initial worktree will be in: './${worktree_dir}'"
+else
+    echo "No-checkout mode: Only bare repository will be created"
+fi
 
 # Check for potential conflicts before creating directories
 if [[ -e "$parent_dir" ]]; then
@@ -147,60 +188,70 @@ fi
 # --- End Step 4 ---
 
 
-# --- Step 5: Create Initial Worktree ---
-echo "--> Changing directory to './${parent_dir}'"
-if ! cd -- "$parent_dir"; then
-    echo "Error: Failed to change directory to './${parent_dir}'." >&2
-    echo "You may need to manually complete the setup." >&2
-    cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
-    exit 1
-fi
-
-echo "Creating initial worktree for branch '${default_branch}'..."
-# We are inside the repo_name dir, so .git is found automatically
-if ! git worktree add "$default_branch"; then
-    echo "Error: 'git worktree add' failed for branch '${default_branch}'." >&2
-    echo "Cleaning up..." >&2
-    cd ..
-    rm -rf "$repo_name"
-    exit 1
-fi
-# --- End Step 5 ---
-
-
-# --- Step 6: Post-Clone Actions (cd & direnv) ---
-echo "--> Changing directory to worktree: './${default_branch}'"
-if cd -- "$default_branch"; then
-    current_dir=$(pwd)
-    echo "--> Successfully changed directory to $current_dir"
-
-    # Run direnv allow if available
-    if command -v direnv &> /dev/null; then
-        if [[ -f ".envrc" ]]; then
-            echo "--> Running 'direnv allow'..."
-            if direnv allow .; then
-                echo "--> 'direnv allow .' completed successfully."
-            else
-                echo "Warning: 'direnv allow .' failed. You may need to run it manually." >&2
-            fi
-        else
-            echo "--> No .envrc file found. Skipping 'direnv allow'."
-        fi
+# --- Step 5: Create Initial Worktree (unless no-checkout) ---
+if [[ "$no_checkout" == "false" ]]; then
+    echo "--> Changing directory to './${parent_dir}'"
+    if ! cd -- "$parent_dir"; then
+        echo "Error: Failed to change directory to './${parent_dir}'." >&2
+        echo "You may need to manually complete the setup." >&2
+        cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+        exit 1
     fi
 
+    echo "Creating initial worktree for branch '${default_branch}'..."
+    # We are inside the repo_name dir, so .git is found automatically
+    if ! git worktree add "$default_branch"; then
+        echo "Error: 'git worktree add' failed for branch '${default_branch}'." >&2
+        echo "Cleaning up..." >&2
+        cd ..
+        rm -rf "$repo_name"
+        exit 1
+    fi
+    
+    # --- Step 6: Post-Clone Actions (cd & direnv) ---
+    echo "--> Changing directory to worktree: './${default_branch}'"
+    if cd -- "$default_branch"; then
+        current_dir=$(pwd)
+        echo "--> Successfully changed directory to $current_dir"
+
+        # Run direnv allow if available
+        if command -v direnv &> /dev/null; then
+            if [[ -f ".envrc" ]]; then
+                echo "--> Running 'direnv allow'..."
+                if direnv allow .; then
+                    echo "--> 'direnv allow .' completed successfully."
+                else
+                    echo "Warning: 'direnv allow .' failed. You may need to run it manually." >&2
+                fi
+            else
+                echo "--> No .envrc file found. Skipping 'direnv allow'."
+            fi
+        fi
+
+        echo "---"
+        echo "Success!"
+        echo "Repository '$repo_name' cloned successfully."
+        echo "The main Git directory is at: '$(git rev-parse --git-dir)'"
+        echo "Your initial worktree for branch '${default_branch}' is ready at: '$(pwd)'"
+        echo "You are now inside the initial worktree."
+        exit 0
+
+    else
+        local cd_exit_code=$?
+        echo "---"
+        echo "Error: Failed to change directory into the new worktree at './${default_branch}' (Exit code: ${cd_exit_code})." >&2
+        echo "The repository and worktree have been created, but you are still in the parent directory: $(pwd)" >&2
+        exit 1
+    fi
+    # --- End Step 6 ---
+else
+    # No-checkout mode: just report success and stay in original directory
     echo "---"
     echo "Success!"
-    echo "Repository '$repo_name' cloned successfully."
-    echo "The main Git directory is at: '$(git rev-parse --git-dir)'"
-    echo "Your initial worktree for branch '${default_branch}' is ready at: '$(pwd)'"
-    echo "You are now inside the initial worktree."
+    echo "Repository '$repo_name' cloned successfully (no-checkout mode)."
+    echo "The bare Git repository is at: '$(realpath "${parent_dir}/.git")'"
+    echo "No worktree was created. You can create worktrees using 'git worktree add' from within the repository directory."
+    echo "You are still in the original directory: $(pwd)"
     exit 0
-
-else
-    local cd_exit_code=$?
-    echo "---"
-    echo "Error: Failed to change directory into the new worktree at './${default_branch}' (Exit code: ${cd_exit_code})." >&2
-    echo "The repository and worktree have been created, but you are still in the parent directory: $(pwd)" >&2
-    exit 1
 fi
-# --- End Step 6 ---
+# --- End Step 5 ---
