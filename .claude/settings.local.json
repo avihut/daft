@@ -23,7 +23,10 @@
       "Bash(chmod:*)",
       "Bash(mkdir:*)",
       "Bash(/Users/avihu/Projects/git-worktree-workflow/scripts/git-worktree-init test-repo)",
-      "Bash(./scripts/git-worktree-init test-repo)"
+      "Bash(./scripts/git-worktree-init test-repo)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(gh pr create:*)"
     ],
     "deny": []
   }
