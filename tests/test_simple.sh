@@ -148,15 +148,15 @@ run_simple_tests() {
     # Add debug output to identify which test is failing
     echo "DEBUG: About to run test_simple_dependencies"
     run_test "simple_dependencies" "test_simple_dependencies"
-    echo "DEBUG: Finished simple_dependencies test"
+    echo "DEBUG: Finished simple_dependencies test - return code: $?"
     
     echo "DEBUG: About to run test_simple_file_operations"
     run_test "simple_file_operations" "test_simple_file_operations"
-    echo "DEBUG: Finished simple_file_operations test"
+    echo "DEBUG: Finished simple_file_operations test - return code: $?"
     
     echo "DEBUG: About to run test_simple_init"
     run_test "simple_init" "test_simple_init"
-    echo "DEBUG: Finished simple_init test"
+    echo "DEBUG: Finished simple_init test - return code: $?"
     
     run_test "simple_init_custom_branch" "test_simple_init_custom_branch"
     run_test "simple_init_bare" "test_simple_init_bare"
