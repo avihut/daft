@@ -188,9 +188,10 @@ run_test() {
     local test_function="$2"
     
     echo "DEBUG: run_test called with name='$test_name' function='$test_function'"
+    echo "DEBUG: TESTS_RUN before increment: $TESTS_RUN"
     
-    ((TESTS_RUN++))
-    echo "DEBUG: TESTS_RUN incremented to $TESTS_RUN"
+    TESTS_RUN=$((TESTS_RUN + 1))
+    echo "DEBUG: TESTS_RUN after increment: $TESTS_RUN"
     
     log "Running test: $test_name"
     
