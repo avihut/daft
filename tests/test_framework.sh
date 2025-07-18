@@ -215,40 +215,40 @@ create_test_remote() {
     local remote_dir="$REMOTE_REPO_DIR/$repo_name"
     
     # Create bare repository
-    git init --bare "$remote_dir"
+    git init --bare "$remote_dir" >/dev/null 2>&1
     
     # Create a temporary clone to set up initial content
     local temp_clone="$TEMP_BASE_DIR/temp_clone_$$"
-    git clone "$remote_dir" "$temp_clone"
+    git clone "$remote_dir" "$temp_clone" >/dev/null 2>&1
     
     (
         cd "$temp_clone"
-        git checkout -b "$default_branch"
+        git checkout -b "$default_branch" >/dev/null 2>&1
         echo "# $repo_name" > README.md
         echo "print('Hello from $repo_name')" > main.py
-        git add .
-        git commit -m "Initial commit"
-        git push origin "$default_branch"
+        git add . >/dev/null 2>&1
+        git commit -m "Initial commit" >/dev/null 2>&1
+        git push origin "$default_branch" >/dev/null 2>&1
         
         # Create additional branches for testing
-        git checkout -b develop
+        git checkout -b develop >/dev/null 2>&1
         echo "# Development branch" >> README.md
-        git add README.md
-        git commit -m "Add development branch"
-        git push origin develop
+        git add README.md >/dev/null 2>&1
+        git commit -m "Add development branch" >/dev/null 2>&1
+        git push origin develop >/dev/null 2>&1
         
-        git checkout -b feature/test-feature
+        git checkout -b feature/test-feature >/dev/null 2>&1
         echo "# Feature branch" >> README.md
-        git add README.md
-        git commit -m "Add feature branch"
-        git push origin feature/test-feature
-    )
+        git add README.md >/dev/null 2>&1
+        git commit -m "Add feature branch" >/dev/null 2>&1
+        git push origin feature/test-feature >/dev/null 2>&1
+    ) >/dev/null 2>&1
     
     # Clean up temporary clone
     rm -rf "$temp_clone"
     
     # Set default branch
-    git -C "$remote_dir" symbolic-ref HEAD "refs/heads/$default_branch"
+    git -C "$remote_dir" symbolic-ref HEAD "refs/heads/$default_branch" >/dev/null 2>&1
     
     echo "$remote_dir"
 }

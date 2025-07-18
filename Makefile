@@ -10,7 +10,7 @@ TEMP_DIR := /tmp/git-worktree-tests
 all: test
 
 # Test targets
-.PHONY: test test-all test-clone test-checkout test-checkout-branch test-checkout-branch-from-default test-init test-prune test-framework
+.PHONY: test test-all test-clone test-checkout test-checkout-branch test-checkout-branch-from-default test-init test-prune test-framework test-simple
 
 test: test-all
 	@echo "All tests completed"
@@ -46,6 +46,10 @@ test-init:
 test-prune:
 	@echo "Running prune tests..."
 	@cd $(TESTS_DIR) && ./test_prune.sh
+
+test-simple:
+	@echo "Running simple validation tests..."
+	@cd $(TESTS_DIR) && ./test_simple.sh
 
 # Individual test runner with verbose output
 .PHONY: test-verbose

@@ -27,7 +27,10 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(gh pr create:*)",
-      "Bash(gh issue create:*)"
+      "Bash(gh issue create:*)",
+      "Bash(make:*)",
+      "Bash(export:*)",
+      "Bash(./test_framework.sh:*)"
     ],
     "deny": []
   }
