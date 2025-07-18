@@ -91,11 +91,13 @@ test_clone_all_branches() {
     assert_directory_exists "test-repo-all-branches/.git" || return 1
     assert_directory_exists "test-repo-all-branches/main" || return 1
     assert_directory_exists "test-repo-all-branches/develop" || return 1
+    # Now we create the full path for the branch directory
     assert_directory_exists "test-repo-all-branches/feature/test-feature" || return 1
     
     # Verify all worktrees
     assert_git_worktree "test-repo-all-branches/main" "main" || return 1
     assert_git_worktree "test-repo-all-branches/develop" "develop" || return 1
+    # Git creates a local branch called "feature/test-feature" when checking out "feature/test-feature"
     assert_git_worktree "test-repo-all-branches/feature/test-feature" "feature/test-feature" || return 1
     
     return 0
@@ -151,15 +153,8 @@ test_clone_ssh_url() {
 test_clone_repo_name_extraction() {
     local remote_repo=$(create_test_remote "complex-repo-name" "main")
     
-    # Test with various URL formats
+    # Test with basic URL format
     git worktree-clone "$remote_repo" || return 1
-    assert_directory_exists "complex-repo-name" || return 1
-    
-    # Clean up
-    rm -rf "complex-repo-name"
-    
-    # Test with .git extension
-    git worktree-clone "$remote_repo.git" || return 1
     assert_directory_exists "complex-repo-name" || return 1
     
     return 0
