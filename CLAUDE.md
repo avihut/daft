@@ -86,11 +86,11 @@ This initializes a new repository in the structured layout:
 ```
 my-new-project/
 ├── .git/           # Shared Git metadata
-└── main/          # Initial worktree (default branch)
+└── master/        # Initial worktree (default branch)
     └── ... (ready for project files)
 ```
 
-You're automatically placed in `my-new-project/main/` and ready to start coding.
+You're automatically placed in `my-new-project/master/` and ready to start coding.
 
 ### Daily Development Workflow
 

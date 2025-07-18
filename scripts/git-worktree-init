@@ -13,14 +13,14 @@
 #   -b, --bare              Only create the bare repository structure
 #                           but do not create the initial worktree
 #   -q, --quiet             Suppress all output and run silently
-#   --initial-branch <name> Set the initial branch name (default: main)
+#   --initial-branch <name> Set the initial branch name (default: master)
 #
 # Examples:
 #   git worktree-init my-new-project
 #   -> Creates directory ./my-new-project/.git (bare repository)
-#   -> Creates directory ./my-new-project/main (initial worktree)
-#   -> Runs 'direnv allow' in ./my-new-project/main
-#   -> Changes current directory to ./my-new-project/main
+#   -> Creates directory ./my-new-project/master (initial worktree)
+#   -> Runs 'direnv allow' in ./my-new-project/master
+#   -> Changes current directory to ./my-new-project/master
 #
 #   git worktree-init --bare my-new-project
 #   -> Creates directory ./my-new-project/.git (bare repository)
@@ -31,7 +31,7 @@
 #   -> Same behavior as default but with all output suppressed
 #
 #   git worktree-init --initial-branch develop my-new-project
-#   -> Creates initial worktree with 'develop' branch instead of 'main'
+#   -> Creates initial worktree with 'develop' branch instead of 'master'
 
 # --- Store Original Directory ---
 original_dir=$(pwd)
@@ -40,7 +40,7 @@ original_dir=$(pwd)
 # --- Input ---
 bare=false
 quiet=false
-initial_branch="main"
+initial_branch="master"
 repo_name=""
 
 # Parse command line arguments
