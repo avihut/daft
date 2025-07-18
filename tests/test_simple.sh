@@ -108,11 +108,19 @@ test_simple_help_commands() {
 
 # Test script dependencies
 test_simple_dependencies() {
-    # Test required commands exist
-    assert_command_success "which git" "Git should be available"
-    assert_command_success "which awk" "AWK should be available"
-    assert_command_success "which basename" "basename should be available"
+    echo "DEBUG: Inside test_simple_dependencies"
     
+    # Test required commands exist
+    echo "DEBUG: Testing git command"
+    assert_command_success "which git" "Git should be available" || return 1
+    
+    echo "DEBUG: Testing awk command"
+    assert_command_success "which awk" "AWK should be available" || return 1
+    
+    echo "DEBUG: Testing basename command"
+    assert_command_success "which basename" "basename should be available" || return 1
+    
+    echo "DEBUG: test_simple_dependencies completed successfully"
     return 0
 }
 
@@ -137,9 +145,19 @@ test_simple_file_operations() {
 run_simple_tests() {
     log "Running simple validation tests..."
     
+    # Add debug output to identify which test is failing
+    echo "DEBUG: About to run test_simple_dependencies"
     run_test "simple_dependencies" "test_simple_dependencies"
+    echo "DEBUG: Finished simple_dependencies test"
+    
+    echo "DEBUG: About to run test_simple_file_operations"
     run_test "simple_file_operations" "test_simple_file_operations"
+    echo "DEBUG: Finished simple_file_operations test"
+    
+    echo "DEBUG: About to run test_simple_init"
     run_test "simple_init" "test_simple_init"
+    echo "DEBUG: Finished simple_init test"
+    
     run_test "simple_init_custom_branch" "test_simple_init_custom_branch"
     run_test "simple_init_bare" "test_simple_init_bare"
     run_test "simple_init_errors" "test_simple_init_errors"
