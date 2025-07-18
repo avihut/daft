@@ -7,13 +7,13 @@
 # This command creates a new repository following the same structured layout
 # used by git-worktree-clone, making it suitable for the worktree workflow.
 #
-# Usage: git worktree-init [--bare|-b] [--quiet|-q] [--initial-branch <branch>] <repository-name>
+# Usage: git worktree-init [--bare] [--quiet|-q] [--initial-branch|-b <branch>] <repository-name>
 #
 # Options:
-#   -b, --bare              Only create the bare repository structure
+#   --bare                  Only create the bare repository structure
 #                           but do not create the initial worktree
 #   -q, --quiet             Suppress all output and run silently
-#   --initial-branch <name> Set the initial branch name (default: master)
+#   -b, --initial-branch <name> Set the initial branch name (default: master)
 #
 # Examples:
 #   git worktree-init my-new-project
@@ -32,6 +32,9 @@
 #
 #   git worktree-init --initial-branch develop my-new-project
 #   -> Creates initial worktree with 'develop' branch instead of 'master'
+#
+#   git worktree-init -b develop my-new-project
+#   -> Same as above using short option
 
 # --- Store Original Directory ---
 original_dir=$(pwd)
@@ -46,7 +49,7 @@ repo_name=""
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -b|--bare)
+        --bare)
             bare=true
             shift
             ;;
@@ -54,20 +57,20 @@ while [[ $# -gt 0 ]]; do
             quiet=true
             shift
             ;;
-        --initial-branch)
+        -b|--initial-branch)
             if [[ -n "$2" && "$2" != -* ]]; then
                 initial_branch="$2"
                 shift 2
             else
-                echo "Error: --initial-branch requires a branch name" >&2
-                echo "Usage: git worktree-init [--bare|-b] [--quiet|-q] [--initial-branch <branch>] <repository-name>" >&2
+                echo "Error: --initial-branch/-b requires a branch name" >&2
+                echo "Usage: git worktree-init [--bare] [--quiet|-q] [--initial-branch|-b <branch>] <repository-name>" >&2
                 cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
                 exit 1
             fi
             ;;
         -*)
             echo "Error: Unknown option '$1'" >&2
-            echo "Usage: git worktree-init [--bare|-b] [--quiet|-q] [--initial-branch <branch>] <repository-name>" >&2
+            echo "Usage: git worktree-init [--bare] [--quiet|-q] [--initial-branch|-b <branch>] <repository-name>" >&2
             cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
             exit 1
             ;;
@@ -76,7 +79,7 @@ while [[ $# -gt 0 ]]; do
                 repo_name="$1"
             else
                 echo "Error: Multiple repository names provided" >&2
-                echo "Usage: git worktree-init [--bare|-b] [--quiet|-q] [--initial-branch <branch>] <repository-name>" >&2
+                echo "Usage: git worktree-init [--bare] [--quiet|-q] [--initial-branch|-b <branch>] <repository-name>" >&2
                 cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
                 exit 1
             fi
@@ -102,7 +105,7 @@ fi
 # --- Input Validation ---
 if [[ -z "$repo_name" ]]; then
   echo "Error: Repository name is required." >&2
-  echo "Usage: git worktree-init [--bare|-b] [--quiet|-q] [--initial-branch <branch>] <repository-name>" >&2
+  echo "Usage: git worktree-init [--bare] [--quiet|-q] [--initial-branch|-b <branch>] <repository-name>" >&2
   cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
   exit 1
 fi
