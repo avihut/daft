@@ -35,7 +35,8 @@
       "Bash(./test_checkout.sh)",
       "Bash(gh pr checks:*)",
       "Bash(gh run view:*)",
-      "Bash(./test_clone.sh)"
+      "Bash(./test_clone.sh)",
+      "Bash(gh pr diff:*)"
     ],
     "deny": []
   }
