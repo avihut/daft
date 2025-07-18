@@ -41,7 +41,11 @@
       "Bash(./target/debug/git-worktree-clone --help)",
       "Bash(./target/release/git-worktree-clone --help)",
       "Bash(./target/release/git-worktree-init --help)",
-      "Bash(./scripts/git-worktree-clone --help)"
+      "Bash(./scripts/git-worktree-clone --help)",
+      "Bash(cp:*)",
+      "Bash(./tests/integration/test_simple.sh:*)",
+      "Bash(git init:*)",
+      "Bash(git worktree:*)"
     ],
     "deny": []
   }

@@ -76,6 +76,28 @@ impl GitCommand {
         Ok(())
     }
 
+    pub fn worktree_add_orphan(&self, path: &Path) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.args(["worktree", "add"]);
+
+        if self.quiet {
+            cmd.arg("--quiet");
+        }
+
+        cmd.arg(path);
+
+        let output = cmd
+            .output()
+            .context("Failed to execute git worktree add command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git worktree add failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
     pub fn worktree_add_new_branch(
         &self,
         path: &Path,

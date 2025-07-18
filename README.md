@@ -188,46 +188,72 @@ git worktree-prune
 
 ## 🧪 Testing
 
-This project includes comprehensive test coverage for both Rust and shell implementations:
+This project includes comprehensive test coverage with dual test suites for both legacy shell scripts and modern Rust implementations:
 
-### Rust Tests
+### Test Structure
+```
+tests/
+├── legacy/              # Legacy shell script tests (37+ scenarios)
+├── integration/         # Rust integration tests (80+ scenarios)
+└── README.md           # Detailed testing documentation
+```
+
+### Quick Testing
+```bash
+# Run all tests (legacy + integration)
+make test
+
+# Run only legacy shell script tests
+make test-legacy
+
+# Run only Rust integration tests
+make test-integration
+
+# Run specific test suites
+make test-legacy-init
+make test-integration-clone
+```
+
+### Rust Unit Tests
 ```bash
 # Run Rust unit tests
 cargo test
-
-# Run Rust tests with output
-cargo test -- --nocapture
 
 # Check code formatting and linting
 cargo fmt --check
 cargo clippy -- -D warnings
 ```
 
-### Shell Script Tests
+### Advanced Testing
 ```bash
-# Run all shell script tests
-make test
+# Run with verbose output
+make test-verbose
 
-# Run specific test suites
-make test-simple
-make test-clone
-make test-checkout
-make test-init
-make test-prune
+# Run performance tests
+make test-perf
+
+# Run tests with different shells
+make test-bash
+make test-zsh
 
 # Run individual test files
-bash tests/test_clone.sh
+cd tests/legacy && ./test_clone.sh
+cd tests/integration && ./test_init.sh
 ```
 
 ### Test Coverage
-The test framework includes:
-- **37+ test scenarios** covering all commands and edge cases
+The comprehensive test framework includes:
+- **120+ test scenarios** across both implementations
+- **Dual validation**: Legacy behavior + enhanced Rust features
 - **Isolated test environments** with temporary directories
 - **Mock remote repositories** for realistic testing
-- **Comprehensive assertions** for directory structure and Git state
-- **Cross-platform compatibility** testing (Ubuntu, macOS)
-- **Error handling** validation
-- **Both Rust and shell implementations** tested in CI
+- **Security testing**: Path traversal prevention
+- **Performance validation**: Timing and resource usage
+- **Cross-platform compatibility** (Ubuntu, macOS)
+- **Error handling** and edge case validation
+- **CI/CD integration** with GitHub Actions
+
+See `tests/README.md` for detailed testing documentation.
 
 ## 🏗️ Architecture
 
