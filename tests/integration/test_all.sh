@@ -71,8 +71,8 @@ test_integration_full_workflow() {
     assert_directory_exists "feature/integration-test" || return 1
     assert_git_worktree "feature/integration-test" "feature/integration-test" || return 1
     
-    # Step 4: Create branch from default
-    git-worktree-checkout-branch-from-default hotfix/integration-fix >/dev/null 2>&1 || true
+    # Step 4: Create branch from master (since this is a local repo with no remote)
+    git-worktree-checkout-branch hotfix/integration-fix master >/dev/null 2>&1 || true
     assert_directory_exists "hotfix/integration-fix" || return 1
     assert_git_worktree "hotfix/integration-fix" "hotfix/integration-fix" || return 1
     

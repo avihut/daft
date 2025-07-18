@@ -114,12 +114,17 @@ impl GitCommand {
 
         cmd.arg(path).arg("-b").arg(new_branch).arg(base_branch);
 
+        println!("--> Executing: git worktree add {} -b {} {}", path.display(), new_branch, base_branch);
+
         let output = cmd
             .output()
             .context("Failed to execute git worktree add command")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            println!("--> Git worktree add stdout: {}", stdout);
+            println!("--> Git worktree add stderr: {}", stderr);
             anyhow::bail!("Git worktree add failed: {}", stderr);
         }
 

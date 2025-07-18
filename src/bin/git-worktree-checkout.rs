@@ -53,7 +53,33 @@ fn run_checkout(args: &Args) -> Result<()> {
     println!("  Project Root: {}", project_root.display());
     println!("---");
 
-    if let Err(e) = git.worktree_add(&worktree_path, &args.branch_name) {
+    // Fetch latest changes from remote to ensure we have the latest version of the branch
+    println!("--> Fetching latest changes from remote '{}'...", config.remote_name);
+    if let Err(e) = git.fetch(&config.remote_name, false) {
+        println!("Warning: Failed to fetch from remote '{}': {}", config.remote_name, e);
+    }
+    
+    // Also fetch the specific branch to ensure remote tracking branch is updated
+    println!("--> Fetching specific branch '{}' from remote '{}'...", args.branch_name, config.remote_name);
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["fetch", &config.remote_name, &format!("{}:{}", args.branch_name, args.branch_name)])
+        .output() {
+        if !output.status.success() {
+            println!("Warning: Failed to fetch specific branch: {}", String::from_utf8_lossy(&output.stderr));
+        }
+    }
+
+    // Check if remote branch exists and use it if local branch is behind
+    let remote_branch_ref = format!("refs/remotes/{}/{}", config.remote_name, args.branch_name);
+    let checkout_ref = if git.show_ref_exists(&remote_branch_ref)? {
+        println!("--> Remote branch '{}/{}' found, using it for worktree creation", config.remote_name, args.branch_name);
+        format!("{}/{}", config.remote_name, args.branch_name)
+    } else {
+        println!("--> Remote branch '{}/{}' not found, using local branch", config.remote_name, args.branch_name);
+        args.branch_name.clone()
+    };
+
+    if let Err(e) = git.worktree_add(&worktree_path, &checkout_ref) {
         anyhow::bail!("Failed to create git worktree: {}", e);
     }
 

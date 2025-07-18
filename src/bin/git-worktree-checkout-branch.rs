@@ -63,14 +63,40 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
     let config = WorktreeConfig::default();
     let git = GitCommand::new(config.quiet);
 
+    // Fetch latest changes from remote to ensure we have the latest version of the base branch
+    println!("--> Fetching latest changes from remote '{}'...", config.remote_name);
+    if let Err(e) = git.fetch(&config.remote_name, false) {
+        println!("Warning: Failed to fetch from remote '{}': {}", config.remote_name, e);
+    }
+    
+    // Fetch the specific remote branch (but don't try to update local branch if it's checked out)
+    println!("--> Fetching remote tracking branch for '{}'...", base_branch);
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["fetch", &config.remote_name, &format!("{}:refs/remotes/{}/{}", base_branch, config.remote_name, base_branch)])
+        .output() {
+        if !output.status.success() {
+            println!("Warning: Failed to fetch remote tracking branch: {}", String::from_utf8_lossy(&output.stderr));
+        }
+    }
+
+    // Check if remote branch exists and is ahead of local branch
+    let remote_branch_ref = format!("refs/remotes/{}/{}", config.remote_name, base_branch);
+    let checkout_base = if git.show_ref_exists(&remote_branch_ref)? {
+        println!("--> Remote branch '{}/{}' found, using it as base", config.remote_name, base_branch);
+        format!("{}/{}", config.remote_name, base_branch)
+    } else {
+        println!("--> Remote branch '{}/{}' not found, using local branch", config.remote_name, base_branch);
+        base_branch.clone()
+    };
+
     println!("Attempting to create Git worktree:");
     println!("  Path:         {}", worktree_path.display());
     println!("  New Branch:   {}", args.new_branch_name);
-    println!("  From Branch:  {base_branch}");
+    println!("  From Branch:  {checkout_base}");
     println!("  Project Root: {}", project_root.display());
     println!("---");
 
-    if let Err(e) = git.worktree_add_new_branch(&worktree_path, &args.new_branch_name, &base_branch)
+    if let Err(e) = git.worktree_add_new_branch(&worktree_path, &args.new_branch_name, &checkout_base)
     {
         anyhow::bail!("Failed to create git worktree: {}", e);
     }

@@ -150,27 +150,36 @@ test_checkout_branch_help() {
 # Test checkout-branch with complex workflow
 test_checkout_branch_workflow() {
     local remote_repo=$(create_test_remote "test-repo-checkout-branch-workflow" "main")
+    local start_dir=$(pwd)
     
     # Clone the repository
     git-worktree-clone "$remote_repo" || return 1
     cd "test-repo-checkout-branch-workflow"
+    local repo_root=$(pwd)
     
-    # Create a series of branches
+    # Create first branch and add content to it
     git-worktree-checkout-branch feature/base-feature || return 1
     
-    # Add some commits to base feature
-    cd "feature/base-feature"
+    # The Rust binary changes its own directory but not our shell's directory
+    # We need to explicitly cd into the worktree
+    cd "$repo_root/feature/base-feature"
+    
     echo "Base feature implementation" > base.txt
     git add base.txt >/dev/null 2>&1
     git commit -m "Add base feature" >/dev/null 2>&1
-    cd ..
     
-    # Create branch from the feature branch
+    # Create second branch from the first one (go back to repo root first)
+    cd "$repo_root"
     git-worktree-checkout-branch feature/extended-feature feature/base-feature || return 1
+    
+    # Go back to repo root for assertions
+    cd "$repo_root"
     
     # Verify both branches exist and have correct content
     assert_directory_exists "feature/base-feature" || return 1
     assert_directory_exists "feature/extended-feature" || return 1
+    
+    
     assert_file_exists "feature/extended-feature/base.txt" || return 1
     
     return 0
