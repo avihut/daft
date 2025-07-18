@@ -26,7 +26,8 @@
       "Bash(./scripts/git-worktree-init test-repo)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(gh pr create:*)"
+      "Bash(gh pr create:*)",
+      "Bash(gh issue create:*)"
     ],
     "deny": []
   }

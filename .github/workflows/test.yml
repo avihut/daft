@@ -1,0 +1,95 @@
+name: Test Shell Scripts
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Git
+      run: |
+        git config --global user.name "Test User"
+        git config --global user.email "test@example.com"
+    
+    - name: Make test scripts executable
+      run: chmod +x tests/*.sh scripts/*
+    
+    - name: Add scripts to PATH
+      run: echo "${{ github.workspace }}/scripts" >> $GITHUB_PATH
+    
+    - name: Run test framework tests
+      run: |
+        cd tests
+        ./test_framework.sh
+    
+    - name: Run clone tests
+      run: |
+        cd tests
+        ./test_clone.sh
+    
+    - name: Run checkout tests
+      run: |
+        cd tests
+        ./test_checkout.sh
+    
+    - name: Run checkout-branch tests
+      run: |
+        cd tests
+        ./test_checkout_branch.sh
+    
+    - name: Run checkout-branch-from-default tests
+      run: |
+        cd tests
+        ./test_checkout_branch_from_default.sh
+    
+    - name: Run init tests
+      run: |
+        cd tests
+        ./test_init.sh
+    
+    - name: Run prune tests
+      run: |
+        cd tests
+        ./test_prune.sh
+    
+    - name: Run all tests
+      run: |
+        cd tests
+        ./test_all.sh
+    
+    - name: Test individual script help
+      run: |
+        git worktree-clone --help || echo "Help command test"
+        git worktree-checkout --help || echo "Help command test"
+        git worktree-checkout-branch --help || echo "Help command test"
+        git worktree-checkout-branch-from-default --help || echo "Help command test"
+        git worktree-init --help || echo "Help command test"
+        git worktree-prune --help || echo "Help command test"
+    
+    - name: Test script dependencies
+      run: |
+        echo "Testing required dependencies..."
+        which git || { echo "Git not found"; exit 1; }
+        which awk || { echo "AWK not found"; exit 1; }
+        which basename || { echo "basename not found"; exit 1; }
+        echo "All dependencies found"
+    
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: test-results-${{ matrix.os }}
+        path: |
+          tests/test-results.log
+          /tmp/git-worktree-tests/
+        retention-days: 7
