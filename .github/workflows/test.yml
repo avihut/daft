@@ -27,45 +27,29 @@ jobs:
     - name: Add scripts to PATH
       run: echo "${{ github.workspace }}/scripts" >> $GITHUB_PATH
     
-    - name: Run test framework tests
-      run: |
-        cd tests
-        ./test_framework.sh
+    - name: Run simple validation tests
+      run: make test-simple
     
     - name: Run clone tests
-      run: |
-        cd tests
-        ./test_clone.sh
+      run: make test-clone
     
     - name: Run checkout tests
-      run: |
-        cd tests
-        ./test_checkout.sh
+      run: make test-checkout
     
     - name: Run checkout-branch tests
-      run: |
-        cd tests
-        ./test_checkout_branch.sh
+      run: make test-checkout-branch
     
     - name: Run checkout-branch-from-default tests
-      run: |
-        cd tests
-        ./test_checkout_branch_from_default.sh
+      run: make test-checkout-branch-from-default
     
     - name: Run init tests
-      run: |
-        cd tests
-        ./test_init.sh
+      run: make test-init
     
     - name: Run prune tests
-      run: |
-        cd tests
-        ./test_prune.sh
+      run: make test-prune
     
-    - name: Run all tests
-      run: |
-        cd tests
-        ./test_all.sh
+    - name: Run integration tests
+      run: make test-all
     
     - name: Test individual script help
       run: |
@@ -91,5 +75,5 @@ jobs:
         name: test-results-${{ matrix.os }}
         path: |
           tests/test-results.log
-          /tmp/git-worktree-tests/
         retention-days: 7
+        if-no-files-found: ignore
