@@ -29,6 +29,11 @@ jobs:
         echo "${{ github.workspace }}/scripts" >> $GITHUB_PATH
         echo "PATH=${{ github.workspace }}/scripts:$PATH" >> $GITHUB_ENV
     
+    - name: Debug environment
+      run: |
+        chmod +x debug_test.sh
+        ./debug_test.sh
+    
     - name: Run simple validation tests
       run: |
         echo "Current PATH: $PATH"
