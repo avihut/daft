@@ -143,9 +143,9 @@ quiet_echo() {
 
 get_remote_branches() {
     local remote_name="$1"
-    # In a bare repository, branches are stored directly as refs/heads/
-    # Use git show-ref to get all branch references
-    git show-ref --heads | cut -d' ' -f2 | sed 's|refs/heads/||'
+    # In a bare repository, get all remote branches
+    # Use git ls-remote to get all branches from the remote
+    git ls-remote --heads "$remote_name" | cut -d$'\t' -f2 | sed 's|refs/heads/||'
 }
 # --- End Helper Functions ---
 
@@ -263,6 +263,9 @@ if [[ "$no_checkout" == "false" ]]; then
         quiet_echo "Fetching all remote branches..."
         remote_name="origin"
         
+        # First, fetch all remote branches
+        git fetch "$remote_name" >/dev/null 2>&1
+        
         # Get list of all remote branches
         remote_branches=$(get_remote_branches "$remote_name")
         
@@ -282,7 +285,8 @@ if [[ "$no_checkout" == "false" ]]; then
             [[ -z "$branch" ]] && continue
             quiet_echo "Creating worktree for branch '$branch'..."
             
-            if ! $git_worktree_cmd "$branch"; then
+            # Use the full branch name as the directory path
+            if ! $git_worktree_cmd "$branch" "$branch"; then
                 echo "Error: 'git worktree add' failed for branch '$branch'." >&2
                 worktree_creation_failed=true
                 break
