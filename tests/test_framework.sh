@@ -205,12 +205,14 @@ run_test() {
     # Run test in subshell to isolate environment
     if (cd "$test_work_dir" && "$test_function" 2>&1); then
         log_success "Test passed: $test_name"
-        ((TESTS_PASSED++))
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo "DEBUG: TESTS_PASSED incremented to $TESTS_PASSED"
     else
         local exit_code=$?
         log_error "Test failed: $test_name (exit code: $exit_code)"
-        ((TESTS_FAILED++))
+        TESTS_FAILED=$((TESTS_FAILED + 1))
         FAILED_TESTS+=("$test_name")
+        echo "DEBUG: TESTS_FAILED incremented to $TESTS_FAILED"
     fi
     
     # Clean up test directory
