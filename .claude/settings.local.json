@@ -16,7 +16,10 @@
       "Bash(rm:*)",
       "Bash(/Users/avihu/Projects/git-worktree-workflow/scripts/git-worktree-clone --all-branches avihut:tax-analyzer)",
       "Bash(/Users/avihu/Projects/git-worktree-workflow/scripts/git-worktree-clone --all-branches --quiet avihut:tax-analyzer)",
-      "Bash(/Users/avihu/Projects/git-worktree-workflow/scripts/git-worktree-clone avihut:tax-analyzer)"
+      "Bash(/Users/avihu/Projects/git-worktree-workflow/scripts/git-worktree-clone avihut:tax-analyzer)",
+      "Bash(gh pr view:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh issue view:*)"
     ],
     "deny": []
   }

@@ -169,3 +169,85 @@ This workflow eliminates the traditional friction of Git branch switching, stash
 ## Testing
 
 This repository contains only shell scripts with no traditional build, test, or lint commands. Testing should be done manually by executing the scripts in various Git repository scenarios.
+
+## Language Migration Considerations
+
+### Current State Assessment
+The project is currently implemented as shell scripts, which has been appropriate for the core Git worktree operations. However, as the project grows in complexity (based on open GitHub issues #3-13), several factors suggest considering migration to a more robust language.
+
+### Complexity Analysis of Planned Features
+Analysis of open issues reveals a mix of complexities:
+- **Simple features (4 issues)**: Command shortcuts, init command, clone flags, man pages
+- **Medium features (4 issues)**: Brew packaging, shell completions, fetch commands, testing
+- **Complex features (2 issues)**: Hooks system, uncommitted work copying
+
+### Shell Script Limitations Emerging
+1. **Argument parsing complexity**: Manual case statement parsing is becoming unwieldy with multiple options (`-n`, `-q`, `-a`) and will worsen with option forwarding
+2. **Shell completions requirement**: Issue #5 requires dynamic completion generation, much easier in modern CLI frameworks
+3. **Interactive features**: Planned features like branch selection and conflict resolution are cumbersome in shell
+4. **Error handling**: Complex state management and rollback (Issue #10) is brittle in shell scripts
+5. **Testing infrastructure**: Issue #13 requires robust testing, which is challenging for shell scripts
+
+### Rust + Clap Migration Case
+**Strong arguments for Rust migration:**
+- **Argument parsing**: Clap provides automatic help text, shell completions, validation, and option forwarding
+- **External command integration**: `std::process::Command` handles `direnv allow`, `git` commands excellently
+- **Professional UX**: Better error messages, help formatting, type-safe arguments
+- **Scalability**: As features grow, Rust will handle complexity better than shell scripts
+- **Single binary distribution**: Easier than managing multiple shell scripts
+
+**Rust advantages for this project:**
+```rust
+// Automatic completions, help text, validation
+#[derive(Parser)]
+#[command(name = "git-worktree-clone")]
+struct Args {
+    #[arg(short = 'n', long = "no-checkout")]
+    no_checkout: bool,
+    
+    #[arg(short = 'q', long = "quiet")]
+    quiet: bool,
+    
+    /// Forward to git clone
+    #[arg(long = "depth")]
+    depth: Option<u32>,
+    
+    repository: String,
+}
+```
+
+### Migration Strategy
+**Recommended approach:**
+1. **Incremental migration**: Start with one complex command (e.g., `git-worktree-clone`)
+2. **Hybrid approach**: Keep simple shell scripts, migrate complex features to Rust
+3. **Unified tool**: Eventually consolidate into single Rust binary with subcommands
+
+### Decision Factors
+**Migrate to Rust if:**
+- ✅ Multiple options per command (already present)
+- ✅ Option forwarding needs (planned)
+- ✅ Shell completion requirements (Issue #5)
+- ✅ Interactive features planned
+- ✅ Complex validation needs
+
+**Current recommendation**: **Yes, migrate to Rust + clap**. The tipping point has been reached where shell scripts become limiting for the sophisticated CLI tool this project is becoming.
+
+### External Command Integration
+Running commands like `direnv allow` and `git` operations work excellently in Rust:
+```rust
+use std::process::Command;
+
+fn run_direnv_allow() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new("direnv")
+        .args(&["allow", "."])
+        .output()?;
+    
+    if output.status.success() {
+        println!("direnv allow completed successfully");
+    }
+    
+    Ok(())
+}
+```
+
+This provides better error handling, type safety, and cross-platform compatibility than shell scripts.
