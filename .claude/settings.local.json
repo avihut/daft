@@ -26,7 +26,17 @@
       "Bash(./scripts/git-worktree-init test-repo)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(gh pr create:*)"
+      "Bash(gh pr create:*)",
+      "Bash(gh issue create:*)",
+      "Bash(make:*)",
+      "Bash(export:*)",
+      "Bash(./test_framework.sh:*)",
+      "Bash(./test_simple.sh:*)",
+      "Bash(./test_checkout.sh)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh run view:*)",
+      "Bash(./test_clone.sh)",
+      "Bash(gh pr diff:*)"
     ],
     "deny": []
   }
