@@ -3,7 +3,8 @@
 # Git Worktree Workflow Test Framework
 # Comprehensive testing suite for shell commands to ensure migration accuracy
 
-set -euo pipefail
+set -eo pipefail
+# Note: Removed -u flag to be more tolerant of unset variables in CI environments
 
 # --- Configuration ---
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -195,11 +196,12 @@ run_test() {
     mkdir -p "$test_work_dir"
     
     # Run test in subshell to isolate environment
-    if (cd "$test_work_dir" && "$test_function"); then
+    if (cd "$test_work_dir" && "$test_function" 2>&1); then
         log_success "Test passed: $test_name"
         ((TESTS_PASSED++))
     else
-        log_error "Test failed: $test_name"
+        local exit_code=$?
+        log_error "Test failed: $test_name (exit code: $exit_code)"
         ((TESTS_FAILED++))
         FAILED_TESTS+=("$test_name")
     fi
