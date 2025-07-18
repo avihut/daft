@@ -36,7 +36,12 @@
       "Bash(gh pr checks:*)",
       "Bash(gh run view:*)",
       "Bash(./test_clone.sh)",
-      "Bash(gh pr diff:*)"
+      "Bash(gh pr diff:*)",
+      "Bash(cargo:*)",
+      "Bash(./target/debug/git-worktree-clone --help)",
+      "Bash(./target/release/git-worktree-clone --help)",
+      "Bash(./target/release/git-worktree-init --help)",
+      "Bash(./scripts/git-worktree-clone --help)"
     ],
     "deny": []
   }
