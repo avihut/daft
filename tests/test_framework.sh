@@ -187,13 +187,19 @@ run_test() {
     local test_name="$1"
     local test_function="$2"
     
+    echo "DEBUG: run_test called with name='$test_name' function='$test_function'"
+    
     ((TESTS_RUN++))
+    echo "DEBUG: TESTS_RUN incremented to $TESTS_RUN"
     
     log "Running test: $test_name"
     
     # Create isolated test environment
+    echo "DEBUG: Creating test work directory"
     local test_work_dir="$WORK_DIR/test_$(date +%s%N)"
+    echo "DEBUG: Test work dir: $test_work_dir"
     mkdir -p "$test_work_dir"
+    echo "DEBUG: Test work dir created"
     
     # Run test in subshell to isolate environment
     if (cd "$test_work_dir" && "$test_function" 2>&1); then
