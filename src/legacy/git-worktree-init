@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# ⚠️  DEPRECATED: This shell script is deprecated. Please use the Rust implementation instead.
+# Migration: `cargo build --release && ./target/release/git-worktree-init --help`
+# See: src/legacy/README.md for migration guide
+
 # Initializes a new Git repository in the worktree workflow structure:
 # <repository_name>/.git (bare repository)
 # <repository_name>/<initial_branch> (initial worktree)

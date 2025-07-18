@@ -52,12 +52,12 @@ jobs:
       run: cargo fmt -- --check
     
     - name: Make test scripts executable
-      run: chmod +x tests/*.sh scripts/*
+      run: chmod +x tests/*.sh src/legacy/*
     
     - name: Add scripts to PATH (shell version)
       run: |
-        echo "${{ github.workspace }}/scripts" >> $GITHUB_PATH
-        echo "PATH=${{ github.workspace }}/scripts:$PATH" >> $GITHUB_ENV
+        echo "${{ github.workspace }}/src/legacy" >> $GITHUB_PATH
+        echo "PATH=${{ github.workspace }}/src/legacy:$PATH" >> $GITHUB_ENV
     
     - name: Add Rust binaries to PATH
       run: |

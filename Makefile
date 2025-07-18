@@ -1,7 +1,7 @@
 # Makefile for git-worktree-workflow
 
 # Variables
-SCRIPTS_DIR := scripts
+SCRIPTS_DIR := src/legacy
 TESTS_DIR := tests
 TEMP_DIR := /tmp/git-worktree-tests
 

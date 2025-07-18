@@ -37,17 +37,19 @@ export PATH="/path/to/git-worktree-workflow/target/release:$PATH"
 ln -s /path/to/git-worktree-workflow/target/release/git-worktree-* /usr/local/bin/
 ```
 
-### Option 2: Shell Scripts (Legacy)
+### Option 2: Shell Scripts (Legacy - Deprecated)
+
+⚠️ **DEPRECATED**: The shell scripts are deprecated. Please use the Rust implementation.
 
 1. Clone this repository (same as above)
 
-2. Add the scripts to your PATH:
+2. Add the legacy scripts to your PATH:
 ```bash
 # Add to your ~/.bashrc, ~/.zshrc, or similar
-export PATH="/path/to/git-worktree-workflow/scripts:$PATH"
+export PATH="/path/to/git-worktree-workflow/src/legacy:$PATH"
 
 # Or create symlinks to a directory already in your PATH
-ln -s /path/to/git-worktree-workflow/scripts/* /usr/local/bin/
+ln -s /path/to/git-worktree-workflow/src/legacy/* /usr/local/bin/
 ```
 
 ### Verify Installation
@@ -245,13 +247,14 @@ git-worktree-workflow/
 │   ├── remote.rs            # Remote repository handling
 │   ├── direnv.rs            # Direnv integration
 │   └── utils.rs             # Utility functions
-├── scripts/                 # Legacy shell scripts (1,194 lines)
+├── src/legacy/              # Legacy shell scripts (1,194 lines) - DEPRECATED
 │   ├── git-worktree-clone              # 380 lines
 │   ├── git-worktree-checkout           # 153 lines
 │   ├── git-worktree-checkout-branch    # 165 lines
 │   ├── git-worktree-checkout-branch-from-default  # 90 lines
 │   ├── git-worktree-init               # 256 lines
-│   └── git-worktree-prune              # 150 lines
+│   ├── git-worktree-prune              # 150 lines
+│   └── README.md                       # Deprecation notice
 ├── tests/                   # Comprehensive test suite
 │   ├── test_framework.sh    # Test infrastructure
 │   ├── test_*.sh           # Individual test files
@@ -306,10 +309,30 @@ The Rust implementation provides significant advantages over the shell scripts:
 ## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch: `git worktree-checkout-branch feature/my-feature`
+2. Create a feature branch: `git-worktree-checkout-branch feature/my-feature`
 3. Make your changes and add tests
-4. Run the test suite: `make test`
+4. Run the test suite: `cargo test && make test`
 5. Submit a pull request
+
+### Development Guidelines
+
+- **Rust Implementation**: Focus development on the Rust codebase (`src/`)
+- **Legacy Scripts**: The shell scripts (`src/legacy/`) are deprecated and in maintenance mode
+- **Testing**: Add both Rust unit tests and shell integration tests
+- **Documentation**: Update both README.md and inline documentation
+
+### Building and Testing
+
+```bash
+# Build Rust binaries
+cargo build --release
+
+# Run all tests
+cargo test              # Rust unit tests
+make test              # Shell integration tests
+cargo clippy           # Linting
+cargo fmt --check      # Formatting
+```
 
 ## 📝 License
 

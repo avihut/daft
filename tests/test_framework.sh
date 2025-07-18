@@ -9,7 +9,7 @@ set -eo pipefail
 # --- Configuration ---
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$TEST_DIR")"
-SCRIPTS_DIR="$PROJECT_ROOT/scripts"
+SCRIPTS_DIR="$PROJECT_ROOT/src/legacy"
 TEMP_BASE_DIR="/tmp/git-worktree-tests"
 REMOTE_REPO_DIR="$TEMP_BASE_DIR/remote-repos"
 WORK_DIR="$TEMP_BASE_DIR/work"
