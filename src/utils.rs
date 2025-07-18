@@ -60,6 +60,14 @@ pub fn validate_repo_name(repo_name: &str) -> Result<()> {
         anyhow::bail!("Repository name cannot contain path separators. Use a simple name like 'my-project', not 'path/to/my-project'");
     }
 
+    if repo_name.contains("..") {
+        anyhow::bail!("Repository name cannot contain '..'");
+    }
+
+    if repo_name.starts_with('.') {
+        anyhow::bail!("Repository name cannot start with '.'");
+    }
+
     Ok(())
 }
 

@@ -90,18 +90,22 @@ test_init_errors() {
 test_init_branch_conventions() {
     # Test with various valid branch names
     local branch_names=("main" "develop" "release-1.0" "feature/init" "hotfix_urgent")
+    local original_dir="$(pwd)"
     
     for i in "${!branch_names[@]}"; do
         local branch="${branch_names[i]}"
         local repo_name="test-repo-$i"
         
+        cd "$original_dir"
         git-worktree-init --initial-branch "$branch" "$repo_name" || return 1
         
+        cd "$original_dir"
         assert_directory_exists "$repo_name" || return 1
         assert_directory_exists "$repo_name/$branch" || return 1
         assert_git_worktree "$repo_name/$branch" "$branch" || return 1
     done
     
+    cd "$original_dir"
     return 0
 }
 
@@ -122,38 +126,52 @@ test_init_direnv_integration() {
 
 # Test init and subsequent operations
 test_init_workflow() {
+    local original_dir="$(pwd)"
+    
     # Test init followed by adding content
     git-worktree-init workflow-test || return 1
     
     # Add content to the repository
-    cd "workflow-test/master"
+    cd "$original_dir/workflow-test/master"
     echo "# Workflow Test" > README.md
     git add README.md
     git commit -m "Initial commit" >/dev/null 2>&1
-    cd ../..
     
+    cd "$original_dir"
     # Verify the commit was successful
     assert_file_exists "workflow-test/master/README.md" || return 1
     
     # Test that we can create more worktrees
-    cd "workflow-test"
-    git worktree add ../feature-branch feature-branch >/dev/null 2>&1 || return 1
-    assert_directory_exists "feature-branch" || return 1
-    cd ..
+    cd "$original_dir/workflow-test"
+    # Need to specify a start point since this is a new repository with no commits yet when we created the worktree
+    if ! git worktree add feature-branch -b feature-branch master >/dev/null 2>&1; then
+        log_error "Failed to create feature-branch worktree. Git status:"
+        git status || true
+        git branch -a || true
+        return 1
+    fi
+    cd "$original_dir"
+    assert_directory_exists "workflow-test/feature-branch" || return 1
     
     return 0
 }
 
 # Test init with absolute and relative paths
 test_init_paths() {
+    local original_dir="$(pwd)"
+    
     # Test with relative path
     git-worktree-init relative-path-test || return 1
+    cd "$original_dir"
     assert_directory_exists "relative-path-test" || return 1
     
-    # Test with absolute path
+    # Test with absolute path (should fail - we don't support absolute paths)
     local abs_path="$(pwd)/absolute-path-test"
-    git-worktree-init "$abs_path" || return 1
-    assert_directory_exists "$abs_path" || return 1
+    if git-worktree-init "$abs_path" >/dev/null 2>&1; then
+        log_error "Absolute path should fail validation"
+        return 1
+    fi
+    log_success "Absolute path correctly rejected"
     
     return 0
 }

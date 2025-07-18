@@ -132,14 +132,25 @@ fn run_clone(args: &Args) -> Result<()> {
         return Err(e.context("Git clone failed"));
     }
 
-    if !args.no_checkout {
+    // Change to the repository directory to set up remote HEAD
+    quiet_echo(
+        &format!("--> Changing directory to './{}'", parent_dir.display()),
+        args.quiet,
+    );
+    change_directory(&parent_dir)?;
+    
+    let config = WorktreeConfig::default();
+    
+    // Set up remote HEAD reference for better default branch detection
+    if let Err(e) = git.remote_set_head_auto(&config.remote_name) {
         quiet_echo(
-            &format!("--> Changing directory to './{}'", parent_dir.display()),
+            &format!("--> Warning: Could not set remote HEAD: {}", e),
             args.quiet,
         );
-        change_directory(&parent_dir)?;
+        // Continue execution - this is not critical
+    }
 
-        let config = WorktreeConfig::default();
+    if !args.no_checkout {
 
         if args.all_branches {
             create_all_worktrees(&git, &config, &default_branch, args.quiet)?;

@@ -76,7 +76,7 @@ impl GitCommand {
         Ok(())
     }
 
-    pub fn worktree_add_orphan(&self, path: &Path) -> Result<()> {
+    pub fn worktree_add_orphan(&self, path: &Path, branch_name: &str) -> Result<()> {
         let mut cmd = Command::new("git");
         cmd.args(["worktree", "add"]);
 
@@ -84,7 +84,8 @@ impl GitCommand {
             cmd.arg("--quiet");
         }
 
-        cmd.arg(path);
+        // Explicitly specify the branch name to avoid Git's path-based inference
+        cmd.arg(path).arg("-b").arg(branch_name);
 
         let output = cmd
             .output()
@@ -305,6 +306,20 @@ impl GitCommand {
         String::from_utf8(output.stdout)
             .context("Failed to parse git rev-parse output")
             .map(|s| s.trim().to_string())
+    }
+
+    pub fn remote_set_head_auto(&self, remote: &str) -> Result<()> {
+        let output = Command::new("git")
+            .args(["remote", "set-head", remote, "--auto"])
+            .output()
+            .context("Failed to execute git remote set-head command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git remote set-head failed: {}", stderr);
+        }
+
+        Ok(())
     }
 }
 

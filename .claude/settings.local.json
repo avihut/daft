@@ -45,7 +45,16 @@
       "Bash(cp:*)",
       "Bash(./tests/integration/test_simple.sh:*)",
       "Bash(git init:*)",
-      "Bash(git worktree:*)"
+      "Bash(git worktree:*)",
+      "Bash(./test_checkout_branch_from_default.sh:*)",
+      "Bash(./test_init.sh:*)",
+      "Bash(timeout:*)",
+      "Bash(source:*)",
+      "Bash(setup)",
+      "Bash(test_init_branch_conventions)",
+      "Bash(git-worktree-init:*)",
+      "Bash(/Users/avihu/Projects/git-worktree-workflow/target/release/git-worktree-init --initial-branch \"feature/init\" test-feature-init)",
+      "Bash(/Users/avihu/Projects/git-worktree-workflow/target/release/git-worktree-init --initial-branch \"hotfix_urgent\" test-hotfix)"
     ],
     "deny": []
   }

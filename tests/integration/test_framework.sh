@@ -156,11 +156,21 @@ assert_git_worktree() {
     local branch="$2"
     local msg="${3:-Should be a git worktree for branch '$branch': $dir}"
     
+    # Debug: show current directory and target directory
+    if [[ ! -d "$dir" ]]; then
+        log_error "$msg (FAILED - directory '$dir' does not exist from '$(pwd)')"
+        return 1
+    fi
+    
     if (cd "$dir" && git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [[ "$(git branch --show-current)" == "$branch" ]]); then
         log_success "$msg"
         return 0
     else
-        log_error "$msg (FAILED - not a worktree or wrong branch)"
+        local current_branch=""
+        if cd "$dir" >/dev/null 2>&1; then
+            current_branch="$(git branch --show-current 2>/dev/null || echo 'unknown')"
+        fi
+        log_error "$msg (FAILED - not a worktree or wrong branch, current branch: '$current_branch')"
         return 1
     fi
 }
