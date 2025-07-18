@@ -32,7 +32,10 @@
       "Bash(export:*)",
       "Bash(./test_framework.sh:*)",
       "Bash(./test_simple.sh:*)",
-      "Bash(./test_checkout.sh)"
+      "Bash(./test_checkout.sh)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh run view:*)",
+      "Bash(./test_clone.sh)"
     ],
     "deny": []
   }

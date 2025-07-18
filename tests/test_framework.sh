@@ -187,32 +187,23 @@ run_test() {
     local test_name="$1"
     local test_function="$2"
     
-    echo "DEBUG: run_test called with name='$test_name' function='$test_function'"
-    echo "DEBUG: TESTS_RUN before increment: $TESTS_RUN"
-    
     TESTS_RUN=$((TESTS_RUN + 1))
-    echo "DEBUG: TESTS_RUN after increment: $TESTS_RUN"
     
     log "Running test: $test_name"
     
     # Create isolated test environment
-    echo "DEBUG: Creating test work directory"
     local test_work_dir="$WORK_DIR/test_$(date +%s%N)"
-    echo "DEBUG: Test work dir: $test_work_dir"
     mkdir -p "$test_work_dir"
-    echo "DEBUG: Test work dir created"
     
     # Run test in subshell to isolate environment
     if (cd "$test_work_dir" && "$test_function" 2>&1); then
         log_success "Test passed: $test_name"
         TESTS_PASSED=$((TESTS_PASSED + 1))
-        echo "DEBUG: TESTS_PASSED incremented to $TESTS_PASSED"
     else
         local exit_code=$?
         log_error "Test failed: $test_name (exit code: $exit_code)"
         TESTS_FAILED=$((TESTS_FAILED + 1))
         FAILED_TESTS+=("$test_name")
-        echo "DEBUG: TESTS_FAILED incremented to $TESTS_FAILED"
     fi
     
     # Clean up test directory
