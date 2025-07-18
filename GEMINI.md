@@ -7,11 +7,11 @@ This project provides a set of shell scripts to streamline a Git workflow that h
 
 ### Directory Structure and Assumptions
 
-*   **Initial Setup (`git worktree-clone`):** The `git worktree-clone` script establishes the foundational directory structure. It clones a repository into a new parent folder named after the repo, and the initial worktree is created in a subdirectory named after the remote's default branch. For example, running `git worktree-clone git@github.com:user/my-repo.git` (where `main` is the default branch) results in:
+*   **Initial Setup (`git worktree-clone`):** The `git worktree-clone` script establishes the foundational directory structure. It clones a repository into a new parent folder named after the repo. The `.git` directory is located at the root of this new folder, and the initial worktree is created in a subdirectory named after the remote's default branch. For example, running `git worktree-clone git@github.com:user/my-repo.git` (where `main` is the default branch) results in:
     ```
     ./my-repo/
+    ├── .git/      <-- This is the actual git repository data
     └── main/      <-- This is the first worktree
-        ├── .git   <-- This is a file pointing to the real git data
         └── ... (repository files)
     ```
 
@@ -23,7 +23,7 @@ This project provides a set of shell scripts to streamline a Git workflow that h
 
 ### Scripts
 
-*   **`git-worktree-clone`**: Clones a remote repository into the structured directory layout: `<repo-name>/<default-branch>`.
+*   **`git-worktree-clone`**: Clones a remote repository into a structured directory layout: `<repo-name>/.git` and an initial worktree at `<repo-name>/<default-branch>`.
 *   **`git-worktree-checkout-branch`**: Creates a new worktree and a new branch from the current or a specified base branch.
 *   **`git-worktree-checkout-branch-from-default`**: Creates a new worktree and a new branch from the remote's default branch.
 *   **`git-worktree-checkout`**: Creates a worktree from an *existing* local or remote branch.

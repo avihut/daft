@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git rev-parse:*)",
+      "Bash(dirname \"$(git rev-parse --git-common-dir)\")",
+      "Bash(bash:*)",
+      "Bash(git for-each-ref:*)",
+      "Bash(git branch:*)",
+      "Bash(git push:*)",
+      "Bash(git fetch:*)",
+      "Bash(git clone:*)",
+      "Bash(git --git-dir=.git branch -r)",
+      "Bash(GIT_DIR=.git git branch -r)",
+      "Bash(ls:*)",
+      "Bash(git --git-dir=.git show-ref)",
+      "Bash(rm:*)",
+      "Bash(/Users/avihu/Projects/git-worktree-workflow/scripts/git-worktree-clone --all-branches avihut:tax-analyzer)",
+      "Bash(/Users/avihu/Projects/git-worktree-workflow/scripts/git-worktree-clone --all-branches --quiet avihut:tax-analyzer)",
+      "Bash(/Users/avihu/Projects/git-worktree-workflow/scripts/git-worktree-clone avihut:tax-analyzer)"
+    ],
+    "deny": []
+  }
+}
