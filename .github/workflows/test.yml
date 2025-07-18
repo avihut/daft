@@ -34,6 +34,11 @@ jobs:
         chmod +x debug_test.sh
         ./debug_test.sh
     
+    - name: Run minimal test
+      run: |
+        chmod +x minimal_test.sh
+        ./minimal_test.sh
+    
     - name: Run simple validation tests
       run: |
         echo "Current PATH: $PATH"
