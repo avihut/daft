@@ -20,6 +20,7 @@ All scripts are located in the `scripts/` directory and follow these patterns:
 ### Core Scripts
 
 - **`git-worktree-clone`**: Clones a repository into the structured layout (`<repo>/.git` + `<repo>/<default-branch>/`)
+- **`git-worktree-init`**: Initializes a new repository in the structured layout (`<repo>/.git` + `<repo>/<initial-branch>/`)
 - **`git-worktree-checkout`**: Creates worktree from an existing local or remote branch
 - **`git-worktree-checkout-branch`**: Creates new worktree + new branch from current or specified base branch
 - **`git-worktree-checkout-branch-from-default`**: Creates new worktree + new branch from remote's default branch
@@ -39,6 +40,7 @@ Scripts are installed by adding the `scripts/` directory to your `PATH`. Once in
 
 ```bash
 git worktree-clone <repository-url>
+git worktree-init <repository-name>
 git worktree-checkout <existing-branch-name>
 git worktree-checkout-branch <new-branch-name> [base-branch-name]
 git worktree-checkout-branch-from-default <new-branch-name>
@@ -74,6 +76,21 @@ my-project/
 ```
 
 You're automatically placed in `my-project/main/` and ready to work.
+
+**Start a new repository:**
+```bash
+git worktree-init my-new-project
+```
+
+This initializes a new repository in the structured layout:
+```
+my-new-project/
+├── .git/           # Shared Git metadata
+└── master/        # Initial worktree (default branch)
+    └── ... (ready for project files)
+```
+
+You're automatically placed in `my-new-project/master/` and ready to start coding.
 
 ### Daily Development Workflow
 
