@@ -7,12 +7,13 @@
 # to find the default branch (e.g., main, master, develop) *before* cloning.
 # After cloning, it runs 'direnv allow' in the new directory and cds into it.
 #
-# Usage: git worktree-clone [-n|--no-checkout] [-q|--quiet] <repository-url>
+# Usage: git worktree-clone [-n|--no-checkout] [-q|--quiet] [-a|--all-branches] <repository-url>
 #
 # Options:
 #   -n, --no-checkout   Only clone the repository and create the .git folder
 #                       but do not checkout the default branch worktree
 #   -q, --quiet         Suppress all output and run silently
+#   -a, --all-branches  Create worktrees for all remote branches, not just the default
 #
 # Examples:
 #   git worktree-clone git@github.com:someuser/my-cool-project.git
@@ -31,6 +32,11 @@
 #   -> Runs completely silently, no output to terminal
 #   -> Same behavior as default but with all output suppressed
 #
+#   git worktree-clone -a git@github.com:someuser/my-cool-project.git
+#   -> Creates worktrees for all remote branches (main, develop, feature/x, etc.)
+#   -> Directory structure: ./my-cool-project/main/, ./my-cool-project/develop/, etc.
+#   -> Changes directory to the default branch worktree
+#
 
 # --- Store Original Directory ---
 original_dir=$(pwd)
@@ -39,6 +45,7 @@ original_dir=$(pwd)
 # --- Input ---
 no_checkout=false
 quiet=false
+all_branches=false
 repo_url=""
 
 # Parse command line arguments
@@ -52,9 +59,13 @@ while [[ $# -gt 0 ]]; do
             quiet=true
             shift
             ;;
+        -a|--all-branches)
+            all_branches=true
+            shift
+            ;;
         -*)
             echo "Error: Unknown option '$1'" >&2
-            echo "Usage: git worktree-clone [-n|--no-checkout] [-q|--quiet] <repository-url>" >&2
+            echo "Usage: git worktree-clone [-n|--no-checkout] [-q|--quiet] [-a|--all-branches] <repository-url>" >&2
             cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
             exit 1
             ;;
@@ -63,7 +74,7 @@ while [[ $# -gt 0 ]]; do
                 repo_url="$1"
             else
                 echo "Error: Multiple repository URLs provided" >&2
-                echo "Usage: git worktree-clone [-n|--no-checkout] [-q|--quiet] <repository-url>" >&2
+                echo "Usage: git worktree-clone [-n|--no-checkout] [-q|--quiet] [-a|--all-branches] <repository-url>" >&2
                 cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
                 exit 1
             fi
@@ -100,7 +111,15 @@ fi
 # --- Input Validation ---
 if [[ -z "$repo_url" ]]; then
   echo "Error: Repository URL is required." >&2
-  echo "Usage: git worktree-clone [-n|--no-checkout] [-q|--quiet] <repository-url>" >&2
+  echo "Usage: git worktree-clone [-n|--no-checkout] [-q|--quiet] [-a|--all-branches] <repository-url>" >&2
+  cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
+  exit 1
+fi
+
+# Validate option combinations
+if [[ "$no_checkout" == "true" && "$all_branches" == "true" ]]; then
+  echo "Error: --no-checkout and --all-branches cannot be used together." >&2
+  echo "Use --no-checkout to create only the bare repository, or --all-branches to create worktrees for all branches." >&2
   cd -- "$original_dir" || echo "Warning: could not cd back to $original_dir" >&2
   exit 1
 fi
@@ -120,6 +139,13 @@ quiet_echo() {
     if [[ "$quiet" == "false" ]]; then
         echo "$@"
     fi
+}
+
+get_remote_branches() {
+    local remote_name="$1"
+    # In a bare repository, branches are stored directly as refs/heads/
+    # Use git show-ref to get all branch references
+    git show-ref --heads | cut -d' ' -f2 | sed 's|refs/heads/||'
 }
 # --- End Helper Functions ---
 
@@ -172,7 +198,11 @@ worktree_dir="${parent_dir}/${default_branch}"
 
 quiet_echo "Target repository directory: './${parent_dir}'"
 if [[ "$no_checkout" == "false" ]]; then
-    quiet_echo "Initial worktree will be in: './${worktree_dir}'"
+    if [[ "$all_branches" == "true" ]]; then
+        quiet_echo "Worktrees will be created for all remote branches"
+    else
+        quiet_echo "Initial worktree will be in: './${worktree_dir}'"
+    fi
 else
     quiet_echo "No-checkout mode: Only bare repository will be created"
 fi
@@ -221,24 +251,76 @@ if [[ "$no_checkout" == "false" ]]; then
         exit 1
     fi
 
-    quiet_echo "Creating initial worktree for branch '${default_branch}'..."
-    # We are inside the repo_name dir, so .git is found automatically
+    # Set up git worktree command based on quiet mode
     if [[ "$quiet" == "true" ]]; then
         git_worktree_cmd="git worktree add --quiet"
     else
         git_worktree_cmd="git worktree add"
     fi
-    if ! $git_worktree_cmd "$default_branch"; then
-        echo "Error: 'git worktree add' failed for branch '${default_branch}'." >&2
-        echo "Cleaning up..." >&2
-        cd ..
-        rm -rf "$repo_name"
-        exit 1
+
+    if [[ "$all_branches" == "true" ]]; then
+        # Create worktrees for all remote branches
+        quiet_echo "Fetching all remote branches..."
+        remote_name="origin"
+        
+        # Get list of all remote branches
+        remote_branches=$(get_remote_branches "$remote_name")
+        
+        if [[ -z "$remote_branches" ]]; then
+            echo "Error: No remote branches found." >&2
+            echo "Cleaning up..." >&2
+            cd ..
+            rm -rf "$repo_name"
+            exit 1
+        fi
+        
+        # Create worktrees for all branches
+        worktree_creation_failed=false
+        created_worktrees=()
+        
+        while IFS= read -r branch; do
+            [[ -z "$branch" ]] && continue
+            quiet_echo "Creating worktree for branch '$branch'..."
+            
+            if ! $git_worktree_cmd "$branch"; then
+                echo "Error: 'git worktree add' failed for branch '$branch'." >&2
+                worktree_creation_failed=true
+                break
+            fi
+            created_worktrees+=("$branch")
+        done <<< "$remote_branches"
+        
+        if [[ "$worktree_creation_failed" == "true" ]]; then
+            echo "Cleaning up created worktrees..." >&2
+            for created_branch in "${created_worktrees[@]}"; do
+                if [[ -d "$created_branch" ]]; then
+                    rm -rf "$created_branch"
+                fi
+            done
+            cd ..
+            rm -rf "$repo_name"
+            exit 1
+        fi
+        
+        # After creating all worktrees, change to the default branch
+        target_worktree="$default_branch"
+        
+    else
+        # Create only the default branch worktree
+        quiet_echo "Creating initial worktree for branch '${default_branch}'..."
+        if ! $git_worktree_cmd "$default_branch"; then
+            echo "Error: 'git worktree add' failed for branch '${default_branch}'." >&2
+            echo "Cleaning up..." >&2
+            cd ..
+            rm -rf "$repo_name"
+            exit 1
+        fi
+        target_worktree="$default_branch"
     fi
     
     # --- Step 6: Post-Clone Actions (cd & direnv) ---
-    quiet_echo "--> Changing directory to worktree: './${default_branch}'"
-    if cd -- "$default_branch"; then
+    quiet_echo "--> Changing directory to worktree: './${target_worktree}'"
+    if cd -- "$target_worktree"; then
         current_dir=$(pwd)
         quiet_echo "--> Successfully changed directory to $current_dir"
 
@@ -260,15 +342,24 @@ if [[ "$no_checkout" == "false" ]]; then
         quiet_echo "Success!"
         quiet_echo "Repository '$repo_name' cloned successfully."
         quiet_echo "The main Git directory is at: '$(git rev-parse --git-dir)'"
-        quiet_echo "Your initial worktree for branch '${default_branch}' is ready at: '$(pwd)'"
-        quiet_echo "You are now inside the initial worktree."
+        if [[ "$all_branches" == "true" ]]; then
+            quiet_echo "Worktrees created for all remote branches."
+            quiet_echo "You are now in the default branch worktree at: '$(pwd)'"
+        else
+            quiet_echo "Your initial worktree for branch '${default_branch}' is ready at: '$(pwd)'"
+            quiet_echo "You are now inside the initial worktree."
+        fi
         exit 0
 
     else
         local cd_exit_code=$?
         echo "---"
-        echo "Error: Failed to change directory into the new worktree at './${default_branch}' (Exit code: ${cd_exit_code})." >&2
-        echo "The repository and worktree have been created, but you are still in the parent directory: $(pwd)" >&2
+        echo "Error: Failed to change directory into the new worktree at './${target_worktree}' (Exit code: ${cd_exit_code})." >&2
+        if [[ "$all_branches" == "true" ]]; then
+            echo "The repository and all worktrees have been created, but you are still in the parent directory: $(pwd)" >&2
+        else
+            echo "The repository and worktree have been created, but you are still in the parent directory: $(pwd)" >&2
+        fi
         exit 1
     fi
     # --- End Step 6 ---
