@@ -123,8 +123,8 @@ impl GitCommand {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            println!("--> Git worktree add stdout: {}", stdout);
-            println!("--> Git worktree add stderr: {}", stderr);
+            println!("--> Git worktree add stdout: {stdout}");
+            println!("--> Git worktree add stderr: {stderr}");
             anyhow::bail!("Git worktree add failed: {}", stderr);
         }
 
