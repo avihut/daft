@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# ⚠️  DEPRECATED: This shell script is deprecated. Please use the Rust implementation instead.
+# Migration: `cargo build --release && ./target/release/git-worktree-clone --help`
+# See: src/legacy/README.md for migration guide
+
 # Clones a Git repository into a specific directory structure:
 # <repository_name>/<default_branch_name>
 #

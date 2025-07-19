@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# ⚠️  DEPRECATED: This shell script is deprecated. Please use the Rust implementation instead.
+# Migration: `cargo build --release && ./target/release/git-worktree-prune --help`
+# See: src/legacy/README.md for migration guide
+
 # Prunes local Git branches whose remote counterparts have been deleted,
 # ensuring any associated worktrees are removed first.
 #

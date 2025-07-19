@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# ⚠️  DEPRECATED: This shell script is deprecated. Please use the Rust implementation instead.
+# Migration: `cargo build --release && ./target/release/git-worktree-checkout-branch --help`
+# See: src/legacy/README.md for migration guide
+
 # Creates a git worktree at the project root level, create a new branch based on either
 # the CURRENT branch or a specified base branch, push the new branch to origin, set upstream tracking,
 # run 'direnv allow' (if direnv exists), and finally cd into the new worktree.
