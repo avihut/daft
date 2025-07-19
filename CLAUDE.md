@@ -291,6 +291,66 @@ When adding new features:
 3. Ensure tests pass locally with `make test`
 4. Verify CI passes on pull requests
 
+## Code Quality Checks
+
+**IMPORTANT**: Always perform these quality checks at the end of every work session to ensure code meets project standards:
+
+### Required End-of-Work Checks
+
+1. **Rust Clippy Linting** - Run clippy to catch common issues and enforce best practices:
+   ```bash
+   cargo clippy -- -D warnings
+   ```
+   This must pass with zero warnings. Common issues to watch for:
+   - Uninlined format arguments (use `println!("{var}")` instead of `println!("{}", var)`)
+   - Using `.len() < 1` instead of `.is_empty()`
+   - Empty lines after doc comments
+   - Unused imports or variables
+
+2. **Rust Code Formatting** - Ensure consistent code style:
+   ```bash
+   cargo fmt -- --check
+   ```
+   If this fails, run `cargo fmt` to fix formatting automatically, then verify with `--check` again.
+
+3. **Unit Test Validation** - Confirm all tests still pass:
+   ```bash
+   make test-unit
+   ```
+
+### Quality Check Workflow
+
+Before committing any Rust code changes:
+```bash
+# 1. Fix any formatting issues
+cargo fmt
+
+# 2. Check for linting issues
+cargo clippy -- -D warnings
+
+# 3. Verify tests pass
+make test-unit
+
+# 4. (Optional) Run full test suite if significant changes
+make test
+```
+
+### Common Issues and Fixes
+
+- **Trailing whitespace**: Use your editor's whitespace cleanup or `sed -i '' 's/[[:space:]]*$//' filename.rs`
+- **Missing newlines at EOF**: Ensure all files end with a single newline
+- **Clippy warnings**: Address each warning individually - don't suppress unless absolutely necessary
+- **Formatting inconsistencies**: Always run `cargo fmt` before committing
+
+### CI Integration
+
+These same checks run in GitHub Actions, so passing them locally ensures CI will pass:
+- `cargo clippy -- -D warnings` (fails CI on any warnings)
+- `cargo fmt -- --check` (fails CI on formatting issues)
+- `cargo test` (fails CI on test failures)
+
+**Remember**: These checks are not optional - they are required for all Rust code contributions and must pass before work is considered complete.
+
 ## Language Migration Considerations
 
 ### Current State Assessment
