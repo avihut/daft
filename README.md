@@ -41,6 +41,8 @@ ln -s /path/to/git-worktree-workflow/target/release/git-worktree-* /usr/local/bi
 
 ⚠️ **DEPRECATED**: The shell scripts are deprecated. Please use the Rust implementation.
 
+The humble origins of this project.
+
 1. Clone this repository (same as above)
 
 2. Add the legacy scripts to your PATH:
