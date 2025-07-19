@@ -236,4 +236,3 @@ fn test_concurrent_worktree_operations() -> Result<()> {
 
     Ok(())
 }
-
