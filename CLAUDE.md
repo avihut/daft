@@ -185,7 +185,111 @@ This workflow eliminates the traditional friction of Git branch switching, stash
 
 ## Testing
 
-This repository contains only shell scripts with no traditional build, test, or lint commands. Testing should be done manually by executing the scripts in various Git repository scenarios.
+The project has a comprehensive three-tier testing architecture that covers unit tests, legacy shell script tests, and Rust integration tests. All tests are fully integrated into GitHub Actions CI/CD workflows.
+
+### Testing Architecture
+
+#### 1. **Unit Tests** (`make test-unit`)
+- Rust unit tests for library functions and utilities
+- 16 tests covering:
+  - Git command wrapper functionality
+  - Directory and path utility functions
+  - Branch/repository name validation
+  - Direnv integration logic
+  - Remote branch detection
+- Run via `cargo test`
+
+#### 2. **Legacy Tests** (`make test-legacy`)
+- Tests for original shell script implementations in `tests/legacy/`
+- Comprehensive test suites for each command:
+  - `test_clone.sh`, `test_init.sh`, `test_checkout.sh`, etc.
+- Uses `test_framework.sh` for consistent test infrastructure
+- Ensures backward compatibility during Rust migration
+
+#### 3. **Integration Tests** (`make test-integration`)
+- End-to-end tests for Rust binaries in `tests/integration/`
+- Mirrors legacy test structure but tests Rust implementations
+- Key test files:
+  - `test_checkout_direnv` - Tests direnv integration
+  - `test_checkout_branch_workflow` - Tests development workflow scenarios
+  - `test_checkout_branch_from_default_remote_updates` - Tests remote branch updates
+  - `test_prune_multiple_deletions` - Tests cleanup operations
+  - `test_integration_full_workflow` - Tests complete workflow scenarios
+- Includes performance, security, and cross-platform compatibility tests
+
+### Test Execution
+
+**Run all tests:**
+```bash
+make test        # or make test-all
+```
+
+**Run specific test suites:**
+```bash
+make test-unit                    # Rust unit tests only
+make test-legacy                  # Legacy shell script tests
+make test-integration             # Rust integration tests
+```
+
+**Run individual integration test suites:**
+```bash
+make test-integration-clone
+make test-integration-checkout
+make test-integration-checkout-branch
+make test-integration-checkout-branch-from-default
+make test-integration-init
+make test-integration-prune
+```
+
+### GitHub Actions Integration
+
+The testing architecture is fully integrated into GitHub Actions via `.github/workflows/test.yml`:
+
+1. **Multi-platform testing**: Runs on both `ubuntu-latest` and `macos-latest`
+2. **Complete test coverage**:
+   - Builds Rust binaries (`cargo build --release`)
+   - Runs Rust unit tests (`cargo test`)
+   - Runs Rust linting (`cargo clippy -- -D warnings`)
+   - Checks code formatting (`cargo fmt -- --check`)
+   - Executes legacy tests (`make test-legacy`)
+   - Executes integration tests (`make test-integration`)
+3. **Path configuration**: Automatically adds both legacy scripts and Rust binaries to PATH
+4. **Dependency validation**: Verifies required tools (git, awk, basename) are available
+5. **Test result artifacts**: Uploads test results for debugging failures
+
+### Key Implementation Details
+
+#### Remote Tracking Branch Handling
+The Rust implementation includes sophisticated logic for handling remote tracking branches in bare repository setups:
+- Ensures remote tracking branches are created with `git fetch origin +refs/heads/*:refs/remotes/origin/*`
+- Intelligently chooses between local and remote branches based on commit history
+- Prefers local branches when they have unpushed commits (development workflow)
+- Prefers remote branches when they're ahead or equal (for getting latest changes)
+
+#### Test Framework Features
+- Isolated test environments using temporary directories
+- Automatic cleanup after test completion
+- Colored output for better readability
+- Detailed error reporting with exit codes
+- Support for verbose mode (`VERBOSE=1`)
+- Parallel test execution support
+
+### Makefile Integration
+
+The Makefile provides convenient targets for all testing needs:
+- `test-all` runs unit + legacy + integration tests
+- Individual targets for granular testing
+- Verbose modes for debugging (`test-verbose`, `test-legacy-verbose`, `test-integration-verbose`)
+- Performance testing targets (`test-perf`, `test-perf-legacy`, `test-perf-integration`)
+- CI simulation target (`make ci`) that mimics GitHub Actions workflow
+
+### Test Maintenance
+
+When adding new features:
+1. Add unit tests for new Rust functions in the appropriate module
+2. Add integration tests in `tests/integration/` following existing patterns
+3. Ensure tests pass locally with `make test`
+4. Verify CI passes on pull requests
 
 ## Language Migration Considerations
 
