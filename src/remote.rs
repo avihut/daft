@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+
+use crate::git::GitCommand;
 
 /// Determines the default branch of a remote Git repository
 ///
@@ -19,25 +20,17 @@ use std::process::Command;
 ///
 /// # Remote Query Strategy
 /// The `ls-remote --symref` command returns output like:
-/// ```
+/// ```text
 /// ref: refs/heads/main    HEAD
 /// abc123...   HEAD
 /// abc123...   refs/heads/main
 /// ```
 /// We parse the first line to extract the branch name from the symbolic reference.
 pub fn get_default_branch_remote(repo_url: &str) -> Result<String> {
-    let output = Command::new("git")
-        .args(["ls-remote", "--symref", repo_url, "HEAD"])
-        .output()
+    let git = GitCommand::new(false);
+    let output_str = git
+        .ls_remote_symref(repo_url)
         .context("Failed to query remote HEAD ref")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Could not query remote HEAD ref: {}", stderr);
-    }
-
-    let output_str =
-        String::from_utf8(output.stdout).context("Failed to parse ls-remote output")?;
 
     // Parse the symbolic reference output to extract the default branch name
     for line in output_str.lines() {
@@ -80,15 +73,8 @@ pub fn get_default_branch_local(git_common_dir: &Path, remote_name: &str) -> Res
 
     // Fallback: Try to determine default branch from remote
     // This happens when remote HEAD isn't set up locally
-    let output = Command::new("git")
-        .args(["ls-remote", "--symref", remote_name, "HEAD"])
-        .output()
-        .context("Failed to query remote HEAD ref")?;
-
-    if output.status.success() {
-        let output_str =
-            String::from_utf8(output.stdout).context("Failed to parse ls-remote output")?;
-
+    let git = GitCommand::new(false);
+    if let Ok(output_str) = git.ls_remote_symref(remote_name) {
         for line in output_str.lines() {
             if line.starts_with("ref:") {
                 let parts: Vec<&str> = line.split_whitespace().collect();
@@ -114,18 +100,10 @@ pub fn get_default_branch_local(git_common_dir: &Path, remote_name: &str) -> Res
 }
 
 pub fn get_remote_branches(remote_name: &str) -> Result<Vec<String>> {
-    let output = Command::new("git")
-        .args(["ls-remote", "--heads", remote_name])
-        .output()
+    let git = GitCommand::new(false);
+    let output_str = git
+        .ls_remote_heads(remote_name, None)
         .context("Failed to get remote branches")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Git ls-remote failed: {}", stderr);
-    }
-
-    let output_str =
-        String::from_utf8(output.stdout).context("Failed to parse ls-remote output")?;
 
     let mut branches = Vec::new();
     for line in output_str.lines() {
@@ -141,24 +119,9 @@ pub fn get_remote_branches(remote_name: &str) -> Result<Vec<String>> {
 }
 
 pub fn remote_branch_exists(remote_name: &str, branch: &str) -> Result<bool> {
-    let output = Command::new("git")
-        .args([
-            "ls-remote",
-            "--heads",
-            remote_name,
-            &format!("refs/heads/{branch}"),
-        ])
-        .output()
-        .context("Failed to check remote branch existence")?;
-
-    if !output.status.success() {
-        return Ok(false);
-    }
-
-    let output_str =
-        String::from_utf8(output.stdout).context("Failed to parse ls-remote output")?;
-
-    Ok(output_str.contains(&format!("refs/heads/{branch}")))
+    let git = GitCommand::new(false);
+    git.ls_remote_branch_exists(remote_name, branch)
+        .context("Failed to check remote branch existence")
 }
 
 #[cfg(test)]

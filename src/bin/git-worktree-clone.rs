@@ -5,6 +5,7 @@ use git_worktree_workflow::{
     direnv::run_direnv_allow,
     extract_repo_name,
     git::GitCommand,
+    logging::init_logging,
     quiet_echo,
     remote::{get_default_branch_remote, get_remote_branches},
     utils::*,
@@ -51,6 +52,9 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Initialize logging - quiet mode disables verbose output
+    init_logging(!args.quiet);
 
     if args.no_checkout && args.all_branches {
         anyhow::bail!("--no-checkout and --all-branches cannot be used together.\nUse --no-checkout to create only the bare repository, or --all-branches to create worktrees for all branches.");

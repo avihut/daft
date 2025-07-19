@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use which::which;
 
 pub mod config;
@@ -28,31 +27,15 @@ impl Default for WorktreeConfig {
 }
 
 pub fn is_git_repository() -> Result<bool> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("Failed to check if inside Git repository")?;
-
-    Ok(output.success())
+    let git = git::GitCommand::new(true); // Use quiet mode for this check
+    git.rev_parse_is_inside_work_tree()
 }
 
 pub fn get_git_common_dir() -> Result<PathBuf> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--git-common-dir"])
-        .output()
+    let git = git::GitCommand::new(false);
+    let path_str = git
+        .rev_parse_git_common_dir()
         .context("Failed to get git common directory")?;
-
-    if !output.status.success() {
-        anyhow::bail!("Not inside a Git repository");
-    }
-
-    let path_str = String::from_utf8(output.stdout)
-        .context("Failed to parse git common directory output")?
-        .trim()
-        .to_string();
-
     Ok(PathBuf::from(path_str))
 }
 
@@ -65,19 +48,10 @@ pub fn get_project_root() -> Result<PathBuf> {
 }
 
 pub fn get_current_branch() -> Result<String> {
-    let output = Command::new("git")
-        .args(["symbolic-ref", "--short", "HEAD"])
-        .output()
-        .context("Failed to get current branch")?;
-
-    if !output.status.success() {
-        anyhow::bail!("Could not determine current branch (maybe detached HEAD?)");
-    }
-
-    let branch = String::from_utf8(output.stdout)
-        .context("Failed to parse current branch output")?
-        .trim()
-        .to_string();
+    let git = git::GitCommand::new(false);
+    let branch = git
+        .symbolic_ref_short_head()
+        .context("Could not determine current branch (maybe detached HEAD?)")?;
 
     if branch.is_empty() {
         anyhow::bail!("Empty branch name returned");

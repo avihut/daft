@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use git_worktree_workflow::{
-    config::git::DEFAULT_EXIT_CODE, get_git_common_dir, is_git_repository,
+    config::git::DEFAULT_EXIT_CODE, get_git_common_dir, is_git_repository, logging::init_logging,
     remote::get_default_branch_local, utils::*, WorktreeConfig,
 };
 use std::process::Command;
@@ -16,10 +16,16 @@ Creates a git worktree and branch based on the REMOTE'S DEFAULT branch
 struct Args {
     #[arg(help = "The name for the new branch and the worktree directory")]
     new_branch_name: String,
+
+    #[arg(short, long, help = "Enable verbose output")]
+    verbose: bool,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Initialize logging based on verbosity flag
+    init_logging(args.verbose);
 
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");

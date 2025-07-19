@@ -5,7 +5,7 @@ use git_worktree_workflow::{
     direnv::run_direnv_allow,
     get_current_branch, get_project_root,
     git::GitCommand,
-    is_git_repository, log_info, log_warning, logging,
+    is_git_repository, log_error, log_info, log_warning, logging,
     utils::*,
     WorktreeConfig,
 };
@@ -60,13 +60,13 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
 
     let base_branch = match &args.base_branch_name {
         Some(branch) => {
-            println!("--> Using explicitly provided base branch: '{branch}'");
+            log_info!("--> Using explicitly provided base branch: '{branch}'");
             branch.clone()
         }
         None => {
-            println!("--> Base branch not specified, using current branch...");
+            log_info!("--> Base branch not specified, using current branch...");
             let current = get_current_branch()?;
-            println!("--> Using current branch as base: '{current}'");
+            log_info!("--> Using current branch as base: '{current}'");
             current
         }
     };
@@ -91,12 +91,12 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
     }
 
     // Ensure remote tracking branches are created (needed for bare repositories)
-    println!("--> Setting up remote tracking branches...");
+    log_info!("--> Setting up remote tracking branches...");
     if let Err(e) = git.fetch_refspec(
         &config.remote_name,
         &format!("+refs/heads/*:refs/remotes/{}/*", config.remote_name),
     ) {
-        println!("Warning: Failed to set up remote tracking branches: {e}");
+        log_warning!("Failed to set up remote tracking branches: {e}");
     }
 
     // Three-way branch selection algorithm for optimal worktree base branch
@@ -167,9 +167,9 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
     // At this point, checkout_base contains the optimal branch reference determined
     // by our three-way selection algorithm, ready for worktree creation
 
-    println!("Attempting to create Git worktree:");
-    println!("  Path:         {}", worktree_path.display());
-    println!("  New Branch:   {}", args.new_branch_name);
+    log_info!("Attempting to create Git worktree:");
+    log_info!("  Path:         {}", worktree_path.display());
+    log_info!("  New Branch:   {}", args.new_branch_name);
     println!("  From Branch:  {checkout_base}");
     println!("  Project Root: {}", project_root.display());
     println!("---");
@@ -209,10 +209,12 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
     );
 
     if let Err(e) = git.push_set_upstream(&config.remote_name, &args.new_branch_name) {
-        eprintln!("---");
-        eprintln!(
+        log_error!("---");
+        log_error!(
             "Error: Failed to push branch '{}' to '{}' or set upstream: {}",
-            args.new_branch_name, config.remote_name, e
+            args.new_branch_name,
+            config.remote_name,
+            e
         );
         eprintln!(
             "Worktree was created at '{}', but push/tracking failed.",

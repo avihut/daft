@@ -3,7 +3,8 @@ use clap::Parser;
 use git_worktree_workflow::{
     config::counters::{INITIAL_BRANCHES_DELETED, INITIAL_WORKTREES_REMOVED, OPERATION_INCREMENT},
     git::GitCommand,
-    is_git_repository,
+    is_git_repository, log_debug, log_error, log_info,
+    logging::init_logging,
     remote::remote_branch_exists,
     WorktreeConfig,
 };
@@ -16,10 +17,16 @@ use std::path::PathBuf;
 Prunes local Git branches whose remote counterparts have been deleted,
 ensuring any associated worktrees are removed first.
 "#)]
-struct Args {}
+struct Args {
+    #[arg(short, long, help = "Enable verbose output")]
+    verbose: bool,
+}
 
 fn main() -> Result<()> {
-    let _args = Args::parse();
+    let args = Args::parse();
+
+    // Initialize logging based on verbosity flag
+    init_logging(args.verbose);
 
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
@@ -33,14 +40,14 @@ fn run_prune() -> Result<()> {
     let config = WorktreeConfig::default();
     let git = GitCommand::new(config.quiet);
 
-    println!(
+    log_info!(
         "Fetching from remote {} and pruning stale remote-tracking branches...",
         config.remote_name
     );
     git.fetch(&config.remote_name, true)
         .context("git fetch failed")?;
 
-    println!("Identifying local branches whose upstream branch is gone...");
+    log_info!("Identifying local branches whose upstream branch is gone...");
 
     let mut gone_branches = Vec::new();
 
@@ -92,13 +99,13 @@ fn run_prune() -> Result<()> {
                 && !gone_branches.contains(&branch_name.to_string())
             {
                 gone_branches.push(branch_name.to_string());
-                println!("Found branch with worktree not on remote: {branch_name}");
+                log_debug!("Found branch with worktree not on remote: {branch_name}");
             }
         }
     }
 
     if gone_branches.is_empty() {
-        println!("No local branches found that need to be pruned. Nothing to do.");
+        log_info!("No local branches found that need to be pruned. Nothing to do.");
         return Ok(());
     }
 
@@ -141,7 +148,7 @@ fn run_prune() -> Result<()> {
             if wt_path.exists() {
                 println!("Attempting to remove worktree...");
                 if let Err(e) = git.worktree_remove(&wt_path, true) {
-                    eprintln!(
+                    log_error!(
                         "Error: Failed to remove worktree {worktree_path}: {e}. Skipping deletion of branch {branch_name}."
                     );
                     continue;

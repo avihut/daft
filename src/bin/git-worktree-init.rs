@@ -1,7 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use git_worktree_workflow::{
-    check_dependencies, direnv::run_direnv_allow, git::GitCommand, quiet_echo, utils::*,
+    check_dependencies, direnv::run_direnv_allow, git::GitCommand, logging::init_logging,
+    quiet_echo, utils::*,
 };
 use std::path::PathBuf;
 
@@ -44,6 +45,9 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Initialize logging - quiet mode disables verbose output
+    init_logging(!args.quiet);
 
     let original_dir = get_current_directory()?;
 

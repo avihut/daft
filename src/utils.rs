@@ -88,9 +88,9 @@ pub fn validate_branch_name(branch_name: &str) -> Result<()> {
         anyhow::bail!("Branch name cannot start with '.'");
     }
 
-    // Security: Length limit to prevent buffer overflow attacks
-    if branch_name.len() > 255 {
-        anyhow::bail!("Branch name too long (max 255 characters)");
+    // Security: Length limit to prevent buffer overflow attacks and encourage reasonable naming
+    if branch_name.len() >= 100 {
+        anyhow::bail!("Branch name too long (max 99 characters)");
     }
 
     Ok(())

@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use git_worktree_workflow::{
-    direnv::run_direnv_allow, get_project_root, git::GitCommand, is_git_repository, utils::*,
-    WorktreeConfig,
+    direnv::run_direnv_allow, get_project_root, git::GitCommand, is_git_repository,
+    logging::init_logging, utils::*, WorktreeConfig,
 };
 
 #[derive(Parser)]
@@ -19,10 +19,16 @@ The new worktree will be created at the project root level (alongside .git direc
 struct Args {
     #[arg(help = "The name of the existing local or remote branch to check out")]
     branch_name: String,
+
+    #[arg(short, long, help = "Enable verbose output")]
+    verbose: bool,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Initialize logging based on verbosity flag
+    init_logging(args.verbose);
 
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
