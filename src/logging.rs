@@ -26,10 +26,10 @@ pub fn get_log_level() -> LogLevel {
 pub fn log(level: LogLevel, message: &str) {
     if level <= get_log_level() {
         match level {
-            LogLevel::Error => eprintln!("Error: {}", message),
-            LogLevel::Warning => eprintln!("Warning: {}", message),
-            LogLevel::Info => println!("{}", message),
-            LogLevel::Debug => println!("Debug: {}", message),
+            LogLevel::Error => eprintln!("Error: {message}"),
+            LogLevel::Warning => eprintln!("Warning: {message}"),
+            LogLevel::Info => println!("{message}"),
+            LogLevel::Debug => println!("Debug: {message}"),
         }
     }
 }

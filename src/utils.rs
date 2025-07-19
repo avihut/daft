@@ -137,7 +137,7 @@ pub fn validate_repo_name(repo_name: &str) -> Result<()> {
     }
 
     // Security: Minimum length to prevent empty-like names
-    if repo_name.len() < 1 {
+    if repo_name.is_empty() {
         anyhow::bail!("Repository name too short");
     }
 

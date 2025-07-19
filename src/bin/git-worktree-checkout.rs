@@ -74,7 +74,7 @@ fn run_checkout(args: &Args) -> Result<()> {
         &config.remote_name,
         &format!("{}:{}", args.branch_name, args.branch_name),
     ) {
-        println!("Warning: Failed to fetch specific branch: {}", e);
+        println!("Warning: Failed to fetch specific branch: {e}");
     }
 
     // Check if remote branch exists and use it if local branch is behind

@@ -91,7 +91,7 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
         &config.remote_name,
         &format!("+refs/heads/*:refs/remotes/{}/*", config.remote_name),
     ) {
-        println!("Warning: Failed to set up remote tracking branches: {}", e);
+        println!("Warning: Failed to set up remote tracking branches: {e}");
     }
 
     // Three-way branch selection algorithm for optimal worktree base branch

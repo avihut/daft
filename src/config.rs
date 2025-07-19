@@ -2,7 +2,6 @@
 /// 
 /// This module centralizes all configurable values and magic numbers
 /// to improve maintainability and reduce hardcoded values throughout the codebase.
-
 /// Git-related constants
 pub mod git {
     /// Default threshold for considering a branch as having "ahead" commits
