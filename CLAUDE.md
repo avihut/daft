@@ -372,3 +372,162 @@ fn run_direnv_allow() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 This provides better error handling, type safety, and cross-platform compatibility than shell scripts.
+
+## Legacy Removal Plan
+
+Once the Rust migration is complete and deemed stable, the legacy shell scripts can be cleanly removed. Here's the systematic plan:
+
+### Phase 1: Preparation and Validation
+1. **Ensure Feature Parity**: Verify all legacy script functionality is fully implemented in Rust
+2. **Performance Benchmarking**: Confirm Rust versions meet or exceed shell script performance
+3. **User Migration**: Provide migration guide for users switching from shell to Rust versions
+4. **Documentation Update**: Update all references from shell scripts to Rust binaries
+
+### Phase 2: Deprecation Period (Recommended 1-2 releases)
+1. **Add deprecation warnings** to shell scripts:
+   ```bash
+   echo "WARNING: Shell scripts are deprecated. Use Rust binaries instead."
+   echo "Legacy scripts will be removed in version X.Y.Z"
+   ```
+2. **Update installation docs** to recommend Rust binaries
+3. **Add migration notices** in README and release notes
+
+### Phase 3: Systematic Legacy Removal
+
+#### Files to Remove:
+```
+src/legacy/                                    # Entire legacy directory
+├── README.md
+├── git-worktree-checkout
+├── git-worktree-checkout-branch
+├── git-worktree-checkout-branch-from-default
+├── git-worktree-clone
+├── git-worktree-init
+└── git-worktree-prune
+
+tests/legacy/                                  # Entire legacy test directory
+├── test_all.sh
+├── test_checkout.sh
+├── test_checkout_branch.sh
+├── test_checkout_branch_from_default.sh
+├── test_clone.sh
+├── test_framework.sh
+├── test_init.sh
+├── test_prune.sh
+└── test_simple.sh
+```
+
+#### Makefile Targets to Remove:
+```makefile
+# Legacy test targets to remove:
+test-legacy
+test-legacy-framework
+test-legacy-clone
+test-legacy-checkout
+test-legacy-checkout-branch
+test-legacy-checkout-branch-from-default
+test-legacy-init
+test-legacy-prune
+test-legacy-simple
+test-legacy-verbose
+test-perf-legacy
+
+# Compatibility aliases to remove:
+test-framework, test-clone, test-checkout, etc.
+```
+
+#### GitHub Actions Cleanup:
+```yaml
+# Remove from .github/workflows/test.yml:
+- name: Run legacy tests
+  run: make test-legacy
+
+- name: Add scripts to PATH (shell version)
+  run: |
+    echo "${{ github.workspace }}/src/legacy" >> $GITHUB_PATH
+
+# Legacy help command tests section
+```
+
+#### Documentation Cleanup:
+- Remove shell script installation instructions from README.md
+- Remove legacy script examples and usage patterns
+- Update CLAUDE.md to remove legacy architecture details
+- Remove shell script references from all documentation
+
+### Phase 4: Update Project Structure
+
+#### Update Makefile:
+```makefile
+# Simplify test targets to:
+test: test-unit test-integration
+test-all: test-unit test-integration
+
+# Remove all legacy-specific targets
+# Update help text to remove legacy references
+```
+
+#### Update GitHub Actions:
+```yaml
+# Simplify to focus only on Rust:
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Run unit tests
+        run: make test-unit
+      - name: Run integration tests  
+        run: make test-integration
+```
+
+#### Update README.md:
+- Remove "Legacy vs Rust" comparison sections
+- Simplify installation to Rust-only approach
+- Update all examples to use Rust binaries
+- Remove shell script PATH setup instructions
+
+### Phase 5: Cleanup Git History (Optional)
+For a clean repository:
+```bash
+# Remove legacy files from git history (DESTRUCTIVE)
+git filter-branch --tree-filter 'rm -rf src/legacy tests/legacy' --prune-empty HEAD
+git for-each-ref --format="%(refname)" refs/original/ | xargs -n 1 git update-ref -d
+```
+
+### Phase 6: Post-Removal Validation
+1. **Test CI/CD Pipeline**: Ensure all workflows pass without legacy components
+2. **Update Release Process**: Remove legacy binary building/packaging
+3. **Documentation Review**: Verify no broken links or references to removed files
+4. **User Communication**: Release notes clearly document the removal
+
+### Migration Commands for Users
+Provide clear migration paths:
+
+```bash
+# Old (shell scripts)
+export PATH="$PATH:/path/to/scripts"
+git worktree-clone repo.git
+
+# New (Rust binaries)  
+export PATH="$PATH:/path/to/target/release"
+git-worktree-clone repo.git
+# OR (if installed via package manager)
+git worktree-clone repo.git
+```
+
+### Benefits of Removal
+- **Simplified codebase**: ~50% reduction in test files and maintenance burden
+- **Reduced CI time**: Eliminate duplicate legacy test runs
+- **Cleaner documentation**: Single source of truth for usage patterns
+- **Easier development**: Focus on single implementation path
+- **Better user experience**: No confusion between shell vs Rust versions
+
+### Risk Mitigation
+- **Gradual rollout**: Use semantic versioning to signal breaking changes
+- **Backup branches**: Tag legacy-complete version before removal
+- **User survey**: Collect feedback during deprecation period
+- **Rollback plan**: Keep ability to restore legacy if critical issues arise
+
+This plan ensures a clean, methodical removal of legacy components while maintaining user confidence and project stability.
