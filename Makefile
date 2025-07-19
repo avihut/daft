@@ -13,13 +13,13 @@ INTEGRATION_TEMP_DIR := /tmp/git-worktree-integration-tests
 all: test
 
 # Test targets
-.PHONY: test test-all test-legacy test-integration test-rust test-clone test-checkout test-checkout-branch test-checkout-branch-from-default test-init test-prune test-framework test-simple
+.PHONY: test test-all test-legacy test-integration test-rust test-unit test-clone test-checkout test-checkout-branch test-checkout-branch-from-default test-init test-prune test-framework test-simple
 
 test: test-all
 	@echo "All tests completed"
 
-test-all: test-legacy test-integration
-	@echo "Running all tests (legacy + integration)..."
+test-all: test-unit test-legacy test-integration
+	@echo "Running all tests (unit + legacy + integration)..."
 
 test-legacy:
 	@echo "Running legacy shell script tests..."
@@ -119,7 +119,7 @@ test-integration-prune: build-rust
 	@cd $(INTEGRATION_TESTS_DIR) && ./test_prune.sh
 
 # Rust build targets
-.PHONY: build-rust clean-rust
+.PHONY: build-rust clean-rust test-unit
 
 build-rust:
 	@echo "Building Rust binaries..."
@@ -128,6 +128,10 @@ build-rust:
 clean-rust:
 	@echo "Cleaning Rust build artifacts..."
 	@cargo clean
+
+test-unit:
+	@echo "Running Rust unit tests..."
+	@cargo test
 
 # Individual test runner with verbose output
 .PHONY: test-verbose test-legacy-verbose test-integration-verbose
@@ -276,6 +280,7 @@ help:
 	@echo "  test-legacy                   - Run legacy shell script tests"
 	@echo "  test-integration              - Run Rust integration tests"
 	@echo "  test-rust                     - Run Rust integration tests"
+	@echo "  test-unit                     - Run Rust unit tests (cargo test)"
 	@echo ""
 	@echo "Legacy test targets:"
 	@echo "  test-legacy-framework         - Run legacy test framework tests"

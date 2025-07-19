@@ -69,7 +69,8 @@
       "Bash(VERBOSE=1 ./test_checkout_branch_from_default.sh)",
       "Bash(VERBOSE=1 ./test_checkout_branch_from_default.sh checkout_branch_from_default_remote_updates)",
       "Bash(VERBOSE=1 ./test_all.sh)",
-      "Bash(./test_checkout_branch.sh)"
+      "Bash(./test_checkout_branch.sh)",
+      "Bash(find:*)"
     ],
     "deny": []
   }
