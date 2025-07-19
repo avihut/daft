@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use git_worktree_workflow::{
     config::counters::{INITIAL_BRANCHES_DELETED, INITIAL_WORKTREES_REMOVED, OPERATION_INCREMENT},
-    git::GitCommand, is_git_repository, remote::remote_branch_exists, WorktreeConfig,
+    git::GitCommand,
+    is_git_repository,
+    remote::remote_branch_exists,
+    WorktreeConfig,
 };
 use std::path::PathBuf;
 

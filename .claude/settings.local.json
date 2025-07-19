@@ -85,7 +85,8 @@
       "mcp__github__get_issue_comments",
       "mcp__github__get_pull_request_status",
       "Bash(rg:*)",
-      "Bash(mv:*)"
+      "Bash(mv:*)",
+      "Bash(sed:*)"
     ],
     "deny": []
   }

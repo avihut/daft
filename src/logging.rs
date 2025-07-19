@@ -61,3 +61,4 @@ macro_rules! log_debug {
         $crate::logging::log($crate::logging::LogLevel::Debug, &format!($($arg)*))
     };
 }
+

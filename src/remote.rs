@@ -4,19 +4,19 @@ use std::path::Path;
 use std::process::Command;
 
 /// Determines the default branch of a remote Git repository
-/// 
+///
 /// This function uses `git ls-remote --symref` to query the remote repository's
 /// symbolic reference for HEAD, which points to the default branch. This is more
 /// reliable than assuming "main" or "master" since repositories can have any
 /// branch as their default.
-/// 
+///
 /// # Arguments
 /// * `repo_url` - The URL of the remote Git repository to query
-/// 
+///
 /// # Returns
 /// * `Ok(String)` - The name of the default branch (e.g., "main", "master", "develop")
 /// * `Err` - If the remote cannot be reached or doesn't have a valid default branch
-/// 
+///
 /// # Remote Query Strategy
 /// The `ls-remote --symref` command returns output like:
 /// ```

@@ -2,8 +2,12 @@ use anyhow::Result;
 use clap::Parser;
 use git_worktree_workflow::{
     config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT},
-    direnv::run_direnv_allow, get_current_branch, get_project_root, git::GitCommand,
-    is_git_repository, logging, utils::*, WorktreeConfig, log_info, log_warning,
+    direnv::run_direnv_allow,
+    get_current_branch, get_project_root,
+    git::GitCommand,
+    is_git_repository, log_info, log_warning, logging,
+    utils::*,
+    WorktreeConfig,
 };
 
 #[derive(Parser)]
@@ -33,7 +37,7 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    
+
     // Initialize logging based on verbosity flags
     logging::init_logging(args.verbose);
 
@@ -81,7 +85,8 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
     if let Err(e) = git.fetch(&config.remote_name, false) {
         log_warning!(
             "Failed to fetch from remote '{}': {}",
-            config.remote_name, e
+            config.remote_name,
+            e
         );
     }
 
@@ -103,7 +108,7 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
     let checkout_base =
         if git.show_ref_exists(&remote_branch_ref)? && git.show_ref_exists(&local_branch_ref)? {
             // Case 1: Both local and remote branches exist - Advanced conflict resolution
-            // 
+            //
             // This is the most complex scenario where we need to determine which branch
             // represents the "better" starting point for new development. We use commit
             // comparison to intelligently choose between local and remote versions.
@@ -128,7 +133,8 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
                 // Remote branch is equal or ahead - use remote for latest changes
                 log_info!(
                     "Using remote branch '{}/{}' as base (has latest changes)",
-                    config.remote_name, base_branch
+                    config.remote_name,
+                    base_branch
                 );
                 format!("{}/{}", config.remote_name, base_branch)
             }
@@ -144,7 +150,9 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
             // checked out locally yet, common in team development scenarios.
             log_info!(
                 "Local branch '{}' not found, using remote branch '{}/{}'",
-                base_branch, config.remote_name, base_branch
+                base_branch,
+                config.remote_name,
+                base_branch
             );
             format!("{}/{}", config.remote_name, base_branch)
         } else {
@@ -155,7 +163,7 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
             log_info!("Neither local nor remote branch found for '{base_branch}', using as-is");
             base_branch.clone()
         };
-        
+
     // At this point, checkout_base contains the optimal branch reference determined
     // by our three-way selection algorithm, ready for worktree creation
 

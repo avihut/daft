@@ -353,10 +353,12 @@ impl GitCommand {
             anyhow::bail!("Git rev-list failed: {}", stderr);
         }
 
-        let stdout = String::from_utf8(output.stdout)
-            .context("Failed to parse git rev-list output")?;
-        
-        stdout.trim().parse::<u32>()
+        let stdout =
+            String::from_utf8(output.stdout).context("Failed to parse git rev-list output")?;
+
+        stdout
+            .trim()
+            .parse::<u32>()
             .context("Failed to parse commit count as number")
     }
 }

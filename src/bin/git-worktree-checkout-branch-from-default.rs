@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use git_worktree_workflow::{
-    config::git::DEFAULT_EXIT_CODE,
-    get_git_common_dir, is_git_repository, remote::get_default_branch_local, utils::*,
-    WorktreeConfig,
+    config::git::DEFAULT_EXIT_CODE, get_git_common_dir, is_git_repository,
+    remote::get_default_branch_local, utils::*, WorktreeConfig,
 };
 use std::process::Command;
 

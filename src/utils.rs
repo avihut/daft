@@ -47,18 +47,25 @@ pub fn validate_branch_name(branch_name: &str) -> Result<()> {
     }
 
     // Security: Check for command injection attempts
-    if branch_name.contains(';') || branch_name.contains('&') || branch_name.contains('|') 
-        || branch_name.contains('$') || branch_name.contains('`') || branch_name.contains('<') 
-        || branch_name.contains('>') {
+    if branch_name.contains(';')
+        || branch_name.contains('&')
+        || branch_name.contains('|')
+        || branch_name.contains('$')
+        || branch_name.contains('`')
+        || branch_name.contains('<')
+        || branch_name.contains('>')
+    {
         anyhow::bail!("Branch name contains unsafe characters");
     }
 
     // Security: Check for null bytes, control characters, and problematic Unicode
-    if branch_name.contains('\0') || branch_name.chars().any(|c| {
-        c.is_control() || 
+    if branch_name.contains('\0')
+        || branch_name.chars().any(|c| {
+            c.is_control() ||
         // Zero-width characters and format characters
         matches!(c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}' | '\u{2028}' | '\u{2029}')
-    }) {
+        })
+    {
         anyhow::bail!("Branch name contains control or problematic Unicode characters");
     }
 
@@ -68,8 +75,11 @@ pub fn validate_branch_name(branch_name: &str) -> Result<()> {
     }
 
     // Security: Check for Git-specific dangerous patterns
-    if branch_name.starts_with(".git") || branch_name.contains("/.git") 
-        || branch_name.starts_with("refs/") || branch_name.contains("HEAD") {
+    if branch_name.starts_with(".git")
+        || branch_name.contains("/.git")
+        || branch_name.starts_with("refs/")
+        || branch_name.contains("HEAD")
+    {
         anyhow::bail!("Branch name contains Git-specific patterns");
     }
 
@@ -102,9 +112,14 @@ pub fn validate_repo_name(repo_name: &str) -> Result<()> {
     }
 
     // Security: Check for command injection attempts
-    if repo_name.contains(';') || repo_name.contains('&') || repo_name.contains('|') 
-        || repo_name.contains('$') || repo_name.contains('`') || repo_name.contains('<') 
-        || repo_name.contains('>') {
+    if repo_name.contains(';')
+        || repo_name.contains('&')
+        || repo_name.contains('|')
+        || repo_name.contains('$')
+        || repo_name.contains('`')
+        || repo_name.contains('<')
+        || repo_name.contains('>')
+    {
         anyhow::bail!("Repository name contains unsafe characters");
     }
 
@@ -124,9 +139,10 @@ pub fn validate_repo_name(repo_name: &str) -> Result<()> {
     }
 
     // Security: Check for Windows reserved names
-    let windows_reserved = ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", 
-                           "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", 
-                           "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"];
+    let windows_reserved = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
     if windows_reserved.contains(&repo_name.to_uppercase().as_str()) {
         anyhow::bail!("Repository name is a Windows reserved name");
     }
