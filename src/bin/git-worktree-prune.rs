@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use git_worktree_workflow::{
+    config::counters::{INITIAL_BRANCHES_DELETED, INITIAL_WORKTREES_REMOVED, OPERATION_INCREMENT},
     git::GitCommand, is_git_repository, remote::remote_branch_exists, WorktreeConfig,
 };
 use std::path::PathBuf;
@@ -107,8 +108,8 @@ fn run_prune() -> Result<()> {
     }
     println!();
 
-    let mut branches_deleted = 0;
-    let mut worktrees_removed = 0;
+    let mut branches_deleted = INITIAL_BRANCHES_DELETED;
+    let mut worktrees_removed = INITIAL_WORKTREES_REMOVED;
 
     for branch_name in &gone_branches {
         println!("--- Processing branch: {branch_name} ---");
@@ -143,7 +144,7 @@ fn run_prune() -> Result<()> {
                     continue;
                 }
                 println!("Worktree at {worktree_path} removed successfully.");
-                worktrees_removed += 1;
+                worktrees_removed += OPERATION_INCREMENT;
             } else {
                 println!("Warning: Worktree directory {worktree_path} not found. Attempting git worktree prune might be needed separately.");
                 println!("Attempting to force remove the worktree record anyway...");
@@ -152,7 +153,7 @@ fn run_prune() -> Result<()> {
                     continue;
                 }
                 println!("Worktree record for {worktree_path} removed successfully.");
-                worktrees_removed += 1;
+                worktrees_removed += OPERATION_INCREMENT;
             }
         } else {
             println!("No associated worktree found for {branch_name}.");
@@ -164,7 +165,7 @@ fn run_prune() -> Result<()> {
             eprintln!("Error: Failed to delete branch {branch_name}: {e}");
         } else {
             println!("Local branch {branch_name} deleted successfully.");
-            branches_deleted += 1;
+            branches_deleted += OPERATION_INCREMENT;
         }
 
         println!("----------------------------------------");

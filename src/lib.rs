@@ -5,8 +5,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use which::which;
 
+pub mod config;
 pub mod direnv;
 pub mod git;
+pub mod logging;
 pub mod remote;
 pub mod utils;
 
@@ -108,12 +110,54 @@ pub fn extract_repo_name(repo_url: &str) -> Result<String> {
         anyhow::bail!("Could not extract repository name from URL: '{}'", repo_url);
     }
 
-    Ok(repo_name)
+    // Security: Sanitize the extracted repository name
+    let sanitized_name = sanitize_extracted_name(&repo_name)?;
+
+    Ok(sanitized_name)
+}
+
+/// Sanitizes an extracted repository name for security
+/// 
+/// This function applies security measures to repository names extracted from URLs
+/// to prevent injection attacks, path traversal, and other security vulnerabilities.
+fn sanitize_extracted_name(name: &str) -> Result<String> {
+    // Remove null bytes and control characters
+    let cleaned: String = name.chars()
+        .filter(|c| !c.is_control() && *c != '\0')
+        .collect();
+    
+    // Remove dangerous characters that could be used for injection
+    let safe_chars: String = cleaned.chars()
+        .filter(|c| match c {
+            // Allow alphanumeric, hyphens, underscores, and dots
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' => true,
+            _ => false,
+        })
+        .collect();
+    
+    // Remove leading/trailing dots and ensure it's not empty
+    let trimmed = safe_chars.trim_matches('.');
+    
+    if trimmed.is_empty() {
+        anyhow::bail!("Repository name contains only unsafe characters");
+    }
+    
+    // Prevent path traversal patterns
+    if trimmed.contains("..") {
+        anyhow::bail!("Repository name contains path traversal patterns");
+    }
+    
+    // Length limit
+    if trimmed.len() > 255 {
+        anyhow::bail!("Repository name too long after sanitization");
+    }
+    
+    Ok(trimmed.to_string())
 }
 
 pub fn quiet_echo(message: &str, quiet: bool) {
     if !quiet {
-        println!("{message}");
+        logging::log(logging::LogLevel::Info, message);
     }
 }
 

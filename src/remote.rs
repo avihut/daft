@@ -3,6 +3,28 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+/// Determines the default branch of a remote Git repository
+/// 
+/// This function uses `git ls-remote --symref` to query the remote repository's
+/// symbolic reference for HEAD, which points to the default branch. This is more
+/// reliable than assuming "main" or "master" since repositories can have any
+/// branch as their default.
+/// 
+/// # Arguments
+/// * `repo_url` - The URL of the remote Git repository to query
+/// 
+/// # Returns
+/// * `Ok(String)` - The name of the default branch (e.g., "main", "master", "develop")
+/// * `Err` - If the remote cannot be reached or doesn't have a valid default branch
+/// 
+/// # Remote Query Strategy
+/// The `ls-remote --symref` command returns output like:
+/// ```
+/// ref: refs/heads/main    HEAD
+/// abc123...   HEAD
+/// abc123...   refs/heads/main
+/// ```
+/// We parse the first line to extract the branch name from the symbolic reference.
 pub fn get_default_branch_remote(repo_url: &str) -> Result<String> {
     let output = Command::new("git")
         .args(["ls-remote", "--symref", repo_url, "HEAD"])
@@ -17,6 +39,7 @@ pub fn get_default_branch_remote(repo_url: &str) -> Result<String> {
     let output_str =
         String::from_utf8(output.stdout).context("Failed to parse ls-remote output")?;
 
+    // Parse the symbolic reference output to extract the default branch name
     for line in output_str.lines() {
         if line.starts_with("ref:") {
             let parts: Vec<&str> = line.split_whitespace().collect();

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use git_worktree_workflow::{
+    config::git::DEFAULT_EXIT_CODE,
     get_git_common_dir, is_git_repository, remote::get_default_branch_local, utils::*,
     WorktreeConfig,
 };
@@ -72,7 +73,7 @@ fn run_checkout_branch_from_default(args: &Args) -> Result<()> {
     if !status.success() {
         anyhow::bail!(
             "git-worktree-checkout-branch failed with exit code: {}",
-            status.code().unwrap_or(-1)
+            status.code().unwrap_or(DEFAULT_EXIT_CODE)
         );
     }
 

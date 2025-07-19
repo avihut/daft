@@ -70,20 +70,11 @@ fn run_checkout(args: &Args) -> Result<()> {
         "--> Fetching specific branch '{}' from remote '{}'...",
         args.branch_name, config.remote_name
     );
-    if let Ok(output) = std::process::Command::new("git")
-        .args([
-            "fetch",
-            &config.remote_name,
-            &format!("{}:{}", args.branch_name, args.branch_name),
-        ])
-        .output()
-    {
-        if !output.status.success() {
-            println!(
-                "Warning: Failed to fetch specific branch: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+    if let Err(e) = git.fetch_refspec(
+        &config.remote_name,
+        &format!("{}:{}", args.branch_name, args.branch_name),
+    ) {
+        println!("Warning: Failed to fetch specific branch: {}", e);
     }
 
     // Check if remote branch exists and use it if local branch is behind

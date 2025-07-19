@@ -114,22 +114,12 @@ impl GitCommand {
 
         cmd.arg(path).arg("-b").arg(new_branch).arg(base_branch);
 
-        println!(
-            "--> Executing: git worktree add {} -b {} {}",
-            path.display(),
-            new_branch,
-            base_branch
-        );
-
         let output = cmd
             .output()
             .context("Failed to execute git worktree add command")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            println!("--> Git worktree add stdout: {stdout}");
-            println!("--> Git worktree add stderr: {stderr}");
             anyhow::bail!("Git worktree add failed: {}", stderr);
         }
 
@@ -330,6 +320,44 @@ impl GitCommand {
         }
 
         Ok(())
+    }
+
+    pub fn fetch_refspec(&self, remote: &str, refspec: &str) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.args(["fetch", remote, refspec]);
+
+        if self.quiet {
+            cmd.arg("--quiet");
+        }
+
+        let output = cmd
+            .output()
+            .context("Failed to execute git fetch command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git fetch with refspec failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
+    pub fn rev_list_count(&self, range: &str) -> Result<u32> {
+        let output = Command::new("git")
+            .args(["rev-list", "--count", range])
+            .output()
+            .context("Failed to execute git rev-list command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git rev-list failed: {}", stderr);
+        }
+
+        let stdout = String::from_utf8(output.stdout)
+            .context("Failed to parse git rev-list output")?;
+        
+        stdout.trim().parse::<u32>()
+            .context("Failed to parse commit count as number")
     }
 }
 
