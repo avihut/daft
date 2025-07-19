@@ -74,8 +74,7 @@ fn run_prune() -> Result<()> {
         for wt_line in worktree_output.lines() {
             if wt_line.starts_with("worktree ") {
                 current_path = wt_line.strip_prefix("worktree ").unwrap_or("").to_string();
-            } else if !current_path.is_empty() && wt_line == format!("branch {target_branch_ref}")
-            {
+            } else if !current_path.is_empty() && wt_line == format!("branch {target_branch_ref}") {
                 has_worktree = true;
                 break;
             } else if wt_line.is_empty() {
@@ -86,10 +85,11 @@ fn run_prune() -> Result<()> {
         if has_worktree {
             // Check if this branch exists on remote
             if !remote_branch_exists(&config.remote_name, branch_name)?
-                && !gone_branches.contains(&branch_name.to_string()) {
-                    gone_branches.push(branch_name.to_string());
-                    println!("Found branch with worktree not on remote: {branch_name}");
-                }
+                && !gone_branches.contains(&branch_name.to_string())
+            {
+                gone_branches.push(branch_name.to_string());
+                println!("Found branch with worktree not on remote: {branch_name}");
+            }
         }
     }
 
@@ -131,9 +131,7 @@ fn run_prune() -> Result<()> {
         }
 
         if !worktree_path.is_empty() {
-            println!(
-                "Found associated worktree for {branch_name} at: {worktree_path}"
-            );
+            println!("Found associated worktree for {branch_name} at: {worktree_path}");
 
             let wt_path = PathBuf::from(&worktree_path);
             if wt_path.exists() {
@@ -153,9 +151,7 @@ fn run_prune() -> Result<()> {
                     eprintln!("Error: Failed to remove potentially orphaned worktree record {worktree_path}: {e}. Skipping deletion of branch {branch_name}.");
                     continue;
                 }
-                println!(
-                    "Worktree record for {worktree_path} removed successfully."
-                );
+                println!("Worktree record for {worktree_path} removed successfully.");
                 worktrees_removed += 1;
             }
         } else {

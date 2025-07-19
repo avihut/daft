@@ -138,9 +138,9 @@ fn run_clone(args: &Args) -> Result<()> {
         args.quiet,
     );
     change_directory(&parent_dir)?;
-    
+
     let config = WorktreeConfig::default();
-    
+
     // Set up remote HEAD reference for better default branch detection
     if let Err(e) = git.remote_set_head_auto(&config.remote_name) {
         quiet_echo(
@@ -151,7 +151,6 @@ fn run_clone(args: &Args) -> Result<()> {
     }
 
     if !args.no_checkout {
-
         if args.all_branches {
             create_all_worktrees(&git, &config, &default_branch, args.quiet)?;
         } else {
@@ -185,9 +184,7 @@ fn run_clone(args: &Args) -> Result<()> {
         quiet_echo("---", args.quiet);
         quiet_echo("Success!", args.quiet);
         quiet_echo(
-            &format!(
-                "Repository '{repo_name}' cloned successfully (no-checkout mode)."
-            ),
+            &format!("Repository '{repo_name}' cloned successfully (no-checkout mode)."),
             args.quiet,
         );
         quiet_echo(
@@ -209,9 +206,7 @@ fn run_clone(args: &Args) -> Result<()> {
 
 fn create_single_worktree(git: &GitCommand, default_branch: &str, quiet: bool) -> Result<()> {
     quiet_echo(
-        &format!(
-            "Creating initial worktree for branch '{default_branch}'..."
-        ),
+        &format!("Creating initial worktree for branch '{default_branch}'..."),
         quiet,
     );
     git.worktree_add(&PathBuf::from(default_branch), default_branch)

@@ -64,57 +64,90 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
     let git = GitCommand::new(config.quiet);
 
     // Fetch latest changes from remote to ensure we have the latest version of the base branch
-    println!("--> Fetching latest changes from remote '{}'...", config.remote_name);
+    println!(
+        "--> Fetching latest changes from remote '{}'...",
+        config.remote_name
+    );
     if let Err(e) = git.fetch(&config.remote_name, false) {
-        println!("Warning: Failed to fetch from remote '{}': {}", config.remote_name, e);
+        println!(
+            "Warning: Failed to fetch from remote '{}': {}",
+            config.remote_name, e
+        );
     }
-    
+
     // Ensure remote tracking branches are created (needed for bare repositories)
     println!("--> Setting up remote tracking branches...");
     if let Ok(output) = std::process::Command::new("git")
-        .args(["fetch", &config.remote_name, &format!("+refs/heads/*:refs/remotes/{}/*", config.remote_name)])
-        .output() {
+        .args([
+            "fetch",
+            &config.remote_name,
+            &format!("+refs/heads/*:refs/remotes/{}/*", config.remote_name),
+        ])
+        .output()
+    {
         if !output.status.success() {
-            println!("Warning: Failed to set up remote tracking branches: {}", String::from_utf8_lossy(&output.stderr));
+            println!(
+                "Warning: Failed to set up remote tracking branches: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
     }
 
     // Check if remote branch exists and if local branch is behind
     let local_branch_ref = format!("refs/heads/{base_branch}");
     let remote_branch_ref = format!("refs/remotes/{}/{}", config.remote_name, base_branch);
-    
-    let checkout_base = if git.show_ref_exists(&remote_branch_ref)? && git.show_ref_exists(&local_branch_ref)? {
-        // Both local and remote branches exist
-        // Check if local branch has commits ahead of remote (indicating local development)
-        let local_ahead = std::process::Command::new("git")
-            .args(["rev-list", "--count", &format!("{}..{}", &format!("{}/{}", config.remote_name, base_branch), &base_branch)])
-            .output()
-            .map(|output| {
-                if output.status.success() {
-                    String::from_utf8_lossy(&output.stdout).trim().parse::<u32>().unwrap_or(0) > 0
-                } else {
-                    false
-                }
-            })
-            .unwrap_or(false);
-        
-        if local_ahead {
-            println!("--> Using local branch '{base_branch}' as base (has local commits)");
+
+    let checkout_base =
+        if git.show_ref_exists(&remote_branch_ref)? && git.show_ref_exists(&local_branch_ref)? {
+            // Both local and remote branches exist
+            // Check if local branch has commits ahead of remote (indicating local development)
+            let local_ahead = std::process::Command::new("git")
+                .args([
+                    "rev-list",
+                    "--count",
+                    &format!(
+                        "{}..{}",
+                        &format!("{}/{}", config.remote_name, base_branch),
+                        &base_branch
+                    ),
+                ])
+                .output()
+                .map(|output| {
+                    if output.status.success() {
+                        String::from_utf8_lossy(&output.stdout)
+                            .trim()
+                            .parse::<u32>()
+                            .unwrap_or(0)
+                            > 0
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(false);
+
+            if local_ahead {
+                println!("--> Using local branch '{base_branch}' as base (has local commits)");
+                base_branch.clone()
+            } else {
+                println!(
+                    "--> Using remote branch '{}/{}' as base (has latest changes)",
+                    config.remote_name, base_branch
+                );
+                format!("{}/{}", config.remote_name, base_branch)
+            }
+        } else if git.show_ref_exists(&local_branch_ref)? {
+            println!("--> Using local branch '{base_branch}' as base");
             base_branch.clone()
-        } else {
-            println!("--> Using remote branch '{}/{}' as base (has latest changes)", config.remote_name, base_branch);
+        } else if git.show_ref_exists(&remote_branch_ref)? {
+            println!(
+                "--> Local branch '{}' not found, using remote branch '{}/{}'",
+                base_branch, config.remote_name, base_branch
+            );
             format!("{}/{}", config.remote_name, base_branch)
-        }
-    } else if git.show_ref_exists(&local_branch_ref)? {
-        println!("--> Using local branch '{base_branch}' as base");
-        base_branch.clone()
-    } else if git.show_ref_exists(&remote_branch_ref)? {
-        println!("--> Local branch '{}' not found, using remote branch '{}/{}'", base_branch, config.remote_name, base_branch);
-        format!("{}/{}", config.remote_name, base_branch)
-    } else {
-        println!("--> Neither local nor remote branch found for '{base_branch}', using as-is");
-        base_branch.clone()
-    };
+        } else {
+            println!("--> Neither local nor remote branch found for '{base_branch}', using as-is");
+            base_branch.clone()
+        };
 
     println!("Attempting to create Git worktree:");
     println!("  Path:         {}", worktree_path.display());
@@ -123,7 +156,8 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
     println!("  Project Root: {}", project_root.display());
     println!("---");
 
-    if let Err(e) = git.worktree_add_new_branch(&worktree_path, &args.new_branch_name, &checkout_base)
+    if let Err(e) =
+        git.worktree_add_new_branch(&worktree_path, &args.new_branch_name, &checkout_base)
     {
         anyhow::bail!("Failed to create git worktree: {}", e);
     }

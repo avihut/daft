@@ -63,8 +63,8 @@ pub fn get_default_branch_local(git_common_dir: &Path, remote_name: &str) -> Res
         .context("Failed to query remote HEAD ref")?;
 
     if output.status.success() {
-        let output_str = String::from_utf8(output.stdout)
-            .context("Failed to parse ls-remote output")?;
+        let output_str =
+            String::from_utf8(output.stdout).context("Failed to parse ls-remote output")?;
 
         for line in output_str.lines() {
             if line.starts_with("ref:") {

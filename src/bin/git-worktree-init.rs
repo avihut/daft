@@ -124,7 +124,8 @@ fn run_init(args: &Args) -> Result<()> {
             ),
             args.quiet,
         );
-        if let Err(e) = git.worktree_add_orphan(&PathBuf::from(&args.initial_branch), &args.initial_branch)
+        if let Err(e) =
+            git.worktree_add_orphan(&PathBuf::from(&args.initial_branch), &args.initial_branch)
         {
             change_directory(parent_dir.parent().unwrap_or(&PathBuf::from("."))).ok();
             remove_directory(&parent_dir).ok();

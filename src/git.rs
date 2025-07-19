@@ -114,7 +114,12 @@ impl GitCommand {
 
         cmd.arg(path).arg("-b").arg(new_branch).arg(base_branch);
 
-        println!("--> Executing: git worktree add {} -b {} {}", path.display(), new_branch, base_branch);
+        println!(
+            "--> Executing: git worktree add {} -b {} {}",
+            path.display(),
+            new_branch,
+            base_branch
+        );
 
         let output = cmd
             .output()
