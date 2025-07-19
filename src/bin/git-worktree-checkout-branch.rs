@@ -80,7 +80,7 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
     }
 
     // Check if remote branch exists and if local branch is behind
-    let local_branch_ref = format!("refs/heads/{}", base_branch);
+    let local_branch_ref = format!("refs/heads/{base_branch}");
     let remote_branch_ref = format!("refs/remotes/{}/{}", config.remote_name, base_branch);
     
     let checkout_base = if git.show_ref_exists(&remote_branch_ref)? && git.show_ref_exists(&local_branch_ref)? {
@@ -99,20 +99,20 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
             .unwrap_or(false);
         
         if local_ahead {
-            println!("--> Using local branch '{}' as base (has local commits)", base_branch);
+            println!("--> Using local branch '{base_branch}' as base (has local commits)");
             base_branch.clone()
         } else {
             println!("--> Using remote branch '{}/{}' as base (has latest changes)", config.remote_name, base_branch);
             format!("{}/{}", config.remote_name, base_branch)
         }
     } else if git.show_ref_exists(&local_branch_ref)? {
-        println!("--> Using local branch '{}' as base", base_branch);
+        println!("--> Using local branch '{base_branch}' as base");
         base_branch.clone()
     } else if git.show_ref_exists(&remote_branch_ref)? {
         println!("--> Local branch '{}' not found, using remote branch '{}/{}'", base_branch, config.remote_name, base_branch);
         format!("{}/{}", config.remote_name, base_branch)
     } else {
-        println!("--> Neither local nor remote branch found for '{}', using as-is", base_branch);
+        println!("--> Neither local nor remote branch found for '{base_branch}', using as-is");
         base_branch.clone()
     };
 

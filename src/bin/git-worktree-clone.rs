@@ -144,7 +144,7 @@ fn run_clone(args: &Args) -> Result<()> {
     // Set up remote HEAD reference for better default branch detection
     if let Err(e) = git.remote_set_head_auto(&config.remote_name) {
         quiet_echo(
-            &format!("--> Warning: Could not set remote HEAD: {}", e),
+            &format!("--> Warning: Could not set remote HEAD: {e}"),
             args.quiet,
         );
         // Continue execution - this is not critical
