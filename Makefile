@@ -131,7 +131,7 @@ clean-rust:
 
 test-unit:
 	@echo "Running Rust unit tests..."
-	@cargo test
+	@cargo test --lib
 
 # Individual test runner with verbose output
 .PHONY: test-verbose test-legacy-verbose test-integration-verbose
