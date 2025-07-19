@@ -1,6 +1,8 @@
 # Git Worktree Workflow
 
-A comprehensive toolkit of shell scripts that streamlines development workflows using Git worktrees. This project enables a "one worktree per branch" approach, eliminating the friction of traditional Git branch switching.
+A comprehensive toolkit that streamlines development workflows using Git worktrees. This project enables a "one worktree per branch" approach, eliminating the friction of traditional Git branch switching.
+
+**🦀 Now Available in Rust**: This project has been migrated to Rust with enhanced features, better error handling, and improved performance, while maintaining full compatibility with the original shell scripts.
 
 ## 🚀 Key Features
 
@@ -13,22 +15,45 @@ A comprehensive toolkit of shell scripts that streamlines development workflows 
 
 ## 📦 Installation
 
+### Option 1: Rust Binaries (Recommended)
+
 1. Clone this repository:
 ```bash
 git clone https://github.com/user/git-worktree-workflow.git
 cd git-worktree-workflow
 ```
 
-2. Add the scripts to your PATH:
+2. Build the Rust binaries:
 ```bash
-# Add to your ~/.bashrc, ~/.zshrc, or similar
-export PATH="/path/to/git-worktree-workflow/scripts:$PATH"
-
-# Or create symlinks to a directory already in your PATH
-ln -s /path/to/git-worktree-workflow/scripts/* /usr/local/bin/
+cargo build --release
 ```
 
-3. Verify installation:
+3. Add the release binaries to your PATH:
+```bash
+# Add to your ~/.bashrc, ~/.zshrc, or similar
+export PATH="/path/to/git-worktree-workflow/target/release:$PATH"
+
+# Or create symlinks to a directory already in your PATH
+ln -s /path/to/git-worktree-workflow/target/release/git-worktree-* /usr/local/bin/
+```
+
+### Option 2: Shell Scripts (Legacy - Deprecated)
+
+⚠️ **DEPRECATED**: The shell scripts are deprecated. Please use the Rust implementation.
+
+1. Clone this repository (same as above)
+
+2. Add the legacy scripts to your PATH:
+```bash
+# Add to your ~/.bashrc, ~/.zshrc, or similar
+export PATH="/path/to/git-worktree-workflow/src/legacy:$PATH"
+
+# Or create symlinks to a directory already in your PATH
+ln -s /path/to/git-worktree-workflow/src/legacy/* /usr/local/bin/
+```
+
+### Verify Installation
+
 ```bash
 git worktree-clone --help
 ```
@@ -163,47 +188,106 @@ git worktree-prune
 
 ## 🧪 Testing
 
-This project includes a comprehensive test suite:
+This project includes comprehensive test coverage with dual test suites for both legacy shell scripts and modern Rust implementations:
 
-```bash
-# Run all tests
-make test
-
-# Run specific test suites
-make test-simple
-make test-clone
-make test-checkout
-make test-init
-make test-prune
-
-# Run individual test files
-bash tests/test_clone.sh
+### Test Structure
+```
+tests/
+├── legacy/              # Legacy shell script tests (37+ scenarios)
+├── integration/         # Rust integration tests (80+ scenarios)
+└── README.md           # Detailed testing documentation
 ```
 
-The test framework includes:
-- **37+ test scenarios** covering all commands and edge cases
+### Quick Testing
+```bash
+# Run all tests (legacy + integration)
+make test
+
+# Run only legacy shell script tests
+make test-legacy
+
+# Run only Rust integration tests
+make test-integration
+
+# Run specific test suites
+make test-legacy-init
+make test-integration-clone
+```
+
+### Rust Unit Tests
+```bash
+# Run Rust unit tests
+cargo test
+
+# Check code formatting and linting
+cargo fmt --check
+cargo clippy -- -D warnings
+```
+
+### Advanced Testing
+```bash
+# Run with verbose output
+make test-verbose
+
+# Run performance tests
+make test-perf
+
+# Run tests with different shells
+make test-bash
+make test-zsh
+
+# Run individual test files
+cd tests/legacy && ./test_clone.sh
+cd tests/integration && ./test_init.sh
+```
+
+### Test Coverage
+The comprehensive test framework includes:
+- **120+ test scenarios** across both implementations
+- **Dual validation**: Legacy behavior + enhanced Rust features
 - **Isolated test environments** with temporary directories
 - **Mock remote repositories** for realistic testing
-- **Comprehensive assertions** for directory structure and Git state
-- **Cross-platform compatibility** testing
-- **Error handling** validation
+- **Security testing**: Path traversal prevention
+- **Performance validation**: Timing and resource usage
+- **Cross-platform compatibility** (Ubuntu, macOS)
+- **Error handling** and edge case validation
+- **CI/CD integration** with GitHub Actions
+
+See `tests/README.md` for detailed testing documentation.
 
 ## 🏗️ Architecture
 
 ### Directory Structure
 ```
 git-worktree-workflow/
-├── scripts/                 # Core shell scripts (1,194 lines)
+├── src/                     # Rust source code
+│   ├── bin/                 # Binary implementations
+│   │   ├── git-worktree-clone.rs
+│   │   ├── git-worktree-checkout.rs
+│   │   ├── git-worktree-checkout-branch.rs
+│   │   ├── git-worktree-checkout-branch-from-default.rs
+│   │   ├── git-worktree-init.rs
+│   │   └── git-worktree-prune.rs
+│   ├── lib.rs               # Shared library code
+│   ├── git.rs               # Git operations
+│   ├── remote.rs            # Remote repository handling
+│   ├── direnv.rs            # Direnv integration
+│   └── utils.rs             # Utility functions
+├── src/legacy/              # Legacy shell scripts (1,194 lines) - DEPRECATED
 │   ├── git-worktree-clone              # 380 lines
 │   ├── git-worktree-checkout           # 153 lines
 │   ├── git-worktree-checkout-branch    # 165 lines
 │   ├── git-worktree-checkout-branch-from-default  # 90 lines
 │   ├── git-worktree-init               # 256 lines
-│   └── git-worktree-prune              # 150 lines
+│   ├── git-worktree-prune              # 150 lines
+│   └── README.md                       # Deprecation notice
 ├── tests/                   # Comprehensive test suite
 │   ├── test_framework.sh    # Test infrastructure
 │   ├── test_*.sh           # Individual test files
 │   └── Makefile            # Test automation
+├── target/                  # Rust build artifacts (gitignored)
+├── Cargo.toml              # Rust project configuration
+├── Cargo.lock              # Rust dependency lock file
 ├── CLAUDE.md               # Project documentation
 └── README.md              # This file
 ```
@@ -218,36 +302,63 @@ git-worktree-workflow/
 
 ## 🔧 Requirements
 
+### For Rust Binaries
+- **Git**: Version 2.5+ (for worktree support)
+- **Rust**: Version 1.70+ (for building from source)
+- **direnv** (optional): For automatic environment setup
+
+### For Shell Scripts (Legacy)
 - **Git**: Version 2.5+ (for worktree support)
 - **Bash**: Version 4.0+ 
 - **Standard Unix tools**: `awk`, `basename`, `dirname`, `sed`, `cut`
 - **direnv** (optional): For automatic environment setup
 
-## 🚧 Future Development
+## 🦀 Rust Implementation Benefits
 
-This project is considering migration to Rust for enhanced features:
+The Rust implementation provides significant advantages over the shell scripts:
 
-### Planned Enhancements
-- **Advanced CLI**: Better argument parsing with `clap`
+### Current Features
+- **Type safety**: Compile-time error checking prevents runtime issues
+- **Better error handling**: Comprehensive error messages and graceful failures
+- **Advanced CLI**: Professional argument parsing with `clap`
+- **Single binary**: Easy distribution and installation
+- **Cross-platform**: Better Windows support and compatibility
+- **Performance**: Faster startup and execution times
+
+### Future Enhancements
 - **Shell completions**: Dynamic completion generation
 - **Interactive features**: Branch selection menus
 - **Hook system**: Custom workflow automation
-- **Performance optimizations**: Faster operations on large repositories
-
-### Migration Benefits
-- Type safety and better error handling
-- Single binary distribution
-- Professional CLI experience
-- Better cross-platform support
-- Enhanced testing capabilities
+- **Configuration files**: User-defined settings and preferences
+- **Enhanced testing**: Better unit test coverage and integration testing
 
 ## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch: `git worktree-checkout-branch feature/my-feature`
+2. Create a feature branch: `git-worktree-checkout-branch feature/my-feature`
 3. Make your changes and add tests
-4. Run the test suite: `make test`
+4. Run the test suite: `cargo test && make test`
 5. Submit a pull request
+
+### Development Guidelines
+
+- **Rust Implementation**: Focus development on the Rust codebase (`src/`)
+- **Legacy Scripts**: The shell scripts (`src/legacy/`) are deprecated and in maintenance mode
+- **Testing**: Add both Rust unit tests and shell integration tests
+- **Documentation**: Update both README.md and inline documentation
+
+### Building and Testing
+
+```bash
+# Build Rust binaries
+cargo build --release
+
+# Run all tests
+cargo test              # Rust unit tests
+make test              # Shell integration tests
+cargo clippy           # Linting
+cargo fmt --check      # Formatting
+```
 
 ## 📝 License
 

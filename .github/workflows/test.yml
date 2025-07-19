@@ -1,4 +1,4 @@
-name: Test Shell Scripts
+name: Test Git Worktree Workflow
 
 on:
   push:
@@ -7,9 +7,47 @@ on:
     branches: [ main, master, develop ]
 
 jobs:
-  test:
+  # Fast feedback: unit tests, linting, formatting on Ubuntu only
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+        components: rustfmt, clippy
+    
+    - name: Cache Rust dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ubuntu-latest-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ubuntu-latest-cargo-
+    
+    - name: Build Rust binaries
+      run: cargo build --release
+    
+    - name: Run Rust unit tests
+      run: cargo test --lib
+    
+    - name: Run Rust clippy
+      run: cargo clippy -- -D warnings
+    
+    - name: Check Rust formatting
+      run: cargo fmt -- --check
+
+  # Cross-platform integration tests (where platform differences matter)
+  integration-tests:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         
@@ -21,47 +59,38 @@ jobs:
         git config --global user.name "Test User"
         git config --global user.email "test@example.com"
     
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+    
+    - name: Cache Rust dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ matrix.os }}-cargo-
+    
+    - name: Build Rust binaries
+      run: cargo build --release
+    
     - name: Make test scripts executable
-      run: chmod +x tests/*.sh scripts/*
+      run: chmod +x tests/legacy/*.sh tests/integration/*.sh src/legacy/*
     
-    - name: Add scripts to PATH
+    - name: Add scripts to PATH (shell version)
       run: |
-        echo "${{ github.workspace }}/scripts" >> $GITHUB_PATH
-        echo "PATH=${{ github.workspace }}/scripts:$PATH" >> $GITHUB_ENV
+        echo "${{ github.workspace }}/src/legacy" >> $GITHUB_PATH
+        echo "PATH=${{ github.workspace }}/src/legacy:$PATH" >> $GITHUB_ENV
     
-    - name: Run simple validation tests
-      run: make test-simple
-    
-    - name: Run clone tests  
-      run: make test-clone
-    
-    - name: Run init tests
-      run: make test-init
-    
-    - name: Run integration tests
-      run: make test-all
-      
-    # Skip the more complex tests for now until we fix the setup issues
-    # - name: Run checkout tests
-    #   run: make test-checkout
-    # 
-    # - name: Run checkout-branch tests
-    #   run: make test-checkout-branch
-    # 
-    # - name: Run checkout-branch-from-default tests
-    #   run: make test-checkout-branch-from-default
-    # 
-    # - name: Run prune tests
-    #   run: make test-prune
-    
-    - name: Test individual script help
+    - name: Add Rust binaries to PATH
       run: |
-        git worktree-clone --help || echo "Help command test"
-        git worktree-checkout --help || echo "Help command test"
-        git worktree-checkout-branch --help || echo "Help command test"
-        git worktree-checkout-branch-from-default --help || echo "Help command test"
-        git worktree-init --help || echo "Help command test"
-        git worktree-prune --help || echo "Help command test"
+        echo "${{ github.workspace }}/target/release" >> $GITHUB_PATH
+        echo "PATH=${{ github.workspace }}/target/release:$PATH" >> $GITHUB_ENV
     
     - name: Test script dependencies
       run: |
@@ -70,6 +99,30 @@ jobs:
         which awk || { echo "AWK not found"; exit 1; }
         which basename || { echo "basename not found"; exit 1; }
         echo "All dependencies found"
+    
+    - name: Run legacy tests
+      run: make test-legacy
+    
+    - name: Run Rust integration tests
+      run: make test-integration
+    
+    - name: Test help commands
+      run: |
+        # Test legacy script help
+        git worktree-clone --help || echo "Legacy help command test"
+        git worktree-checkout --help || echo "Legacy help command test"
+        git worktree-checkout-branch --help || echo "Legacy help command test"
+        git worktree-checkout-branch-from-default --help || echo "Legacy help command test"
+        git worktree-init --help || echo "Legacy help command test"
+        git worktree-prune --help || echo "Legacy help command test"
+        
+        # Test Rust binary help
+        ./target/release/git-worktree-clone --help
+        ./target/release/git-worktree-checkout --help
+        ./target/release/git-worktree-checkout-branch --help
+        ./target/release/git-worktree-checkout-branch-from-default --help
+        ./target/release/git-worktree-init --help
+        ./target/release/git-worktree-prune --help
     
     - name: Upload test results
       uses: actions/upload-artifact@v4

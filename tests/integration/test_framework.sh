@@ -1,16 +1,15 @@
 #!/bin/bash
 
-# Git Worktree Workflow Test Framework
-# Comprehensive testing suite for shell commands to ensure migration accuracy
+# Git Worktree Workflow Integration Test Framework for Rust Binaries
+# Tests the compiled Rust binaries as they would run in the real world
 
 set -eo pipefail
-# Note: Removed -u flag to be more tolerant of unset variables in CI environments
 
 # --- Configuration ---
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$TEST_DIR")"
-SCRIPTS_DIR="$PROJECT_ROOT/src/legacy"
-TEMP_BASE_DIR="/tmp/git-worktree-tests"
+PROJECT_ROOT="$(dirname "$(dirname "$TEST_DIR")")"
+RUST_BINARY_DIR="$PROJECT_ROOT/target/release"
+TEMP_BASE_DIR="/tmp/git-worktree-integration-tests"
 REMOTE_REPO_DIR="$TEMP_BASE_DIR/remote-repos"
 WORK_DIR="$TEMP_BASE_DIR/work"
 
@@ -44,6 +43,33 @@ log_warning() {
     echo -e "${YELLOW}[!]${NC} $*"
 }
 
+# Build Rust binaries if they don't exist or are outdated
+ensure_rust_binaries() {
+    local cargo_toml="$PROJECT_ROOT/Cargo.toml"
+    local binary_names=("git-worktree-clone" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-checkout-branch-from-default" "git-worktree-init" "git-worktree-prune")
+    local need_build=false
+    
+    # Check if any binary is missing or outdated
+    for binary in "${binary_names[@]}"; do
+        local binary_path="$RUST_BINARY_DIR/$binary"
+        if [[ ! -f "$binary_path" ]] || [[ "$cargo_toml" -nt "$binary_path" ]]; then
+            need_build=true
+            break
+        fi
+    done
+    
+    if [[ "$need_build" == "true" ]]; then
+        log "Building Rust binaries..."
+        (cd "$PROJECT_ROOT" && cargo build --release) || {
+            log_error "Failed to build Rust binaries"
+            return 1
+        }
+        log_success "Rust binaries built successfully"
+    else
+        log "Rust binaries are up to date"
+    fi
+}
+
 # Clean up function
 cleanup() {
     if [[ -d "$TEMP_BASE_DIR" ]]; then
@@ -54,7 +80,10 @@ cleanup() {
 
 # Setup function
 setup() {
-    log "Setting up test environment..."
+    log "Setting up Rust integration test environment..."
+    
+    # Ensure Rust binaries are built
+    ensure_rust_binaries || exit 1
     
     # Clean up any previous test runs
     cleanup
@@ -63,14 +92,23 @@ setup() {
     mkdir -p "$REMOTE_REPO_DIR"
     mkdir -p "$WORK_DIR"
     
-    # Add scripts to PATH for testing
-    export PATH="$SCRIPTS_DIR:$PATH"
+    # Add Rust binaries to PATH for testing
+    export PATH="$RUST_BINARY_DIR:$PATH"
     
     # Ensure git is configured
     git config --global user.name "Test User" 2>/dev/null || true
     git config --global user.email "test@example.com" 2>/dev/null || true
     
-    log_success "Test environment setup complete"
+    # Verify all binaries are available
+    local binary_names=("git-worktree-clone" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-checkout-branch-from-default" "git-worktree-init" "git-worktree-prune")
+    for binary in "${binary_names[@]}"; do
+        if ! command -v "$binary" >/dev/null 2>&1; then
+            log_error "Binary $binary not found in PATH"
+            return 1
+        fi
+    done
+    
+    log_success "Rust integration test environment setup complete"
 }
 
 # Test assertion functions
@@ -118,11 +156,21 @@ assert_git_worktree() {
     local branch="$2"
     local msg="${3:-Should be a git worktree for branch '$branch': $dir}"
     
+    # Debug: show current directory and target directory
+    if [[ ! -d "$dir" ]]; then
+        log_error "$msg (FAILED - directory '$dir' does not exist from '$(pwd)')"
+        return 1
+    fi
+    
     if (cd "$dir" && git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [[ "$(git branch --show-current)" == "$branch" ]]); then
         log_success "$msg"
         return 0
     else
-        log_error "$msg (FAILED - not a worktree or wrong branch)"
+        local current_branch=""
+        if cd "$dir" >/dev/null 2>&1; then
+            current_branch="$(git branch --show-current 2>/dev/null || echo 'unknown')"
+        fi
+        log_error "$msg (FAILED - not a worktree or wrong branch, current branch: '$current_branch')"
         return 1
     fi
 }
@@ -182,6 +230,34 @@ assert_command_failure() {
     fi
 }
 
+# Test command help functionality
+assert_command_help() {
+    local cmd="$1"
+    local msg="${2:-Command help should work: $cmd --help}"
+    
+    if "$cmd" --help >/dev/null 2>&1; then
+        log_success "$msg"
+        return 0
+    else
+        log_error "$msg (FAILED - help command failed)"
+        return 1
+    fi
+}
+
+# Test command version if available
+assert_command_version() {
+    local cmd="$1"
+    local msg="${2:-Command version should work: $cmd --version}"
+    
+    if "$cmd" --version >/dev/null 2>&1; then
+        log_success "$msg"
+        return 0
+    else
+        log_warning "$msg (version flag not available)"
+        return 0  # Not an error, just not implemented
+    fi
+}
+
 # Test runner function
 run_test() {
     local test_name="$1"
@@ -189,7 +265,7 @@ run_test() {
     
     TESTS_RUN=$((TESTS_RUN + 1))
     
-    log "Running test: $test_name"
+    log "Running integration test: $test_name"
     
     # Create isolated test environment
     local test_work_dir="$WORK_DIR/test_$(date +%s%N)"
@@ -197,11 +273,11 @@ run_test() {
     
     # Run test in subshell to isolate environment
     if (cd "$test_work_dir" && "$test_function" 2>&1); then
-        log_success "Test passed: $test_name"
+        log_success "Integration test passed: $test_name"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
         local exit_code=$?
-        log_error "Test failed: $test_name (exit code: $exit_code)"
+        log_error "Integration test failed: $test_name (exit code: $exit_code)"
         TESTS_FAILED=$((TESTS_FAILED + 1))
         FAILED_TESTS+=("$test_name")
     fi
@@ -258,9 +334,9 @@ create_test_remote() {
 # Test results summary
 print_summary() {
     echo
-    echo "=================================================="
-    echo "Test Results Summary"
-    echo "=================================================="
+    echo "========================================================="
+    echo "Rust Integration Test Results Summary"
+    echo "========================================================="
     echo "Total tests run: $TESTS_RUN"
     echo "Passed: $TESTS_PASSED"
     echo "Failed: $TESTS_FAILED"
@@ -273,13 +349,13 @@ print_summary() {
         done
     fi
     
-    echo "=================================================="
+    echo "========================================================="
     
     if [[ $TESTS_FAILED -eq 0 ]]; then
-        log_success "All tests passed!"
+        log_success "All integration tests passed!"
         return 0
     else
-        log_error "Some tests failed!"
+        log_error "Some integration tests failed!"
         return 1
     fi
 }

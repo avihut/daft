@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# ⚠️  DEPRECATED: This shell script is deprecated. Please use the Rust implementation instead.
+# Migration: `cargo build --release && ./target/release/git-worktree-checkout-branch-from-default --help`
+# See: src/legacy/README.md for migration guide
+
 # Creates a git worktree and branch based on the REMOTE'S DEFAULT branch
 # (e.g., main, master). It determines the default branch and then calls 'git-worktree-checkout-branch'.
 #

@@ -185,7 +185,171 @@ This workflow eliminates the traditional friction of Git branch switching, stash
 
 ## Testing
 
-This repository contains only shell scripts with no traditional build, test, or lint commands. Testing should be done manually by executing the scripts in various Git repository scenarios.
+The project has a comprehensive three-tier testing architecture that covers unit tests, legacy shell script tests, and Rust integration tests. All tests are fully integrated into GitHub Actions CI/CD workflows.
+
+### Testing Architecture
+
+#### 1. **Unit Tests** (`make test-unit`)
+- Rust unit tests for library functions and utilities
+- 16 tests covering:
+  - Git command wrapper functionality
+  - Directory and path utility functions
+  - Branch/repository name validation
+  - Direnv integration logic
+  - Remote branch detection
+- Run via `cargo test`
+
+#### 2. **Legacy Tests** (`make test-legacy`)
+- Tests for original shell script implementations in `tests/legacy/`
+- Comprehensive test suites for each command:
+  - `test_clone.sh`, `test_init.sh`, `test_checkout.sh`, etc.
+- Uses `test_framework.sh` for consistent test infrastructure
+- Ensures backward compatibility during Rust migration
+
+#### 3. **Integration Tests** (`make test-integration`)
+- End-to-end tests for Rust binaries in `tests/integration/`
+- Mirrors legacy test structure but tests Rust implementations
+- Key test files:
+  - `test_checkout_direnv` - Tests direnv integration
+  - `test_checkout_branch_workflow` - Tests development workflow scenarios
+  - `test_checkout_branch_from_default_remote_updates` - Tests remote branch updates
+  - `test_prune_multiple_deletions` - Tests cleanup operations
+  - `test_integration_full_workflow` - Tests complete workflow scenarios
+- Includes performance, security, and cross-platform compatibility tests
+
+### Test Execution
+
+**Run all tests:**
+```bash
+make test        # or make test-all
+```
+
+**Run specific test suites:**
+```bash
+make test-unit                    # Rust unit tests only
+make test-legacy                  # Legacy shell script tests
+make test-integration             # Rust integration tests
+```
+
+**Run individual integration test suites:**
+```bash
+make test-integration-clone
+make test-integration-checkout
+make test-integration-checkout-branch
+make test-integration-checkout-branch-from-default
+make test-integration-init
+make test-integration-prune
+```
+
+### GitHub Actions Integration
+
+The testing architecture is fully integrated into GitHub Actions via `.github/workflows/test.yml`:
+
+1. **Multi-platform testing**: Runs on both `ubuntu-latest` and `macos-latest`
+2. **Complete test coverage**:
+   - Builds Rust binaries (`cargo build --release`)
+   - Runs Rust unit tests (`cargo test`)
+   - Runs Rust linting (`cargo clippy -- -D warnings`)
+   - Checks code formatting (`cargo fmt -- --check`)
+   - Executes legacy tests (`make test-legacy`)
+   - Executes integration tests (`make test-integration`)
+3. **Path configuration**: Automatically adds both legacy scripts and Rust binaries to PATH
+4. **Dependency validation**: Verifies required tools (git, awk, basename) are available
+5. **Test result artifacts**: Uploads test results for debugging failures
+
+### Key Implementation Details
+
+#### Remote Tracking Branch Handling
+The Rust implementation includes sophisticated logic for handling remote tracking branches in bare repository setups:
+- Ensures remote tracking branches are created with `git fetch origin +refs/heads/*:refs/remotes/origin/*`
+- Intelligently chooses between local and remote branches based on commit history
+- Prefers local branches when they have unpushed commits (development workflow)
+- Prefers remote branches when they're ahead or equal (for getting latest changes)
+
+#### Test Framework Features
+- Isolated test environments using temporary directories
+- Automatic cleanup after test completion
+- Colored output for better readability
+- Detailed error reporting with exit codes
+- Support for verbose mode (`VERBOSE=1`)
+- Parallel test execution support
+
+### Makefile Integration
+
+The Makefile provides convenient targets for all testing needs:
+- `test-all` runs unit + legacy + integration tests
+- Individual targets for granular testing
+- Verbose modes for debugging (`test-verbose`, `test-legacy-verbose`, `test-integration-verbose`)
+- Performance testing targets (`test-perf`, `test-perf-legacy`, `test-perf-integration`)
+- CI simulation target (`make ci`) that mimics GitHub Actions workflow
+
+### Test Maintenance
+
+When adding new features:
+1. Add unit tests for new Rust functions in the appropriate module
+2. Add integration tests in `tests/integration/` following existing patterns
+3. Ensure tests pass locally with `make test`
+4. Verify CI passes on pull requests
+
+## Code Quality Checks
+
+**IMPORTANT**: Always perform these quality checks at the end of every work session to ensure code meets project standards:
+
+### Required End-of-Work Checks
+
+1. **Rust Clippy Linting** - Run clippy to catch common issues and enforce best practices:
+   ```bash
+   cargo clippy -- -D warnings
+   ```
+   This must pass with zero warnings. Common issues to watch for:
+   - Uninlined format arguments (use `println!("{var}")` instead of `println!("{}", var)`)
+   - Using `.len() < 1` instead of `.is_empty()`
+   - Empty lines after doc comments
+   - Unused imports or variables
+
+2. **Rust Code Formatting** - Ensure consistent code style:
+   ```bash
+   cargo fmt -- --check
+   ```
+   If this fails, run `cargo fmt` to fix formatting automatically, then verify with `--check` again.
+
+3. **Unit Test Validation** - Confirm all tests still pass:
+   ```bash
+   make test-unit
+   ```
+
+### Quality Check Workflow
+
+Before committing any Rust code changes:
+```bash
+# 1. Fix any formatting issues
+cargo fmt
+
+# 2. Check for linting issues
+cargo clippy -- -D warnings
+
+# 3. Verify tests pass
+make test-unit
+
+# 4. (Optional) Run full test suite if significant changes
+make test
+```
+
+### Common Issues and Fixes
+
+- **Trailing whitespace**: Use your editor's whitespace cleanup or `sed -i '' 's/[[:space:]]*$//' filename.rs`
+- **Missing newlines at EOF**: Ensure all files end with a single newline
+- **Clippy warnings**: Address each warning individually - don't suppress unless absolutely necessary
+- **Formatting inconsistencies**: Always run `cargo fmt` before committing
+
+### CI Integration
+
+These same checks run in GitHub Actions, so passing them locally ensures CI will pass:
+- `cargo clippy -- -D warnings` (fails CI on any warnings)
+- `cargo fmt -- --check` (fails CI on formatting issues)
+- `cargo test` (fails CI on test failures)
+
+**Remember**: These checks are not optional - they are required for all Rust code contributions and must pass before work is considered complete.
 
 ## Language Migration Considerations
 
@@ -268,3 +432,162 @@ fn run_direnv_allow() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 This provides better error handling, type safety, and cross-platform compatibility than shell scripts.
+
+## Legacy Removal Plan
+
+Once the Rust migration is complete and deemed stable, the legacy shell scripts can be cleanly removed. Here's the systematic plan:
+
+### Phase 1: Preparation and Validation
+1. **Ensure Feature Parity**: Verify all legacy script functionality is fully implemented in Rust
+2. **Performance Benchmarking**: Confirm Rust versions meet or exceed shell script performance
+3. **User Migration**: Provide migration guide for users switching from shell to Rust versions
+4. **Documentation Update**: Update all references from shell scripts to Rust binaries
+
+### Phase 2: Deprecation Period (Recommended 1-2 releases)
+1. **Add deprecation warnings** to shell scripts:
+   ```bash
+   echo "WARNING: Shell scripts are deprecated. Use Rust binaries instead."
+   echo "Legacy scripts will be removed in version X.Y.Z"
+   ```
+2. **Update installation docs** to recommend Rust binaries
+3. **Add migration notices** in README and release notes
+
+### Phase 3: Systematic Legacy Removal
+
+#### Files to Remove:
+```
+src/legacy/                                    # Entire legacy directory
+├── README.md
+├── git-worktree-checkout
+├── git-worktree-checkout-branch
+├── git-worktree-checkout-branch-from-default
+├── git-worktree-clone
+├── git-worktree-init
+└── git-worktree-prune
+
+tests/legacy/                                  # Entire legacy test directory
+├── test_all.sh
+├── test_checkout.sh
+├── test_checkout_branch.sh
+├── test_checkout_branch_from_default.sh
+├── test_clone.sh
+├── test_framework.sh
+├── test_init.sh
+├── test_prune.sh
+└── test_simple.sh
+```
+
+#### Makefile Targets to Remove:
+```makefile
+# Legacy test targets to remove:
+test-legacy
+test-legacy-framework
+test-legacy-clone
+test-legacy-checkout
+test-legacy-checkout-branch
+test-legacy-checkout-branch-from-default
+test-legacy-init
+test-legacy-prune
+test-legacy-simple
+test-legacy-verbose
+test-perf-legacy
+
+# Compatibility aliases to remove:
+test-framework, test-clone, test-checkout, etc.
+```
+
+#### GitHub Actions Cleanup:
+```yaml
+# Remove from .github/workflows/test.yml:
+- name: Run legacy tests
+  run: make test-legacy
+
+- name: Add scripts to PATH (shell version)
+  run: |
+    echo "${{ github.workspace }}/src/legacy" >> $GITHUB_PATH
+
+# Legacy help command tests section
+```
+
+#### Documentation Cleanup:
+- Remove shell script installation instructions from README.md
+- Remove legacy script examples and usage patterns
+- Update CLAUDE.md to remove legacy architecture details
+- Remove shell script references from all documentation
+
+### Phase 4: Update Project Structure
+
+#### Update Makefile:
+```makefile
+# Simplify test targets to:
+test: test-unit test-integration
+test-all: test-unit test-integration
+
+# Remove all legacy-specific targets
+# Update help text to remove legacy references
+```
+
+#### Update GitHub Actions:
+```yaml
+# Simplify to focus only on Rust:
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Run unit tests
+        run: make test-unit
+      - name: Run integration tests  
+        run: make test-integration
+```
+
+#### Update README.md:
+- Remove "Legacy vs Rust" comparison sections
+- Simplify installation to Rust-only approach
+- Update all examples to use Rust binaries
+- Remove shell script PATH setup instructions
+
+### Phase 5: Cleanup Git History (Optional)
+For a clean repository:
+```bash
+# Remove legacy files from git history (DESTRUCTIVE)
+git filter-branch --tree-filter 'rm -rf src/legacy tests/legacy' --prune-empty HEAD
+git for-each-ref --format="%(refname)" refs/original/ | xargs -n 1 git update-ref -d
+```
+
+### Phase 6: Post-Removal Validation
+1. **Test CI/CD Pipeline**: Ensure all workflows pass without legacy components
+2. **Update Release Process**: Remove legacy binary building/packaging
+3. **Documentation Review**: Verify no broken links or references to removed files
+4. **User Communication**: Release notes clearly document the removal
+
+### Migration Commands for Users
+Provide clear migration paths:
+
+```bash
+# Old (shell scripts)
+export PATH="$PATH:/path/to/scripts"
+git worktree-clone repo.git
+
+# New (Rust binaries)  
+export PATH="$PATH:/path/to/target/release"
+git-worktree-clone repo.git
+# OR (if installed via package manager)
+git worktree-clone repo.git
+```
+
+### Benefits of Removal
+- **Simplified codebase**: ~50% reduction in test files and maintenance burden
+- **Reduced CI time**: Eliminate duplicate legacy test runs
+- **Cleaner documentation**: Single source of truth for usage patterns
+- **Easier development**: Focus on single implementation path
+- **Better user experience**: No confusion between shell vs Rust versions
+
+### Risk Mitigation
+- **Gradual rollout**: Use semantic versioning to signal breaking changes
+- **Backup branches**: Tag legacy-complete version before removal
+- **User survey**: Collect feedback during deprecation period
+- **Rollback plan**: Keep ability to restore legacy if critical issues arise
+
+This plan ensures a clean, methodical removal of legacy components while maintaining user confidence and project stability.
