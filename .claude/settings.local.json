@@ -70,7 +70,15 @@
       "Bash(VERBOSE=1 ./test_checkout_branch_from_default.sh checkout_branch_from_default_remote_updates)",
       "Bash(VERBOSE=1 ./test_all.sh)",
       "Bash(./test_checkout_branch.sh)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "mcp__github__get_pull_request",
+      "mcp__github__get_issue",
+      "mcp__github__list_pull_requests",
+      "mcp__github__get_me",
+      "mcp__github__get_pull_request_files",
+      "mcp__github__get_pull_request_diff",
+      "Bash(grep:*)",
+      "mcp__github__add_issue_comment"
     ],
     "deny": []
   }
