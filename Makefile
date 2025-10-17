@@ -1,4 +1,4 @@
-# Makefile for git-worktree-workflow
+# Makefile for daft
 
 # Variables
 SCRIPTS_DIR := src/legacy

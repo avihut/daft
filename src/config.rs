@@ -1,4 +1,4 @@
-/// Configuration constants for git-worktree-workflow
+/// Configuration constants for daft
 ///
 /// This module centralizes all configurable values and magic numbers
 /// to improve maintainability and reduce hardcoded values throughout the codebase.

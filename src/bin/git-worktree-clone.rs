@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use git_worktree_workflow::{
+use daft::{
     check_dependencies,
     direnv::run_direnv_allow,
     extract_repo_name,

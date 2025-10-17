@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Master test runner for all git-worktree-workflow commands
+# Master test runner for all daft commands
 
 source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 
@@ -195,7 +195,7 @@ test_security_path_traversal() {
 
 # Run all tests
 run_all_tests() {
-    log "Running comprehensive test suite for git-worktree-workflow..."
+    log "Running comprehensive test suite for daft..."
     
     # Framework tests
     run_test "framework_assertions" "test_framework_assertions"
