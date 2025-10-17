@@ -1,5 +1,5 @@
 use anyhow::Result;
-use git_worktree_workflow::{git::GitCommand, WorktreeConfig};
+use daft::{git::GitCommand, WorktreeConfig};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use git_worktree_workflow::{
+use daft::{
     config::counters::{INITIAL_BRANCHES_DELETED, INITIAL_WORKTREES_REMOVED, OPERATION_INCREMENT},
     git::GitCommand,
     is_git_repository, log_debug, log_error, log_info,

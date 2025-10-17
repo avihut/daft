@@ -1,6 +1,6 @@
 # Git Worktree Workflow Test Suite
 
-This directory contains comprehensive test suites for both the legacy shell script implementation and the new Rust binary implementation of the git-worktree-workflow toolkit.
+This directory contains comprehensive test suites for both the legacy shell script implementation and the new Rust binary implementation of the daft toolkit.
 
 ## Test Structure
 

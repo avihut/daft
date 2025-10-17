@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Master integration test runner for all git-worktree-workflow Rust binaries
+# Master integration test runner for all daft Rust binaries
 
 source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 

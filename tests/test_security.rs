@@ -1,5 +1,5 @@
 use anyhow::Result;
-use git_worktree_workflow::{
+use daft::{
     extract_repo_name,
     utils::{validate_branch_name, validate_repo_name},
 };
@@ -253,7 +253,7 @@ fn test_legitimate_inputs_still_work() -> Result<()> {
         "my-project",
         "awesome_tool",
         "project123",
-        "git-worktree-workflow",
+        "daft",
         "react-app",
         "backend-api",
     ];

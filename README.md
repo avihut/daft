@@ -19,8 +19,8 @@ A comprehensive toolkit that streamlines development workflows using Git worktre
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/user/git-worktree-workflow.git
-cd git-worktree-workflow
+git clone https://github.com/avihut/daft.git
+cd daft
 ```
 
 2. Build the Rust binaries:
@@ -31,10 +31,10 @@ cargo build --release
 3. Add the release binaries to your PATH:
 ```bash
 # Add to your ~/.bashrc, ~/.zshrc, or similar
-export PATH="/path/to/git-worktree-workflow/target/release:$PATH"
+export PATH="/path/to/daft/target/release:$PATH"
 
 # Or create symlinks to a directory already in your PATH
-ln -s /path/to/git-worktree-workflow/target/release/git-worktree-* /usr/local/bin/
+ln -s /path/to/daft/target/release/git-worktree-* /usr/local/bin/
 ```
 
 ### Option 2: Shell Scripts (Legacy - Deprecated)
@@ -48,10 +48,10 @@ The humble origins of this project.
 2. Add the legacy scripts to your PATH:
 ```bash
 # Add to your ~/.bashrc, ~/.zshrc, or similar
-export PATH="/path/to/git-worktree-workflow/src/legacy:$PATH"
+export PATH="/path/to/daft/src/legacy:$PATH"
 
 # Or create symlinks to a directory already in your PATH
-ln -s /path/to/git-worktree-workflow/src/legacy/* /usr/local/bin/
+ln -s /path/to/daft/src/legacy/* /usr/local/bin/
 ```
 
 ### Verify Installation
@@ -261,7 +261,7 @@ See `tests/README.md` for detailed testing documentation.
 
 ### Directory Structure
 ```
-git-worktree-workflow/
+daft/
 ├── src/                     # Rust source code
 │   ├── bin/                 # Binary implementations
 │   │   ├── git-worktree-clone.rs

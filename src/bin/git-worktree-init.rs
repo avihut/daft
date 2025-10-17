@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use git_worktree_workflow::{
+use daft::{
     check_dependencies, direnv::run_direnv_allow, git::GitCommand, logging::init_logging,
     quiet_echo, utils::*,
 };

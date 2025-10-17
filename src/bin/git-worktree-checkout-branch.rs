@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use git_worktree_workflow::{
+use daft::{
     config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT},
     direnv::run_direnv_allow,
     get_current_branch, get_project_root,

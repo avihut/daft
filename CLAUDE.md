@@ -1,10 +1,20 @@
-# CLAUDE.md
+# WARP.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Warp AI when working with code in this repository.
+
+## Recent Changes
+
+**Project Renamed from `git-worktree-workflow` to `daft` (2025-10-17)**
+- GitHub repository: `https://github.com/avihut/daft` (was `git-worktree-workflow`)
+- Project directory: `/Users/avihu/Projects/daft` (was `git-worktree-workflow`)
+- Cargo package name: `daft` (was `git-worktree-workflow`)
+- All command names remain unchanged (`git-worktree-*`)
+- All functionality preserved, 147 tests passing
+- Documentation and installation paths updated throughout
 
 ## Overview
 
-This is a Git worktree workflow toolkit consisting of shell scripts designed to streamline a development workflow that heavily utilizes `git worktree`. The scripts are intended to be used as custom Git commands (e.g., `git worktree-clone`, `git worktree-checkout`).
+This is **daft** - a Git worktree workflow toolkit with both Rust binaries and legacy shell scripts designed to streamline a development workflow that heavily utilizes `git worktree`. The commands are intended to be used as custom Git commands (e.g., `git worktree-clone`, `git worktree-checkout`).
 
 ## Key Concepts
 
@@ -15,7 +25,7 @@ This is a Git worktree workflow toolkit consisting of shell scripts designed to 
 
 ## Script Architecture
 
-All scripts are located in the `scripts/` directory and follow these patterns:
+The Rust binaries are located in `src/bin/` with shared code in `src/`, and legacy scripts are in `src/legacy/`. All follow these patterns:
 
 ### Core Scripts
 
@@ -36,7 +46,7 @@ All scripts are located in the `scripts/` directory and follow these patterns:
 
 ## Usage
 
-Scripts are installed by adding the `scripts/` directory to your `PATH`. Once installed, they can be executed as Git subcommands:
+**Rust binaries** are installed by adding `target/release/` to your `PATH`, or **legacy scripts** by adding `src/legacy/` to your `PATH`. Once installed, they can be executed as Git subcommands:
 
 ```bash
 git worktree-clone <repository-url>
@@ -65,6 +75,8 @@ These scripts enable a complete worktree-based development workflow that elimina
 **Start with any Git repository:**
 ```bash
 git worktree-clone git@github.com:user/my-project.git
+# Or clone daft itself:
+git worktree-clone git@github.com:avihut/daft.git
 ```
 
 This creates a structured layout:
@@ -380,6 +392,9 @@ Analysis of open issues reveals a mix of complexities:
 **Rust advantages for this project:**
 ```rust
 // Automatic completions, help text, validation
+use clap::Parser;
+use daft::utils::*;
+
 #[derive(Parser)]
 #[command(name = "git-worktree-clone")]
 struct Args {
