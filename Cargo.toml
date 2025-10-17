@@ -2,7 +2,7 @@
 name = "daft"
 version = "0.1.0"
 edition = "2021"
-description = "A Git worktree workflow toolkit - Rust implementation"
+description = "A comprehensive Git extensions toolkit that enhances developer workflows, starting with powerful worktree management"
 authors = ["avihu <avihu@users.noreply.github.com>"]
 license = "MIT"
 repository = "https://github.com/avihut/daft"

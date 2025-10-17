@@ -1,6 +1,6 @@
-# WARP.md
+# CLAUDE.md
 
-This file provides guidance to Warp AI when working with code in this repository.
+This file provides guidance when working with code in this repository.
 
 ## Recent Changes
 
@@ -14,7 +14,9 @@ This file provides guidance to Warp AI when working with code in this repository
 
 ## Overview
 
-This is **daft** - a Git worktree workflow toolkit with both Rust binaries and legacy shell scripts designed to streamline a development workflow that heavily utilizes `git worktree`. The commands are intended to be used as custom Git commands (e.g., `git worktree-clone`, `git worktree-checkout`).
+This is **daft** - a comprehensive Git extensions toolkit built in Rust. While the project currently focuses on worktree workflow management with both Rust binaries and legacy shell scripts, the vision extends far beyond: daft aims to provide a suite of Git extensions that enhance modern development workflows.
+
+The current worktree commands are intended to be used as custom Git commands (e.g., `git worktree-clone`, `git worktree-checkout`), and future extensions will follow the same pattern of seamlessly integrating with Git's command-line interface.
 
 ## Key Concepts
 
