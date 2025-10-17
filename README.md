@@ -1,17 +1,21 @@
-# Git Worktree Workflow
+# daft - Git Extensions Toolkit
 
-A comprehensive toolkit that streamlines development workflows using Git worktrees. This project enables a "one worktree per branch" approach, eliminating the friction of traditional Git branch switching.
+**daft** is a comprehensive toolkit that extends Git functionality to enhance developer workflows. Starting with powerful worktree management that enables a "one worktree per branch" approach, daft aims to provide a suite of Git extensions that eliminate friction and streamline modern development practices.
 
-**🦀 Now Available in Rust**: This project has been migrated to Rust with enhanced features, better error handling, and improved performance, while maintaining full compatibility with the original shell scripts.
+**🦀 Built with Rust**: Professional-grade Git extensions with type safety, comprehensive error handling, and excellent performance.
 
 ## 🚀 Key Features
 
+### Worktree Extensions (Current Focus)
 - **Worktree-centric workflow**: One worktree per branch, organized under a common parent directory
 - **Smart repository structure**: Uses `<repo-name>/.git` at root with worktrees at `<repo-name>/<branch-name>/`
 - **Automatic branch detection**: Dynamically detects default branches (main, master, develop, etc.)
 - **direnv integration**: Automatically runs `direnv allow` when entering new worktrees
 - **Comprehensive error handling**: Robust cleanup of partial operations on failure
 - **Works from anywhere**: Execute commands from any directory within the repository
+
+### Future Extensions
+daft is evolving beyond worktree management to provide additional Git workflow enhancements. Future extensions will focus on streamlining common Git operations and enabling advanced workflows that aren't well-supported by Git's core commands.
 
 ## 📦 Installation
 
