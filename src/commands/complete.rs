@@ -21,6 +21,13 @@ struct Args {
 
     #[arg(short, long, help = "Position of the word being completed (0-indexed)")]
     position: Option<usize>,
+
+    #[arg(
+        short,
+        long,
+        help = "Enable verbose error output for debugging completion issues"
+    )]
+    verbose: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -35,7 +42,12 @@ pub fn run() -> Result<()> {
 
     let args = Args::parse_from(&args_vec);
 
-    let suggestions = complete(&args.command, args.position.unwrap_or(1), &args.word)?;
+    let suggestions = complete(
+        &args.command,
+        args.position.unwrap_or(1),
+        &args.word,
+        args.verbose,
+    )?;
 
     for suggestion in suggestions {
         println!("{}", suggestion);
@@ -45,10 +57,10 @@ pub fn run() -> Result<()> {
 }
 
 /// Provide context-aware completions based on command and position
-fn complete(command: &str, position: usize, word: &str) -> Result<Vec<String>> {
+fn complete(command: &str, position: usize, word: &str, verbose: bool) -> Result<Vec<String>> {
     match (command, position) {
         // git-worktree-checkout: complete existing branch names
-        ("git-worktree-checkout", 1) => complete_existing_branches(word),
+        ("git-worktree-checkout", 1) => complete_existing_branches(word, verbose),
 
         // git-worktree-checkout-branch: position 1 = new branch name (no completion),
         // position 2 = base branch name (existing branches)
@@ -56,7 +68,7 @@ fn complete(command: &str, position: usize, word: &str) -> Result<Vec<String>> {
             // New branch name - suggest based on common patterns
             Ok(suggest_new_branch_names(word))
         }
-        ("git-worktree-checkout-branch", 2) => complete_existing_branches(word),
+        ("git-worktree-checkout-branch", 2) => complete_existing_branches(word, verbose),
 
         // git-worktree-checkout-branch-from-default: position 1 = new branch name
         ("git-worktree-checkout-branch-from-default", 1) => Ok(suggest_new_branch_names(word)),
@@ -76,7 +88,7 @@ fn complete(command: &str, position: usize, word: &str) -> Result<Vec<String>> {
 }
 
 /// Complete existing branch names (local and remote)
-fn complete_existing_branches(prefix: &str) -> Result<Vec<String>> {
+fn complete_existing_branches(prefix: &str, verbose: bool) -> Result<Vec<String>> {
     // Use git for-each-ref for fast, parseable output
     let output = Command::new("git")
         .args([
@@ -89,6 +101,14 @@ fn complete_existing_branches(prefix: &str) -> Result<Vec<String>> {
 
     if !output.status.success() {
         // Not in a git repository or git command failed
+        if verbose {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("Git command failed: {}", stderr.trim());
+            eprintln!("Exit code: {}", output.status.code().unwrap_or(-1));
+            if !std::path::Path::new(".git").exists() {
+                eprintln!("Note: Not in a git repository (no .git directory found)");
+            }
+        }
         return Ok(vec![]);
     }
 
@@ -108,6 +128,10 @@ fn complete_existing_branches(prefix: &str) -> Result<Vec<String>> {
     let mut unique_branches: Vec<String> = branches;
     unique_branches.sort();
     unique_branches.dedup();
+
+    if verbose && unique_branches.is_empty() {
+        eprintln!("No branches found matching prefix: '{}'", prefix);
+    }
 
     Ok(unique_branches)
 }
@@ -136,12 +160,16 @@ fn suggest_new_branch_names(prefix: &str) -> Vec<String> {
 
 /// Complete local branches only (for base branch selection)
 #[allow(dead_code)]
-fn complete_local_branches(prefix: &str) -> Result<Vec<String>> {
+fn complete_local_branches(prefix: &str, verbose: bool) -> Result<Vec<String>> {
     let output = Command::new("git")
         .args(["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
         .output()?;
 
     if !output.status.success() {
+        if verbose {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("Git command failed (local branches): {}", stderr.trim());
+        }
         return Ok(vec![]);
     }
 
@@ -156,7 +184,7 @@ fn complete_local_branches(prefix: &str) -> Result<Vec<String>> {
 
 /// Complete remote branches only
 #[allow(dead_code)]
-fn complete_remote_branches(prefix: &str) -> Result<Vec<String>> {
+fn complete_remote_branches(prefix: &str, verbose: bool) -> Result<Vec<String>> {
     let output = Command::new("git")
         .args([
             "for-each-ref",
@@ -166,6 +194,10 @@ fn complete_remote_branches(prefix: &str) -> Result<Vec<String>> {
         .output()?;
 
     if !output.status.success() {
+        if verbose {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("Git command failed (remote branches): {}", stderr.trim());
+        }
         return Ok(vec![]);
     }
 

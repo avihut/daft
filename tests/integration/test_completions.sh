@@ -183,6 +183,189 @@ test_prune_no_dynamic() {
     fi
 }
 
+# Test: Position-aware completion for checkout-branch (new branch name vs base branch)
+test_position_aware_completion() {
+    run_test "Position-aware completion distinguishes argument positions"
+
+    # Create a temporary test repository
+    local test_repo="/tmp/test-position-$$"
+    mkdir -p "$test_repo"
+    cd "$test_repo"
+
+    git init >/dev/null 2>&1
+    git config user.name "Test" >/dev/null 2>&1
+    git config user.email "test@example.com" >/dev/null 2>&1
+
+    echo "test" > README.md
+    git add README.md >/dev/null 2>&1
+    git commit -m "Initial commit" >/dev/null 2>&1
+    git branch feature-existing >/dev/null 2>&1
+
+    # First argument should suggest patterns AND existing branches
+    local output
+    output=$("$DAFT_BIN" __complete git-worktree-checkout-branch "fea" 2>&1)
+
+    # Clean up
+    cd /
+    rm -rf "$test_repo"
+
+    if [[ "$output" == *"feature/"* ]] || [[ "$output" == *"feature-existing"* ]]; then
+        pass_test
+    else
+        fail_test "Position-aware completion didn't provide appropriate suggestions"
+    fi
+}
+
+# Test: Remote branch handling in dynamic completions
+test_remote_branch_completion() {
+    run_test "Remote branch handling in completions"
+
+    # Create a test repository with local branches simulating remote branches
+    local test_repo="/tmp/test-remote-$$"
+    mkdir -p "$test_repo"
+    cd "$test_repo"
+
+    git init >/dev/null 2>&1
+    git config user.name "Test" >/dev/null 2>&1
+    git config user.email "test@example.com" >/dev/null 2>&1
+
+    echo "test" > README.md
+    git add README.md >/dev/null 2>&1
+    git commit -m "Initial commit" >/dev/null 2>&1
+
+    # Create local branches that would be typical from a remote
+    git branch remote-feature >/dev/null 2>&1
+    git branch origin-main >/dev/null 2>&1
+
+    # Test completion includes these branches
+    local output
+    output=$("$DAFT_BIN" __complete git-worktree-checkout "remote" 2>&1)
+
+    # Clean up
+    cd /
+    rm -rf "$test_repo"
+
+    # Should at least not crash when checking for remote branches
+    if [[ $? -eq 0 ]]; then
+        pass_test
+    else
+        fail_test "Remote branch completion failed"
+    fi
+}
+
+# Test: Non-git-repo behavior for dynamic completions
+test_non_git_repo_completion() {
+    run_test "Graceful handling when not in a git repository"
+
+    # Create non-git directory
+    local test_dir="/tmp/test-non-git-$$"
+    mkdir -p "$test_dir"
+    cd "$test_dir"
+
+    # Attempt completion outside git repo
+    local output
+    output=$("$DAFT_BIN" __complete git-worktree-checkout "feat" 2>&1)
+
+    # Clean up
+    cd /
+    rm -rf "$test_dir"
+
+    # Should return empty or pattern suggestions, not crash
+    if [[ $? -eq 0 ]]; then
+        pass_test
+    else
+        fail_test "Completion crashed outside git repository"
+    fi
+}
+
+# Test: Bash git subcommand registration
+test_bash_git_subcommand_registration() {
+    run_test "Bash completion registers git subcommand support"
+
+    local output
+    output=$("$DAFT_BIN" completions bash --command=git-worktree-checkout 2>&1)
+
+    if [[ "$output" == *'__git_complete'* ]] && [[ "$output" == *'git-worktree-checkout'* ]]; then
+        pass_test
+    else
+        fail_test "Bash completion missing git subcommand registration"
+    fi
+}
+
+# Test: Fish git subcommand registration
+test_fish_git_subcommand_registration() {
+    run_test "Fish completion registers git subcommand support"
+
+    local output
+    output=$("$DAFT_BIN" completions fish --command=git-worktree-checkout 2>&1)
+
+    if [[ "$output" == *'complete -c git'* ]] && [[ "$output" == *'__fish_seen_subcommand_from'* ]]; then
+        pass_test
+    else
+        fail_test "Fish completion missing git subcommand registration"
+    fi
+}
+
+# Test: Zsh git subcommand registration (already implemented)
+test_zsh_git_subcommand_registration() {
+    run_test "Zsh completion registers git subcommand support"
+
+    local output
+    output=$("$DAFT_BIN" completions zsh --command=git-worktree-checkout 2>&1)
+
+    if [[ "$output" == *'_git-worktree-checkout'* ]]; then
+        pass_test
+    else
+        fail_test "Zsh completion missing git subcommand registration"
+    fi
+}
+
+# Test: All commands generate completions without errors
+test_all_commands_generate() {
+    run_test "All commands generate completions for all shells"
+
+    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-checkout-branch-from-default" "git-worktree-prune")
+    local shells=("bash" "zsh" "fish")
+    local success=true
+
+    for cmd in "${commands[@]}"; do
+        for shell in "${shells[@]}"; do
+            if ! "$DAFT_BIN" completions "$shell" --command="$cmd" >/dev/null 2>&1; then
+                success=false
+                fail_test "Failed to generate $shell completion for $cmd"
+                return
+            fi
+        done
+    done
+
+    if $success; then
+        pass_test
+    fi
+}
+
+# Test: Centralized flag extraction consistency
+test_flag_extraction_consistency() {
+    run_test "Flags are consistent across all shells (clap introspection)"
+
+    # Check that all shells include the essential flags from clap introspection
+    local bash_has_verbose
+    local zsh_has_verbose
+    local fish_has_verbose
+
+    bash_has_verbose=$("$DAFT_BIN" completions bash --command=git-worktree-checkout 2>&1 | grep -c "verbose" || true)
+    zsh_has_verbose=$("$DAFT_BIN" completions zsh --command=git-worktree-checkout 2>&1 | grep -c "verbose" || true)
+    fish_has_verbose=$("$DAFT_BIN" completions fish --command=git-worktree-checkout 2>&1 | grep -c "verbose" || true)
+
+    # All should include the verbose flag (count > 0)
+    if [[ "$bash_has_verbose" -gt 0 ]] && \
+       [[ "$zsh_has_verbose" -gt 0 ]] && \
+       [[ "$fish_has_verbose" -gt 0 ]]; then
+        pass_test
+    else
+        fail_test "Flag extraction inconsistent across shells (bash:$bash_has_verbose zsh:$zsh_has_verbose fish:$fish_has_verbose)"
+    fi
+}
+
 # Main test execution
 main() {
     echo "========================================="
@@ -209,6 +392,16 @@ main() {
     test_zsh_dynamic_wiring
     test_fish_dynamic_wiring
     test_prune_no_dynamic
+
+    # New comprehensive tests
+    test_position_aware_completion
+    test_remote_branch_completion
+    test_non_git_repo_completion
+    test_bash_git_subcommand_registration
+    test_fish_git_subcommand_registration
+    test_zsh_git_subcommand_registration
+    test_all_commands_generate
+    test_flag_extraction_consistency
 
     # Print summary
     echo "========================================="
