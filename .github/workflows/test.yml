@@ -34,18 +34,24 @@ jobs:
     - name: Build Rust binaries
       run: cargo build --release
 
+    - name: Clean old binaries from cache
+      run: |
+        # Remove any old binaries that might be in cache from before src/bin/ was removed
+        rm -f target/release/git-worktree-*
+        echo "Cleaned old binaries from cache"
+
     - name: Verify single binary architecture
       run: |
         echo "Verifying single binary architecture..."
         # Count executables in target/release (excluding .d files and symlinks)
-        BINARY_COUNT=$(find target/release -maxdepth 1 -type f -perm +111 ! -name "*.d" | wc -l | tr -d ' ')
+        BINARY_COUNT=$(find target/release -maxdepth 1 -type f -executable ! -name "*.d" | wc -l | tr -d ' ')
         echo "Found $BINARY_COUNT binary executable(s)"
 
         # Verify exactly 1 binary exists
         if [ "$BINARY_COUNT" -ne 1 ]; then
           echo "ERROR: Expected exactly 1 binary, found $BINARY_COUNT"
           echo "Binaries found:"
-          find target/release -maxdepth 1 -type f -perm +111 ! -name "*.d" -exec ls -lh {} \;
+          find target/release -maxdepth 1 -type f -executable ! -name "*.d" -exec ls -lh {} \;
           exit 1
         fi
 
@@ -103,18 +109,24 @@ jobs:
     - name: Build Rust binaries
       run: cargo build --release
 
+    - name: Clean old binaries from cache
+      run: |
+        # Remove any old binaries that might be in cache from before src/bin/ was removed
+        rm -f target/release/git-worktree-*
+        echo "Cleaned old binaries from cache"
+
     - name: Verify single binary architecture
       run: |
         echo "Verifying single binary architecture..."
         # Count executables in target/release (excluding .d files and symlinks)
-        BINARY_COUNT=$(find target/release -maxdepth 1 -type f -perm +111 ! -name "*.d" | wc -l | tr -d ' ')
+        BINARY_COUNT=$(find target/release -maxdepth 1 -type f -executable ! -name "*.d" | wc -l | tr -d ' ')
         echo "Found $BINARY_COUNT binary executable(s)"
 
         # Verify exactly 1 binary exists
         if [ "$BINARY_COUNT" -ne 1 ]; then
           echo "ERROR: Expected exactly 1 binary, found $BINARY_COUNT"
           echo "Binaries found:"
-          find target/release -maxdepth 1 -type f -perm +111 ! -name "*.d" -exec ls -lh {} \;
+          find target/release -maxdepth 1 -type f -executable ! -name "*.d" -exec ls -lh {} \;
           exit 1
         fi
 
