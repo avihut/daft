@@ -148,7 +148,7 @@ test-integration-verbose: build-rust
 
 # Clean up test artifacts
 .PHONY: clean clean-tests
-clean: clean-tests clean-rust
+clean: clean-tests clean-rust dev-clean
 	@echo "All artifacts cleaned"
 
 clean-tests:
@@ -173,9 +173,61 @@ setup-legacy:
 setup-rust: build-rust
 	@echo "Setting up Rust development environment..."
 	@chmod +x $(INTEGRATION_TESTS_DIR)/*.sh
-	@echo "Integration test scripts made executable"
-	@echo "Add $(PWD)/target/release to your PATH to use the Rust binaries"
+	@echo "Creating symlinks in target/release/..."
+	@cd target/release && \
+		ln -sf daft git-worktree-clone && \
+		ln -sf daft git-worktree-init && \
+		ln -sf daft git-worktree-checkout && \
+		ln -sf daft git-worktree-checkout-branch && \
+		ln -sf daft git-worktree-checkout-branch-from-default && \
+		ln -sf daft git-worktree-prune && \
+		ln -sf daft git-daft
+	@echo "✓ Development environment ready!"
+	@echo ""
+	@echo "Binary size: $$(stat -f '%z' target/release/daft 2>/dev/null | awk '{printf "%.0f KB", $$1/1024}')"
+	@echo ""
+	@echo "Add to PATH for Git integration:"
 	@echo "  export PATH=\"$(PWD)/target/release:\$$PATH\""
+	@echo ""
+	@echo "Quick test:"
+	@echo "  ./target/release/daft"
+	@echo "  ./target/release/git-worktree-clone --help"
+
+# Development workflow targets
+.PHONY: dev dev-setup dev-clean dev-test dev-verify
+
+# Alias for setup-rust (clearer intent)
+dev-setup: setup-rust
+
+# Quick development cycle: setup + verify
+dev: dev-setup dev-verify
+	@echo "✓ Development environment ready and verified!"
+
+# Remove development symlinks (keeps binary)
+dev-clean:
+	@echo "Cleaning development symlinks..."
+	@cd target/release && rm -f \
+		git-worktree-clone \
+		git-worktree-init \
+		git-worktree-checkout \
+		git-worktree-checkout-branch \
+		git-worktree-checkout-branch-from-default \
+		git-worktree-prune \
+		git-daft
+	@echo "✓ Symlinks removed (binary preserved)"
+
+# Verify dev setup is working
+dev-verify:
+	@echo "Verifying development setup..."
+	@test -f target/release/daft || (echo "✗ Binary not found" && exit 1)
+	@test -L target/release/git-worktree-clone || (echo "✗ Symlinks not created" && exit 1)
+	@./target/release/daft >/dev/null 2>&1 || (echo "✗ Direct invocation failed" && exit 1)
+	@./target/release/git-worktree-clone --help >/dev/null 2>&1 || (echo "✗ Symlink invocation failed" && exit 1)
+	@echo "✓ All checks passed"
+
+# Full dev test: setup + run all tests
+dev-test: dev-setup test
+	@echo "✓ Development setup tested successfully!"
 
 # Validate scripts (basic syntax check)
 .PHONY: validate validate-legacy validate-rust
@@ -272,6 +324,13 @@ help:
 	@echo "Build targets:"
 	@echo "  build-rust                    - Build Rust binaries"
 	@echo "  clean-rust                    - Clean Rust build artifacts"
+	@echo ""
+	@echo "Development targets:"
+	@echo "  dev                           - Quick setup + verify (recommended for dev)"
+	@echo "  dev-setup                     - Build binary and create symlinks in target/release/"
+	@echo "  dev-clean                     - Remove development symlinks"
+	@echo "  dev-verify                    - Verify development setup is working"
+	@echo "  dev-test                      - Full dev setup + run all tests"
 	@echo ""
 	@echo "Test targets:"
 	@echo "  all                           - Run all tests (default)"
