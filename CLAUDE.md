@@ -120,6 +120,14 @@ git worktree-prune
 - Error handling includes cleanup of partially created worktrees on failure
 - All scripts include detailed usage documentation and examples in their headers
 
+### Branch names
+
+When working on project tickets, branch names should follow this convention daft-<issue number>/<shortened issue name>
+
+### PRs
+
+When opening a PR, the name should follow this convention [DAFT-<issue number>] <type: Feature / Bugfix / Enhancement / etc.>: <short description>
+
 ## Worktree Workflow
 
 These scripts enable a complete worktree-based development workflow that eliminates traditional Git branch switching friction:
