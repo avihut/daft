@@ -311,6 +311,50 @@ test-zsh:
 		echo "zsh not available, skipping..."; \
 	fi
 
+# Shell completions
+.PHONY: install-completions gen-completions-bash gen-completions-zsh gen-completions-fish test-completions
+
+install-completions: build-rust
+	@echo "Installing shell completions..."
+	@./target/release/daft completions bash --install
+	@./target/release/daft completions zsh --install
+	@./target/release/daft completions fish --install
+	@echo "✓ Completions installed successfully!"
+	@echo ""
+	@echo "Restart your shell or source your shell config file to enable completions"
+
+gen-completions-bash: build-rust
+	@echo "Generating bash completions..."
+	@for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-checkout-branch-from-default git-worktree-prune; do \
+		echo "  $$cmd"; \
+		./target/release/daft completions bash --command="$$cmd" > /tmp/completion-$$cmd.bash; \
+	done
+	@echo "✓ Bash completions generated in /tmp/"
+
+gen-completions-zsh: build-rust
+	@echo "Generating zsh completions..."
+	@for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-checkout-branch-from-default git-worktree-prune; do \
+		echo "  $$cmd"; \
+		./target/release/daft completions zsh --command="$$cmd" > /tmp/completion-_$$cmd.zsh; \
+	done
+	@echo "✓ Zsh completions generated in /tmp/"
+
+gen-completions-fish: build-rust
+	@echo "Generating fish completions..."
+	@for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-checkout-branch-from-default git-worktree-prune; do \
+		echo "  $$cmd"; \
+		./target/release/daft completions fish --command="$$cmd" > /tmp/completion-$$cmd.fish; \
+	done
+	@echo "✓ Fish completions generated in /tmp/"
+
+test-completions: build-rust
+	@echo "Testing shell completions..."
+	@if [ -f $(INTEGRATION_TESTS_DIR)/test_completions.sh ]; then \
+		$(INTEGRATION_TESTS_DIR)/test_completions.sh; \
+	else \
+		echo "Completion tests not yet implemented"; \
+	fi
+
 # CI simulation
 .PHONY: ci
 ci: setup validate test
@@ -389,6 +433,13 @@ help:
 	@echo "  lint                          - Run all linting tools"
 	@echo "  lint-legacy                   - Run shellcheck on legacy scripts"
 	@echo "  lint-rust                     - Run Rust linting (clippy + fmt)"
+	@echo ""
+	@echo "Shell completions:"
+	@echo "  install-completions           - Install shell completions for bash/zsh/fish"
+	@echo "  gen-completions-bash          - Generate bash completions to /tmp/"
+	@echo "  gen-completions-zsh           - Generate zsh completions to /tmp/"
+	@echo "  gen-completions-fish          - Generate fish completions to /tmp/"
+	@echo "  test-completions              - Test completion generation"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  clean                         - Clean up all artifacts"

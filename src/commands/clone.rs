@@ -25,7 +25,7 @@ It determines the repository name from the URL and queries the remote
 to find the default branch (e.g., main, master, develop) *before* cloning.
 After cloning, it runs 'direnv allow' in the new directory and cds into it.
 "#)]
-struct Args {
+pub struct Args {
     #[arg(help = "Repository URL to clone")]
     repository_url: String,
 

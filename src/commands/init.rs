@@ -18,7 +18,7 @@ Initializes a new Git repository in the worktree workflow structure:
 This command creates a new repository following the same structured layout
 used by git-worktree-clone, making it suitable for the worktree workflow.
 "#)]
-struct Args {
+pub struct Args {
     #[arg(help = "Repository name to initialize")]
     repository_name: String,
 

@@ -14,7 +14,7 @@ use std::process::Command;
 Creates a git worktree and branch based on the REMOTE'S DEFAULT branch
 (e.g., main, master). It determines the default branch and then calls 'git-worktree-checkout-branch'.
 "#)]
-struct Args {
+pub struct Args {
     #[arg(help = "The name for the new branch and the worktree directory")]
     new_branch_name: String,
 

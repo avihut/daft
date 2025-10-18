@@ -125,7 +125,7 @@ fn test_concurrent_branch_checking() -> Result<()> {
     for i in 0..10 {
         let git_clone = Arc::clone(&git);
         let config_clone = Arc::clone(&config);
-        let race_flag = Arc::clone(&race_condition_detected);
+        let _race_flag = Arc::clone(&race_condition_detected);
 
         let handle = thread::spawn(move || {
             let branch_name = match i % 3 {
@@ -200,7 +200,7 @@ fn test_concurrent_worktree_operations() -> Result<()> {
     let mut handles = vec![];
 
     // Spawn threads that perform concurrent worktree list operations
-    for i in 0..8 {
+    for _i in 0..8 {
         let git_clone = Arc::clone(&git);
 
         let handle = thread::spawn(move || {
