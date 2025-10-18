@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-init")]
+#[command(version)]
 #[command(about = "Initializes a new Git repository in the worktree workflow structure")]
 #[command(long_about = r#"
 Initializes a new Git repository in the worktree workflow structure:
@@ -43,7 +44,7 @@ struct Args {
     initial_branch: String,
 }
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let args = Args::parse();
 
     // Initialize logging - quiet mode disables verbose output

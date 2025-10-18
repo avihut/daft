@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-prune")]
+#[command(version)]
 #[command(about = "Prunes local Git branches whose remote counterparts have been deleted")]
 #[command(long_about = r#"
 Prunes local Git branches whose remote counterparts have been deleted,
@@ -22,7 +23,7 @@ struct Args {
     verbose: bool,
 }
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let args = Args::parse();
 
     // Initialize logging based on verbosity flag

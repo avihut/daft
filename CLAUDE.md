@@ -4,6 +4,14 @@ This file provides guidance when working with code in this repository.
 
 ## Recent Changes
 
+**Single Binary Architecture Migration (2025-10-18)**
+- Migrated from 6 separate binaries to single multicall binary
+- Reduced total binary size from ~3.5MB to 589KB (83% reduction)
+- All commands now route through single `daft` binary via symlinks
+- Binary detects invocation name (argv[0]) and routes to appropriate command
+- Development workflow streamlined with `make dev` target
+- All 147 tests passing with new architecture
+
 **Project Renamed from `git-worktree-workflow` to `daft` (2025-10-17)**
 - GitHub repository: `https://github.com/avihut/daft` (was `git-worktree-workflow`)
 - Project directory: `/Users/avihu/Projects/daft` (was `git-worktree-workflow`)
@@ -25,9 +33,53 @@ The current worktree commands are intended to be used as custom Git commands (e.
 - **`direnv` integration**: Automatically runs `direnv allow` when entering new worktrees that contain `.envrc` files
 - **Dynamic branch detection**: Scripts query remote repositories to determine actual default branch (main, master, develop, etc.)
 
-## Script Architecture
+## Architecture
 
-The Rust binaries are located in `src/bin/` with shared code in `src/`, and legacy scripts are in `src/legacy/`. All follow these patterns:
+### Single Binary Design
+
+**daft uses a multicall binary architecture** for optimal size and maintainability:
+
+#### How It Works
+1. **Single Entry Point**: `src/main.rs` contains the main binary entry point
+2. **Command Routing**: The binary examines `argv[0]` (how it was invoked) and routes to the appropriate command
+3. **Command Modules**: Individual command implementations live in `src/commands/`
+4. **Symlink Distribution**: During installation/development, symlinks are created:
+   - `git-worktree-clone` → `daft`
+   - `git-worktree-checkout` → `daft`
+   - `git-worktree-checkout-branch` → `daft`
+   - `git-worktree-checkout-branch-from-default` → `daft`
+   - `git-worktree-init` → `daft`
+   - `git-worktree-prune` → `daft`
+   - `git-daft` → `daft`
+
+#### Benefits
+- **Size Efficiency**: 589KB single binary vs ~3.5MB for 6 separate binaries (83% reduction)
+- **Code Sharing**: All commands share the same compiled code for common operations
+- **Easier Distribution**: Only one binary to compile, package, and distribute
+- **Simpler Development**: `make dev` builds once and creates all necessary symlinks
+- **Git Integration**: Symlinks work seamlessly with Git's command discovery
+
+#### Directory Structure
+```
+src/
+├── main.rs              # Multicall binary entry point - routes based on argv[0]
+├── commands/            # Command implementations
+│   ├── mod.rs           # Command module exports
+│   ├── clone.rs         # git-worktree-clone implementation
+│   ├── checkout.rs      # git-worktree-checkout implementation
+│   ├── checkout_branch.rs  # git-worktree-checkout-branch implementation
+│   ├── checkout_branch_from_default.rs
+│   ├── init.rs          # git-worktree-init implementation
+│   └── prune.rs         # git-worktree-prune implementation
+├── lib.rs               # Shared library code
+├── git.rs               # Git operations wrapper
+├── remote.rs            # Remote repository handling
+├── direnv.rs            # Direnv integration
+├── utils.rs             # Utility functions
+└── config.rs            # Configuration handling
+```
+
+Legacy shell scripts remain in `src/legacy/` for backward compatibility but are deprecated.
 
 ### Core Scripts
 
