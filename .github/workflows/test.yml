@@ -210,7 +210,12 @@ jobs:
     
     - name: Run Rust integration tests
       run: make test-integration
-    
+
+    - name: Test shell completions
+      run: |
+        echo "Testing completion generation..."
+        ./tests/integration/test_completions.sh
+
     - name: Test help commands
       run: |
         # Test legacy script help

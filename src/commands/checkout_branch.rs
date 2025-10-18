@@ -22,7 +22,7 @@ run 'direnv allow' (if direnv exists), and finally cd into the new worktree.
 Can be run from anywhere within the Git repository (including deep subdirectories).
 The new worktree will be created at the project root level (alongside .git directory).
 "#)]
-struct Args {
+pub struct Args {
     #[arg(help = "The name for the new branch and the worktree directory")]
     new_branch_name: String,
 

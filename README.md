@@ -87,6 +87,62 @@ ln -s /path/to/daft/src/legacy/* /usr/local/bin/
 git worktree-clone --help
 ```
 
+### Shell Completions
+
+daft provides intelligent shell completions for bash, zsh, and fish shells with dynamic branch name suggestions.
+
+#### Quick Install (Recommended)
+
+```bash
+# After building/installing daft, install completions for all shells
+make install-completions
+
+# Or install manually using daft
+daft completions bash --install
+daft completions zsh --install
+daft completions fish --install
+```
+
+#### Manual Installation by Shell
+
+**Bash:**
+```bash
+# Generate completion file
+daft completions bash --command=git-worktree-checkout > ~/.local/share/bash-completion/completions/git-worktree-checkout
+
+# Repeat for other commands or generate all at once
+make gen-completions-bash
+
+# Add to ~/.bashrc (if not already present)
+if [ -f ~/.local/share/bash-completion/bash_completion ]; then
+    . ~/.local/share/bash-completion/bash_completion
+fi
+```
+
+**Zsh:**
+```bash
+# Add completions directory to fpath (in ~/.zshrc)
+fpath=(~/.zfunc $fpath)
+autoload -Uz compinit && compinit
+
+# Generate completion files
+daft completions zsh --install
+```
+
+**Fish:**
+```bash
+# Fish automatically loads completions from the config directory
+daft completions fish --install
+```
+
+#### Features
+
+- **Tab completion** for all command names and options
+- **Dynamic branch name suggestions** - type `git worktree-checkout fea<TAB>` to see feature branches
+- **Context-aware** - only shows relevant branches for each command
+- **Fast** - completion suggestions return in < 50ms even in large repositories
+- **Pattern suggestions** - suggests `feature/`, `bugfix/`, `hotfix/`, etc. when creating new branches
+
 ## 🛠️ Commands
 
 ### Core Commands

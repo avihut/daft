@@ -18,7 +18,7 @@ use std::path::PathBuf;
 Prunes local Git branches whose remote counterparts have been deleted,
 ensuring any associated worktrees are removed first.
 "#)]
-struct Args {
+pub struct Args {
     #[arg(short, long, help = "Enable verbose output")]
     verbose: bool,
 }
