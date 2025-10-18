@@ -33,7 +33,31 @@ jobs:
     
     - name: Build Rust binaries
       run: cargo build --release
-    
+
+    - name: Verify single binary architecture
+      run: |
+        echo "Verifying single binary architecture..."
+        # Count executables in target/release (excluding .d files and symlinks)
+        BINARY_COUNT=$(find target/release -maxdepth 1 -type f -perm +111 ! -name "*.d" | wc -l | tr -d ' ')
+        echo "Found $BINARY_COUNT binary executable(s)"
+
+        # Verify exactly 1 binary exists
+        if [ "$BINARY_COUNT" -ne 1 ]; then
+          echo "ERROR: Expected exactly 1 binary, found $BINARY_COUNT"
+          echo "Binaries found:"
+          find target/release -maxdepth 1 -type f -perm +111 ! -name "*.d" -exec ls -lh {} \;
+          exit 1
+        fi
+
+        # Verify it's named 'daft'
+        if [ ! -f target/release/daft ]; then
+          echo "ERROR: Binary 'daft' not found"
+          exit 1
+        fi
+
+        echo "✓ Single binary architecture verified: daft binary exists"
+        ls -lh target/release/daft
+
     - name: Run Rust unit tests
       run: cargo test --lib
     
@@ -78,7 +102,31 @@ jobs:
     
     - name: Build Rust binaries
       run: cargo build --release
-    
+
+    - name: Verify single binary architecture
+      run: |
+        echo "Verifying single binary architecture..."
+        # Count executables in target/release (excluding .d files and symlinks)
+        BINARY_COUNT=$(find target/release -maxdepth 1 -type f -perm +111 ! -name "*.d" | wc -l | tr -d ' ')
+        echo "Found $BINARY_COUNT binary executable(s)"
+
+        # Verify exactly 1 binary exists
+        if [ "$BINARY_COUNT" -ne 1 ]; then
+          echo "ERROR: Expected exactly 1 binary, found $BINARY_COUNT"
+          echo "Binaries found:"
+          find target/release -maxdepth 1 -type f -perm +111 ! -name "*.d" -exec ls -lh {} \;
+          exit 1
+        fi
+
+        # Verify it's named 'daft'
+        if [ ! -f target/release/daft ]; then
+          echo "ERROR: Binary 'daft' not found"
+          exit 1
+        fi
+
+        echo "✓ Single binary architecture verified: daft binary exists"
+        ls -lh target/release/daft
+
     - name: Make test scripts executable
       run: chmod +x tests/legacy/*.sh tests/integration/*.sh src/legacy/*
     

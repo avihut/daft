@@ -8,6 +8,7 @@ use std::process::Command;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-checkout-branch-from-default")]
+#[command(version)]
 #[command(about = "Creates a git worktree and branch based on the remote's default branch")]
 #[command(long_about = r#"
 Creates a git worktree and branch based on the REMOTE'S DEFAULT branch

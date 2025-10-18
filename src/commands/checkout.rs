@@ -7,6 +7,7 @@ use daft::{
 
 #[derive(Parser)]
 #[command(name = "git-worktree-checkout")]
+#[command(version)]
 #[command(about = "Creates a git worktree checking out an existing branch")]
 #[command(long_about = r#"
 Creates a git worktree at the project root level, checking out an EXISTING branch,

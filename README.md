@@ -19,26 +19,49 @@ daft is evolving beyond worktree management to provide additional Git workflow e
 
 ## 📦 Installation
 
-### Option 1: Rust Binaries (Recommended)
+### Option 1: Rust Binary (Recommended)
 
-1. Clone this repository:
+**daft uses a single multicall binary architecture** - one 589KB binary with symlinks for all commands.
+
+#### Automated Installation (Recommended)
+
 ```bash
 git clone https://github.com/avihut/daft.git
 cd daft
+./install.sh
 ```
 
-2. Build the Rust binaries:
+The installation script will:
+1. Build the optimized release binary
+2. Create symlinks for all Git commands
+3. Add daft to your PATH (via ~/.bashrc or ~/.zshrc)
+
+#### Manual Installation
+
+1. Clone and build:
 ```bash
+git clone https://github.com/avihut/daft.git
+cd daft
 cargo build --release
 ```
 
-3. Add the release binaries to your PATH:
+2. Create symlinks and add to PATH:
 ```bash
-# Add to your ~/.bashrc, ~/.zshrc, or similar
+# Create development symlinks (from project root)
+make dev
+
+# Add to your PATH
 export PATH="/path/to/daft/target/release:$PATH"
 
-# Or create symlinks to a directory already in your PATH
-ln -s /path/to/daft/target/release/git-worktree-* /usr/local/bin/
+# Or install to system location
+sudo cp target/release/daft /usr/local/bin/
+sudo ln -s /usr/local/bin/daft /usr/local/bin/git-worktree-clone
+sudo ln -s /usr/local/bin/daft /usr/local/bin/git-worktree-checkout
+sudo ln -s /usr/local/bin/daft /usr/local/bin/git-worktree-checkout-branch
+sudo ln -s /usr/local/bin/daft /usr/local/bin/git-worktree-checkout-branch-from-default
+sudo ln -s /usr/local/bin/daft /usr/local/bin/git-worktree-init
+sudo ln -s /usr/local/bin/daft /usr/local/bin/git-worktree-prune
+sudo ln -s /usr/local/bin/daft /usr/local/bin/git-daft
 ```
 
 ### Option 2: Shell Scripts (Legacy - Deprecated)
@@ -76,6 +99,7 @@ git worktree-clone --help
 | `git worktree-checkout-branch` | Create new worktree + new branch |
 | `git worktree-checkout-branch-from-default` | Create new branch from remote's default branch |
 | `git worktree-prune` | Remove worktrees for deleted remote branches |
+| `git daft` | Show daft documentation and available commands |
 
 ### Command Details
 
@@ -263,17 +287,28 @@ See `tests/README.md` for detailed testing documentation.
 
 ## 🏗️ Architecture
 
+### Single Binary Design
+
+**daft uses a multicall binary architecture** - a single 589KB executable that provides all commands:
+
+- **One binary**: `target/release/daft` (589KB)
+- **Multiple symlinks**: `git-worktree-clone`, `git-worktree-checkout`, etc. all point to `daft`
+- **Intelligent routing**: The binary detects how it was invoked (via `argv[0]`) and routes to the appropriate command
+- **83% size reduction**: Compared to 6 separate binaries (~3.5MB), the single binary approach saves ~2.9MB
+
 ### Directory Structure
 ```
 daft/
 ├── src/                     # Rust source code
-│   ├── bin/                 # Binary implementations
-│   │   ├── git-worktree-clone.rs
-│   │   ├── git-worktree-checkout.rs
-│   │   ├── git-worktree-checkout-branch.rs
-│   │   ├── git-worktree-checkout-branch-from-default.rs
-│   │   ├── git-worktree-init.rs
-│   │   └── git-worktree-prune.rs
+│   ├── commands/            # Command implementations
+│   │   ├── clone.rs         # git-worktree-clone
+│   │   ├── checkout.rs      # git-worktree-checkout
+│   │   ├── checkout_branch.rs  # git-worktree-checkout-branch
+│   │   ├── checkout_branch_from_default.rs
+│   │   ├── init.rs          # git-worktree-init
+│   │   ├── prune.rs         # git-worktree-prune
+│   │   └── mod.rs           # Command module
+│   ├── main.rs              # Multicall binary entry point
 │   ├── lib.rs               # Shared library code
 │   ├── git.rs               # Git operations
 │   ├── remote.rs            # Remote repository handling
@@ -288,10 +323,18 @@ daft/
 │   ├── git-worktree-prune              # 150 lines
 │   └── README.md                       # Deprecation notice
 ├── tests/                   # Comprehensive test suite
-│   ├── test_framework.sh    # Test infrastructure
-│   ├── test_*.sh           # Individual test files
-│   └── Makefile            # Test automation
-├── target/                  # Rust build artifacts (gitignored)
+│   ├── legacy/              # Legacy shell script tests
+│   ├── integration/         # Rust integration tests
+│   └── README.md            # Testing documentation
+├── target/release/          # Build artifacts (gitignored)
+│   ├── daft                 # Main binary (589KB)
+│   ├── git-worktree-clone → daft       # Symlinks
+│   ├── git-worktree-checkout → daft
+│   ├── git-worktree-checkout-branch → daft
+│   ├── git-worktree-checkout-branch-from-default → daft
+│   ├── git-worktree-init → daft
+│   ├── git-worktree-prune → daft
+│   └── git-daft → daft
 ├── Cargo.toml              # Rust project configuration
 ├── Cargo.lock              # Rust dependency lock file
 ├── CLAUDE.md               # Project documentation

@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-clone")]
+#[command(version)]
 #[command(about = "Clones a Git repository into a worktree-based directory structure")]
 #[command(long_about = r#"
 Clones a Git repository into a specific directory structure:
