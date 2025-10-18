@@ -346,25 +346,54 @@ The Rust implementation provides significant advantages over the shell scripts:
 4. Run the test suite: `cargo test && make test`
 5. Submit a pull request
 
-### Development Guidelines
+### Local Development Setup
 
-- **Rust Implementation**: Focus development on the Rust codebase (`src/`)
-- **Legacy Scripts**: The shell scripts (`src/legacy/`) are deprecated and in maintenance mode
-- **Testing**: Add both Rust unit tests and shell integration tests
-- **Documentation**: Update both README.md and inline documentation
-
-### Building and Testing
-
+**Quick Start:**
 ```bash
-# Build Rust binaries
-cargo build --release
+# Build binary, create symlinks, and verify
+make dev
 
-# Run all tests
-cargo test              # Rust unit tests
-make test              # Shell integration tests
-cargo clippy           # Linting
-cargo fmt --check      # Formatting
+# Add to PATH for testing Git commands
+export PATH="$PWD/target/release:$PATH"
+
+# Test it works
+git daft
+git worktree-clone --help
 ```
+
+**Development Workflow:**
+```bash
+# 1. Make changes
+vim src/commands/clone.rs
+
+# 2. Rebuild and test
+make dev                           # Quick: build + verify
+./target/release/git-worktree-clone --help
+
+# 3. Run tests
+cargo test --lib                   # Unit tests (fast)
+make test                          # Full test suite (147 tests)
+
+# 4. Quality checks
+cargo clippy -- -D warnings        # Linting
+cargo fmt                          # Formatting
+```
+
+**Useful Make Targets:**
+- `make dev` - Build binary + create symlinks + verify (recommended)
+- `make dev-test` - Full setup + run all tests
+- `make dev-clean` - Remove symlinks (keeps binary)
+- `make help` - Show all available targets
+
+**Architecture Note:**
+daft uses a single binary (589KB) with symlinks for all commands. When you run `make dev`, it creates symlinks in `target/release/` that point to the main `daft` binary. The binary detects how it was invoked (via argv[0]) and routes to the appropriate command.
+
+### Guidelines
+
+- **Focus on Rust**: The shell scripts (`src/legacy/`) are deprecated
+- **Add tests**: Include unit tests for new functionality
+- **Run quality checks**: `cargo clippy` and `cargo fmt` before committing
+- **Update docs**: Keep README.md and inline documentation current
 
 ## 📝 License
 

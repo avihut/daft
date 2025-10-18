@@ -87,6 +87,19 @@ jobs:
         echo "${{ github.workspace }}/src/legacy" >> $GITHUB_PATH
         echo "PATH=${{ github.workspace }}/src/legacy:$PATH" >> $GITHUB_ENV
     
+    - name: Create symlinks for Rust binaries
+      run: |
+        # Create symlinks for the new multicall binary
+        cd target/release
+        ln -sf daft git-worktree-clone
+        ln -sf daft git-worktree-init
+        ln -sf daft git-worktree-checkout
+        ln -sf daft git-worktree-checkout-branch
+        ln -sf daft git-worktree-checkout-branch-from-default
+        ln -sf daft git-worktree-prune
+        ln -sf daft git-daft
+        cd ../..
+
     - name: Add Rust binaries to PATH
       run: |
         echo "${{ github.workspace }}/target/release" >> $GITHUB_PATH
@@ -115,14 +128,18 @@ jobs:
         git worktree-checkout-branch-from-default --help || echo "Legacy help command test"
         git worktree-init --help || echo "Legacy help command test"
         git worktree-prune --help || echo "Legacy help command test"
-        
-        # Test Rust binary help
+
+        # Test Rust binary help (via symlinks)
         ./target/release/git-worktree-clone --help
         ./target/release/git-worktree-checkout --help
         ./target/release/git-worktree-checkout-branch --help
         ./target/release/git-worktree-checkout-branch-from-default --help
         ./target/release/git-worktree-init --help
         ./target/release/git-worktree-prune --help
+
+        # Test git daft documentation command
+        ./target/release/daft | head -20
+        ./target/release/git-daft | head -20
     
     - name: Upload test results
       uses: actions/upload-artifact@v4
