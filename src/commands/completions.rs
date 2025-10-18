@@ -4,9 +4,8 @@
 /// - Static completions for flags and options (via clap_complete)
 /// - Dynamic completions for branch names (via daft __complete helper)
 use anyhow::{Context, Result};
-use clap::{CommandFactory, Parser};
-use clap_complete::{generate, Shell};
-use std::io;
+use clap::Parser;
+use clap_complete::Shell;
 use std::path::PathBuf;
 
 /// Available daft commands that need completion scripts
@@ -65,62 +64,315 @@ pub fn run() -> Result<()> {
 
 /// Generate completion script for a specific command
 fn generate_completion_for_command(command_name: &str, shell: Shell) -> Result<()> {
-    // For now, we'll generate a basic completion structure
-    // This will be enhanced with dynamic completion hooks
-    match command_name {
-        "git-worktree-clone" => {
-            generate(
-                shell,
-                &mut crate::commands::clone::Args::command(),
-                command_name,
-                &mut io::stdout(),
-            );
-        }
-        "git-worktree-init" => {
-            generate(
-                shell,
-                &mut crate::commands::init::Args::command(),
-                command_name,
-                &mut io::stdout(),
-            );
-        }
-        "git-worktree-checkout" => {
-            generate(
-                shell,
-                &mut crate::commands::checkout::Args::command(),
-                command_name,
-                &mut io::stdout(),
-            );
-        }
-        "git-worktree-checkout-branch" => {
-            generate(
-                shell,
-                &mut crate::commands::checkout_branch::Args::command(),
-                command_name,
-                &mut io::stdout(),
-            );
-        }
-        "git-worktree-checkout-branch-from-default" => {
-            generate(
-                shell,
-                &mut crate::commands::checkout_branch_from_default::Args::command(),
-                command_name,
-                &mut io::stdout(),
-            );
-        }
-        "git-worktree-prune" => {
-            generate(
-                shell,
-                &mut crate::commands::prune::Args::command(),
-                command_name,
-                &mut io::stdout(),
-            );
-        }
+    // Generate custom completion scripts with dynamic branch completion
+    match shell {
+        Shell::Bash => generate_bash_completion(command_name)?,
+        Shell::Zsh => generate_zsh_completion(command_name)?,
+        Shell::Fish => generate_fish_completion(command_name)?,
         _ => {
-            anyhow::bail!("Unknown command: {}", command_name);
+            anyhow::bail!("Unsupported shell: {:?}", shell);
         }
     }
 
+    Ok(())
+}
+
+/// Generate completion script as a String
+fn generate_completion_string_for_command(command_name: &str, shell: Shell) -> Result<String> {
+    match shell {
+        Shell::Bash => generate_bash_completion_string(command_name),
+        Shell::Zsh => generate_zsh_completion_string(command_name),
+        Shell::Fish => generate_fish_completion_string(command_name),
+        _ => anyhow::bail!("Unsupported shell: {:?}", shell),
+    }
+}
+
+/// Generate bash completion string
+fn generate_bash_completion_string(command_name: &str) -> Result<String> {
+    let mut output = String::new();
+    let has_branches = matches!(
+        command_name,
+        "git-worktree-checkout" | "git-worktree-checkout-branch"
+    );
+
+    let func_name = command_name.replace('-', "_");
+
+    output.push_str(&format!("_{func_name}() {{\n"));
+    output.push_str("    local cur prev words cword\n");
+    output.push_str("    _init_completion || return\n");
+    output.push('\n');
+
+    if has_branches {
+        output.push_str("    # Dynamic branch name completion for positional arguments\n");
+        output.push_str(&format!("    if [[ $cword -eq 1 ]] || [[ $cword -eq 2 && \"{}\" == *\"checkout-branch\"* ]]; then\n", command_name));
+        output.push_str("        local branches\n");
+        output.push_str(&format!(
+            "        branches=$(daft __complete \"{}\" \"$cur\" 2>/dev/null)\n",
+            command_name
+        ));
+        output.push_str("        if [[ -n \"$branches\" ]]; then\n");
+        output.push_str("            COMPREPLY=( $(compgen -W \"$branches\" -- \"$cur\") )\n");
+        output.push_str("            return 0\n");
+        output.push_str("        fi\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
+    output.push_str("    # Static flag completions\n");
+    output.push_str("    if [[ \"$cur\" == -* ]]; then\n");
+    output.push_str("        local flags=\"");
+
+    match command_name {
+        "git-worktree-clone" => {
+            output.push_str("-n --no-checkout -q --quiet -a --all-branches -h --help -V --version")
+        }
+        "git-worktree-init" => {
+            output.push_str("--bare -q --quiet -b --initial-branch -h --help -V --version")
+        }
+        "git-worktree-checkout" => output.push_str("-v --verbose -h --help -V --version"),
+        "git-worktree-checkout-branch" => {
+            output.push_str("-q --quiet -v --verbose -h --help -V --version")
+        }
+        "git-worktree-checkout-branch-from-default" => {
+            output.push_str("-v --verbose -h --help -V --version")
+        }
+        "git-worktree-prune" => output.push_str("-v --verbose -h --help -V --version"),
+        _ => {}
+    }
+
+    output.push_str("\"\n");
+    output.push_str("        COMPREPLY=( $(compgen -W \"$flags\" -- \"$cur\") )\n");
+    output.push_str("        return 0\n");
+    output.push_str("    fi\n");
+    output.push_str("}\n");
+    output.push('\n');
+    output.push_str(&format!("complete -F _{func_name} {command_name}\n"));
+
+    Ok(output)
+}
+
+/// Generate zsh completion string
+fn generate_zsh_completion_string(command_name: &str) -> Result<String> {
+    let mut output = String::new();
+    let has_branches = matches!(
+        command_name,
+        "git-worktree-checkout" | "git-worktree-checkout-branch"
+    );
+
+    let func_name = command_name.replace('-', "_");
+
+    output.push_str(&format!("#compdef {command_name}\n"));
+    output.push('\n');
+
+    // Shared implementation function
+    output.push_str(&format!("__{func_name}_impl() {{\n"));
+    output.push_str("    local curword\n");
+    output.push_str("    curword=\"${words[$CURRENT]}\"\n");
+    output.push('\n');
+
+    if has_branches {
+        output.push_str("    # Branch completions for non-flag words\n");
+        output.push_str("    if [[ $curword != -* ]]; then\n");
+        output.push_str("        local -a branches\n");
+        output.push_str(&format!(
+            "        branches=($(daft __complete \"{}\" \"$curword\" 2>/dev/null))\n",
+            command_name
+        ));
+        output.push_str("        if [[ ${#branches[@]} -gt 0 ]]; then\n");
+        output.push_str("            compadd -a branches\n");
+        output.push_str("        fi\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
+    output.push_str("    # Flag completions\n");
+    output.push_str("    local -a flags\n");
+    output.push_str("    flags=(\n");
+
+    match command_name {
+        "git-worktree-clone" => {
+            output.push_str("        '-n' '--no-checkout'\n");
+            output.push_str("        '-q' '--quiet'\n");
+            output.push_str("        '-a' '--all-branches'\n");
+            output.push_str("        '-h' '--help'\n");
+            output.push_str("        '-V' '--version'\n");
+        }
+        "git-worktree-init" => {
+            output.push_str("        '--bare'\n");
+            output.push_str("        '-q' '--quiet'\n");
+            output.push_str("        '-b' '--initial-branch'\n");
+            output.push_str("        '-h' '--help'\n");
+            output.push_str("        '-V' '--version'\n");
+        }
+        "git-worktree-checkout" => {
+            output.push_str("        '-v' '--verbose'\n");
+            output.push_str("        '-h' '--help'\n");
+            output.push_str("        '-V' '--version'\n");
+        }
+        "git-worktree-checkout-branch" => {
+            output.push_str("        '-q' '--quiet'\n");
+            output.push_str("        '-v' '--verbose'\n");
+            output.push_str("        '-h' '--help'\n");
+            output.push_str("        '-V' '--version'\n");
+        }
+        "git-worktree-checkout-branch-from-default" => {
+            output.push_str("        '-v' '--verbose'\n");
+            output.push_str("        '-h' '--help'\n");
+            output.push_str("        '-V' '--version'\n");
+        }
+        "git-worktree-prune" => {
+            output.push_str("        '-v' '--verbose'\n");
+            output.push_str("        '-h' '--help'\n");
+            output.push_str("        '-V' '--version'\n");
+        }
+        _ => {}
+    }
+
+    output.push_str("    )\n");
+    output.push_str("    compadd -a flags\n");
+    output.push_str("}\n");
+    output.push('\n');
+
+    // Wrapper for direct invocation (git-worktree-checkout)
+    output.push_str(&format!("_{func_name}() {{\n"));
+    output.push_str(&format!("    __{func_name}_impl\n"));
+    output.push_str("}\n");
+    output.push('\n');
+
+    // Wrapper for git subcommand invocation (git worktree-checkout)
+    // Git's completion system expects _git-<subcommand>
+    let git_func_name = format!("_git-{}", command_name.trim_start_matches("git-"));
+    output.push_str(&format!("{git_func_name}() {{\n"));
+    output.push_str(&format!("    __{func_name}_impl\n"));
+    output.push_str("}\n");
+    output.push('\n');
+
+    // Register both
+    output.push_str(&format!("compdef _{func_name} {command_name}\n"));
+
+    Ok(output)
+}
+
+/// Generate fish completion string
+fn generate_fish_completion_string(command_name: &str) -> Result<String> {
+    let mut output = String::new();
+    let has_branches = matches!(
+        command_name,
+        "git-worktree-checkout" | "git-worktree-checkout-branch"
+    );
+
+    if has_branches {
+        output.push_str("# Dynamic branch name completion\n");
+        output.push_str(&format!(
+            "complete -c {} -f -a \"(daft __complete {} '')\"\n",
+            command_name, command_name
+        ));
+        output.push('\n');
+    }
+
+    output.push_str("# Static flag completions\n");
+
+    match command_name {
+        "git-worktree-clone" => {
+            output.push_str(&format!(
+                "complete -c {command_name} -s n -l no-checkout -d 'Only clone the repository'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s q -l quiet -d 'Suppress output'\n"
+            ));
+            output.push_str(&format!("complete -c {command_name} -s a -l all-branches -d 'Create worktrees for all branches'\n"));
+            output.push_str(&format!(
+                "complete -c {command_name} -s h -l help -d 'Print help'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s V -l version -d 'Print version'\n"
+            ));
+        }
+        "git-worktree-init" => {
+            output.push_str(&format!(
+                "complete -c {command_name} -l bare -d 'Only create bare repository'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s q -l quiet -d 'Suppress output'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s b -l initial-branch -d 'Set initial branch' -r\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s h -l help -d 'Print help'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s V -l version -d 'Print version'\n"
+            ));
+        }
+        "git-worktree-checkout" => {
+            output.push_str(&format!(
+                "complete -c {command_name} -s v -l verbose -d 'Enable verbose output'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s h -l help -d 'Print help'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s V -l version -d 'Print version'\n"
+            ));
+        }
+        "git-worktree-checkout-branch" => {
+            output.push_str(&format!(
+                "complete -c {command_name} -s q -l quiet -d 'Suppress output'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s v -l verbose -d 'Enable verbose output'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s h -l help -d 'Print help'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s V -l version -d 'Print version'\n"
+            ));
+        }
+        "git-worktree-checkout-branch-from-default" => {
+            output.push_str(&format!(
+                "complete -c {command_name} -s v -l verbose -d 'Enable verbose output'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s h -l help -d 'Print help'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s V -l version -d 'Print version'\n"
+            ));
+        }
+        "git-worktree-prune" => {
+            output.push_str(&format!(
+                "complete -c {command_name} -s v -l verbose -d 'Enable verbose output'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s h -l help -d 'Print help'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c {command_name} -s V -l version -d 'Print version'\n"
+            ));
+        }
+        _ => {}
+    }
+
+    Ok(output)
+}
+
+/// Generate bash completion with dynamic branch name support
+fn generate_bash_completion(command_name: &str) -> Result<()> {
+    print!("{}", generate_bash_completion_string(command_name)?);
+    Ok(())
+}
+
+/// Generate zsh completion with dynamic branch name support
+fn generate_zsh_completion(command_name: &str) -> Result<()> {
+    print!("{}", generate_zsh_completion_string(command_name)?);
+    Ok(())
+}
+
+/// Generate fish completion with dynamic branch name support
+fn generate_fish_completion(command_name: &str) -> Result<()> {
+    print!("{}", generate_fish_completion_string(command_name)?);
     Ok(())
 }
 
@@ -140,62 +392,12 @@ fn install_completions(shell: Shell) -> Result<()> {
 
         eprintln!("  Installing: {}", filename);
 
-        let file = std::fs::File::create(&file_path)
-            .with_context(|| format!("Failed to create completion file: {:?}", file_path))?;
-
-        let mut writer = io::BufWriter::new(file);
-
-        match *command {
-            "git-worktree-clone" => {
-                generate(
-                    shell,
-                    &mut crate::commands::clone::Args::command(),
-                    *command,
-                    &mut writer,
-                );
-            }
-            "git-worktree-init" => {
-                generate(
-                    shell,
-                    &mut crate::commands::init::Args::command(),
-                    *command,
-                    &mut writer,
-                );
-            }
-            "git-worktree-checkout" => {
-                generate(
-                    shell,
-                    &mut crate::commands::checkout::Args::command(),
-                    *command,
-                    &mut writer,
-                );
-            }
-            "git-worktree-checkout-branch" => {
-                generate(
-                    shell,
-                    &mut crate::commands::checkout_branch::Args::command(),
-                    *command,
-                    &mut writer,
-                );
-            }
-            "git-worktree-checkout-branch-from-default" => {
-                generate(
-                    shell,
-                    &mut crate::commands::checkout_branch_from_default::Args::command(),
-                    *command,
-                    &mut writer,
-                );
-            }
-            "git-worktree-prune" => {
-                generate(
-                    shell,
-                    &mut crate::commands::prune::Args::command(),
-                    *command,
-                    &mut writer,
-                );
-            }
-            _ => unreachable!(),
-        }
+        // Generate and write completion file
+        std::fs::write(
+            &file_path,
+            generate_completion_string_for_command(command, shell)?,
+        )
+        .with_context(|| format!("Failed to write completion file: {:?}", file_path))?;
     }
 
     eprintln!("\n✓ Completions installed successfully!");

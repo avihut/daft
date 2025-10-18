@@ -42,7 +42,7 @@ test_bash_completion_generation() {
     local output
     output=$("$DAFT_BIN" completions bash --command=git-worktree-checkout 2>&1)
 
-    if [[ "$output" == *"_git-worktree-checkout"* ]] && [[ "$output" == *"COMPREPLY"* ]]; then
+    if [[ "$output" == *"_git_worktree_checkout"* ]] && [[ "$output" == *"COMPREPLY"* ]]; then
         pass_test
     else
         fail_test "Bash completion output doesn't contain expected patterns"
@@ -56,7 +56,7 @@ test_zsh_completion_generation() {
     local output
     output=$("$DAFT_BIN" completions zsh --command=git-worktree-checkout 2>&1)
 
-    if [[ "$output" == *"#compdef git-worktree-checkout"* ]] && [[ "$output" == *"_git-worktree-checkout"* ]]; then
+    if [[ "$output" == *"#compdef git-worktree-checkout"* ]] && [[ "$output" == *"_git_worktree_checkout"* ]]; then
         pass_test
     else
         fail_test "Zsh completion output doesn't contain expected patterns"
@@ -127,6 +127,62 @@ test_branch_pattern_suggestions() {
     fi
 }
 
+# Test: Bash completion includes dynamic branch wiring
+test_bash_dynamic_wiring() {
+    run_test "Bash completion includes dynamic branch logic"
+
+    local output
+    output=$("$DAFT_BIN" completions bash --command=git-worktree-checkout 2>&1)
+
+    if [[ "$output" == *'daft __complete'* ]] && [[ "$output" == *'branches='* ]]; then
+        pass_test
+    else
+        fail_test "Bash completion missing 'daft __complete' call for dynamic branches"
+    fi
+}
+
+# Test: Zsh completion includes dynamic branch wiring
+test_zsh_dynamic_wiring() {
+    run_test "Zsh completion includes dynamic branch logic"
+
+    local output
+    output=$("$DAFT_BIN" completions zsh --command=git-worktree-checkout 2>&1)
+
+    if [[ "$output" == *'daft __complete'* ]] && [[ "$output" == *'branches='* ]]; then
+        pass_test
+    else
+        fail_test "Zsh completion missing 'daft __complete' call for dynamic branches"
+    fi
+}
+
+# Test: Fish completion includes dynamic branch wiring
+test_fish_dynamic_wiring() {
+    run_test "Fish completion includes dynamic branch logic"
+
+    local output
+    output=$("$DAFT_BIN" completions fish --command=git-worktree-checkout 2>&1)
+
+    if [[ "$output" == *'daft __complete'* ]]; then
+        pass_test
+    else
+        fail_test "Fish completion missing 'daft __complete' call for dynamic branches"
+    fi
+}
+
+# Test: Completions without dynamic branches don't include __complete
+test_prune_no_dynamic() {
+    run_test "Prune completion has no dynamic logic (as expected)"
+
+    local output
+    output=$("$DAFT_BIN" completions bash --command=git-worktree-prune 2>&1)
+
+    if [[ "$output" != *'daft __complete'* ]]; then
+        pass_test
+    else
+        fail_test "Prune completion incorrectly includes dynamic branch logic"
+    fi
+}
+
 # Main test execution
 main() {
     echo "========================================="
@@ -147,6 +203,12 @@ main() {
     test_fish_completion_generation
     test_dynamic_branch_completion
     test_branch_pattern_suggestions
+
+    # Test dynamic completion wiring
+    test_bash_dynamic_wiring
+    test_zsh_dynamic_wiring
+    test_fish_dynamic_wiring
+    test_prune_no_dynamic
 
     # Print summary
     echo "========================================="
