@@ -19,71 +19,113 @@ daft is evolving beyond worktree management to provide additional Git workflow e
 
 ## 📦 Installation
 
-### Option 1: Rust Binary (Recommended)
-
 **daft uses a single multicall binary architecture** - one 589KB binary with symlinks for all commands.
 
-#### Automated Installation (Recommended)
+### macOS
+
+#### Homebrew (Recommended)
 
 ```bash
-git clone https://github.com/avihut/daft.git
-cd daft
-./install.sh
+brew install avihut/daft
 ```
 
-The installation script will:
-1. Build the optimized release binary
-2. Create symlinks for all Git commands
-3. Add daft to your PATH (via ~/.bashrc or ~/.zshrc)
+This automatically:
+- Installs the `daft` binary
+- Creates symlinks for all `git-worktree-*` commands
+- Installs shell completions (bash, zsh, fish)
+- Adds commands to your PATH
 
-#### Manual Installation
+#### From Source
 
-1. Clone and build:
 ```bash
 git clone https://github.com/avihut/daft.git
 cd daft
 cargo build --release
-```
 
-2. Create symlinks and add to PATH:
-```bash
-# Create development symlinks (from project root)
-make dev
-
-# Add to your PATH
-export PATH="/path/to/daft/target/release:$PATH"
-
-# Or install to system location
+# Install system-wide
 sudo cp target/release/daft /usr/local/bin/
-sudo ln -s /usr/local/bin/daft /usr/local/bin/git-worktree-clone
-sudo ln -s /usr/local/bin/daft /usr/local/bin/git-worktree-checkout
-sudo ln -s /usr/local/bin/daft /usr/local/bin/git-worktree-checkout-branch
-sudo ln -s /usr/local/bin/daft /usr/local/bin/git-worktree-checkout-branch-from-default
-sudo ln -s /usr/local/bin/daft /usr/local/bin/git-worktree-init
-sudo ln -s /usr/local/bin/daft /usr/local/bin/git-worktree-prune
-sudo ln -s /usr/local/bin/daft /usr/local/bin/git-daft
+cd /usr/local/bin/
+sudo ln -s daft git-worktree-clone
+sudo ln -s daft git-worktree-checkout
+sudo ln -s daft git-worktree-checkout-branch
+sudo ln -s daft git-worktree-checkout-branch-from-default
+sudo ln -s daft git-worktree-init
+sudo ln -s daft git-worktree-prune
+sudo ln -s daft git-daft
 ```
 
-### Option 2: Shell Scripts (Legacy - Deprecated)
+### Windows
 
-⚠️ **DEPRECATED**: The shell scripts are deprecated. Please use the Rust implementation.
+#### PowerShell Installer (Recommended)
 
-The humble origins of this project.
+```powershell
+irm https://github.com/avihut/daft/releases/latest/download/daft-installer.ps1 | iex
+```
 
-1. Clone this repository (same as above)
+This automatically:
+- Downloads the latest Windows binary
+- Installs to your local bin directory
+- Creates shims for all `git-worktree-*` commands
+- Adds to your PATH
 
-2. Add the legacy scripts to your PATH:
+#### MSI Installer
+
+Download the `.msi` installer from [GitHub Releases](https://github.com/avihut/daft/releases/latest) and run it.
+
+#### Scoop (Coming Soon)
+
+```powershell
+scoop bucket add avihut https://github.com/avihut/daft
+scoop install daft
+```
+
+### Linux
+
+#### From Binary Release
+
+Download the appropriate binary for your platform from [GitHub Releases](https://github.com/avihut/daft/releases/latest):
+
 ```bash
-# Add to your ~/.bashrc, ~/.zshrc, or similar
-export PATH="/path/to/daft/src/legacy:$PATH"
+# Download (replace with actual version and architecture)
+wget https://github.com/avihut/daft/releases/latest/download/daft-x86_64-unknown-linux-gnu.tar.xz
 
-# Or create symlinks to a directory already in your PATH
-ln -s /path/to/daft/src/legacy/* /usr/local/bin/
+# Extract
+tar -xf daft-x86_64-unknown-linux-gnu.tar.xz
+
+# Install system-wide
+sudo cp daft /usr/local/bin/
+cd /usr/local/bin/
+sudo ln -s daft git-worktree-clone
+sudo ln -s daft git-worktree-checkout
+sudo ln -s daft git-worktree-checkout-branch
+sudo ln -s daft git-worktree-checkout-branch-from-default
+sudo ln -s daft git-worktree-init
+sudo ln -s daft git-worktree-prune
+sudo ln -s daft git-daft
+```
+
+#### From Source
+
+```bash
+git clone https://github.com/avihut/daft.git
+cd daft
+cargo build --release
+
+# Install (same as above)
+sudo cp target/release/daft /usr/local/bin/
+# ... create symlinks as above
 ```
 
 ### Verify Installation
 
 ```bash
+# Check version
+daft --version
+
+# View documentation
+git daft
+
+# Test a command
 git worktree-clone --help
 ```
 
