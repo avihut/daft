@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-init")]
-#[command(version)]
+#[command(version = daft::VERSION)]
 #[command(about = "Initializes a new Git repository in the worktree workflow structure")]
 #[command(long_about = r#"
 Initializes a new Git repository in the worktree workflow structure:

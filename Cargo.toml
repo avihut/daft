@@ -26,6 +26,7 @@ which = "8.0"
 tempfile = "3.8"
 regex = "1.10"
 url = "2.5"
+git-version = "0.3"
 
 [dev-dependencies]
 tempfile = "3.8"
