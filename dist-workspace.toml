@@ -16,7 +16,7 @@ pr-run-mode = "plan"
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
 # A GitHub repo to push Homebrew formulas to
-tap = "avihut/daft"
+tap = "avihut/homebrew-daft"
 # Skip checking whether the specified configuration files are up to date
 allow-dirty = ["ci"]
 # Path that installers should place binaries in
