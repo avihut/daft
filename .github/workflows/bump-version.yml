@@ -80,11 +80,27 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Final version: $VERSION"
 
-      - name: Create and push tag
+      - name: Update Cargo.toml and create tag
         run: |
           VERSION="${{ steps.final.outputs.version }}"
+          # Remove 'v' prefix for Cargo.toml
+          CARGO_VERSION="${VERSION#v}"
+
           git config user.name "wheatley-the-moronic-ci-bot[bot]"
           git config user.email "wheatley-the-moronic-ci-bot[bot]@users.noreply.github.com"
+
+          # Update version in Cargo.toml
+          sed -i "s/^version = .*/version = \"$CARGO_VERSION\"/" Cargo.toml
+
+          # Commit version bump
+          git add Cargo.toml
+          git commit -m "chore: release $VERSION"
+
+          # Create tag on the version bump commit
           git tag -a "$VERSION" -m "Release $VERSION"
+
+          # Push both the commit and tag
+          git push origin master
           git push origin "$VERSION"
-          echo "Created and pushed tag: $VERSION"
+
+          echo "Updated Cargo.toml, committed, and created tag: $VERSION"
