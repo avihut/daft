@@ -92,15 +92,18 @@ jobs:
           # Update version in Cargo.toml
           sed -i "s/^version = .*/version = \"$CARGO_VERSION\"/" Cargo.toml
 
-          # Commit version bump
-          git add Cargo.toml
-          git commit -m "chore: release $VERSION"
+          # Only commit if Cargo.toml actually changed
+          # (it won't change if this is a manual/major version bump from develop)
+          if git diff --quiet Cargo.toml; then
+            echo "Cargo.toml already at $CARGO_VERSION, skipping commit"
+          else
+            git add Cargo.toml
+            git commit -m "chore: release $VERSION"
+            git push origin master
+          fi
 
-          # Create tag on the version bump commit
+          # Create and push tag
           git tag -a "$VERSION" -m "Release $VERSION"
-
-          # Push both the commit and tag
-          git push origin master
           git push origin "$VERSION"
 
-          echo "Updated Cargo.toml, committed, and created tag: $VERSION"
+          echo "Created tag: $VERSION"
