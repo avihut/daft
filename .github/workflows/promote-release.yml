@@ -86,3 +86,23 @@ jobs:
           git push origin develop --force-with-lease
 
           echo "Bumped develop to v${{ inputs.next_version }}"
+
+      - name: Create milestone for next version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEXT_VERSION="${{ inputs.next_version }}"
+
+          # Check if milestone already exists
+          EXISTING=$(gh api "repos/${{ github.repository }}/milestones" --jq ".[] | select(.title==\"v${NEXT_VERSION}\") | .number")
+
+          if [ -n "$EXISTING" ]; then
+            echo "Milestone v${NEXT_VERSION} already exists (number: $EXISTING)"
+          else
+            gh api "repos/${{ github.repository }}/milestones" \
+              -X POST \
+              -f title="v${NEXT_VERSION}" \
+              -f state="open" \
+              -f description="Development milestone for v${NEXT_VERSION}"
+            echo "Created milestone v${NEXT_VERSION}"
+          fi
