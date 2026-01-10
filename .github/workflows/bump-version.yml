@@ -107,3 +107,12 @@ jobs:
           git push origin "$VERSION"
 
           echo "Created tag: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger release workflow
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          VERSION="${{ steps.final.outputs.version }}"
+          echo "Triggering release workflow for $VERSION"
+          gh workflow run release.yml -f tag="$VERSION"
