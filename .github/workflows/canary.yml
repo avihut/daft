@@ -1,0 +1,34 @@
+name: Canary Release
+
+on:
+  push:
+    branches: [develop]
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.WHEATLEY_BOT_APP_ID }}
+          private-key: ${{ secrets.WHEATLEY_BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Create canary tag
+        run: |
+          # Read target version from Cargo.toml
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          CANARY_TAG="v${VERSION}-canary.${{ github.run_number }}"
+
+          git config user.name "wheatley-the-moronic-ci-bot[bot]"
+          git config user.email "wheatley-the-moronic-ci-bot[bot]@users.noreply.github.com"
+          git tag -a "$CANARY_TAG" -m "Canary release $CANARY_TAG"
+          git push origin "$CANARY_TAG"
+
+          echo "Created canary release: $CANARY_TAG"

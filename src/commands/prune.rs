@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-prune")]
-#[command(version)]
+#[command(version = daft::VERSION)]
 #[command(about = "Prunes local Git branches whose remote counterparts have been deleted")]
 #[command(long_about = r#"
 Prunes local Git branches whose remote counterparts have been deleted,

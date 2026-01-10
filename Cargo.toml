@@ -5,10 +5,17 @@ edition = "2021"
 description = "A comprehensive Git extensions toolkit that enhances developer workflows, starting with powerful worktree management"
 authors = ["avihu <avihu@users.noreply.github.com>"]
 license = "MIT"
+homepage = "https://github.com/avihut/daft"
 repository = "https://github.com/avihut/daft"
 readme = "README.md"
 keywords = ["git", "worktree", "workflow", "cli"]
 categories = ["command-line-utilities", "development-tools"]
+
+[package.metadata.wix]
+upgrade-guid = "9249F38F-28C0-4EDA-AA9F-DF597369AB67"
+path-guid = "0D7614BC-BA63-41C9-9CA3-F3469DC02EBB"
+license = false
+eula = false
 
 [dependencies]
 clap = { version = "4.5", features = ["derive", "cargo"] }
@@ -19,6 +26,7 @@ which = "8.0"
 tempfile = "3.8"
 regex = "1.10"
 url = "2.5"
+git-version = "0.3"
 
 [dev-dependencies]
 tempfile = "3.8"
@@ -32,3 +40,8 @@ lto = "fat"          # Full link-time optimization
 codegen-units = 1    # Single codegen unit for better optimization
 strip = true         # Strip debug symbols
 panic = "abort"      # Abort on panic (smaller binary)
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
