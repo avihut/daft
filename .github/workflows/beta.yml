@@ -1,0 +1,62 @@
+name: Beta Release
+
+on:
+  schedule:
+    - cron: '0 10 1 * *'  # 1st of every month at 10:00 UTC
+  workflow_dispatch:       # Manual trigger option
+
+jobs:
+  beta:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.WHEATLEY_BOT_APP_ID }}
+          private-key: ${{ secrets.WHEATLEY_BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Check for changes since last beta
+        id: check-changes
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          LAST_BETA=$(git tag -l "v${VERSION}-beta.*" | sort -V | tail -n1)
+
+          if [ -z "$LAST_BETA" ]; then
+            echo "No previous beta found, will create first beta"
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "beta_number=1" >> "$GITHUB_OUTPUT"
+          else
+            # Check if there are commits since last beta
+            COMMITS=$(git rev-list ${LAST_BETA}..HEAD --count)
+            if [ "$COMMITS" -gt 0 ]; then
+              echo "Found $COMMITS commits since $LAST_BETA"
+              echo "has_changes=true" >> "$GITHUB_OUTPUT"
+              BETA_NUM=$(echo "$LAST_BETA" | sed 's/.*beta\.//')
+              echo "beta_number=$((BETA_NUM + 1))" >> "$GITHUB_OUTPUT"
+            else
+              echo "No changes since $LAST_BETA, skipping beta release"
+              echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create beta tag
+        if: steps.check-changes.outputs.has_changes == 'true'
+        run: |
+          VERSION="${{ steps.check-changes.outputs.version }}"
+          BETA_NUM="${{ steps.check-changes.outputs.beta_number }}"
+          BETA_TAG="v${VERSION}-beta.${BETA_NUM}"
+
+          git config user.name "wheatley-the-moronic-ci-bot[bot]"
+          git config user.email "wheatley-the-moronic-ci-bot[bot]@users.noreply.github.com"
+          git tag -a "$BETA_TAG" -m "Beta release $BETA_TAG"
+          git push origin "$BETA_TAG"
+
+          echo "Created beta release: $BETA_TAG"

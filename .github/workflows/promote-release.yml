@@ -1,0 +1,88 @@
+name: Promote to Stable Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      next_version:
+        description: 'Next development version (e.g., 3.0.0)'
+        required: true
+        type: string
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.WHEATLEY_BOT_APP_ID }}
+          private-key: ${{ secrets.WHEATLEY_BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Get release version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing version: $VERSION"
+
+      - name: Configure git
+        run: |
+          git config user.name "wheatley-the-moronic-ci-bot[bot]"
+          git config user.email "wheatley-the-moronic-ci-bot[bot]@users.noreply.github.com"
+
+      - name: Rebase develop onto master and fast-forward
+        run: |
+          # Fetch latest master
+          git fetch origin master
+
+          # Rebase develop onto master for flat history
+          git rebase origin/master
+
+          # Checkout master and fast-forward to develop
+          git checkout master
+          git merge --ff-only develop
+
+          # Push updated master
+          git push origin master
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          # Get last stable tag
+          LAST_STABLE=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]' | grep -v '-' | sort -V | tail -n1)
+
+          echo "## What's Changed in v${{ steps.version.outputs.version }}" > release_notes.md
+          echo "" >> release_notes.md
+
+          if [ -n "$LAST_STABLE" ]; then
+            git log ${LAST_STABLE}..HEAD --pretty=format:"- %s" >> release_notes.md
+          else
+            git log --pretty=format:"- %s" >> release_notes.md
+          fi
+
+          echo "" >> release_notes.md
+          cat release_notes.md
+
+      - name: Bump develop to next version
+        run: |
+          git checkout develop
+
+          # Rebase onto new master
+          git rebase master
+
+          # Update Cargo.toml to next version
+          sed -i 's/^version = .*/version = "${{ inputs.next_version }}"/' Cargo.toml
+
+          git add Cargo.toml
+          git commit -m "chore: begin v${{ inputs.next_version }} development"
+
+          git push origin develop --force-with-lease
+
+          echo "Bumped develop to v${{ inputs.next_version }}"

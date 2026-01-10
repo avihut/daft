@@ -536,6 +536,42 @@ daft uses a single binary (589KB) with symlinks for all commands. When you run `
 - **Run quality checks**: `cargo clippy` and `cargo fmt` before committing
 - **Update docs**: Keep README.md and inline documentation current
 
+## 📦 Release Process
+
+daft uses a multi-channel release system:
+
+| Channel | Branch | Trigger | Version Pattern | Audience |
+|---------|--------|---------|-----------------|----------|
+| **Stable** | master | Every push | v1.0.X | All users |
+| **Canary** | develop | Every push | v2.0.0-canary.X | Developers |
+| **Beta** | develop | Monthly | v2.0.0-beta.X | Early adopters |
+
+### Release Channels
+
+- **Stable (master)**: Auto-patches on every push. Manual minor/major via Cargo.toml bump.
+- **Canary (develop)**: Bleeding-edge builds on every commit. Use at your own risk.
+- **Beta (develop)**: Monthly curated releases for testing upcoming versions.
+
+### Promoting a Major/Minor Release
+
+To release a new major or minor version:
+
+1. Ensure `develop` branch has all features for the release
+2. Go to Actions → "Promote to Stable Release"
+3. Enter the next development version (e.g., `3.0.0`)
+4. The workflow rebases develop onto master (flat history) and bumps develop
+
+### Installing Pre-release Versions
+
+```bash
+# Install specific canary/beta from GitHub releases
+# Download from: https://github.com/avihut/daft/releases
+
+# Or build from develop branch
+git clone -b develop https://github.com/avihut/daft.git
+cd daft && cargo build --release
+```
+
 ## 📝 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
