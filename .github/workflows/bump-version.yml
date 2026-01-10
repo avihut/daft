@@ -98,7 +98,7 @@ jobs:
             echo "Cargo.toml already at $CARGO_VERSION, skipping commit"
           else
             git add Cargo.toml
-            git commit -m "chore: release $VERSION"
+            git commit -m "chore: release $VERSION [skip ci]"
             git push origin master
           fi
 
