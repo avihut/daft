@@ -23,8 +23,8 @@ jobs:
       - name: Get latest version tag
         id: get-version
         run: |
-          # Get latest semver tag, default to v0.0.0 if none exist
-          LATEST=$(git tag -l 'v*.*.*' | sort -V | tail -n1)
+          # Get latest stable semver tag (exclude prereleases with hyphens)
+          LATEST=$(git tag -l 'v*.*.*' | grep -v '-' | sort -V | tail -n1)
           if [ -z "$LATEST" ]; then
             LATEST="v0.0.0"
           fi
