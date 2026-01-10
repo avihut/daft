@@ -16,3 +16,5 @@ pr-run-mode = "plan"
 publish-jobs = ["homebrew"]
 # A GitHub repo to push Homebrew formulas to
 tap = "avihut/daft"
+# Allow custom modifications to CI workflow files
+allow-dirty = ["ci"]
