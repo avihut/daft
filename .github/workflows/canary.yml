@@ -20,7 +20,9 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Create canary tag
+      - name: Create canary tag and release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           # Read target version from Cargo.toml
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
@@ -30,5 +32,23 @@ jobs:
           git config user.email "wheatley-the-moronic-ci-bot[bot]@users.noreply.github.com"
           git tag -a "$CANARY_TAG" -m "Canary release $CANARY_TAG"
           git push origin "$CANARY_TAG"
+
+          # Create GitHub prerelease (no binaries)
+          gh release create "$CANARY_TAG" \
+            --prerelease \
+            --title "Canary: $CANARY_TAG" \
+            --notes "$(cat <<EOF
+          Canary release from \`develop\` branch.
+
+          **This is a pre-release for testing purposes.**
+
+          To install this canary version:
+          \`\`\`bash
+          cargo install --git https://github.com/avihut/daft --tag $CANARY_TAG
+          \`\`\`
+
+          Commit: ${{ github.sha }}
+          EOF
+          )"
 
           echo "Created canary release: $CANARY_TAG"
