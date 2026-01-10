@@ -14,7 +14,5 @@ targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msv
 # Publish jobs to run in CI
 pr-run-mode = "plan"
 publish-jobs = ["homebrew"]
-# Whether to install the Homebrew formula to the current tap
+# A GitHub repo to push Homebrew formulas to
 tap = "avihut/daft"
-# Path to Homebrew formula
-formula = "Formula/daft"

@@ -23,10 +23,10 @@ jobs:
       - name: Get latest version tag
         id: get-version
         run: |
-          # Get latest semver tag, default to v0.1.19 if none
+          # Get latest semver tag, default to v0.0.0 if none exist
           LATEST=$(git tag -l 'v*.*.*' | sort -V | tail -n1)
           if [ -z "$LATEST" ]; then
-            LATEST="v0.1.19"
+            LATEST="v0.0.0"
           fi
           echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
           echo "Latest version tag: $LATEST"

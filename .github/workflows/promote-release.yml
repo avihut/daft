@@ -83,6 +83,8 @@ jobs:
           git add Cargo.toml
           git commit -m "chore: begin v${{ inputs.next_version }} development"
 
+          # Force push is safe here: we just rebased develop onto master,
+          # and --force-with-lease ensures we don't overwrite concurrent changes
           git push origin develop --force-with-lease
 
           echo "Bumped develop to v${{ inputs.next_version }}"
