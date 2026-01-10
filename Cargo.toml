@@ -8,7 +8,7 @@ license = "MIT"
 homepage = "https://github.com/avihut/daft"
 repository = "https://github.com/avihut/daft"
 readme = "README.md"
-keywords = ["git", "worktree", "workflow", "cli"]
+keywords = ["git", "worktree", "workflow", "cli", "developer-tools"]
 categories = ["command-line-utilities", "development-tools"]
 
 [package.metadata.wix]
