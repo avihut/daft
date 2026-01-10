@@ -37,15 +37,13 @@ jobs:
           git config user.name "wheatley-the-moronic-ci-bot[bot]"
           git config user.email "wheatley-the-moronic-ci-bot[bot]@users.noreply.github.com"
 
-      - name: Rebase develop onto master and fast-forward
+      - name: Fast-forward master to develop
         run: |
           # Fetch latest master
           git fetch origin master
 
-          # Rebase develop onto master for flat history
-          git rebase origin/master
-
           # Checkout master and fast-forward to develop
+          # This requires develop to be rebased onto master first
           git checkout master
           git merge --ff-only develop
 

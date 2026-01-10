@@ -20,6 +20,91 @@ This file provides guidance when working with code in this repository.
 - All functionality preserved, 147 tests passing
 - Documentation and installation paths updated throughout
 
+## Release Workflow and Git Branching Strategy
+
+This project uses a multi-channel release workflow with `master` as the stable branch and `develop` as the integration branch.
+
+### Branch Structure
+
+| Branch | Purpose | Version Example |
+|--------|---------|-----------------|
+| `master` | Stable releases, published to Homebrew | v0.3.0 |
+| `develop` | Next release development, canary/beta builds | v0.4.0 |
+
+### Release Channels
+
+| Channel | Trigger | Tag Format | Binaries | Homebrew |
+|---------|---------|------------|----------|----------|
+| **Stable** | Promote workflow | `v0.3.0` | ✅ Yes | ✅ Yes |
+| **Canary** | Push to develop | `v0.4.0-canary.N` | ❌ No | ❌ No |
+| **Beta** | Monthly/manual | `v0.4.0-beta.N` | ❌ No | ❌ No |
+
+### Git Flow Rules (Important!)
+
+To maintain flat history on `master`, follow these rules strictly:
+
+#### Normal Development Flow
+```
+1. All features/changes → develop branch
+2. Periodically promote develop → master (creates stable release)
+```
+
+#### Hotfix Flow (bugfix needed on stable while develop is ahead)
+```
+1. Create hotfix branch from master
+2. Fix the bug, PR to master
+3. Cherry-pick the fix commit to develop
+4. When promoting, git rebase will skip the duplicate commit
+```
+
+**Example:**
+```bash
+# On master (v0.3.0), need to fix a bug while develop is at v0.4.0
+
+# 1. Create and apply hotfix to master
+git checkout master
+git checkout -b hotfix/critical-bug
+# ... fix the bug ...
+git commit -m "fix: critical bug"
+# PR and merge to master → triggers v0.3.1 release
+
+# 2. Cherry-pick to develop
+git checkout develop
+git cherry-pick <hotfix-commit-sha>
+git push origin develop
+
+# 3. Later, when promoting v0.4.0, rebase will be clean
+#    (cherry-picked commit is auto-skipped)
+```
+
+#### Before Promoting a Release
+If develop and master have diverged (conflicts during promote):
+```bash
+# Manually rebase develop onto master
+git checkout develop
+git fetch origin master
+git rebase origin/master
+# Resolve any conflicts
+git push origin develop --force-with-lease
+
+# Now run promote workflow - will be a clean fast-forward
+```
+
+### What NOT to Do
+- ❌ Don't backport changes from develop to master (creates divergence)
+- ❌ Don't merge master into develop (creates merge commits)
+- ❌ Don't apply the same fix separately to both branches (creates conflicts)
+
+### Workflows
+
+| Workflow | File | Trigger |
+|----------|------|---------|
+| Bump Version | `bump-version.yml` | Push to master |
+| Release | `release.yml` | After bump-version |
+| Canary | `canary.yml` | Push to develop |
+| Beta | `beta.yml` | Monthly schedule or manual |
+| Promote | `promote-release.yml` | Manual with next_version input |
+
 ## Overview
 
 This is **daft** - a comprehensive Git extensions toolkit built in Rust. While the project currently focuses on worktree workflow management with both Rust binaries and legacy shell scripts, the vision extends far beyond: daft aims to provide a suite of Git extensions that enhance modern development workflows.
