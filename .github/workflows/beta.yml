@@ -22,6 +22,11 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
+      - name: Install git-cliff
+        run: |
+          curl -sSfL https://github.com/orhun/git-cliff/releases/latest/download/git-cliff-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          sudo mv git-cliff /usr/local/bin/
+
       - name: Check for changes since last beta
         id: check-changes
         run: |
@@ -56,27 +61,57 @@ jobs:
           BETA_NUM="${{ steps.check-changes.outputs.beta_number }}"
           BETA_TAG="v${VERSION}-beta.${BETA_NUM}"
 
+          # Generate release notes with git-cliff
+          echo "Generating release notes..."
+
+          # Find reference point for changelog
+          LAST_BETA=$(git tag -l "v${VERSION}-beta.*" | sort -V | tail -n1)
+          LAST_STABLE=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]' | grep -v '-' | sort -V | tail -n1)
+
+          if [ -n "$LAST_BETA" ]; then
+            echo "Generating changelog from $LAST_BETA to HEAD"
+            git cliff --config cliff-prerelease.toml "${LAST_BETA}"..HEAD > /tmp/cliff_notes.md || echo ""
+          elif [ -n "$LAST_STABLE" ]; then
+            echo "Generating changelog from $LAST_STABLE to HEAD"
+            git cliff --config cliff-prerelease.toml "${LAST_STABLE}"..HEAD > /tmp/cliff_notes.md || echo ""
+          else
+            echo "Generating changelog for all commits"
+            git cliff --config cliff-prerelease.toml --unreleased > /tmp/cliff_notes.md || echo ""
+          fi
+
+          # Build final release notes
+          cat > /tmp/release_notes.md << EOF
+Beta release from \`develop\` branch.
+
+**This is a pre-release for testing purposes.**
+
+To install this beta version:
+\`\`\`bash
+cargo install --git https://github.com/avihut/daft --tag $BETA_TAG
+\`\`\`
+
+Commit: ${{ github.sha }}
+
+EOF
+
+          # Append git-cliff output if it has content
+          if [ -s /tmp/cliff_notes.md ]; then
+            echo "---" >> /tmp/release_notes.md
+            echo "" >> /tmp/release_notes.md
+            echo "## Changes" >> /tmp/release_notes.md
+            echo "" >> /tmp/release_notes.md
+            cat /tmp/cliff_notes.md >> /tmp/release_notes.md
+          fi
+
           git config user.name "wheatley-the-moronic-ci-bot[bot]"
           git config user.email "wheatley-the-moronic-ci-bot[bot]@users.noreply.github.com"
           git tag -a "$BETA_TAG" -m "Beta release $BETA_TAG"
           git push origin "$BETA_TAG"
 
-          # Create GitHub prerelease (no binaries)
+          # Create GitHub prerelease
           gh release create "$BETA_TAG" \
             --prerelease \
             --title "Beta: $BETA_TAG" \
-            --notes "$(cat <<EOF
-          Beta release from \`develop\` branch.
-
-          **This is a pre-release for testing purposes.**
-
-          To install this beta version:
-          \`\`\`bash
-          cargo install --git https://github.com/avihut/daft --tag $BETA_TAG
-          \`\`\`
-
-          Commit: ${{ github.sha }}
-          EOF
-          )"
+            --notes-file /tmp/release_notes.md
 
           echo "Created beta release: $BETA_TAG"

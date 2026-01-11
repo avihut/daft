@@ -80,6 +80,18 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Final version: $VERSION"
 
+      - name: Install git-cliff
+        run: |
+          curl -sSfL https://github.com/orhun/git-cliff/releases/latest/download/git-cliff-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          sudo mv git-cliff /usr/local/bin/
+
+      - name: Update CHANGELOG.md
+        run: |
+          VERSION="${{ steps.final.outputs.version }}"
+          echo "Generating changelog for $VERSION"
+          git cliff --config cliff.toml --tag "$VERSION" -o CHANGELOG.md
+          echo "CHANGELOG.md updated"
+
       - name: Update Cargo.toml and create tag
         run: |
           VERSION="${{ steps.final.outputs.version }}"
@@ -92,12 +104,21 @@ jobs:
           # Update version in Cargo.toml
           sed -i "s/^version = .*/version = \"$CARGO_VERSION\"/" Cargo.toml
 
-          # Only commit if Cargo.toml actually changed
+          # Stage CHANGELOG.md (always updated by git-cliff)
+          git add CHANGELOG.md
+
+          # Only commit Cargo.toml if it actually changed
           # (it won't change if this is a manual/major version bump from develop)
           if git diff --quiet Cargo.toml; then
-            echo "Cargo.toml already at $CARGO_VERSION, skipping commit"
+            echo "Cargo.toml already at $CARGO_VERSION, skipping Cargo.toml"
           else
             git add Cargo.toml
+          fi
+
+          # Commit if there are staged changes
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
             git commit -m "chore: release $VERSION [skip ci]"
             git push origin master
           fi
