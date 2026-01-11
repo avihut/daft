@@ -83,19 +83,21 @@ jobs:
           fi
 
           # Build final release notes
-          cat > /tmp/release_notes.md << EOF
-Beta release from \`develop\` branch.
+          cat > /tmp/release_notes.md << 'NOTES'
+          Beta release from `develop` branch.
 
-**This is a pre-release for testing purposes.**
+          **This is a pre-release for testing purposes.**
 
-To install this beta version:
-\`\`\`bash
-cargo install --git https://github.com/avihut/daft --tag $BETA_TAG
-\`\`\`
+          To install this beta version:
+          ```bash
+          cargo install --git https://github.com/avihut/daft --tag $BETA_TAG
+          ```
 
-Commit: ${{ github.sha }}
-
-EOF
+          Commit: COMMIT_SHA
+          NOTES
+          sed -i "s/COMMIT_SHA/${{ github.sha }}/" /tmp/release_notes.md
+          sed -i "s/\$BETA_TAG/$BETA_TAG/" /tmp/release_notes.md
+          sed -i 's/^          //' /tmp/release_notes.md
 
           # Append git-cliff output if it has content
           if [ -s /tmp/cliff_notes.md ]; then

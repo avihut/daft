@@ -41,19 +41,21 @@ jobs:
           git cliff --config cliff-prerelease.toml --unreleased > /tmp/cliff_notes.md || echo ""
 
           # Build final release notes
-          cat > /tmp/release_notes.md << EOF
-Canary release from \`develop\` branch.
+          cat > /tmp/release_notes.md << 'NOTES'
+          Canary release from `develop` branch.
 
-**This is a pre-release for testing purposes.**
+          **This is a pre-release for testing purposes.**
 
-To install this canary version:
-\`\`\`bash
-cargo install --git https://github.com/avihut/daft --tag $CANARY_TAG
-\`\`\`
+          To install this canary version:
+          ```bash
+          cargo install --git https://github.com/avihut/daft --tag $CANARY_TAG
+          ```
 
-Commit: ${{ github.sha }}
-
-EOF
+          Commit: COMMIT_SHA
+          NOTES
+          sed -i "s/COMMIT_SHA/${{ github.sha }}/" /tmp/release_notes.md
+          sed -i "s/\$CANARY_TAG/$CANARY_TAG/" /tmp/release_notes.md
+          sed -i 's/^          //' /tmp/release_notes.md
 
           # Append git-cliff output if it has content
           if [ -s /tmp/cliff_notes.md ]; then
