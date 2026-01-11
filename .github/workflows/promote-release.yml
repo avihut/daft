@@ -50,6 +50,11 @@ jobs:
           # Push updated master
           git push origin master
 
+      - name: Install git-cliff
+        run: |
+          curl -sSfL https://github.com/orhun/git-cliff/releases/latest/download/git-cliff-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          sudo mv git-cliff /usr/local/bin/
+
       - name: Generate release notes
         id: notes
         run: |
@@ -59,10 +64,11 @@ jobs:
           echo "## What's Changed in v${{ steps.version.outputs.version }}" > release_notes.md
           echo "" >> release_notes.md
 
+          # Use git-cliff for structured release notes
           if [ -n "$LAST_STABLE" ]; then
-            git log ${LAST_STABLE}..HEAD --pretty=format:"- %s" >> release_notes.md
+            git cliff --config cliff-prerelease.toml "${LAST_STABLE}"..HEAD >> release_notes.md || echo "No categorized changes."
           else
-            git log --pretty=format:"- %s" >> release_notes.md
+            git cliff --config cliff-prerelease.toml >> release_notes.md || echo "No categorized changes."
           fi
 
           echo "" >> release_notes.md
@@ -89,7 +95,7 @@ jobs:
 
       - name: Create milestone for next version
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           NEXT_VERSION="${{ inputs.next_version }}"
 

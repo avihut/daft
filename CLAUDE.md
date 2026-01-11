@@ -105,6 +105,50 @@ git push origin develop --force-with-lease
 | Beta | `beta.yml` | Monthly schedule or manual |
 | Promote | `promote-release.yml` | Manual with next_version input |
 
+## Commit Message Convention
+
+This project uses [Conventional Commits](https://www.conventionalcommits.org/) for automatic changelog generation via git-cliff.
+
+### Format
+
+```
+<type>[optional scope]: <description>
+
+[optional body]
+
+[optional footer - e.g., "Fixes #42"]
+```
+
+### Types
+
+| Type | Description | Changelog Section |
+|------|-------------|-------------------|
+| `feat` | New feature | Features |
+| `fix` | Bug fix | Bug Fixes |
+| `docs` | Documentation changes | Documentation |
+| `style` | Code style (no logic change) | Styling |
+| `refactor` | Code refactoring | Refactoring |
+| `perf` | Performance improvement | Performance |
+| `test` | Adding/updating tests | Testing |
+| `chore` | Maintenance tasks | Miscellaneous |
+| `ci` | CI/CD changes | CI/CD |
+
+### Examples
+
+```bash
+feat: add shell completion generation
+fix(clone): handle repositories with special characters
+docs: update installation instructions
+refactor(git): extract common git operations
+chore: upgrade dependencies
+```
+
+### Changelog Generation
+
+- **Stable releases**: CHANGELOG.md is automatically updated when releasing to master
+- **Canary/Beta**: Release notes are generated but CHANGELOG.md is not modified
+- Configuration files: `cliff.toml` (stable), `cliff-prerelease.toml` (prereleases)
+
 ## Overview
 
 This is **daft** - a comprehensive Git extensions toolkit built in Rust. While the project currently focuses on worktree workflow management with both Rust binaries and legacy shell scripts, the vision extends far beyond: daft aims to provide a suite of Git extensions that enhance modern development workflows.
@@ -211,7 +255,18 @@ When working on project tickets, branch names should follow this convention daft
 
 ### PRs
 
-When opening a PR, the name should follow this convention [DAFT-<issue number>] <type: Feature / Bugfix / Enhancement / etc.>: <short description>
+PR titles should follow the conventional commit format:
+
+```
+feat: add dark mode toggle
+fix: resolve authentication timeout
+docs: update API documentation
+```
+
+Issue references should be in the PR body or commit footer, not the title. Example:
+```
+Fixes #42
+```
 
 ## Worktree Workflow
 

@@ -1,0 +1,54 @@
+# git-cliff configuration for prerelease notes (canary/beta)
+# Simpler format without header, includes catch-all for non-conventional commits
+
+[changelog]
+# No header for prerelease notes
+header = ""
+
+# Compact body format
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | upper_first }}
+{% endfor %}
+
+{% endfor %}
+"""
+
+# No footer
+footer = ""
+
+# Remove leading and trailing whitespace
+trim = true
+
+[git]
+# Parse conventional commits
+conventional_commits = true
+
+# Don't filter non-conventional commits (include them in "Other" group)
+filter_unconventional = false
+
+# Commit message parsers (with catch-all)
+commit_parsers = [
+    { message = "^feat", group = "Features" },
+    { message = "^fix", group = "Bug Fixes" },
+    { message = "^doc", group = "Documentation" },
+    { message = "^perf", group = "Performance" },
+    { message = "^refactor", group = "Refactoring" },
+    { message = "^style", group = "Styling" },
+    { message = "^test", group = "Testing" },
+    { message = "^chore\\(release\\)", skip = true },
+    { message = "^chore: release", skip = true },
+    { message = "^chore: begin", skip = true },
+    { message = "^chore", group = "Miscellaneous" },
+    { message = "^ci", group = "CI/CD" },
+    { message = "^deps", group = "Dependencies" },
+    { body = ".*", group = "Other" },
+]
+
+# Tag pattern
+tag_pattern = "v[0-9].*"
+
+# Sort commits by newest first
+sort_commits = "newest"
