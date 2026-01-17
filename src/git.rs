@@ -443,6 +443,65 @@ impl GitCommand {
             String::from_utf8(output.stdout).context("Failed to parse git ls-remote output")?;
         Ok(!stdout.trim().is_empty())
     }
+
+    /// Check if working directory has uncommitted or untracked changes
+    pub fn has_uncommitted_changes(&self) -> Result<bool> {
+        let output = Command::new("git")
+            .args(["status", "--porcelain"])
+            .output()
+            .context("Failed to execute git status command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git status failed: {}", stderr);
+        }
+
+        let stdout =
+            String::from_utf8(output.stdout).context("Failed to parse git status output")?;
+        Ok(!stdout.trim().is_empty())
+    }
+
+    /// Stash all changes including untracked files
+    pub fn stash_push_with_untracked(&self, message: &str) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.args(["stash", "push", "-u", "-m", message]);
+
+        if self.quiet {
+            cmd.arg("--quiet");
+        }
+
+        let output = cmd
+            .output()
+            .context("Failed to execute git stash push command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git stash push failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
+    /// Pop the most recent stash
+    pub fn stash_pop(&self) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.args(["stash", "pop"]);
+
+        if self.quiet {
+            cmd.arg("--quiet");
+        }
+
+        let output = cmd
+            .output()
+            .context("Failed to execute git stash pop command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git stash pop failed: {}", stderr);
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use daft::{
-    direnv::run_direnv_allow, get_project_root, git::GitCommand, is_git_repository,
-    logging::init_logging, utils::*, WorktreeConfig,
+    direnv::run_direnv_allow, get_project_root, git::GitCommand, is_git_repository, log_error,
+    log_info, log_warning, logging::init_logging, utils::*, WorktreeConfig,
 };
 
 #[derive(Parser)]
@@ -23,6 +23,16 @@ pub struct Args {
 
     #[arg(short, long, help = "Enable verbose output")]
     verbose: bool,
+
+    #[arg(
+        short = 'c',
+        long = "carry",
+        help = "Carry uncommitted changes to the worktree"
+    )]
+    carry: bool,
+
+    #[arg(long, help = "Don't carry uncommitted changes (default)")]
+    no_carry: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -100,7 +110,39 @@ fn run_checkout(args: &Args) -> Result<()> {
         args.branch_name.clone()
     };
 
+    // Check for uncommitted changes and stash them if --carry is set
+    let stash_created = if args.carry {
+        match git.has_uncommitted_changes() {
+            Ok(true) => {
+                println!("--> Stashing uncommitted changes...");
+                if let Err(e) = git.stash_push_with_untracked("daft: carry changes to worktree") {
+                    log_error!("Failed to stash changes: {e}");
+                    anyhow::bail!("Failed to stash uncommitted changes: {e}");
+                }
+                true
+            }
+            Ok(false) => {
+                log_info!("--> No uncommitted changes to carry");
+                false
+            }
+            Err(e) => {
+                log_warning!("Could not check for uncommitted changes: {e}");
+                false
+            }
+        }
+    } else {
+        false
+    };
+
     if let Err(e) = git.worktree_add(&worktree_path, &checkout_ref) {
+        // If worktree creation fails and we stashed changes, restore them
+        if stash_created {
+            log_info!("--> Restoring stashed changes due to worktree creation failure...");
+            if let Err(pop_err) = git.stash_pop() {
+                log_error!("Failed to restore stashed changes: {pop_err}");
+                eprintln!("Warning: Your changes are still in the stash. Run 'git stash pop' to restore them.");
+            }
+        }
         anyhow::bail!("Failed to create git worktree: {}", e);
     }
 
@@ -127,6 +169,19 @@ fn run_checkout(args: &Args) -> Result<()> {
         "--> Successfully changed directory to {}",
         get_current_directory()?.display()
     );
+
+    // Apply stashed changes to the new worktree
+    if stash_created {
+        println!("--> Applying stashed changes to worktree...");
+        if let Err(e) = git.stash_pop() {
+            log_error!("Failed to apply stashed changes: {e}");
+            eprintln!(
+                "Stash could not be applied cleanly. Resolve conflicts and run: git stash pop"
+            );
+        } else {
+            println!("--> Changes successfully applied to worktree");
+        }
+    }
 
     let remote_branch_ref = format!("refs/remotes/{}/{}", config.remote_name, args.branch_name);
     println!(
