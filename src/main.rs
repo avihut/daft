@@ -42,6 +42,7 @@ fn main() -> Result<()> {
                     "completions" => commands::completions::run(),
                     "__complete" => commands::complete::run(),
                     "shell-init" => commands::shell_init::run(),
+                    "setup" => commands::setup::run(),
                     _ => commands::docs::run(),
                 }
             } else {

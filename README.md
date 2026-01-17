@@ -189,7 +189,14 @@ daft completions fish --install
 
 By default, daft commands change directory internally but your shell stays in the original directory. Shell integration solves this by automatically cd'ing into newly created worktrees.
 
-**Add to your shell config:**
+**Automatic setup (recommended):**
+```bash
+daft setup
+```
+
+This detects your shell, backs up your config, and adds the integration line automatically.
+
+**Manual setup:**
 
 **Bash** (`~/.bashrc`):
 ```bash

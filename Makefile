@@ -92,7 +92,7 @@ test-legacy-simple:
 	@cd $(LEGACY_TESTS_DIR) && ./test_simple.sh
 
 # Integration test targets
-.PHONY: test-integration-clone test-integration-checkout test-integration-checkout-branch test-integration-checkout-branch-from-default test-integration-init test-integration-prune test-integration-shell-init
+.PHONY: test-integration-clone test-integration-checkout test-integration-checkout-branch test-integration-checkout-branch-from-default test-integration-init test-integration-prune test-integration-shell-init test-integration-setup
 
 test-integration-clone: build-rust
 	@echo "Running Rust integration clone tests..."
@@ -121,6 +121,10 @@ test-integration-prune: build-rust
 test-integration-shell-init: build-rust
 	@echo "Running Rust integration shell-init tests..."
 	@cd $(INTEGRATION_TESTS_DIR) && ./test_shell_init.sh
+
+test-integration-setup: build-rust
+	@echo "Running Rust integration setup tests..."
+	@cd $(INTEGRATION_TESTS_DIR) && ./test_setup.sh
 
 # Rust build targets
 .PHONY: build-rust clean-rust test-unit

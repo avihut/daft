@@ -96,19 +96,16 @@ def caveats
 
     Run 'git daft' for full documentation.
 
-    RECOMMENDED: For automatic cd into new worktrees, add ONE of
-    these lines to your shell config:
+    RECOMMENDED: For automatic cd into new worktrees, run:
 
-      Bash (~/.bashrc):
-        eval "$(daft shell-init bash)"
+      daft setup
 
-      Zsh (~/.zshrc):
-        eval "$(daft shell-init zsh)"
+    This will detect your shell and add the integration automatically.
 
-      Fish (~/.config/fish/config.fish):
-        daft shell-init fish | source
-
-    Then restart your shell or run: source ~/.zshrc (or ~/.bashrc)
+    Or manually add to your shell config:
+      Bash:  eval "$(daft shell-init bash)"
+      Zsh:   eval "$(daft shell-init zsh)"
+      Fish:  daft shell-init fish | source
   EOS
 end
 ```
@@ -165,19 +162,16 @@ class Daft < Formula
 
       Run 'git daft' for full documentation.
 
-      RECOMMENDED: For automatic cd into new worktrees, add ONE of
-      these lines to your shell config:
+      RECOMMENDED: For automatic cd into new worktrees, run:
 
-        Bash (~/.bashrc):
-          eval "$(daft shell-init bash)"
+        daft setup
 
-        Zsh (~/.zshrc):
-          eval "$(daft shell-init zsh)"
+      This will detect your shell and add the integration automatically.
 
-        Fish (~/.config/fish/config.fish):
-          daft shell-init fish | source
-
-      Then restart your shell or run: source ~/.zshrc (or ~/.bashrc)
+      Or manually add to your shell config:
+        Bash:  eval "$(daft shell-init bash)"
+        Zsh:   eval "$(daft shell-init zsh)"
+        Fish:  daft shell-init fish | source
     EOS
   end
 
