@@ -102,9 +102,9 @@ test_checkout_existing_worktree() {
         return 1
     }
 
-    # Verify output contains the expected message
-    if ! echo "$output" | grep -q "already has a worktree"; then
-        log_error "Output should mention 'already has a worktree'"
+    # Verify output contains the expected message (switched to existing worktree)
+    if ! echo "$output" | grep -qE "(existing worktree|already has a worktree)"; then
+        log_error "Output should mention 'existing worktree' or 'already has a worktree'"
         echo "$output"
         return 1
     fi

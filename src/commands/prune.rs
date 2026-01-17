@@ -3,8 +3,9 @@ use clap::Parser;
 use daft::{
     config::counters::{INITIAL_BRANCHES_DELETED, INITIAL_WORKTREES_REMOVED, OPERATION_INCREMENT},
     git::GitCommand,
-    is_git_repository, log_debug, log_error, log_info,
+    is_git_repository,
     logging::init_logging,
+    output::{CliOutput, Output, OutputConfig},
     remote::remote_branch_exists,
     WorktreeConfig,
 };
@@ -33,22 +34,25 @@ pub fn run() -> Result<()> {
         anyhow::bail!("Not inside a Git repository");
     }
 
-    run_prune()?;
+    let config = OutputConfig::new(false, args.verbose);
+    let mut output = CliOutput::new(config);
+
+    run_prune(&mut output)?;
     Ok(())
 }
 
-fn run_prune() -> Result<()> {
+fn run_prune(output: &mut dyn Output) -> Result<()> {
     let config = WorktreeConfig::default();
-    let git = GitCommand::new(config.quiet);
+    let git = GitCommand::new(output.is_quiet());
 
-    log_info!(
+    output.step(&format!(
         "Fetching from remote {} and pruning stale remote-tracking branches...",
         config.remote_name
-    );
+    ));
     git.fetch(&config.remote_name, true)
         .context("git fetch failed")?;
 
-    log_info!("Identifying local branches whose upstream branch is gone...");
+    output.step("Identifying local branches whose upstream branch is gone...");
 
     let mut gone_branches = Vec::new();
 
@@ -68,7 +72,7 @@ fn run_prune() -> Result<()> {
     }
 
     // Method 2: Also check for branches that don't exist on remote but have worktrees
-    println!("Checking for branches with worktrees that don't exist on remote...");
+    output.step("Checking for branches with worktrees that don't exist on remote...");
     let ref_output = git.for_each_ref("%(refname:short)", "refs/heads")?;
 
     for line in ref_output.lines() {
@@ -100,30 +104,31 @@ fn run_prune() -> Result<()> {
                 && !gone_branches.contains(&branch_name.to_string())
             {
                 gone_branches.push(branch_name.to_string());
-                log_debug!("Found branch with worktree not on remote: {branch_name}");
+                output.debug(&format!(
+                    "Found branch with worktree not on remote: {branch_name}"
+                ));
             }
         }
     }
 
     if gone_branches.is_empty() {
-        log_info!("No local branches found that need to be pruned. Nothing to do.");
+        output.result("Nothing to prune");
         return Ok(());
     }
 
-    println!(
-        "Found {} branches to potentially prune:",
+    output.step(&format!(
+        "Found {} branches to potentially prune",
         gone_branches.len()
-    );
+    ));
     for branch in &gone_branches {
-        println!(" - {branch}");
+        output.step(&format!(" - {branch}"));
     }
-    println!();
 
     let mut branches_deleted = INITIAL_BRANCHES_DELETED;
     let mut worktrees_removed = INITIAL_WORKTREES_REMOVED;
 
     for branch_name in &gone_branches {
-        println!("--- Processing branch: {branch_name} ---");
+        output.step(&format!("Processing branch: {branch_name}"));
 
         // Check for worktree using --porcelain
         let worktree_output = git.worktree_list_porcelain()?;
@@ -143,57 +148,63 @@ fn run_prune() -> Result<()> {
         }
 
         if !worktree_path.is_empty() {
-            println!("Found associated worktree for {branch_name} at: {worktree_path}");
+            output.step(&format!(
+                "Found associated worktree for {branch_name} at: {worktree_path}"
+            ));
 
             let wt_path = PathBuf::from(&worktree_path);
             if wt_path.exists() {
-                println!("Attempting to remove worktree...");
+                output.step("Removing worktree...");
                 if let Err(e) = git.worktree_remove(&wt_path, true) {
-                    log_error!(
-                        "Error: Failed to remove worktree {worktree_path}: {e}. Skipping deletion of branch {branch_name}."
-                    );
+                    output.error(&format!(
+                        "Failed to remove worktree {worktree_path}: {e}. Skipping deletion of branch {branch_name}."
+                    ));
                     continue;
                 }
-                println!("Worktree at {worktree_path} removed successfully.");
+                output.step(&format!("Worktree at {worktree_path} removed"));
                 worktrees_removed += OPERATION_INCREMENT;
             } else {
-                println!("Warning: Worktree directory {worktree_path} not found. Attempting git worktree prune might be needed separately.");
-                println!("Attempting to force remove the worktree record anyway...");
+                output.warning(&format!(
+                    "Worktree directory {worktree_path} not found. Attempting to force remove record."
+                ));
                 if let Err(e) = git.worktree_remove(&wt_path, true) {
-                    eprintln!("Error: Failed to remove potentially orphaned worktree record {worktree_path}: {e}. Skipping deletion of branch {branch_name}.");
+                    output.error(&format!(
+                        "Failed to remove orphaned worktree record {worktree_path}: {e}. Skipping deletion of branch {branch_name}."
+                    ));
                     continue;
                 }
-                println!("Worktree record for {worktree_path} removed successfully.");
+                output.step(&format!("Worktree record for {worktree_path} removed"));
                 worktrees_removed += OPERATION_INCREMENT;
             }
         } else {
-            println!("No associated worktree found for {branch_name}.");
+            output.step(&format!("No associated worktree found for {branch_name}"));
         }
 
         // Now, attempt to delete the local branch
-        println!("Attempting to delete local branch {branch_name}...");
+        output.step(&format!("Deleting local branch {branch_name}..."));
         if let Err(e) = git.branch_delete(branch_name, true) {
-            eprintln!("Error: Failed to delete branch {branch_name}: {e}");
+            output.error(&format!("Failed to delete branch {branch_name}: {e}"));
         } else {
-            println!("Local branch {branch_name} deleted successfully.");
+            output.step(&format!("Branch {branch_name} deleted"));
             branches_deleted += OPERATION_INCREMENT;
         }
-
-        println!("----------------------------------------");
     }
 
-    println!();
-    println!("--- Summary ---");
-    println!("Branches deleted: {branches_deleted}");
-    println!("Worktrees removed: {worktrees_removed}");
-    println!("Pruning process complete.");
+    // Git-like result message
+    if branches_deleted > 0 || worktrees_removed > 0 {
+        output.result(&format!(
+            "Pruned {} branches, removed {} worktrees",
+            branches_deleted, worktrees_removed
+        ));
+    } else {
+        output.result("Nothing pruned");
+    }
 
     // Check if any worktrees might need manual pruning
     let worktree_list = git.worktree_list_porcelain()?;
     if worktree_list.contains("prunable") {
-        println!();
-        println!(
-            "Note: Some prunable worktree data may exist. Run git worktree prune to clean up."
+        output.warning(
+            "Some prunable worktree data may exist. Run 'git worktree prune' to clean up.",
         );
     }
 
