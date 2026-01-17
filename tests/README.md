@@ -32,26 +32,26 @@ The integration tests validate the Rust binary implementations by:
 
 ## Running Tests
 
-### Using Make (Recommended)
+### Using Just (Recommended)
 
 ```bash
 # Run all tests (unit + integration)
-make test
+just test
 
 # Run only unit tests
-make test-unit
+just test-unit
 
 # Run only integration tests
-make test-integration
+just test-integration
 
 # Run specific test suites
-make test-integration-clone
-make test-integration-init
-make test-integration-checkout
+just test-integration-clone
+just test-integration-init
+just test-integration-checkout
 
 # Run with verbose output
-make test-verbose
-make test-integration-verbose
+just test-verbose
+just test-integration-verbose
 ```
 
 ### Direct Execution

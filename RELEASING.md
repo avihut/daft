@@ -5,7 +5,7 @@ This project uses [cargo-dist](https://github.com/axodotdev/cargo-dist) for full
 ## Prerequisites
 
 - Write access to the repository
-- All tests passing locally (`make test`)
+- All tests passing locally (`just test`)
 - Code quality checks passing (`cargo clippy -- -D warnings`, `cargo fmt --check`)
 - GitHub token configured (automatic for maintainers)
 
@@ -135,7 +135,7 @@ Run these checks before pushing a tag:
 
 ```bash
 # All tests must pass
-make test
+just test
 
 # No clippy warnings
 cargo clippy -- -D warnings
@@ -339,7 +339,7 @@ If users have already installed:
 vim src/...
 
 # Test thoroughly
-make test
+just test
 
 # Release hotfix
 vim Cargo.toml  # version = "0.2.1"
