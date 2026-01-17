@@ -1,42 +1,37 @@
+use crate::output::Output;
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
 use which::which;
 
-pub fn run_direnv_allow(path: &Path, quiet: bool) -> Result<()> {
+pub fn run_direnv_allow(path: &Path, output: &mut dyn Output) -> Result<()> {
     if which("direnv").is_err() {
         return Ok(());
     }
 
     let envrc_path = path.join(".envrc");
     if !envrc_path.exists() {
-        if !quiet {
-            println!(
-                "--> No .envrc file found in {}. Skipping 'direnv allow'.",
-                path.display()
-            );
-        }
+        output.step(&format!(
+            "No .envrc file found in {}. Skipping 'direnv allow'.",
+            path.display()
+        ));
         return Ok(());
     }
 
-    if !quiet {
-        println!("--> Running 'direnv allow'...");
-    }
+    output.step("Running 'direnv allow'...");
 
-    let output = Command::new("direnv")
+    let cmd_output = Command::new("direnv")
         .args(["allow", "."])
         .current_dir(path)
         .output()
         .context("Failed to execute direnv allow command")?;
 
-    if output.status.success() {
-        if !quiet {
-            println!("--> 'direnv allow .' completed successfully.");
-        }
+    if cmd_output.status.success() {
+        output.step("'direnv allow .' completed successfully.");
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("Warning: 'direnv allow .' failed: {stderr}");
-        eprintln!("You may need to run it manually.");
+        let stderr = String::from_utf8_lossy(&cmd_output.stderr);
+        output.warning(&format!("'direnv allow .' failed: {stderr}"));
+        output.warning("You may need to run it manually.");
     }
 
     Ok(())
@@ -49,6 +44,7 @@ pub fn is_direnv_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::TestOutput;
     use std::fs;
     use tempfile::tempdir;
 
@@ -61,7 +57,8 @@ mod tests {
     #[test]
     fn test_run_direnv_allow_no_envrc() {
         let temp_dir = tempdir().unwrap();
-        let result = run_direnv_allow(temp_dir.path(), true);
+        let mut output = TestOutput::default();
+        let result = run_direnv_allow(temp_dir.path(), &mut output);
         assert!(result.is_ok());
     }
 
@@ -71,7 +68,8 @@ mod tests {
         let envrc_path = temp_dir.path().join(".envrc");
         fs::write(&envrc_path, "export TEST=1").unwrap();
 
-        let result = run_direnv_allow(temp_dir.path(), true);
+        let mut output = TestOutput::default();
+        let result = run_direnv_allow(temp_dir.path(), &mut output);
         assert!(result.is_ok());
     }
 }

@@ -90,7 +90,7 @@ fn run_checkout(args: &Args, output: &mut dyn Output) -> Result<()> {
         ));
         output.step("Changing to existing worktree...");
         change_directory(&existing_path)?;
-        run_direnv_allow(&get_current_directory()?, output.is_quiet())?;
+        run_direnv_allow(&get_current_directory()?, output)?;
         output.result(&format!(
             "Switched to existing worktree '{}'",
             args.branch_name
@@ -236,7 +236,7 @@ fn run_checkout(args: &Args, output: &mut dyn Output) -> Result<()> {
         ));
     }
 
-    run_direnv_allow(&get_current_directory()?, output.is_quiet())?;
+    run_direnv_allow(&get_current_directory()?, output)?;
 
     // Git-like result message
     output.result(&format!("Prepared worktree '{}'", args.branch_name));

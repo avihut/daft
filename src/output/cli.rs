@@ -10,12 +10,13 @@ use std::path::Path;
 
 /// CLI output implementation that writes directly to stdout/stderr.
 ///
-/// This preserves the exact output format used throughout the codebase:
-/// - `info()` → `println!("{msg}")`
-/// - `progress()` → `println!("--> {msg}")`
-/// - `divider()` → `println!("---")`
-/// - `warning()` → `eprintln!("Warning: {msg}")`
-/// - `error()` → `eprintln!("Error: {msg}")`
+/// Git-like output format:
+/// - `step()` → verbose only, no prefix
+/// - `result()` → primary output, always shown (unless quiet)
+/// - `warning()` → `eprintln!("warning: {msg}")`
+/// - `error()` → `eprintln!("error: {msg}")`
+/// - `progress()` → deprecated, delegates to `step()`
+/// - `divider()` → deprecated, no-op
 #[derive(Debug)]
 pub struct CliOutput {
     config: OutputConfig,

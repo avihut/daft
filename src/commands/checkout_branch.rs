@@ -249,7 +249,7 @@ fn run_checkout_branch(args: &Args, output: &mut dyn Output) -> Result<()> {
         config.remote_name
     ));
 
-    run_direnv_allow(&get_current_directory()?, output.is_quiet())?;
+    run_direnv_allow(&get_current_directory()?, output)?;
 
     // Git-like result message
     output.result(&format!(

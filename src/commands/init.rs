@@ -150,7 +150,7 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
             return Err(e);
         }
 
-        run_direnv_allow(&get_current_directory()?, output.is_quiet())?;
+        run_direnv_allow(&get_current_directory()?, output)?;
 
         let current_dir = get_current_directory()?;
 
