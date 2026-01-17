@@ -37,6 +37,7 @@ pub mod config;
 pub mod direnv;
 pub mod git;
 pub mod logging;
+pub mod output;
 pub mod remote;
 pub mod utils;
 
