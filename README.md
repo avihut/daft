@@ -2,9 +2,9 @@
 
 **daft** is a comprehensive toolkit that extends Git functionality to enhance developer workflows. Starting with powerful worktree management that enables a "one worktree per branch" approach, daft aims to provide a suite of Git extensions that eliminate friction and streamline modern development practices.
 
-**🦀 Built with Rust**: Professional-grade Git extensions with type safety, comprehensive error handling, and excellent performance.
+**Built with Rust**: Professional-grade Git extensions with type safety, comprehensive error handling, and excellent performance.
 
-## 🚀 Key Features
+## Key Features
 
 ### Worktree Extensions (Current Focus)
 - **Worktree-centric workflow**: One worktree per branch, organized under a common parent directory
@@ -17,7 +17,7 @@
 ### Future Extensions
 daft is evolving beyond worktree management to provide additional Git workflow enhancements. Future extensions will focus on streamlining common Git operations and enabling advanced workflows that aren't well-supported by Git's core commands.
 
-## 📦 Installation
+## Installation
 
 **daft uses a single multicall binary architecture** - one 589KB binary with symlinks for all commands.
 
@@ -224,7 +224,7 @@ git worktree-checkout feature/auth    # spaces - works with shell integration
 git-worktree-checkout feature/auth    # hyphens - also works
 ```
 
-## 🛠️ Commands
+## Commands
 
 ### Core Commands
 
@@ -288,7 +288,7 @@ Clean up deleted remote branches:
 git worktree-prune
 ```
 
-## 🔄 Workflow Examples
+## Workflow Examples
 
 ### Starting a New Project
 
@@ -353,32 +353,31 @@ git worktree-prune
 # for deleted remote branches
 ```
 
-## 🧪 Testing
+## Testing
 
-This project includes comprehensive test coverage with dual test suites for both legacy shell scripts and modern Rust implementations:
+This project includes comprehensive test coverage:
 
 ### Test Structure
 ```
 tests/
-├── legacy/              # Legacy shell script tests (37+ scenarios)
-├── integration/         # Rust integration tests (80+ scenarios)
+├── integration/         # End-to-end Rust integration tests (80+ scenarios)
 └── README.md           # Detailed testing documentation
 ```
 
 ### Quick Testing
 ```bash
-# Run all tests (legacy + integration)
+# Run all tests (unit + integration)
 make test
 
-# Run only legacy shell script tests
-make test-legacy
+# Run only Rust unit tests
+make test-unit
 
-# Run only Rust integration tests
+# Run only integration tests
 make test-integration
 
 # Run specific test suites
-make test-legacy-init
 make test-integration-clone
+make test-integration-checkout
 ```
 
 ### Rust Unit Tests
@@ -399,19 +398,13 @@ make test-verbose
 # Run performance tests
 make test-perf
 
-# Run tests with different shells
-make test-bash
-make test-zsh
-
 # Run individual test files
-cd tests/legacy && ./test_clone.sh
 cd tests/integration && ./test_init.sh
 ```
 
 ### Test Coverage
 The comprehensive test framework includes:
-- **120+ test scenarios** across both implementations
-- **Dual validation**: Legacy behavior + enhanced Rust features
+- **80+ test scenarios** covering all commands
 - **Isolated test environments** with temporary directories
 - **Mock remote repositories** for realistic testing
 - **Security testing**: Path traversal prevention
@@ -422,7 +415,7 @@ The comprehensive test framework includes:
 
 See `tests/README.md` for detailed testing documentation.
 
-## 🏗️ Architecture
+## Architecture
 
 ### Single Binary Design
 
@@ -451,18 +444,11 @@ daft/
 │   ├── remote.rs            # Remote repository handling
 │   ├── direnv.rs            # Direnv integration
 │   └── utils.rs             # Utility functions
-├── src/legacy/              # Legacy shell scripts (1,194 lines) - DEPRECATED
-│   ├── git-worktree-clone              # 380 lines
-│   ├── git-worktree-checkout           # 153 lines
-│   ├── git-worktree-checkout-branch    # 165 lines
-│   ├── git-worktree-checkout-branch-from-default  # 90 lines
-│   ├── git-worktree-init               # 256 lines
-│   ├── git-worktree-prune              # 150 lines
-│   └── README.md                       # Deprecation notice
-├── tests/                   # Comprehensive test suite
-│   ├── legacy/              # Legacy shell script tests
-│   ├── integration/         # Rust integration tests
+├── tests/                   # Test suite
+│   ├── integration/         # End-to-end integration tests
 │   └── README.md            # Testing documentation
+├── docs/                    # Documentation
+│   └── HISTORY.md           # Project history and origins
 ├── target/release/          # Build artifacts (gitignored)
 │   ├── daft                 # Main binary (589KB)
 │   ├── git-worktree-clone → daft       # Symlinks
@@ -480,28 +466,21 @@ daft/
 
 ### Design Principles
 
-- **Robust error handling**: All scripts include comprehensive error checking and cleanup
+- **Robust error handling**: All commands include comprehensive error checking and cleanup
 - **Path independence**: Commands work from any directory within the repository
-- **Consistent behavior**: All scripts follow the same patterns and conventions
+- **Consistent behavior**: All commands follow the same patterns and conventions
 - **Optional integrations**: Features like direnv work when available but don't break when absent
 - **Atomic operations**: Failed operations are cleaned up automatically
 
-## 🔧 Requirements
+## Requirements
 
-### For Rust Binaries
 - **Git**: Version 2.5+ (for worktree support)
 - **Rust**: Version 1.70+ (for building from source)
 - **direnv** (optional): For automatic environment setup
 
-### For Shell Scripts (Legacy)
-- **Git**: Version 2.5+ (for worktree support)
-- **Bash**: Version 4.0+ 
-- **Standard Unix tools**: `awk`, `basename`, `dirname`, `sed`, `cut`
-- **direnv** (optional): For automatic environment setup
+## Rust Implementation Benefits
 
-## 🦀 Rust Implementation Benefits
-
-The Rust implementation provides significant advantages over the shell scripts:
+The Rust implementation provides significant advantages:
 
 ### Current Features
 - **Type safety**: Compile-time error checking prevents runtime issues
@@ -518,7 +497,7 @@ The Rust implementation provides significant advantages over the shell scripts:
 - **Configuration files**: User-defined settings and preferences
 - **Enhanced testing**: Better unit test coverage and integration testing
 
-## 🤝 Contributing
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch: `git-worktree-checkout-branch feature/my-feature`
@@ -552,7 +531,7 @@ make dev                           # Quick: build + verify
 
 # 3. Run tests
 cargo test --lib                   # Unit tests (fast)
-make test                          # Full test suite (147 tests)
+make test                          # Full test suite
 
 # 4. Quality checks
 cargo clippy -- -D warnings        # Linting
@@ -570,12 +549,11 @@ daft uses a single binary (589KB) with symlinks for all commands. When you run `
 
 ### Guidelines
 
-- **Focus on Rust**: The shell scripts (`src/legacy/`) are deprecated
 - **Add tests**: Include unit tests for new functionality
 - **Run quality checks**: `cargo clippy` and `cargo fmt` before committing
 - **Update docs**: Keep README.md and inline documentation current
 
-## 📦 Release Process
+## Release Process
 
 daft uses a multi-channel release system:
 
@@ -611,11 +589,11 @@ git clone -b develop https://github.com/avihut/daft.git
 cd daft && cargo build --release
 ```
 
-## 📝 License
+## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - Built for developers who love Git worktrees
 - Inspired by the need for friction-free branch switching
@@ -628,3 +606,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - Code reviews that require testing different branches
 - Hotfix development while feature work continues
 - Projects with complex build processes that benefit from isolation
+
+**Project History**: Interested in how daft evolved from shell scripts to Rust? See [docs/HISTORY.md](docs/HISTORY.md).
