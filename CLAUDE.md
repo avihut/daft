@@ -279,6 +279,8 @@ When working on project tickets, branch names should follow this convention daft
 
 ### PRs
 
+**Target branch**: All PRs should be opened against `develop`, not `master`. The `master` branch only receives changes through the promote workflow (rebase from develop).
+
 PR titles should follow the conventional commit format:
 
 ```
