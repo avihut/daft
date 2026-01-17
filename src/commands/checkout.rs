@@ -4,6 +4,7 @@ use daft::{
     direnv::run_direnv_allow, get_project_root, git::GitCommand, is_git_repository, log_error,
     log_info, log_warning, logging::init_logging, output_cd_path, utils::*, WorktreeConfig,
 };
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-checkout")]
@@ -69,6 +70,25 @@ fn run_checkout(args: &Args) -> Result<()> {
     println!("  Branch:       {}", args.branch_name);
     println!("  Project Root: {}", project_root.display());
     println!("---");
+
+    // Check if worktree already exists for this branch
+    if let Some(existing_path) = find_existing_worktree_for_branch(&git, &args.branch_name)? {
+        println!(
+            "--> Branch '{}' already has a worktree at '{}'",
+            args.branch_name,
+            existing_path.display()
+        );
+        println!("--> Changing to existing worktree...");
+        change_directory(&existing_path)?;
+        run_direnv_allow(&get_current_directory()?, config.quiet)?;
+        println!("---");
+        println!(
+            "Switched to existing worktree for branch '{}'.",
+            args.branch_name
+        );
+        output_cd_path(&get_current_directory()?);
+        return Ok(());
+    }
 
     // Fetch latest changes from remote to ensure we have the latest version of the branch
     println!(
@@ -224,4 +244,32 @@ fn run_checkout(args: &Args) -> Result<()> {
     output_cd_path(&get_current_directory()?);
 
     Ok(())
+}
+
+/// Check if a worktree already exists for the given branch name.
+/// Returns the path to the existing worktree if found.
+fn find_existing_worktree_for_branch(
+    git: &GitCommand,
+    branch_name: &str,
+) -> Result<Option<PathBuf>> {
+    let porcelain_output = git.worktree_list_porcelain()?;
+
+    let mut current_path: Option<PathBuf> = None;
+
+    for line in porcelain_output.lines() {
+        if let Some(worktree_path) = line.strip_prefix("worktree ") {
+            current_path = Some(PathBuf::from(worktree_path));
+        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
+            if let Some(branch) = branch_ref.strip_prefix("refs/heads/") {
+                if branch == branch_name {
+                    return Ok(current_path.take());
+                }
+            }
+            current_path = None;
+        } else if line.is_empty() {
+            current_path = None;
+        }
+    }
+
+    Ok(None)
 }
