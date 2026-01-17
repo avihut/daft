@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use daft::{
     direnv::run_direnv_allow, get_project_root, git::GitCommand, is_git_repository, log_error,
-    log_info, log_warning, logging::init_logging, utils::*, WorktreeConfig,
+    log_info, log_warning, logging::init_logging, output_cd_path, utils::*, WorktreeConfig,
 };
 
 #[derive(Parser)]
@@ -220,6 +220,8 @@ fn run_checkout(args: &Args) -> Result<()> {
 
     println!("---");
     println!("Overall Success: Worktree created, branch checked out, upstream handled, direnv handled (if present), and CD'd into worktree.");
+
+    output_cd_path(&get_current_directory()?);
 
     Ok(())
 }

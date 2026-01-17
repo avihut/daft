@@ -6,7 +6,7 @@ use daft::{
     extract_repo_name,
     git::GitCommand,
     logging::init_logging,
-    quiet_echo,
+    output_cd_path, quiet_echo,
     remote::{get_default_branch_remote, get_remote_branches},
     utils::*,
     WorktreeConfig,
@@ -185,6 +185,8 @@ fn run_clone(args: &Args) -> Result<()> {
             &git_dir_result,
             args.quiet,
         );
+
+        output_cd_path(&get_current_directory()?);
     } else {
         quiet_echo("---", args.quiet);
         quiet_echo("Success!", args.quiet);
