@@ -298,10 +298,178 @@ test_checkout_branch_from_default_security() {
     return 0
 }
 
+# =============================================================================
+# Carry Feature Tests
+# =============================================================================
+
+# Test checkout-branch-from-default default carries changes
+test_checkout_branch_from_default_carry_default() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-from-default-carry" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-from-default-carry"
+    repo_root=$(pwd)
+
+    # Create untracked file in main worktree
+    cd main
+    echo "carry content" > carry_file.txt
+
+    # Create new branch from default (should carry by default)
+    git-worktree-checkout-branch-from-default feature/carry-test || return 1
+
+    cd "$repo_root/feature/carry-test"
+
+    # Verify file is in new worktree
+    assert_file_exists "carry_file.txt" "File should be carried by default" || return 1
+    assert_file_contains "carry_file.txt" "carry content" "File content should be correct" || return 1
+
+    return 0
+}
+
+# Test checkout-branch-from-default --carry explicit
+test_checkout_branch_from_default_carry_explicit() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-from-default-carry-explicit" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-from-default-carry-explicit"
+    repo_root=$(pwd)
+
+    # Create file in main worktree
+    cd main
+    echo "explicit carry" > explicit_file.txt
+
+    # Create new branch with explicit --carry
+    git-worktree-checkout-branch-from-default --carry feature/explicit-carry || return 1
+
+    cd "$repo_root/feature/explicit-carry"
+
+    # Verify file is in new worktree
+    assert_file_exists "explicit_file.txt" "File should be carried with explicit --carry" || return 1
+
+    return 0
+}
+
+# Test checkout-branch-from-default -c shorthand
+test_checkout_branch_from_default_carry_shorthand() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-from-default-carry-short" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-from-default-carry-short"
+    repo_root=$(pwd)
+
+    # Create file in main worktree
+    cd main
+    echo "shorthand content" > shorthand_file.txt
+
+    # Create new branch with -c shorthand
+    git-worktree-checkout-branch-from-default -c feature/shorthand-carry || return 1
+
+    cd "$repo_root/feature/shorthand-carry"
+
+    # Verify file is in new worktree
+    assert_file_exists "shorthand_file.txt" "File should be carried with -c shorthand" || return 1
+
+    return 0
+}
+
+# Test checkout-branch-from-default --no-carry keeps changes
+test_checkout_branch_from_default_no_carry() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-from-default-no-carry" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-from-default-no-carry"
+    repo_root=$(pwd)
+
+    # Create file in main worktree
+    cd main
+    echo "no carry content" > no_carry_file.txt
+
+    # Create new branch with --no-carry
+    git-worktree-checkout-branch-from-default --no-carry feature/no-carry || return 1
+
+    cd "$repo_root"
+
+    # Verify file is NOT in new worktree
+    assert_file_not_exists "feature/no-carry/no_carry_file.txt" "File should NOT be in new worktree with --no-carry" || return 1
+
+    # Verify file IS still in original worktree
+    assert_file_exists "main/no_carry_file.txt" "File should remain in original worktree" || return 1
+
+    return 0
+}
+
+# Test checkout-branch-from-default carry with mixed changes
+test_checkout_branch_from_default_carry_mixed() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-from-default-carry-mixed" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-from-default-carry-mixed"
+    repo_root=$(pwd)
+
+    # Create mixed changes in main worktree
+    cd main
+    echo "staged" > staged.txt
+    git add staged.txt
+    echo "unstaged modification" >> README.md
+    echo "untracked" > untracked.txt
+
+    # Create new branch from default (carries all by default)
+    git-worktree-checkout-branch-from-default feature/mixed-carry || return 1
+
+    cd "$repo_root/feature/mixed-carry"
+
+    # Verify all changes are in new worktree
+    assert_file_exists "staged.txt" "Staged file should be carried" || return 1
+    assert_file_contains "README.md" "unstaged modification" "Unstaged modification should be carried" || return 1
+    assert_file_exists "untracked.txt" "Untracked file should be carried" || return 1
+
+    return 0
+}
+
+# Test checkout-branch-from-default help shows carry flags
+test_checkout_branch_from_default_carry_help() {
+    # Verify --carry and --no-carry appear in help
+    local help_output
+    help_output=$(git-worktree-checkout-branch-from-default --help 2>&1)
+
+    if echo "$help_output" | grep -q "\-\-carry"; then
+        log_success "--carry flag appears in help"
+    else
+        log_error "--carry flag missing from help output"
+        return 1
+    fi
+
+    if echo "$help_output" | grep -q "\-\-no-carry"; then
+        log_success "--no-carry flag appears in help"
+    else
+        log_error "--no-carry flag missing from help output"
+        return 1
+    fi
+
+    if echo "$help_output" | grep -q "\-c"; then
+        log_success "-c shorthand appears in help"
+    else
+        log_error "-c shorthand missing from help output"
+        return 1
+    fi
+
+    return 0
+}
+
 # Run all checkout-branch-from-default tests
 run_checkout_branch_from_default_tests() {
     log "Running git-worktree-checkout-branch-from-default integration tests..."
-    
+
     run_test "checkout_branch_from_default_basic" "test_checkout_branch_from_default_basic"
     run_test "checkout_branch_from_default_develop" "test_checkout_branch_from_default_develop"
     run_test "checkout_branch_from_default_subdir" "test_checkout_branch_from_default_subdir"
@@ -315,6 +483,14 @@ run_checkout_branch_from_default_tests() {
     run_test "checkout_branch_from_default_large_repo" "test_checkout_branch_from_default_large_repo"
     run_test "checkout_branch_from_default_remote_updates" "test_checkout_branch_from_default_remote_updates"
     run_test "checkout_branch_from_default_security" "test_checkout_branch_from_default_security"
+
+    # Carry feature tests
+    run_test "checkout_branch_from_default_carry_default" "test_checkout_branch_from_default_carry_default"
+    run_test "checkout_branch_from_default_carry_explicit" "test_checkout_branch_from_default_carry_explicit"
+    run_test "checkout_branch_from_default_carry_shorthand" "test_checkout_branch_from_default_carry_shorthand"
+    run_test "checkout_branch_from_default_no_carry" "test_checkout_branch_from_default_no_carry"
+    run_test "checkout_branch_from_default_carry_mixed" "test_checkout_branch_from_default_carry_mixed"
+    run_test "checkout_branch_from_default_carry_help" "test_checkout_branch_from_default_carry_help"
 }
 
 # Main execution

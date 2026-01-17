@@ -20,6 +20,16 @@ pub struct Args {
 
     #[arg(short, long, help = "Enable verbose output")]
     verbose: bool,
+
+    #[arg(
+        short = 'c',
+        long = "carry",
+        help = "Carry uncommitted changes to the new worktree (default)"
+    )]
+    carry: bool,
+
+    #[arg(long, help = "Don't carry uncommitted changes to the new worktree")]
+    no_carry: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -70,9 +80,17 @@ fn run_checkout_branch_from_default(args: &Args) -> Result<()> {
 
     let checkout_branch_exe = exe_dir.join("git-worktree-checkout-branch");
 
-    let status = Command::new(&checkout_branch_exe)
-        .arg(&args.new_branch_name)
-        .arg(&default_branch)
+    let mut cmd = Command::new(&checkout_branch_exe);
+    cmd.arg(&args.new_branch_name).arg(&default_branch);
+
+    if args.carry {
+        cmd.arg("--carry");
+    }
+    if args.no_carry {
+        cmd.arg("--no-carry");
+    }
+
+    let status = cmd
         .status()
         .context("Failed to execute git-worktree-checkout-branch")?;
 

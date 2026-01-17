@@ -2,6 +2,7 @@
 ///
 /// Each module represents a Git extension command that can be invoked
 /// either directly or via symlink detection in the multicall binary.
+pub mod carry;
 pub mod checkout;
 pub mod checkout_branch;
 pub mod checkout_branch_from_default;

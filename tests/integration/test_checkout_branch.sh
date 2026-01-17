@@ -291,10 +291,256 @@ test_checkout_branch_security() {
     return 0
 }
 
+# =============================================================================
+# Carry Feature Tests
+# =============================================================================
+
+# Test checkout-branch default carries staged changes
+test_checkout_branch_carry_staged() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-carry-staged" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-carry-staged"
+    repo_root=$(pwd)
+
+    # Create and stage a file in main worktree
+    cd main
+    echo "staged content" > staged_file.txt
+    git add staged_file.txt
+
+    # Create new branch (default should carry changes)
+    git-worktree-checkout-branch feature/carry-staged || return 1
+
+    cd "$repo_root/feature/carry-staged"
+
+    # Verify staged file is in new worktree
+    assert_file_exists "staged_file.txt" "Staged file should be carried to new worktree" || return 1
+    assert_file_contains "staged_file.txt" "staged content" "File should have correct content" || return 1
+
+    # Verify file is NOT in original worktree (stash moves it)
+    assert_file_not_exists "$repo_root/main/staged_file.txt" "Staged file should not remain in original worktree" || return 1
+
+    return 0
+}
+
+# Test checkout-branch default carries unstaged changes
+test_checkout_branch_carry_unstaged() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-carry-unstaged" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-carry-unstaged"
+    repo_root=$(pwd)
+
+    # Modify existing tracked file in main worktree (unstaged)
+    cd main
+    echo "modified content" >> README.md
+
+    # Create new branch (default should carry changes)
+    git-worktree-checkout-branch feature/carry-unstaged || return 1
+
+    cd "$repo_root/feature/carry-unstaged"
+
+    # Verify modification is in new worktree
+    assert_file_contains "README.md" "modified content" "Modification should be carried to new worktree" || return 1
+
+    return 0
+}
+
+# Test checkout-branch default carries untracked files
+test_checkout_branch_carry_untracked() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-carry-untracked" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-carry-untracked"
+    repo_root=$(pwd)
+
+    # Create untracked file in main worktree
+    cd main
+    echo "untracked content" > untracked_file.txt
+
+    # Create new branch (default should carry changes including untracked)
+    git-worktree-checkout-branch feature/carry-untracked || return 1
+
+    cd "$repo_root/feature/carry-untracked"
+
+    # Verify untracked file is in new worktree
+    assert_file_exists "untracked_file.txt" "Untracked file should be carried to new worktree" || return 1
+    assert_file_contains "untracked_file.txt" "untracked content" "Untracked file should have correct content" || return 1
+
+    return 0
+}
+
+# Test checkout-branch --carry explicit flag
+test_checkout_branch_carry_explicit() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-carry-explicit" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-carry-explicit"
+    repo_root=$(pwd)
+
+    # Create file in main worktree
+    cd main
+    echo "explicit carry content" > explicit_file.txt
+
+    # Create new branch with explicit --carry flag
+    git-worktree-checkout-branch --carry feature/explicit-carry || return 1
+
+    cd "$repo_root/feature/explicit-carry"
+
+    # Verify file is in new worktree
+    assert_file_exists "explicit_file.txt" "File should be carried with explicit --carry flag" || return 1
+
+    return 0
+}
+
+# Test checkout-branch -c shorthand
+test_checkout_branch_carry_shorthand() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-carry-short" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-carry-short"
+    repo_root=$(pwd)
+
+    # Create file in main worktree
+    cd main
+    echo "shorthand carry content" > shorthand_file.txt
+
+    # Create new branch with -c shorthand
+    git-worktree-checkout-branch -c feature/shorthand-carry || return 1
+
+    cd "$repo_root/feature/shorthand-carry"
+
+    # Verify file is in new worktree
+    assert_file_exists "shorthand_file.txt" "File should be carried with -c shorthand" || return 1
+
+    return 0
+}
+
+# Test checkout-branch --no-carry keeps changes in original
+test_checkout_branch_no_carry() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-no-carry" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-no-carry"
+    repo_root=$(pwd)
+
+    # Create file in main worktree
+    cd main
+    echo "no carry content" > no_carry_file.txt
+
+    # Create new branch with --no-carry flag
+    git-worktree-checkout-branch --no-carry feature/no-carry || return 1
+
+    cd "$repo_root"
+
+    # Verify file is NOT in new worktree
+    assert_file_not_exists "feature/no-carry/no_carry_file.txt" "File should NOT be in new worktree with --no-carry" || return 1
+
+    # Verify file IS still in original worktree
+    assert_file_exists "main/no_carry_file.txt" "File should remain in original worktree with --no-carry" || return 1
+
+    return 0
+}
+
+# Test checkout-branch with no uncommitted changes
+test_checkout_branch_carry_no_changes() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-carry-clean" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-carry-clean"
+    repo_root=$(pwd)
+
+    # No changes - just create new branch
+    cd main
+    git-worktree-checkout-branch feature/clean-create || return 1
+
+    cd "$repo_root"
+
+    # Verify worktree was created successfully
+    assert_directory_exists "feature/clean-create" || return 1
+    assert_git_worktree "feature/clean-create" "feature/clean-create" || return 1
+
+    return 0
+}
+
+# Test checkout-branch carry with mixed changes (staged + unstaged + untracked)
+test_checkout_branch_carry_mixed() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-carry-mixed" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-carry-mixed"
+    repo_root=$(pwd)
+
+    # Create mixed changes in main worktree
+    cd main
+    echo "staged" > staged.txt
+    git add staged.txt
+    echo "unstaged modification" >> README.md
+    echo "untracked" > untracked.txt
+
+    # Create new branch (default carries all)
+    git-worktree-checkout-branch feature/mixed-carry || return 1
+
+    cd "$repo_root/feature/mixed-carry"
+
+    # Verify all changes are in new worktree
+    assert_file_exists "staged.txt" "Staged file should be carried" || return 1
+    assert_file_contains "README.md" "unstaged modification" "Unstaged modification should be carried" || return 1
+    assert_file_exists "untracked.txt" "Untracked file should be carried" || return 1
+
+    return 0
+}
+
+# Test checkout-branch help shows carry flags
+test_checkout_branch_carry_help() {
+    # Verify --carry and --no-carry appear in help
+    local help_output
+    help_output=$(git-worktree-checkout-branch --help 2>&1)
+
+    if echo "$help_output" | grep -q "\-\-carry"; then
+        log_success "--carry flag appears in help"
+    else
+        log_error "--carry flag missing from help output"
+        return 1
+    fi
+
+    if echo "$help_output" | grep -q "\-\-no-carry"; then
+        log_success "--no-carry flag appears in help"
+    else
+        log_error "--no-carry flag missing from help output"
+        return 1
+    fi
+
+    if echo "$help_output" | grep -q "\-c"; then
+        log_success "-c shorthand appears in help"
+    else
+        log_error "-c shorthand missing from help output"
+        return 1
+    fi
+
+    return 0
+}
+
 # Run all checkout-branch tests
 run_checkout_branch_tests() {
     log "Running git-worktree-checkout-branch integration tests..."
-    
+
     run_test "checkout_branch_basic" "test_checkout_branch_basic"
     run_test "checkout_branch_with_base" "test_checkout_branch_with_base"
     run_test "checkout_branch_from_subdirectory" "test_checkout_branch_from_subdirectory"
@@ -308,6 +554,17 @@ run_checkout_branch_tests() {
     run_test "checkout_branch_large_repo" "test_checkout_branch_large_repo"
     run_test "checkout_branch_with_uncommitted" "test_checkout_branch_with_uncommitted"
     run_test "checkout_branch_security" "test_checkout_branch_security"
+
+    # Carry feature tests
+    run_test "checkout_branch_carry_staged" "test_checkout_branch_carry_staged"
+    run_test "checkout_branch_carry_unstaged" "test_checkout_branch_carry_unstaged"
+    run_test "checkout_branch_carry_untracked" "test_checkout_branch_carry_untracked"
+    run_test "checkout_branch_carry_explicit" "test_checkout_branch_carry_explicit"
+    run_test "checkout_branch_carry_shorthand" "test_checkout_branch_carry_shorthand"
+    run_test "checkout_branch_no_carry" "test_checkout_branch_no_carry"
+    run_test "checkout_branch_carry_no_changes" "test_checkout_branch_carry_no_changes"
+    run_test "checkout_branch_carry_mixed" "test_checkout_branch_carry_mixed"
+    run_test "checkout_branch_carry_help" "test_checkout_branch_carry_help"
 }
 
 # Main execution
