@@ -20,6 +20,14 @@ This file provides guidance when working with code in this repository.
 - All functionality preserved, 147 tests passing
 - Documentation and installation paths updated throughout
 
+## Critical Development Rules
+
+**DO NOT** violate these rules under any circumstances:
+
+1. **Never modify global git config** - Do not change the global git user name, email, or any other global settings. This applies to both manual work and automated tests. If existing tests modify global config, they must be fixed to use local config instead.
+
+2. **Never use this repository for testing** - This project's own git repository must never be used as a test subject for the worktree commands. Tests must always create isolated temporary repositories. Using this repo for testing could corrupt the project's version control state.
+
 ## Release Workflow and Git Branching Strategy
 
 This project uses a multi-channel release workflow with `master` as the stable branch and `develop` as the integration branch.
