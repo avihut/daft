@@ -502,6 +502,131 @@ impl GitCommand {
 
         Ok(())
     }
+
+    /// Apply the top stash without removing it
+    pub fn stash_apply(&self) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.args(["stash", "apply"]);
+
+        if self.quiet {
+            cmd.arg("--quiet");
+        }
+
+        let output = cmd
+            .output()
+            .context("Failed to execute git stash apply command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git stash apply failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
+    /// Drop the top stash entry
+    pub fn stash_drop(&self) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.args(["stash", "drop"]);
+
+        if self.quiet {
+            cmd.arg("--quiet");
+        }
+
+        let output = cmd
+            .output()
+            .context("Failed to execute git stash drop command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git stash drop failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
+    /// Get the path of the current worktree
+    pub fn get_current_worktree_path(&self) -> Result<std::path::PathBuf> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .context("Failed to execute git rev-parse command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git rev-parse failed: {}", stderr);
+        }
+
+        let path_str =
+            String::from_utf8(output.stdout).context("Failed to parse git rev-parse output")?;
+        Ok(std::path::PathBuf::from(path_str.trim()))
+    }
+
+    /// Resolve a target (worktree name or branch name) to a worktree path.
+    /// Priority: worktree name (directory name) > branch name
+    pub fn resolve_worktree_path(
+        &self,
+        target: &str,
+        project_root: &Path,
+    ) -> Result<std::path::PathBuf> {
+        let porcelain_output = self.worktree_list_porcelain()?;
+
+        // Parse worktree list porcelain output
+        // Format:
+        // worktree /path/to/worktree
+        // HEAD <sha>
+        // branch refs/heads/branch-name
+        // <blank line>
+        let mut worktrees: Vec<(std::path::PathBuf, Option<String>)> = Vec::new();
+        let mut current_path: Option<std::path::PathBuf> = None;
+        let mut current_branch: Option<String> = None;
+
+        for line in porcelain_output.lines() {
+            if let Some(worktree_path) = line.strip_prefix("worktree ") {
+                // Save previous worktree if any
+                if let Some(path) = current_path.take() {
+                    worktrees.push((path, current_branch.take()));
+                }
+                current_path = Some(std::path::PathBuf::from(worktree_path));
+                current_branch = None;
+            } else if let Some(branch_ref) = line.strip_prefix("branch ") {
+                // Extract branch name from refs/heads/branch-name
+                current_branch = branch_ref.strip_prefix("refs/heads/").map(String::from);
+            }
+        }
+        // Don't forget the last worktree
+        if let Some(path) = current_path.take() {
+            worktrees.push((path, current_branch.take()));
+        }
+
+        // First, check if target matches a worktree name (directory name)
+        for (path, _) in &worktrees {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name == target {
+                    return Ok(path.clone());
+                }
+            }
+        }
+
+        // Second, check if target matches a branch name
+        for (path, branch) in &worktrees {
+            if let Some(branch_name) = branch {
+                if branch_name == target {
+                    return Ok(path.clone());
+                }
+            }
+        }
+
+        // Third, check if target is a path relative to project root
+        let potential_path = project_root.join(target);
+        for (path, _) in &worktrees {
+            if path == &potential_path {
+                return Ok(path.clone());
+            }
+        }
+
+        anyhow::bail!("No worktree found for '{}'", target)
+    }
 }
 
 #[cfg(test)]

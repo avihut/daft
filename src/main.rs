@@ -28,6 +28,7 @@ fn main() -> Result<()> {
             commands::checkout_branch_from_default::run()
         }
         "git-worktree-prune" => commands::prune::run(),
+        "git-worktree-carry" => commands::carry::run(),
 
         // Documentation command (via git-daft symlink or direct invocation)
         "git-daft" => commands::docs::run(),

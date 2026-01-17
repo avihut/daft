@@ -181,6 +181,7 @@ setup-rust: build-rust
 		ln -sf daft git-worktree-checkout-branch && \
 		ln -sf daft git-worktree-checkout-branch-from-default && \
 		ln -sf daft git-worktree-prune && \
+		ln -sf daft git-worktree-carry && \
 		ln -sf daft git-daft
 	@echo "✓ Development environment ready!"
 	@echo ""
@@ -213,6 +214,7 @@ dev-clean:
 		git-worktree-checkout-branch \
 		git-worktree-checkout-branch-from-default \
 		git-worktree-prune \
+		git-worktree-carry \
 		git-daft
 	@echo "✓ Symlinks removed (binary preserved)"
 
