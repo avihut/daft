@@ -229,6 +229,35 @@ dev-verify:
 dev-test: dev-setup test
 	@echo "✓ Development setup tested successfully!"
 
+# Watch targets (requires cargo-watch: cargo install cargo-watch)
+.PHONY: watch watch-unit watch-clippy watch-check
+
+watch: watch-unit
+
+watch-unit:
+	@if command -v cargo-watch >/dev/null 2>&1; then \
+		cargo watch -c -x "test --lib"; \
+	else \
+		echo "cargo-watch not installed. Install with: cargo install cargo-watch"; \
+		exit 1; \
+	fi
+
+watch-clippy:
+	@if command -v cargo-watch >/dev/null 2>&1; then \
+		cargo watch -c -x "clippy -- -D warnings" -x "test --lib"; \
+	else \
+		echo "cargo-watch not installed. Install with: cargo install cargo-watch"; \
+		exit 1; \
+	fi
+
+watch-check:
+	@if command -v cargo-watch >/dev/null 2>&1; then \
+		cargo watch -c -x check; \
+	else \
+		echo "cargo-watch not installed. Install with: cargo install cargo-watch"; \
+		exit 1; \
+	fi
+
 # Validate scripts (basic syntax check)
 .PHONY: validate validate-legacy validate-rust
 validate: validate-legacy validate-rust
@@ -375,6 +404,12 @@ help:
 	@echo "  dev-clean                     - Remove development symlinks"
 	@echo "  dev-verify                    - Verify development setup is working"
 	@echo "  dev-test                      - Full dev setup + run all tests"
+	@echo ""
+	@echo "Watch targets (requires: cargo install cargo-watch):"
+	@echo "  watch                         - Watch and run unit tests on changes (alias for watch-unit)"
+	@echo "  watch-unit                    - Watch and run unit tests on changes"
+	@echo "  watch-clippy                  - Watch and run clippy + unit tests on changes"
+	@echo "  watch-check                   - Watch and run cargo check on changes"
 	@echo ""
 	@echo "Test targets:"
 	@echo "  all                           - Run all tests (default)"
