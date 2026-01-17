@@ -78,14 +78,29 @@ pub trait Output {
     // Structured Output
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// Display an intermediate step message.
+    /// Only shown in verbose mode (not in default output).
+    /// Use this for step-by-step progress during operations.
+    fn step(&mut self, msg: &str);
+
+    /// Display a final result message.
+    /// The primary success output shown in default mode.
+    /// Use this for the 1-2 line summary at the end of a command.
+    fn result(&mut self, msg: &str);
+
     /// Display a progress/action message.
     /// Renders as "--> msg" in CLI.
     /// Respects quiet mode.
+    #[deprecated(since = "0.4.0", note = "Use step() for verbose output instead")]
     fn progress(&mut self, msg: &str);
 
     /// Display a visual divider.
     /// Renders as "---" in CLI.
     /// Respects quiet mode.
+    #[deprecated(
+        since = "0.4.0",
+        note = "Dividers are no longer used in git-like output"
+    )]
     fn divider(&mut self);
 
     /// Display a key-value detail.

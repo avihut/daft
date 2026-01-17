@@ -6,7 +6,7 @@ use daft::{
     extract_repo_name,
     git::GitCommand,
     logging::init_logging,
-    output_cd_path, quiet_echo,
+    output::{CliOutput, Output, OutputConfig},
     remote::{get_default_branch_remote, get_remote_branches},
     utils::*,
     WorktreeConfig,
@@ -43,6 +43,9 @@ pub struct Args {
     )]
     quiet: bool,
 
+    #[arg(short = 'v', long = "verbose", help = "Enable verbose output")]
+    verbose: bool,
+
     #[arg(
         short = 'a',
         long = "all-branches",
@@ -54,16 +57,19 @@ pub struct Args {
 pub fn run() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize logging - quiet mode disables verbose output
-    init_logging(!args.quiet);
+    // Initialize logging based on verbose flag
+    init_logging(args.verbose);
 
     if args.no_checkout && args.all_branches {
         anyhow::bail!("--no-checkout and --all-branches cannot be used together.\nUse --no-checkout to create only the bare repository, or --all-branches to create worktrees for all branches.");
     }
 
+    let config = OutputConfig::new(args.quiet, args.verbose);
+    let mut output = CliOutput::new(config);
+
     let original_dir = get_current_directory()?;
 
-    if let Err(e) = run_clone(&args) {
+    if let Err(e) = run_clone(&args, &mut output) {
         change_directory(&original_dir).ok();
         return Err(e);
     }
@@ -71,66 +77,51 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn run_clone(args: &Args) -> Result<()> {
+fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
     check_dependencies()?;
 
     let repo_name = extract_repo_name(&args.repository_url)?;
-    quiet_echo(
-        &format!("Repository name detected: '{repo_name}'"),
-        args.quiet,
-    );
+    output.step(&format!("Repository name detected: '{repo_name}'"));
 
     let default_branch = get_default_branch_remote(&args.repository_url)
         .context("Failed to determine default branch")?;
-    quiet_echo(
-        &format!("Default branch detected: '{default_branch}'"),
-        args.quiet,
-    );
+    output.step(&format!("Default branch detected: '{default_branch}'"));
 
     let parent_dir = PathBuf::from(&repo_name);
     let worktree_dir = parent_dir.join(&default_branch);
 
-    quiet_echo(
-        &format!("Target repository directory: './{}'", parent_dir.display()),
-        args.quiet,
-    );
+    output.step(&format!(
+        "Target repository directory: './{}'",
+        parent_dir.display()
+    ));
 
     if !args.no_checkout {
         if args.all_branches {
-            quiet_echo(
-                "Worktrees will be created for all remote branches",
-                args.quiet,
-            );
+            output.step("Worktrees will be created for all remote branches");
         } else {
-            quiet_echo(
-                &format!(
-                    "Initial worktree will be in: './{}'",
-                    worktree_dir.display()
-                ),
-                args.quiet,
-            );
+            output.step(&format!(
+                "Initial worktree will be in: './{}'",
+                worktree_dir.display()
+            ));
         }
     } else {
-        quiet_echo(
-            "No-checkout mode: Only bare repository will be created",
-            args.quiet,
-        );
+        output.step("No-checkout mode: Only bare repository will be created");
     }
 
     if path_exists(&parent_dir) {
         anyhow::bail!("Target path './{} already exists.", parent_dir.display());
     }
 
-    quiet_echo("Creating repository directory...", args.quiet);
+    output.step("Creating repository directory...");
     create_directory(&parent_dir)?;
 
     let git_dir = parent_dir.join(".git");
-    let git = GitCommand::new(args.quiet);
+    let git = GitCommand::new(output.is_quiet());
 
-    quiet_echo(
-        &format!("Cloning bare repository into './{}'...", git_dir.display()),
-        args.quiet,
-    );
+    output.step(&format!(
+        "Cloning bare repository into './{}'...",
+        git_dir.display()
+    ));
 
     if let Err(e) = git.clone_bare(&args.repository_url, &git_dir) {
         remove_directory(&parent_dir).ok();
@@ -138,84 +129,62 @@ fn run_clone(args: &Args) -> Result<()> {
     }
 
     // Change to the repository directory to set up remote HEAD
-    quiet_echo(
-        &format!("--> Changing directory to './{}'", parent_dir.display()),
-        args.quiet,
-    );
+    output.step(&format!(
+        "Changing directory to './{}'",
+        parent_dir.display()
+    ));
     change_directory(&parent_dir)?;
 
     let config = WorktreeConfig::default();
 
     // Set up remote HEAD reference for better default branch detection
     if let Err(e) = git.remote_set_head_auto(&config.remote_name) {
-        quiet_echo(
-            &format!("--> Warning: Could not set remote HEAD: {e}"),
-            args.quiet,
-        );
+        output.warning(&format!("Could not set remote HEAD: {e}"));
         // Continue execution - this is not critical
     }
 
     if !args.no_checkout {
         if args.all_branches {
-            create_all_worktrees(&git, &config, &default_branch, args.quiet)?;
+            create_all_worktrees(&git, &config, &default_branch, output)?;
         } else {
-            create_single_worktree(&git, &default_branch, args.quiet)?;
+            create_single_worktree(&git, &default_branch, output)?;
         }
 
         let target_worktree = PathBuf::from(&default_branch);
-        quiet_echo(
-            &format!(
-                "--> Changing directory to worktree: './{}'",
-                target_worktree.display()
-            ),
-            args.quiet,
-        );
+        output.step(&format!(
+            "Changing directory to worktree: './{}'",
+            target_worktree.display()
+        ));
 
         if let Err(e) = change_directory(&target_worktree) {
             change_directory(parent_dir.parent().unwrap_or(&PathBuf::from("."))).ok();
             return Err(e);
         }
 
-        run_direnv_allow(&get_current_directory()?, args.quiet)?;
+        run_direnv_allow(&get_current_directory()?, output.is_quiet())?;
 
-        let git_dir_result = git.get_git_dir().unwrap_or_else(|_| "unknown".to_string());
-        print_success_message(
-            &repo_name,
-            &get_current_directory()?,
-            &git_dir_result,
-            args.quiet,
-        );
+        let current_dir = get_current_directory()?;
 
-        output_cd_path(&get_current_directory()?);
+        // Git-like result message
+        output.result(&format!("Cloned into '{repo_name}/{default_branch}'"));
+
+        output.cd_path(&current_dir);
     } else {
-        quiet_echo("---", args.quiet);
-        quiet_echo("Success!", args.quiet);
-        quiet_echo(
-            &format!("Repository '{repo_name}' cloned successfully (no-checkout mode)."),
-            args.quiet,
-        );
-        quiet_echo(
-            &format!("The bare Git repository is at: '{}'", git_dir.display()),
-            args.quiet,
-        );
-        quiet_echo("No worktree was created. You can create worktrees using 'git worktree add' from within the repository directory.", args.quiet);
-        quiet_echo(
-            &format!(
-                "You are still in the original directory: {}",
-                get_current_directory()?.display()
-            ),
-            args.quiet,
-        );
+        // Git-like result message for no-checkout mode
+        output.result(&format!("Cloned '{repo_name}' (bare)"));
     }
 
     Ok(())
 }
 
-fn create_single_worktree(git: &GitCommand, default_branch: &str, quiet: bool) -> Result<()> {
-    quiet_echo(
-        &format!("Creating initial worktree for branch '{default_branch}'..."),
-        quiet,
-    );
+fn create_single_worktree(
+    git: &GitCommand,
+    default_branch: &str,
+    output: &mut dyn Output,
+) -> Result<()> {
+    output.step(&format!(
+        "Creating initial worktree for branch '{default_branch}'..."
+    ));
     git.worktree_add(&PathBuf::from(default_branch), default_branch)
         .context("Failed to create initial worktree")?;
     Ok(())
@@ -225,9 +194,9 @@ fn create_all_worktrees(
     git: &GitCommand,
     config: &WorktreeConfig,
     _default_branch: &str,
-    quiet: bool,
+    output: &mut dyn Output,
 ) -> Result<()> {
-    quiet_echo("Fetching all remote branches...", quiet);
+    output.step("Fetching all remote branches...");
     git.fetch(&config.remote_name, false)?;
 
     let remote_branches =
@@ -238,12 +207,9 @@ fn create_all_worktrees(
     }
 
     for branch in &remote_branches {
-        quiet_echo(
-            &format!("Creating worktree for branch '{branch}'..."),
-            quiet,
-        );
+        output.step(&format!("Creating worktree for branch '{branch}'..."));
         if let Err(e) = git.worktree_add(&PathBuf::from(branch), branch) {
-            eprintln!("Error creating worktree for branch '{branch}': {e}");
+            output.error(&format!("creating worktree for branch '{branch}': {e}"));
             continue;
         }
     }

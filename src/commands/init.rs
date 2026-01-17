@@ -39,6 +39,9 @@ pub struct Args {
     )]
     quiet: bool,
 
+    #[arg(short = 'v', long = "verbose", help = "Enable verbose output")]
+    verbose: bool,
+
     #[arg(
         short = 'b',
         long = "initial-branch",
@@ -51,10 +54,10 @@ pub struct Args {
 pub fn run() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize logging - quiet mode disables verbose output
-    init_logging(!args.quiet);
+    // Initialize logging based on verbose flag
+    init_logging(args.verbose);
 
-    let config = OutputConfig::new(args.quiet, false);
+    let config = OutputConfig::new(args.quiet, args.verbose);
     let mut output = CliOutput::new(config);
 
     let original_dir = get_current_directory()?;
@@ -83,31 +86,31 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
     let parent_dir = PathBuf::from(&args.repository_name);
     let worktree_dir = parent_dir.join(&args.initial_branch);
 
-    output.info(&format!(
+    output.step(&format!(
         "Target repository directory: './{}'",
         parent_dir.display()
     ));
 
     if !args.bare {
-        output.info(&format!(
+        output.step(&format!(
             "Initial worktree will be in: './{}'",
             worktree_dir.display()
         ));
     } else {
-        output.info("Bare mode: Only bare repository will be created");
+        output.step("Bare mode: Only bare repository will be created");
     }
 
     if path_exists(&parent_dir) {
         anyhow::bail!("Target path './{} already exists.", parent_dir.display());
     }
 
-    output.info("Creating repository directory...");
+    output.step("Creating repository directory...");
     create_directory(&parent_dir)?;
 
     let git_dir = parent_dir.join(".git");
     let git = GitCommand::new(output.is_quiet());
 
-    output.info(&format!(
+    output.step(&format!(
         "Initializing bare repository in './{}'...",
         git_dir.display()
     ));
@@ -118,13 +121,13 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
     }
 
     if !args.bare {
-        output.progress(&format!(
+        output.step(&format!(
             "Changing directory to './{}'",
             parent_dir.display()
         ));
         change_directory(&parent_dir)?;
 
-        output.info(&format!(
+        output.step(&format!(
             "Creating initial worktree for branch '{}'...",
             args.initial_branch
         ));
@@ -137,7 +140,7 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
         }
 
         let target_worktree = PathBuf::from(&args.initial_branch);
-        output.progress(&format!(
+        output.step(&format!(
             "Changing directory to worktree: './{}'",
             target_worktree.display()
         ));
@@ -149,39 +152,20 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
 
         run_direnv_allow(&get_current_directory()?, output.is_quiet())?;
 
-        let git_dir_result = git.get_git_dir().unwrap_or_else(|_| "unknown".to_string());
         let current_dir = get_current_directory()?;
 
-        // Success message block
-        output.divider();
-        output.success("Success!");
-        output.info(&format!("Repository '{}' ready.", args.repository_name));
-        output.info(&format!(
-            "The main Git directory is at: '{}'",
-            git_dir_result
+        // Git-like result message
+        output.result(&format!(
+            "Initialized repository '{}' in '{}/{}'",
+            args.repository_name, args.repository_name, args.initial_branch
         ));
-        output.info(&format!(
-            "Your worktree is ready at: '{}'",
-            current_dir.display()
-        ));
-        output.info("You are now inside the worktree.");
 
         output.cd_path(&current_dir);
     } else {
-        output.divider();
-        output.success("Success!");
-        output.info(&format!(
-            "Repository '{}' initialized successfully (bare mode).",
+        // Git-like result message for bare mode
+        output.result(&format!(
+            "Initialized empty repository '{}' (bare)",
             args.repository_name
-        ));
-        output.info(&format!(
-            "The bare Git repository is at: '{}'",
-            git_dir.display()
-        ));
-        output.info("No worktree was created. You can create worktrees using 'git worktree add' from within the repository directory.");
-        output.info(&format!(
-            "You are still in the original directory: {}",
-            get_current_directory()?.display()
         ));
     }
 
@@ -195,11 +179,12 @@ mod tests {
     use std::env;
     use tempfile::tempdir;
 
-    fn create_test_args(repo_name: &str, bare: bool, quiet: bool) -> Args {
+    fn create_test_args(repo_name: &str, bare: bool, quiet: bool, verbose: bool) -> Args {
         Args {
             repository_name: repo_name.to_string(),
             bare,
             quiet,
+            verbose,
             initial_branch: "master".to_string(),
         }
     }
@@ -209,18 +194,17 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         env::set_current_dir(temp_dir.path()).unwrap();
 
-        let args = create_test_args("test-repo", false, false);
-        let mut output = TestOutput::new();
+        let args = create_test_args("test-repo", false, false, true);
+        let mut output = TestOutput::verbose();
 
         let result = run_with_output(&args, &mut output);
 
         // The command may fail due to git not being configured, but we can still
         // verify the output messages that were generated before the failure
         if result.is_ok() {
-            assert!(output.has_info("Target repository directory"));
-            assert!(output.has_info("Initial worktree will be in"));
-            assert!(output.has_success("Success!"));
-            assert!(output.has_divider());
+            assert!(output.has_step("Target repository directory"));
+            assert!(output.has_step("Initial worktree will be in"));
+            assert!(output.has_result("Initialized repository"));
             assert!(output.get_cd_path().is_some());
         }
     }
@@ -230,15 +214,14 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         env::set_current_dir(temp_dir.path()).unwrap();
 
-        let args = create_test_args("test-bare-repo", true, false);
-        let mut output = TestOutput::new();
+        let args = create_test_args("test-bare-repo", true, false, true);
+        let mut output = TestOutput::verbose();
 
         let result = run_with_output(&args, &mut output);
 
         if result.is_ok() {
-            assert!(output.has_info("Bare mode"));
-            assert!(output.has_info("bare mode"));
-            assert!(output.has_success("Success!"));
+            assert!(output.has_step("Bare mode"));
+            assert!(output.has_result("bare"));
             // Bare mode should NOT output cd_path
             assert!(output.get_cd_path().is_none());
         }
@@ -249,14 +232,14 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         env::set_current_dir(temp_dir.path()).unwrap();
 
-        let args = create_test_args("quiet-repo", true, true);
+        let args = create_test_args("quiet-repo", true, true, false);
         let mut output = TestOutput::quiet();
 
         let _ = run_with_output(&args, &mut output);
 
-        // In quiet mode, info messages should be suppressed
-        assert!(output.infos().is_empty());
-        assert!(output.successes().is_empty());
+        // In quiet mode, all messages should be suppressed
+        assert!(output.steps().is_empty());
+        assert!(output.results().is_empty());
     }
 
     #[test]
@@ -265,6 +248,7 @@ mod tests {
             repository_name: "".to_string(),
             bare: false,
             quiet: false,
+            verbose: false,
             initial_branch: "master".to_string(),
         };
         let mut output = TestOutput::new();
@@ -284,6 +268,7 @@ mod tests {
             repository_name: "test-repo".to_string(),
             bare: false,
             quiet: false,
+            verbose: false,
             initial_branch: "".to_string(),
         };
         let mut output = TestOutput::new();

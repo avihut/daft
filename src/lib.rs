@@ -161,6 +161,10 @@ fn sanitize_extracted_name(name: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+#[deprecated(
+    since = "0.4.0",
+    note = "Use Output::step() for verbose output instead"
+)]
 pub fn quiet_echo(message: &str, quiet: bool) {
     if !quiet {
         logging::log(logging::LogLevel::Info, message);
@@ -248,6 +252,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_quiet_echo() {
         quiet_echo("test message", true);
         quiet_echo("test message", false);

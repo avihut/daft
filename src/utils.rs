@@ -160,6 +160,10 @@ pub fn validate_repo_name(repo_name: &str) -> Result<()> {
     Ok(())
 }
 
+#[deprecated(
+    since = "0.4.0",
+    note = "Use Output::result() for final output instead"
+)]
 pub fn print_success_message(repo_name: &str, worktree_path: &Path, git_dir: &str, quiet: bool) {
     if !quiet {
         println!("---");

@@ -58,30 +58,45 @@ impl Output for CliOutput {
 
     fn warning(&mut self, msg: &str) {
         // Warnings are always shown (not affected by quiet mode)
-        eprintln!("Warning: {msg}");
+        // Git-like format: lowercase prefix
+        eprintln!("warning: {msg}");
     }
 
     fn error(&mut self, msg: &str) {
         // Errors are always shown (not affected by quiet mode)
-        eprintln!("Error: {msg}");
+        // Git-like format: lowercase prefix
+        eprintln!("error: {msg}");
     }
 
     fn debug(&mut self, msg: &str) {
         if self.config.verbose {
-            println!("Debug: {msg}");
+            println!("debug: {msg}");
         }
     }
 
+    fn step(&mut self, msg: &str) {
+        // Steps are only shown in verbose mode
+        if self.config.verbose && !self.config.quiet {
+            println!("{msg}");
+        }
+    }
+
+    fn result(&mut self, msg: &str) {
+        // Result is the primary output - always shown unless quiet
+        if !self.config.quiet {
+            println!("{msg}");
+        }
+    }
+
+    #[allow(deprecated)]
     fn progress(&mut self, msg: &str) {
-        if !self.config.quiet {
-            println!("--> {msg}");
-        }
+        // Legacy: now delegates to step() for verbose-only output
+        self.step(msg);
     }
 
+    #[allow(deprecated)]
     fn divider(&mut self) {
-        if !self.config.quiet {
-            println!("---");
-        }
+        // No-op: dividers are no longer used in git-like output
     }
 
     fn detail(&mut self, key: &str, value: &str) {
@@ -97,16 +112,16 @@ impl Output for CliOutput {
     }
 
     fn operation_start(&mut self, operation: &str) {
-        // In CLI mode, just print a progress message
-        self.progress(operation);
+        // In CLI mode, just print a step message (verbose only)
+        self.step(operation);
     }
 
     fn operation_end(&mut self, operation: &str, success: bool) {
-        if !self.config.quiet {
+        if self.config.verbose && !self.config.quiet {
             if success {
-                println!("--> {operation} completed successfully.");
+                println!("{operation} completed");
             } else {
-                eprintln!("--> {operation} failed.");
+                eprintln!("{operation} failed");
             }
         }
     }
