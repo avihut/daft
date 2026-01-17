@@ -128,12 +128,39 @@ assert_directory_exists() {
 assert_file_exists() {
     local file="$1"
     local msg="${2:-File should exist: $file}"
-    
+
     if [[ -f "$file" ]]; then
         log_success "$msg"
         return 0
     else
         log_error "$msg (FAILED - file not found)"
+        return 1
+    fi
+}
+
+assert_file_not_exists() {
+    local file="$1"
+    local msg="${2:-File should not exist: $file}"
+
+    if [[ ! -f "$file" ]]; then
+        log_success "$msg"
+        return 0
+    else
+        log_error "$msg (FAILED - file exists when it should not)"
+        return 1
+    fi
+}
+
+assert_file_contains() {
+    local file="$1"
+    local content="$2"
+    local msg="${3:-File should contain: $content}"
+
+    if [[ -f "$file" ]] && grep -q "$content" "$file"; then
+        log_success "$msg"
+        return 0
+    else
+        log_error "$msg (FAILED - content not found in file)"
         return 1
     fi
 }
