@@ -65,11 +65,13 @@ setup() {
     
     # Add scripts to PATH for testing
     export PATH="$SCRIPTS_DIR:$PATH"
-    
-    # Ensure git is configured
-    git config --global user.name "Test User" 2>/dev/null || true
-    git config --global user.email "test@example.com" 2>/dev/null || true
-    
+
+    # Set git identity via environment variables (avoids modifying global config)
+    export GIT_AUTHOR_NAME="Test User"
+    export GIT_AUTHOR_EMAIL="test@example.com"
+    export GIT_COMMITTER_NAME="Test User"
+    export GIT_COMMITTER_EMAIL="test@example.com"
+
     log_success "Test environment setup complete"
 }
 

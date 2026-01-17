@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use daft::{
     check_dependencies, direnv::run_direnv_allow, git::GitCommand, logging::init_logging,
-    quiet_echo, utils::*,
+    output_cd_path, quiet_echo, utils::*,
 };
 use std::path::PathBuf;
 
@@ -160,6 +160,8 @@ fn run_init(args: &Args) -> Result<()> {
             &git_dir_result,
             args.quiet,
         );
+
+        output_cd_path(&get_current_directory()?);
     } else {
         quiet_echo("---", args.quiet);
         quiet_echo("Success!", args.quiet);

@@ -185,6 +185,45 @@ daft completions fish --install
 - **Fast** - completion suggestions return in < 50ms even in large repositories
 - **Pattern suggestions** - suggests `feature/`, `bugfix/`, `hotfix/`, etc. when creating new branches
 
+### Shell Integration (cd into new worktrees)
+
+By default, daft commands change directory internally but your shell stays in the original directory. Shell integration solves this by automatically cd'ing into newly created worktrees.
+
+**Automatic setup (recommended):**
+```bash
+daft setup
+```
+
+This detects your shell, backs up your config, and adds the integration line automatically.
+
+**Manual setup:**
+
+**Bash** (`~/.bashrc`):
+```bash
+eval "$(daft shell-init bash)"
+```
+
+**Zsh** (`~/.zshrc`):
+```zsh
+eval "$(daft shell-init zsh)"
+```
+
+**Fish** (`~/.config/fish/config.fish`):
+```fish
+daft shell-init fish | source
+```
+
+**With short aliases** (gwco, gwcob, etc.):
+```bash
+eval "$(daft shell-init bash --aliases)"
+```
+
+After setting this up, both command forms will auto-cd into new worktrees:
+```bash
+git worktree-checkout feature/auth    # spaces - works with shell integration
+git-worktree-checkout feature/auth    # hyphens - also works
+```
+
 ## 🛠️ Commands
 
 ### Core Commands

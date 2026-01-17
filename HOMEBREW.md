@@ -96,10 +96,16 @@ def caveats
 
     Run 'git daft' for full documentation.
 
-    Shell completions are installed for:
-      • bash (source via Homebrew's bash-completion)
-      • zsh (automatically loaded)
-      • fish (automatically loaded)
+    RECOMMENDED: For automatic cd into new worktrees, run:
+
+      daft setup
+
+    This will detect your shell and add the integration automatically.
+
+    Or manually add to your shell config:
+      Bash:  eval "$(daft shell-init bash)"
+      Zsh:   eval "$(daft shell-init zsh)"
+      Fish:  daft shell-init fish | source
   EOS
 end
 ```
@@ -155,6 +161,17 @@ class Daft < Formula
         git worktree-prune
 
       Run 'git daft' for full documentation.
+
+      RECOMMENDED: For automatic cd into new worktrees, run:
+
+        daft setup
+
+      This will detect your shell and add the integration automatically.
+
+      Or manually add to your shell config:
+        Bash:  eval "$(daft shell-init bash)"
+        Zsh:   eval "$(daft shell-init zsh)"
+        Fish:  daft shell-init fish | source
     EOS
   end
 
