@@ -1,8 +1,14 @@
 use anyhow::Result;
 use clap::Parser;
 use daft::{
-    direnv::run_direnv_allow, get_project_root, git::GitCommand, is_git_repository, log_error,
-    log_info, log_warning, logging::init_logging, output_cd_path, utils::*, WorktreeConfig,
+    direnv::run_direnv_allow,
+    get_project_root,
+    git::GitCommand,
+    is_git_repository,
+    logging::init_logging,
+    output::{CliOutput, Output, OutputConfig},
+    utils::*,
+    WorktreeConfig,
 };
 use std::path::PathBuf;
 
@@ -46,9 +52,12 @@ pub fn run() -> Result<()> {
         anyhow::bail!("Not inside a Git repository");
     }
 
+    let config = OutputConfig::new(false, args.verbose);
+    let mut output = CliOutput::new(config);
+
     let original_dir = get_current_directory()?;
 
-    if let Err(e) = run_checkout(&args) {
+    if let Err(e) = run_checkout(&args, &mut output) {
         change_directory(&original_dir).ok();
         return Err(e);
     }
@@ -56,77 +65,77 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn run_checkout(args: &Args) -> Result<()> {
+fn run_checkout(args: &Args, output: &mut dyn Output) -> Result<()> {
     validate_branch_name(&args.branch_name)?;
 
     let project_root = get_project_root()?;
     let worktree_path = project_root.join(&args.branch_name);
 
     let config = WorktreeConfig::default();
-    let git = GitCommand::new(config.quiet);
+    let git = GitCommand::new(output.is_quiet());
 
-    println!("Attempting to create Git worktree and checkout branch:");
-    println!("  Path:         {}", worktree_path.display());
-    println!("  Branch:       {}", args.branch_name);
-    println!("  Project Root: {}", project_root.display());
-    println!("---");
+    output.step(&format!(
+        "Path: {}, Branch: {}, Project Root: {}",
+        worktree_path.display(),
+        args.branch_name,
+        project_root.display()
+    ));
 
     // Check if worktree already exists for this branch
     if let Some(existing_path) = find_existing_worktree_for_branch(&git, &args.branch_name)? {
-        println!(
-            "--> Branch '{}' already has a worktree at '{}'",
+        output.step(&format!(
+            "Branch '{}' already has a worktree at '{}'",
             args.branch_name,
             existing_path.display()
-        );
-        println!("--> Changing to existing worktree...");
+        ));
+        output.step("Changing to existing worktree...");
         change_directory(&existing_path)?;
-        run_direnv_allow(&get_current_directory()?, config.quiet)?;
-        println!("---");
-        println!(
-            "Switched to existing worktree for branch '{}'.",
+        run_direnv_allow(&get_current_directory()?, output)?;
+        output.result(&format!(
+            "Switched to existing worktree '{}'",
             args.branch_name
-        );
-        output_cd_path(&get_current_directory()?);
+        ));
+        output.cd_path(&get_current_directory()?);
         return Ok(());
     }
 
     // Fetch latest changes from remote to ensure we have the latest version of the branch
-    println!(
-        "--> Fetching latest changes from remote '{}'...",
+    output.step(&format!(
+        "Fetching latest changes from remote '{}'...",
         config.remote_name
-    );
+    ));
     if let Err(e) = git.fetch(&config.remote_name, false) {
-        println!(
-            "Warning: Failed to fetch from remote '{}': {}",
+        output.warning(&format!(
+            "Failed to fetch from remote '{}': {}",
             config.remote_name, e
-        );
+        ));
     }
 
     // Also fetch the specific branch to ensure remote tracking branch is updated
-    println!(
-        "--> Fetching specific branch '{}' from remote '{}'...",
+    output.step(&format!(
+        "Fetching specific branch '{}' from remote '{}'...",
         args.branch_name, config.remote_name
-    );
+    ));
     if let Err(e) = git.fetch_refspec(
         &config.remote_name,
         &format!("{}:{}", args.branch_name, args.branch_name),
     ) {
-        println!("Warning: Failed to fetch specific branch: {e}");
+        output.warning(&format!("Failed to fetch specific branch: {e}"));
     }
 
     // Check if remote branch exists and use it if local branch is behind
     let remote_branch_ref = format!("refs/remotes/{}/{}", config.remote_name, args.branch_name);
     let checkout_ref = if git.show_ref_exists(&remote_branch_ref)? {
-        println!(
-            "--> Remote branch '{}/{}' found, using it for worktree creation",
+        output.step(&format!(
+            "Remote branch '{}/{}' found, using it for worktree creation",
             config.remote_name, args.branch_name
-        );
+        ));
         format!("{}/{}", config.remote_name, args.branch_name)
     } else {
-        println!(
-            "--> Remote branch '{}/{}' not found, using local branch",
+        output.step(&format!(
+            "Remote branch '{}/{}' not found, using local branch",
             config.remote_name, args.branch_name
-        );
+        ));
         args.branch_name.clone()
     };
 
@@ -134,19 +143,18 @@ fn run_checkout(args: &Args) -> Result<()> {
     let stash_created = if args.carry {
         match git.has_uncommitted_changes() {
             Ok(true) => {
-                println!("--> Stashing uncommitted changes...");
+                output.step("Stashing uncommitted changes...");
                 if let Err(e) = git.stash_push_with_untracked("daft: carry changes to worktree") {
-                    log_error!("Failed to stash changes: {e}");
                     anyhow::bail!("Failed to stash uncommitted changes: {e}");
                 }
                 true
             }
             Ok(false) => {
-                log_info!("--> No uncommitted changes to carry");
+                output.step("No uncommitted changes to carry");
                 false
             }
             Err(e) => {
-                log_warning!("Could not check for uncommitted changes: {e}");
+                output.warning(&format!("Could not check for uncommitted changes: {e}"));
                 false
             }
         }
@@ -157,10 +165,11 @@ fn run_checkout(args: &Args) -> Result<()> {
     if let Err(e) = git.worktree_add(&worktree_path, &checkout_ref) {
         // If worktree creation fails and we stashed changes, restore them
         if stash_created {
-            log_info!("--> Restoring stashed changes due to worktree creation failure...");
+            output.step("Restoring stashed changes due to worktree creation failure...");
             if let Err(pop_err) = git.stash_pop() {
-                log_error!("Failed to restore stashed changes: {pop_err}");
-                eprintln!("Warning: Your changes are still in the stash. Run 'git stash pop' to restore them.");
+                output.warning(&format!(
+                    "Your changes are still in the stash. Run 'git stash pop' to restore them. Error: {pop_err}"
+                ));
             }
         }
         anyhow::bail!("Failed to create git worktree: {}", e);
@@ -173,75 +182,66 @@ fn run_checkout(args: &Args) -> Result<()> {
         );
     }
 
-    println!(
-        "Git worktree created successfully at '{}' checking out branch '{}'.",
+    output.step(&format!(
+        "Worktree created at '{}' checking out branch '{}'",
         worktree_path.display(),
         args.branch_name
-    );
-    println!("---");
+    ));
 
-    println!(
-        "--> Changing directory to worktree: {}",
+    output.step(&format!(
+        "Changing directory to worktree: {}",
         worktree_path.display()
-    );
+    ));
     change_directory(&worktree_path)?;
-    println!(
-        "--> Successfully changed directory to {}",
-        get_current_directory()?.display()
-    );
 
     // Apply stashed changes to the new worktree
     if stash_created {
-        println!("--> Applying stashed changes to worktree...");
+        output.step("Applying stashed changes to worktree...");
         if let Err(e) = git.stash_pop() {
-            log_error!("Failed to apply stashed changes: {e}");
-            eprintln!(
-                "Stash could not be applied cleanly. Resolve conflicts and run: git stash pop"
-            );
+            output.warning(&format!(
+                "Stash could not be applied cleanly. Resolve conflicts and run 'git stash pop'. Error: {e}"
+            ));
         } else {
-            println!("--> Changes successfully applied to worktree");
+            output.step("Changes successfully applied to worktree");
         }
     }
 
     let remote_branch_ref = format!("refs/remotes/{}/{}", config.remote_name, args.branch_name);
-    println!(
-        "--> Checking for remote branch '{}/{}'...",
+    output.step(&format!(
+        "Checking for remote branch '{}/{}'...",
         config.remote_name, args.branch_name
-    );
+    ));
 
     if git.show_ref_exists(&remote_branch_ref)? {
-        println!(
-            "--> Remote branch found. Attempting: git branch --set-upstream-to={}/{}",
+        output.step(&format!(
+            "Setting upstream to '{}/{}'...",
             config.remote_name, args.branch_name
-        );
+        ));
 
         if let Err(e) = git.set_upstream(&config.remote_name, &args.branch_name) {
-            println!("---");
-            eprintln!(
-                "Warning: Failed to set upstream tracking for branch '{}' to '{}/{}': {}",
-                args.branch_name, config.remote_name, args.branch_name, e
-            );
-            eprintln!("         Worktree created and CD'd into, but upstream may need manual configuration.");
+            output.warning(&format!(
+                "Failed to set upstream tracking: {}. Worktree created, but upstream may need manual configuration.",
+                e
+            ));
         } else {
-            println!(
-                "--> Upstream tracking set successfully to '{}/{}'.",
+            output.step(&format!(
+                "Upstream tracking set to '{}/{}'",
                 config.remote_name, args.branch_name
-            );
+            ));
         }
     } else {
-        println!(
-            "--> Remote branch '{}/{}' not found. Skipping upstream setup.",
+        output.step(&format!(
+            "Remote branch '{}/{}' not found, skipping upstream setup",
             config.remote_name, args.branch_name
-        );
-        println!("    You might need to push the branch or check the remote name/branch name.");
+        ));
     }
 
-    run_direnv_allow(&get_current_directory()?, config.quiet)?;
+    run_direnv_allow(&get_current_directory()?, output)?;
 
-    println!("---");
-    println!("Overall Success: Worktree created, branch checked out, upstream handled, direnv handled (if present), and CD'd into worktree.");
+    // Git-like result message
+    output.result(&format!("Prepared worktree '{}'", args.branch_name));
 
-    output_cd_path(&get_current_directory()?);
+    output.cd_path(&get_current_directory()?);
 
     Ok(())
 }

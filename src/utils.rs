@@ -160,17 +160,6 @@ pub fn validate_repo_name(repo_name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn print_success_message(repo_name: &str, worktree_path: &Path, git_dir: &str, quiet: bool) {
-    if !quiet {
-        println!("---");
-        println!("Success!");
-        println!("Repository '{repo_name}' ready.");
-        println!("The main Git directory is at: '{git_dir}'");
-        println!("Your worktree is ready at: '{}'", worktree_path.display());
-        println!("You are now inside the worktree.");
-    }
-}
-
 pub fn print_error_cleanup(error_msg: &str, cleanup_path: Option<&Path>) {
     eprintln!("Error: {error_msg}");
     if let Some(path) = cleanup_path {

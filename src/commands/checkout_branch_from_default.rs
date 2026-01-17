@@ -1,8 +1,13 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use daft::{
-    config::git::DEFAULT_EXIT_CODE, get_git_common_dir, is_git_repository, logging::init_logging,
-    remote::get_default_branch_local, utils::*, WorktreeConfig,
+    config::git::DEFAULT_EXIT_CODE,
+    get_git_common_dir, is_git_repository,
+    logging::init_logging,
+    output::{CliOutput, Output, OutputConfig},
+    remote::get_default_branch_local,
+    utils::*,
+    WorktreeConfig,
 };
 use std::process::Command;
 
@@ -42,9 +47,12 @@ pub fn run() -> Result<()> {
         anyhow::bail!("Not inside a Git repository");
     }
 
+    let config = OutputConfig::new(false, args.verbose);
+    let mut output = CliOutput::new(config);
+
     let original_dir = get_current_directory()?;
 
-    if let Err(e) = run_checkout_branch_from_default(&args) {
+    if let Err(e) = run_checkout_branch_from_default(&args, &mut output) {
         change_directory(&original_dir).ok();
         return Err(e);
     }
@@ -52,26 +60,28 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn run_checkout_branch_from_default(args: &Args) -> Result<()> {
+fn run_checkout_branch_from_default(args: &Args, output: &mut dyn Output) -> Result<()> {
     validate_branch_name(&args.new_branch_name)?;
 
     let config = WorktreeConfig::default();
 
-    println!(
-        "--> Determining default branch for remote '{}'...",
+    output.step(&format!(
+        "Determining default branch for remote '{}'...",
         config.remote_name
-    );
+    ));
 
     let git_common_dir = get_git_common_dir()?;
     let default_branch = get_default_branch_local(&git_common_dir, &config.remote_name)
         .context("Failed to determine default branch")?;
 
-    println!(
-        "--> [git-worktree-checkout-branch-from-default] Detected default origin branch: '{default_branch}'"
-    );
+    output.step(&format!(
+        "Detected default origin branch: '{default_branch}'"
+    ));
 
-    println!("--> [git-worktree-checkout-branch-from-default] Calling git-worktree-checkout-branch '{}' '{}'...", 
-        args.new_branch_name, default_branch);
+    output.step(&format!(
+        "Calling git-worktree-checkout-branch '{}' '{}'...",
+        args.new_branch_name, default_branch
+    ));
 
     let current_exe = std::env::current_exe()?;
     let exe_dir = current_exe
@@ -83,6 +93,9 @@ fn run_checkout_branch_from_default(args: &Args) -> Result<()> {
     let mut cmd = Command::new(&checkout_branch_exe);
     cmd.arg(&args.new_branch_name).arg(&default_branch);
 
+    if args.verbose {
+        cmd.arg("--verbose");
+    }
     if args.carry {
         cmd.arg("--carry");
     }

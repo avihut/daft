@@ -18,9 +18,15 @@ pub enum OutputEntry {
     Error(String),
     /// Debug message
     Debug(String),
+    /// Step message (verbose-only, intermediate progress)
+    Step(String),
+    /// Result message (final output shown by default)
+    Result(String),
     /// Progress/action message (rendered as "--> msg" in CLI)
+    #[deprecated(since = "0.4.0", note = "Use Step instead")]
     Progress(String),
     /// Visual divider (rendered as "---" in CLI)
+    #[deprecated(since = "0.4.0", note = "Dividers are no longer used")]
     Divider,
     /// Key-value detail (rendered as "  Key: value" in CLI)
     Detail { key: String, value: String },
@@ -152,11 +158,34 @@ impl TestOutput {
     }
 
     /// Get all progress messages.
+    #[allow(deprecated)]
     pub fn progress_messages(&self) -> Vec<&str> {
         self.entries
             .iter()
             .filter_map(|e| match e {
                 OutputEntry::Progress(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Get all step messages.
+    pub fn steps(&self) -> Vec<&str> {
+        self.entries
+            .iter()
+            .filter_map(|e| match e {
+                OutputEntry::Step(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Get all result messages.
+    pub fn results(&self) -> Vec<&str> {
+        self.entries
+            .iter()
+            .filter_map(|e| match e {
+                OutputEntry::Result(s) => Some(s.as_str()),
                 _ => None,
             })
             .collect()
@@ -207,10 +236,21 @@ impl TestOutput {
     }
 
     /// Check if any progress message contains the given substring.
+    #[allow(deprecated)]
     pub fn has_progress(&self, substring: &str) -> bool {
         self.progress_messages()
             .iter()
             .any(|s| s.contains(substring))
+    }
+
+    /// Check if any step message contains the given substring.
+    pub fn has_step(&self, substring: &str) -> bool {
+        self.steps().iter().any(|s| s.contains(substring))
+    }
+
+    /// Check if any result message contains the given substring.
+    pub fn has_result(&self, substring: &str) -> bool {
+        self.results().iter().any(|s| s.contains(substring))
     }
 
     /// Check if any errors were output.
@@ -228,6 +268,7 @@ impl TestOutput {
     }
 
     /// Check if a divider was output.
+    #[allow(deprecated)]
     pub fn has_divider(&self) -> bool {
         self.entries
             .iter()
@@ -235,6 +276,7 @@ impl TestOutput {
     }
 
     /// Count the number of entries of a specific type.
+    #[allow(deprecated)]
     pub fn count_dividers(&self) -> usize {
         self.entries
             .iter()
@@ -274,16 +316,29 @@ impl Output for TestOutput {
         }
     }
 
-    fn progress(&mut self, msg: &str) {
-        if !self.config.quiet {
-            self.entries.push(OutputEntry::Progress(msg.to_string()));
+    fn step(&mut self, msg: &str) {
+        // Steps are only shown in verbose mode
+        if self.config.verbose && !self.config.quiet {
+            self.entries.push(OutputEntry::Step(msg.to_string()));
         }
     }
 
-    fn divider(&mut self) {
+    fn result(&mut self, msg: &str) {
+        // Results are shown unless quiet
         if !self.config.quiet {
-            self.entries.push(OutputEntry::Divider);
+            self.entries.push(OutputEntry::Result(msg.to_string()));
         }
+    }
+
+    #[allow(deprecated)]
+    fn progress(&mut self, msg: &str) {
+        // Legacy: delegates to step()
+        self.step(msg);
+    }
+
+    #[allow(deprecated)]
+    fn divider(&mut self) {
+        // No-op: dividers are no longer used
     }
 
     fn detail(&mut self, key: &str, value: &str) {
@@ -345,11 +400,31 @@ mod tests {
     }
 
     #[test]
-    fn test_captures_progress() {
+    fn test_captures_step() {
+        // Steps require verbose mode to be captured
+        let mut output = TestOutput::verbose();
+        output.step("Processing files");
+        assert_eq!(output.steps(), vec!["Processing files"]);
+        assert!(output.has_step("Processing"));
+    }
+
+    #[test]
+    fn test_captures_result() {
         let mut output = TestOutput::new();
+        output.result("Created worktree 'feature-x'");
+        assert_eq!(output.results(), vec!["Created worktree 'feature-x'"]);
+        assert!(output.has_result("worktree"));
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_progress_delegates_to_step() {
+        // progress() is deprecated and now delegates to step()
+        // which only shows in verbose mode
+        let mut output = TestOutput::verbose();
         output.progress("Processing files");
-        assert_eq!(output.progress_messages(), vec!["Processing files"]);
-        assert!(output.has_progress("Processing"));
+        // Progress now adds to steps, not progress_messages
+        assert!(output.has_step("Processing"));
     }
 
     #[test]
@@ -368,11 +443,13 @@ mod tests {
     fn test_quiet_mode_suppresses_info() {
         let mut output = TestOutput::quiet();
         output.info("Should not appear");
-        output.progress("Should not appear either");
+        output.step("Should not appear either");
+        output.result("Should not appear either");
         output.warning("Should appear");
 
         assert!(output.infos().is_empty());
-        assert!(output.progress_messages().is_empty());
+        assert!(output.steps().is_empty());
+        assert!(output.results().is_empty());
         assert!(!output.warnings().is_empty());
     }
 
@@ -400,13 +477,16 @@ mod tests {
     }
 
     #[test]
-    fn test_divider() {
+    #[allow(deprecated)]
+    fn test_divider_is_noop() {
+        // divider() is deprecated and now a no-op
         let mut output = TestOutput::new();
         output.divider();
         output.divider();
 
-        assert!(output.has_divider());
-        assert_eq!(output.count_dividers(), 2);
+        // Dividers no longer create entries
+        assert!(!output.has_divider());
+        assert_eq!(output.count_dividers(), 0);
     }
 
     #[test]
