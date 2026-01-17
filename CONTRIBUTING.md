@@ -107,7 +107,7 @@ Before submitting, ensure:
 
 ## Testing
 
-The project has a three-tier testing architecture:
+The project has a two-tier testing architecture:
 
 ```bash
 # Run all tests
@@ -116,7 +116,6 @@ make test
 # Run specific test suites
 make test-unit          # Rust unit tests
 make test-integration   # End-to-end tests
-make test-legacy        # Legacy shell script tests
 ```
 
 ## Getting Help

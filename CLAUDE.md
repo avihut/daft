@@ -4,20 +4,25 @@ This file provides guidance when working with code in this repository.
 
 ## Recent Changes
 
+**Legacy Scripts Removed (2025-10)**
+- Removed deprecated shell scripts from `src/legacy/`
+- Removed legacy tests from `tests/legacy/`
+- Project is now Rust-only
+- See `docs/HISTORY.md` for project origins and shell script history
+
 **Single Binary Architecture Migration (2025-10-18)**
 - Migrated from 6 separate binaries to single multicall binary
 - Reduced total binary size from ~3.5MB to 589KB (83% reduction)
 - All commands now route through single `daft` binary via symlinks
 - Binary detects invocation name (argv[0]) and routes to appropriate command
 - Development workflow streamlined with `make dev` target
-- All 147 tests passing with new architecture
 
 **Project Renamed from `git-worktree-workflow` to `daft` (2025-10-17)**
 - GitHub repository: `https://github.com/avihut/daft` (was `git-worktree-workflow`)
 - Project directory: `/Users/avihu/Projects/daft` (was `git-worktree-workflow`)
 - Cargo package name: `daft` (was `git-worktree-workflow`)
 - All command names remain unchanged (`git-worktree-*`)
-- All functionality preserved, 147 tests passing
+- All functionality preserved
 - Documentation and installation paths updated throughout
 
 ## Critical Development Rules
@@ -43,9 +48,9 @@ This project uses a multi-channel release workflow with `master` as the stable b
 
 | Channel | Trigger | Tag Format | Binaries | Homebrew |
 |---------|---------|------------|----------|----------|
-| **Stable** | Promote workflow | `v0.3.0` | ✅ Yes | ✅ Yes |
-| **Canary** | Push to develop | `v0.4.0-canary.N` | ❌ No | ❌ No |
-| **Beta** | Monthly/manual | `v0.4.0-beta.N` | ❌ No | ❌ No |
+| **Stable** | Promote workflow | `v0.3.0` | Yes | Yes |
+| **Canary** | Push to develop | `v0.4.0-canary.N` | No | No |
+| **Beta** | Monthly/manual | `v0.4.0-beta.N` | No | No |
 
 ### Git Flow Rules (Important!)
 
@@ -99,9 +104,9 @@ git push origin develop --force-with-lease
 ```
 
 ### What NOT to Do
-- ❌ Don't backport changes from develop to master (creates divergence)
-- ❌ Don't merge master into develop (creates merge commits)
-- ❌ Don't apply the same fix separately to both branches (creates conflicts)
+- Don't backport changes from develop to master (creates divergence)
+- Don't merge master into develop (creates merge commits)
+- Don't apply the same fix separately to both branches (creates conflicts)
 
 ### Workflows
 
@@ -159,16 +164,16 @@ chore: upgrade dependencies
 
 ## Overview
 
-This is **daft** - a comprehensive Git extensions toolkit built in Rust. While the project currently focuses on worktree workflow management with both Rust binaries and legacy shell scripts, the vision extends far beyond: daft aims to provide a suite of Git extensions that enhance modern development workflows.
+This is **daft** - a comprehensive Git extensions toolkit built in Rust. The project currently focuses on worktree workflow management, with the vision of providing a suite of Git extensions that enhance modern development workflows.
 
-The current worktree commands are intended to be used as custom Git commands (e.g., `git worktree-clone`, `git worktree-checkout`), and future extensions will follow the same pattern of seamlessly integrating with Git's command-line interface.
+The worktree commands are intended to be used as custom Git commands (e.g., `git worktree-clone`, `git worktree-checkout`), and future extensions will follow the same pattern of seamlessly integrating with Git's command-line interface.
 
 ## Key Concepts
 
 - **Worktree-centric workflow**: One worktree per branch, with all worktrees for a repository organized under a common parent directory
 - **Directory structure**: Uses `<repo-name>/.git` at root with worktrees at `<repo-name>/<branch-name>/`
 - **`direnv` integration**: Automatically runs `direnv allow` when entering new worktrees that contain `.envrc` files
-- **Dynamic branch detection**: Scripts query remote repositories to determine actual default branch (main, master, develop, etc.)
+- **Dynamic branch detection**: Commands query remote repositories to determine actual default branch (main, master, develop, etc.)
 
 ## Architecture
 
@@ -217,9 +222,7 @@ src/
 └── config.rs            # Configuration handling
 ```
 
-Legacy shell scripts remain in `src/legacy/` for backward compatibility but are deprecated.
-
-### Core Scripts
+### Core Commands
 
 - **`git-worktree-clone`**: Clones a repository into the structured layout (`<repo>/.git` + `<repo>/<default-branch>/`)
 - **`git-worktree-init`**: Initializes a new repository in the structured layout (`<repo>/.git` + `<repo>/<initial-branch>/`)
@@ -227,14 +230,6 @@ Legacy shell scripts remain in `src/legacy/` for backward compatibility but are 
 - **`git-worktree-checkout-branch`**: Creates new worktree + new branch from current or specified base branch
 - **`git-worktree-checkout-branch-from-default`**: Creates new worktree + new branch from remote's default branch
 - **`git-worktree-prune`**: Removes local branches whose remote counterparts are deleted, plus associated worktrees
-
-### Script Patterns
-
-- All scripts use `#!/bin/bash` and include comprehensive error handling
-- Scripts that create worktrees change directory into the new worktree upon completion
-- Remote name is configurable via `remote_name="origin"` variable
-- Scripts use `git rev-parse --git-common-dir` to locate shared Git metadata
-- Path resolution handles both absolute and relative paths robustly
 
 ### Shell Integration
 
@@ -259,7 +254,7 @@ eval "$(daft shell-init bash --aliases)"
 
 ## Usage
 
-**Rust binaries** are installed by adding `target/release/` to your `PATH`, or **legacy scripts** by adding `src/legacy/` to your `PATH`. Once installed, they can be executed as Git subcommands:
+Install by adding `target/release/` to your `PATH`. Commands can be executed as Git subcommands:
 
 ```bash
 git worktree-clone <repository-url>
@@ -272,18 +267,19 @@ git worktree-prune
 
 ## Development Notes
 
-- Scripts can be executed from anywhere within the Git repository (including deep subdirectories)
+- Commands can be executed from anywhere within the Git repository (including deep subdirectories)
 - New worktrees are always created at the project root level (alongside the `.git` directory)
-- Scripts use `git rev-parse --git-common-dir` to locate the project root regardless of execution location
-- Scripts include optional `direnv` integration but silently skip if not available
+- Commands use `git rev-parse --git-common-dir` to locate the project root regardless of execution location
+- Commands include optional `direnv` integration but silently skip if not available
 - Error handling includes cleanup of partially created worktrees on failure
-- All scripts include detailed usage documentation and examples in their headers
 
 ### Branch names
 
 When working on project tickets, branch names should follow this convention daft-<issue number>/<shortened issue name>
 
 ### PRs
+
+**Target branch**: All PRs should be opened against `develop`, not `master`. The `master` branch only receives changes through the promote workflow (rebase from develop).
 
 PR titles should follow the conventional commit format:
 
@@ -300,7 +296,7 @@ Fixes #42
 
 ## Worktree Workflow
 
-These scripts enable a complete worktree-based development workflow that eliminates traditional Git branch switching friction:
+These commands enable a complete worktree-based development workflow that eliminates traditional Git branch switching friction:
 
 ### Initial Setup
 
@@ -406,7 +402,7 @@ This automatically:
 cd my-project/feature/user-auth/
 npm run dev
 
-# Terminal 2: working on UI components  
+# Terminal 2: working on UI components
 cd my-project/feature/new-ui/
 npm run storybook
 
@@ -429,13 +425,13 @@ This workflow eliminates the traditional friction of Git branch switching, stash
 
 ## Testing
 
-The project has a comprehensive three-tier testing architecture that covers unit tests, legacy shell script tests, and Rust integration tests. All tests are fully integrated into GitHub Actions CI/CD workflows.
+The project has a comprehensive two-tier testing architecture covering unit tests and integration tests. All tests are fully integrated into GitHub Actions CI/CD workflows.
 
 ### Testing Architecture
 
 #### 1. **Unit Tests** (`make test-unit`)
 - Rust unit tests for library functions and utilities
-- 16 tests covering:
+- Tests covering:
   - Git command wrapper functionality
   - Directory and path utility functions
   - Branch/repository name validation
@@ -443,16 +439,8 @@ The project has a comprehensive three-tier testing architecture that covers unit
   - Remote branch detection
 - Run via `cargo test`
 
-#### 2. **Legacy Tests** (`make test-legacy`)
-- Tests for original shell script implementations in `tests/legacy/`
-- Comprehensive test suites for each command:
-  - `test_clone.sh`, `test_init.sh`, `test_checkout.sh`, etc.
-- Uses `test_framework.sh` for consistent test infrastructure
-- Ensures backward compatibility during Rust migration
-
-#### 3. **Integration Tests** (`make test-integration`)
+#### 2. **Integration Tests** (`make test-integration`)
 - End-to-end tests for Rust binaries in `tests/integration/`
-- Mirrors legacy test structure but tests Rust implementations
 - Key test files:
   - `test_checkout_direnv` - Tests direnv integration
   - `test_checkout_branch_workflow` - Tests development workflow scenarios
@@ -471,7 +459,6 @@ make test        # or make test-all
 **Run specific test suites:**
 ```bash
 make test-unit                    # Rust unit tests only
-make test-legacy                  # Legacy shell script tests
 make test-integration             # Rust integration tests
 ```
 
@@ -495,9 +482,8 @@ The testing architecture is fully integrated into GitHub Actions via `.github/wo
    - Runs Rust unit tests (`cargo test`)
    - Runs Rust linting (`cargo clippy -- -D warnings`)
    - Checks code formatting (`cargo fmt -- --check`)
-   - Executes legacy tests (`make test-legacy`)
    - Executes integration tests (`make test-integration`)
-3. **Path configuration**: Automatically adds both legacy scripts and Rust binaries to PATH
+3. **Path configuration**: Automatically adds Rust binaries to PATH
 4. **Dependency validation**: Verifies required tools (git, awk, basename) are available
 5. **Test result artifacts**: Uploads test results for debugging failures
 
@@ -521,10 +507,10 @@ The Rust implementation includes sophisticated logic for handling remote trackin
 ### Makefile Integration
 
 The Makefile provides convenient targets for all testing needs:
-- `test-all` runs unit + legacy + integration tests
+- `test-all` runs unit + integration tests
 - Individual targets for granular testing
-- Verbose modes for debugging (`test-verbose`, `test-legacy-verbose`, `test-integration-verbose`)
-- Performance testing targets (`test-perf`, `test-perf-legacy`, `test-perf-integration`)
+- Verbose modes for debugging (`test-verbose`, `test-integration-verbose`)
+- Performance testing targets (`test-perf`, `test-perf-integration`)
 - CI simulation target (`make ci`) that mimics GitHub Actions workflow
 
 ### Test Maintenance
@@ -595,246 +581,6 @@ These same checks run in GitHub Actions, so passing them locally ensures CI will
 
 **Remember**: These checks are not optional - they are required for all Rust code contributions and must pass before work is considered complete.
 
-## Language Migration Considerations
+## Project History
 
-### Current State Assessment
-The project is currently implemented as shell scripts, which has been appropriate for the core Git worktree operations. However, as the project grows in complexity (based on open GitHub issues #3-13), several factors suggest considering migration to a more robust language.
-
-### Complexity Analysis of Planned Features
-Analysis of open issues reveals a mix of complexities:
-- **Simple features (4 issues)**: Command shortcuts, init command, clone flags, man pages
-- **Medium features (4 issues)**: Brew packaging, shell completions, fetch commands, testing
-- **Complex features (2 issues)**: Hooks system, uncommitted work copying
-
-### Shell Script Limitations Emerging
-1. **Argument parsing complexity**: Manual case statement parsing is becoming unwieldy with multiple options (`-n`, `-q`, `-a`) and will worsen with option forwarding
-2. **Shell completions requirement**: Issue #5 requires dynamic completion generation, much easier in modern CLI frameworks
-3. **Interactive features**: Planned features like branch selection and conflict resolution are cumbersome in shell
-4. **Error handling**: Complex state management and rollback (Issue #10) is brittle in shell scripts
-5. **Testing infrastructure**: Issue #13 requires robust testing, which is challenging for shell scripts
-
-### Rust + Clap Migration Case
-**Strong arguments for Rust migration:**
-- **Argument parsing**: Clap provides automatic help text, shell completions, validation, and option forwarding
-- **External command integration**: `std::process::Command` handles `direnv allow`, `git` commands excellently
-- **Professional UX**: Better error messages, help formatting, type-safe arguments
-- **Scalability**: As features grow, Rust will handle complexity better than shell scripts
-- **Single binary distribution**: Easier than managing multiple shell scripts
-
-**Rust advantages for this project:**
-```rust
-// Automatic completions, help text, validation
-use clap::Parser;
-use daft::utils::*;
-
-#[derive(Parser)]
-#[command(name = "git-worktree-clone")]
-struct Args {
-    #[arg(short = 'n', long = "no-checkout")]
-    no_checkout: bool,
-    
-    #[arg(short = 'q', long = "quiet")]
-    quiet: bool,
-    
-    /// Forward to git clone
-    #[arg(long = "depth")]
-    depth: Option<u32>,
-    
-    repository: String,
-}
-```
-
-### Migration Strategy
-**Recommended approach:**
-1. **Incremental migration**: Start with one complex command (e.g., `git-worktree-clone`)
-2. **Hybrid approach**: Keep simple shell scripts, migrate complex features to Rust
-3. **Unified tool**: Eventually consolidate into single Rust binary with subcommands
-
-### Decision Factors
-**Migrate to Rust if:**
-- ✅ Multiple options per command (already present)
-- ✅ Option forwarding needs (planned)
-- ✅ Shell completion requirements (Issue #5)
-- ✅ Interactive features planned
-- ✅ Complex validation needs
-
-**Current recommendation**: **Yes, migrate to Rust + clap**. The tipping point has been reached where shell scripts become limiting for the sophisticated CLI tool this project is becoming.
-
-### External Command Integration
-Running commands like `direnv allow` and `git` operations work excellently in Rust:
-```rust
-use std::process::Command;
-
-fn run_direnv_allow() -> Result<(), Box<dyn std::error::Error>> {
-    let output = Command::new("direnv")
-        .args(&["allow", "."])
-        .output()?;
-    
-    if output.status.success() {
-        println!("direnv allow completed successfully");
-    }
-    
-    Ok(())
-}
-```
-
-This provides better error handling, type safety, and cross-platform compatibility than shell scripts.
-
-## Legacy Removal Plan
-
-Once the Rust migration is complete and deemed stable, the legacy shell scripts can be cleanly removed. Here's the systematic plan:
-
-### Phase 1: Preparation and Validation
-1. **Ensure Feature Parity**: Verify all legacy script functionality is fully implemented in Rust
-2. **Performance Benchmarking**: Confirm Rust versions meet or exceed shell script performance
-3. **User Migration**: Provide migration guide for users switching from shell to Rust versions
-4. **Documentation Update**: Update all references from shell scripts to Rust binaries
-
-### Phase 2: Deprecation Period (Recommended 1-2 releases)
-1. **Add deprecation warnings** to shell scripts:
-   ```bash
-   echo "WARNING: Shell scripts are deprecated. Use Rust binaries instead."
-   echo "Legacy scripts will be removed in version X.Y.Z"
-   ```
-2. **Update installation docs** to recommend Rust binaries
-3. **Add migration notices** in README and release notes
-
-### Phase 3: Systematic Legacy Removal
-
-#### Files to Remove:
-```
-src/legacy/                                    # Entire legacy directory
-├── README.md
-├── git-worktree-checkout
-├── git-worktree-checkout-branch
-├── git-worktree-checkout-branch-from-default
-├── git-worktree-clone
-├── git-worktree-init
-└── git-worktree-prune
-
-tests/legacy/                                  # Entire legacy test directory
-├── test_all.sh
-├── test_checkout.sh
-├── test_checkout_branch.sh
-├── test_checkout_branch_from_default.sh
-├── test_clone.sh
-├── test_framework.sh
-├── test_init.sh
-├── test_prune.sh
-└── test_simple.sh
-```
-
-#### Makefile Targets to Remove:
-```makefile
-# Legacy test targets to remove:
-test-legacy
-test-legacy-framework
-test-legacy-clone
-test-legacy-checkout
-test-legacy-checkout-branch
-test-legacy-checkout-branch-from-default
-test-legacy-init
-test-legacy-prune
-test-legacy-simple
-test-legacy-verbose
-test-perf-legacy
-
-# Compatibility aliases to remove:
-test-framework, test-clone, test-checkout, etc.
-```
-
-#### GitHub Actions Cleanup:
-```yaml
-# Remove from .github/workflows/test.yml:
-- name: Run legacy tests
-  run: make test-legacy
-
-- name: Add scripts to PATH (shell version)
-  run: |
-    echo "${{ github.workspace }}/src/legacy" >> $GITHUB_PATH
-
-# Legacy help command tests section
-```
-
-#### Documentation Cleanup:
-- Remove shell script installation instructions from README.md
-- Remove legacy script examples and usage patterns
-- Update CLAUDE.md to remove legacy architecture details
-- Remove shell script references from all documentation
-
-### Phase 4: Update Project Structure
-
-#### Update Makefile:
-```makefile
-# Simplify test targets to:
-test: test-unit test-integration
-test-all: test-unit test-integration
-
-# Remove all legacy-specific targets
-# Update help text to remove legacy references
-```
-
-#### Update GitHub Actions:
-```yaml
-# Simplify to focus only on Rust:
-jobs:
-  test:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - name: Run unit tests
-        run: make test-unit
-      - name: Run integration tests  
-        run: make test-integration
-```
-
-#### Update README.md:
-- Remove "Legacy vs Rust" comparison sections
-- Simplify installation to Rust-only approach
-- Update all examples to use Rust binaries
-- Remove shell script PATH setup instructions
-
-### Phase 5: Cleanup Git History (Optional)
-For a clean repository:
-```bash
-# Remove legacy files from git history (DESTRUCTIVE)
-git filter-branch --tree-filter 'rm -rf src/legacy tests/legacy' --prune-empty HEAD
-git for-each-ref --format="%(refname)" refs/original/ | xargs -n 1 git update-ref -d
-```
-
-### Phase 6: Post-Removal Validation
-1. **Test CI/CD Pipeline**: Ensure all workflows pass without legacy components
-2. **Update Release Process**: Remove legacy binary building/packaging
-3. **Documentation Review**: Verify no broken links or references to removed files
-4. **User Communication**: Release notes clearly document the removal
-
-### Migration Commands for Users
-Provide clear migration paths:
-
-```bash
-# Old (shell scripts)
-export PATH="$PATH:/path/to/scripts"
-git worktree-clone repo.git
-
-# New (Rust binaries)  
-export PATH="$PATH:/path/to/target/release"
-git-worktree-clone repo.git
-# OR (if installed via package manager)
-git worktree-clone repo.git
-```
-
-### Benefits of Removal
-- **Simplified codebase**: ~50% reduction in test files and maintenance burden
-- **Reduced CI time**: Eliminate duplicate legacy test runs
-- **Cleaner documentation**: Single source of truth for usage patterns
-- **Easier development**: Focus on single implementation path
-- **Better user experience**: No confusion between shell vs Rust versions
-
-### Risk Mitigation
-- **Gradual rollout**: Use semantic versioning to signal breaking changes
-- **Backup branches**: Tag legacy-complete version before removal
-- **User survey**: Collect feedback during deprecation period
-- **Rollback plan**: Keep ability to restore legacy if critical issues arise
-
-This plan ensures a clean, methodical removal of legacy components while maintaining user confidence and project stability.
+For information about the project's origins as shell scripts and its evolution to Rust, see [docs/HISTORY.md](docs/HISTORY.md).

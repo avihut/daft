@@ -14,14 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
-    
+
     - name: Set up Rust
       uses: actions-rs/toolchain@v1
       with:
         toolchain: stable
         override: true
         components: rustfmt, clippy
-    
+
     - name: Cache Rust dependencies
       uses: actions/cache@v5
       with:
@@ -32,7 +32,7 @@ jobs:
         key: ubuntu-latest-cargo-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
           ubuntu-latest-cargo-
-    
+
     - name: Build Rust binaries
       run: cargo build --release
 
@@ -79,15 +79,15 @@ jobs:
           exit 1
         fi
 
-        echo "✓ Single binary architecture verified: daft binary exists"
+        echo "Single binary architecture verified: daft binary exists"
         ls -lh target/release/daft
 
     - name: Run Rust unit tests
       run: cargo test --lib
-    
+
     - name: Run Rust clippy
       run: cargo clippy -- -D warnings
-    
+
     - name: Check Rust formatting
       run: cargo fmt -- --check
 
@@ -98,21 +98,21 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        
+
     steps:
     - uses: actions/checkout@v6
-    
+
     - name: Set up Git
       run: |
         git config --global user.name "Test User"
         git config --global user.email "test@example.com"
-    
+
     - name: Set up Rust
       uses: actions-rs/toolchain@v1
       with:
         toolchain: stable
         override: true
-    
+
     - name: Cache Rust dependencies
       uses: actions/cache@v5
       with:
@@ -123,7 +123,7 @@ jobs:
         key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
           ${{ matrix.os }}-cargo-
-    
+
     - name: Build Rust binaries
       run: cargo build --release
 
@@ -170,17 +170,12 @@ jobs:
           exit 1
         fi
 
-        echo "✓ Single binary architecture verified: daft binary exists"
+        echo "Single binary architecture verified: daft binary exists"
         ls -lh target/release/daft
 
     - name: Make test scripts executable
-      run: chmod +x tests/legacy/*.sh tests/integration/*.sh src/legacy/*
-    
-    - name: Add scripts to PATH (shell version)
-      run: |
-        echo "${{ github.workspace }}/src/legacy" >> $GITHUB_PATH
-        echo "PATH=${{ github.workspace }}/src/legacy:$PATH" >> $GITHUB_ENV
-    
+      run: chmod +x tests/integration/*.sh
+
     - name: Create symlinks for Rust binaries
       run: |
         # Create symlinks for the new multicall binary
@@ -198,7 +193,7 @@ jobs:
       run: |
         echo "${{ github.workspace }}/target/release" >> $GITHUB_PATH
         echo "PATH=${{ github.workspace }}/target/release:$PATH" >> $GITHUB_ENV
-    
+
     - name: Test script dependencies
       run: |
         echo "Testing required dependencies..."
@@ -206,10 +201,7 @@ jobs:
         which awk || { echo "AWK not found"; exit 1; }
         which basename || { echo "basename not found"; exit 1; }
         echo "All dependencies found"
-    
-    - name: Run legacy tests
-      run: make test-legacy
-    
+
     - name: Run Rust integration tests
       run: make test-integration
 
@@ -220,14 +212,6 @@ jobs:
 
     - name: Test help commands
       run: |
-        # Test legacy script help
-        git worktree-clone --help || echo "Legacy help command test"
-        git worktree-checkout --help || echo "Legacy help command test"
-        git worktree-checkout-branch --help || echo "Legacy help command test"
-        git worktree-checkout-branch-from-default --help || echo "Legacy help command test"
-        git worktree-init --help || echo "Legacy help command test"
-        git worktree-prune --help || echo "Legacy help command test"
-
         # Test Rust binary help (via symlinks)
         ./target/release/git-worktree-clone --help
         ./target/release/git-worktree-checkout --help
@@ -239,7 +223,7 @@ jobs:
         # Test git daft documentation command
         ./target/release/daft | head -20
         ./target/release/git-daft | head -20
-    
+
     - name: Upload test results
       uses: actions/upload-artifact@v6
       if: always()

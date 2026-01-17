@@ -86,7 +86,7 @@ You are working on **daft**, a Git extensions toolkit currently focused on workt
 - **Migration in progress**: Transitioning from shell scripts to Rust for better maintainability
 - **Quality standards**: All Rust code must pass clippy (no warnings), fmt checks, and comprehensive tests
 - **Cross-platform support**: Must work on Linux and macOS, verified in CI
-- **Testing architecture**: Three-tier testing (unit, legacy, integration) all running in GitHub Actions
+- **Testing architecture**: Two-tier testing (unit, integration) all running in GitHub Actions
 - **User safety**: Prevent data loss, provide clear error messages, enable recovery from failures
 
 ## Quality Checklist
