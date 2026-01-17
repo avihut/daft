@@ -15,7 +15,7 @@ This file provides guidance when working with code in this repository.
 - Reduced total binary size from ~3.5MB to 589KB (83% reduction)
 - All commands now route through single `daft` binary via symlinks
 - Binary detects invocation name (argv[0]) and routes to appropriate command
-- Development workflow streamlined with `make dev` target
+- Development workflow streamlined with `just dev` recipe
 
 **Project Renamed from `git-worktree-workflow` to `daft` (2025-10-17)**
 - GitHub repository: `https://github.com/avihut/daft` (was `git-worktree-workflow`)
@@ -198,7 +198,7 @@ The worktree commands are intended to be used as custom Git commands (e.g., `git
 - **Size Efficiency**: 589KB single binary vs ~3.5MB for 6 separate binaries (83% reduction)
 - **Code Sharing**: All commands share the same compiled code for common operations
 - **Easier Distribution**: Only one binary to compile, package, and distribute
-- **Simpler Development**: `make dev` builds once and creates all necessary symlinks
+- **Simpler Development**: `just dev` builds once and creates all necessary symlinks
 - **Git Integration**: Symlinks work seamlessly with Git's command discovery
 
 #### Directory Structure
@@ -429,7 +429,7 @@ The project has a comprehensive two-tier testing architecture covering unit test
 
 ### Testing Architecture
 
-#### 1. **Unit Tests** (`make test-unit`)
+#### 1. **Unit Tests** (`just test-unit`)
 - Rust unit tests for library functions and utilities
 - Tests covering:
   - Git command wrapper functionality
@@ -439,7 +439,7 @@ The project has a comprehensive two-tier testing architecture covering unit test
   - Remote branch detection
 - Run via `cargo test`
 
-#### 2. **Integration Tests** (`make test-integration`)
+#### 2. **Integration Tests** (`just test-integration`)
 - End-to-end tests for Rust binaries in `tests/integration/`
 - Key test files:
   - `test_checkout_direnv` - Tests direnv integration
@@ -453,23 +453,23 @@ The project has a comprehensive two-tier testing architecture covering unit test
 
 **Run all tests:**
 ```bash
-make test        # or make test-all
+just test        # or just test-all
 ```
 
 **Run specific test suites:**
 ```bash
-make test-unit                    # Rust unit tests only
-make test-integration             # Rust integration tests
+just test-unit                    # Rust unit tests only
+just test-integration             # Rust integration tests
 ```
 
 **Run individual integration test suites:**
 ```bash
-make test-integration-clone
-make test-integration-checkout
-make test-integration-checkout-branch
-make test-integration-checkout-branch-from-default
-make test-integration-init
-make test-integration-prune
+just test-integration-clone
+just test-integration-checkout
+just test-integration-checkout-branch
+just test-integration-checkout-branch-from-default
+just test-integration-init
+just test-integration-prune
 ```
 
 ### GitHub Actions Integration
@@ -482,7 +482,7 @@ The testing architecture is fully integrated into GitHub Actions via `.github/wo
    - Runs Rust unit tests (`cargo test`)
    - Runs Rust linting (`cargo clippy -- -D warnings`)
    - Checks code formatting (`cargo fmt -- --check`)
-   - Executes integration tests (`make test-integration`)
+   - Executes integration tests (`just test-integration`)
 3. **Path configuration**: Automatically adds Rust binaries to PATH
 4. **Dependency validation**: Verifies required tools (git, awk, basename) are available
 5. **Test result artifacts**: Uploads test results for debugging failures
@@ -504,21 +504,21 @@ The Rust implementation includes sophisticated logic for handling remote trackin
 - Support for verbose mode (`VERBOSE=1`)
 - Parallel test execution support
 
-### Makefile Integration
+### Justfile Integration
 
-The Makefile provides convenient targets for all testing needs:
+The justfile provides convenient recipes for all testing needs:
 - `test-all` runs unit + integration tests
-- Individual targets for granular testing
+- Individual recipes for granular testing
 - Verbose modes for debugging (`test-verbose`, `test-integration-verbose`)
-- Performance testing targets (`test-perf`, `test-perf-integration`)
-- CI simulation target (`make ci`) that mimics GitHub Actions workflow
+- Performance testing recipes (`test-perf`, `test-perf-integration`)
+- CI simulation recipe (`just ci`) that mimics GitHub Actions workflow
 
 ### Test Maintenance
 
 When adding new features:
 1. Add unit tests for new Rust functions in the appropriate module
 2. Add integration tests in `tests/integration/` following existing patterns
-3. Ensure tests pass locally with `make test`
+3. Ensure tests pass locally with `just test`
 4. Verify CI passes on pull requests
 
 ## Code Quality Checks
@@ -545,7 +545,7 @@ When adding new features:
 
 3. **Unit Test Validation** - Confirm all tests still pass:
    ```bash
-   make test-unit
+   just test-unit
    ```
 
 ### Quality Check Workflow
@@ -559,10 +559,10 @@ cargo fmt
 cargo clippy -- -D warnings
 
 # 3. Verify tests pass
-make test-unit
+just test-unit
 
 # 4. (Optional) Run full test suite if significant changes
-make test
+just test
 ```
 
 ### Common Issues and Fixes

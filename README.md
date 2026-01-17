@@ -137,7 +137,7 @@ daft provides intelligent shell completions for bash, zsh, and fish shells with 
 
 ```bash
 # After building/installing daft, install completions for all shells
-make install-completions
+just install-completions
 
 # Or install manually using daft
 daft completions bash --install
@@ -153,7 +153,7 @@ daft completions fish --install
 daft completions bash --command=git-worktree-checkout > ~/.local/share/bash-completion/completions/git-worktree-checkout
 
 # Repeat for other commands or generate all at once
-make gen-completions-bash
+just gen-completions-bash
 
 # Add to ~/.bashrc (if not already present)
 if [ -f ~/.local/share/bash-completion/bash_completion ]; then
@@ -367,17 +367,17 @@ tests/
 ### Quick Testing
 ```bash
 # Run all tests (unit + integration)
-make test
+just test
 
 # Run only Rust unit tests
-make test-unit
+just test-unit
 
 # Run only integration tests
-make test-integration
+just test-integration
 
 # Run specific test suites
-make test-integration-clone
-make test-integration-checkout
+just test-integration-clone
+just test-integration-checkout
 ```
 
 ### Rust Unit Tests
@@ -393,10 +393,10 @@ cargo clippy -- -D warnings
 ### Advanced Testing
 ```bash
 # Run with verbose output
-make test-verbose
+just test-verbose
 
 # Run performance tests
-make test-perf
+just test-perf
 
 # Run individual test files
 cd tests/integration && ./test_init.sh
@@ -502,7 +502,7 @@ The Rust implementation provides significant advantages:
 1. Fork the repository
 2. Create a feature branch: `git-worktree-checkout-branch feature/my-feature`
 3. Make your changes and add tests
-4. Run the test suite: `cargo test && make test`
+4. Run the test suite: `cargo test && just test`
 5. Submit a pull request
 
 ### Local Development Setup
@@ -510,7 +510,7 @@ The Rust implementation provides significant advantages:
 **Quick Start:**
 ```bash
 # Build binary, create symlinks, and verify
-make dev
+just dev
 
 # Add to PATH for testing Git commands
 export PATH="$PWD/target/release:$PATH"
@@ -526,26 +526,26 @@ git worktree-clone --help
 vim src/commands/clone.rs
 
 # 2. Rebuild and test
-make dev                           # Quick: build + verify
+just dev                           # Quick: build + verify
 ./target/release/git-worktree-clone --help
 
 # 3. Run tests
 cargo test --lib                   # Unit tests (fast)
-make test                          # Full test suite
+just test                          # Full test suite
 
 # 4. Quality checks
 cargo clippy -- -D warnings        # Linting
 cargo fmt                          # Formatting
 ```
 
-**Useful Make Targets:**
-- `make dev` - Build binary + create symlinks + verify (recommended)
-- `make dev-test` - Full setup + run all tests
-- `make dev-clean` - Remove symlinks (keeps binary)
-- `make help` - Show all available targets
+**Useful Recipes:**
+- `just dev` - Build binary + create symlinks + verify (recommended)
+- `just dev-test` - Full setup + run all tests
+- `just dev-clean` - Remove symlinks (keeps binary)
+- `just help` - Show all available recipes
 
 **Architecture Note:**
-daft uses a single binary (589KB) with symlinks for all commands. When you run `make dev`, it creates symlinks in `target/release/` that point to the main `daft` binary. The binary detects how it was invoked (via argv[0]) and routes to the appropriate command.
+daft uses a single binary (589KB) with symlinks for all commands. When you run `just dev`, it creates symlinks in `target/release/` that point to the main `daft` binary. The binary detects how it was invoked (via argv[0]) and routes to the appropriate command.
 
 ### Guidelines
 
