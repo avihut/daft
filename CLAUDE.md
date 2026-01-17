@@ -207,8 +207,9 @@ src/
 │   ├── checkout_branch.rs  # git-worktree-checkout-branch implementation
 │   ├── checkout_branch_from_default.rs
 │   ├── init.rs          # git-worktree-init implementation
-│   └── prune.rs         # git-worktree-prune implementation
-├── lib.rs               # Shared library code
+│   ├── prune.rs         # git-worktree-prune implementation
+│   └── shell_init.rs    # daft shell-init implementation
+├── lib.rs               # Shared library code (includes output_cd_path for shell integration)
 ├── git.rs               # Git operations wrapper
 ├── remote.rs            # Remote repository handling
 ├── direnv.rs            # Direnv integration
@@ -234,6 +235,27 @@ Legacy shell scripts remain in `src/legacy/` for backward compatibility but are 
 - Remote name is configurable via `remote_name="origin"` variable
 - Scripts use `git rev-parse --git-common-dir` to locate shared Git metadata
 - Path resolution handles both absolute and relative paths robustly
+
+### Shell Integration
+
+The `daft shell-init` command generates shell wrapper functions that enable automatic cd into new worktrees. This solves the problem where the Rust binary changes directory internally but the parent shell stays in the original directory.
+
+**How it works:**
+1. Wrappers set `DAFT_SHELL_WRAPPER=1` before calling the underlying command
+2. When this env var is set, commands output a `__DAFT_CD__:/path/to/worktree` marker
+3. Wrappers parse this marker and use the shell's builtin `cd` to change directory
+
+**Usage:**
+```bash
+# Bash/Zsh: Add to ~/.bashrc or ~/.zshrc
+eval "$(daft shell-init bash)"
+
+# Fish: Add to ~/.config/fish/config.fish
+daft shell-init fish | source
+
+# With short aliases (gwco, gwcob, etc.)
+eval "$(daft shell-init bash --aliases)"
+```
 
 ## Usage
 

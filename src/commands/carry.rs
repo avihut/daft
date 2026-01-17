@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use daft::{
     get_project_root, git::GitCommand, is_git_repository, log_error, log_info, log_warning,
-    logging::init_logging, utils::*, WorktreeConfig,
+    logging::init_logging, output_cd_path, utils::*, WorktreeConfig,
 };
 use std::path::PathBuf;
 
@@ -198,6 +198,8 @@ fn run_carry(args: &Args) -> Result<()> {
             last_target.display()
         );
     }
+
+    output_cd_path(&get_current_directory()?);
 
     Ok(())
 }

@@ -41,6 +41,7 @@ fn main() -> Result<()> {
                 match args[1].as_str() {
                     "completions" => commands::completions::run(),
                     "__complete" => commands::complete::run(),
+                    "shell-init" => commands::shell_init::run(),
                     _ => commands::docs::run(),
                 }
             } else {

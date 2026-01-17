@@ -5,7 +5,7 @@ use daft::{
     direnv::run_direnv_allow,
     get_current_branch, get_project_root,
     git::GitCommand,
-    is_git_repository, log_error, log_info, log_warning, logging,
+    is_git_repository, log_error, log_info, log_warning, logging, output_cd_path,
     utils::*,
     WorktreeConfig,
 };
@@ -295,6 +295,8 @@ fn run_checkout_branch(args: &Args) -> Result<()> {
 
     println!("---");
     println!("Overall Success: Worktree created, branch pushed/tracked, direnv handled (if present), and CD'd into worktree.");
+
+    output_cd_path(&get_current_directory()?);
 
     Ok(())
 }
