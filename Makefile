@@ -1,3 +1,10 @@
+# ============================================================================
+# DEPRECATED: This Makefile is deprecated. Use `just` instead.
+# See justfile for available commands. Run `just --list` for help.
+#
+# Install just: brew install just (macOS) or cargo install just (any platform)
+# ============================================================================
+
 # Makefile for daft
 
 # Variables
