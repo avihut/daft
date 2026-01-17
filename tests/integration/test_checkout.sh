@@ -67,18 +67,63 @@ test_checkout_from_subdirectory() {
 # Test checkout error handling
 test_checkout_errors() {
     local remote_repo=$(create_test_remote "test-repo-checkout-errors" "main")
-    
+
     # Clone the repository
     git-worktree-clone "$remote_repo" || return 1
     cd "test-repo-checkout-errors"
-    
+
     # Test checkout nonexistent branch
     assert_command_failure "git-worktree-checkout nonexistent-branch" "Should fail with nonexistent branch"
-    
-    # Test checkout existing worktree
+
+    return 0
+}
+
+# Test checkout cd to existing worktree
+test_checkout_existing_worktree() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-existing" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-existing"
+
+    # First checkout creates the worktree
     git-worktree-checkout develop || return 1
-    assert_command_failure "git-worktree-checkout develop" "Should fail with existing worktree"
-    
+    assert_directory_exists "develop" || return 1
+    assert_git_worktree "develop" "develop" || return 1
+
+    # Go back to main
+    cd main
+
+    # Second checkout should succeed and cd to existing worktree
+    local output
+    output=$(git-worktree-checkout develop 2>&1) || {
+        log_error "Second checkout should succeed, but failed"
+        echo "$output"
+        return 1
+    }
+
+    # Verify output contains the expected message
+    if ! echo "$output" | grep -q "already has a worktree"; then
+        log_error "Output should mention 'already has a worktree'"
+        echo "$output"
+        return 1
+    fi
+
+    # Verify shell integration marker is present when DAFT_SHELL_WRAPPER is set
+    local output_with_wrapper
+    output_with_wrapper=$(DAFT_SHELL_WRAPPER=1 git-worktree-checkout develop 2>&1) || {
+        log_error "Second checkout with shell wrapper should succeed, but failed"
+        echo "$output_with_wrapper"
+        return 1
+    }
+
+    if ! echo "$output_with_wrapper" | grep -q "__DAFT_CD__:"; then
+        log_error "Output with DAFT_SHELL_WRAPPER=1 should contain shell integration marker __DAFT_CD__:"
+        echo "$output_with_wrapper"
+        return 1
+    fi
+
+    log_success "Checkout to existing worktree works correctly"
     return 0
 }
 
@@ -525,6 +570,7 @@ run_checkout_tests() {
     run_test "checkout_remote_branch" "test_checkout_remote_branch"
     run_test "checkout_from_subdirectory" "test_checkout_from_subdirectory"
     run_test "checkout_errors" "test_checkout_errors"
+    run_test "checkout_existing_worktree" "test_checkout_existing_worktree"
     run_test "checkout_direnv" "test_checkout_direnv"
     run_test "checkout_outside_repo" "test_checkout_outside_repo"
     run_test "checkout_help" "test_checkout_help"
