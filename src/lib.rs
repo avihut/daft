@@ -39,7 +39,10 @@ pub mod git;
 pub mod logging;
 pub mod output;
 pub mod remote;
+pub mod settings;
 pub mod utils;
+
+pub use settings::DaftSettings;
 
 #[derive(Debug, Clone)]
 pub struct WorktreeConfig {

@@ -137,6 +137,11 @@ test-integration-setup: build
     @echo "Running Rust integration setup tests..."
     @cd {{integration_tests_dir}} && ./test_setup.sh
 
+# Run integration config tests
+test-integration-config: build
+    @echo "Running Rust integration config tests..."
+    @cd {{integration_tests_dir}} && ./test_config.sh
+
 # ============================================================================
 # Verbose Test Recipes
 # ============================================================================
@@ -409,6 +414,7 @@ help:
     @echo "  test-integration-init             - Run Rust integration init tests"
     @echo "  test-integration-prune            - Run Rust integration prune tests"
     @echo "  test-integration-shell-init       - Run Rust integration shell-init tests"
+    @echo "  test-integration-config           - Run Rust integration config tests"
     @echo ""
     @echo "Other test recipes:"
     @echo "  test-verbose                      - Run tests with verbose output"

@@ -11,6 +11,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_checkout.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_checkout_branch.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_checkout_branch_from_default.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_prune.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/test_config.sh"
 
 # Test framework self-tests
 test_integration_framework_assertions() {
@@ -291,6 +292,7 @@ run_all_integration_tests() {
     run_checkout_branch_tests
     run_checkout_branch_from_default_tests
     run_prune_tests
+    run_config_tests
     
     # Integration tests
     run_test "integration_full_workflow" "test_integration_full_workflow"

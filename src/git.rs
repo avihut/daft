@@ -566,6 +566,44 @@ impl GitCommand {
         Ok(())
     }
 
+    /// Get a git config value from the current repository (respects local + global config)
+    pub fn config_get(&self, key: &str) -> Result<Option<String>> {
+        let output = Command::new("git")
+            .args(["config", "--get", key])
+            .output()
+            .context("Failed to execute git config command")?;
+
+        if output.status.success() {
+            let value = String::from_utf8(output.stdout)
+                .context("Failed to parse git config output")?
+                .trim()
+                .to_string();
+            Ok(Some(value))
+        } else {
+            // Exit code 1 means the key was not found, which is not an error
+            Ok(None)
+        }
+    }
+
+    /// Get a git config value from global config only
+    pub fn config_get_global(&self, key: &str) -> Result<Option<String>> {
+        let output = Command::new("git")
+            .args(["config", "--global", "--get", key])
+            .output()
+            .context("Failed to execute git config command")?;
+
+        if output.status.success() {
+            let value = String::from_utf8(output.stdout)
+                .context("Failed to parse git config output")?
+                .trim()
+                .to_string();
+            Ok(Some(value))
+        } else {
+            // Exit code 1 means the key was not found, which is not an error
+            Ok(None)
+        }
+    }
+
     /// Get the path of the current worktree
     pub fn get_current_worktree_path(&self) -> Result<std::path::PathBuf> {
         let output = Command::new("git")

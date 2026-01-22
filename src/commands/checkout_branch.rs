@@ -7,6 +7,7 @@ use daft::{
     git::GitCommand,
     is_git_repository, logging,
     output::{CliOutput, Output, OutputConfig},
+    settings::DaftSettings,
     utils::*,
     WorktreeConfig,
 };
@@ -57,12 +58,15 @@ pub fn run() -> Result<()> {
         anyhow::bail!("Not inside a Git repository");
     }
 
-    let config = OutputConfig::new(args.quiet, args.verbose);
+    // Load settings from git config
+    let settings = DaftSettings::load()?;
+
+    let config = OutputConfig::with_autocd(args.quiet, args.verbose, settings.autocd);
     let mut output = CliOutput::new(config);
 
     let original_dir = get_current_directory()?;
 
-    if let Err(e) = run_checkout_branch(&args, &mut output) {
+    if let Err(e) = run_checkout_branch(&args, &settings, &mut output) {
         change_directory(&original_dir).ok();
         return Err(e);
     }
@@ -70,7 +74,11 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn run_checkout_branch(args: &Args, output: &mut dyn Output) -> Result<()> {
+fn run_checkout_branch(
+    args: &Args,
+    settings: &DaftSettings,
+    output: &mut dyn Output,
+) -> Result<()> {
     validate_branch_name(&args.new_branch_name)?;
 
     let base_branch = match &args.base_branch_name {
@@ -91,7 +99,10 @@ fn run_checkout_branch(args: &Args, output: &mut dyn Output) -> Result<()> {
     let project_root = get_project_root()?;
     let worktree_path = project_root.join(&args.new_branch_name);
 
-    let config = WorktreeConfig::default();
+    let config = WorktreeConfig {
+        remote_name: settings.remote.clone(),
+        quiet: output.is_quiet(),
+    };
     let git = GitCommand::new(output.is_quiet());
 
     // Fetch latest changes from remote to ensure we have the latest version of the base branch
@@ -159,8 +170,20 @@ fn run_checkout_branch(args: &Args, output: &mut dyn Output) -> Result<()> {
             base_branch.clone()
         };
 
-    // Check for uncommitted changes and stash them if --no-carry is not set
-    let stash_created = if !args.no_carry {
+    // Determine carry behavior:
+    // 1. --carry flag explicitly set -> carry
+    // 2. --no-carry flag explicitly set -> don't carry
+    // 3. Neither flag set -> use settings.checkout_branch_carry
+    let should_carry = if args.carry {
+        true
+    } else if args.no_carry {
+        false
+    } else {
+        settings.checkout_branch_carry
+    };
+
+    // Check for uncommitted changes and stash them if should_carry is true
+    let stash_created = if should_carry {
         match git.has_uncommitted_changes() {
             Ok(true) => {
                 output.step("Stashing uncommitted changes...");
@@ -180,7 +203,7 @@ fn run_checkout_branch(args: &Args, output: &mut dyn Output) -> Result<()> {
             }
         }
     } else {
-        output.step("Skipping carry (--no-carry flag set)");
+        output.step("Skipping carry (--no-carry flag set or carry disabled in config)");
         false
     };
 
@@ -231,23 +254,28 @@ fn run_checkout_branch(args: &Args, output: &mut dyn Output) -> Result<()> {
         }
     }
 
-    output.step(&format!(
-        "Pushing and setting upstream to '{}/{}'...",
-        config.remote_name, args.new_branch_name
-    ));
-
-    if let Err(e) = git.push_set_upstream(&config.remote_name, &args.new_branch_name) {
-        output.warning(&format!(
-            "Failed to push branch '{}' to '{}' or set upstream: {}. You may need to resolve the push issue manually.",
-            args.new_branch_name, config.remote_name, e
+    // Push and set upstream only if checkout_push is enabled
+    if settings.checkout_push {
+        output.step(&format!(
+            "Pushing and setting upstream to '{}/{}'...",
+            config.remote_name, args.new_branch_name
         ));
-        return Err(e);
-    }
 
-    output.step(&format!(
-        "Push to '{}' and upstream tracking set successfully",
-        config.remote_name
-    ));
+        if let Err(e) = git.push_set_upstream(&config.remote_name, &args.new_branch_name) {
+            output.warning(&format!(
+                "Failed to push branch '{}' to '{}' or set upstream: {}. You may need to resolve the push issue manually.",
+                args.new_branch_name, config.remote_name, e
+            ));
+            return Err(e);
+        }
+
+        output.step(&format!(
+            "Push to '{}' and upstream tracking set successfully",
+            config.remote_name
+        ));
+    } else {
+        output.step("Skipping push (disabled in config)");
+    }
 
     run_direnv_allow(&get_current_directory()?, output)?;
 

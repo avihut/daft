@@ -7,6 +7,7 @@ use daft::{
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
+    settings::DaftSettings,
     utils::*,
     WorktreeConfig,
 };
@@ -52,12 +53,15 @@ pub fn run() -> Result<()> {
         anyhow::bail!("Not inside a Git repository");
     }
 
-    let config = OutputConfig::new(false, args.verbose);
+    // Load settings from git config
+    let settings = DaftSettings::load()?;
+
+    let config = OutputConfig::with_autocd(false, args.verbose, settings.autocd);
     let mut output = CliOutput::new(config);
 
     let original_dir = get_current_directory()?;
 
-    if let Err(e) = run_checkout(&args, &mut output) {
+    if let Err(e) = run_checkout(&args, &settings, &mut output) {
         change_directory(&original_dir).ok();
         return Err(e);
     }
@@ -65,13 +69,16 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn run_checkout(args: &Args, output: &mut dyn Output) -> Result<()> {
+fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
     validate_branch_name(&args.branch_name)?;
 
     let project_root = get_project_root()?;
     let worktree_path = project_root.join(&args.branch_name);
 
-    let config = WorktreeConfig::default();
+    let config = WorktreeConfig {
+        remote_name: settings.remote.clone(),
+        quiet: output.is_quiet(),
+    };
     let git = GitCommand::new(output.is_quiet());
 
     output.step(&format!(
@@ -152,8 +159,20 @@ fn run_checkout(args: &Args, output: &mut dyn Output) -> Result<()> {
         false
     };
 
-    // Check for uncommitted changes and stash them if --carry is set
-    let stash_created = if args.carry {
+    // Determine carry behavior:
+    // 1. --carry flag explicitly set -> carry
+    // 2. --no-carry flag explicitly set -> don't carry
+    // 3. Neither flag set -> use settings.checkout_carry
+    let should_carry = if args.carry {
+        true
+    } else if args.no_carry {
+        false
+    } else {
+        settings.checkout_carry
+    };
+
+    // Check for uncommitted changes and stash them if should_carry is true
+    let stash_created = if should_carry {
         match git.has_uncommitted_changes() {
             Ok(true) => {
                 output.step("Stashing uncommitted changes...");
@@ -228,34 +247,39 @@ fn run_checkout(args: &Args, output: &mut dyn Output) -> Result<()> {
         }
     }
 
-    let remote_branch_ref = format!("refs/remotes/{}/{}", config.remote_name, args.branch_name);
-    output.step(&format!(
-        "Checking for remote branch '{}/{}'...",
-        config.remote_name, args.branch_name
-    ));
-
-    if git.show_ref_exists(&remote_branch_ref)? {
+    // Set upstream only if checkout_upstream is enabled
+    if settings.checkout_upstream {
+        let remote_branch_ref = format!("refs/remotes/{}/{}", config.remote_name, args.branch_name);
         output.step(&format!(
-            "Setting upstream to '{}/{}'...",
+            "Checking for remote branch '{}/{}'...",
             config.remote_name, args.branch_name
         ));
 
-        if let Err(e) = git.set_upstream(&config.remote_name, &args.branch_name) {
-            output.warning(&format!(
-                "Failed to set upstream tracking: {}. Worktree created, but upstream may need manual configuration.",
-                e
+        if git.show_ref_exists(&remote_branch_ref)? {
+            output.step(&format!(
+                "Setting upstream to '{}/{}'...",
+                config.remote_name, args.branch_name
             ));
+
+            if let Err(e) = git.set_upstream(&config.remote_name, &args.branch_name) {
+                output.warning(&format!(
+                    "Failed to set upstream tracking: {}. Worktree created, but upstream may need manual configuration.",
+                    e
+                ));
+            } else {
+                output.step(&format!(
+                    "Upstream tracking set to '{}/{}'",
+                    config.remote_name, args.branch_name
+                ));
+            }
         } else {
             output.step(&format!(
-                "Upstream tracking set to '{}/{}'",
+                "Remote branch '{}/{}' not found, skipping upstream setup",
                 config.remote_name, args.branch_name
             ));
         }
     } else {
-        output.step(&format!(
-            "Remote branch '{}/{}' not found, skipping upstream setup",
-            config.remote_name, args.branch_name
-        ));
+        output.step("Skipping upstream setup (disabled in config)");
     }
 
     run_direnv_allow(&get_current_directory()?, output)?;
