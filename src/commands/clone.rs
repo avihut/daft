@@ -184,12 +184,6 @@ fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
         // Continue execution - upstream tracking may not work but worktrees will
     }
 
-    // Set up remote HEAD reference for better default branch detection
-    if let Err(e) = git.remote_set_head_auto(&config.remote_name) {
-        output.warning(&format!("Could not set remote HEAD: {e}"));
-        // Continue execution - this is not critical
-    }
-
     if !args.no_checkout && branch_exists {
         if args.all_branches {
             create_all_worktrees(&git, &config, &default_branch, output)?;
@@ -215,6 +209,11 @@ fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
         ));
         if let Err(e) = git.fetch(&config.remote_name, false) {
             output.warning(&format!("Could not fetch from remote: {e}"));
+        }
+
+        // Set up remote HEAD reference (must be after fetch so refs exist)
+        if let Err(e) = git.remote_set_head_auto(&config.remote_name) {
+            output.warning(&format!("Could not set remote HEAD: {e}"));
         }
 
         // Set up upstream tracking for the target branch
