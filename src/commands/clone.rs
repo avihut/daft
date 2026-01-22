@@ -137,6 +137,13 @@ fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
 
     let config = WorktreeConfig::default();
 
+    // Set up fetch refspec for bare repo (required for upstream tracking to work)
+    output.step("Setting up fetch refspec for remote tracking...");
+    if let Err(e) = git.setup_fetch_refspec(&config.remote_name) {
+        output.warning(&format!("Could not set fetch refspec: {e}"));
+        // Continue execution - upstream tracking may not work but worktrees will
+    }
+
     // Set up remote HEAD reference for better default branch detection
     if let Err(e) = git.remote_set_head_auto(&config.remote_name) {
         output.warning(&format!("Could not set remote HEAD: {e}"));
