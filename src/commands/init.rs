@@ -46,10 +46,9 @@ pub struct Args {
     #[arg(
         short = 'b',
         long = "initial-branch",
-        help = "Set the initial branch name",
-        default_value = "master"
+        help = "Set the initial branch name (defaults to git config init.defaultBranch or 'master')"
     )]
-    initial_branch: String,
+    initial_branch: Option<String>,
 }
 
 pub fn run() -> Result<()> {
@@ -74,6 +73,29 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// Resolve the initial branch name from args, git config, or default.
+///
+/// Priority:
+/// 1. Explicitly provided via -b/--initial-branch
+/// 2. Git config init.defaultBranch (global)
+/// 3. Fallback to "master"
+fn resolve_initial_branch(initial_branch: &Option<String>) -> String {
+    if let Some(branch) = initial_branch {
+        return branch.clone();
+    }
+
+    // Query git config for init.defaultBranch
+    let git = GitCommand::new(true); // quiet mode for config query
+    if let Ok(Some(configured_branch)) = git.config_get_global("init.defaultBranch") {
+        if !configured_branch.is_empty() {
+            return configured_branch;
+        }
+    }
+
+    // Fallback to "master"
+    "master".to_string()
+}
+
 /// Run the init command with the given output implementation.
 ///
 /// This function contains all the business logic and uses the `Output` trait
@@ -83,12 +105,14 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
 
     validate_repo_name(&args.repository_name)?;
 
-    if args.initial_branch.is_empty() {
+    let initial_branch = resolve_initial_branch(&args.initial_branch);
+
+    if initial_branch.is_empty() {
         anyhow::bail!("Initial branch name cannot be empty");
     }
 
     let parent_dir = PathBuf::from(&args.repository_name);
-    let worktree_dir = parent_dir.join(&args.initial_branch);
+    let worktree_dir = parent_dir.join(&initial_branch);
 
     output.step(&format!(
         "Target repository directory: './{}'",
@@ -119,7 +143,7 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
         git_dir.display()
     ));
 
-    if let Err(e) = git.init_bare(&git_dir, &args.initial_branch) {
+    if let Err(e) = git.init_bare(&git_dir, &initial_branch) {
         remove_directory(&parent_dir).ok();
         return Err(e.context("Git init failed"));
     }
@@ -133,17 +157,15 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
 
         output.step(&format!(
             "Creating initial worktree for branch '{}'...",
-            args.initial_branch
+            initial_branch
         ));
-        if let Err(e) =
-            git.worktree_add_orphan(&PathBuf::from(&args.initial_branch), &args.initial_branch)
-        {
+        if let Err(e) = git.worktree_add_orphan(&PathBuf::from(&initial_branch), &initial_branch) {
             change_directory(parent_dir.parent().unwrap_or(&PathBuf::from("."))).ok();
             remove_directory(&parent_dir).ok();
             return Err(e.context("Failed to create initial worktree"));
         }
 
-        let target_worktree = PathBuf::from(&args.initial_branch);
+        let target_worktree = PathBuf::from(&initial_branch);
         output.step(&format!(
             "Changing directory to worktree: './{}'",
             target_worktree.display()
@@ -161,7 +183,7 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
         // Git-like result message
         output.result(&format!(
             "Initialized repository '{}' in '{}/{}'",
-            args.repository_name, args.repository_name, args.initial_branch
+            args.repository_name, args.repository_name, initial_branch
         ));
 
         output.cd_path(&current_dir);
@@ -189,7 +211,7 @@ mod tests {
             bare,
             quiet,
             verbose,
-            initial_branch: "master".to_string(),
+            initial_branch: Some("master".to_string()),
         }
     }
 
@@ -253,7 +275,7 @@ mod tests {
             bare: false,
             quiet: false,
             verbose: false,
-            initial_branch: "master".to_string(),
+            initial_branch: Some("master".to_string()),
         };
         let mut output = TestOutput::new();
 
@@ -273,7 +295,7 @@ mod tests {
             bare: false,
             quiet: false,
             verbose: false,
-            initial_branch: "".to_string(),
+            initial_branch: Some("".to_string()),
         };
         let mut output = TestOutput::new();
 
@@ -284,5 +306,23 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Initial branch name cannot be empty"));
+    }
+
+    #[test]
+    fn test_resolve_initial_branch_explicit() {
+        // When explicitly provided, should use that value
+        let result = resolve_initial_branch(&Some("develop".to_string()));
+        assert_eq!(result, "develop");
+
+        let result = resolve_initial_branch(&Some("main".to_string()));
+        assert_eq!(result, "main");
+    }
+
+    #[test]
+    fn test_resolve_initial_branch_none_returns_non_empty() {
+        // When None is provided, should return either git config value or "master" fallback
+        // We can't easily mock git config, but we can verify it returns something non-empty
+        let result = resolve_initial_branch(&None);
+        assert!(!result.is_empty());
     }
 }
