@@ -6,6 +6,7 @@ use daft::{
     git::GitCommand,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
+    settings::DaftSettings,
     utils::*,
 };
 use std::path::PathBuf;
@@ -57,7 +58,10 @@ pub fn run() -> Result<()> {
     // Initialize logging based on verbose flag
     init_logging(args.verbose);
 
-    let config = OutputConfig::new(args.quiet, args.verbose);
+    // Load settings from global config only (repo doesn't exist yet)
+    let settings = DaftSettings::load_global()?;
+
+    let config = OutputConfig::with_autocd(args.quiet, args.verbose, settings.autocd);
     let mut output = CliOutput::new(config);
 
     let original_dir = get_current_directory()?;

@@ -26,18 +26,43 @@ pub use test::{OutputEntry, TestOutput};
 use std::path::Path;
 
 /// Configuration for output behavior.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct OutputConfig {
     /// Suppress most output when true.
     pub quiet: bool,
     /// Enable debug/verbose output when true.
     pub verbose: bool,
+    /// Enable auto-cd into new worktrees when true.
+    pub autocd: bool,
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            quiet: false,
+            verbose: false,
+            autocd: true,
+        }
+    }
 }
 
 impl OutputConfig {
-    /// Create a new output configuration.
+    /// Create a new output configuration with autocd enabled by default.
     pub fn new(quiet: bool, verbose: bool) -> Self {
-        Self { quiet, verbose }
+        Self {
+            quiet,
+            verbose,
+            autocd: true,
+        }
+    }
+
+    /// Create a new output configuration with explicit autocd setting.
+    pub fn with_autocd(quiet: bool, verbose: bool, autocd: bool) -> Self {
+        Self {
+            quiet,
+            verbose,
+            autocd,
+        }
     }
 }
 

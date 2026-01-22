@@ -8,6 +8,7 @@ use daft::{
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     remote::{get_default_branch_remote, get_remote_branches},
+    settings::DaftSettings,
     utils::*,
     WorktreeConfig,
 };
@@ -80,12 +81,15 @@ pub fn run() -> Result<()> {
         anyhow::bail!("--branch and --no-checkout cannot be used together.\nUse --branch to checkout a specific branch, or --no-checkout to skip worktree creation.");
     }
 
-    let config = OutputConfig::new(args.quiet, args.verbose);
+    // Load settings from global config only (repo doesn't exist yet)
+    let settings = DaftSettings::load_global()?;
+
+    let config = OutputConfig::with_autocd(args.quiet, args.verbose, settings.autocd);
     let mut output = CliOutput::new(config);
 
     let original_dir = get_current_directory()?;
 
-    if let Err(e) = run_clone(&args, &mut output) {
+    if let Err(e) = run_clone(&args, &settings, &mut output) {
         change_directory(&original_dir).ok();
         return Err(e);
     }
@@ -93,7 +97,7 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
+fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
     check_dependencies()?;
 
     let repo_name = extract_repo_name(&args.repository_url)?;
@@ -175,7 +179,10 @@ fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
     ));
     change_directory(&parent_dir)?;
 
-    let config = WorktreeConfig::default();
+    let config = WorktreeConfig {
+        remote_name: settings.remote.clone(),
+        quiet: output.is_quiet(),
+    };
 
     // Set up fetch refspec for bare repo (required for upstream tracking to work)
     output.step("Setting up fetch refspec for remote tracking...");
@@ -216,15 +223,19 @@ fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
             output.warning(&format!("Could not set remote HEAD: {e}"));
         }
 
-        // Set up upstream tracking for the target branch
-        output.step(&format!(
-            "Setting upstream to '{}/{}'...",
-            config.remote_name, target_branch
-        ));
-        if let Err(e) = git.set_upstream(&config.remote_name, &target_branch) {
-            output.warning(&format!(
-                "Could not set upstream tracking: {e}. You may need to set it manually."
+        // Set up upstream tracking for the target branch (if enabled)
+        if settings.checkout_upstream {
+            output.step(&format!(
+                "Setting upstream to '{}/{}'...",
+                config.remote_name, target_branch
             ));
+            if let Err(e) = git.set_upstream(&config.remote_name, &target_branch) {
+                output.warning(&format!(
+                    "Could not set upstream tracking: {e}. You may need to set it manually."
+                ));
+            }
+        } else {
+            output.step("Skipping upstream setup (disabled in config)");
         }
 
         run_direnv_allow(&get_current_directory()?, output)?;

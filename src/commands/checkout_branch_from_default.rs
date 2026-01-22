@@ -6,8 +6,8 @@ use daft::{
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     remote::get_default_branch_local,
+    settings::DaftSettings,
     utils::*,
-    WorktreeConfig,
 };
 use std::process::Command;
 
@@ -47,12 +47,15 @@ pub fn run() -> Result<()> {
         anyhow::bail!("Not inside a Git repository");
     }
 
-    let config = OutputConfig::new(false, args.verbose);
+    // Load settings from git config
+    let settings = DaftSettings::load()?;
+
+    let config = OutputConfig::with_autocd(false, args.verbose, settings.autocd);
     let mut output = CliOutput::new(config);
 
     let original_dir = get_current_directory()?;
 
-    if let Err(e) = run_checkout_branch_from_default(&args, &mut output) {
+    if let Err(e) = run_checkout_branch_from_default(&args, &settings, &mut output) {
         change_directory(&original_dir).ok();
         return Err(e);
     }
@@ -60,18 +63,20 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn run_checkout_branch_from_default(args: &Args, output: &mut dyn Output) -> Result<()> {
+fn run_checkout_branch_from_default(
+    args: &Args,
+    settings: &DaftSettings,
+    output: &mut dyn Output,
+) -> Result<()> {
     validate_branch_name(&args.new_branch_name)?;
-
-    let config = WorktreeConfig::default();
 
     output.step(&format!(
         "Determining default branch for remote '{}'...",
-        config.remote_name
+        settings.remote
     ));
 
     let git_common_dir = get_git_common_dir()?;
-    let default_branch = get_default_branch_local(&git_common_dir, &config.remote_name)
+    let default_branch = get_default_branch_local(&git_common_dir, &settings.remote)
         .context("Failed to determine default branch")?;
 
     output.step(&format!(

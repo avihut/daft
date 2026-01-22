@@ -128,9 +128,9 @@ impl Output for CliOutput {
     }
 
     fn cd_path(&mut self, path: &Path) {
-        // Only output if the shell wrapper environment variable is set.
+        // Only output if autocd is enabled and the shell wrapper environment variable is set.
         // This keeps output clean for users who don't use wrappers.
-        if env::var(SHELL_WRAPPER_ENV).is_ok() {
+        if self.config.autocd && env::var(SHELL_WRAPPER_ENV).is_ok() {
             println!("{CD_PATH_MARKER}{}", path.display());
         }
     }
