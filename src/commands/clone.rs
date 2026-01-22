@@ -137,6 +137,13 @@ fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
 
     let config = WorktreeConfig::default();
 
+    // Set up fetch refspec for bare repo (required for upstream tracking to work)
+    output.step("Setting up fetch refspec for remote tracking...");
+    if let Err(e) = git.setup_fetch_refspec(&config.remote_name) {
+        output.warning(&format!("Could not set fetch refspec: {e}"));
+        // Continue execution - upstream tracking may not work but worktrees will
+    }
+
     // Set up remote HEAD reference for better default branch detection
     if let Err(e) = git.remote_set_head_auto(&config.remote_name) {
         output.warning(&format!("Could not set remote HEAD: {e}"));
@@ -159,6 +166,26 @@ fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
         if let Err(e) = change_directory(&target_worktree) {
             change_directory(parent_dir.parent().unwrap_or(&PathBuf::from("."))).ok();
             return Err(e);
+        }
+
+        // Fetch to create remote tracking refs (bare clone only creates local refs)
+        output.step(&format!(
+            "Fetching from '{}' to set up remote tracking...",
+            config.remote_name
+        ));
+        if let Err(e) = git.fetch(&config.remote_name, false) {
+            output.warning(&format!("Could not fetch from remote: {e}"));
+        }
+
+        // Set up upstream tracking for the default branch
+        output.step(&format!(
+            "Setting upstream to '{}/{}'...",
+            config.remote_name, default_branch
+        ));
+        if let Err(e) = git.set_upstream(&config.remote_name, &default_branch) {
+            output.warning(&format!(
+                "Could not set upstream tracking: {e}. You may need to set it manually."
+            ));
         }
 
         run_direnv_allow(&get_current_directory()?, output)?;
