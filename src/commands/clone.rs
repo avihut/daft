@@ -19,15 +19,23 @@ use std::path::PathBuf;
 #[command(about = "Clones a Git repository into a worktree-based directory structure")]
 #[command(long_about = r#"
 Clones a Git repository into a specific directory structure:
-<repository_name>/<default_branch_name>
+<repository_name>/<branch_name>
 
 It determines the repository name from the URL and queries the remote
-to find the default branch (e.g., main, master, develop) *before* cloning.
+to find the default branch (e.g., main, master, develop) *before* cloning,
+unless a specific branch is specified with -b.
 After cloning, it runs 'direnv allow' in the new directory and cds into it.
 "#)]
 pub struct Args {
     #[arg(help = "Repository URL to clone")]
     repository_url: String,
+
+    #[arg(
+        short = 'b',
+        long = "branch",
+        help = "Checkout this branch instead of the remote's default branch"
+    )]
+    branch: Option<String>,
 
     #[arg(
         short = 'n',
@@ -64,6 +72,14 @@ pub fn run() -> Result<()> {
         anyhow::bail!("--no-checkout and --all-branches cannot be used together.\nUse --no-checkout to create only the bare repository, or --all-branches to create worktrees for all branches.");
     }
 
+    if args.branch.is_some() && args.all_branches {
+        anyhow::bail!("--branch and --all-branches cannot be used together.\nUse --branch to checkout a specific branch, or --all-branches to create worktrees for all branches.");
+    }
+
+    if args.branch.is_some() && args.no_checkout {
+        anyhow::bail!("--branch and --no-checkout cannot be used together.\nUse --branch to checkout a specific branch, or --no-checkout to skip worktree creation.");
+    }
+
     let config = OutputConfig::new(args.quiet, args.verbose);
     let mut output = CliOutput::new(config);
 
@@ -87,8 +103,30 @@ fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
         .context("Failed to determine default branch")?;
     output.step(&format!("Default branch detected: '{default_branch}'"));
 
+    // Determine the target branch and whether it exists on remote
+    let (target_branch, branch_exists) = if let Some(ref specified_branch) = args.branch {
+        output.step(&format!(
+            "Checking if branch '{}' exists on remote...",
+            specified_branch
+        ));
+        let git = GitCommand::new(output.is_quiet());
+        let exists = git
+            .ls_remote_branch_exists(&args.repository_url, specified_branch)
+            .unwrap_or(false);
+        if exists {
+            output.step(&format!("Branch '{specified_branch}' found on remote"));
+        } else {
+            output.warning(&format!(
+                "Branch '{specified_branch}' does not exist on remote"
+            ));
+        }
+        (specified_branch.clone(), exists)
+    } else {
+        (default_branch.clone(), true)
+    };
+
     let parent_dir = PathBuf::from(&repo_name);
-    let worktree_dir = parent_dir.join(&default_branch);
+    let worktree_dir = parent_dir.join(&target_branch);
 
     output.step(&format!(
         "Target repository directory: './{}'",
@@ -98,11 +136,13 @@ fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
     if !args.no_checkout {
         if args.all_branches {
             output.step("Worktrees will be created for all remote branches");
-        } else {
+        } else if branch_exists {
             output.step(&format!(
                 "Initial worktree will be in: './{}'",
                 worktree_dir.display()
             ));
+        } else {
+            output.step("Worktree creation will be skipped (branch does not exist)");
         }
     } else {
         output.step("No-checkout mode: Only bare repository will be created");
@@ -144,20 +184,14 @@ fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
         // Continue execution - upstream tracking may not work but worktrees will
     }
 
-    // Set up remote HEAD reference for better default branch detection
-    if let Err(e) = git.remote_set_head_auto(&config.remote_name) {
-        output.warning(&format!("Could not set remote HEAD: {e}"));
-        // Continue execution - this is not critical
-    }
-
-    if !args.no_checkout {
+    if !args.no_checkout && branch_exists {
         if args.all_branches {
             create_all_worktrees(&git, &config, &default_branch, output)?;
         } else {
-            create_single_worktree(&git, &default_branch, output)?;
+            create_single_worktree(&git, &target_branch, output)?;
         }
 
-        let target_worktree = PathBuf::from(&default_branch);
+        let target_worktree = PathBuf::from(&target_branch);
         output.step(&format!(
             "Changing directory to worktree: './{}'",
             target_worktree.display()
@@ -177,12 +211,17 @@ fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
             output.warning(&format!("Could not fetch from remote: {e}"));
         }
 
-        // Set up upstream tracking for the default branch
+        // Set up remote HEAD reference (must be after fetch so refs exist)
+        if let Err(e) = git.remote_set_head_auto(&config.remote_name) {
+            output.warning(&format!("Could not set remote HEAD: {e}"));
+        }
+
+        // Set up upstream tracking for the target branch
         output.step(&format!(
             "Setting upstream to '{}/{}'...",
-            config.remote_name, default_branch
+            config.remote_name, target_branch
         ));
-        if let Err(e) = git.set_upstream(&config.remote_name, &default_branch) {
+        if let Err(e) = git.set_upstream(&config.remote_name, &target_branch) {
             output.warning(&format!(
                 "Could not set upstream tracking: {e}. You may need to set it manually."
             ));
@@ -193,8 +232,16 @@ fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
         let current_dir = get_current_directory()?;
 
         // Git-like result message
-        output.result(&format!("Cloned into '{repo_name}/{default_branch}'"));
+        output.result(&format!("Cloned into '{repo_name}/{target_branch}'"));
 
+        output.cd_path(&current_dir);
+    } else if !args.no_checkout && !branch_exists {
+        // Branch was specified but doesn't exist - stay in repo root
+        let current_dir = get_current_directory()?;
+        output.result(&format!(
+            "Cloned '{repo_name}' (branch '{}' not found, no worktree created)",
+            target_branch
+        ));
         output.cd_path(&current_dir);
     } else {
         // Git-like result message for no-checkout mode
@@ -204,15 +251,11 @@ fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
     Ok(())
 }
 
-fn create_single_worktree(
-    git: &GitCommand,
-    default_branch: &str,
-    output: &mut dyn Output,
-) -> Result<()> {
+fn create_single_worktree(git: &GitCommand, branch: &str, output: &mut dyn Output) -> Result<()> {
     output.step(&format!(
-        "Creating initial worktree for branch '{default_branch}'..."
+        "Creating initial worktree for branch '{branch}'..."
     ));
-    git.worktree_add(&PathBuf::from(default_branch), default_branch)
+    git.worktree_add(&PathBuf::from(branch), branch)
         .context("Failed to create initial worktree")?;
     Ok(())
 }
