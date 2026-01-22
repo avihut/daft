@@ -1,8 +1,14 @@
 use anyhow::Result;
 use clap::Parser;
 use daft::{
-    get_project_root, git::GitCommand, is_git_repository, log_error, log_info, log_warning,
-    logging::init_logging, output_cd_path, utils::*, WorktreeConfig,
+    get_project_root,
+    git::GitCommand,
+    is_git_repository, log_error, log_info, log_warning,
+    logging::init_logging,
+    output::{CliOutput, Output, OutputConfig},
+    settings::DaftSettings,
+    utils::*,
+    WorktreeConfig,
 };
 use std::path::PathBuf;
 
@@ -49,11 +55,20 @@ pub fn run() -> Result<()> {
         anyhow::bail!("Not inside a Git repository");
     }
 
-    run_carry(&args)
+    // Load settings from git config
+    let settings = DaftSettings::load()?;
+
+    let config = OutputConfig::with_autocd(false, args.verbose, settings.autocd);
+    let mut output = CliOutput::new(config);
+
+    run_carry(&args, &settings, &mut output)
 }
 
-fn run_carry(args: &Args) -> Result<()> {
-    let config = WorktreeConfig::default();
+fn run_carry(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
+    let config = WorktreeConfig {
+        remote_name: settings.remote.clone(),
+        quiet: false,
+    };
     let git = GitCommand::new(config.quiet);
 
     // Get the current worktree path before we start
@@ -199,7 +214,7 @@ fn run_carry(args: &Args) -> Result<()> {
         );
     }
 
-    output_cd_path(&get_current_directory()?);
+    output.cd_path(&get_current_directory()?);
 
     Ok(())
 }
