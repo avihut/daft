@@ -168,6 +168,26 @@ fn run_clone(args: &Args, output: &mut dyn Output) -> Result<()> {
             return Err(e);
         }
 
+        // Fetch to create remote tracking refs (bare clone only creates local refs)
+        output.step(&format!(
+            "Fetching from '{}' to set up remote tracking...",
+            config.remote_name
+        ));
+        if let Err(e) = git.fetch(&config.remote_name, false) {
+            output.warning(&format!("Could not fetch from remote: {e}"));
+        }
+
+        // Set up upstream tracking for the default branch
+        output.step(&format!(
+            "Setting upstream to '{}/{}'...",
+            config.remote_name, default_branch
+        ));
+        if let Err(e) = git.set_upstream(&config.remote_name, &default_branch) {
+            output.warning(&format!(
+                "Could not set upstream tracking: {e}. You may need to set it manually."
+            ));
+        }
+
         run_direnv_allow(&get_current_directory()?, output)?;
 
         let current_dir = get_current_directory()?;
