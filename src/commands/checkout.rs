@@ -123,20 +123,33 @@ fn run_checkout(args: &Args, output: &mut dyn Output) -> Result<()> {
         output.warning(&format!("Failed to fetch specific branch: {e}"));
     }
 
-    // Check if remote branch exists and use it if local branch is behind
+    // Check if local and/or remote branch exists
+    let local_branch_ref = format!("refs/heads/{}", args.branch_name);
     let remote_branch_ref = format!("refs/remotes/{}/{}", config.remote_name, args.branch_name);
-    let checkout_ref = if git.show_ref_exists(&remote_branch_ref)? {
+    let local_exists = git.show_ref_exists(&local_branch_ref)?;
+    let remote_exists = git.show_ref_exists(&remote_branch_ref)?;
+
+    if !local_exists && !remote_exists {
+        anyhow::bail!(
+            "Branch '{}' does not exist locally or on remote '{}'",
+            args.branch_name,
+            config.remote_name
+        );
+    }
+
+    // Determine whether to use local branch or create from remote
+    let use_local_branch = if local_exists {
         output.step(&format!(
-            "Remote branch '{}/{}' found, using it for worktree creation",
-            config.remote_name, args.branch_name
+            "Local branch '{}' found, using it for worktree creation",
+            args.branch_name
         ));
-        format!("{}/{}", config.remote_name, args.branch_name)
+        true
     } else {
         output.step(&format!(
-            "Remote branch '{}/{}' not found, using local branch",
-            config.remote_name, args.branch_name
+            "Local branch '{}' not found, will create from remote '{}/{}'",
+            args.branch_name, config.remote_name, args.branch_name
         ));
-        args.branch_name.clone()
+        false
     };
 
     // Check for uncommitted changes and stash them if --carry is set
@@ -162,7 +175,16 @@ fn run_checkout(args: &Args, output: &mut dyn Output) -> Result<()> {
         false
     };
 
-    if let Err(e) = git.worktree_add(&worktree_path, &checkout_ref) {
+    // Create worktree: use local branch directly, or create local branch from remote
+    let worktree_result = if use_local_branch {
+        git.worktree_add(&worktree_path, &args.branch_name)
+    } else {
+        // Create a new local branch tracking the remote branch
+        let remote_ref = format!("{}/{}", config.remote_name, args.branch_name);
+        git.worktree_add_new_branch(&worktree_path, &args.branch_name, &remote_ref)
+    };
+
+    if let Err(e) = worktree_result {
         // If worktree creation fails and we stashed changes, restore them
         if stash_created {
             output.step("Restoring stashed changes due to worktree creation failure...");
