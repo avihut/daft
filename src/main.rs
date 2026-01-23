@@ -6,6 +6,7 @@ use anyhow::Result;
 use std::path::Path;
 
 mod commands;
+mod shortcuts;
 
 fn main() -> Result<()> {
     // Detect how we were invoked by checking argv[0]
@@ -17,8 +18,11 @@ fn main() -> Result<()> {
         .and_then(|n| n.to_str())
         .unwrap_or("daft");
 
+    // Resolve shortcut aliases to full command names
+    let resolved = shortcuts::resolve(program_name);
+
     // Route to the appropriate command based on invocation name
-    match program_name {
+    match resolved {
         // Git worktree extension commands (via symlinks)
         "git-worktree-clone" => commands::clone::run(),
         "git-worktree-init" => commands::init::run(),
@@ -55,7 +59,14 @@ fn main() -> Result<()> {
                     "__complete" => commands::complete::run(),
                     "hooks" => commands::hooks::run(),
                     "man" => commands::man::run(),
-                    "setup" => commands::setup::run(),
+                    "setup" => {
+                        // Check for setup subcommands
+                        if args.len() > 2 && args[2] == "shortcuts" {
+                            commands::shortcuts::run()
+                        } else {
+                            commands::setup::run()
+                        }
+                    }
                     "shell-init" => commands::shell_init::run(),
                     _ => commands::docs::run(),
                 }

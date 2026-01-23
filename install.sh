@@ -57,6 +57,8 @@ symlinks=(
     "git-worktree-checkout-branch"
     "git-worktree-checkout-branch-from-default"
     "git-worktree-prune"
+    "git-worktree-carry"
+    "git-worktree-fetch"
     "git-daft"
 )
 
@@ -68,6 +70,30 @@ for symlink in "${symlinks[@]}"; do
     fi
     ln -s "$INSTALL_DIR/daft" "$target"
     info "Created symlink: $symlink -> daft"
+done
+
+# Create git-style shortcuts (default)
+info "Creating git-style shortcuts..."
+
+shortcuts=(
+    "gwtclone"
+    "gwtinit"
+    "gwtco"
+    "gwtcb"
+    "gwtcbm"
+    "gwtprune"
+    "gwtcarry"
+    "gwtfetch"
+)
+
+for shortcut in "${shortcuts[@]}"; do
+    target="$INSTALL_DIR/$shortcut"
+    if [ -L "$target" ] || [ -f "$target" ]; then
+        warn "Removing existing $shortcut"
+        rm "$target"
+    fi
+    ln -s "$INSTALL_DIR/daft" "$target"
+    info "Created shortcut: $shortcut -> daft"
 done
 
 # Check if install directory is in PATH
@@ -87,12 +113,18 @@ info ""
 info "Installed:"
 info "  - daft binary: $INSTALL_DIR/daft"
 info "  - Git extensions: git worktree-clone, git worktree-checkout, etc."
+info "  - Shortcuts: gwtclone, gwtco, gwtcb, gwtcbm, gwtprune, gwtcarry, gwtfetch, gwtinit"
 info "  - Documentation: git daft"
 info ""
 info "Test the installation:"
 info "  daft                         # Show documentation"
 info "  git daft                     # Show documentation (via Git)"
 info "  git worktree-clone --help    # Show clone command help"
+info "  gwtco --help                 # Show checkout help (shortcut)"
+info ""
+info "Manage shortcuts:"
+info "  daft setup shortcuts list    # List all shortcut styles"
+info "  daft setup shortcuts status  # Show installed shortcuts"
 info ""
 
 # Binary size info
