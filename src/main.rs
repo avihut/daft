@@ -55,10 +55,12 @@ fn main() -> Result<()> {
             let args: Vec<String> = std::env::args().collect();
             if args.len() > 1 {
                 match args[1].as_str() {
+                    "branch" => commands::branch::run(),
                     "completions" => commands::completions::run(),
                     "__complete" => commands::complete::run(),
                     "hooks" => commands::hooks::run(),
                     "man" => commands::man::run(),
+                    "multi-remote" => commands::multi_remote::run(),
                     "setup" => {
                         // Check for setup subcommands
                         if args.len() > 2 && args[2] == "shortcuts" {
