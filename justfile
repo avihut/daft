@@ -353,6 +353,24 @@ test-completions: build
     fi
 
 # ============================================================================
+# Man Page Recipes
+# ============================================================================
+
+# Generate man pages to man/ directory
+gen-man: build
+    @echo "Generating man pages..."
+    @mkdir -p man
+    @./target/release/daft man --output-dir=man
+    @echo "Man pages generated in man/"
+
+# Install man pages to system location
+install-man: build
+    @echo "Installing man pages..."
+    @./target/release/daft man --install
+    @echo ""
+    @echo "Note: You may need to run 'mandb' or restart your shell for man to find the new pages"
+
+# ============================================================================
 # Cleanup Recipes
 # ============================================================================
 
@@ -442,6 +460,10 @@ help:
     @echo "  gen-completions-zsh               - Generate zsh completions to /tmp/"
     @echo "  gen-completions-fish              - Generate fish completions to /tmp/"
     @echo "  test-completions                  - Test completion generation"
+    @echo ""
+    @echo "Man pages:"
+    @echo "  gen-man                           - Generate man pages to man/"
+    @echo "  install-man                       - Install man pages to system location"
     @echo ""
     @echo "Cleanup:"
     @echo "  clean                             - Clean up all artifacts"

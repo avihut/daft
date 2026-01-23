@@ -53,6 +53,7 @@ fn main() -> Result<()> {
                     "completions" => commands::completions::run(),
                     "__complete" => commands::complete::run(),
                     "hooks" => commands::hooks::run(),
+                    "man" => commands::man::run(),
                     "setup" => commands::setup::run(),
                     "shell-init" => commands::shell_init::run(),
                     _ => commands::docs::run(),
