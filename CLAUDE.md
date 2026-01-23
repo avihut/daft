@@ -127,6 +127,8 @@ git push origin develop --force-with-lease
 
 | Workflow | File | Trigger |
 |----------|------|---------|
+| Test | `test.yml` | Pull requests |
+| Test Homebrew | `test-homebrew.yml` | After Release workflow |
 | Bump Version | `bump-version.yml` | Push to master |
 | Release | `release.yml` | After bump-version |
 | Canary | `canary.yml` | Push to develop |
@@ -548,6 +550,32 @@ The testing architecture is fully integrated into GitHub Actions via `.github/wo
 3. **Path configuration**: Automatically adds Rust binaries to PATH
 4. **Dependency validation**: Verifies required tools (git, awk, basename) are available
 5. **Test result artifacts**: Uploads test results for debugging failures
+6. **Homebrew simulation** (macOS only): Simulates Homebrew installation to catch formula issues before release
+
+### Homebrew Integration Testing
+
+The project includes two layers of Homebrew testing to ensure the installation experience works correctly:
+
+#### 1. Simulated Installation (`test.yml` - homebrew-simulation job)
+Runs on every PR to catch installation issues early:
+- Builds the binary and installs to `$HOME/.local` prefix
+- Creates all 9 symlinks (matching Homebrew formula)
+- Generates and installs man pages
+- Verifies all commands respond to `--help`
+- Verifies man pages exist and are valid groff format
+- Tests Git command discovery (`git worktree-clone`, etc.)
+
+#### 2. Real Homebrew Installation (`test-homebrew.yml`)
+Runs after successful releases via `workflow_run` trigger:
+- Installs via `brew tap avihut/daft && brew install avihut/daft/daft`
+- Includes retry logic for tap propagation delays
+- Verifies all commands are in PATH
+- Verifies man pages are installed
+- Tests actual clone functionality with a temporary repository
+
+This two-tier approach catches both:
+- **Pre-release issues**: Installation structure problems, missing symlinks, invalid man pages
+- **Post-release issues**: Homebrew formula errors, tap propagation problems, formula/binary mismatches
 
 ### Key Implementation Details
 

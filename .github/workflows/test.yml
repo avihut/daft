@@ -242,3 +242,109 @@ jobs:
           tests/test-results.log
         retention-days: 7
         if-no-files-found: ignore
+
+  # Simulate Homebrew installation to catch formula issues before release
+  homebrew-simulation:
+    runs-on: macos-latest
+    needs: integration-tests
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Cache Rust dependencies
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: macos-latest-cargo-homebrew-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          macos-latest-cargo-homebrew-
+          macos-latest-cargo-
+
+    - name: Build Rust binaries
+      run: cargo build --release
+
+    - name: Simulate Homebrew installation
+      run: |
+        PREFIX="$HOME/.local"
+        mkdir -p "$PREFIX/bin" "$PREFIX/share/man/man1"
+
+        # Install main binary
+        cp target/release/daft "$PREFIX/bin/"
+        chmod +x "$PREFIX/bin/daft"
+
+        # Create symlinks for all commands (matching Homebrew formula)
+        for cmd in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
+                   git-worktree-checkout-branch-from-default git-worktree-init \
+                   git-worktree-prune git-worktree-carry git-worktree-fetch git-daft; do
+          ln -sf daft "$PREFIX/bin/$cmd"
+        done
+
+        # Generate and install man pages
+        "$PREFIX/bin/daft" man --output-dir "$PREFIX/share/man/man1"
+
+        echo "Installation complete. Installed files:"
+        ls -la "$PREFIX/bin/"
+        ls -la "$PREFIX/share/man/man1/"
+
+    - name: Verify symlinks work
+      run: |
+        PREFIX="$HOME/.local"
+        export PATH="$PREFIX/bin:$PATH"
+
+        echo "Verifying daft binary..."
+        daft --version
+
+        echo "Verifying all symlinked commands..."
+        for cmd in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
+                   git-worktree-checkout-branch-from-default git-worktree-init \
+                   git-worktree-prune git-worktree-carry git-worktree-fetch git-daft; do
+          echo "  Testing $cmd..."
+          "$PREFIX/bin/$cmd" --help > /dev/null || { echo "FAILED: $cmd --help"; exit 1; }
+        done
+
+        echo "All symlinked commands verified!"
+
+    - name: Verify man pages
+      run: |
+        PREFIX="$HOME/.local"
+
+        echo "Verifying man pages exist and are valid..."
+        for page in daft git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
+                    git-worktree-checkout-branch-from-default git-worktree-init \
+                    git-worktree-prune git-worktree-carry git-worktree-fetch git-daft; do
+          MANFILE="$PREFIX/share/man/man1/${page}.1"
+          if [ ! -f "$MANFILE" ]; then
+            echo "FAILED: Missing man page: $page"
+            exit 1
+          fi
+          # Verify it's valid groff format (has .TH header)
+          if ! head -20 "$MANFILE" | grep -q '\.TH'; then
+            echo "FAILED: Invalid man page format: $page"
+            exit 1
+          fi
+          echo "  $page.1 - OK"
+        done
+
+        echo "All man pages verified!"
+
+    - name: Test installation with git prefix
+      run: |
+        PREFIX="$HOME/.local"
+        export PATH="$PREFIX/bin:$PATH"
+
+        # Verify git can discover the commands
+        echo "Testing git command discovery..."
+        git worktree-clone --help > /dev/null || { echo "FAILED: git worktree-clone not found"; exit 1; }
+        git worktree-checkout --help > /dev/null || { echo "FAILED: git worktree-checkout not found"; exit 1; }
+        git daft --help > /dev/null || { echo "FAILED: git daft not found"; exit 1; }
+
+        echo "Git command discovery verified!"
+        echo "Homebrew simulation test PASSED!"

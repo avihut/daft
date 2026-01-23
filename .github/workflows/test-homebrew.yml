@@ -1,0 +1,125 @@
+name: Test Homebrew Installation
+
+on:
+  # Trigger after Release workflow completes successfully
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  # Allow manual triggering for testing
+  workflow_dispatch:
+
+jobs:
+  test-homebrew:
+    runs-on: macos-latest
+    # Only run if Release succeeded or manually triggered
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - name: Wait for Homebrew tap to update
+        run: |
+          echo "Waiting for Homebrew tap to propagate..."
+          sleep 30
+
+      - name: Install via Homebrew
+        run: |
+          # Retry logic for tap propagation delays
+          for i in 1 2 3 4 5; do
+            echo "Attempt $i: Tapping avihut/daft..."
+            if brew tap avihut/daft; then
+              echo "Tap successful!"
+              break
+            fi
+            echo "Tap failed, retrying in 30s..."
+            sleep 30
+          done
+
+          echo "Installing daft..."
+          brew install avihut/daft/daft
+
+      - name: Verify installation
+        run: |
+          echo "=== Verifying daft installation ==="
+
+          # Version check
+          echo "Version:"
+          daft --version
+
+          # Verify all commands are available in PATH
+          echo ""
+          echo "Command locations:"
+          for cmd in daft git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
+                     git-worktree-checkout-branch-from-default git-worktree-init \
+                     git-worktree-prune git-worktree-carry git-worktree-fetch git-daft; do
+            echo "  $cmd: $(which $cmd)"
+          done
+
+          # Verify help commands work
+          echo ""
+          echo "Testing --help for all commands..."
+          for cmd in daft git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
+                     git-worktree-checkout-branch-from-default git-worktree-init \
+                     git-worktree-prune git-worktree-carry git-worktree-fetch git-daft; do
+            echo "  $cmd --help..."
+            $cmd --help > /dev/null || { echo "FAILED: $cmd --help"; exit 1; }
+          done
+
+          echo ""
+          echo "All commands verified!"
+
+      - name: Verify man pages
+        run: |
+          echo "=== Verifying man pages ==="
+
+          for page in daft git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
+                      git-worktree-checkout-branch-from-default git-worktree-init \
+                      git-worktree-prune git-worktree-carry git-worktree-fetch git-daft; do
+            echo "  Checking man $page..."
+            man -w $page > /dev/null 2>&1 || { echo "FAILED: man page not found for $page"; exit 1; }
+          done
+
+          echo "All man pages found!"
+
+      - name: Test basic functionality
+        run: |
+          echo "=== Testing basic functionality ==="
+
+          # Set up git identity for test operations (in test directory only)
+          cd /tmp
+          mkdir -p test-daft && cd test-daft
+
+          # Create a bare repository to use as remote
+          echo "Creating test remote repository..."
+          git init --bare remote.git
+
+          # Initialize it with a commit so clone works
+          git clone remote.git temp-init
+          cd temp-init
+          git config user.name "Test User"
+          git config user.email "test@example.com"
+          echo "# Test Project" > README.md
+          git add README.md
+          git commit -m "Initial commit"
+          git push origin HEAD
+          cd ..
+          rm -rf temp-init
+
+          # Test git-worktree-clone
+          echo ""
+          echo "Testing git worktree-clone..."
+          git worktree-clone /tmp/test-daft/remote.git test-clone
+
+          # Verify the structure
+          echo "Verifying clone structure..."
+          test -d test-clone/.git || { echo "FAILED: .git directory not found"; exit 1; }
+          # Find the worktree directory (could be main or master)
+          WORKTREE_DIR=$(ls -d test-clone/*/ 2>/dev/null | head -1)
+          test -n "$WORKTREE_DIR" || { echo "FAILED: No worktree directory found"; exit 1; }
+          test -f "${WORKTREE_DIR}README.md" || { echo "FAILED: README.md not found in worktree"; exit 1; }
+
+          echo ""
+          echo "=== All tests passed! ==="
+          echo "Homebrew installation is working correctly."
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf /tmp/test-daft
