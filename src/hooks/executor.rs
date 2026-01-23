@@ -260,7 +260,7 @@ impl HookExecutor {
         if let Some(stdout) = stdout_handle {
             let reader = BufReader::new(stdout);
             for line in reader.lines().map_while(Result::ok) {
-                output.raw(&format!("  {line}"));
+                output.raw(&format!("  {line}\n"));
                 stdout_content.push_str(&line);
                 stdout_content.push('\n');
             }
@@ -270,7 +270,7 @@ impl HookExecutor {
         if let Some(stderr) = stderr_handle {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
-                output.raw(&format!("  {line}"));
+                output.raw(&format!("  {line}\n"));
                 stderr_content.push_str(&line);
                 stderr_content.push('\n');
             }

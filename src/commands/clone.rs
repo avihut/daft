@@ -255,6 +255,17 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         // Git-like result message
         output.result(&format!("Cloned into '{repo_name}/{target_branch}'"));
 
+        // Execute post-create hook (worktree was created)
+        run_post_create_hook(
+            args,
+            &parent_dir,
+            &git_dir,
+            &config.remote_name,
+            &current_dir,
+            &target_branch,
+            output,
+        )?;
+
         // Execute post-clone hooks
         run_post_clone_hook(
             args,
@@ -316,6 +327,48 @@ fn create_all_worktrees(
             continue;
         }
     }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_post_create_hook(
+    args: &Args,
+    project_root: &PathBuf,
+    git_dir: &PathBuf,
+    remote_name: &str,
+    worktree_path: &PathBuf,
+    branch_name: &str,
+    output: &mut dyn Output,
+) -> Result<()> {
+    // Skip hooks if --no-hooks flag is set
+    if args.no_hooks {
+        return Ok(());
+    }
+
+    let hooks_config = HooksConfig::default();
+    let mut executor = HookExecutor::new(hooks_config)?;
+
+    // If --trust-hooks flag is set, trust the repository first
+    if args.trust_hooks {
+        executor.trust_repository(git_dir, TrustLevel::Allow)?;
+    }
+
+    // Build the hook context
+    let ctx = HookContext::new(
+        HookType::PostCreate,
+        "clone",
+        project_root,
+        git_dir,
+        remote_name,
+        worktree_path, // source and target are the same for clone
+        worktree_path,
+        branch_name,
+    )
+    .with_new_branch(false);
+
+    // Execute the hook (ignore skipped result for post-create during clone)
+    executor.execute(&ctx, output)?;
 
     Ok(())
 }
