@@ -186,6 +186,8 @@ jobs:
         ln -sf daft git-worktree-checkout-branch
         ln -sf daft git-worktree-checkout-branch-from-default
         ln -sf daft git-worktree-prune
+        ln -sf daft git-worktree-carry
+        ln -sf daft git-worktree-fetch
         ln -sf daft git-daft
         cd ../..
 
@@ -224,6 +226,8 @@ jobs:
         ./target/release/git-worktree-checkout-branch-from-default --help
         ./target/release/git-worktree-init --help
         ./target/release/git-worktree-prune --help
+        ./target/release/git-worktree-carry --help
+        ./target/release/git-worktree-fetch --help
 
         # Test git daft documentation command
         ./target/release/daft | head -20
