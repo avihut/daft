@@ -52,7 +52,10 @@ dev-clean:
         git-worktree-prune \
         git-worktree-carry \
         git-worktree-fetch \
-        git-daft
+        git-daft \
+        gwtclone gwtinit gwtco gwtcb gwtcbm gwtprune gwtcarry gwtfetch \
+        gwco gwcob gwcobd \
+        gclone gcw gcbw gcbdw gprune
     @echo "Symlinks removed (binary preserved)"
 
 # Verify dev setup is working
@@ -195,6 +198,7 @@ setup-rust: build
     chmod +x {{integration_tests_dir}}/*.sh
     echo "Creating symlinks in target/release/..."
     cd target/release
+    # Core command symlinks
     ln -sf daft git-worktree-clone
     ln -sf daft git-worktree-init
     ln -sf daft git-worktree-checkout
@@ -204,6 +208,15 @@ setup-rust: build
     ln -sf daft git-worktree-carry
     ln -sf daft git-worktree-fetch
     ln -sf daft git-daft
+    # Git-style shortcuts (default for development)
+    ln -sf daft gwtclone
+    ln -sf daft gwtinit
+    ln -sf daft gwtco
+    ln -sf daft gwtcb
+    ln -sf daft gwtcbm
+    ln -sf daft gwtprune
+    ln -sf daft gwtcarry
+    ln -sf daft gwtfetch
     cd ../..
     echo "Development environment ready!"
     echo ""
@@ -221,6 +234,7 @@ setup-rust: build
     echo "Quick test:"
     echo "  ./target/release/daft"
     echo "  ./target/release/git-worktree-clone --help"
+    echo "  ./target/release/gwtco --help  # Git-style shortcut"
 
 # ============================================================================
 # Validation Recipes

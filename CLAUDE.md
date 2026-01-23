@@ -231,7 +231,8 @@ src/
 │   ├── carry.rs         # git-worktree-carry implementation
 │   ├── hooks.rs         # git-daft hooks subcommand
 │   ├── man.rs           # daft man - man page generation
-│   └── shell_init.rs    # daft shell-init implementation
+│   ├── shell_init.rs    # daft shell-init implementation
+│   └── shortcuts.rs     # daft setup shortcuts - shortcut management
 ├── hooks/               # Hooks system
 │   ├── mod.rs           # Hook types and configuration
 │   ├── executor.rs      # Hook execution logic
@@ -240,6 +241,7 @@ src/
 ├── lib.rs               # Shared library code (includes output_cd_path for shell integration)
 ├── git.rs               # Git operations wrapper
 ├── remote.rs            # Remote repository handling
+├── shortcuts.rs         # Shortcut aliases and resolution
 ├── utils.rs             # Utility functions
 └── config.rs            # Configuration handling
 ```
@@ -274,6 +276,44 @@ daft shell-init fish | source
 # With short aliases (gwco, gwcob, etc.)
 eval "$(daft shell-init bash --aliases)"
 ```
+
+### Command Shortcuts
+
+daft supports three shortcut styles for frequently used commands:
+
+| Style | Shortcuts | Description |
+|-------|-----------|-------------|
+| **Git** (default) | `gwtclone`, `gwtinit`, `gwtco`, `gwtcb`, `gwtcbm`, `gwtprune`, `gwtcarry`, `gwtfetch` | Git worktree focused |
+| **Shell** | `gwco`, `gwcob`, `gwcobd` | Shell-friendly minimal |
+| **Legacy** | `gclone`, `gcw`, `gcbw`, `gcbdw`, `gprune` | Older style aliases |
+
+**How it works:**
+1. Shortcuts are resolved in `src/shortcuts.rs` before command routing in `main.rs`
+2. The binary detects the invocation name and maps shortcuts to their full command names
+3. Symlinks are managed via `daft setup shortcuts`
+
+**Managing shortcuts:**
+```bash
+daft setup shortcuts list            # List all styles and mappings
+daft setup shortcuts status          # Show installed shortcuts
+daft setup shortcuts enable git      # Enable git-style shortcuts
+daft setup shortcuts disable legacy  # Disable legacy shortcuts
+daft setup shortcuts only shell      # Enable only shell shortcuts
+daft setup shortcuts only git --dry-run  # Preview changes
+```
+
+**Complete shortcut mapping:**
+
+| Full Command | Git Style | Shell Style | Legacy Style |
+|--------------|-----------|-------------|--------------|
+| `git-worktree-clone` | `gwtclone` | - | `gclone` |
+| `git-worktree-init` | `gwtinit` | - | - |
+| `git-worktree-checkout` | `gwtco` | `gwco` | `gcw` |
+| `git-worktree-checkout-branch` | `gwtcb` | `gwcob` | `gcbw` |
+| `git-worktree-checkout-branch-from-default` | `gwtcbm` | `gwcobd` | `gcbdw` |
+| `git-worktree-prune` | `gwtprune` | - | `gprune` |
+| `git-worktree-carry` | `gwtcarry` | - | - |
+| `git-worktree-fetch` | `gwtfetch` | - | - |
 
 ## Usage
 

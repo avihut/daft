@@ -224,6 +224,45 @@ git worktree-checkout feature/auth    # spaces - works with shell integration
 git-worktree-checkout feature/auth    # hyphens - also works
 ```
 
+### Command Shortcuts
+
+daft provides short aliases for frequently used commands. Three styles are available:
+
+| Style | Shortcuts | Description |
+|-------|-----------|-------------|
+| **Git** (default) | `gwtclone`, `gwtinit`, `gwtco`, `gwtcb`, `gwtcbm`, `gwtprune`, `gwtcarry`, `gwtfetch` | Git worktree focused |
+| **Shell** | `gwco`, `gwcob`, `gwcobd` | Shell-friendly minimal |
+| **Legacy** | `gclone`, `gcw`, `gcbw`, `gcbdw`, `gprune` | Older style aliases |
+
+**Managing shortcuts:**
+```bash
+# List all shortcut styles and their mappings
+daft setup shortcuts list
+
+# Show currently installed shortcuts
+daft setup shortcuts status
+
+# Enable a specific style
+daft setup shortcuts enable git      # Enable git-style shortcuts
+daft setup shortcuts enable shell    # Enable shell-style shortcuts
+
+# Disable a style
+daft setup shortcuts disable legacy
+
+# Use only one style (disable others)
+daft setup shortcuts only shell
+
+# Preview changes without modifying
+daft setup shortcuts only git --dry-run
+```
+
+**Example usage with shortcuts:**
+```bash
+gwtco feature/auth           # Same as: git worktree-checkout feature/auth
+gwtcb feature/new-feature    # Same as: git worktree-checkout-branch feature/new-feature
+gwtprune                     # Same as: git worktree-prune
+```
+
 ## Commands
 
 ### Core Commands

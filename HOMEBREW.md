@@ -17,7 +17,11 @@ daft uses a **single binary with multiple symlinks** (like BusyBox):
   - `git-worktree-checkout-branch-from-default` → `daft`
   - `git-worktree-init` → `daft`
   - `git-worktree-prune` → `daft`
+  - `git-worktree-carry` → `daft`
+  - `git-worktree-fetch` → `daft`
   - `git-daft` → `daft`
+- Git-style shortcuts (default):
+  - `gwtclone`, `gwtinit`, `gwtco`, `gwtcb`, `gwtcbm`, `gwtprune`, `gwtcarry`, `gwtfetch`
 
 ## Formula Customization
 
@@ -74,7 +78,18 @@ def install
   bin.install_symlink bin/"daft" => "git-worktree-init"
   bin.install_symlink bin/"daft" => "git-worktree-prune"
   bin.install_symlink bin/"daft" => "git-worktree-carry"
+  bin.install_symlink bin/"daft" => "git-worktree-fetch"
   bin.install_symlink bin/"daft" => "git-daft"
+
+  # Create git-style shortcuts (default)
+  bin.install_symlink bin/"daft" => "gwtclone"
+  bin.install_symlink bin/"daft" => "gwtinit"
+  bin.install_symlink bin/"daft" => "gwtco"
+  bin.install_symlink bin/"daft" => "gwtcb"
+  bin.install_symlink bin/"daft" => "gwtcbm"
+  bin.install_symlink bin/"daft" => "gwtprune"
+  bin.install_symlink bin/"daft" => "gwtcarry"
+  bin.install_symlink bin/"daft" => "gwtfetch"
 
   # Generate and install man pages
   system bin/"daft", "man", "--output-dir=#{buildpath}/man"
@@ -149,7 +164,18 @@ class Daft < Formula
     bin.install_symlink bin/"daft" => "git-worktree-init"
     bin.install_symlink bin/"daft" => "git-worktree-prune"
     bin.install_symlink bin/"daft" => "git-worktree-carry"
+    bin.install_symlink bin/"daft" => "git-worktree-fetch"
     bin.install_symlink bin/"daft" => "git-daft"
+
+    # Create git-style shortcuts (default)
+    bin.install_symlink bin/"daft" => "gwtclone"
+    bin.install_symlink bin/"daft" => "gwtinit"
+    bin.install_symlink bin/"daft" => "gwtco"
+    bin.install_symlink bin/"daft" => "gwtcb"
+    bin.install_symlink bin/"daft" => "gwtcbm"
+    bin.install_symlink bin/"daft" => "gwtprune"
+    bin.install_symlink bin/"daft" => "gwtcarry"
+    bin.install_symlink bin/"daft" => "gwtfetch"
 
     # Generate and install man pages
     system bin/"daft", "man", "--output-dir=#{buildpath}/man"
@@ -170,7 +196,11 @@ class Daft < Formula
         git worktree-init <repo-name>
         git worktree-prune
 
+      Shortcuts are also available:
+        gwtclone, gwtco, gwtcb, gwtcbm, gwtprune, gwtinit, gwtcarry, gwtfetch
+
       Run 'git daft' for full documentation.
+      Run 'daft setup shortcuts list' to see all shortcut styles.
 
       RECOMMENDED: For automatic cd into new worktrees, run:
 
