@@ -73,7 +73,12 @@ def install
   bin.install_symlink bin/"daft" => "git-worktree-checkout-branch-from-default"
   bin.install_symlink bin/"daft" => "git-worktree-init"
   bin.install_symlink bin/"daft" => "git-worktree-prune"
+  bin.install_symlink bin/"daft" => "git-worktree-carry"
   bin.install_symlink bin/"daft" => "git-daft"
+
+  # Generate and install man pages
+  system bin/"daft", "man", "--output-dir=#{buildpath}/man"
+  man1.install Dir["#{buildpath}/man/*.1"]
 
   # Install shell completions (if available in release)
   bash_completion.install "completions/daft.bash" if File.exist?("completions/daft.bash")
@@ -143,7 +148,12 @@ class Daft < Formula
     bin.install_symlink bin/"daft" => "git-worktree-checkout-branch-from-default"
     bin.install_symlink bin/"daft" => "git-worktree-init"
     bin.install_symlink bin/"daft" => "git-worktree-prune"
+    bin.install_symlink bin/"daft" => "git-worktree-carry"
     bin.install_symlink bin/"daft" => "git-daft"
+
+    # Generate and install man pages
+    system bin/"daft", "man", "--output-dir=#{buildpath}/man"
+    man1.install Dir["#{buildpath}/man/*.1"]
 
     # Install shell completions
     bash_completion.install "completions/daft.bash" if File.exist?("completions/daft.bash")
@@ -178,6 +188,8 @@ class Daft < Formula
   test do
     assert_match version.to_s, shell_output("#{bin}/daft --version")
     assert_match "daft", shell_output("#{bin}/git-worktree-clone --help")
+    # Verify man pages were installed
+    assert_predicate man1/"git-worktree-clone.1", :exist?
   end
 end
 ```
@@ -250,6 +262,46 @@ brew install daft
 ```
 
 The tap name matches the repository name, so the short form `brew install avihut/daft` works without explicitly tapping.
+
+## Man Pages
+
+The formula generates and installs man pages during installation using `daft man --output-dir`. This ensures:
+
+- Man pages are always in sync with the installed binary version
+- `man git-worktree-clone` works immediately after installation
+- Man pages are installed to Homebrew's standard location (`$(brew --prefix)/share/man/man1/`)
+
+### Man Page Installation
+
+The formula includes:
+
+```ruby
+# Generate and install man pages
+system bin/"daft", "man", "--output-dir=#{buildpath}/man"
+man1.install Dir["#{buildpath}/man/*.1"]
+```
+
+This generates man pages for all commands:
+- `git-worktree-clone.1`
+- `git-worktree-checkout.1`
+- `git-worktree-checkout-branch.1`
+- `git-worktree-checkout-branch-from-default.1`
+- `git-worktree-init.1`
+- `git-worktree-prune.1`
+- `git-worktree-carry.1`
+
+### Verifying Man Pages
+
+After installation:
+
+```bash
+# View man page
+man git-worktree-clone
+
+# Check man page location
+man -w git-worktree-clone
+# Should show: /usr/local/share/man/man1/git-worktree-clone.1
+```
 
 ## Shell Completions
 
