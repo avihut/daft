@@ -604,6 +604,29 @@ impl GitCommand {
         }
     }
 
+    /// Pull from remote with specified arguments
+    pub fn pull(&self, args: &[&str]) -> Result<String> {
+        let mut cmd = Command::new("git");
+        cmd.arg("pull");
+
+        for arg in args {
+            cmd.arg(arg);
+        }
+
+        if self.quiet {
+            cmd.arg("--quiet");
+        }
+
+        let output = cmd.output().context("Failed to execute git pull command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git pull failed: {}", stderr);
+        }
+
+        String::from_utf8(output.stdout).context("Failed to parse git pull output")
+    }
+
     /// Get the path of the current worktree
     pub fn get_current_worktree_path(&self) -> Result<std::path::PathBuf> {
         let output = Command::new("git")
