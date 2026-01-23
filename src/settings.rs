@@ -15,6 +15,16 @@
 //! | `daft.checkoutBranch.carry` | `true` | Default carry for checkout-branch |
 //! | `daft.checkout.carry` | `false` | Default carry for checkout |
 //!
+//! # Hooks Config Keys
+//!
+//! | Key | Default | Description |
+//! |-----|---------|-------------|
+//! | `daft.hooks.enabled` | `true` | Master switch for all hooks |
+//! | `daft.hooks.defaultTrust` | `deny` | Default trust level for unknown repos |
+//! | `daft.hooks.timeout` | `300` | Timeout for hook execution in seconds |
+//! | `daft.hooks.<hookName>.enabled` | `true` | Enable/disable specific hook |
+//! | `daft.hooks.<hookName>.failMode` | varies | Behavior on hook failure (abort/warn) |
+//!
 //! # Example
 //!
 //! ```bash
@@ -23,10 +33,18 @@
 //!
 //! # Use a different remote for this repository
 //! git config daft.remote upstream
+//!
+//! # Disable hooks globally
+//! git config --global daft.hooks.enabled false
+//!
+//! # Make post-create hooks abort on failure
+//! git config daft.hooks.postCreate.failMode abort
 //! ```
 
 use crate::git::GitCommand;
+use crate::hooks::{FailMode, HookConfig, HookType, HooksConfig, TrustLevel};
 use anyhow::Result;
+use std::path::PathBuf;
 
 /// Default values for settings.
 pub mod defaults {
@@ -68,6 +86,26 @@ pub mod keys {
 
     /// Config key for checkout.carry setting.
     pub const CHECKOUT_CARRY: &str = "daft.checkout.carry";
+
+    /// Hooks config keys.
+    pub mod hooks {
+        /// Config key for hooks.enabled setting.
+        pub const ENABLED: &str = "daft.hooks.enabled";
+
+        /// Config key for hooks.defaultTrust setting.
+        pub const DEFAULT_TRUST: &str = "daft.hooks.defaultTrust";
+
+        /// Config key for hooks.userDirectory setting.
+        pub const USER_DIRECTORY: &str = "daft.hooks.userDirectory";
+
+        /// Config key for hooks.timeout setting.
+        pub const TIMEOUT: &str = "daft.hooks.timeout";
+
+        /// Generate a config key for a hook-specific setting.
+        pub fn hook_key(hook_name: &str, setting: &str) -> String {
+            format!("daft.hooks.{hook_name}.{setting}")
+        }
+    }
 }
 
 /// User-configurable settings for daft commands.
@@ -201,6 +239,146 @@ fn parse_bool(value: &str, default: bool) -> bool {
         "false" | "no" | "off" | "0" => false,
         _ => default,
     }
+}
+
+/// Load hooks configuration from git config.
+///
+/// This loads hooks settings from the current repository's config,
+/// falling back to global config and then to defaults.
+pub fn load_hooks_config() -> Result<HooksConfig> {
+    let git = GitCommand::new(true);
+    let mut config = HooksConfig::default();
+
+    // Load global hooks settings
+    if let Some(value) = git.config_get(keys::hooks::ENABLED)? {
+        config.enabled = parse_bool(&value, true);
+    }
+
+    if let Some(value) = git.config_get(keys::hooks::DEFAULT_TRUST)? {
+        if let Some(level) = TrustLevel::parse(&value) {
+            config.default_trust = level;
+        }
+    }
+
+    if let Some(value) = git.config_get(keys::hooks::USER_DIRECTORY)? {
+        if !value.is_empty() {
+            // Expand ~ to home directory
+            let expanded = if let Some(stripped) = value.strip_prefix("~/") {
+                if let Some(home) = dirs::home_dir() {
+                    home.join(stripped)
+                } else {
+                    PathBuf::from(&value)
+                }
+            } else {
+                PathBuf::from(&value)
+            };
+            config.user_directory = expanded;
+        }
+    }
+
+    if let Some(value) = git.config_get(keys::hooks::TIMEOUT)? {
+        if let Ok(timeout) = value.parse::<u32>() {
+            config.timeout_seconds = timeout;
+        }
+    }
+
+    // Load per-hook settings
+    for hook_type in HookType::all() {
+        let hook_config = config.get_hook_config_mut(*hook_type);
+        load_hook_type_config(&git, *hook_type, hook_config)?;
+    }
+
+    Ok(config)
+}
+
+/// Load hooks configuration from global git config only.
+///
+/// Use this for commands that run before a repository exists (e.g., clone).
+pub fn load_hooks_config_global() -> Result<HooksConfig> {
+    let git = GitCommand::new(true);
+    let mut config = HooksConfig::default();
+
+    // Load global hooks settings
+    if let Some(value) = git.config_get_global(keys::hooks::ENABLED)? {
+        config.enabled = parse_bool(&value, true);
+    }
+
+    if let Some(value) = git.config_get_global(keys::hooks::DEFAULT_TRUST)? {
+        if let Some(level) = TrustLevel::parse(&value) {
+            config.default_trust = level;
+        }
+    }
+
+    if let Some(value) = git.config_get_global(keys::hooks::USER_DIRECTORY)? {
+        if !value.is_empty() {
+            let expanded = if let Some(stripped) = value.strip_prefix("~/") {
+                if let Some(home) = dirs::home_dir() {
+                    home.join(stripped)
+                } else {
+                    PathBuf::from(&value)
+                }
+            } else {
+                PathBuf::from(&value)
+            };
+            config.user_directory = expanded;
+        }
+    }
+
+    if let Some(value) = git.config_get_global(keys::hooks::TIMEOUT)? {
+        if let Ok(timeout) = value.parse::<u32>() {
+            config.timeout_seconds = timeout;
+        }
+    }
+
+    // Load per-hook settings from global config
+    for hook_type in HookType::all() {
+        let hook_config = config.get_hook_config_mut(*hook_type);
+        load_hook_type_config_global(&git, *hook_type, hook_config)?;
+    }
+
+    Ok(config)
+}
+
+/// Load configuration for a specific hook type.
+fn load_hook_type_config(
+    git: &GitCommand,
+    hook_type: HookType,
+    hook_config: &mut HookConfig,
+) -> Result<()> {
+    let enabled_key = keys::hooks::hook_key(hook_type.config_key(), "enabled");
+    if let Some(value) = git.config_get(&enabled_key)? {
+        hook_config.enabled = parse_bool(&value, true);
+    }
+
+    let fail_mode_key = keys::hooks::hook_key(hook_type.config_key(), "failMode");
+    if let Some(value) = git.config_get(&fail_mode_key)? {
+        if let Some(mode) = FailMode::parse(&value) {
+            hook_config.fail_mode = mode;
+        }
+    }
+
+    Ok(())
+}
+
+/// Load configuration for a specific hook type from global config only.
+fn load_hook_type_config_global(
+    git: &GitCommand,
+    hook_type: HookType,
+    hook_config: &mut HookConfig,
+) -> Result<()> {
+    let enabled_key = keys::hooks::hook_key(hook_type.config_key(), "enabled");
+    if let Some(value) = git.config_get_global(&enabled_key)? {
+        hook_config.enabled = parse_bool(&value, true);
+    }
+
+    let fail_mode_key = keys::hooks::hook_key(hook_type.config_key(), "failMode");
+    if let Some(value) = git.config_get_global(&fail_mode_key)? {
+        if let Some(mode) = FailMode::parse(&value) {
+            hook_config.fail_mode = mode;
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

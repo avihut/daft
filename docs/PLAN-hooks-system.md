@@ -351,9 +351,8 @@ fn find_hook(hook_name: &str, worktree_path: &Path, user_hooks_dir: &Path) -> Ve
 
 - [ ] **Task 4.1**: Remove `src/direnv.rs`
 - [ ] **Task 4.2**: Remove direnv calls from all commands
-- [ ] **Task 4.3**: Add migration notice for direnv users
-- [ ] **Task 4.4**: Update README.md with hooks documentation
-- [ ] **Task 4.5**: Update CLAUDE.md with hooks information
+- [ ] **Task 4.3**: Update README.md with hooks documentation
+- [ ] **Task 4.4**: Update CLAUDE.md with hooks information
 
 ### Phase 5: Testing
 
