@@ -6,6 +6,7 @@ use daft::{
     hooks::{HookContext, HookExecutor, HookType, HooksConfig},
     is_git_repository,
     logging::init_logging,
+    multi_remote::path::{calculate_worktree_path, resolve_remote_for_branch},
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
     utils::*,
@@ -49,6 +50,13 @@ pub struct Args {
 
     #[arg(long, help = "Do not carry uncommitted changes (this is the default)")]
     no_carry: bool,
+
+    #[arg(
+        short = 'r',
+        long = "remote",
+        help = "Remote for worktree organization (multi-remote mode)"
+    )]
+    remote: Option<String>,
 }
 
 pub fn run() -> Result<()> {
@@ -83,13 +91,28 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
     let project_root = get_project_root()?;
     let git_dir = get_git_common_dir()?;
     let source_worktree = get_current_directory()?;
-    let worktree_path = project_root.join(&args.branch_name);
 
     let config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
     };
     let git = GitCommand::new(output.is_quiet());
+
+    // Resolve remote for multi-remote mode
+    let remote_for_path = resolve_remote_for_branch(
+        &git,
+        &args.branch_name,
+        args.remote.as_deref(),
+        &settings.multi_remote_default,
+    )?;
+
+    // Calculate worktree path based on multi-remote mode
+    let worktree_path = calculate_worktree_path(
+        &project_root,
+        &args.branch_name,
+        &remote_for_path,
+        settings.multi_remote_enabled,
+    );
 
     output.step(&format!(
         "Path: {}, Branch: {}, Project Root: {}",

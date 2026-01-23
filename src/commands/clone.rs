@@ -5,6 +5,7 @@ use daft::{
     git::GitCommand,
     hooks::{HookContext, HookExecutor, HookType, HooksConfig, TrustLevel},
     logging::init_logging,
+    multi_remote::path::calculate_worktree_path,
     output::{CliOutput, Output, OutputConfig},
     remote::{get_default_branch_remote, get_remote_branches},
     settings::DaftSettings,
@@ -79,6 +80,13 @@ pub struct Args {
 
     #[arg(long = "no-hooks", help = "Do not run any hooks from the repository")]
     no_hooks: bool,
+
+    #[arg(
+        short = 'r',
+        long = "remote",
+        help = "Organize worktree under this remote folder (enables multi-remote mode)"
+    )]
+    remote: Option<String>,
 }
 
 pub fn run() -> Result<()> {
@@ -152,7 +160,21 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     };
 
     let parent_dir = PathBuf::from(&repo_name);
-    let worktree_dir = parent_dir.join(&target_branch);
+
+    // Determine if we should use multi-remote mode
+    // If --remote flag is provided, enable multi-remote layout for this clone
+    let use_multi_remote = args.remote.is_some() || settings.multi_remote_enabled;
+    let remote_for_path = args
+        .remote
+        .clone()
+        .unwrap_or_else(|| settings.multi_remote_default.clone());
+
+    let worktree_dir = calculate_worktree_path(
+        &parent_dir,
+        &target_branch,
+        &remote_for_path,
+        use_multi_remote,
+    );
 
     output.step(&format!(
         "Target repository directory: './{}'",
@@ -213,20 +235,40 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         // Continue execution - upstream tracking may not work but worktrees will
     }
 
+    // Set multi-remote config if --remote was provided
+    if args.remote.is_some() {
+        output.step("Enabling multi-remote mode for this repository...");
+        daft::multi_remote::config::set_multi_remote_enabled(&git, true)?;
+        daft::multi_remote::config::set_multi_remote_default(&git, &remote_for_path)?;
+    }
+
     if !args.no_checkout && branch_exists {
-        if args.all_branches {
-            create_all_worktrees(&git, &config, &default_branch, output)?;
+        // Calculate the relative worktree path from the parent_dir (we're now in parent_dir)
+        let relative_worktree_path = if use_multi_remote {
+            PathBuf::from(&remote_for_path).join(&target_branch)
         } else {
-            create_single_worktree(&git, &target_branch, output)?;
+            PathBuf::from(&target_branch)
+        };
+
+        if args.all_branches {
+            create_all_worktrees(
+                &git,
+                &config,
+                &default_branch,
+                use_multi_remote,
+                &remote_for_path,
+                output,
+            )?;
+        } else {
+            create_single_worktree(&git, &target_branch, &relative_worktree_path, output)?;
         }
 
-        let target_worktree = PathBuf::from(&target_branch);
         output.step(&format!(
             "Changing directory to worktree: './{}'",
-            target_worktree.display()
+            relative_worktree_path.display()
         ));
 
-        if let Err(e) = change_directory(&target_worktree) {
+        if let Err(e) = change_directory(&relative_worktree_path) {
             change_directory(parent_dir.parent().unwrap_or(&PathBuf::from("."))).ok();
             return Err(e);
         }
@@ -305,11 +347,27 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     Ok(())
 }
 
-fn create_single_worktree(git: &GitCommand, branch: &str, output: &mut dyn Output) -> Result<()> {
+fn create_single_worktree(
+    git: &GitCommand,
+    branch: &str,
+    worktree_path: &std::path::Path,
+    output: &mut dyn Output,
+) -> Result<()> {
     output.step(&format!(
-        "Creating initial worktree for branch '{branch}'..."
+        "Creating initial worktree for branch '{}' at '{}'...",
+        branch,
+        worktree_path.display()
     ));
-    git.worktree_add(&PathBuf::from(branch), branch)
+
+    // Ensure parent directory exists (for multi-remote mode)
+    if let Some(parent) = worktree_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+        }
+    }
+
+    git.worktree_add(worktree_path, branch)
         .context("Failed to create initial worktree")?;
     Ok(())
 }
@@ -318,6 +376,8 @@ fn create_all_worktrees(
     git: &GitCommand,
     config: &WorktreeConfig,
     _default_branch: &str,
+    use_multi_remote: bool,
+    remote_for_path: &str,
     output: &mut dyn Output,
 ) -> Result<()> {
     output.step("Fetching all remote branches...");
@@ -331,8 +391,29 @@ fn create_all_worktrees(
     }
 
     for branch in &remote_branches {
-        output.step(&format!("Creating worktree for branch '{branch}'..."));
-        if let Err(e) = git.worktree_add(&PathBuf::from(branch), branch) {
+        let worktree_path = if use_multi_remote {
+            PathBuf::from(remote_for_path).join(branch)
+        } else {
+            PathBuf::from(branch)
+        };
+
+        output.step(&format!(
+            "Creating worktree for branch '{}' at '{}'...",
+            branch,
+            worktree_path.display()
+        ));
+
+        // Ensure parent directory exists (for multi-remote mode)
+        if let Some(parent) = worktree_path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    output.error(&format!("creating directory '{}': {e}", parent.display()));
+                    continue;
+                }
+            }
+        }
+
+        if let Err(e) = git.worktree_add(&worktree_path, branch) {
             output.error(&format!("creating worktree for branch '{branch}': {e}"));
             continue;
         }

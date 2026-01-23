@@ -9,6 +9,7 @@ use daft::{
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     remote::remote_branch_exists,
+    settings::DaftSettings,
     WorktreeConfig,
 };
 use std::path::PathBuf;
@@ -54,6 +55,7 @@ pub fn run() -> Result<()> {
 
 fn run_prune(output: &mut dyn Output) -> Result<()> {
     let config = WorktreeConfig::default();
+    let settings = DaftSettings::load()?;
     let git = GitCommand::new(output.is_quiet());
     let project_root = get_project_root()?;
     let git_dir = get_git_common_dir()?;
@@ -218,6 +220,11 @@ fn run_prune(output: &mut dyn Output) -> Result<()> {
             ) {
                 output.warning(&format!("Post-remove hook failed for {branch_name}: {e}"));
             }
+
+            // In multi-remote mode, clean up empty remote directories
+            if settings.multi_remote_enabled {
+                cleanup_empty_remote_dir(&project_root, &wt_path, output);
+            }
         } else {
             output.step(&format!("No associated worktree found for {branch_name}"));
         }
@@ -309,4 +316,43 @@ fn run_post_remove_hook(
     executor.execute(&ctx, output)?;
 
     Ok(())
+}
+
+/// Clean up empty remote directories after removing a worktree in multi-remote mode.
+fn cleanup_empty_remote_dir(
+    project_root: &std::path::Path,
+    worktree_path: &std::path::Path,
+    output: &mut dyn Output,
+) {
+    // Extract the remote directory from the worktree path
+    // In multi-remote mode, paths are like: project_root/remote/branch
+    if let Ok(relative) = worktree_path.strip_prefix(project_root) {
+        let components: Vec<_> = relative.components().collect();
+        if components.len() >= 2 {
+            // First component should be the remote name
+            if let Some(first) = components.first() {
+                let remote_dir = project_root.join(first.as_os_str());
+                if remote_dir.exists() {
+                    // Check if directory is empty
+                    if let Ok(mut entries) = std::fs::read_dir(&remote_dir) {
+                        if entries.next().is_none() {
+                            // Directory is empty, remove it
+                            if let Err(e) = std::fs::remove_dir(&remote_dir) {
+                                output.debug(&format!(
+                                    "Could not remove empty remote directory '{}': {}",
+                                    remote_dir.display(),
+                                    e
+                                ));
+                            } else {
+                                output.step(&format!(
+                                    "Removed empty remote directory '{}'",
+                                    remote_dir.display()
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

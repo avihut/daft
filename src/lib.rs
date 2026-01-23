@@ -37,6 +37,7 @@ pub mod config;
 pub mod git;
 pub mod hooks;
 pub mod logging;
+pub mod multi_remote;
 pub mod output;
 pub mod remote;
 pub mod settings;

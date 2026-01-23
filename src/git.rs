@@ -48,6 +48,21 @@ impl GitCommand {
         Ok(())
     }
 
+    /// Unset a git config value
+    pub fn config_unset(&self, key: &str) -> Result<()> {
+        let output = Command::new("git")
+            .args(["config", "--unset", key])
+            .output()
+            .context("Failed to execute git config --unset command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git config --unset failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
     /// Set up the fetch refspec for a remote (required for bare repos to support upstream tracking)
     pub fn setup_fetch_refspec(&self, remote_name: &str) -> Result<()> {
         let refspec = format!("+refs/heads/*:refs/remotes/{remote_name}/*");
@@ -708,6 +723,58 @@ impl GitCommand {
         }
 
         anyhow::bail!("No worktree found for '{}'", target)
+    }
+
+    /// List all configured remotes.
+    pub fn remote_list(&self) -> Result<Vec<String>> {
+        let output = Command::new("git")
+            .args(["remote"])
+            .output()
+            .context("Failed to execute git remote command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git remote failed: {}", stderr);
+        }
+
+        let stdout =
+            String::from_utf8(output.stdout).context("Failed to parse git remote output")?;
+
+        Ok(stdout
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect())
+    }
+
+    /// Check if a remote exists.
+    pub fn remote_exists(&self, remote: &str) -> Result<bool> {
+        let remotes = self.remote_list()?;
+        Ok(remotes.contains(&remote.to_string()))
+    }
+
+    /// Get the tracking remote for a branch.
+    pub fn get_branch_tracking_remote(&self, branch: &str) -> Result<Option<String>> {
+        let key = format!("branch.{branch}.remote");
+        self.config_get(&key)
+    }
+
+    /// Move a worktree to a new location.
+    pub fn worktree_move(&self, from: &Path, to: &Path) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.args(["worktree", "move"]);
+        cmd.arg(from).arg(to);
+
+        let output = cmd
+            .output()
+            .context("Failed to execute git worktree move command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git worktree move failed: {}", stderr);
+        }
+
+        Ok(())
     }
 }
 
