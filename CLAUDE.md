@@ -4,6 +4,12 @@ This file provides guidance when working with code in this repository.
 
 ## Recent Changes
 
+**Man Pages Added (2025-01)**
+- Added man page generation using `clap_mangen`
+- Man pages are auto-generated from clap command definitions
+- Generate with `just gen-man` or install with `just install-man`
+- See "Documentation Requirements" section for best practices
+
 **Hooks System Added (2025-01)**
 - Added flexible, project-managed hooks system for worktree lifecycle events
 - Replaces hardcoded direnv integration with configurable hooks
@@ -222,7 +228,9 @@ src/
 │   ├── checkout_branch_from_default.rs
 │   ├── init.rs          # git-worktree-init implementation
 │   ├── prune.rs         # git-worktree-prune implementation
+│   ├── carry.rs         # git-worktree-carry implementation
 │   ├── hooks.rs         # git-daft hooks subcommand
+│   ├── man.rs           # daft man - man page generation
 │   └── shell_init.rs    # daft shell-init implementation
 ├── hooks/               # Hooks system
 │   ├── mod.rs           # Hook types and configuration
@@ -244,6 +252,7 @@ src/
 - **`git-worktree-checkout-branch`**: Creates new worktree + new branch from current or specified base branch
 - **`git-worktree-checkout-branch-from-default`**: Creates new worktree + new branch from remote's default branch
 - **`git-worktree-prune`**: Removes local branches whose remote counterparts are deleted, plus associated worktrees
+- **`git-worktree-carry`**: Carries uncommitted changes to one or more existing worktrees
 
 ### Shell Integration
 
@@ -593,6 +602,49 @@ These same checks run in GitHub Actions, so passing them locally ensures CI will
 - `cargo test` (fails CI on test failures)
 
 **Remember**: These checks are not optional - they are required for all Rust code contributions and must pass before work is considered complete.
+
+## Documentation Requirements
+
+### Man Pages
+
+Man pages are **auto-generated from clap command definitions** using `clap_mangen`. This means:
+
+1. **No separate man page files to maintain** - Man pages are derived directly from the `#[command]` and `#[arg]` attributes in each command's `Args` struct.
+
+2. **Write descriptive help text** - When adding or modifying commands, ensure you provide:
+   - `#[command(about = "...")]` - Short one-line description (shown in man page NAME section)
+   - `#[command(long_about = "...")]` - Detailed description (shown in DESCRIPTION section)
+   - `#[arg(help = "...")]` - Help text for each argument (shown in OPTIONS section)
+
+3. **Example of well-documented command:**
+   ```rust
+   #[derive(Parser)]
+   #[command(name = "git-worktree-example")]
+   #[command(about = "Short description for the command")]
+   #[command(long_about = r#"
+   Detailed multi-line description explaining what the command does,
+   when to use it, and any important behavior notes.
+   "#)]
+   pub struct Args {
+       #[arg(help = "Description of what this argument does")]
+       target: String,
+
+       #[arg(short, long, help = "Enable verbose output")]
+       verbose: bool,
+   }
+   ```
+
+4. **Generation commands:**
+   ```bash
+   just gen-man       # Generate to man/ directory
+   just install-man   # Install to ~/.local/share/man/man1/
+   daft man --help    # See all options
+   ```
+
+5. **When adding new commands:**
+   - Add the command to the `COMMANDS` array in `src/commands/man.rs`
+   - Add the command mapping in `get_command_for_name()` function
+   - Ensure the command has proper `#[command]` and `#[arg]` documentation
 
 ## Project History
 

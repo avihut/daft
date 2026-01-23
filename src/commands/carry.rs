@@ -15,34 +15,38 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "git-worktree-carry")]
 #[command(version = daft::VERSION)]
-#[command(about = "Carry uncommitted changes to one or more existing worktrees")]
+#[command(about = "Transfer uncommitted changes to other worktrees")]
 #[command(long_about = r#"
-Carries uncommitted changes (including untracked files) to one or more existing
-worktrees and changes directory to the (last) target.
+Transfers uncommitted changes (staged, unstaged, and untracked files) from
+the current worktree to one or more target worktrees.
 
-With a single target and no --copy flag, changes are MOVED (source loses them).
-With --copy or multiple targets, changes are COPIED (source keeps them).
+When a single target is specified without --copy, changes are moved: they
+are applied to the target worktree and removed from the source. When --copy
+is specified or multiple targets are given, changes are copied: they are
+applied to all targets while remaining in the source worktree.
 
-Targets can be specified by worktree name (directory name) or branch name.
-Worktree names take priority over branch names if there's a conflict.
+Targets may be specified by worktree directory name or by branch name. If
+both a worktree and a branch have the same name, the worktree takes
+precedence.
 
-Examples:
-  git worktree-carry feature/auth           # Move changes to feature/auth
-  git worktree-carry feature/auth --copy    # Copy changes to feature/auth
-  git worktree-carry feat1 feat2 feat3      # Copy changes to all three
+After transferring changes, the working directory is changed to the last
+target worktree (or the only target, if just one was specified).
 "#)]
 pub struct Args {
-    #[arg(required = true, help = "Target worktree(s) - name or branch name")]
+    #[arg(
+        required = true,
+        help = "Target worktree(s) by directory name or branch name"
+    )]
     targets: Vec<String>,
 
     #[arg(
         short = 'c',
         long = "copy",
-        help = "Copy changes instead of moving (keeps changes in source)"
+        help = "Copy changes instead of moving; changes remain in the source worktree"
     )]
     copy: bool,
 
-    #[arg(short, long, help = "Enable verbose output")]
+    #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
 }
 

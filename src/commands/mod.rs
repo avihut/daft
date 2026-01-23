@@ -12,6 +12,7 @@ pub mod completions;
 pub mod docs;
 pub mod hooks;
 pub mod init;
+pub mod man;
 pub mod prune;
 pub mod setup;
 pub mod shell_init;

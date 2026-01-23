@@ -16,13 +16,22 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "git-worktree-prune")]
 #[command(version = daft::VERSION)]
-#[command(about = "Prunes local Git branches whose remote counterparts have been deleted")]
+#[command(about = "Remove worktrees and branches for deleted remote branches")]
 #[command(long_about = r#"
-Prunes local Git branches whose remote counterparts have been deleted,
-ensuring any associated worktrees are removed first.
+Removes local branches whose corresponding remote tracking branches have been
+deleted, along with any associated worktrees. This is useful for cleaning up
+after branches have been merged and deleted on the remote.
+
+The command first fetches from the remote with pruning enabled to update the
+list of remote tracking branches. It then identifies local branches that were
+tracking now-deleted remote branches, removes their worktrees (if any exist),
+and finally deletes the local branches.
+
+Pre-remove and post-remove lifecycle hooks are executed for each worktree
+removal if the repository is trusted. See git-daft(1) for hook management.
 "#)]
 pub struct Args {
-    #[arg(short, long, help = "Enable verbose output")]
+    #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
 }
 

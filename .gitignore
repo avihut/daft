@@ -6,6 +6,9 @@
 **/*.rs.bk
 Cargo.lock
 
+# Generated files
+/man/
+
 # IDE and editor files
 .vscode/
 .idea/

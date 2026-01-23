@@ -14,26 +14,35 @@ use std::process::Command;
 #[derive(Parser)]
 #[command(name = "git-worktree-checkout-branch-from-default")]
 #[command(version = daft::VERSION)]
-#[command(about = "Creates a git worktree and branch based on the remote's default branch")]
+#[command(about = "Create a worktree with a new branch based on the remote's default branch")]
 #[command(long_about = r#"
-Creates a git worktree and branch based on the REMOTE'S DEFAULT branch
-(e.g., main, master). It determines the default branch and then calls 'git-worktree-checkout-branch'.
+Creates a new branch based on the remote's default branch (typically main or
+master) and a corresponding worktree. This is equivalent to running
+git-worktree-checkout-branch(1) with the default branch as the base.
+
+The default branch is determined by querying the remote's HEAD reference.
+This command is useful when the current branch has diverged from the mainline
+and a fresh starting point is needed.
+
+By default, uncommitted changes from the current worktree are carried to the
+new worktree; use --no-carry to disable this. The worktree is placed at the
+project root level as a sibling to other worktrees.
 "#)]
 pub struct Args {
-    #[arg(help = "The name for the new branch and the worktree directory")]
+    #[arg(help = "Name for the new branch (also used as the worktree directory name)")]
     new_branch_name: String,
 
-    #[arg(short, long, help = "Enable verbose output")]
+    #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
 
     #[arg(
         short = 'c',
         long = "carry",
-        help = "Carry uncommitted changes to the new worktree (default)"
+        help = "Apply uncommitted changes to the new worktree (this is the default)"
     )]
     carry: bool,
 
-    #[arg(long, help = "Don't carry uncommitted changes to the new worktree")]
+    #[arg(long, help = "Do not carry uncommitted changes to the new worktree")]
     no_carry: bool,
 }
 

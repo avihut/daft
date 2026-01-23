@@ -15,36 +15,42 @@ use daft::{
 #[derive(Parser)]
 #[command(name = "git-worktree-checkout-branch")]
 #[command(version = daft::VERSION)]
-#[command(about = "Creates a git worktree with a new branch")]
+#[command(about = "Create a worktree with a new branch")]
 #[command(long_about = r#"
-Creates a git worktree at the project root level, creates a new branch based on either
-the CURRENT branch or a specified base branch, pushes the new branch to origin, sets upstream tracking,
-runs any configured hooks, and finally cds into the new worktree.
+Creates a new branch and a corresponding worktree in a single operation. The
+new branch is based on the current branch, or on <base-branch> if specified.
+The worktree is placed at the project root level as a sibling to other
+worktrees.
 
-Can be run from anywhere within the Git repository (including deep subdirectories).
-The new worktree will be created at the project root level (alongside .git directory).
+After creating the branch locally, this command pushes it to the remote and
+configures upstream tracking. By default, uncommitted changes from the current
+worktree are carried to the new worktree; use --no-carry to disable this.
+
+This command can be run from anywhere within the repository. Lifecycle hooks
+from .daft/hooks/ are executed if the repository is trusted. See git-daft(1)
+for hook management.
 "#)]
 pub struct Args {
-    #[arg(help = "The name for the new branch and the worktree directory")]
+    #[arg(help = "Name for the new branch (also used as the worktree directory name)")]
     new_branch_name: String,
 
-    #[arg(help = "The branch to base the new branch on (defaults to current branch)")]
+    #[arg(help = "Branch to use as the base for the new branch; defaults to the current branch")]
     base_branch_name: Option<String>,
 
-    #[arg(short, long, help = "Suppress non-essential output")]
+    #[arg(short, long, help = "Operate quietly; suppress progress reporting")]
     quiet: bool,
 
-    #[arg(short, long, help = "Enable verbose debug output")]
+    #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
 
     #[arg(
         short = 'c',
         long = "carry",
-        help = "Carry uncommitted changes to the new worktree (default)"
+        help = "Apply uncommitted changes to the new worktree (this is the default)"
     )]
     carry: bool,
 
-    #[arg(long, help = "Don't carry uncommitted changes to the new worktree")]
+    #[arg(long, help = "Do not carry uncommitted changes to the new worktree")]
     no_carry: bool,
 }
 
