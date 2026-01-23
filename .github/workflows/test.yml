@@ -245,7 +245,6 @@ jobs:
   # Simulate Homebrew installation to catch formula issues before release
   homebrew-simulation:
     runs-on: macos-latest
-    needs: integration-tests
     steps:
     - uses: actions/checkout@v6
 
@@ -341,10 +340,11 @@ jobs:
         export PATH="$PREFIX/bin:$PATH"
 
         # Verify git can discover the commands
+        # Use -h instead of --help because macOS git opens man pages for --help
         echo "Testing git command discovery..."
-        git worktree-clone --help > /dev/null || { echo "FAILED: git worktree-clone not found"; exit 1; }
-        git worktree-checkout --help > /dev/null || { echo "FAILED: git worktree-checkout not found"; exit 1; }
-        git daft --help > /dev/null || { echo "FAILED: git daft not found"; exit 1; }
+        git worktree-clone -h > /dev/null || { echo "FAILED: git worktree-clone not found"; exit 1; }
+        git worktree-checkout -h > /dev/null || { echo "FAILED: git worktree-checkout not found"; exit 1; }
+        git daft -h > /dev/null || { echo "FAILED: git daft not found"; exit 1; }
 
         echo "Git command discovery verified!"
         echo "Homebrew simulation test PASSED!"
