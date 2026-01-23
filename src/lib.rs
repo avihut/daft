@@ -40,6 +40,7 @@ pub mod logging;
 pub mod output;
 pub mod remote;
 pub mod settings;
+pub mod shortcuts;
 pub mod utils;
 
 pub use settings::DaftSettings;
