@@ -44,6 +44,13 @@ pub struct Args {
 
     #[arg(long, help = "Do not carry uncommitted changes to the new worktree")]
     no_carry: bool,
+
+    #[arg(
+        short = 'r',
+        long = "remote",
+        help = "Remote for worktree organization (multi-remote mode)"
+    )]
+    remote: Option<String>,
 }
 
 pub fn run() -> Result<()> {
@@ -115,6 +122,9 @@ fn run_checkout_branch_from_default(
     }
     if args.no_carry {
         cmd.arg("--no-carry");
+    }
+    if let Some(ref remote) = args.remote {
+        cmd.arg("--remote").arg(remote);
     }
 
     let status = cmd

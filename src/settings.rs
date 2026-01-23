@@ -68,6 +68,12 @@ pub mod defaults {
 
     /// Default value for fetch.args setting.
     pub const FETCH_ARGS: &str = "--ff-only";
+
+    /// Default value for multiRemote.enabled setting.
+    pub const MULTI_REMOTE_ENABLED: bool = false;
+
+    /// Default value for multiRemote.defaultRemote setting.
+    pub const MULTI_REMOTE_DEFAULT_REMOTE: &str = "origin";
 }
 
 /// Git config keys for daft settings.
@@ -92,6 +98,15 @@ pub mod keys {
 
     /// Config key for fetch.args setting.
     pub const FETCH_ARGS: &str = "daft.fetch.args";
+
+    /// Multi-remote config keys.
+    pub mod multi_remote {
+        /// Config key for multiRemote.enabled setting.
+        pub const ENABLED: &str = "daft.multiRemote.enabled";
+
+        /// Config key for multiRemote.defaultRemote setting.
+        pub const DEFAULT_REMOTE: &str = "daft.multiRemote.defaultRemote";
+    }
 
     /// Hooks config keys.
     pub mod hooks {
@@ -142,6 +157,12 @@ pub struct DaftSettings {
 
     /// Default arguments for git pull in fetch command.
     pub fetch_args: String,
+
+    /// Whether multi-remote mode is enabled.
+    pub multi_remote_enabled: bool,
+
+    /// Default remote for multi-remote mode.
+    pub multi_remote_default: String,
 }
 
 impl Default for DaftSettings {
@@ -154,6 +175,8 @@ impl Default for DaftSettings {
             checkout_branch_carry: defaults::CHECKOUT_BRANCH_CARRY,
             checkout_carry: defaults::CHECKOUT_CARRY,
             fetch_args: defaults::FETCH_ARGS.to_string(),
+            multi_remote_enabled: defaults::MULTI_REMOTE_ENABLED,
+            multi_remote_default: defaults::MULTI_REMOTE_DEFAULT_REMOTE.to_string(),
         }
     }
 }
@@ -201,6 +224,16 @@ impl DaftSettings {
             }
         }
 
+        if let Some(value) = git.config_get(keys::multi_remote::ENABLED)? {
+            settings.multi_remote_enabled = parse_bool(&value, defaults::MULTI_REMOTE_ENABLED);
+        }
+
+        if let Some(value) = git.config_get(keys::multi_remote::DEFAULT_REMOTE)? {
+            if !value.is_empty() {
+                settings.multi_remote_default = value;
+            }
+        }
+
         Ok(settings)
     }
 
@@ -241,6 +274,16 @@ impl DaftSettings {
         if let Some(value) = git.config_get_global(keys::FETCH_ARGS)? {
             if !value.is_empty() {
                 settings.fetch_args = value;
+            }
+        }
+
+        if let Some(value) = git.config_get_global(keys::multi_remote::ENABLED)? {
+            settings.multi_remote_enabled = parse_bool(&value, defaults::MULTI_REMOTE_ENABLED);
+        }
+
+        if let Some(value) = git.config_get_global(keys::multi_remote::DEFAULT_REMOTE)? {
+            if !value.is_empty() {
+                settings.multi_remote_default = value;
             }
         }
 
@@ -417,6 +460,8 @@ mod tests {
         assert!(settings.checkout_branch_carry);
         assert!(!settings.checkout_carry);
         assert_eq!(settings.fetch_args, "--ff-only");
+        assert!(!settings.multi_remote_enabled);
+        assert_eq!(settings.multi_remote_default, "origin");
     }
 
     #[test]
