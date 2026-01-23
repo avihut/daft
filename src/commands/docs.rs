@@ -54,12 +54,31 @@ WORKTREE COMMANDS
         git worktree-prune
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOOKS MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  git daft hooks status
+      Show trust status and available hooks for current repository
+
+  git daft hooks trust [--prompt]
+      Trust current repository to run hooks
+      Examples:
+        git daft hooks trust           # Allow hooks to run automatically
+        git daft hooks trust --prompt  # Require confirmation before each hook
+
+  git daft hooks untrust
+      Revoke trust for current repository
+
+  git daft hooks list
+      List all trusted repositories
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 KEY FEATURES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   • One worktree per branch - work on multiple branches simultaneously
   • No more git checkout or stashing - each branch has its own directory
-  • Automatic direnv integration - isolated environments per worktree
+  • Lifecycle hooks - run custom scripts on worktree create/remove
   • Smart branch detection - automatically detects main/master/develop
   • Robust error handling - automatic cleanup on failures
 

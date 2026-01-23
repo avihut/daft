@@ -10,6 +10,7 @@ pub mod clone;
 pub mod complete;
 pub mod completions;
 pub mod docs;
+pub mod hooks;
 pub mod init;
 pub mod prune;
 pub mod setup;
