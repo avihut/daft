@@ -69,9 +69,10 @@ jobs:
         run: |
           echo "=== Verifying man pages ==="
 
-          for page in daft git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
+          # Only git-worktree-* commands have man pages (not daft or git-daft)
+          for page in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
                       git-worktree-checkout-branch-from-default git-worktree-init \
-                      git-worktree-prune git-worktree-carry git-worktree-fetch git-daft; do
+                      git-worktree-prune git-worktree-carry git-worktree-fetch; do
             echo "  Checking man $page..."
             man -w $page > /dev/null 2>&1 || { echo "FAILED: man page not found for $page"; exit 1; }
           done

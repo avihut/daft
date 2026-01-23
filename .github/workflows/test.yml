@@ -316,9 +316,10 @@ jobs:
         PREFIX="$HOME/.local"
 
         echo "Verifying man pages exist and are valid..."
-        for page in daft git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
+        # Only git-worktree-* commands have man pages (not daft or git-daft)
+        for page in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
                     git-worktree-checkout-branch-from-default git-worktree-init \
-                    git-worktree-prune git-worktree-carry git-worktree-fetch git-daft; do
+                    git-worktree-prune git-worktree-carry git-worktree-fetch; do
           MANFILE="$PREFIX/share/man/man1/${page}.1"
           if [ ! -f "$MANFILE" ]; then
             echo "FAILED: Missing man page: $page"
