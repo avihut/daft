@@ -24,7 +24,7 @@ Clones a Git repository into a specific directory structure:
 It determines the repository name from the URL and queries the remote
 to find the default branch (e.g., main, master, develop) *before* cloning,
 unless a specific branch is specified with -b.
-After cloning, it runs 'direnv allow' in the new directory and cds into it.
+After cloning, runs any configured hooks and cds into the new worktree.
 "#)]
 pub struct Args {
     #[arg(help = "Repository URL to clone")]

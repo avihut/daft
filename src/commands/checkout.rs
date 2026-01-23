@@ -19,8 +19,8 @@ use std::path::PathBuf;
 #[command(about = "Creates a git worktree checking out an existing branch")]
 #[command(long_about = r#"
 Creates a git worktree at the project root level, checking out an EXISTING branch,
-set upstream tracking to the corresponding remote branch (if it exists),
-run 'direnv allow' (if direnv exists), and finally cd into the new worktree.
+sets upstream tracking to the corresponding remote branch (if it exists),
+runs any configured hooks, and finally cds into the new worktree.
 
 Can be run from anywhere within the Git repository (including deep subdirectories).
 The new worktree will be created at the project root level (alongside .git directory).

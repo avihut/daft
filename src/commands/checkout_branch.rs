@@ -17,9 +17,9 @@ use daft::{
 #[command(version = daft::VERSION)]
 #[command(about = "Creates a git worktree with a new branch")]
 #[command(long_about = r#"
-Creates a git worktree at the project root level, create a new branch based on either
-the CURRENT branch or a specified base branch, push the new branch to origin, set upstream tracking,
-run 'direnv allow' (if direnv exists), and finally cd into the new worktree.
+Creates a git worktree at the project root level, creates a new branch based on either
+the CURRENT branch or a specified base branch, pushes the new branch to origin, sets upstream tracking,
+runs any configured hooks, and finally cds into the new worktree.
 
 Can be run from anywhere within the Git repository (including deep subdirectories).
 The new worktree will be created at the project root level (alongside .git directory).
