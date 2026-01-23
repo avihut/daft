@@ -4,6 +4,15 @@ This file provides guidance when working with code in this repository.
 
 ## Recent Changes
 
+**Hooks System Added (2025-01)**
+- Added flexible, project-managed hooks system for worktree lifecycle events
+- Replaces hardcoded direnv integration with configurable hooks
+- Six hook types: post-clone, post-init, pre-create, post-create, pre-remove, post-remove
+- Trust-based security model with per-repository trust levels
+- Trust management via `git daft hooks` subcommand
+- Hooks stored in `.daft/hooks/` within repositories
+- See `docs/PLAN-hooks-system.md` for full specification
+
 **Legacy Scripts Removed (2025-10)**
 - Removed deprecated shell scripts from `src/legacy/`
 - Removed legacy tests from `tests/legacy/`
@@ -172,7 +181,7 @@ The worktree commands are intended to be used as custom Git commands (e.g., `git
 
 - **Worktree-centric workflow**: One worktree per branch, with all worktrees for a repository organized under a common parent directory
 - **Directory structure**: Uses `<repo-name>/.git` at root with worktrees at `<repo-name>/<branch-name>/`
-- **`direnv` integration**: Automatically runs `direnv allow` when entering new worktrees that contain `.envrc` files
+- **Hooks system**: Project-managed lifecycle hooks for automation (post-clone, pre-create, post-create, pre-remove, etc.)
 - **Dynamic branch detection**: Commands query remote repositories to determine actual default branch (main, master, develop, etc.)
 
 ## Architecture
@@ -213,11 +222,16 @@ src/
 │   ├── checkout_branch_from_default.rs
 │   ├── init.rs          # git-worktree-init implementation
 │   ├── prune.rs         # git-worktree-prune implementation
+│   ├── hooks.rs         # git-daft hooks subcommand
 │   └── shell_init.rs    # daft shell-init implementation
+├── hooks/               # Hooks system
+│   ├── mod.rs           # Hook types and configuration
+│   ├── executor.rs      # Hook execution logic
+│   ├── trust.rs         # Trust management and storage
+│   └── environment.rs   # Environment variable builder
 ├── lib.rs               # Shared library code (includes output_cd_path for shell integration)
 ├── git.rs               # Git operations wrapper
 ├── remote.rs            # Remote repository handling
-├── direnv.rs            # Direnv integration
 ├── utils.rs             # Utility functions
 └── config.rs            # Configuration handling
 ```
@@ -270,7 +284,7 @@ git worktree-prune
 - Commands can be executed from anywhere within the Git repository (including deep subdirectories)
 - New worktrees are always created at the project root level (alongside the `.git` directory)
 - Commands use `git rev-parse --git-common-dir` to locate the project root regardless of execution location
-- Commands include optional `direnv` integration but silently skip if not available
+- Commands execute lifecycle hooks from `.daft/hooks/` (requires trust for untrusted repositories)
 - Error handling includes cleanup of partially created worktrees on failure
 
 ### Branch names
@@ -340,7 +354,7 @@ You're automatically placed in `my-new-project/master/` and ready to start codin
 git worktree-checkout-branch feature/user-auth
 
 # Creates: my-project/feature/user-auth/ at project root level
-# Automatically: creates branch, pushes to origin, sets upstream, runs direnv
+# Automatically: creates branch, pushes to origin, sets upstream, runs hooks
 ```
 
 **Switching to existing branch:**
@@ -435,14 +449,13 @@ The project has a comprehensive two-tier testing architecture covering unit test
   - Git command wrapper functionality
   - Directory and path utility functions
   - Branch/repository name validation
-  - Direnv integration logic
+  - Hooks system logic
   - Remote branch detection
 - Run via `cargo test`
 
 #### 2. **Integration Tests** (`just test-integration`)
 - End-to-end tests for Rust binaries in `tests/integration/`
 - Key test files:
-  - `test_checkout_direnv` - Tests direnv integration
   - `test_checkout_branch_workflow` - Tests development workflow scenarios
   - `test_checkout_branch_from_default_remote_updates` - Tests remote branch updates
   - `test_prune_multiple_deletions` - Tests cleanup operations

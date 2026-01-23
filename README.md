@@ -10,7 +10,7 @@
 - **Worktree-centric workflow**: One worktree per branch, organized under a common parent directory
 - **Smart repository structure**: Uses `<repo-name>/.git` at root with worktrees at `<repo-name>/<branch-name>/`
 - **Automatic branch detection**: Dynamically detects default branches (main, master, develop, etc.)
-- **direnv integration**: Automatically runs `direnv allow` when entering new worktrees
+- **Flexible hooks system**: Project-managed lifecycle hooks for automation (replaces hardcoded direnv)
 - **Comprehensive error handling**: Robust cleanup of partial operations on failure
 - **Works from anywhere**: Execute commands from any directory within the repository
 
@@ -353,6 +353,105 @@ git worktree-prune
 # for deleted remote branches
 ```
 
+## Hooks System
+
+daft provides a flexible, project-managed hooks system for automating worktree lifecycle events.
+
+### Hook Types
+
+| Hook | Trigger | Use Case |
+|------|---------|----------|
+| `post-clone` | After repository clone | Initial setup, dependency install |
+| `post-init` | After repository init | Initialize new project |
+| `pre-create` | Before worktree creation | Validate environment, check resources |
+| `post-create` | After worktree created | Environment setup, docker up |
+| `pre-remove` | Before worktree removal | Cleanup, docker down |
+| `post-remove` | After worktree removed | Notifications, logging |
+
+### Setting Up Hooks
+
+Create hooks in `.daft/hooks/` within your repository:
+
+```bash
+mkdir -p .daft/hooks
+
+# Example: post-create hook for environment setup
+cat > .daft/hooks/post-create << 'EOF'
+#!/bin/bash
+# Allow direnv in new worktrees
+if [ -f ".envrc" ] && command -v direnv &>/dev/null; then
+    direnv allow .
+fi
+
+# Start docker services (isolated per branch)
+if [ -f "docker-compose.yml" ]; then
+    export COMPOSE_PROJECT_NAME="myapp-${DAFT_BRANCH_NAME//\//-}"
+    docker compose up -d
+fi
+EOF
+chmod +x .daft/hooks/post-create
+
+# Commit hooks to share with team
+git add .daft/hooks/
+git commit -m "Add daft hooks for environment setup"
+```
+
+### Trust Model
+
+For security, hooks require explicit trust before execution:
+
+```bash
+# Trust current repository
+git daft hooks trust
+
+# Check trust status
+git daft hooks status
+
+# List all trusted repositories
+git daft hooks list
+```
+
+When cloning, hooks are not executed by default:
+
+```bash
+# Clone without running hooks (safe default)
+git worktree-clone https://github.com/user/repo.git
+
+# Clone and trust hooks immediately
+git worktree-clone https://github.com/user/repo.git --trust-hooks
+
+# Clone and skip hooks without prompting
+git worktree-clone https://github.com/user/repo.git --no-hooks
+```
+
+### Environment Variables
+
+Hooks receive context about the operation:
+
+| Variable | Description |
+|----------|-------------|
+| `DAFT_HOOK` | Hook type (e.g., `post-create`) |
+| `DAFT_COMMAND` | Triggering command (e.g., `checkout-branch`) |
+| `DAFT_PROJECT_ROOT` | Repository root path |
+| `DAFT_WORKTREE_PATH` | Path to target worktree |
+| `DAFT_BRANCH_NAME` | Branch name |
+| `DAFT_IS_NEW_BRANCH` | `true` or `false` |
+| `DAFT_BASE_BRANCH` | Base branch (if applicable) |
+
+### Migration from direnv
+
+If you were relying on daft's previous built-in direnv integration, create a `post-create` hook:
+
+```bash
+mkdir -p .daft/hooks
+cat > .daft/hooks/post-create << 'EOF'
+#!/bin/bash
+[ -f ".envrc" ] && command -v direnv &>/dev/null && direnv allow .
+EOF
+chmod +x .daft/hooks/post-create
+git daft hooks trust
+```
+
 ## Testing
 
 This project includes comprehensive test coverage:
@@ -442,7 +541,7 @@ daft/
 │   ├── lib.rs               # Shared library code
 │   ├── git.rs               # Git operations
 │   ├── remote.rs            # Remote repository handling
-│   ├── direnv.rs            # Direnv integration
+│   ├── hooks/               # Lifecycle hooks system
 │   └── utils.rs             # Utility functions
 ├── tests/                   # Test suite
 │   ├── integration/         # End-to-end integration tests
@@ -469,14 +568,13 @@ daft/
 - **Robust error handling**: All commands include comprehensive error checking and cleanup
 - **Path independence**: Commands work from any directory within the repository
 - **Consistent behavior**: All commands follow the same patterns and conventions
-- **Optional integrations**: Features like direnv work when available but don't break when absent
+- **Flexible automation**: Project-managed hooks for custom automation workflows
 - **Atomic operations**: Failed operations are cleaned up automatically
 
 ## Requirements
 
 - **Git**: Version 2.5+ (for worktree support)
 - **Rust**: Version 1.70+ (for building from source)
-- **direnv** (optional): For automatic environment setup
 
 ## Rust Implementation Benefits
 

@@ -1,9 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
 use daft::{
-    direnv::run_direnv_allow,
-    get_project_root,
+    get_git_common_dir, get_project_root,
     git::GitCommand,
+    hooks::{HookContext, HookExecutor, HookType, HooksConfig},
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -19,8 +19,8 @@ use std::path::PathBuf;
 #[command(about = "Creates a git worktree checking out an existing branch")]
 #[command(long_about = r#"
 Creates a git worktree at the project root level, checking out an EXISTING branch,
-set upstream tracking to the corresponding remote branch (if it exists),
-run 'direnv allow' (if direnv exists), and finally cd into the new worktree.
+sets upstream tracking to the corresponding remote branch (if it exists),
+runs any configured hooks, and finally cds into the new worktree.
 
 Can be run from anywhere within the Git repository (including deep subdirectories).
 The new worktree will be created at the project root level (alongside .git directory).
@@ -73,6 +73,8 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
     validate_branch_name(&args.branch_name)?;
 
     let project_root = get_project_root()?;
+    let git_dir = get_git_common_dir()?;
+    let source_worktree = get_current_directory()?;
     let worktree_path = project_root.join(&args.branch_name);
 
     let config = WorktreeConfig {
@@ -97,7 +99,6 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
         ));
         output.step("Changing to existing worktree...");
         change_directory(&existing_path)?;
-        run_direnv_allow(&get_current_directory()?, output)?;
         output.result(&format!(
             "Switched to existing worktree '{}'",
             args.branch_name
@@ -194,6 +195,18 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
         false
     };
 
+    // Run pre-create hook
+    run_pre_create_hook(
+        &project_root,
+        &git_dir,
+        &config.remote_name,
+        &source_worktree,
+        &worktree_path,
+        &args.branch_name,
+        false, // not a new branch (existing branch checkout)
+        output,
+    )?;
+
     // Create worktree: use local branch directly, or create local branch from remote
     let worktree_result = if use_local_branch {
         git.worktree_add(&worktree_path, &args.branch_name)
@@ -282,7 +295,17 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
         output.step("Skipping upstream setup (disabled in config)");
     }
 
-    run_direnv_allow(&get_current_directory()?, output)?;
+    // Run post-create hook
+    run_post_create_hook(
+        &project_root,
+        &git_dir,
+        &config.remote_name,
+        &source_worktree,
+        &worktree_path,
+        &args.branch_name,
+        false, // not a new branch
+        output,
+    )?;
 
     // Git-like result message
     output.result(&format!("Prepared worktree '{}'", args.branch_name));
@@ -318,4 +341,73 @@ fn find_existing_worktree_for_branch(
     }
 
     Ok(None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_pre_create_hook(
+    project_root: &PathBuf,
+    git_dir: &PathBuf,
+    remote_name: &str,
+    source_worktree: &PathBuf,
+    worktree_path: &PathBuf,
+    branch_name: &str,
+    is_new_branch: bool,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let hooks_config = HooksConfig::default();
+    let executor = HookExecutor::new(hooks_config)?;
+
+    let ctx = HookContext::new(
+        HookType::PreCreate,
+        "checkout",
+        project_root,
+        git_dir,
+        remote_name,
+        source_worktree,
+        worktree_path,
+        branch_name,
+    )
+    .with_new_branch(is_new_branch);
+
+    let result = executor.execute(&ctx, output)?;
+
+    // Pre-create hooks with fail_mode=abort will return an error if they fail
+    // If they succeed or are skipped, we continue
+    if !result.success && !result.skipped {
+        anyhow::bail!("Pre-create hook failed");
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_post_create_hook(
+    project_root: &PathBuf,
+    git_dir: &PathBuf,
+    remote_name: &str,
+    source_worktree: &PathBuf,
+    worktree_path: &PathBuf,
+    branch_name: &str,
+    is_new_branch: bool,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let hooks_config = HooksConfig::default();
+    let executor = HookExecutor::new(hooks_config)?;
+
+    let ctx = HookContext::new(
+        HookType::PostCreate,
+        "checkout",
+        project_root,
+        git_dir,
+        remote_name,
+        source_worktree,
+        worktree_path,
+        branch_name,
+    )
+    .with_new_branch(is_new_branch);
+
+    // Execute the hook (ignores if no hooks exist or not trusted)
+    executor.execute(&ctx, output)?;
+
+    Ok(())
 }
