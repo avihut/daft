@@ -16,30 +16,38 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "git-worktree-checkout")]
 #[command(version = daft::VERSION)]
-#[command(about = "Creates a git worktree checking out an existing branch")]
+#[command(about = "Create a worktree for an existing branch")]
 #[command(long_about = r#"
-Creates a git worktree at the project root level, checking out an EXISTING branch,
-sets upstream tracking to the corresponding remote branch (if it exists),
-runs any configured hooks, and finally cds into the new worktree.
+Creates a new worktree for an existing local or remote branch. The worktree
+is placed at the project root level as a sibling to other worktrees, using
+the branch name as the directory name.
 
-Can be run from anywhere within the Git repository (including deep subdirectories).
-The new worktree will be created at the project root level (alongside .git directory).
+If the branch exists only on the remote, a local tracking branch is created
+automatically. If the branch exists both locally and on the remote, the local
+branch is checked out and upstream tracking is configured.
+
+This command can be run from anywhere within the repository. If a worktree
+for the specified branch already exists, no new worktree is created; the
+working directory is changed to the existing worktree instead.
+
+Lifecycle hooks from .daft/hooks/ are executed if the repository is trusted.
+See git-daft(1) for hook management.
 "#)]
 pub struct Args {
-    #[arg(help = "The name of the existing local or remote branch to check out")]
+    #[arg(help = "Name of the branch to check out")]
     branch_name: String,
 
-    #[arg(short, long, help = "Enable verbose output")]
+    #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
 
     #[arg(
         short = 'c',
         long = "carry",
-        help = "Carry uncommitted changes to the worktree"
+        help = "Apply uncommitted changes from the current worktree to the new one"
     )]
     carry: bool,
 
-    #[arg(long, help = "Don't carry uncommitted changes (default)")]
+    #[arg(long, help = "Do not carry uncommitted changes (this is the default)")]
     no_carry: bool,
 }
 

@@ -14,39 +14,52 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "git-worktree-init")]
 #[command(version = daft::VERSION)]
-#[command(about = "Initializes a new Git repository in the worktree workflow structure")]
+#[command(about = "Initialize a new repository in the worktree-based directory structure")]
 #[command(long_about = r#"
-Initializes a new Git repository in the worktree workflow structure:
-<repository_name>/.git (bare repository)
-<repository_name>/<initial_branch> (initial worktree)
+Initializes a new Git repository using the same directory structure as
+git-worktree-clone(1). The resulting layout is:
 
-This command creates a new repository following the same structured layout
-used by git-worktree-clone, making it suitable for the worktree workflow.
+    <name>/.git      (bare repository metadata)
+    <name>/<branch>  (worktree for the initial branch)
+
+This structure is optimized for worktree-based development, allowing multiple
+branches to be checked out simultaneously as sibling directories.
+
+The initial branch name is determined by, in order of precedence: the -b
+option, the init.defaultBranch configuration value, or "master" as a fallback.
+
+If the repository contains a .daft/hooks/ directory (created manually after
+init) and is trusted, lifecycle hooks are executed. See git-daft(1) for hook
+management.
 "#)]
 pub struct Args {
-    #[arg(help = "Repository name to initialize")]
+    #[arg(help = "Name for the new repository directory")]
     repository_name: String,
 
     #[arg(
         long = "bare",
-        help = "Only create the bare repository structure but do not create the initial worktree"
+        help = "Create only the bare repository; do not create an initial worktree"
     )]
     bare: bool,
 
     #[arg(
         short = 'q',
         long = "quiet",
-        help = "Suppress all output and run silently"
+        help = "Operate quietly; suppress progress reporting"
     )]
     quiet: bool,
 
-    #[arg(short = 'v', long = "verbose", help = "Enable verbose output")]
+    #[arg(
+        short = 'v',
+        long = "verbose",
+        help = "Be verbose; show detailed progress"
+    )]
     verbose: bool,
 
     #[arg(
         short = 'b',
         long = "initial-branch",
-        help = "Set the initial branch name (defaults to git config init.defaultBranch or 'master')"
+        help = "Use <name> as the initial branch instead of the configured default"
     )]
     initial_branch: Option<String>,
 }

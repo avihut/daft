@@ -16,58 +16,68 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "git-worktree-clone")]
 #[command(version = daft::VERSION)]
-#[command(about = "Clones a Git repository into a worktree-based directory structure")]
+#[command(about = "Clone a repository into a worktree-based directory structure")]
 #[command(long_about = r#"
-Clones a Git repository into a specific directory structure:
-<repository_name>/<branch_name>
+Clones a repository into a directory structure optimized for worktree-based
+development. The resulting layout is:
 
-It determines the repository name from the URL and queries the remote
-to find the default branch (e.g., main, master, develop) *before* cloning,
-unless a specific branch is specified with -b.
-After cloning, runs any configured hooks and cds into the new worktree.
+    <repository-name>/.git    (bare repository metadata)
+    <repository-name>/<branch>  (worktree for the checked-out branch)
+
+The command first queries the remote to determine the default branch (main,
+master, or other configured default), then performs a bare clone and creates
+the initial worktree. This structure allows multiple worktrees to be created
+as siblings, each containing a different branch.
+
+If the repository contains a .daft/hooks/ directory and the repository is
+trusted, lifecycle hooks are executed. See git-daft(1) for hook management.
 "#)]
 pub struct Args {
-    #[arg(help = "Repository URL to clone")]
+    #[arg(help = "The repository URL to clone (HTTPS or SSH)")]
     repository_url: String,
 
     #[arg(
         short = 'b',
         long = "branch",
-        help = "Checkout this branch instead of the remote's default branch"
+        help = "Check out <branch> instead of the remote's default branch"
     )]
     branch: Option<String>,
 
     #[arg(
         short = 'n',
         long = "no-checkout",
-        help = "Only clone the repository and create the .git folder but do not checkout the default branch worktree"
+        help = "Perform a bare clone only; do not create any worktree"
     )]
     no_checkout: bool,
 
     #[arg(
         short = 'q',
         long = "quiet",
-        help = "Suppress all output and run silently"
+        help = "Operate quietly; suppress progress reporting"
     )]
     quiet: bool,
 
-    #[arg(short = 'v', long = "verbose", help = "Enable verbose output")]
+    #[arg(
+        short = 'v',
+        long = "verbose",
+        help = "Be verbose; show detailed progress"
+    )]
     verbose: bool,
 
     #[arg(
         short = 'a',
         long = "all-branches",
-        help = "Create worktrees for all remote branches, not just the default"
+        help = "Create a worktree for each remote branch, not just the default"
     )]
     all_branches: bool,
 
     #[arg(
         long = "trust-hooks",
-        help = "Trust and run hooks from this repository"
+        help = "Trust the repository and allow hooks to run without prompting"
     )]
     trust_hooks: bool,
 
-    #[arg(long = "no-hooks", help = "Skip hook execution without prompting")]
+    #[arg(long = "no-hooks", help = "Do not run any hooks from the repository")]
     no_hooks: bool,
 }
 

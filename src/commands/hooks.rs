@@ -15,24 +15,25 @@ use std::path::Path;
 
 #[derive(Parser)]
 #[command(name = "hooks")]
-#[command(about = "Manage hook trust for repositories")]
+#[command(about = "Manage repository trust for hook execution")]
 #[command(long_about = r#"
-Manage trust settings for daft hooks.
+Manages trust settings that control whether lifecycle hooks are executed for
+a repository. Hooks are executable scripts stored in a repository's
+.daft/hooks/ directory that run during worktree operations such as clone,
+create, and remove.
 
-Hooks are scripts in .daft/hooks/ that run during worktree operations.
-For security, hooks only run in repositories you explicitly trust.
+For security, hooks are only executed in repositories that have been
+explicitly trusted. Trust settings are stored in ~/.config/daft/trust.json
+and are not part of the repository itself.
 
 Trust levels:
-  deny   - Never run hooks (default for unknown repos)
-  prompt - Ask before each hook execution
-  allow  - Run hooks without prompting
 
-Examples:
-  git daft hooks status          # Show hooks and trust status
-  git daft hooks trust           # Trust current repo (allow level)
-  git daft hooks trust --prompt  # Trust with confirmation prompts
-  git daft hooks untrust         # Revoke trust for current repo
-  git daft hooks list            # List all trusted repositories
+    deny    Do not run hooks (default for untrusted repositories)
+    prompt  Prompt for confirmation before each hook execution
+    allow   Run hooks without prompting
+
+When invoked without a subcommand, displays the trust status and available
+hooks for the current repository (equivalent to the status subcommand).
 "#)]
 pub struct Args {
     #[command(subcommand)]
@@ -41,44 +42,45 @@ pub struct Args {
 
 #[derive(Subcommand)]
 enum HooksCommand {
-    /// Trust the current repository to run hooks
+    /// Grant trust to the current repository
     #[command(long_about = r#"
-Trust the current repository to run hooks.
+Grants trust to the current repository, allowing hooks in .daft/hooks/ to be
+executed during worktree operations.
 
-By default, grants 'allow' level which runs hooks without prompting.
-Use --prompt to require confirmation before each hook execution.
+By default, sets the trust level to "allow", which runs hooks without
+prompting. Use --prompt to set the trust level to "prompt" instead, which
+requires confirmation before each hook execution.
 
-Trust is stored in ~/.config/daft/trust.json, not in the repository.
+Trust settings are stored in ~/.config/daft/trust.json and persist across
+sessions.
 "#)]
     Trust {
-        /// Trust level: require prompts before running hooks
-        #[arg(long, help = "Require prompts before running hooks")]
+        #[arg(
+            long,
+            help = "Set trust level to prompt; require confirmation before each hook"
+        )]
         prompt: bool,
 
-        /// Skip confirmation prompt
-        #[arg(short = 'y', long, help = "Skip confirmation prompt")]
+        #[arg(short = 'y', long, help = "Do not ask for confirmation")]
         yes: bool,
     },
 
-    /// Revoke trust for the current repository
+    /// Revoke trust from the current repository
     #[command(long_about = r#"
-Revoke trust for the current repository.
-
-After running this command, hooks will no longer execute for this repository.
+Revokes trust from the current repository. After this command, hooks will
+no longer be executed for this repository until trust is granted again.
 "#)]
     Untrust {
-        /// Skip confirmation prompt
-        #[arg(short = 'y', long, help = "Skip confirmation prompt")]
+        #[arg(short = 'y', long, help = "Do not ask for confirmation")]
         yes: bool,
     },
 
-    /// Show trust status and available hooks for current repository
+    /// Display trust status and available hooks
     Status,
 
-    /// List all trusted repositories
+    /// List all repositories with trust settings
     List {
-        /// Show all repositories including denied ones
-        #[arg(long, help = "Show all repositories including denied ones")]
+        #[arg(long, help = "Include repositories with deny trust level")]
         all: bool,
     },
 }
