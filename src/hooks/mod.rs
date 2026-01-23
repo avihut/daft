@@ -325,6 +325,8 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn test_hook_type_filename() {
@@ -376,5 +378,257 @@ mod tests {
         assert_eq!(config.pre_create.fail_mode, FailMode::Abort);
         assert!(config.post_create.enabled);
         assert_eq!(config.post_create.fail_mode, FailMode::Warn);
+    }
+
+    #[test]
+    fn test_hook_type_all() {
+        let all = HookType::all();
+        assert_eq!(all.len(), 6);
+        assert!(all.contains(&HookType::PostClone));
+        assert!(all.contains(&HookType::PostInit));
+        assert!(all.contains(&HookType::PreCreate));
+        assert!(all.contains(&HookType::PostCreate));
+        assert!(all.contains(&HookType::PreRemove));
+        assert!(all.contains(&HookType::PostRemove));
+    }
+
+    #[test]
+    fn test_hook_type_display() {
+        assert_eq!(format!("{}", HookType::PostClone), "post-clone");
+        assert_eq!(format!("{}", HookType::PreCreate), "pre-create");
+    }
+
+    #[test]
+    fn test_fail_mode_display() {
+        assert_eq!(format!("{}", FailMode::Abort), "abort");
+        assert_eq!(format!("{}", FailMode::Warn), "warn");
+    }
+
+    #[test]
+    fn test_hook_config_new() {
+        let config = HookConfig::new(HookType::PreCreate);
+        assert!(config.enabled);
+        assert_eq!(config.fail_mode, FailMode::Abort);
+
+        let config = HookConfig::new(HookType::PostCreate);
+        assert!(config.enabled);
+        assert_eq!(config.fail_mode, FailMode::Warn);
+    }
+
+    #[test]
+    fn test_hooks_config_get_hook_config() {
+        let config = HooksConfig::default();
+        assert_eq!(
+            config.get_hook_config(HookType::PreCreate).fail_mode,
+            FailMode::Abort
+        );
+        assert_eq!(
+            config.get_hook_config(HookType::PostCreate).fail_mode,
+            FailMode::Warn
+        );
+    }
+
+    #[test]
+    fn test_hooks_config_get_hook_config_mut() {
+        let mut config = HooksConfig::default();
+        config.get_hook_config_mut(HookType::PostCreate).enabled = false;
+        assert!(!config.post_create.enabled);
+    }
+
+    // Helper to create an executable hook file
+    #[cfg(unix)]
+    fn create_executable_hook(dir: &std::path::Path, hook_name: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let hooks_dir = dir.join(PROJECT_HOOKS_DIR);
+        fs::create_dir_all(&hooks_dir).unwrap();
+        let hook_path = hooks_dir.join(hook_name);
+        fs::write(&hook_path, "#!/bin/bash\necho test").unwrap();
+
+        let mut perms = fs::metadata(&hook_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&hook_path, perms).unwrap();
+
+        hook_path
+    }
+
+    #[cfg(not(unix))]
+    fn create_executable_hook(dir: &std::path::Path, hook_name: &str) -> std::path::PathBuf {
+        let hooks_dir = dir.join(PROJECT_HOOKS_DIR);
+        fs::create_dir_all(&hooks_dir).unwrap();
+        let hook_path = hooks_dir.join(hook_name);
+        fs::write(&hook_path, "@echo off\necho test").unwrap();
+        hook_path
+    }
+
+    #[test]
+    fn test_hook_exists_no_hooks_dir() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        // No hooks directory - should return false
+        assert!(!hook_exists(HookType::PostCreate, &worktree));
+    }
+
+    #[test]
+    fn test_hook_exists_with_hook() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        create_executable_hook(&worktree, "post-create");
+
+        assert!(hook_exists(HookType::PostCreate, &worktree));
+        assert!(!hook_exists(HookType::PreCreate, &worktree));
+    }
+
+    #[test]
+    fn test_list_hooks_empty() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        let hooks = list_hooks(&worktree);
+        assert!(hooks.is_empty());
+    }
+
+    #[test]
+    fn test_list_hooks_multiple() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        create_executable_hook(&worktree, "post-create");
+        create_executable_hook(&worktree, "pre-remove");
+        create_executable_hook(&worktree, "post-clone");
+
+        let hooks = list_hooks(&worktree);
+        assert_eq!(hooks.len(), 3);
+        assert!(hooks.contains(&HookType::PostCreate));
+        assert!(hooks.contains(&HookType::PreRemove));
+        assert!(hooks.contains(&HookType::PostClone));
+    }
+
+    #[test]
+    fn test_find_hooks_no_hooks() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        let config = HooksConfig::default();
+        let hooks = find_hooks(HookType::PostCreate, &worktree, &config);
+        assert!(hooks.is_empty());
+    }
+
+    #[test]
+    fn test_find_hooks_project_hook_only() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        let hook_path = create_executable_hook(&worktree, "post-create");
+
+        let config = HooksConfig::default();
+        let hooks = find_hooks(HookType::PostCreate, &worktree, &config);
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0], hook_path);
+    }
+
+    #[test]
+    fn test_find_hooks_user_hook_only() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        // Create user hook directory
+        let user_hooks_dir = temp_dir.path().join("user_hooks");
+        fs::create_dir_all(&user_hooks_dir).unwrap();
+
+        // Create user hook
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let user_hook = user_hooks_dir.join("post-create");
+            fs::write(&user_hook, "#!/bin/bash\necho user").unwrap();
+            let mut perms = fs::metadata(&user_hook).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&user_hook, perms).unwrap();
+        }
+        #[cfg(not(unix))]
+        {
+            let user_hook = user_hooks_dir.join("post-create");
+            fs::write(&user_hook, "@echo off\necho user").unwrap();
+        }
+
+        let mut config = HooksConfig::default();
+        config.user_directory = user_hooks_dir.clone();
+
+        let hooks = find_hooks(HookType::PostCreate, &worktree, &config);
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0], user_hooks_dir.join("post-create"));
+    }
+
+    #[test]
+    fn test_find_hooks_both_project_and_user() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        // Create project hook
+        let project_hook = create_executable_hook(&worktree, "post-create");
+
+        // Create user hooks directory and hook
+        let user_hooks_dir = temp_dir.path().join("user_hooks");
+        fs::create_dir_all(&user_hooks_dir).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let user_hook = user_hooks_dir.join("post-create");
+            fs::write(&user_hook, "#!/bin/bash\necho user").unwrap();
+            let mut perms = fs::metadata(&user_hook).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&user_hook, perms).unwrap();
+        }
+        #[cfg(not(unix))]
+        {
+            let user_hook = user_hooks_dir.join("post-create");
+            fs::write(&user_hook, "@echo off\necho user").unwrap();
+        }
+
+        let mut config = HooksConfig::default();
+        config.user_directory = user_hooks_dir.clone();
+
+        let hooks = find_hooks(HookType::PostCreate, &worktree, &config);
+        // Should find both hooks, project first then user
+        assert_eq!(hooks.len(), 2);
+        assert_eq!(hooks[0], project_hook);
+        assert_eq!(hooks[1], user_hooks_dir.join("post-create"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_find_hooks_non_executable_ignored() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        let hooks_dir = worktree.join(PROJECT_HOOKS_DIR);
+        fs::create_dir_all(&hooks_dir).unwrap();
+
+        // Create a non-executable hook file
+        let hook_path = hooks_dir.join("post-create");
+        fs::write(&hook_path, "#!/bin/bash\necho test").unwrap();
+
+        // Explicitly set non-executable
+        let mut perms = fs::metadata(&hook_path).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&hook_path, perms).unwrap();
+
+        let config = HooksConfig::default();
+        let hooks = find_hooks(HookType::PostCreate, &worktree, &config);
+        // Non-executable hook should be ignored
+        assert!(hooks.is_empty());
     }
 }
