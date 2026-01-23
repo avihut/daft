@@ -31,7 +31,18 @@ fn main() -> Result<()> {
         "git-worktree-carry" => commands::carry::run(),
 
         // Documentation command (via git-daft symlink or direct invocation)
-        "git-daft" => commands::docs::run(),
+        "git-daft" => {
+            // Check for subcommands like `git daft hooks`
+            let args: Vec<String> = std::env::args().collect();
+            if args.len() > 1 {
+                match args[1].as_str() {
+                    "hooks" => commands::hooks::run(),
+                    _ => commands::docs::run(),
+                }
+            } else {
+                commands::docs::run()
+            }
+        }
 
         // Main daft command - check for subcommands
         "daft" => {
@@ -41,8 +52,9 @@ fn main() -> Result<()> {
                 match args[1].as_str() {
                     "completions" => commands::completions::run(),
                     "__complete" => commands::complete::run(),
-                    "shell-init" => commands::shell_init::run(),
+                    "hooks" => commands::hooks::run(),
                     "setup" => commands::setup::run(),
+                    "shell-init" => commands::shell_init::run(),
                     _ => commands::docs::run(),
                 }
             } else {
