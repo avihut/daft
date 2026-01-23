@@ -204,14 +204,29 @@ fn determine_targets(args: &Args, git: &GitCommand, project_root: &Path) -> Resu
 fn get_all_worktrees(git: &GitCommand) -> Result<Vec<PathBuf>> {
     let porcelain_output = git.worktree_list_porcelain()?;
     let mut worktrees: Vec<PathBuf> = Vec::new();
+    let mut current_worktree: Option<PathBuf> = None;
+    let mut is_bare = false;
 
     for line in porcelain_output.lines() {
         if let Some(worktree_path) = line.strip_prefix("worktree ") {
-            let path = PathBuf::from(worktree_path);
-            // Skip bare repository (it's the .git directory)
-            if path.ends_with(".git") || worktree_path.ends_with("/.git") {
-                continue;
+            // Save previous worktree if it wasn't bare
+            if let Some(path) = current_worktree.take() {
+                if !is_bare {
+                    worktrees.push(path);
+                }
             }
+            // Start tracking new worktree
+            current_worktree = Some(PathBuf::from(worktree_path));
+            is_bare = false;
+        } else if line == "bare" {
+            // Mark current worktree as bare (will be skipped)
+            is_bare = true;
+        }
+    }
+
+    // Don't forget the last worktree
+    if let Some(path) = current_worktree {
+        if !is_bare {
             worktrees.push(path);
         }
     }
