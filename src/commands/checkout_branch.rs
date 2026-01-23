@@ -2,9 +2,9 @@ use anyhow::Result;
 use clap::Parser;
 use daft::{
     config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT},
-    direnv::run_direnv_allow,
-    get_current_branch, get_project_root,
+    get_current_branch, get_git_common_dir, get_project_root,
     git::GitCommand,
+    hooks::{HookContext, HookExecutor, HookType, HooksConfig},
     is_git_repository, logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
@@ -97,6 +97,8 @@ fn run_checkout_branch(
     };
 
     let project_root = get_project_root()?;
+    let git_dir = get_git_common_dir()?;
+    let source_worktree = get_current_directory()?;
     let worktree_path = project_root.join(&args.new_branch_name);
 
     let config = WorktreeConfig {
@@ -207,6 +209,18 @@ fn run_checkout_branch(
         false
     };
 
+    // Run pre-create hook
+    run_pre_create_hook(
+        &project_root,
+        &git_dir,
+        &config.remote_name,
+        &source_worktree,
+        &worktree_path,
+        &args.new_branch_name,
+        Some(&base_branch),
+        output,
+    )?;
+
     output.step(&format!(
         "Creating worktree at '{}' with new branch '{}' from '{}'",
         worktree_path.display(),
@@ -277,7 +291,17 @@ fn run_checkout_branch(
         output.step("Skipping push (disabled in config)");
     }
 
-    run_direnv_allow(&get_current_directory()?, output)?;
+    // Run post-create hook
+    run_post_create_hook(
+        &project_root,
+        &git_dir,
+        &config.remote_name,
+        &source_worktree,
+        &worktree_path,
+        &args.new_branch_name,
+        Some(&base_branch),
+        output,
+    )?;
 
     // Git-like result message
     output.result(&format!(
@@ -286,6 +310,80 @@ fn run_checkout_branch(
     ));
 
     output.cd_path(&get_current_directory()?);
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_pre_create_hook(
+    project_root: &std::path::PathBuf,
+    git_dir: &std::path::PathBuf,
+    remote_name: &str,
+    source_worktree: &std::path::PathBuf,
+    worktree_path: &std::path::PathBuf,
+    branch_name: &str,
+    base_branch: Option<&str>,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let hooks_config = HooksConfig::default();
+    let executor = HookExecutor::new(hooks_config)?;
+
+    let mut ctx = HookContext::new(
+        HookType::PreCreate,
+        "checkout-branch",
+        project_root,
+        git_dir,
+        remote_name,
+        source_worktree,
+        worktree_path,
+        branch_name,
+    )
+    .with_new_branch(true);
+
+    if let Some(base) = base_branch {
+        ctx = ctx.with_base_branch(base);
+    }
+
+    let result = executor.execute(&ctx, output)?;
+
+    if !result.success && !result.skipped {
+        anyhow::bail!("Pre-create hook failed");
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_post_create_hook(
+    project_root: &std::path::PathBuf,
+    git_dir: &std::path::PathBuf,
+    remote_name: &str,
+    source_worktree: &std::path::PathBuf,
+    worktree_path: &std::path::PathBuf,
+    branch_name: &str,
+    base_branch: Option<&str>,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let hooks_config = HooksConfig::default();
+    let executor = HookExecutor::new(hooks_config)?;
+
+    let mut ctx = HookContext::new(
+        HookType::PostCreate,
+        "checkout-branch",
+        project_root,
+        git_dir,
+        remote_name,
+        source_worktree,
+        worktree_path,
+        branch_name,
+    )
+    .with_new_branch(true);
+
+    if let Some(base) = base_branch {
+        ctx = ctx.with_base_branch(base);
+    }
+
+    executor.execute(&ctx, output)?;
 
     Ok(())
 }

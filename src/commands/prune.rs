@@ -2,7 +2,9 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use daft::{
     config::counters::{INITIAL_BRANCHES_DELETED, INITIAL_WORKTREES_REMOVED, OPERATION_INCREMENT},
+    get_git_common_dir, get_project_root,
     git::GitCommand,
+    hooks::{HookContext, HookExecutor, HookType, HooksConfig, RemovalReason},
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -44,6 +46,9 @@ pub fn run() -> Result<()> {
 fn run_prune(output: &mut dyn Output) -> Result<()> {
     let config = WorktreeConfig::default();
     let git = GitCommand::new(output.is_quiet());
+    let project_root = get_project_root()?;
+    let git_dir = get_git_common_dir()?;
+    let source_worktree = std::env::current_dir()?;
 
     output.step(&format!(
         "Fetching from remote {} and pruning stale remote-tracking branches...",
@@ -153,6 +158,21 @@ fn run_prune(output: &mut dyn Output) -> Result<()> {
             ));
 
             let wt_path = PathBuf::from(&worktree_path);
+
+            // Run pre-remove hook
+            if let Err(e) = run_pre_remove_hook(
+                &project_root,
+                &git_dir,
+                &config.remote_name,
+                &source_worktree,
+                &wt_path,
+                branch_name,
+                output,
+            ) {
+                output.warning(&format!("Pre-remove hook failed for {branch_name}: {e}"));
+                // Continue with removal even if hook fails (warn mode)
+            }
+
             if wt_path.exists() {
                 output.step("Removing worktree...");
                 if let Err(e) = git.worktree_remove(&wt_path, true) {
@@ -175,6 +195,19 @@ fn run_prune(output: &mut dyn Output) -> Result<()> {
                 }
                 output.step(&format!("Worktree record for {worktree_path} removed"));
                 worktrees_removed += OPERATION_INCREMENT;
+            }
+
+            // Run post-remove hook
+            if let Err(e) = run_post_remove_hook(
+                &project_root,
+                &git_dir,
+                &config.remote_name,
+                &source_worktree,
+                &wt_path,
+                branch_name,
+                output,
+            ) {
+                output.warning(&format!("Post-remove hook failed for {branch_name}: {e}"));
             }
         } else {
             output.step(&format!("No associated worktree found for {branch_name}"));
@@ -207,6 +240,64 @@ fn run_prune(output: &mut dyn Output) -> Result<()> {
             "Some prunable worktree data may exist. Run 'git worktree prune' to clean up.",
         );
     }
+
+    Ok(())
+}
+
+fn run_pre_remove_hook(
+    project_root: &PathBuf,
+    git_dir: &PathBuf,
+    remote_name: &str,
+    source_worktree: &PathBuf,
+    worktree_path: &PathBuf,
+    branch_name: &str,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let hooks_config = HooksConfig::default();
+    let executor = HookExecutor::new(hooks_config)?;
+
+    let ctx = HookContext::new(
+        HookType::PreRemove,
+        "prune",
+        project_root,
+        git_dir,
+        remote_name,
+        source_worktree,
+        worktree_path,
+        branch_name,
+    )
+    .with_removal_reason(RemovalReason::RemoteDeleted);
+
+    executor.execute(&ctx, output)?;
+
+    Ok(())
+}
+
+fn run_post_remove_hook(
+    project_root: &PathBuf,
+    git_dir: &PathBuf,
+    remote_name: &str,
+    source_worktree: &PathBuf,
+    worktree_path: &PathBuf,
+    branch_name: &str,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let hooks_config = HooksConfig::default();
+    let executor = HookExecutor::new(hooks_config)?;
+
+    let ctx = HookContext::new(
+        HookType::PostRemove,
+        "prune",
+        project_root,
+        git_dir,
+        remote_name,
+        source_worktree,
+        worktree_path,
+        branch_name,
+    )
+    .with_removal_reason(RemovalReason::RemoteDeleted);
+
+    executor.execute(&ctx, output)?;
 
     Ok(())
 }

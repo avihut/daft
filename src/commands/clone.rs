@@ -1,10 +1,9 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use daft::{
-    check_dependencies,
-    direnv::run_direnv_allow,
-    extract_repo_name,
+    check_dependencies, extract_repo_name,
     git::GitCommand,
+    hooks::{HookContext, HookExecutor, HookType, HooksConfig, TrustLevel},
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     remote::{get_default_branch_remote, get_remote_branches},
@@ -61,6 +60,15 @@ pub struct Args {
         help = "Create worktrees for all remote branches, not just the default"
     )]
     all_branches: bool,
+
+    #[arg(
+        long = "trust-hooks",
+        help = "Trust and run hooks from this repository"
+    )]
+    trust_hooks: bool,
+
+    #[arg(long = "no-hooks", help = "Skip hook execution without prompting")]
+    no_hooks: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -79,6 +87,10 @@ pub fn run() -> Result<()> {
 
     if args.branch.is_some() && args.no_checkout {
         anyhow::bail!("--branch and --no-checkout cannot be used together.\nUse --branch to checkout a specific branch, or --no-checkout to skip worktree creation.");
+    }
+
+    if args.trust_hooks && args.no_hooks {
+        anyhow::bail!("--trust-hooks and --no-hooks cannot be used together.");
     }
 
     // Load settings from global config only (repo doesn't exist yet)
@@ -238,12 +250,22 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             output.step("Skipping upstream setup (disabled in config)");
         }
 
-        run_direnv_allow(&get_current_directory()?, output)?;
-
         let current_dir = get_current_directory()?;
 
         // Git-like result message
         output.result(&format!("Cloned into '{repo_name}/{target_branch}'"));
+
+        // Execute post-clone hooks
+        run_post_clone_hook(
+            args,
+            &parent_dir,
+            &git_dir,
+            &config.remote_name,
+            &current_dir,
+            &args.repository_url,
+            &target_branch,
+            output,
+        )?;
 
         output.cd_path(&current_dir);
     } else if !args.no_checkout && !branch_exists {
@@ -292,6 +314,62 @@ fn create_all_worktrees(
         if let Err(e) = git.worktree_add(&PathBuf::from(branch), branch) {
             output.error(&format!("creating worktree for branch '{branch}': {e}"));
             continue;
+        }
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_post_clone_hook(
+    args: &Args,
+    project_root: &PathBuf,
+    git_dir: &PathBuf,
+    remote_name: &str,
+    worktree_path: &PathBuf,
+    repository_url: &str,
+    default_branch: &str,
+    output: &mut dyn Output,
+) -> Result<()> {
+    // Skip hooks if --no-hooks flag is set
+    if args.no_hooks {
+        output.step("Skipping hooks (--no-hooks flag)");
+        return Ok(());
+    }
+
+    let hooks_config = HooksConfig::default();
+    let mut executor = HookExecutor::new(hooks_config)?;
+
+    // If --trust-hooks flag is set, trust the repository first
+    if args.trust_hooks {
+        output.step("Trusting repository for hooks (--trust-hooks flag)");
+        executor.trust_repository(git_dir, TrustLevel::Allow)?;
+    }
+
+    // Build the hook context
+    let ctx = HookContext::new(
+        HookType::PostClone,
+        "clone",
+        project_root,
+        git_dir,
+        remote_name,
+        worktree_path, // source and target are the same for clone
+        worktree_path,
+        default_branch,
+    )
+    .with_repository_url(repository_url)
+    .with_default_branch(default_branch)
+    .with_new_branch(false);
+
+    // Execute the hook
+    let result = executor.execute(&ctx, output)?;
+
+    // If hooks were skipped due to trust, show notice
+    if result.skipped {
+        if let Some(reason) = &result.skip_reason {
+            if reason == "Repository not trusted" {
+                executor.check_hooks_notice(worktree_path, git_dir, output);
+            }
         }
     }
 
