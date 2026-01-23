@@ -29,6 +29,7 @@ fn main() -> Result<()> {
         }
         "git-worktree-prune" => commands::prune::run(),
         "git-worktree-carry" => commands::carry::run(),
+        "git-worktree-fetch" => commands::fetch::run(),
 
         // Documentation command (via git-daft symlink or direct invocation)
         "git-daft" => {

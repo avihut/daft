@@ -65,6 +65,9 @@ pub mod defaults {
 
     /// Default value for checkout.carry setting.
     pub const CHECKOUT_CARRY: bool = false;
+
+    /// Default value for fetch.args setting.
+    pub const FETCH_ARGS: &str = "--ff-only";
 }
 
 /// Git config keys for daft settings.
@@ -86,6 +89,9 @@ pub mod keys {
 
     /// Config key for checkout.carry setting.
     pub const CHECKOUT_CARRY: &str = "daft.checkout.carry";
+
+    /// Config key for fetch.args setting.
+    pub const FETCH_ARGS: &str = "daft.fetch.args";
 
     /// Hooks config keys.
     pub mod hooks {
@@ -133,6 +139,9 @@ pub struct DaftSettings {
 
     /// Default carry setting for checkout command.
     pub checkout_carry: bool,
+
+    /// Default arguments for git pull in fetch command.
+    pub fetch_args: String,
 }
 
 impl Default for DaftSettings {
@@ -144,6 +153,7 @@ impl Default for DaftSettings {
             remote: defaults::REMOTE.to_string(),
             checkout_branch_carry: defaults::CHECKOUT_BRANCH_CARRY,
             checkout_carry: defaults::CHECKOUT_CARRY,
+            fetch_args: defaults::FETCH_ARGS.to_string(),
         }
     }
 }
@@ -185,6 +195,12 @@ impl DaftSettings {
             settings.checkout_carry = parse_bool(&value, defaults::CHECKOUT_CARRY);
         }
 
+        if let Some(value) = git.config_get(keys::FETCH_ARGS)? {
+            if !value.is_empty() {
+                settings.fetch_args = value;
+            }
+        }
+
         Ok(settings)
     }
 
@@ -220,6 +236,12 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get_global(keys::CHECKOUT_CARRY)? {
             settings.checkout_carry = parse_bool(&value, defaults::CHECKOUT_CARRY);
+        }
+
+        if let Some(value) = git.config_get_global(keys::FETCH_ARGS)? {
+            if !value.is_empty() {
+                settings.fetch_args = value;
+            }
         }
 
         Ok(settings)
@@ -394,6 +416,7 @@ mod tests {
         assert_eq!(settings.remote, "origin");
         assert!(settings.checkout_branch_carry);
         assert!(!settings.checkout_carry);
+        assert_eq!(settings.fetch_args, "--ff-only");
     }
 
     #[test]

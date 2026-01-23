@@ -51,6 +51,7 @@ dev-clean:
         git-worktree-checkout-branch-from-default \
         git-worktree-prune \
         git-worktree-carry \
+        git-worktree-fetch \
         git-daft
     @echo "Symlinks removed (binary preserved)"
 
@@ -147,6 +148,11 @@ test-integration-hooks: build
     @echo "Running Rust integration hooks tests..."
     @cd {{integration_tests_dir}} && ./test_hooks.sh
 
+# Run integration fetch tests
+test-integration-fetch: build
+    @echo "Running Rust integration fetch tests..."
+    @cd {{integration_tests_dir}} && ./test_fetch.sh
+
 # ============================================================================
 # Verbose Test Recipes
 # ============================================================================
@@ -196,6 +202,7 @@ setup-rust: build
     ln -sf daft git-worktree-checkout-branch-from-default
     ln -sf daft git-worktree-prune
     ln -sf daft git-worktree-carry
+    ln -sf daft git-worktree-fetch
     ln -sf daft git-daft
     cd ../..
     echo "Development environment ready!"
@@ -439,6 +446,7 @@ help:
     @echo "  test-integration-shell-init       - Run Rust integration shell-init tests"
     @echo "  test-integration-config           - Run Rust integration config tests"
     @echo "  test-integration-hooks            - Run Rust integration hooks tests"
+    @echo "  test-integration-fetch            - Run Rust integration fetch tests"
     @echo ""
     @echo "Other test recipes:"
     @echo "  test-verbose                      - Run tests with verbose output"
