@@ -305,6 +305,31 @@ jobs:
           pattern: artifacts-*
           path: Formula/
           merge-multiple: true
+      # Add caveats to the formula (cargo-dist doesn't support this natively)
+      - name: Add caveats to formula
+        run: |
+          FORMULA_FILE="Formula/daft.rb"
+          if [ -f "$FORMULA_FILE" ]; then
+            # Remove the final 'end' and append caveats + end
+            sed -i '$ d' "$FORMULA_FILE"
+            cat >> "$FORMULA_FILE" << 'CAVEATS'
+
+            def caveats
+              <<~EOS
+                To complete setup (shell integration + shortcuts), run:
+                  daft setup
+
+                This enables automatic cd into new worktrees and installs
+                git-style shortcuts (gwtco, gwtcb, gwtcbm, etc.)
+
+                For more information:
+                  daft --help
+              EOS
+            end
+          end
+          CAVEATS
+            echo "Added caveats to $FORMULA_FILE"
+          fi
       # This is extra complex because you can make your Formula name not match your app name
       # so we need to find releases with a *.rb file, and publish with that filename.
       - name: Commit formula files
