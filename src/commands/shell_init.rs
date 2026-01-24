@@ -138,6 +138,29 @@ git() {
             command git "$@" ;;
     esac
 }
+
+# Shortcut wrappers - these override symlinks to enable cd behavior
+# Git-style shortcuts
+gwtclone() { __daft_wrapper git-worktree-clone "$@"; }
+gwtinit() { __daft_wrapper git-worktree-init "$@"; }
+gwtco() { __daft_wrapper git-worktree-checkout "$@"; }
+gwtcb() { __daft_wrapper git-worktree-checkout-branch "$@"; }
+gwtcbm() { __daft_wrapper git-worktree-checkout-branch-from-default "$@"; }
+gwtprune() { __daft_wrapper git-worktree-prune "$@"; }
+gwtcarry() { __daft_wrapper git-worktree-carry "$@"; }
+gwtfetch() { __daft_wrapper git-worktree-fetch "$@"; }
+
+# Shell-style shortcuts
+gwco() { __daft_wrapper git-worktree-checkout "$@"; }
+gwcob() { __daft_wrapper git-worktree-checkout-branch "$@"; }
+gwcobd() { __daft_wrapper git-worktree-checkout-branch-from-default "$@"; }
+
+# Legacy-style shortcuts
+gclone() { __daft_wrapper git-worktree-clone "$@"; }
+gcw() { __daft_wrapper git-worktree-checkout "$@"; }
+gcbw() { __daft_wrapper git-worktree-checkout-branch "$@"; }
+gcbdw() { __daft_wrapper git-worktree-checkout-branch-from-default "$@"; }
+gprune() { __daft_wrapper git-worktree-prune "$@"; }
 "#;
 
 const BASH_ZSH_ALIASES: &str = r#"
@@ -255,6 +278,74 @@ function git --wraps git
         case '*'
             command git $argv
     end
+end
+
+# Shortcut wrappers - these override symlinks to enable cd behavior
+# Git-style shortcuts
+function gwtclone
+    __daft_wrapper git-worktree-clone $argv
+end
+
+function gwtinit
+    __daft_wrapper git-worktree-init $argv
+end
+
+function gwtco
+    __daft_wrapper git-worktree-checkout $argv
+end
+
+function gwtcb
+    __daft_wrapper git-worktree-checkout-branch $argv
+end
+
+function gwtcbm
+    __daft_wrapper git-worktree-checkout-branch-from-default $argv
+end
+
+function gwtprune
+    __daft_wrapper git-worktree-prune $argv
+end
+
+function gwtcarry
+    __daft_wrapper git-worktree-carry $argv
+end
+
+function gwtfetch
+    __daft_wrapper git-worktree-fetch $argv
+end
+
+# Shell-style shortcuts
+function gwco
+    __daft_wrapper git-worktree-checkout $argv
+end
+
+function gwcob
+    __daft_wrapper git-worktree-checkout-branch $argv
+end
+
+function gwcobd
+    __daft_wrapper git-worktree-checkout-branch-from-default $argv
+end
+
+# Legacy-style shortcuts
+function gclone
+    __daft_wrapper git-worktree-clone $argv
+end
+
+function gcw
+    __daft_wrapper git-worktree-checkout $argv
+end
+
+function gcbw
+    __daft_wrapper git-worktree-checkout-branch $argv
+end
+
+function gcbdw
+    __daft_wrapper git-worktree-checkout-branch-from-default $argv
+end
+
+function gprune
+    __daft_wrapper git-worktree-prune $argv
 end
 "#;
 
