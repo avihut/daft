@@ -4,6 +4,7 @@ use daft::{
     config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT},
     get_current_branch, get_git_common_dir, get_project_root,
     git::GitCommand,
+    hints::maybe_show_shell_hint,
     hooks::{HookContext, HookExecutor, HookType, HooksConfig},
     is_git_repository, logging,
     multi_remote::path::{calculate_worktree_path, resolve_remote_for_branch},
@@ -339,6 +340,7 @@ fn run_checkout_branch(
     ));
 
     output.cd_path(&get_current_directory()?);
+    maybe_show_shell_hint(output)?;
 
     Ok(())
 }

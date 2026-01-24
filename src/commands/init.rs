@@ -3,6 +3,7 @@ use clap::Parser;
 use daft::{
     check_dependencies,
     git::GitCommand,
+    hints::maybe_show_shell_hint,
     hooks::{HookContext, HookExecutor, HookType, HooksConfig, TrustLevel},
     logging::init_logging,
     multi_remote::path::calculate_worktree_path,
@@ -226,6 +227,7 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
         run_post_init_hook(&parent_dir, &git_dir, &current_dir, &initial_branch, output)?;
 
         output.cd_path(&current_dir);
+        maybe_show_shell_hint(output)?;
     } else {
         // Git-like result message for bare mode
         output.result(&format!(
