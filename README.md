@@ -9,22 +9,33 @@
 [![Linux](https://img.shields.io/badge/Linux-supported-success)](https://github.com/avihut/daft/releases)
 [![Windows](https://img.shields.io/badge/Windows-supported-success)](https://github.com/avihut/daft/releases)
 
-**daft** is a comprehensive toolkit that extends Git functionality to enhance developer workflows. Starting with powerful worktree management that enables a "one worktree per branch" approach, daft aims to provide a suite of Git extensions that eliminate friction and streamline modern development practices.
+> Stop switching branches. Work on multiple branches simultaneously.
 
-**Built with Rust**: Professional-grade Git extensions with type safety, comprehensive error handling, and excellent performance.
+**daft** gives each Git branch its own directory. No more stashing, no more context switching, no more waiting for builds to restart.
 
-## Key Features
+```
+my-project/
+├── .git/                    # Shared Git data
+├── main/                    # Stable branch
+├── feature/auth/            # Your feature work
+├── bugfix/login/            # Parallel bugfix
+└── review/teammate-pr/      # Code review
+```
 
-### Worktree Extensions (Current Focus)
-- **Worktree-centric workflow**: One worktree per branch, organized under a common parent directory
-- **Smart repository structure**: Uses `<repo-name>/.git` at root with worktrees at `<repo-name>/<branch-name>/`
-- **Automatic branch detection**: Dynamically detects default branches (main, master, develop, etc.)
-- **Flexible hooks system**: Project-managed lifecycle hooks for automation (replaces hardcoded direnv)
-- **Comprehensive error handling**: Robust cleanup of partial operations on failure
-- **Works from anywhere**: Execute commands from any directory within the repository
+## Quick Start
 
-### Future Extensions
-daft is evolving beyond worktree management to provide additional Git workflow enhancements. Future extensions will focus on streamlining common Git operations and enabling advanced workflows that aren't well-supported by Git's core commands.
+```bash
+# Install (macOS)
+brew install avihut/daft
+
+# Clone a repo (creates my-project/main/)
+git worktree-clone git@github.com:user/my-project.git
+
+# Start a feature branch (creates my-project/feature/auth/)
+git worktree-checkout-branch feature/auth
+```
+
+Each directory is a full working copy. Run different branches in different terminals. Your IDE state, node_modules, build artifacts - all isolated per branch.
 
 ## Installation
 
