@@ -60,6 +60,8 @@ pub enum RemovalReason {
     RemoteDeleted,
     /// Manual removal by user.
     Manual,
+    /// Worktree being removed during flow-eject.
+    Ejecting,
 }
 
 impl RemovalReason {
@@ -68,6 +70,7 @@ impl RemovalReason {
         match self {
             RemovalReason::RemoteDeleted => "remote-deleted",
             RemovalReason::Manual => "manual",
+            RemovalReason::Ejecting => "ejecting",
         }
     }
 }
@@ -356,5 +359,6 @@ mod tests {
     fn test_removal_reason_as_str() {
         assert_eq!(RemovalReason::RemoteDeleted.as_str(), "remote-deleted");
         assert_eq!(RemovalReason::Manual.as_str(), "manual");
+        assert_eq!(RemovalReason::Ejecting.as_str(), "ejecting");
     }
 }
