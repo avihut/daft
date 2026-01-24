@@ -7,7 +7,8 @@ use daft::{
     logging::init_logging,
     multi_remote::path::calculate_worktree_path,
     output::{CliOutput, Output, OutputConfig},
-    remote::{get_default_branch_remote, get_remote_branches},
+    remote::{get_default_branch_remote, get_remote_branches, is_remote_empty},
+    resolve_initial_branch,
     settings::DaftSettings,
     utils::*,
     WorktreeConfig,
@@ -133,30 +134,46 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     let repo_name = extract_repo_name(&args.repository_url)?;
     output.step(&format!("Repository name detected: '{repo_name}'"));
 
-    let default_branch = get_default_branch_remote(&args.repository_url)
-        .context("Failed to determine default branch")?;
-    output.step(&format!("Default branch detected: '{default_branch}'"));
+    // Check if the remote repository is empty (no commits)
+    let is_empty =
+        is_remote_empty(&args.repository_url).context("Failed to check if repository is empty")?;
 
-    // Determine the target branch and whether it exists on remote
-    let (target_branch, branch_exists) = if let Some(ref specified_branch) = args.branch {
+    // Determine the default branch and whether it exists on remote
+    let (default_branch, target_branch, branch_exists) = if is_empty {
+        // Empty repo: use local default branch config (init.defaultBranch or "master")
+        let local_default = resolve_initial_branch(&args.branch);
         output.step(&format!(
-            "Checking if branch '{}' exists on remote...",
-            specified_branch
+            "Empty repository detected, using branch: '{local_default}'"
         ));
-        let git = GitCommand::new(output.is_quiet());
-        let exists = git
-            .ls_remote_branch_exists(&args.repository_url, specified_branch)
-            .unwrap_or(false);
-        if exists {
-            output.step(&format!("Branch '{specified_branch}' found on remote"));
-        } else {
-            output.warning(&format!(
-                "Branch '{specified_branch}' does not exist on remote"
-            ));
-        }
-        (specified_branch.clone(), exists)
+        (local_default.clone(), local_default, false)
     } else {
-        (default_branch.clone(), true)
+        // Normal repo: query remote for default branch
+        let default_branch = get_default_branch_remote(&args.repository_url)
+            .context("Failed to determine default branch")?;
+        output.step(&format!("Default branch detected: '{default_branch}'"));
+
+        // Determine the target branch and whether it exists on remote
+        let (target_branch, branch_exists) = if let Some(ref specified_branch) = args.branch {
+            output.step(&format!(
+                "Checking if branch '{}' exists on remote...",
+                specified_branch
+            ));
+            let git = GitCommand::new(output.is_quiet());
+            let exists = git
+                .ls_remote_branch_exists(&args.repository_url, specified_branch)
+                .unwrap_or(false);
+            if exists {
+                output.step(&format!("Branch '{specified_branch}' found on remote"));
+            } else {
+                output.warning(&format!(
+                    "Branch '{specified_branch}' does not exist on remote"
+                ));
+            }
+            (specified_branch.clone(), exists)
+        } else {
+            (default_branch.clone(), true)
+        };
+        (default_branch, target_branch, branch_exists)
     };
 
     let parent_dir = PathBuf::from(&repo_name);
@@ -242,7 +259,12 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         daft::multi_remote::config::set_multi_remote_default(&git, &remote_for_path)?;
     }
 
-    if !args.no_checkout && branch_exists {
+    // Create worktree if:
+    // - Not in no-checkout mode, AND
+    // - Either the branch exists on remote, OR the repo is empty (we'll create an orphan branch)
+    let should_create_worktree = !args.no_checkout && (branch_exists || is_empty);
+
+    if should_create_worktree {
         // Calculate the relative worktree path from the parent_dir (we're now in parent_dir)
         let relative_worktree_path = if use_multi_remote {
             PathBuf::from(&remote_for_path).join(&target_branch)
@@ -251,6 +273,12 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         };
 
         if args.all_branches {
+            if is_empty {
+                // Empty repos have no branches to clone
+                anyhow::bail!(
+                    "Cannot use --all-branches with an empty repository (no branches exist)"
+                );
+            }
             create_all_worktrees(
                 &git,
                 &config,
@@ -259,6 +287,9 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
                 &remote_for_path,
                 output,
             )?;
+        } else if is_empty {
+            // Empty repo: create orphan worktree (no commits to checkout)
+            create_orphan_worktree(&git, &target_branch, &relative_worktree_path, output)?;
         } else {
             create_single_worktree(&git, &target_branch, &relative_worktree_path, output)?;
         }
@@ -273,33 +304,36 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             return Err(e);
         }
 
-        // Fetch to create remote tracking refs (bare clone only creates local refs)
-        output.step(&format!(
-            "Fetching from '{}' to set up remote tracking...",
-            config.remote_name
-        ));
-        if let Err(e) = git.fetch(&config.remote_name, false) {
-            output.warning(&format!("Could not fetch from remote: {e}"));
-        }
-
-        // Set up remote HEAD reference (must be after fetch so refs exist)
-        if let Err(e) = git.remote_set_head_auto(&config.remote_name) {
-            output.warning(&format!("Could not set remote HEAD: {e}"));
-        }
-
-        // Set up upstream tracking for the target branch (if enabled)
-        if settings.checkout_upstream {
+        // Skip fetch and upstream setup for empty repos (no remote refs exist)
+        if !is_empty {
+            // Fetch to create remote tracking refs (bare clone only creates local refs)
             output.step(&format!(
-                "Setting upstream to '{}/{}'...",
-                config.remote_name, target_branch
+                "Fetching from '{}' to set up remote tracking...",
+                config.remote_name
             ));
-            if let Err(e) = git.set_upstream(&config.remote_name, &target_branch) {
-                output.warning(&format!(
-                    "Could not set upstream tracking: {e}. You may need to set it manually."
-                ));
+            if let Err(e) = git.fetch(&config.remote_name, false) {
+                output.warning(&format!("Could not fetch from remote: {e}"));
             }
-        } else {
-            output.step("Skipping upstream setup (disabled in config)");
+
+            // Set up remote HEAD reference (must be after fetch so refs exist)
+            if let Err(e) = git.remote_set_head_auto(&config.remote_name) {
+                output.warning(&format!("Could not set remote HEAD: {e}"));
+            }
+
+            // Set up upstream tracking for the target branch (if enabled)
+            if settings.checkout_upstream {
+                output.step(&format!(
+                    "Setting upstream to '{}/{}'...",
+                    config.remote_name, target_branch
+                ));
+                if let Err(e) = git.set_upstream(&config.remote_name, &target_branch) {
+                    output.warning(&format!(
+                        "Could not set upstream tracking: {e}. You may need to set it manually."
+                    ));
+                }
+            } else {
+                output.step("Skipping upstream setup (disabled in config)");
+            }
         }
 
         let current_dir = get_current_directory()?;
@@ -369,6 +403,35 @@ fn create_single_worktree(
 
     git.worktree_add(worktree_path, branch)
         .context("Failed to create initial worktree")?;
+    Ok(())
+}
+
+/// Create an orphan worktree for an empty repository.
+///
+/// This is used when cloning an empty repository that has no commits.
+/// The worktree is created with a new orphan branch that can receive
+/// the first commit.
+fn create_orphan_worktree(
+    git: &GitCommand,
+    branch: &str,
+    worktree_path: &std::path::Path,
+    output: &mut dyn Output,
+) -> Result<()> {
+    output.step(&format!(
+        "Creating initial worktree for empty repository at '{}'...",
+        worktree_path.display()
+    ));
+
+    // Ensure parent directory exists (for multi-remote mode)
+    if let Some(parent) = worktree_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+        }
+    }
+
+    git.worktree_add_orphan(worktree_path, branch)
+        .context("Failed to create initial worktree for empty repository")?;
     Ok(())
 }
 

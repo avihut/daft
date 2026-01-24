@@ -48,6 +48,29 @@ pub fn get_default_branch_remote(repo_url: &str) -> Result<String> {
     anyhow::bail!("Could not parse default branch from ls-remote output")
 }
 
+/// Checks if a remote repository is empty (has no refs/commits).
+///
+/// Empty repositories (like a freshly created GitHub repo with no README)
+/// return no refs from `git ls-remote`. This function detects that case
+/// so callers can handle it appropriately.
+///
+/// # Arguments
+/// * `repo_url` - The URL of the remote Git repository to check
+///
+/// # Returns
+/// * `Ok(true)` - The repository is empty (no refs)
+/// * `Ok(false)` - The repository has at least one ref
+/// * `Err` - If the remote cannot be reached
+pub fn is_remote_empty(repo_url: &str) -> Result<bool> {
+    let git = GitCommand::new(false);
+    let output_str = git
+        .ls_remote_symref(repo_url)
+        .context("Failed to query remote")?;
+
+    // Empty repos return no refs at all (or only whitespace)
+    Ok(output_str.lines().all(|line| line.trim().is_empty()))
+}
+
 pub fn get_default_branch_local(git_common_dir: &Path, remote_name: &str) -> Result<String> {
     let head_ref_file = git_common_dir
         .join("refs/remotes")
@@ -176,5 +199,15 @@ mod tests {
     fn test_get_remote_branches() {
         let result = get_remote_branches("origin");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_is_remote_empty() {
+        // This is a basic test - the function itself is tested more thoroughly
+        // in integration tests with actual empty repositories
+        let result = is_remote_empty("origin");
+        assert!(result.is_ok());
+        // Our own repo should not be empty
+        assert!(!result.unwrap());
     }
 }

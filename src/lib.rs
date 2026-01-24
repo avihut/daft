@@ -95,6 +95,32 @@ pub fn get_current_branch() -> Result<String> {
     Ok(branch)
 }
 
+/// Resolve the initial branch name from explicit argument, git config, or default.
+///
+/// Priority:
+/// 1. Explicitly provided branch name (if Some)
+/// 2. Git config init.defaultBranch (global)
+/// 3. Fallback to "master"
+///
+/// This function is used when creating new repositories or handling empty
+/// repositories where no remote default branch can be queried.
+pub fn resolve_initial_branch(branch: &Option<String>) -> String {
+    if let Some(branch) = branch {
+        return branch.clone();
+    }
+
+    // Query git config for init.defaultBranch
+    let git = git::GitCommand::new(true); // quiet mode for config query
+    if let Ok(Some(configured_branch)) = git.config_get_global("init.defaultBranch") {
+        if !configured_branch.is_empty() {
+            return configured_branch;
+        }
+    }
+
+    // Fallback to "master"
+    "master".to_string()
+}
+
 pub fn extract_repo_name(repo_url: &str) -> Result<String> {
     let repo_name = if repo_url.contains(':') {
         let parts: Vec<&str> = repo_url.split(':').collect();

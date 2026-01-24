@@ -7,6 +7,7 @@ use daft::{
     logging::init_logging,
     multi_remote::path::calculate_worktree_path,
     output::{CliOutput, Output, OutputConfig},
+    resolve_initial_branch,
     settings::DaftSettings,
     utils::*,
 };
@@ -92,29 +93,6 @@ pub fn run() -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Resolve the initial branch name from args, git config, or default.
-///
-/// Priority:
-/// 1. Explicitly provided via -b/--initial-branch
-/// 2. Git config init.defaultBranch (global)
-/// 3. Fallback to "master"
-fn resolve_initial_branch(initial_branch: &Option<String>) -> String {
-    if let Some(branch) = initial_branch {
-        return branch.clone();
-    }
-
-    // Query git config for init.defaultBranch
-    let git = GitCommand::new(true); // quiet mode for config query
-    if let Ok(Some(configured_branch)) = git.config_get_global("init.defaultBranch") {
-        if !configured_branch.is_empty() {
-            return configured_branch;
-        }
-    }
-
-    // Fallback to "master"
-    "master".to_string()
 }
 
 /// Run the init command with the given output implementation.
