@@ -1,5 +1,14 @@
 # daft - Git Extensions Toolkit
 
+[![CI](https://github.com/avihut/daft/actions/workflows/test.yml/badge.svg)](https://github.com/avihut/daft/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/avihut/daft?label=release)](https://github.com/avihut/daft/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+[![Homebrew](https://img.shields.io/badge/homebrew-avihut%2Fdaft-blueviolet)](https://github.com/avihut/homebrew-daft)
+[![macOS](https://img.shields.io/badge/macOS-supported-success)](https://github.com/avihut/daft/releases)
+[![Linux](https://img.shields.io/badge/Linux-supported-success)](https://github.com/avihut/daft/releases)
+[![Windows](https://img.shields.io/badge/Windows-supported-success)](https://github.com/avihut/daft/releases)
+
 **daft** is a comprehensive toolkit that extends Git functionality to enhance developer workflows. Starting with powerful worktree management that enables a "one worktree per branch" approach, daft aims to provide a suite of Git extensions that eliminate friction and streamline modern development practices.
 
 **Built with Rust**: Professional-grade Git extensions with type safety, comprehensive error handling, and excellent performance.
