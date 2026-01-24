@@ -52,6 +52,8 @@ dev-clean:
         git-worktree-prune \
         git-worktree-carry \
         git-worktree-fetch \
+        git-worktree-flow-adopt \
+        git-worktree-flow-eject \
         git-daft \
         gwtclone gwtinit gwtco gwtcb gwtcbm gwtprune gwtcarry gwtfetch \
         gwco gwcob gwcobd \
@@ -156,6 +158,16 @@ test-integration-fetch: build
     @echo "Running Rust integration fetch tests..."
     @cd {{integration_tests_dir}} && ./test_fetch.sh
 
+# Run integration flow-adopt tests
+test-integration-flow-adopt: build
+    @echo "Running Rust integration flow-adopt tests..."
+    @cd {{integration_tests_dir}} && ./test_flow_adopt.sh
+
+# Run integration flow-eject tests
+test-integration-flow-eject: build
+    @echo "Running Rust integration flow-eject tests..."
+    @cd {{integration_tests_dir}} && ./test_flow_eject.sh
+
 # ============================================================================
 # Verbose Test Recipes
 # ============================================================================
@@ -207,6 +219,8 @@ setup-rust: build
     ln -sf daft git-worktree-prune
     ln -sf daft git-worktree-carry
     ln -sf daft git-worktree-fetch
+    ln -sf daft git-worktree-flow-adopt
+    ln -sf daft git-worktree-flow-eject
     ln -sf daft git-daft
     # Git-style shortcuts (default for development)
     ln -sf daft gwtclone
