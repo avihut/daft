@@ -388,6 +388,8 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     }
 
     // Move files from target worktree to project root
+    // Use a staging directory to avoid conflicts when the branch name matches
+    // a directory inside the worktree (e.g., branch "test" with a "test/" dir inside)
     output.step(&format!(
         "Moving files from '{}' to '{}'...",
         target_worktree.path.display(),
@@ -405,22 +407,23 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         })
         .collect();
 
+    // Use staging directory inside .git to avoid path conflicts
+    let staging_dir = git_dir.join("daft-eject-staging");
+    fs::create_dir_all(&staging_dir).with_context(|| {
+        format!(
+            "Failed to create staging directory: {}",
+            staging_dir.display()
+        )
+    })?;
+
+    // Move files from worktree to staging first
     for entry in &entries_to_move {
         let file_name = entry.file_name().context("Could not get file name")?;
-        let dest = project_root.join(file_name);
-
-        // Remove destination if it exists (shouldn't happen, but be safe)
-        if dest.exists() {
-            if dest.is_dir() {
-                fs::remove_dir_all(&dest).ok();
-            } else {
-                fs::remove_file(&dest).ok();
-            }
-        }
+        let dest = staging_dir.join(file_name);
 
         fs::rename(entry, &dest).with_context(|| {
             format!(
-                "Failed to move '{}' to '{}'",
+                "Failed to move '{}' to staging: {}",
                 entry.display(),
                 dest.display()
             )
@@ -436,11 +439,33 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     // Remove the now-empty worktree directory
     if target_worktree.path.exists() {
         output.step(&format!(
-            "Removing empty worktree directory '{}'...",
+            "Removing worktree directory '{}'...",
             target_worktree.path.display()
         ));
         fs::remove_dir_all(&target_worktree.path).ok();
     }
+
+    // Now move files from staging to project root (safe because worktree dir is gone)
+    let staged_entries: Vec<PathBuf> = fs::read_dir(&staging_dir)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .collect();
+
+    for entry in &staged_entries {
+        let file_name = entry.file_name().context("Could not get file name")?;
+        let dest = project_root.join(file_name);
+
+        fs::rename(entry, &dest).with_context(|| {
+            format!(
+                "Failed to move '{}' to '{}'",
+                entry.display(),
+                dest.display()
+            )
+        })?;
+    }
+
+    // Clean up staging directory
+    fs::remove_dir(&staging_dir).ok();
 
     // Remove worktree registration
     let worktrees_dir = git_dir.join("worktrees");

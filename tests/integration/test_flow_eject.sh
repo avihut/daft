@@ -232,6 +232,56 @@ test_flow_eject_help() {
     return 0
 }
 
+# Test eject when worktree contains directory matching branch name
+# Branch "test" with a "test/" directory inside - tests staging directory approach
+test_flow_eject_branch_matches_directory() {
+    create_worktree_repo "eject-conflict" || return 1
+
+    cd "eject-conflict"
+
+    # Create a new branch worktree named "test"
+    git worktree add test -b test master >/dev/null 2>&1 || return 1
+
+    # Add a directory named "test" inside the "test" worktree
+    cd "test"
+    mkdir -p test
+    echo "nested content" > test/nested.txt
+    echo "root content" > root.txt
+    git add . >/dev/null 2>&1
+    git commit -m "Add test directory" >/dev/null 2>&1
+    cd ..
+
+    # Remove master worktree so only "test" remains
+    git worktree remove master --force >/dev/null 2>&1 || return 1
+
+    # Eject - this used to fail because we'd try to move test/test to test
+    # while test (the worktree) still exists
+    git-worktree-flow-eject || return 1
+
+    cd ..
+
+    # Verify traditional structure
+    assert_file_exists "eject-conflict/root.txt" || return 1
+    assert_file_exists "eject-conflict/test/nested.txt" || return 1
+
+    # Verify worktree directory is gone
+    if [[ -d "eject-conflict/test" ]] && [[ -f "eject-conflict/test/root.txt" ]]; then
+        # If test/ exists and has root.txt, the worktree wasn't properly removed
+        log_error "Worktree directory structure should be flattened"
+        return 1
+    fi
+
+    # Verify on test branch
+    cd "eject-conflict"
+    local current_branch=$(git branch --show-current)
+    if [[ "$current_branch" != "test" ]]; then
+        log_error "Should be on test branch, but on '$current_branch'"
+        return 1
+    fi
+
+    return 0
+}
+
 # Test eject with only a non-default branch (no master/main worktree)
 # This tests the fallback to first available worktree
 test_flow_eject_only_non_default_branch() {
@@ -298,6 +348,7 @@ run_flow_eject_tests() {
     run_test "flow_eject_dry_run" "test_flow_eject_dry_run"
     run_test "flow_eject_traditional_repo" "test_flow_eject_traditional_repo"
     run_test "flow_eject_help" "test_flow_eject_help"
+    run_test "flow_eject_branch_matches_directory" "test_flow_eject_branch_matches_directory"
     run_test "flow_eject_only_non_default_branch" "test_flow_eject_only_non_default_branch"
 }
 
