@@ -232,6 +232,60 @@ test_flow_eject_help() {
     return 0
 }
 
+# Test eject with only a non-default branch (no master/main worktree)
+# This tests the fallback to first available worktree
+test_flow_eject_only_non_default_branch() {
+    # Create a worktree repo, then remove the master worktree and add a test branch
+    create_worktree_repo "eject-nondefault" || return 1
+
+    cd "eject-nondefault"
+
+    # Create a new branch worktree
+    git worktree add test-branch -b test-branch master >/dev/null 2>&1 || return 1
+
+    # Add content to test branch
+    cd "test-branch"
+    echo "test content" > test.txt
+    git add . >/dev/null 2>&1
+    git commit -m "Add test content" >/dev/null 2>&1
+    cd ..
+
+    # Remove the master worktree so only test-branch remains
+    git worktree remove master --force >/dev/null 2>&1 || return 1
+
+    # Verify only test-branch worktree exists
+    if [[ -d "master" ]]; then
+        log_error "Master worktree should be removed"
+        return 1
+    fi
+
+    # Eject without specifying branch - should automatically use test-branch
+    git-worktree-flow-eject || return 1
+
+    cd ..
+
+    # Verify traditional structure with test-branch content
+    assert_file_exists "eject-nondefault/test.txt" || return 1
+    assert_file_exists "eject-nondefault/README.md" || return 1
+
+    # Verify on test-branch
+    cd "eject-nondefault"
+    local current_branch=$(git branch --show-current)
+    if [[ "$current_branch" != "test-branch" ]]; then
+        log_error "Should be on test-branch, but on '$current_branch'"
+        return 1
+    fi
+
+    # Verify .git is not bare
+    local is_bare=$(git config --get core.bare)
+    if [[ "$is_bare" == "true" ]]; then
+        log_error "Repository should NOT be bare after eject"
+        return 1
+    fi
+
+    return 0
+}
+
 # Run all flow_eject tests
 run_flow_eject_tests() {
     log "Running git-worktree-flow-eject integration tests..."
@@ -244,6 +298,7 @@ run_flow_eject_tests() {
     run_test "flow_eject_dry_run" "test_flow_eject_dry_run"
     run_test "flow_eject_traditional_repo" "test_flow_eject_traditional_repo"
     run_test "flow_eject_help" "test_flow_eject_help"
+    run_test "flow_eject_only_non_default_branch" "test_flow_eject_only_non_default_branch"
 }
 
 # Main execution

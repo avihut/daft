@@ -177,60 +177,78 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         output.step(&format!("  - {} ({})", wt.path.display(), branch_display));
     }
 
-    // Determine target branch
-    let target_branch = if let Some(ref branch) = args.branch {
-        branch.clone()
+    // Helper to check if a branch has a worktree
+    let find_worktree_for_branch = |branch: &str| -> Option<&WorktreeInfo> {
+        non_bare_worktrees
+            .iter()
+            .find(|wt| wt.branch.as_ref().map(|b| b == branch).unwrap_or(false))
+            .copied()
+    };
+
+    // Determine target branch and worktree
+    let (target_branch, target_worktree) = if let Some(ref branch) = args.branch {
+        // User explicitly specified a branch - must exist
+        match find_worktree_for_branch(branch) {
+            Some(wt) => (branch.clone(), wt.clone()),
+            None => {
+                let available_branches: Vec<_> = non_bare_worktrees
+                    .iter()
+                    .filter_map(|wt| wt.branch.as_ref())
+                    .collect();
+                anyhow::bail!(
+                    "No worktree found for branch '{}'. Available branches: {}",
+                    branch,
+                    available_branches
+                        .iter()
+                        .map(|b| format!("'{}'", b))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
     } else {
-        // Try to get default branch from remote HEAD
-        get_default_branch_from_remote_head(&settings.remote).unwrap_or_else(|_| {
-            // Fall back to common defaults
-            for wt in &non_bare_worktrees {
-                if let Some(ref branch) = wt.branch {
-                    if branch == "main" || branch == "master" {
-                        return branch.clone();
-                    }
+        // No branch specified - try default, then main/master, then first available
+        let default_branch = get_default_branch_from_remote_head(&settings.remote).ok();
+
+        // Try remote's default branch first
+        if let Some(ref branch) = default_branch {
+            if let Some(wt) = find_worktree_for_branch(branch) {
+                (branch.clone(), wt.clone())
+            } else {
+                // Default branch doesn't have a worktree, try main/master
+                if let Some(wt) = find_worktree_for_branch("main") {
+                    ("main".to_string(), wt.clone())
+                } else if let Some(wt) = find_worktree_for_branch("master") {
+                    ("master".to_string(), wt.clone())
+                } else {
+                    // Fall back to first available worktree
+                    let first_wt = non_bare_worktrees.first().unwrap();
+                    let branch = first_wt
+                        .branch
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string());
+                    (branch, (*first_wt).clone())
                 }
             }
-            // Just use the first worktree's branch
-            non_bare_worktrees
-                .first()
-                .and_then(|wt| wt.branch.clone())
-                .unwrap_or_else(|| "main".to_string())
-        })
+        } else {
+            // No remote default, try main/master, then first available
+            if let Some(wt) = find_worktree_for_branch("main") {
+                ("main".to_string(), wt.clone())
+            } else if let Some(wt) = find_worktree_for_branch("master") {
+                ("master".to_string(), wt.clone())
+            } else {
+                // Fall back to first available worktree
+                let first_wt = non_bare_worktrees.first().unwrap();
+                let branch = first_wt
+                    .branch
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string());
+                (branch, (*first_wt).clone())
+            }
+        }
     };
 
     output.step(&format!("Target branch to keep: '{target_branch}'"));
-
-    // Find target worktree
-    let target_worktree = non_bare_worktrees
-        .iter()
-        .find(|wt| {
-            wt.branch
-                .as_ref()
-                .map(|b| b == &target_branch)
-                .unwrap_or(false)
-        })
-        .cloned();
-
-    let target_worktree = match target_worktree {
-        Some(wt) => wt.clone(),
-        None => {
-            // Branch might exist but not have a worktree yet
-            let available_branches: Vec<_> = non_bare_worktrees
-                .iter()
-                .filter_map(|wt| wt.branch.as_ref())
-                .collect();
-            anyhow::bail!(
-                "No worktree found for branch '{}'. Available branches: {}",
-                target_branch,
-                available_branches
-                    .iter()
-                    .map(|b| format!("'{}'", b))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-    };
 
     output.step(&format!(
         "Target worktree: '{}'",
