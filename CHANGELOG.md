@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.2] - 2026-01-24
+
+
+### Bug Fixes
+
+- Enable CD behavior for all shortcut styles (#80)
 ## [1.0.1] - 2026-01-24
 
 
