@@ -32,6 +32,7 @@ pub fn output_cd_path(path: &Path) {
 
 pub mod config;
 pub mod git;
+pub mod hints;
 pub mod hooks;
 pub mod logging;
 pub mod multi_remote;

@@ -3,6 +3,7 @@ use clap::Parser;
 use daft::{
     get_git_common_dir, get_project_root,
     git::GitCommand,
+    hints::maybe_show_shell_hint,
     hooks::{HookContext, HookExecutor, HookType, HooksConfig},
     is_git_repository,
     logging::init_logging,
@@ -135,6 +136,7 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
             args.branch_name
         ));
         output.cd_path(&get_current_directory()?);
+        maybe_show_shell_hint(output)?;
         return Ok(());
     }
 
@@ -342,6 +344,7 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
     output.result(&format!("Prepared worktree '{}'", args.branch_name));
 
     output.cd_path(&get_current_directory()?);
+    maybe_show_shell_hint(output)?;
 
     Ok(())
 }

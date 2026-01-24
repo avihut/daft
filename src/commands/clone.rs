@@ -3,6 +3,7 @@ use clap::Parser;
 use daft::{
     check_dependencies, extract_repo_name,
     git::GitCommand,
+    hints::maybe_show_shell_hint,
     hooks::{HookContext, HookExecutor, HookType, HooksConfig, TrustLevel},
     logging::init_logging,
     multi_remote::path::calculate_worktree_path,
@@ -372,6 +373,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         )?;
 
         output.cd_path(&current_dir);
+        maybe_show_shell_hint(output)?;
     } else if !args.no_checkout && !branch_exists {
         // Branch was specified but doesn't exist - stay in repo root
         let current_dir = get_current_directory()?;
@@ -380,6 +382,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             target_branch
         ));
         output.cd_path(&current_dir);
+        maybe_show_shell_hint(output)?;
     } else {
         // Git-like result message for no-checkout mode
         output.result(&format!("Cloned '{repo_name}' (bare)"));
