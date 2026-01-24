@@ -480,10 +480,15 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         }
     }
 
+    // Change to the project root
+    change_directory(&project_root)?;
+
     output.result(&format!(
         "Converted to traditional layout on branch '{}'",
         target_branch
     ));
+
+    output.cd_path(&project_root);
 
     Ok(())
 }

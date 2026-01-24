@@ -268,6 +268,12 @@ fn run_adopt(args: &Args, output: &mut dyn Output) -> Result<()> {
     git.config_set("core.bare", "true")
         .context("Failed to set core.bare")?;
 
+    // Remove the index file from the bare repo (bare repos don't need an index)
+    let bare_index = git_dir.join("index");
+    if bare_index.exists() {
+        fs::remove_file(&bare_index).ok();
+    }
+
     // Setup fetch refspec for remote tracking
     let settings = DaftSettings::load_global()?;
     output.step("Setting up fetch refspec for remote tracking...");
@@ -315,6 +321,20 @@ fn run_adopt(args: &Args, output: &mut dyn Output) -> Result<()> {
     // Change to the new worktree
     change_directory(&worktree_path)?;
 
+    // Initialize the index for this worktree
+    // The worktree needs its own index file to track the working tree state
+    output.step("Initializing worktree index...");
+    let reset_result = std::process::Command::new("git")
+        .args(["reset", "--mixed", "HEAD"])
+        .current_dir(&worktree_path)
+        .output()
+        .context("Failed to initialize worktree index")?;
+
+    if !reset_result.status.success() {
+        let stderr = String::from_utf8_lossy(&reset_result.stderr);
+        output.warning(&format!("git reset warning: {}", stderr.trim()));
+    }
+
     // Restore stashed changes if any
     if has_changes {
         output.step("Restoring uncommitted changes...");
@@ -324,15 +344,13 @@ fn run_adopt(args: &Args, output: &mut dyn Output) -> Result<()> {
         }
     }
 
-    let current_dir = get_current_directory()?;
-
     // Run post-clone hook
     run_post_adopt_hook(
         args,
         &project_root,
         &git_dir,
         &settings.remote,
-        &current_dir,
+        &worktree_path,
         &current_branch,
         output,
     )?;
@@ -346,7 +364,7 @@ fn run_adopt(args: &Args, output: &mut dyn Output) -> Result<()> {
         current_branch
     ));
 
-    output.cd_path(&current_dir);
+    output.cd_path(&get_current_directory()?);
 
     Ok(())
 }

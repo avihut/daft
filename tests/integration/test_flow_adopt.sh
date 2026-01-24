@@ -42,6 +42,21 @@ test_flow_adopt_basic() {
         return 1
     fi
 
+    # Verify bare repo doesn't have an index file (bare repos shouldn't have one)
+    if [[ -f ".git/index" ]]; then
+        log_error "Bare repo should not have an index file"
+        return 1
+    fi
+
+    # Verify git status is clean in the worktree (index is properly initialized)
+    cd "master"
+    local status_output=$(git status --porcelain 2>&1)
+    if [[ -n "$status_output" ]]; then
+        log_error "Git status should be clean after adopt, but got:"
+        echo "$status_output"
+        return 1
+    fi
+
     return 0
 }
 

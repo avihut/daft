@@ -94,6 +94,8 @@ git-worktree-checkout() { __daft_wrapper git-worktree-checkout "$@"; }
 git-worktree-checkout-branch() { __daft_wrapper git-worktree-checkout-branch "$@"; }
 git-worktree-checkout-branch-from-default() { __daft_wrapper git-worktree-checkout-branch-from-default "$@"; }
 git-worktree-carry() { __daft_wrapper git-worktree-carry "$@"; }
+git-worktree-flow-adopt() { __daft_wrapper git-worktree-flow-adopt "$@"; }
+git-worktree-flow-eject() { __daft_wrapper git-worktree-flow-eject "$@"; }
 
 # Git wrapper to intercept "git worktree-*" subcommands (with spaces)
 git() {
@@ -110,6 +112,10 @@ git() {
             shift; __daft_wrapper git-worktree-checkout-branch-from-default "$@" ;;
         worktree-carry)
             shift; __daft_wrapper git-worktree-carry "$@" ;;
+        worktree-flow-adopt)
+            shift; __daft_wrapper git-worktree-flow-adopt "$@" ;;
+        worktree-flow-eject)
+            shift; __daft_wrapper git-worktree-flow-eject "$@" ;;
         *)
             command git "$@" ;;
     esac
@@ -184,6 +190,14 @@ function git-worktree-carry
     __daft_wrapper git-worktree-carry $argv
 end
 
+function git-worktree-flow-adopt
+    __daft_wrapper git-worktree-flow-adopt $argv
+end
+
+function git-worktree-flow-eject
+    __daft_wrapper git-worktree-flow-eject $argv
+end
+
 # Git wrapper to intercept "git worktree-*" subcommands (with spaces)
 function git --wraps git
     switch $argv[1]
@@ -199,6 +213,10 @@ function git --wraps git
             __daft_wrapper git-worktree-checkout-branch-from-default $argv[2..-1]
         case worktree-carry
             __daft_wrapper git-worktree-carry $argv[2..-1]
+        case worktree-flow-adopt
+            __daft_wrapper git-worktree-flow-adopt $argv[2..-1]
+        case worktree-flow-eject
+            __daft_wrapper git-worktree-flow-eject $argv[2..-1]
         case '*'
             command git $argv
     end
