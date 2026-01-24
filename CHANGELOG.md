@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.3] - 2026-01-24
+
+
+### CI/CD
+
+- Add post-install caveats to Homebrew formula
 ## [1.0.2] - 2026-01-24
 
 
