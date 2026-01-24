@@ -88,6 +88,20 @@ jobs:
           tar xzf git-cliff-*-x86_64-unknown-linux-gnu.tar.gz
           sudo mv git-cliff-*/git-cliff /usr/local/bin/
 
+      - name: Remove conflicting prerelease tags from HEAD
+        run: |
+          # git-cliff skips releases when a canary/beta tag points to the same commit
+          # as the release tag. Remove any prerelease tags on HEAD to prevent this.
+          HEAD_SHA=$(git rev-parse HEAD)
+          echo "HEAD commit: $HEAD_SHA"
+
+          # Find and delete any canary/beta tags pointing to HEAD
+          for tag in $(git tag --points-at HEAD | grep -E '-(canary|beta)'); do
+            echo "Removing conflicting prerelease tag: $tag"
+            git tag -d "$tag"
+            git push origin --delete "$tag" || echo "Failed to delete remote tag $tag (may not exist)"
+          done
+
       - name: Update CHANGELOG.md
         run: |
           VERSION="${{ steps.final.outputs.version }}"
