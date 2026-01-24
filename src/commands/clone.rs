@@ -134,47 +134,54 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     let repo_name = extract_repo_name(&args.repository_url)?;
     output.step(&format!("Repository name detected: '{repo_name}'"));
 
-    // Check if the remote repository is empty (no commits)
-    let is_empty =
-        is_remote_empty(&args.repository_url).context("Failed to check if repository is empty")?;
+    // Try to get the default branch from remote first.
+    // If this fails, check if the repository is empty (no commits).
+    // This order ensures invalid URLs fail properly instead of being treated as empty repos.
+    let (default_branch, target_branch, branch_exists, is_empty) =
+        match get_default_branch_remote(&args.repository_url) {
+            Ok(default_branch) => {
+                // Normal repo with commits - proceed with standard flow
+                output.step(&format!("Default branch detected: '{default_branch}'"));
 
-    // Determine the default branch and whether it exists on remote
-    let (default_branch, target_branch, branch_exists) = if is_empty {
-        // Empty repo: use local default branch config (init.defaultBranch or "master")
-        let local_default = resolve_initial_branch(&args.branch);
-        output.step(&format!(
-            "Empty repository detected, using branch: '{local_default}'"
-        ));
-        (local_default.clone(), local_default, false)
-    } else {
-        // Normal repo: query remote for default branch
-        let default_branch = get_default_branch_remote(&args.repository_url)
-            .context("Failed to determine default branch")?;
-        output.step(&format!("Default branch detected: '{default_branch}'"));
-
-        // Determine the target branch and whether it exists on remote
-        let (target_branch, branch_exists) = if let Some(ref specified_branch) = args.branch {
-            output.step(&format!(
-                "Checking if branch '{}' exists on remote...",
-                specified_branch
-            ));
-            let git = GitCommand::new(output.is_quiet());
-            let exists = git
-                .ls_remote_branch_exists(&args.repository_url, specified_branch)
-                .unwrap_or(false);
-            if exists {
-                output.step(&format!("Branch '{specified_branch}' found on remote"));
-            } else {
-                output.warning(&format!(
-                    "Branch '{specified_branch}' does not exist on remote"
-                ));
+                // Determine the target branch and whether it exists on remote
+                let (target_branch, branch_exists) = if let Some(ref specified_branch) = args.branch
+                {
+                    output.step(&format!(
+                        "Checking if branch '{}' exists on remote...",
+                        specified_branch
+                    ));
+                    let git = GitCommand::new(output.is_quiet());
+                    let exists = git
+                        .ls_remote_branch_exists(&args.repository_url, specified_branch)
+                        .unwrap_or(false);
+                    if exists {
+                        output.step(&format!("Branch '{specified_branch}' found on remote"));
+                    } else {
+                        output.warning(&format!(
+                            "Branch '{specified_branch}' does not exist on remote"
+                        ));
+                    }
+                    (specified_branch.clone(), exists)
+                } else {
+                    (default_branch.clone(), true)
+                };
+                (default_branch, target_branch, branch_exists, false)
             }
-            (specified_branch.clone(), exists)
-        } else {
-            (default_branch.clone(), true)
+            Err(e) => {
+                // Failed to get default branch - check if repo is empty
+                if is_remote_empty(&args.repository_url).unwrap_or(false) {
+                    // Empty repo: use local default branch config
+                    let local_default = resolve_initial_branch(&args.branch);
+                    output.step(&format!(
+                        "Empty repository detected, using branch: '{local_default}'"
+                    ));
+                    (local_default.clone(), local_default, false, true)
+                } else {
+                    // Not an empty repo - propagate the original error
+                    return Err(e.context("Failed to determine default branch"));
+                }
+            }
         };
-        (default_branch, target_branch, branch_exists)
-    };
 
     let parent_dir = PathBuf::from(&repo_name);
 

@@ -103,15 +103,18 @@ test_clone_all_branches() {
 
 # Test clone error handling - invalid URL
 test_clone_invalid_url() {
-    # Test with invalid URL
-    assert_command_failure "git-worktree-clone https://invalid-url-that-does-not-exist.com/repo.git" "Should fail with invalid URL"
-    
+    # Test with a local path that doesn't exist (guaranteed to fail)
+    # Note: HTTP URLs like "https://invalid-url.com/repo.git" may resolve to
+    # parking pages or empty responses that git treats as empty repos, so we
+    # use a local file path that definitely doesn't exist.
+    assert_command_failure "git-worktree-clone /nonexistent/path/to/repo.git" "Should fail with invalid URL"
+
     # Verify no directory was created
     if [[ -d "repo" ]]; then
         log_error "Failed clone should not create directory"
         return 1
     fi
-    
+
     return 0
 }
 
