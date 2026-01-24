@@ -32,6 +32,50 @@ All notable changes to this project will be documented in this file.
 ### Bug Fixes
 
 - Resolve v1.0.0 release issues (#78)
+
+## [1.0.0] - 2026-01-24
+
+### Features
+
+- Shell integration for automatic cd into new worktrees (#46)
+- Carry uncommitted (dirty) state between worktrees (#44)
+- Worktree-checkout to branch with existing worktree just CDs to that worktree (#51)
+- Add IO abstraction layer for future TUI support (#54)
+- Git-like terminal logging (#55)
+- **clone**: Add -b/--branch option to specify checkout branch (#59)
+- Add git config-based configuration system (#60)
+- **init**: Respect git config init.defaultBranch setting (#61)
+- **hooks**: Add flexible project-managed hooks system (#62)
+- Add man page generation using clap_mangen (#63)
+- Add git-worktree-fetch command to update worktree branches (#66)
+- Add multi-style command shortcuts system (#4) (#69)
+- Add multi-remote workflow support (#71)
+- Add git-worktree-flow-adopt and git-worktree-flow-eject commands (#73)
+- Support cloning empty repositories (#74)
+
+### Bug Fixes
+
+- Checkout existing branch no longer results in detached HEAD (#58)
+
+### CI/CD
+
+- Add Homebrew integration tests (#70)
+
+### Documentation
+
+- Add badges to README
+- Rewrite README intro with user-focused content
+- Add before/after workflow diagram to README
+- Condense README from 796 to 166 lines
+- Add SECURITY.md and CODE_OF_CONDUCT.md
+- Add demo GIF to README
+- Add docs badge linking to avihu.dev/daft
+
+### Miscellaneous
+
+- Migrate from Makefile to justfile (#50)
+- Remove legacy shell scripts (#48)
+
 ## [0.3.3] - 2026-01-17
 
 
