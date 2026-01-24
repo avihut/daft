@@ -40,6 +40,30 @@ git worktree-checkout-branch feature/auth
 
 Each directory is a full working copy. Run different branches in different terminals. Your IDE state, node_modules, build artifacts - all isolated per branch.
 
+## Adopt Existing Repositories
+
+Already have a repository? Convert it to the worktree workflow with one command:
+
+```bash
+cd my-existing-project
+git worktree-flow-adopt
+```
+
+This restructures your repo:
+```
+my-project/                 my-project/
+├── .git/                   ├── .git/        (bare repository)
+├── src/           →        └── main/        (worktree)
+└── README.md                   ├── src/
+                                └── README.md
+```
+
+Your uncommitted changes are preserved. If you change your mind:
+
+```bash
+git worktree-flow-eject      # Converts back to traditional layout
+```
+
 ## Why daft?
 
 **Traditional Git workflow:**
@@ -116,6 +140,8 @@ daft shell-init fish | source
 | `git worktree-checkout-branch-from-default <branch>` | Create branch from remote default |
 | `git worktree-prune` | Remove worktrees for deleted remote branches |
 | `git worktree-carry` | Carry uncommitted changes to other worktrees |
+| `git worktree-flow-adopt` | Convert traditional repo to worktree layout |
+| `git worktree-flow-eject` | Convert back to traditional layout |
 
 Run any command with `--help` for full options.
 
