@@ -101,7 +101,7 @@ pub fn run() -> Result<()> {
 }
 
 /// Detect the installation directory by finding where the daft binary is located.
-fn detect_install_dir() -> Result<PathBuf> {
+pub fn detect_install_dir() -> Result<PathBuf> {
     let exe_path =
         std::env::current_exe().context("Failed to determine current executable path")?;
     let install_dir = exe_path
@@ -269,26 +269,73 @@ fn cmd_enable(style_name: &str, install_dir: Option<PathBuf>, dry_run: bool) -> 
 
     let install_dir = install_dir.map(Ok).unwrap_or_else(detect_install_dir)?;
 
+    enable_style(style, &install_dir, dry_run, true)
+}
+
+/// Enable shortcuts for a given style. Public API for use by other commands.
+///
+/// If `verbose` is true, prints status messages. If false, operates silently.
+pub fn enable_style(
+    style: ShortcutStyle,
+    install_dir: &Path,
+    dry_run: bool,
+    verbose: bool,
+) -> Result<()> {
     if !dry_run {
-        check_write_permission(&install_dir)?;
+        check_write_permission(install_dir)?;
     }
 
     let shortcuts = shortcuts_for_style(style);
 
-    if dry_run {
-        println!("[dry-run] Would enable {} style shortcuts:", style.name());
-    } else {
-        println!("Enabling {} style shortcuts:", style.name());
+    if verbose {
+        if dry_run {
+            println!("[dry-run] Would enable {} style shortcuts:", style.name());
+        } else {
+            println!("Enabling {} style shortcuts:", style.name());
+        }
+        println!();
     }
-    println!();
 
     for shortcut in shortcuts {
-        create_symlink(shortcut.alias, &install_dir, dry_run)?;
+        if verbose {
+            create_symlink(shortcut.alias, install_dir, dry_run)?;
+        } else if !dry_run {
+            // Silent mode - create without printing
+            create_symlink_silent(shortcut.alias, install_dir)?;
+        }
     }
 
-    if !dry_run {
+    if verbose && !dry_run {
         println!();
         println!("Done! {} shortcuts enabled.", style.name());
+    }
+
+    Ok(())
+}
+
+/// Create a symlink without printing output.
+fn create_symlink_silent(alias: &str, install_dir: &Path) -> Result<()> {
+    let link_path = install_dir.join(alias);
+
+    // Remove existing file/symlink if present
+    if link_path.exists() || link_path.is_symlink() {
+        fs::remove_file(&link_path)
+            .with_context(|| format!("Failed to remove existing {alias}"))?;
+    }
+
+    // Create symlink (using relative path for portability)
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("daft", &link_path)
+            .with_context(|| format!("Failed to create symlink for {alias}"))?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        // On non-Unix, copy the binary instead
+        let daft_binary = get_daft_binary(install_dir);
+        fs::copy(&daft_binary, &link_path)
+            .with_context(|| format!("Failed to copy daft binary to {alias}"))?;
     }
 
     Ok(())

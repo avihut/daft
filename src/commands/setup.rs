@@ -5,6 +5,9 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
+use crate::commands::shortcuts::{detect_install_dir, enable_style};
+use crate::shortcuts::ShortcutStyle;
+
 #[derive(Debug, Clone, PartialEq)]
 enum Shell {
     Bash,
@@ -189,12 +192,28 @@ pub fn run() -> Result<()> {
     )?;
     writeln!(file, "{init_line}")?;
 
+    // Install git-style shortcuts
+    let shortcuts_installed = if let Ok(install_dir) = detect_install_dir() {
+        enable_style(ShortcutStyle::Git, &install_dir, false, false).is_ok()
+    } else {
+        false
+    };
+
     println!();
     println!("Done! Shell integration added to {}", config_file.display());
+    if shortcuts_installed {
+        println!("      Git-style shortcuts installed (gwtco, gwtcb, etc.)");
+    }
     println!();
     println!("To activate, either:");
     println!("  1. Restart your terminal, or");
     println!("  2. Run: source {}", config_file.display());
+    if shortcuts_installed {
+        println!();
+        println!("To use different shortcut styles:");
+        println!("  daft setup shortcuts only shell   # gwco, gwcob, gwcobd");
+        println!("  daft setup shortcuts only legacy  # gclone, gcw, gcbw, ...");
+    }
 
     Ok(())
 }
