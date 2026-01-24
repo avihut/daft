@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.4] - 2026-01-24
+
+
+### Features
+
+- Add one-time shell integration hint for new users (#81)
 ## [1.0.3] - 2026-01-24
 
 
