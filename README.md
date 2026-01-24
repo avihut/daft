@@ -29,7 +29,7 @@ my-project/
 
 ```bash
 # Install (macOS)
-brew install avihut/daft
+brew install avihut/daft/daft
 
 # Clone a repo (creates my-project/main/)
 git worktree-clone git@github.com:user/my-project.git
@@ -73,7 +73,7 @@ Terminal 1 (feature-a/)     Terminal 2 (feature-b/)
 ### macOS (Homebrew)
 
 ```bash
-brew install avihut/daft
+brew install avihut/daft/daft
 ```
 
 ### Windows
