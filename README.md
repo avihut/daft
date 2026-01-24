@@ -11,6 +11,8 @@
 
 > Stop switching branches. Work on multiple branches simultaneously.
 
+![daft demo](https://github.com/user-attachments/assets/6552f08b-536a-4ccb-9377-37ec1ab06fa0)
+
 **daft** gives each Git branch its own directory. No more stashing, no more context switching, no more waiting for builds to restart.
 
 ```
