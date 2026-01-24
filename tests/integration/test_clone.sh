@@ -103,15 +103,18 @@ test_clone_all_branches() {
 
 # Test clone error handling - invalid URL
 test_clone_invalid_url() {
-    # Test with invalid URL
-    assert_command_failure "git-worktree-clone https://invalid-url-that-does-not-exist.com/repo.git" "Should fail with invalid URL"
-    
+    # Test with a local path that doesn't exist (guaranteed to fail)
+    # Note: HTTP URLs like "https://invalid-url.com/repo.git" may resolve to
+    # parking pages or empty responses that git treats as empty repos, so we
+    # use a local file path that definitely doesn't exist.
+    assert_command_failure "git-worktree-clone /nonexistent/path/to/repo.git" "Should fail with invalid URL"
+
     # Verify no directory was created
     if [[ -d "repo" ]]; then
         log_error "Failed clone should not create directory"
         return 1
     fi
-    
+
     return 0
 }
 
@@ -213,10 +216,151 @@ test_clone_performance() {
     return 0
 }
 
+# Test clone of empty repository (no commits)
+test_clone_empty_repo() {
+    # Create a bare repository with no commits (simulates empty GitHub repo)
+    local empty_repo="$REMOTE_REPO_DIR/empty-repo.git"
+    git init --bare "$empty_repo" >/dev/null 2>&1
+
+    # Clone the empty repository
+    git-worktree-clone "$empty_repo" || return 1
+
+    # Verify structure was created
+    assert_directory_exists "empty-repo" || return 1
+    assert_directory_exists "empty-repo/.git" || return 1
+
+    # Get the expected default branch (from init.defaultBranch config or "master")
+    local expected_branch=$(git config --global init.defaultBranch 2>/dev/null || echo "master")
+    if [[ -z "$expected_branch" ]]; then
+        expected_branch="master"
+    fi
+
+    # Verify worktree was created with expected branch
+    assert_directory_exists "empty-repo/$expected_branch" || return 1
+
+    # Verify it's a valid git worktree
+    if ! (cd "empty-repo/$expected_branch" && git rev-parse --git-dir >/dev/null 2>&1); then
+        log_error "Empty repo worktree is not a valid git repository"
+        return 1
+    fi
+
+    # Verify the branch matches expected
+    local actual_branch=$(cd "empty-repo/$expected_branch" && git branch --show-current 2>/dev/null)
+    if [[ "$actual_branch" != "$expected_branch" ]]; then
+        log_error "Expected branch '$expected_branch' but got '$actual_branch'"
+        return 1
+    fi
+
+    log_success "Empty repository cloned successfully with branch '$expected_branch'"
+    return 0
+}
+
+# Test clone of empty repository with explicit branch name
+test_clone_empty_repo_with_branch() {
+    # Create a bare repository with no commits
+    local empty_repo="$REMOTE_REPO_DIR/empty-repo-branch.git"
+    git init --bare "$empty_repo" >/dev/null 2>&1
+
+    # Clone with explicit branch name
+    git-worktree-clone --branch develop "$empty_repo" || return 1
+
+    # Verify structure was created
+    assert_directory_exists "empty-repo-branch" || return 1
+    assert_directory_exists "empty-repo-branch/.git" || return 1
+    assert_directory_exists "empty-repo-branch/develop" || return 1
+
+    # Verify the branch matches
+    local actual_branch=$(cd "empty-repo-branch/develop" && git branch --show-current 2>/dev/null)
+    if [[ "$actual_branch" != "develop" ]]; then
+        log_error "Expected branch 'develop' but got '$actual_branch'"
+        return 1
+    fi
+
+    log_success "Empty repository cloned with custom branch 'develop'"
+    return 0
+}
+
+# Test clone of empty repository with no-checkout
+test_clone_empty_repo_no_checkout() {
+    # Create a bare repository with no commits
+    local empty_repo="$REMOTE_REPO_DIR/empty-repo-bare.git"
+    git init --bare "$empty_repo" >/dev/null 2>&1
+
+    # Clone with no-checkout
+    git-worktree-clone --no-checkout "$empty_repo" || return 1
+
+    # Verify only bare structure was created
+    assert_directory_exists "empty-repo-bare" || return 1
+    assert_directory_exists "empty-repo-bare/.git" || return 1
+
+    # Should NOT have any worktree
+    local worktree_count=$(ls -d empty-repo-bare/*/ 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$worktree_count" != "0" ]]; then
+        log_error "No-checkout mode should not create worktree, found $worktree_count directories"
+        return 1
+    fi
+
+    log_success "Empty repository cloned in bare mode"
+    return 0
+}
+
+# Test that --all-branches fails gracefully with empty repos
+test_clone_empty_repo_all_branches_fails() {
+    # Create a bare repository with no commits
+    local empty_repo="$REMOTE_REPO_DIR/empty-repo-all.git"
+    git init --bare "$empty_repo" >/dev/null 2>&1
+
+    # Clone with --all-branches should fail
+    if git-worktree-clone --all-branches "$empty_repo" 2>&1; then
+        log_error "Clone with --all-branches should fail for empty repository"
+        return 1
+    fi
+
+    log_success "Clone with --all-branches correctly failed for empty repository"
+    return 0
+}
+
+# Test that first commit works in cloned empty repository
+test_clone_empty_repo_first_commit() {
+    # Create a bare repository with no commits
+    local empty_repo="$REMOTE_REPO_DIR/empty-repo-commit.git"
+    git init --bare "$empty_repo" >/dev/null 2>&1
+
+    # Clone the empty repository
+    git-worktree-clone "$empty_repo" || return 1
+
+    # Get the expected default branch
+    local expected_branch=$(git config --global init.defaultBranch 2>/dev/null || echo "master")
+    if [[ -z "$expected_branch" ]]; then
+        expected_branch="master"
+    fi
+
+    # Create first commit in the worktree
+    (
+        cd "empty-repo-commit/$expected_branch"
+        echo "# My Project" > README.md
+        git add README.md
+        git commit -m "Initial commit"
+    ) >/dev/null 2>&1 || {
+        log_error "Failed to create first commit in empty repository"
+        return 1
+    }
+
+    # Verify the commit was created
+    local commit_count=$(cd "empty-repo-commit/$expected_branch" && git rev-list --count HEAD 2>/dev/null)
+    if [[ "$commit_count" != "1" ]]; then
+        log_error "Expected 1 commit but got '$commit_count'"
+        return 1
+    fi
+
+    log_success "First commit works in cloned empty repository"
+    return 0
+}
+
 # Run all clone tests
 run_clone_tests() {
     log "Running git-worktree-clone integration tests..."
-    
+
     run_test "clone_basic" "test_clone_basic"
     run_test "clone_different_default_branch" "test_clone_different_default_branch"
     run_test "clone_no_checkout" "test_clone_no_checkout"
@@ -228,6 +372,13 @@ run_clone_tests() {
     run_test "clone_help" "test_clone_help"
     run_test "clone_direnv_integration" "test_clone_direnv_integration"
     run_test "clone_performance" "test_clone_performance"
+
+    # Empty repository tests
+    run_test "clone_empty_repo" "test_clone_empty_repo"
+    run_test "clone_empty_repo_with_branch" "test_clone_empty_repo_with_branch"
+    run_test "clone_empty_repo_no_checkout" "test_clone_empty_repo_no_checkout"
+    run_test "clone_empty_repo_all_branches_fails" "test_clone_empty_repo_all_branches_fails"
+    run_test "clone_empty_repo_first_commit" "test_clone_empty_repo_first_commit"
 }
 
 # Main execution
