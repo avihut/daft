@@ -37,6 +37,34 @@ git worktree-checkout-branch feature/auth
 
 Each directory is a full working copy. Run different branches in different terminals. Your IDE state, node_modules, build artifacts - all isolated per branch.
 
+## Why daft?
+
+**Traditional Git workflow:**
+```
+┌─────────────────────────────────────────────────────────┐
+│  $ git stash                                            │
+│  $ git checkout feature-b                               │
+│  $ npm install        # wait...                         │
+│  $ npm run build      # wait...                         │
+│  # context lost, IDE state gone                         │
+│  $ git checkout feature-a                               │
+│  $ git stash pop                                        │
+│  # where was I?                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+**With daft:**
+```
+Terminal 1 (feature-a/)     Terminal 2 (feature-b/)
+┌───────────────────────┐   ┌───────────────────────┐
+│ $ npm run dev         │   │ $ npm run dev         │
+│ Server on :3000       │   │ Server on :3001       │
+│ # full context        │   │ # full context        │
+└───────────────────────┘   └───────────────────────┘
+         ↓                           ↓
+    Both running simultaneously, isolated environments
+```
+
 ## Installation
 
 **daft uses a single multicall binary architecture** - one 589KB binary with symlinks for all commands.
