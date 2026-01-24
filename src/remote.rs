@@ -124,6 +124,44 @@ pub fn remote_branch_exists(remote_name: &str, branch: &str) -> Result<bool> {
         .context("Failed to check remote branch existence")
 }
 
+/// Get the default branch from the remote HEAD in an existing repository.
+///
+/// This function queries the remote to determine its default branch.
+/// It works from within an existing git repository.
+///
+/// # Arguments
+/// * `remote_name` - The name of the remote (e.g., "origin")
+///
+/// # Returns
+/// * `Ok(String)` - The name of the default branch
+/// * `Err` - If the remote cannot be queried
+pub fn get_default_branch_from_remote_head(remote_name: &str) -> Result<String> {
+    let git = GitCommand::new(false);
+
+    // Try to query the remote for its default branch
+    let output_str = git
+        .ls_remote_symref(remote_name)
+        .context("Failed to query remote HEAD ref")?;
+
+    // Parse the symbolic reference output
+    for line in output_str.lines() {
+        if line.starts_with("ref:") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let ref_path = parts[1];
+                if let Some(branch) = ref_path.strip_prefix("refs/heads/") {
+                    return Ok(branch.to_string());
+                }
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "Could not determine default branch for remote '{}'",
+        remote_name
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

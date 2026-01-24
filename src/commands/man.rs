@@ -19,6 +19,8 @@ const COMMANDS: &[&str] = &[
     "git-worktree-prune",
     "git-worktree-carry",
     "git-worktree-fetch",
+    "git-worktree-flow-adopt",
+    "git-worktree-flow-eject",
 ];
 
 /// Get the clap Command for a given command name by using CommandFactory
@@ -34,6 +36,8 @@ fn get_command_for_name(command_name: &str) -> Option<Command> {
         "git-worktree-prune" => Some(crate::commands::prune::Args::command()),
         "git-worktree-carry" => Some(crate::commands::carry::Args::command()),
         "git-worktree-fetch" => Some(crate::commands::fetch::Args::command()),
+        "git-worktree-flow-adopt" => Some(crate::commands::flow_adopt::Args::command()),
+        "git-worktree-flow-eject" => Some(crate::commands::flow_eject::Args::command()),
         _ => None,
     }
 }
