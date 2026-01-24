@@ -24,6 +24,23 @@ install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
 
+# Symlinks to create for the multicall binary
+# These enable git-worktree-* commands to work via symlinks to daft
+[dist.bin-aliases]
+daft = [
+    "git-worktree-clone",
+    "git-worktree-init",
+    "git-worktree-checkout",
+    "git-worktree-checkout-branch",
+    "git-worktree-checkout-branch-from-default",
+    "git-worktree-prune",
+    "git-worktree-carry",
+    "git-worktree-fetch",
+    "git-worktree-flow-adopt",
+    "git-worktree-flow-eject",
+    "git-daft",
+]
+
 # Use newer macOS runners (macos-13 is retired)
 [dist.github-custom-runners]
 aarch64-apple-darwin = "macos-15"

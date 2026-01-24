@@ -117,6 +117,11 @@ pub fn run() -> Result<()> {
             "daft shell integration is already configured in {}.",
             config_file.display()
         );
+        println!();
+        println!("If commands aren't working, activate it by either:");
+        println!("  1. Restarting your terminal, or");
+        println!("  2. Running: source {}", config_file.display());
+        println!();
         println!("Use --force to add it again anyway.");
         return Ok(());
     }

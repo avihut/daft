@@ -1,16 +1,13 @@
 use anyhow::{Context, Result};
-use git_version::git_version;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use which::which;
 
-/// Version string derived from git tags at build time.
-/// Falls back to Cargo.toml version if not in a git repository.
-pub const VERSION: &str = git_version!(
-    args = ["--tags", "--always", "--dirty=-modified"],
-    fallback = env!("CARGO_PKG_VERSION")
-);
+/// Version string from Cargo.toml.
+/// Using CARGO_PKG_VERSION ensures consistency across all build methods
+/// (git clone, tarball, Homebrew, etc.)
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Marker prefix for shell wrapper cd path extraction.
 /// Shell wrappers look for this marker to determine which directory to cd into.

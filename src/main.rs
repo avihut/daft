@@ -21,6 +21,15 @@ fn main() -> Result<()> {
     // Resolve shortcut aliases to full command names
     let resolved = shortcuts::resolve(program_name);
 
+    // Handle --version/-V flag for the main daft command
+    if resolved == "daft" {
+        let args: Vec<String> = std::env::args().collect();
+        if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
+            println!("daft {}", daft::VERSION);
+            return Ok(());
+        }
+    }
+
     // Route to the appropriate command based on invocation name
     match resolved {
         // Git worktree extension commands (via symlinks)
