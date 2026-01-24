@@ -235,13 +235,38 @@ fn run_adopt(args: &Args, output: &mut dyn Output) -> Result<()> {
         output.step("No files to move (empty repository)");
     } else {
         output.step(&format!(
-            "Moving {} items to '{}'...",
-            entries_to_move.len(),
-            worktree_path.display()
+            "Moving {} items to worktree...",
+            entries_to_move.len()
         ));
     }
 
-    // Create the worktree directory
+    // Use a staging directory inside .git to avoid path conflicts.
+    // This handles the case where branch name is "feature/something" and there's
+    // already a "feature" directory in the project - we can't create feature/something
+    // and then try to move feature into it (would be moving a dir into its own subdir).
+    let staging_dir = git_dir.join("daft-adopt-staging");
+    fs::create_dir_all(&staging_dir).with_context(|| {
+        format!(
+            "Failed to create staging directory: {}",
+            staging_dir.display()
+        )
+    })?;
+
+    // Move all files to the staging directory first
+    for entry in &entries_to_move {
+        let file_name = entry.file_name().context("Could not get file name")?;
+        let dest = staging_dir.join(file_name);
+
+        fs::rename(entry, &dest).with_context(|| {
+            format!(
+                "Failed to move '{}' to staging: {}",
+                entry.display(),
+                dest.display()
+            )
+        })?;
+    }
+
+    // Now create the worktree directory (safe because project root is empty except .git)
     fs::create_dir_all(&worktree_path).with_context(|| {
         format!(
             "Failed to create worktree directory: {}",
@@ -249,8 +274,13 @@ fn run_adopt(args: &Args, output: &mut dyn Output) -> Result<()> {
         )
     })?;
 
-    // Move all files to the worktree directory
-    for entry in &entries_to_move {
+    // Move all files from staging to the worktree directory
+    let staged_entries: Vec<PathBuf> = fs::read_dir(&staging_dir)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .collect();
+
+    for entry in &staged_entries {
         let file_name = entry.file_name().context("Could not get file name")?;
         let dest = worktree_path.join(file_name);
 
@@ -262,6 +292,9 @@ fn run_adopt(args: &Args, output: &mut dyn Output) -> Result<()> {
             )
         })?;
     }
+
+    // Clean up the staging directory
+    fs::remove_dir(&staging_dir).ok();
 
     // Convert .git to bare repository
     output.step("Converting to bare repository...");

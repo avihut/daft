@@ -202,6 +202,98 @@ test_flow_adopt_not_git_repo() {
     return 0
 }
 
+# Test adopt with branch name matching existing directory
+# This tests the staging directory approach - when branch is "test" and there's a "test" dir
+test_flow_adopt_branch_matches_directory() {
+    # Create a traditional git repository with a directory named "test"
+    mkdir -p "conflict-repo"
+    cd "conflict-repo"
+    git init >/dev/null 2>&1
+    echo "# Test Repo" > README.md
+    mkdir -p test
+    echo "test content" > test/file.txt
+    mkdir -p src
+    echo "fn main() {}" > src/main.rs
+    git add . >/dev/null 2>&1
+    git commit -m "Initial commit" >/dev/null 2>&1
+
+    # Create and checkout a branch named "test" (same as directory name)
+    git checkout -b test >/dev/null 2>&1
+
+    # Adopt the repository - this used to fail because we'd try to create
+    # the "test" worktree directory but "test" already exists, and then
+    # try to move "test" into "test/test" which is impossible
+    git-worktree-flow-adopt || return 1
+
+    cd ..
+
+    # Verify structure was created correctly
+    assert_directory_exists "conflict-repo/.git" || return 1
+    assert_directory_exists "conflict-repo/test" || return 1
+    assert_file_exists "conflict-repo/test/README.md" || return 1
+    assert_file_exists "conflict-repo/test/test/file.txt" || return 1
+    assert_file_exists "conflict-repo/test/src/main.rs" || return 1
+
+    # Verify .git is now bare
+    cd "conflict-repo"
+    local is_bare=$(git config --get core.bare)
+    if [[ "$is_bare" != "true" ]]; then
+        log_error "Repository should be bare after adopt"
+        return 1
+    fi
+
+    # Verify git status is clean in the worktree
+    cd "test"
+    local status_output=$(git status --porcelain 2>&1)
+    if [[ -n "$status_output" ]]; then
+        log_error "Git status should be clean after adopt, but got:"
+        echo "$status_output"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test adopt with nested branch containing path component matching directory
+# Branch: feature/test, Directory: feature/
+test_flow_adopt_nested_branch_matches_directory() {
+    # Create a traditional git repository with a "feature" directory
+    mkdir -p "nested-conflict-repo"
+    cd "nested-conflict-repo"
+    git init >/dev/null 2>&1
+    echo "# Test Repo" > README.md
+    mkdir -p feature
+    echo "feature content" > feature/existing.txt
+    git add . >/dev/null 2>&1
+    git commit -m "Initial commit" >/dev/null 2>&1
+
+    # Create and checkout a branch named "feature/test"
+    git checkout -b feature/test >/dev/null 2>&1
+
+    # Adopt the repository
+    git-worktree-flow-adopt || return 1
+
+    cd ..
+
+    # Verify structure was created correctly
+    # The worktree should be at feature/test/, with feature/ inside it
+    assert_directory_exists "nested-conflict-repo/.git" || return 1
+    assert_directory_exists "nested-conflict-repo/feature/test" || return 1
+    assert_file_exists "nested-conflict-repo/feature/test/README.md" || return 1
+    assert_file_exists "nested-conflict-repo/feature/test/feature/existing.txt" || return 1
+
+    # Verify git status is clean
+    cd "nested-conflict-repo/feature/test"
+    local status_output=$(git status --porcelain 2>&1)
+    if [[ -n "$status_output" ]]; then
+        log_error "Git status should be clean after adopt, but got:"
+        echo "$status_output"
+        return 1
+    fi
+
+    return 0
+}
+
 # Run all flow_adopt tests
 run_flow_adopt_tests() {
     log "Running git-worktree-flow-adopt integration tests..."
@@ -213,6 +305,8 @@ run_flow_adopt_tests() {
     run_test "flow_adopt_custom_branch" "test_flow_adopt_custom_branch"
     run_test "flow_adopt_help" "test_flow_adopt_help"
     run_test "flow_adopt_not_git_repo" "test_flow_adopt_not_git_repo"
+    run_test "flow_adopt_branch_matches_directory" "test_flow_adopt_branch_matches_directory"
+    run_test "flow_adopt_nested_branch_matches_directory" "test_flow_adopt_nested_branch_matches_directory"
 }
 
 # Main execution

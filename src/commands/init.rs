@@ -306,6 +306,7 @@ mod tests {
             quiet,
             verbose,
             initial_branch: Some("master".to_string()),
+            remote: None,
         }
     }
 
@@ -370,6 +371,7 @@ mod tests {
             quiet: false,
             verbose: false,
             initial_branch: Some("master".to_string()),
+            remote: None,
         };
         let mut output = TestOutput::new();
 
@@ -390,6 +392,7 @@ mod tests {
             quiet: false,
             verbose: false,
             initial_branch: Some("".to_string()),
+            remote: None,
         };
         let mut output = TestOutput::new();
 
