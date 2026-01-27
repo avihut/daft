@@ -5,6 +5,9 @@ git_release_enable = true
 git_release_draft = false
 # We don't publish to crates.io
 publish = false
+# Disable strict semver - default to patch bumps for all changes
+# For minor/major releases, manually edit version in Cargo.toml
+semver_check = false
 
 [changelog]
 # Use git-cliff for changelog generation (matches cliff.toml)

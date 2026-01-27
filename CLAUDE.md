@@ -62,11 +62,15 @@ This project uses [release-plz](https://release-plz.dev/) for automated releases
 
 ### Version Bumps
 
-| Commit Type | Version Bump | Example |
-|-------------|--------------|---------|
-| `fix:` | Patch (0.0.x) | `fix: handle edge case` |
-| `feat:` | Minor (0.x.0) | `feat: add new command` |
-| `feat!:` or `BREAKING CHANGE:` | Major (x.0.0) | `feat!: redesign API` |
+All commits result in **patch** bumps by default. For milestone releases:
+
+| Release Type | How to trigger |
+|--------------|----------------|
+| Patch (0.0.x) | Merge Release PR as-is (automatic) |
+| Minor (0.x.0) | Edit `Cargo.toml` version before merging Release PR |
+| Major (x.0.0) | Edit `Cargo.toml` version before merging Release PR |
+
+This gives full control over when to cut minor/major releases rather than having them auto-bump based on commit types.
 
 ### Workflows
 
