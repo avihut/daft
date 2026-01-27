@@ -13,7 +13,7 @@ use daft::hooks::{TrustDatabase, TrustLevel, PROJECT_HOOKS_DIR};
 use daft::styles::def;
 use daft::{get_git_common_dir, is_git_repository};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn hooks_long_about() -> String {
     [
@@ -338,16 +338,25 @@ fn cmd_status(path: &Path) -> Result<()> {
 
         println!();
 
-        // Show commands
+        // Show commands with relative path
+        // If we're inside the repo, "." works since trust resolves the git common dir
+        let path_arg = if original_dir.starts_with(project_root) || original_dir == project_root {
+            ".".to_string()
+        } else {
+            relative_path(&original_dir, project_root)
+                .display()
+                .to_string()
+        };
+
         match trust_level {
             TrustLevel::Deny => {
                 println!("To enable hooks:");
-                println!("  git daft hooks trust            # Allow hooks to run");
-                println!("  git daft hooks prompt           # Require confirmation");
+                println!("  git daft hooks trust {path_arg}");
+                println!("  git daft hooks prompt {path_arg}");
             }
             TrustLevel::Prompt | TrustLevel::Allow => {
                 println!("To revoke trust:");
-                println!("  git daft hooks untrust");
+                println!("  git daft hooks untrust {path_arg}");
             }
         }
 
@@ -488,4 +497,53 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable(_path: &Path) -> bool {
     true // Assume executable on non-Unix
+}
+
+/// Compute the shortest relative path from `from` to `to`.
+///
+/// Returns "." if they are the same directory.
+fn relative_path(from: &Path, to: &Path) -> PathBuf {
+    if from == to {
+        return PathBuf::from(".");
+    }
+
+    // If `to` is a descendant of `from`, strip the prefix
+    if let Ok(rel) = to.strip_prefix(from) {
+        return rel.to_path_buf();
+    }
+
+    // If `from` is a descendant of `to`, go up with ".."
+    if let Ok(rel) = from.strip_prefix(to) {
+        let mut path = PathBuf::new();
+        for _ in rel.components() {
+            path.push("..");
+        }
+        return path;
+    }
+
+    // Find common ancestor and build relative path
+    let from_components: Vec<_> = from.components().collect();
+    let to_components: Vec<_> = to.components().collect();
+
+    // Find common prefix length
+    let common_len = from_components
+        .iter()
+        .zip(to_components.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    // Build path: go up from `from` to common ancestor, then down to `to`
+    let mut path = PathBuf::new();
+    for _ in common_len..from_components.len() {
+        path.push("..");
+    }
+    for component in &to_components[common_len..] {
+        path.push(component);
+    }
+
+    if path.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        path
+    }
 }
