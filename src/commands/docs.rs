@@ -151,9 +151,9 @@ pub fn run() -> Result<()> {
 
     if via_git {
         println!("usage: git worktree-<command> [<args>]");
-        println!("   or: git-worktree-<command> [<args>]");
+        println!("   or: daft worktree-<command> [<args>]");
     } else {
-        println!("usage: git-worktree-<command> [<args>]");
+        println!("usage: daft worktree-<command> [<args>]");
         println!("   or: git worktree-<command> [<args>]");
     }
 
@@ -183,7 +183,7 @@ pub fn run() -> Result<()> {
     if via_git {
         println!("'git worktree-<command> --help' to read about a specific command.");
     } else {
-        println!("'git-worktree-<command> --help' to read about a specific command.");
+        println!("'daft worktree-<command> --help' to read about a specific command.");
     }
     println!("See https://github.com/avihut/daft for documentation.");
 
