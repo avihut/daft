@@ -32,6 +32,7 @@ serde_json = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 pager = "0.16"
 termimad = "0.34"
+version-migrate = "0.18"
 
 [dev-dependencies]
 tempfile = "3.8"

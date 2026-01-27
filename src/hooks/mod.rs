@@ -43,6 +43,7 @@
 mod environment;
 mod executor;
 mod trust;
+mod trust_dto;
 
 pub use environment::{HookContext, HookEnvironment, RemovalReason};
 pub use executor::{HookExecutor, HookResult};
