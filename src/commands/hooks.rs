@@ -1,7 +1,8 @@
 //! Trust management commands for the hooks system.
 //!
 //! Provides `git daft hooks` subcommand with:
-//! - `trust` - Trust a repository to run hooks
+//! - `trust` - Trust a repository to run hooks automatically
+//! - `prompt` - Trust a repository but prompt before each hook
 //! - `untrust` - Revoke trust from a repository
 //! - `status` - Show trust status and available hooks
 //! - `list` - List all trusted repositories
@@ -39,14 +40,13 @@ pub struct Args {
 
 #[derive(Subcommand)]
 enum HooksCommand {
-    /// Grant trust to the current repository
+    /// Trust repository to run hooks automatically
     #[command(long_about = r#"
-Grants trust to the current repository, allowing hooks in .daft/hooks/ to be
-executed during worktree operations.
+Grants full trust to the current repository, allowing hooks in .daft/hooks/
+to be executed automatically during worktree operations.
 
-By default, sets the trust level to "allow", which runs hooks without
-prompting. Use --prompt to set the trust level to "prompt" instead, which
-requires confirmation before each hook execution.
+Use 'git daft hooks prompt' instead if you want to be prompted before each
+hook execution.
 
 Trust settings are stored in ~/.config/daft/trust.json and persist across
 sessions.
@@ -56,11 +56,26 @@ sessions.
         #[arg(default_value = ".")]
         path: std::path::PathBuf,
 
-        #[arg(
-            long,
-            help = "Set trust level to prompt; require confirmation before each hook"
-        )]
-        prompt: bool,
+        #[arg(short = 'f', long, help = "Do not ask for confirmation")]
+        force: bool,
+    },
+
+    /// Trust repository but prompt before each hook
+    #[command(long_about = r#"
+Grants conditional trust to the current repository. Hooks in .daft/hooks/
+will be executed, but you will be prompted for confirmation before each
+hook runs.
+
+Use 'git daft hooks trust' instead if you want hooks to run automatically
+without prompting.
+
+Trust settings are stored in ~/.config/daft/trust.json and persist across
+sessions.
+"#)]
+    Prompt {
+        /// Path to repository (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: std::path::PathBuf,
 
         #[arg(short = 'f', long, help = "Do not ask for confirmation")]
         force: bool,
@@ -99,7 +114,8 @@ pub fn run() -> Result<()> {
     let args = Args::parse_from(args);
 
     match args.command {
-        Some(HooksCommand::Trust { path, prompt, force }) => cmd_trust(&path, prompt, force),
+        Some(HooksCommand::Trust { path, force }) => cmd_set_trust(&path, TrustLevel::Allow, force),
+        Some(HooksCommand::Prompt { path, force }) => cmd_set_trust(&path, TrustLevel::Prompt, force),
         Some(HooksCommand::Untrust { path, force }) => cmd_untrust(&path, force),
         Some(HooksCommand::Status { path }) => cmd_status(&path),
         Some(HooksCommand::List { all }) => cmd_list(all),
@@ -107,8 +123,8 @@ pub fn run() -> Result<()> {
     }
 }
 
-/// Trust the repository at the given path.
-fn cmd_trust(path: &Path, prompt_level: bool, force: bool) -> Result<()> {
+/// Set trust level for the repository at the given path.
+fn cmd_set_trust(path: &Path, new_level: TrustLevel, force: bool) -> Result<()> {
     let abs_path = path
         .canonicalize()
         .with_context(|| format!("Path does not exist: {}", path.display()))?;
@@ -123,11 +139,6 @@ fn cmd_trust(path: &Path, prompt_level: bool, force: bool) -> Result<()> {
         }
 
         let git_dir = get_git_common_dir()?;
-        let new_level = if prompt_level {
-            TrustLevel::Prompt
-        } else {
-            TrustLevel::Allow
-        };
 
         // Show hooks that exist
         let hooks = find_project_hooks(&git_dir)?;
@@ -332,7 +343,7 @@ fn cmd_status(path: &Path) -> Result<()> {
             TrustLevel::Deny => {
                 println!("To enable hooks:");
                 println!("  git daft hooks trust            # Allow hooks to run");
-                println!("  git daft hooks trust --prompt   # Require confirmation");
+                println!("  git daft hooks prompt           # Require confirmation");
             }
             TrustLevel::Prompt | TrustLevel::Allow => {
                 println!("To revoke trust:");
