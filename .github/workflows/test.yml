@@ -203,7 +203,7 @@ jobs:
         echo "PATH=${{ github.workspace }}/target/release:$PATH" >> $GITHUB_ENV
 
     - name: Install just
-      uses: extractions/setup-just@v2
+      uses: extractions/setup-just@v3
       with:
         just-version: 1.37.0
 
