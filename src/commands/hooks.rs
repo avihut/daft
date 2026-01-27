@@ -454,8 +454,9 @@ fn cmd_list(show_all: bool) -> Result<()> {
         } else {
             (*path).to_string()
         };
+        let display_time = format_timestamp(granted_at);
         output.push_str(&format!("  {display_path}\n"));
-        output.push_str(&format!("    Level: {level}  (trusted: {granted_at})\n"));
+        output.push_str(&format!("    Level: {level}  (trusted: {display_time})\n"));
     }
 
     // Show patterns if any
@@ -503,6 +504,19 @@ fn output_with_pager(text: &str) {
     // Fall back to direct output if pager fails
     if result.is_err() {
         print!("{text}");
+    }
+}
+
+/// Format an ISO 8601 timestamp for display.
+/// Converts "2026-02-08T07:28:54Z" to "2026-02-08 07:28".
+fn format_timestamp(iso: &str) -> String {
+    // Try to parse and reformat, fall back to original if it fails
+    if iso.len() >= 16 && iso.contains('T') {
+        let date = &iso[..10];
+        let time = &iso[11..16];
+        format!("{date} {time}")
+    } else {
+        iso.to_string()
     }
 }
 
