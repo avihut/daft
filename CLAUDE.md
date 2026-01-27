@@ -50,14 +50,15 @@ This file provides guidance when working with code in this repository.
 
 ## Release Workflow
 
-This project uses [release-please](https://github.com/googleapis/release-please) for automated releases based on conventional commits.
+This project uses [release-plz](https://release-plz.dev/) for automated releases.
 
 ### How It Works
 
 1. **Commit with conventional format**: `feat:`, `fix:`, `docs:`, etc.
-2. **release-please opens a Release PR** accumulating changes
-3. **Merge the Release PR** to cut a new version
-4. **Binaries are built** and published to GitHub Releases + Homebrew
+2. **Push to master** triggers release-plz to create/update a Release PR
+3. **Release PR** contains version bump in Cargo.toml and changelog updates
+4. **When Release PR is merged**, release-plz creates a GitHub Release with tag
+5. **Tag push** triggers the release workflow to build and publish binaries
 
 ### Version Bumps
 
@@ -71,10 +72,15 @@ This project uses [release-please](https://github.com/googleapis/release-please)
 
 | Workflow | File | Trigger |
 |----------|------|---------|
-| Release Please | `release-please.yml` | Push to master |
-| Release | `release.yml` | Release PR merged |
+| Release-plz | `release-plz.yml` | Push to master |
+| Release | `release.yml` | Tag push (v*) or manual |
 | Test | `test.yml` | Pull requests |
 | Test Homebrew | `test-homebrew.yml` | After Release workflow |
+
+### Configuration
+
+- `release-plz.toml` - release-plz configuration (changelog parsing, release settings)
+- `cliff.toml` - git-cliff configuration for changelog generation
 
 ## Commit Message Convention
 
@@ -116,8 +122,8 @@ chore: upgrade dependencies
 
 ### Changelog Generation
 
-- CHANGELOG.md is automatically updated by release-please when a Release PR is merged
-- Configuration: `release-please-config.json` and `.release-please-manifest.json`
+- CHANGELOG.md is automatically updated by release-plz when a Release PR is created
+- Configuration: `release-plz.toml` and `cliff.toml`
 
 ## Overview
 
