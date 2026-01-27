@@ -79,7 +79,11 @@ Examples:
   daft setup --dry-run    # Show what would be done without making changes
 "#)]
 pub struct Args {
-    #[arg(short = 'f', long, help = "Skip confirmation and re-add if already configured")]
+    #[arg(
+        short = 'f',
+        long,
+        help = "Skip confirmation and re-add if already configured"
+    )]
     force: bool,
 
     #[arg(long, help = "Show what would be done without making changes")]

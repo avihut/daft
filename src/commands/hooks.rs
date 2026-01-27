@@ -118,7 +118,9 @@ pub fn run() -> Result<()> {
 
     match args.command {
         Some(HooksCommand::Trust { path, force }) => cmd_set_trust(&path, TrustLevel::Allow, force),
-        Some(HooksCommand::Prompt { path, force }) => cmd_set_trust(&path, TrustLevel::Prompt, force),
+        Some(HooksCommand::Prompt { path, force }) => {
+            cmd_set_trust(&path, TrustLevel::Prompt, force)
+        }
         Some(HooksCommand::Untrust { path, force }) => cmd_untrust(&path, force),
         Some(HooksCommand::Status { path, short }) => cmd_status(&path, short),
         Some(HooksCommand::List { all }) => cmd_list(all),
@@ -143,47 +145,30 @@ fn cmd_set_trust(path: &Path, new_level: TrustLevel, force: bool) -> Result<()> 
 
         let git_dir = get_git_common_dir()?;
 
-        // Show hooks that exist
         let hooks = find_project_hooks(&git_dir)?;
-        if hooks.is_empty() {
-            println!("No hooks found in .daft/hooks/");
-            println!();
-            println!("To create hooks, add executable scripts to .daft/hooks/");
-            println!("Available hook types: post-clone, post-init, pre-create, post-create, pre-remove, post-remove");
-            return Ok(());
-        }
-
-        // Load database to show current trust level
         let db = TrustDatabase::load().context("Failed to load trust database")?;
         let current_level = db.get_trust_level(&git_dir);
-        let is_explicit = db.has_explicit_trust(&git_dir);
         let project_root = git_dir.parent().context("Invalid git directory")?;
 
-        println!("Repository: {}", project_root.display());
-        println!();
-        println!("Hooks found in {}:", PROJECT_HOOKS_DIR);
-        for hook in &hooks {
-            let name = hook.file_name().unwrap_or_default().to_string_lossy();
-            println!("  - {name}");
-        }
-        println!();
+        // Build hooks list string
+        let hook_names: Vec<_> = hooks
+            .iter()
+            .filter_map(|h| h.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .collect();
+        let hooks_str = if hook_names.is_empty() {
+            "none".to_string()
+        } else {
+            hook_names.join(", ")
+        };
 
-        // Show current trust level
-        let current_source = if is_explicit { "" } else { " (default)" };
-        println!("Current trust level: {current_level}{current_source}");
-        println!("  {}", trust_level_description(current_level));
-        println!();
-
-        // Show new trust level
-        println!("New trust level: {new_level}");
-        println!("  {}", trust_level_description(new_level));
-        println!();
-
-        println!("Trusting this repository allows it to run arbitrary scripts");
-        println!("during worktree operations.");
+        // Show current status
+        println!("Current:");
+        println!("{} (repository)", project_root.display());
+        println!("{hooks_str} ({current_level})");
 
         if !force {
-            print!("\nTrust this repository? [y/N] ");
+            print!("\nChange trust level to {new_level}? [y/N] ");
             io::stdout().flush()?;
 
             let mut input = String::new();
@@ -201,9 +186,9 @@ fn cmd_set_trust(path: &Path, new_level: TrustLevel, force: bool) -> Result<()> 
         db.set_trust_level(&git_dir, new_level);
         db.save().context("Failed to save trust database")?;
 
-        println!();
-        println!("Repository trusted with level: {new_level}");
-        println!("This applies to all worktrees in this repository.");
+        // Show new status
+        println!("{} (repository)", project_root.display());
+        println!("{hooks_str} ({new_level})");
 
         Ok(())
     })();
@@ -228,22 +213,35 @@ fn cmd_untrust(path: &Path, force: bool) -> Result<()> {
         }
 
         let git_dir = get_git_common_dir()?;
-
         let db = TrustDatabase::load().context("Failed to load trust database")?;
         let current_level = db.get_trust_level(&git_dir);
+        let project_root = git_dir.parent().context("Invalid git directory")?;
 
-        if current_level == TrustLevel::Deny && !db.has_explicit_trust(&git_dir) {
-            println!("Repository is not explicitly trusted.");
-            println!("Current trust level: {current_level} (default)");
+        if !db.has_explicit_trust(&git_dir) {
+            println!("{} (repository)", project_root.display());
+            println!("Not explicitly trusted");
             return Ok(());
         }
 
-        let project_root = git_dir.parent().context("Invalid git directory")?;
-        println!("Repository: {}", project_root.display());
-        println!("Current trust level: {current_level}");
+        let hooks = find_project_hooks(&git_dir)?;
+        let hook_names: Vec<_> = hooks
+            .iter()
+            .filter_map(|h| h.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .collect();
+        let hooks_str = if hook_names.is_empty() {
+            "none".to_string()
+        } else {
+            hook_names.join(", ")
+        };
+
+        // Show current status
+        println!("Current:");
+        println!("{} (repository)", project_root.display());
+        println!("{hooks_str} ({current_level})");
 
         if !force {
-            print!("\nRevoke trust for this repository? [y/N] ");
+            print!("\nChange trust level to deny? [y/N] ");
             io::stdout().flush()?;
 
             let mut input = String::new();
@@ -257,13 +255,12 @@ fn cmd_untrust(path: &Path, force: bool) -> Result<()> {
         }
 
         let mut db = db;
-        if db.remove_trust(&git_dir) {
-            db.save().context("Failed to save trust database")?;
-            println!();
-            println!("Trust revoked. Hooks will no longer run for this repository.");
-        } else {
-            println!("Repository was not explicitly trusted.");
-        }
+        db.remove_trust(&git_dir);
+        db.save().context("Failed to save trust database")?;
+
+        // Show new status
+        println!("{} (repository)", project_root.display());
+        println!("{hooks_str} (deny)");
 
         Ok(())
     })();
@@ -363,7 +360,8 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
 
             // Show commands with relative path
             // If we're inside the repo, "." works since trust resolves the git common dir
-            let path_arg = if original_dir.starts_with(project_root) || original_dir == project_root {
+            let path_arg = if original_dir.starts_with(project_root) || original_dir == project_root
+            {
                 ".".to_string()
             } else {
                 relative_path(&original_dir, project_root)
