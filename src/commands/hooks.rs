@@ -3,7 +3,7 @@
 //! Provides `git daft hooks` subcommand with:
 //! - `trust` - Trust a repository to run hooks automatically
 //! - `prompt` - Trust a repository but prompt before each hook
-//! - `untrust` - Revoke trust from a repository
+//! - `deny` - Revoke trust from a repository
 //! - `status` - Show trust status and available hooks
 //! - `list` - List all trusted repositories
 
@@ -71,7 +71,7 @@ fn prompt_long_about() -> String {
     .join("\n")
 }
 
-fn untrust_long_about() -> String {
+fn deny_long_about() -> String {
     [
         &format!(
             "{} trust from the current repository. After this command,",
@@ -168,8 +168,8 @@ enum HooksCommand {
     },
 
     /// Revoke trust from the current repository
-    #[command(long_about = untrust_long_about())]
-    Untrust {
+    #[command(long_about = deny_long_about())]
+    Deny {
         /// Path to repository (defaults to current directory)
         #[arg(default_value = ".")]
         path: std::path::PathBuf,
@@ -213,7 +213,7 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::Prompt { path, force }) => {
             cmd_set_trust(&path, TrustLevel::Prompt, force)
         }
-        Some(HooksCommand::Untrust { path, force }) => cmd_untrust(&path, force),
+        Some(HooksCommand::Deny { path, force }) => cmd_deny(&path, force),
         Some(HooksCommand::Status { path, short }) => cmd_status(&path, short),
         Some(HooksCommand::List { all }) => cmd_list(all),
         Some(HooksCommand::ResetTrust { force }) => cmd_reset_trust(force),
@@ -294,7 +294,7 @@ fn cmd_set_trust(path: &Path, new_level: TrustLevel, force: bool) -> Result<()> 
 }
 
 /// Revoke trust for the repository at the given path.
-fn cmd_untrust(path: &Path, force: bool) -> Result<()> {
+fn cmd_deny(path: &Path, force: bool) -> Result<()> {
     let abs_path = path
         .canonicalize()
         .with_context(|| format!("Path does not exist: {}", path.display()))?;
@@ -492,7 +492,7 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
                 }
                 TrustLevel::Prompt | TrustLevel::Allow => {
                     println!("{}", bold("To revoke trust:"));
-                    println!("  {}", cyan(&format!("git daft hooks untrust {path_arg}")));
+                    println!("  {}", cyan(&format!("git daft hooks deny {path_arg}")));
                 }
             }
         }
