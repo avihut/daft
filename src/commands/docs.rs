@@ -1,8 +1,141 @@
 /// Documentation command for `git daft`
 ///
-/// Shows daft commands in git-style help format
+/// Shows daft commands in git-style help format, dynamically extracting
+/// descriptions from clap command definitions.
 use anyhow::Result;
+use clap::{Command, CommandFactory};
 use std::path::Path;
+
+use crate::commands::{
+    branch, carry, checkout, checkout_branch, checkout_branch_from_default, clone, completions,
+    fetch, flow_adopt, flow_eject, hooks, init, man, multi_remote, prune, shell_init, shortcuts,
+};
+
+/// A category of commands with a title and list of commands.
+struct CommandCategory {
+    title: &'static str,
+    commands: Vec<CommandEntry>,
+}
+
+/// A single command entry with its display name and clap Command.
+struct CommandEntry {
+    display_name: &'static str,
+    command: Command,
+}
+
+/// Get all command categories with their commands.
+fn get_command_categories() -> Vec<CommandCategory> {
+    vec![
+        CommandCategory {
+            title: "start a worktree-based repository",
+            commands: vec![
+                CommandEntry {
+                    display_name: "worktree-clone",
+                    command: clone::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-init",
+                    command: init::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-flow-adopt",
+                    command: flow_adopt::Args::command(),
+                },
+            ],
+        },
+        CommandCategory {
+            title: "work on branches (each branch gets its own directory)",
+            commands: vec![
+                CommandEntry {
+                    display_name: "worktree-checkout",
+                    command: checkout::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-checkout-branch",
+                    command: checkout_branch::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-checkout-branch-from-default",
+                    command: checkout_branch_from_default::Args::command(),
+                },
+            ],
+        },
+        CommandCategory {
+            title: "share changes across worktrees",
+            commands: vec![CommandEntry {
+                display_name: "worktree-carry",
+                command: carry::Args::command(),
+            }],
+        },
+        CommandCategory {
+            title: "maintain your worktrees",
+            commands: vec![
+                CommandEntry {
+                    display_name: "worktree-prune",
+                    command: prune::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-fetch",
+                    command: fetch::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-flow-eject",
+                    command: flow_eject::Args::command(),
+                },
+            ],
+        },
+        CommandCategory {
+            title: "manage daft configuration",
+            commands: vec![
+                CommandEntry {
+                    display_name: "daft hooks",
+                    command: hooks::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft branch",
+                    command: branch::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft multi-remote",
+                    command: multi_remote::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft setup shortcuts",
+                    command: shortcuts::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft shell-init",
+                    command: shell_init::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft completions",
+                    command: completions::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft man",
+                    command: man::Args::command(),
+                },
+            ],
+        },
+    ]
+}
+
+/// Extract the short description (about) from a clap Command.
+fn get_about(cmd: &Command) -> String {
+    cmd.get_about()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "(no description)".to_string())
+}
+
+/// Calculate the maximum display name length for proper alignment.
+fn max_display_name_len(categories: &[CommandCategory]) -> usize {
+    categories
+        .iter()
+        .flat_map(|cat| cat.commands.iter())
+        .map(|entry| entry.display_name.len())
+        .max()
+        .unwrap_or(20)
+}
 
 pub fn run() -> Result<()> {
     // Detect how we were invoked
@@ -24,33 +157,29 @@ pub fn run() -> Result<()> {
         println!("   or: git worktree-<command> [<args>]");
     }
 
-    print!(
-        r#"
-These are common daft commands used in various situations:
+    println!();
+    println!("These are common daft commands used in various situations:");
 
-start a worktree-based repository
-   worktree-clone    Clone a repository into worktree structure
-   worktree-init     Initialize a new worktree-based repository
+    let categories = get_command_categories();
+    let max_len = max_display_name_len(&categories);
 
-work on branches (each branch gets its own directory)
-   worktree-checkout              Check out existing branch into new worktree
-   worktree-checkout-branch       Create new branch in new worktree
-   worktree-checkout-branch-from-default
-                                  Create new branch from default in new worktree
+    for category in &categories {
+        println!();
+        println!("{}", category.title);
 
-share changes across worktrees
-   worktree-carry    Carry uncommitted changes to other worktrees
+        for entry in &category.commands {
+            let about = get_about(&entry.command);
+            // Pad the display name for alignment
+            println!(
+                "   {:width$}   {}",
+                entry.display_name,
+                about,
+                width = max_len
+            );
+        }
+    }
 
-maintain your worktrees
-   worktree-prune    Remove worktrees for remotely-deleted branches
-   worktree-fetch    Fetch and update all worktrees
-
-manage hooks
-   daft hooks        Manage repository hook trust settings
-
-"#
-    );
-
+    println!();
     if via_git {
         println!("'git worktree-<command> --help' to read about a specific command.");
     } else {

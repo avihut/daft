@@ -137,7 +137,7 @@ fn get_flag_descriptions(cmd: &Command) -> Vec<(String, String, Option<String>)>
 #[derive(Parser)]
 #[command(name = "daft-completions")]
 #[command(about = "Generate shell completion scripts for daft commands")]
-struct Args {
+pub struct Args {
     #[arg(value_enum, help = "Shell to generate completions for")]
     shell: Shell,
 
