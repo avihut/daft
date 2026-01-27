@@ -70,6 +70,7 @@ pub mod output;
 pub mod remote;
 pub mod settings;
 pub mod shortcuts;
+pub mod styles;
 pub mod utils;
 
 pub use settings::DaftSettings;
@@ -99,7 +100,15 @@ pub fn get_git_common_dir() -> Result<PathBuf> {
     let path_str = git
         .rev_parse_git_common_dir()
         .context("Failed to get git common directory")?;
-    Ok(PathBuf::from(path_str))
+    let path = PathBuf::from(path_str);
+
+    // Canonicalize to ensure consistent absolute paths.
+    // This is critical for trust database lookups - git rev-parse returns
+    // relative paths in some contexts (e.g., ".git") and absolute paths in
+    // others. Without canonicalization, trust set from one worktree wouldn't
+    // be recognized from another worktree of the same repo.
+    path.canonicalize()
+        .with_context(|| format!("Failed to canonicalize git directory: {}", path.display()))
 }
 
 pub fn get_project_root() -> Result<PathBuf> {

@@ -67,8 +67,8 @@ to match the new remote organization.
         #[arg(long, help = "Preview changes without executing")]
         dry_run: bool,
 
-        #[arg(short = 'y', long, help = "Skip confirmation")]
-        yes: bool,
+        #[arg(short = 'f', long, help = "Skip confirmation")]
+        force: bool,
     },
 }
 
@@ -85,8 +85,8 @@ pub fn run() -> Result<()> {
             push,
             delete_old,
             dry_run,
-            yes,
-        } => cmd_move(&branch, &to, set_upstream, push, delete_old, dry_run, yes),
+            force,
+        } => cmd_move(&branch, &to, set_upstream, push, delete_old, dry_run, force),
     }
 }
 

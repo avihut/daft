@@ -8,7 +8,7 @@
 [![Homebrew](https://img.shields.io/badge/homebrew-avihut%2Fdaft-blueviolet)](https://github.com/avihut/homebrew-daft)
 [![macOS](https://img.shields.io/badge/macOS-supported-success)](https://github.com/avihut/daft/releases)
 [![Linux](https://img.shields.io/badge/Linux-supported-success)](https://github.com/avihut/daft/releases)
-[![Windows](https://img.shields.io/badge/Windows-supported-success)](https://github.com/avihut/daft/releases)
+[![Windows](https://img.shields.io/badge/Windows-supported%20(WSL)-success)](https://github.com/avihut/daft/releases)
 
 > Stop switching branches. Work on multiple branches simultaneously.
 

@@ -43,10 +43,11 @@
 mod environment;
 mod executor;
 mod trust;
+mod trust_dto;
 
 pub use environment::{HookContext, HookEnvironment, RemovalReason};
 pub use executor::{HookExecutor, HookResult};
-pub use trust::{TrustDatabase, TrustLevel};
+pub use trust::{TrustDatabase, TrustEntry, TrustLevel};
 
 use std::fmt;
 use std::path::Path;

@@ -12,6 +12,8 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::trust_dto::{TrustDatabaseV1_0_0, TrustDatabaseV2_0_0};
+
 /// Trust level for a repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -63,8 +65,9 @@ impl fmt::Display for TrustLevel {
 pub struct TrustEntry {
     /// Trust level for this repository.
     pub level: TrustLevel,
-    /// When trust was granted (ISO 8601 format).
-    pub granted_at: String,
+    /// When trust was granted (Unix epoch seconds).
+    #[serde(default)]
+    pub granted_at: i64,
     /// How trust was granted.
     #[serde(default = "default_granted_by")]
     pub granted_by: String,
@@ -77,11 +80,26 @@ fn default_granted_by() -> String {
 impl TrustEntry {
     /// Create a new trust entry with the current timestamp.
     pub fn new(level: TrustLevel) -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
         Self {
             level,
-            granted_at: chrono_now(),
+            granted_at: epoch,
             granted_by: "user".to_string(),
         }
+    }
+
+    /// Format the granted_at timestamp for display.
+    pub fn formatted_time(&self) -> String {
+        use chrono::{Local, TimeZone};
+        Local
+            .timestamp_opt(self.granted_at, 0)
+            .single()
+            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "unknown".to_string())
     }
 }
 
@@ -115,13 +133,13 @@ pub struct TrustDatabase {
 }
 
 fn default_version() -> u32 {
-    1
+    2
 }
 
 impl Default for TrustDatabase {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             default_level: TrustLevel::Deny,
             repositories: HashMap::new(),
             patterns: Vec::new(),
@@ -137,7 +155,18 @@ impl TrustDatabase {
     }
 
     /// Load the trust database from a specific path.
+    ///
+    /// This method handles automatic migration from older schema versions:
+    /// - V1: Original schema with string timestamps (ISO 8601)
+    /// - V2: Current schema with epoch timestamps (i64)
+    ///
+    /// The migration from V1 to V2 converts string timestamps to Unix epoch.
+    ///
+    /// Note: Due to a historical bug, some V2 databases may have version=1.
+    /// We detect this by checking the granted_at field type.
     pub fn load_from(path: &Path) -> Result<Self> {
+        use version_migrate::{IntoDomain, MigratesTo};
+
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -145,8 +174,47 @@ impl TrustDatabase {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("Failed to read trust database from {}", path.display()))?;
 
-        serde_json::from_str(&contents)
-            .with_context(|| format!("Failed to parse trust database from {}", path.display()))
+        // Parse as generic JSON to detect version and schema
+        let json: serde_json::Value = serde_json::from_str(&contents)
+            .with_context(|| format!("Failed to parse JSON from {}", path.display()))?;
+
+        // Determine version - default to 1 for legacy data without version field
+        let stated_version = json.get("version").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+
+        // Detect actual schema by checking granted_at field type in first repository entry
+        // V1 has string timestamps, V2 has integer timestamps
+        let actual_version = detect_schema_version(&json, stated_version);
+
+        let db = match actual_version {
+            1 => {
+                // V1: String timestamps - need migration
+                let v1: TrustDatabaseV1_0_0 = serde_json::from_value(json).with_context(|| {
+                    format!("Failed to parse V1 trust database from {}", path.display())
+                })?;
+                let v2: TrustDatabaseV2_0_0 = v1.migrate();
+                let db: TrustDatabase = v2.into_domain();
+
+                // Save migrated version
+                db.save_to(path)?;
+                db
+            }
+            _ => {
+                // V2 or later: Load directly, then ensure version is updated
+                let mut db: TrustDatabase = serde_json::from_value(json).with_context(|| {
+                    format!("Failed to parse trust database from {}", path.display())
+                })?;
+
+                // Update version if it was mislabeled
+                if db.version != 2 {
+                    db.version = 2;
+                    db.save_to(path)?;
+                }
+
+                db
+            }
+        };
+
+        Ok(db)
     }
 
     /// Save the trust database to the default location.
@@ -232,6 +300,12 @@ impl TrustDatabase {
         self.patterns.len() < initial_len
     }
 
+    /// Clear all trust entries and patterns.
+    pub fn clear(&mut self) {
+        self.repositories.clear();
+        self.patterns.clear();
+    }
+
     /// List all trusted repositories.
     pub fn list_trusted(&self) -> Vec<(&str, &TrustEntry)> {
         self.repositories
@@ -246,6 +320,38 @@ impl TrustDatabase {
         let git_dir_str = git_dir.to_string_lossy();
         self.repositories.contains_key(git_dir_str.as_ref())
     }
+}
+
+/// Detect the actual schema version by examining the data structure.
+///
+/// Some databases may have version=1 but actually contain V2 data (with integer
+/// timestamps) due to a historical bug where the version wasn't updated when
+/// the schema changed.
+///
+/// Returns 1 if the data looks like V1 (string timestamps), 2 otherwise.
+fn detect_schema_version(json: &serde_json::Value, stated_version: u32) -> u32 {
+    // If stated version is already 2+, trust it
+    if stated_version >= 2 {
+        return stated_version;
+    }
+
+    // Check if repositories have any entries with granted_at
+    if let Some(repos) = json.get("repositories").and_then(|v| v.as_object()) {
+        for (_path, entry) in repos {
+            if let Some(granted_at) = entry.get("granted_at") {
+                // V1 has string timestamps, V2 has integer timestamps
+                if granted_at.is_string() {
+                    return 1;
+                } else if granted_at.is_number() {
+                    return 2;
+                }
+            }
+        }
+    }
+
+    // No repositories with granted_at - could be either version
+    // Default to V2 (current) since empty databases should use current schema
+    2
 }
 
 /// Simple glob matching for trust patterns.
@@ -316,38 +422,6 @@ fn matches_component(pattern: &str, component: &str) -> bool {
     pattern == component
 }
 
-/// Get the current timestamp in ISO 8601 format.
-fn chrono_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-
-    // Convert to rough ISO 8601 format without external dependency
-    // This is a simplified version - in production you might want chrono crate
-    let days_since_epoch = secs / 86400;
-    let secs_today = secs % 86400;
-
-    let years = 1970 + (days_since_epoch / 365); // Approximate
-    let months = ((days_since_epoch % 365) / 30) + 1;
-    let days = ((days_since_epoch % 365) % 30) + 1;
-    let hours = secs_today / 3600;
-    let minutes = (secs_today % 3600) / 60;
-    let seconds = secs_today % 60;
-
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        years,
-        months.min(12),
-        days.min(31),
-        hours,
-        minutes,
-        seconds
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,7 +450,7 @@ mod tests {
     #[test]
     fn test_trust_database_default() {
         let db = TrustDatabase::default();
-        assert_eq!(db.version, 1);
+        assert_eq!(db.version, 2);
         assert_eq!(db.default_level, TrustLevel::Deny);
         assert!(db.repositories.is_empty());
         assert!(db.patterns.is_empty());
@@ -477,5 +551,132 @@ mod tests {
 
         let trusted = db.list_trusted();
         assert_eq!(trusted.len(), 2);
+    }
+
+    #[test]
+    fn test_load_v1_format_migrates_to_v2() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("trust.json");
+
+        // Create a V1 format file with string timestamp
+        let v1_json = r#"{
+            "version": 1,
+            "default_level": "deny",
+            "repositories": {
+                "/path/to/repo/.git": {
+                    "level": "allow",
+                    "granted_at": "2025-01-28T10:30:00Z",
+                    "granted_by": "user"
+                }
+            },
+            "patterns": []
+        }"#;
+        std::fs::write(&path, v1_json).unwrap();
+
+        // Load should migrate to V2
+        let db = TrustDatabase::load_from(&path).unwrap();
+        assert_eq!(db.version, 2);
+        assert_eq!(db.default_level, TrustLevel::Deny);
+
+        let entry = db.repositories.get("/path/to/repo/.git").unwrap();
+        assert_eq!(entry.level, TrustLevel::Allow);
+        // 2025-01-28T10:30:00Z = 1738060200 seconds since epoch
+        assert_eq!(entry.granted_at, 1738060200);
+        assert_eq!(entry.granted_by, "user");
+
+        // Verify the file was updated to V2 format
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(saved["version"], 2);
+        // granted_at should now be an integer
+        assert!(saved["repositories"]["/path/to/repo/.git"]["granted_at"].is_number());
+    }
+
+    #[test]
+    fn test_load_mislabeled_v2_as_v1() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("trust.json");
+
+        // Create a file that says version 1 but has integer timestamp (V2 schema)
+        // This simulates the historical bug where version wasn't updated
+        let mislabeled_json = r#"{
+            "version": 1,
+            "default_level": "allow",
+            "repositories": {
+                "/path/to/repo/.git": {
+                    "level": "allow",
+                    "granted_at": 1738060200,
+                    "granted_by": "user"
+                }
+            },
+            "patterns": []
+        }"#;
+        std::fs::write(&path, mislabeled_json).unwrap();
+
+        // Load should detect it's actually V2 and load correctly
+        let db = TrustDatabase::load_from(&path).unwrap();
+        assert_eq!(db.version, 2);
+        assert_eq!(db.default_level, TrustLevel::Allow);
+
+        let entry = db.repositories.get("/path/to/repo/.git").unwrap();
+        assert_eq!(entry.granted_at, 1738060200);
+
+        // Verify the file was updated with correct version
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(saved["version"], 2);
+    }
+
+    #[test]
+    fn test_detect_schema_version() {
+        // V1: string timestamp
+        let v1_json: serde_json::Value = serde_json::from_str(
+            r#"{
+            "version": 1,
+            "repositories": {
+                "/repo/.git": {
+                    "level": "allow",
+                    "granted_at": "2025-01-28T10:30:00Z"
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(detect_schema_version(&v1_json, 1), 1);
+
+        // V2: integer timestamp
+        let v2_json: serde_json::Value = serde_json::from_str(
+            r#"{
+            "version": 1,
+            "repositories": {
+                "/repo/.git": {
+                    "level": "allow",
+                    "granted_at": 1738060200
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(detect_schema_version(&v2_json, 1), 2);
+
+        // Empty repositories - defaults to V2
+        let empty_json: serde_json::Value = serde_json::from_str(
+            r#"{
+            "version": 1,
+            "repositories": {}
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(detect_schema_version(&empty_json, 1), 2);
+
+        // Stated version 2 - trust it
+        let stated_v2: serde_json::Value = serde_json::from_str(
+            r#"{
+            "version": 2,
+            "repositories": {}
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(detect_schema_version(&stated_v2, 2), 2);
     }
 }
