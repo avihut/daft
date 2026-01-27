@@ -48,92 +48,33 @@ This file provides guidance when working with code in this repository.
 
 2. **Never use this repository for testing** - This project's own git repository must never be used as a test subject for the worktree commands. Tests must always create isolated temporary repositories. Using this repo for testing could corrupt the project's version control state.
 
-## Release Workflow and Git Branching Strategy
+## Release Workflow
 
-This project uses a multi-channel release workflow with `master` as the stable branch and `develop` as the integration branch.
+This project uses [release-please](https://github.com/googleapis/release-please) for automated releases based on conventional commits.
 
-### Branch Structure
+### How It Works
 
-| Branch | Purpose | Version Example |
-|--------|---------|-----------------|
-| `master` | Stable releases, published to Homebrew | v0.3.0 |
-| `develop` | Next release development, canary/beta builds | v0.4.0 |
+1. **Commit with conventional format**: `feat:`, `fix:`, `docs:`, etc.
+2. **release-please opens a Release PR** accumulating changes
+3. **Merge the Release PR** to cut a new version
+4. **Binaries are built** and published to GitHub Releases + Homebrew
 
-### Release Channels
+### Version Bumps
 
-| Channel | Trigger | Tag Format | Binaries | Homebrew |
-|---------|---------|------------|----------|----------|
-| **Stable** | Promote workflow | `v0.3.0` | Yes | Yes |
-| **Canary** | Push to develop | `v0.4.0-canary.N` | No | No |
-| **Beta** | Monthly/manual | `v0.4.0-beta.N` | No | No |
-
-### Git Flow Rules (Important!)
-
-To maintain flat history on `master`, follow these rules strictly:
-
-#### Normal Development Flow
-```
-1. All features/changes → develop branch
-2. Periodically promote develop → master (creates stable release)
-```
-
-#### Hotfix Flow (bugfix needed on stable while develop is ahead)
-```
-1. Create hotfix branch from master
-2. Fix the bug, PR to master
-3. Cherry-pick the fix commit to develop
-4. When promoting, git rebase will skip the duplicate commit
-```
-
-**Example:**
-```bash
-# On master (v0.3.0), need to fix a bug while develop is at v0.4.0
-
-# 1. Create and apply hotfix to master
-git checkout master
-git checkout -b hotfix/critical-bug
-# ... fix the bug ...
-git commit -m "fix: critical bug"
-# PR and merge to master → triggers v0.3.1 release
-
-# 2. Cherry-pick to develop
-git checkout develop
-git cherry-pick <hotfix-commit-sha>
-git push origin develop
-
-# 3. Later, when promoting v0.4.0, rebase will be clean
-#    (cherry-picked commit is auto-skipped)
-```
-
-#### Before Promoting a Release
-If develop and master have diverged (conflicts during promote):
-```bash
-# Manually rebase develop onto master
-git checkout develop
-git fetch origin master
-git rebase origin/master
-# Resolve any conflicts
-git push origin develop --force-with-lease
-
-# Now run promote workflow - will be a clean fast-forward
-```
-
-### What NOT to Do
-- Don't backport changes from develop to master (creates divergence)
-- Don't merge master into develop (creates merge commits)
-- Don't apply the same fix separately to both branches (creates conflicts)
+| Commit Type | Version Bump | Example |
+|-------------|--------------|---------|
+| `fix:` | Patch (0.0.x) | `fix: handle edge case` |
+| `feat:` | Minor (0.x.0) | `feat: add new command` |
+| `feat!:` or `BREAKING CHANGE:` | Major (x.0.0) | `feat!: redesign API` |
 
 ### Workflows
 
 | Workflow | File | Trigger |
 |----------|------|---------|
+| Release Please | `release-please.yml` | Push to master |
+| Release | `release.yml` | Release PR merged |
 | Test | `test.yml` | Pull requests |
 | Test Homebrew | `test-homebrew.yml` | After Release workflow |
-| Bump Version | `bump-version.yml` | Push to master |
-| Release | `release.yml` | After bump-version |
-| Canary | `canary.yml` | Push to develop |
-| Beta | `beta.yml` | Monthly schedule or manual |
-| Promote | `promote-release.yml` | Manual with next_version input |
 
 ## Commit Message Convention
 
@@ -175,9 +116,8 @@ chore: upgrade dependencies
 
 ### Changelog Generation
 
-- **Stable releases**: CHANGELOG.md is automatically updated when releasing to master
-- **Canary/Beta**: Release notes are generated but CHANGELOG.md is not modified
-- Configuration files: `cliff.toml` (stable), `cliff-prerelease.toml` (prereleases)
+- CHANGELOG.md is automatically updated by release-please when a Release PR is merged
+- Configuration: `release-please-config.json` and `.release-please-manifest.json`
 
 ## Overview
 
@@ -344,7 +284,7 @@ When working on project tickets, branch names should follow this convention daft
 
 ### PRs
 
-**Target branch**: All PRs should be opened against `develop`, not `master`. The `master` branch only receives changes through the promote workflow (rebase from develop).
+**Target branch**: All PRs should be opened against `master`.
 
 PR titles should follow the conventional commit format:
 
