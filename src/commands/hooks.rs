@@ -12,8 +12,9 @@ use clap::{Parser, Subcommand};
 use daft::hooks::{TrustDatabase, TrustLevel, PROJECT_HOOKS_DIR};
 use daft::styles::def;
 use daft::{get_git_common_dir, is_git_repository};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 fn hooks_long_about() -> String {
     [
@@ -435,40 +436,74 @@ fn cmd_list(show_all: bool) -> Result<()> {
         return Ok(());
     }
 
+    // Build output
+    let mut output = String::new();
+
     let title = if show_all {
         "All repositories in trust database:"
     } else {
         "Trusted repositories:"
     };
-    println!("{title}");
-    println!();
+    output.push_str(title);
+    output.push_str("\n\n");
 
-    for (path, level, granted_at) in repos {
+    for (path, level, granted_at) in &repos {
         // Truncate long paths
         let display_path = if path.len() > 60 {
             format!("...{}", &path[path.len() - 57..])
         } else {
-            path.to_string()
+            (*path).to_string()
         };
-        println!("  {display_path}");
-        println!("    Level: {level}  (trusted: {granted_at})");
+        output.push_str(&format!("  {display_path}\n"));
+        output.push_str(&format!("    Level: {level}  (trusted: {granted_at})\n"));
     }
 
     // Show patterns if any
     if !db.patterns.is_empty() {
-        println!();
-        println!("Trust patterns:");
+        output.push_str("\nTrust patterns:\n");
         for pattern in &db.patterns {
             let comment = pattern
                 .comment
                 .as_ref()
                 .map(|c| format!(" # {c}"))
                 .unwrap_or_default();
-            println!("  {} -> {}{comment}", pattern.pattern, pattern.level);
+            output.push_str(&format!(
+                "  {} -> {}{comment}\n",
+                pattern.pattern, pattern.level
+            ));
         }
     }
 
+    // Use pager if output is long and we're in a terminal
+    let line_count = output.lines().count();
+    if line_count > 20 && std::io::stdout().is_terminal() {
+        output_with_pager(&output);
+    } else {
+        print!("{output}");
+    }
+
     Ok(())
+}
+
+/// Output text through a pager if available.
+fn output_with_pager(text: &str) {
+    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".to_string());
+
+    let result = Command::new("sh")
+        .args(["-c", &format!("{pager} -R")])
+        .stdin(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            if let Some(stdin) = child.stdin.as_mut() {
+                stdin.write_all(text.as_bytes())?;
+            }
+            child.wait()
+        });
+
+    // Fall back to direct output if pager fails
+    if result.is_err() {
+        print!("{text}");
+    }
 }
 
 /// Clear all trust settings.
