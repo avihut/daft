@@ -71,8 +71,8 @@ Use --dry-run to preview the migration without making changes.
         #[arg(long, help = "Preview changes without executing")]
         dry_run: bool,
 
-        #[arg(short = 'y', long, help = "Skip confirmation")]
-        yes: bool,
+        #[arg(short = 'f', long, help = "Skip confirmation")]
+        force: bool,
     },
 
     /// Disable multi-remote mode and flatten worktree structure
@@ -90,8 +90,8 @@ Use --dry-run to preview the migration without making changes.
         #[arg(long, help = "Preview changes without executing")]
         dry_run: bool,
 
-        #[arg(short = 'y', long, help = "Skip confirmation")]
-        yes: bool,
+        #[arg(short = 'f', long, help = "Skip confirmation")]
+        force: bool,
     },
 
     /// Show current multi-remote configuration
@@ -113,9 +113,9 @@ pub fn run() -> Result<()> {
         Some(MultiRemoteCommand::Enable {
             default,
             dry_run,
-            yes,
-        }) => cmd_enable(default, dry_run, yes),
-        Some(MultiRemoteCommand::Disable { dry_run, yes }) => cmd_disable(dry_run, yes),
+            force,
+        }) => cmd_enable(default, dry_run, force),
+        Some(MultiRemoteCommand::Disable { dry_run, force }) => cmd_disable(dry_run, force),
         Some(MultiRemoteCommand::Status) => cmd_status(),
         Some(MultiRemoteCommand::SetDefault { remote }) => cmd_set_default(&remote),
         None => cmd_status(), // Default to status

@@ -75,18 +75,15 @@ The command will:
 
 Examples:
   daft setup              # Interactive setup with confirmation
-  daft setup --yes        # Skip confirmation prompt
+  daft setup --force      # Skip confirmation and re-add if already configured
   daft setup --dry-run    # Show what would be done without making changes
 "#)]
 pub struct Args {
-    #[arg(short = 'y', long, help = "Skip confirmation prompt")]
-    yes: bool,
+    #[arg(short = 'f', long, help = "Skip confirmation and re-add if already configured")]
+    force: bool,
 
     #[arg(long, help = "Show what would be done without making changes")]
     dry_run: bool,
-
-    #[arg(long, help = "Force setup even if already configured")]
-    force: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -141,8 +138,8 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
-    // Confirm unless --yes
-    if !args.yes {
+    // Confirm unless --force
+    if !args.force {
         print!("Proceed? [y/N] ");
         io::stdout().flush()?;
 

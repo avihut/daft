@@ -62,8 +62,8 @@ sessions.
         )]
         prompt: bool,
 
-        #[arg(short = 'y', long, help = "Do not ask for confirmation")]
-        yes: bool,
+        #[arg(short = 'f', long, help = "Do not ask for confirmation")]
+        force: bool,
     },
 
     /// Revoke trust from the current repository
@@ -76,8 +76,8 @@ no longer be executed for this repository until trust is granted again.
         #[arg(default_value = ".")]
         path: std::path::PathBuf,
 
-        #[arg(short = 'y', long, help = "Do not ask for confirmation")]
-        yes: bool,
+        #[arg(short = 'f', long, help = "Do not ask for confirmation")]
+        force: bool,
     },
 
     /// Display trust status and available hooks
@@ -99,8 +99,8 @@ pub fn run() -> Result<()> {
     let args = Args::parse_from(args);
 
     match args.command {
-        Some(HooksCommand::Trust { path, prompt, yes }) => cmd_trust(&path, prompt, yes),
-        Some(HooksCommand::Untrust { path, yes }) => cmd_untrust(&path, yes),
+        Some(HooksCommand::Trust { path, prompt, force }) => cmd_trust(&path, prompt, force),
+        Some(HooksCommand::Untrust { path, force }) => cmd_untrust(&path, force),
         Some(HooksCommand::Status { path }) => cmd_status(&path),
         Some(HooksCommand::List { all }) => cmd_list(all),
         None => cmd_status(&std::path::PathBuf::from(".")), // Default to status if no subcommand
@@ -108,7 +108,7 @@ pub fn run() -> Result<()> {
 }
 
 /// Trust the repository at the given path.
-fn cmd_trust(path: &Path, prompt_level: bool, skip_confirm: bool) -> Result<()> {
+fn cmd_trust(path: &Path, prompt_level: bool, force: bool) -> Result<()> {
     let abs_path = path
         .canonicalize()
         .with_context(|| format!("Path does not exist: {}", path.display()))?;
@@ -168,7 +168,7 @@ fn cmd_trust(path: &Path, prompt_level: bool, skip_confirm: bool) -> Result<()> 
         println!("Trusting this repository allows it to run arbitrary scripts");
         println!("during worktree operations.");
 
-        if !skip_confirm {
+        if !force {
             print!("\nTrust this repository? [y/N] ");
             io::stdout().flush()?;
 
@@ -199,7 +199,7 @@ fn cmd_trust(path: &Path, prompt_level: bool, skip_confirm: bool) -> Result<()> 
 }
 
 /// Revoke trust for the repository at the given path.
-fn cmd_untrust(path: &Path, skip_confirm: bool) -> Result<()> {
+fn cmd_untrust(path: &Path, force: bool) -> Result<()> {
     let abs_path = path
         .canonicalize()
         .with_context(|| format!("Path does not exist: {}", path.display()))?;
@@ -228,7 +228,7 @@ fn cmd_untrust(path: &Path, skip_confirm: bool) -> Result<()> {
         println!("Repository: {}", project_root.display());
         println!("Current trust level: {current_level}");
 
-        if !skip_confirm {
+        if !force {
             print!("\nRevoke trust for this repository? [y/N] ");
             io::stdout().flush()?;
 
