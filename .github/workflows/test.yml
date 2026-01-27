@@ -1,11 +1,6 @@
 name: Test Git Worktree Workflow
 
 on:
-  push:
-    branches: [ main, master ]
-    paths-ignore:
-      - '*.md'
-      - 'docs/**'
   pull_request:
     branches: [ main, master ]
     paths-ignore:
