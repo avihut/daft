@@ -7,6 +7,7 @@ use clap::Parser;
 use pager::Pager;
 use serde::Serialize;
 use std::io::{self, IsTerminal, Write};
+use termimad::crossterm::style::Color;
 use termimad::MadSkin;
 
 /// Embedded CHANGELOG.md content (compiled into the binary)
@@ -259,8 +260,49 @@ fn output_full(releases: &[Release], no_pager: bool) -> Result<()> {
 
 /// Render markdown to terminal-formatted text with colors
 fn render_markdown(markdown: &str) -> String {
-    let skin = MadSkin::default();
+    let skin = create_daft_skin();
     skin.term_text(markdown).to_string()
+}
+
+/// Create a custom skin with daft's orange accent color
+fn create_daft_skin() -> MadSkin {
+    // Daft orange accent color
+    let orange = Color::Rgb {
+        r: 255,
+        g: 140,
+        b: 0,
+    };
+    let light_orange = Color::Rgb {
+        r: 255,
+        g: 180,
+        b: 100,
+    };
+
+    let mut skin = MadSkin::default();
+
+    // Headers in orange
+    skin.set_headers_fg(orange);
+
+    // Bold text in orange
+    skin.bold.set_fg(orange);
+
+    // Italic in a lighter orange
+    skin.italic.set_fg(light_orange);
+
+    // Inline code with subtle styling
+    skin.inline_code.set_fg(Color::Rgb {
+        r: 200,
+        g: 200,
+        b: 200,
+    });
+
+    // Bullet points in orange
+    skin.bullet.set_fg(orange);
+
+    // Horizontal rules in orange
+    skin.horizontal_rule.set_fg(orange);
+
+    skin
 }
 
 /// Display content using pager if appropriate
