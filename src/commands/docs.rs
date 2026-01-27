@@ -8,7 +8,8 @@ use std::path::Path;
 
 use crate::commands::{
     branch, carry, checkout, checkout_branch, checkout_branch_from_default, clone, completions,
-    fetch, flow_adopt, flow_eject, hooks, init, man, multi_remote, prune, shell_init, shortcuts,
+    fetch, flow_adopt, flow_eject, hooks, init, man, multi_remote, prune, release_notes,
+    shell_init, shortcuts,
 };
 
 /// A category of commands with a title and list of commands.
@@ -114,6 +115,10 @@ fn get_command_categories() -> Vec<CommandCategory> {
                 CommandEntry {
                     display_name: "daft man",
                     command: man::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft release-notes",
+                    command: release_notes::Args::command(),
                 },
             ],
         },

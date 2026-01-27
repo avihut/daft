@@ -21,6 +21,7 @@ const COMMANDS: &[&str] = &[
     "git-worktree-fetch",
     "git-worktree-flow-adopt",
     "git-worktree-flow-eject",
+    "daft-release-notes",
 ];
 
 /// Get the clap Command for a given command name by using CommandFactory
@@ -38,6 +39,7 @@ fn get_command_for_name(command_name: &str) -> Option<Command> {
         "git-worktree-fetch" => Some(crate::commands::fetch::Args::command()),
         "git-worktree-flow-adopt" => Some(crate::commands::flow_adopt::Args::command()),
         "git-worktree-flow-eject" => Some(crate::commands::flow_eject::Args::command()),
+        "daft-release-notes" => Some(crate::commands::release_notes::Args::command()),
         _ => None,
     }
 }

@@ -663,6 +663,7 @@ Man pages are **auto-generated from clap command definitions** using `clap_mange
    - Add the command to the `COMMANDS` array in `src/commands/man.rs`
    - Add the command mapping in `get_command_for_name()` function
    - Ensure the command has proper `#[command]` and `#[arg]` documentation
+   - **Add the command to the help output** in `src/commands/docs.rs` (add to imports and appropriate category in `get_command_categories()`)
 
 ## Project History
 

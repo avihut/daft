@@ -72,6 +72,7 @@ fn main() -> Result<()> {
                     "hooks" => commands::hooks::run(),
                     "man" => commands::man::run(),
                     "multi-remote" => commands::multi_remote::run(),
+                    "release-notes" => commands::release_notes::run(),
                     "setup" => {
                         // Check for setup subcommands
                         if args.len() > 2 && args[2] == "shortcuts" {
