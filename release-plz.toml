@@ -5,6 +5,9 @@ git_release_enable = true
 git_release_draft = false
 # We don't publish to crates.io
 publish = false
+# Use git tags for version comparison instead of cargo registry
+# This is required because our crates.io version (0.1.5) is stale
+git_only = true
 # Disable strict semver - default to patch bumps for all changes
 # For minor/major releases, manually edit version in Cargo.toml
 semver_check = false
