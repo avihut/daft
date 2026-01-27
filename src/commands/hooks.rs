@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use daft::hooks::{TrustDatabase, TrustEntry, TrustLevel, PROJECT_HOOKS_DIR};
-use daft::styles::def;
+use daft::styles::{bold, cyan, def, dim, green, red, yellow};
 use daft::{get_git_common_dir, is_git_repository};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -30,6 +30,110 @@ fn hooks_long_about() -> String {
     .join("\n")
 }
 
+fn trust_long_about() -> String {
+    [
+        &format!(
+            "Grants {} trust to the current repository, allowing hooks in",
+            bold("full")
+        ),
+        ".daft/hooks/ to be executed automatically during worktree operations.",
+        "",
+        &format!(
+            "Use '{}' instead if you want to be prompted before",
+            bold("git daft hooks prompt")
+        ),
+        "each hook execution.",
+        "",
+        "Trust settings are stored in ~/.config/daft/trust.json and persist",
+        "across sessions.",
+    ]
+    .join("\n")
+}
+
+fn prompt_long_about() -> String {
+    [
+        &format!(
+            "Grants {} trust to the current repository. Hooks in",
+            bold("conditional")
+        ),
+        ".daft/hooks/ will be executed, but you will be prompted for",
+        "confirmation before each hook runs.",
+        "",
+        &format!(
+            "Use '{}' instead if you want hooks to run",
+            bold("git daft hooks trust")
+        ),
+        "automatically without prompting.",
+        "",
+        "Trust settings are stored in ~/.config/daft/trust.json and persist",
+        "across sessions.",
+    ]
+    .join("\n")
+}
+
+fn untrust_long_about() -> String {
+    [
+        &format!(
+            "{} trust from the current repository. After this command,",
+            bold("Revokes")
+        ),
+        "hooks will no longer be executed for this repository until trust",
+        "is granted again.",
+        "",
+        &format!("This sets the trust level to {}.", bold("deny")),
+    ]
+    .join("\n")
+}
+
+fn status_long_about() -> String {
+    [
+        "Display trust status and available hooks for the current repository.",
+        "",
+        "Shows:",
+        &def("level", "Current trust level (deny, prompt, or allow)"),
+        &def("hooks", "Available hooks in .daft/hooks/"),
+        &def("commands", "Suggested commands to change trust"),
+        "",
+        &format!("Use {} for a compact one-line output.", bold("-s/--short")),
+    ]
+    .join("\n")
+}
+
+fn list_long_about() -> String {
+    [
+        "List all repositories with explicit trust settings.",
+        "",
+        &format!(
+            "By default, only shows repositories with {} or {} trust.",
+            bold("allow"),
+            bold("prompt")
+        ),
+        &format!(
+            "Use {} to include {} entries as well.",
+            bold("--all"),
+            bold("deny")
+        ),
+        "",
+        "Output is paginated if it exceeds the terminal height.",
+    ]
+    .join("\n")
+}
+
+fn reset_trust_long_about() -> String {
+    [
+        &format!("{} all trust settings from the database.", bold("Clear")),
+        "",
+        "This removes all repository trust entries and patterns, resetting",
+        "the trust database to its initial empty state.",
+        "",
+        &format!(
+            "Use {} to skip the confirmation prompt.",
+            bold("-f/--force")
+        ),
+    ]
+    .join("\n")
+}
+
 #[derive(Parser)]
 #[command(name = "hooks")]
 #[command(about = "Manage repository trust for hook execution")]
@@ -42,16 +146,7 @@ pub struct Args {
 #[derive(Subcommand)]
 enum HooksCommand {
     /// Trust repository to run hooks automatically
-    #[command(long_about = r#"
-Grants full trust to the current repository, allowing hooks in .daft/hooks/
-to be executed automatically during worktree operations.
-
-Use 'git daft hooks prompt' instead if you want to be prompted before each
-hook execution.
-
-Trust settings are stored in ~/.config/daft/trust.json and persist across
-sessions.
-"#)]
+    #[command(long_about = trust_long_about())]
     Trust {
         /// Path to repository (defaults to current directory)
         #[arg(default_value = ".")]
@@ -62,17 +157,7 @@ sessions.
     },
 
     /// Trust repository but prompt before each hook
-    #[command(long_about = r#"
-Grants conditional trust to the current repository. Hooks in .daft/hooks/
-will be executed, but you will be prompted for confirmation before each
-hook runs.
-
-Use 'git daft hooks trust' instead if you want hooks to run automatically
-without prompting.
-
-Trust settings are stored in ~/.config/daft/trust.json and persist across
-sessions.
-"#)]
+    #[command(long_about = prompt_long_about())]
     Prompt {
         /// Path to repository (defaults to current directory)
         #[arg(default_value = ".")]
@@ -83,10 +168,7 @@ sessions.
     },
 
     /// Revoke trust from the current repository
-    #[command(long_about = r#"
-Revokes trust from the current repository. After this command, hooks will
-no longer be executed for this repository until trust is granted again.
-"#)]
+    #[command(long_about = untrust_long_about())]
     Untrust {
         /// Path to repository (defaults to current directory)
         #[arg(default_value = ".")]
@@ -97,6 +179,7 @@ no longer be executed for this repository until trust is granted again.
     },
 
     /// Display trust status and available hooks
+    #[command(long_about = status_long_about())]
     Status {
         /// Path to check (defaults to current directory)
         #[arg(default_value = ".")]
@@ -107,12 +190,14 @@ no longer be executed for this repository until trust is granted again.
     },
 
     /// List all repositories with trust settings
+    #[command(long_about = list_long_about())]
     List {
         #[arg(long, help = "Include repositories with deny trust level")]
         all: bool,
     },
 
     /// Clear all trust settings
+    #[command(long_about = reset_trust_long_about())]
     ResetTrust {
         #[arg(short = 'f', long, help = "Do not ask for confirmation")]
         force: bool,
@@ -171,12 +256,15 @@ fn cmd_set_trust(path: &Path, new_level: TrustLevel, force: bool) -> Result<()> 
         };
 
         // Show current status
-        println!("Current:");
-        println!("{} (repository)", project_root.display());
-        println!("{hooks_str} ({current_level})");
+        println!("{}", bold("Current:"));
+        println!("{} {}", project_root.display(), dim("(repository)"));
+        println!("{hooks_str} ({})", styled_trust_level(current_level));
 
         if !force {
-            print!("\nChange trust level to {new_level}? [y/N] ");
+            print!(
+                "\nChange trust level to {}? [y/N] ",
+                styled_trust_level(new_level)
+            );
             io::stdout().flush()?;
 
             let mut input = String::new();
@@ -184,7 +272,7 @@ fn cmd_set_trust(path: &Path, new_level: TrustLevel, force: bool) -> Result<()> 
             let input = input.trim().to_lowercase();
 
             if input != "y" && input != "yes" {
-                println!("Aborted.");
+                println!("{}", dim("Aborted."));
                 return Ok(());
             }
         }
@@ -195,8 +283,8 @@ fn cmd_set_trust(path: &Path, new_level: TrustLevel, force: bool) -> Result<()> 
         db.save().context("Failed to save trust database")?;
 
         // Show new status
-        println!("{} (repository)", project_root.display());
-        println!("{hooks_str} ({new_level})");
+        println!("{} {}", project_root.display(), dim("(repository)"));
+        println!("{hooks_str} ({})", styled_trust_level(new_level));
 
         Ok(())
     })();
@@ -226,8 +314,8 @@ fn cmd_untrust(path: &Path, force: bool) -> Result<()> {
         let project_root = git_dir.parent().context("Invalid git directory")?;
 
         if !db.has_explicit_trust(&git_dir) {
-            println!("{} (repository)", project_root.display());
-            println!("Not explicitly trusted");
+            println!("{} {}", project_root.display(), dim("(repository)"));
+            println!("{}", dim("Not explicitly trusted"));
             return Ok(());
         }
 
@@ -244,12 +332,15 @@ fn cmd_untrust(path: &Path, force: bool) -> Result<()> {
         };
 
         // Show current status
-        println!("Current:");
-        println!("{} (repository)", project_root.display());
-        println!("{hooks_str} ({current_level})");
+        println!("{}", bold("Current:"));
+        println!("{} {}", project_root.display(), dim("(repository)"));
+        println!("{hooks_str} ({})", styled_trust_level(current_level));
 
         if !force {
-            print!("\nChange trust level to deny? [y/N] ");
+            print!(
+                "\nChange trust level to {}? [y/N] ",
+                styled_trust_level(TrustLevel::Deny)
+            );
             io::stdout().flush()?;
 
             let mut input = String::new();
@@ -257,7 +348,7 @@ fn cmd_untrust(path: &Path, force: bool) -> Result<()> {
             let input = input.trim().to_lowercase();
 
             if input != "y" && input != "yes" {
-                println!("Aborted.");
+                println!("{}", dim("Aborted."));
                 return Ok(());
             }
         }
@@ -267,8 +358,8 @@ fn cmd_untrust(path: &Path, force: bool) -> Result<()> {
         db.save().context("Failed to save trust database")?;
 
         // Show new status
-        println!("{} (repository)", project_root.display());
-        println!("{hooks_str} (deny)");
+        println!("{} {}", project_root.display(), dim("(repository)"));
+        println!("{hooks_str} ({})", styled_trust_level(TrustLevel::Deny));
 
         Ok(())
     })();
@@ -322,9 +413,9 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
 
         if short {
             // Short format: PATH (type), optional repo line, then (LEVEL) hooks
-            println!("{} ({path_type})", abs_path.display());
+            println!("{} {}", abs_path.display(), dim(&format!("({path_type})")));
             if !is_repo_root {
-                println!("{} (repository)", project_root.display());
+                println!("{} {}", project_root.display(), dim("(repository)"));
             }
             let hook_names: Vec<_> = hooks
                 .iter()
@@ -336,31 +427,47 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
             } else {
                 hook_names.join(", ")
             };
-            println!("{hooks_str} ({trust_level})");
+            println!("{hooks_str} ({})", styled_trust_level(trust_level));
         } else {
             // Full format
-            println!("{} ({path_type})", abs_path.display());
+            println!("{} {}", abs_path.display(), dim(&format!("({path_type})")));
             if !is_repo_root {
-                println!("{} (repository)", project_root.display());
+                println!("{} {}", project_root.display(), dim("(repository)"));
             }
             println!();
 
             // Trust status
-            let trust_source = if is_explicit { "" } else { " (default)" };
-            println!("Trust level: {trust_level}{trust_source}");
-            println!("  {}", trust_level_description(trust_level));
+            let trust_source = if is_explicit {
+                String::new()
+            } else {
+                format!(" {}", dim("(default)"))
+            };
+            println!(
+                "{} {}{}",
+                bold("Trust level:"),
+                styled_trust_level(trust_level),
+                trust_source
+            );
+            println!("  {}", dim(trust_level_description(trust_level)));
             println!();
 
             if hooks.is_empty() {
-                println!("No hooks found in {}:", PROJECT_HOOKS_DIR);
-                println!("  (Create hooks by adding executable scripts to .daft/hooks/)");
+                println!("{} {}:", bold("No hooks found in"), cyan(PROJECT_HOOKS_DIR));
+                println!(
+                    "  {}",
+                    dim("(Create hooks by adding executable scripts to .daft/hooks/)")
+                );
             } else {
-                println!("Hooks found in {}:", PROJECT_HOOKS_DIR);
+                println!("{} {}:", bold("Hooks found in"), cyan(PROJECT_HOOKS_DIR));
                 for hook in &hooks {
                     let name = hook.file_name().unwrap_or_default().to_string_lossy();
                     let executable = is_executable(hook);
-                    let status = if executable { "" } else { " (not executable)" };
-                    println!("  - {name}{status}");
+                    let status = if executable {
+                        String::new()
+                    } else {
+                        format!(" {}", red("(not executable)"))
+                    };
+                    println!("  - {}{status}", cyan(&name));
                 }
             }
 
@@ -379,13 +486,13 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
 
             match trust_level {
                 TrustLevel::Deny => {
-                    println!("To enable hooks:");
-                    println!("  git daft hooks trust {path_arg}");
-                    println!("  git daft hooks prompt {path_arg}");
+                    println!("{}", bold("To enable hooks:"));
+                    println!("  {}", cyan(&format!("git daft hooks trust {path_arg}")));
+                    println!("  {}", cyan(&format!("git daft hooks prompt {path_arg}")));
                 }
                 TrustLevel::Prompt | TrustLevel::Allow => {
-                    println!("To revoke trust:");
-                    println!("  git daft hooks untrust {path_arg}");
+                    println!("{}", bold("To revoke trust:"));
+                    println!("  {}", cyan(&format!("git daft hooks untrust {path_arg}")));
                 }
             }
         }
@@ -408,6 +515,15 @@ fn trust_level_description(level: TrustLevel) -> &'static str {
     }
 }
 
+/// Format a trust level with appropriate color.
+fn styled_trust_level(level: TrustLevel) -> String {
+    match level {
+        TrustLevel::Deny => red(&level.to_string()),
+        TrustLevel::Prompt => yellow(&level.to_string()),
+        TrustLevel::Allow => green(&level.to_string()),
+    }
+}
+
 /// List all trusted repositories.
 fn cmd_list(show_all: bool) -> Result<()> {
     let db = TrustDatabase::load().context("Failed to load trust database")?;
@@ -423,12 +539,12 @@ fn cmd_list(show_all: bool) -> Result<()> {
 
     if repos.is_empty() {
         if show_all {
-            println!("No repositories in trust database.");
+            println!("{}", dim("No repositories in trust database."));
         } else {
-            println!("No trusted repositories.");
+            println!("{}", dim("No trusted repositories."));
             println!();
-            println!("To trust a repository, cd into it and run:");
-            println!("  git daft hooks trust");
+            println!("{}", bold("To trust a repository, cd into it and run:"));
+            println!("  {}", cyan("git daft hooks trust"));
         }
         return Ok(());
     }
@@ -437,11 +553,11 @@ fn cmd_list(show_all: bool) -> Result<()> {
     let mut output = String::new();
 
     let title = if show_all {
-        "All repositories in trust database:"
+        bold("All repositories in trust database:")
     } else {
-        "Trusted repositories:"
+        bold("Trusted repositories:")
     };
-    output.push_str(title);
+    output.push_str(&title);
     output.push_str("\n\n");
 
     for (path, entry) in &repos {
@@ -456,23 +572,25 @@ fn cmd_list(show_all: bool) -> Result<()> {
         let display_time = entry.formatted_time();
         output.push_str(&format!("  {display_path}\n"));
         output.push_str(&format!(
-            "    Level: {}  (trusted: {display_time})\n",
-            entry.level
+            "    Level: {}  {}\n",
+            styled_trust_level(entry.level),
+            dim(&format!("(trusted: {display_time})"))
         ));
     }
 
     // Show patterns if any
     if !db.patterns.is_empty() {
-        output.push_str("\nTrust patterns:\n");
+        output.push_str(&format!("\n{}:\n", bold("Trust patterns")));
         for pattern in &db.patterns {
             let comment = pattern
                 .comment
                 .as_ref()
-                .map(|c| format!(" # {c}"))
+                .map(|c| format!(" {}", dim(&format!("# {c}"))))
                 .unwrap_or_default();
             output.push_str(&format!(
                 "  {} -> {}{comment}\n",
-                pattern.pattern, pattern.level
+                cyan(&pattern.pattern),
+                styled_trust_level(pattern.level)
             ));
         }
     }
@@ -517,16 +635,20 @@ fn cmd_reset_trust(force: bool) -> Result<()> {
     let pattern_count = db.patterns.len();
 
     if repo_count == 0 && pattern_count == 0 {
-        println!("Trust database is already empty.");
+        println!("{}", dim("Trust database is already empty."));
         return Ok(());
     }
 
     // Show current status
-    println!("Current:");
-    println!("{repo_count} repositories, {pattern_count} patterns");
+    println!("{}", bold("Current:"));
+    println!(
+        "{} repositories, {} patterns",
+        yellow(&repo_count.to_string()),
+        yellow(&pattern_count.to_string())
+    );
 
     if !force {
-        print!("\nClear all trust settings? [y/N] ");
+        print!("\n{} all trust settings? [y/N] ", red("Clear"));
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -534,7 +656,7 @@ fn cmd_reset_trust(force: bool) -> Result<()> {
         let input = input.trim().to_lowercase();
 
         if input != "y" && input != "yes" {
-            println!("Aborted.");
+            println!("{}", dim("Aborted."));
             return Ok(());
         }
     }
@@ -543,7 +665,7 @@ fn cmd_reset_trust(force: bool) -> Result<()> {
     db.clear();
     db.save().context("Failed to save trust database")?;
 
-    println!("0 repositories, 0 patterns");
+    println!("{} repositories, {} patterns", green("0"), green("0"));
 
     Ok(())
 }
