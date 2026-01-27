@@ -147,15 +147,15 @@ pub fn run() -> Result<()> {
         .and_then(|n| n.to_str())
         .unwrap_or("daft");
 
-    let via_git = program_name == "git-daft";
-
-    if via_git {
-        println!("usage: git worktree-<command> [<args>]");
-        println!("   or: daft worktree-<command> [<args>]");
+    // Determine primary/secondary invocation style based on how we were called
+    let (primary, secondary) = if program_name == "git-daft" {
+        ("git", "daft")
     } else {
-        println!("usage: daft worktree-<command> [<args>]");
-        println!("   or: git worktree-<command> [<args>]");
-    }
+        ("daft", "git")
+    };
+
+    println!("usage: {primary} worktree-<command> [<args>]");
+    println!("   or: {secondary} worktree-<command> [<args>]");
 
     println!();
     println!("These are common daft commands used in various situations:");
@@ -180,11 +180,7 @@ pub fn run() -> Result<()> {
     }
 
     println!();
-    if via_git {
-        println!("'git worktree-<command> --help' to read about a specific command.");
-    } else {
-        println!("'daft worktree-<command> --help' to read about a specific command.");
-    }
+    println!("'{primary} worktree-<command> --help' to read about a specific command.");
     println!("See https://github.com/avihut/daft for documentation.");
 
     Ok(())
