@@ -51,7 +51,7 @@ pub struct Args {
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse();
+    let args = Args::parse_from(daft::get_clap_args("git-worktree-carry"));
 
     init_logging(args.verbose);
 

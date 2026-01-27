@@ -81,6 +81,19 @@ fn main() -> Result<()> {
                         }
                     }
                     "shell-init" => commands::shell_init::run(),
+                    // Worktree commands accessible via `daft worktree-<command>`
+                    "worktree-clone" => commands::clone::run(),
+                    "worktree-init" => commands::init::run(),
+                    "worktree-checkout" => commands::checkout::run(),
+                    "worktree-checkout-branch" => commands::checkout_branch::run(),
+                    "worktree-checkout-branch-from-default" => {
+                        commands::checkout_branch_from_default::run()
+                    }
+                    "worktree-prune" => commands::prune::run(),
+                    "worktree-carry" => commands::carry::run(),
+                    "worktree-fetch" => commands::fetch::run(),
+                    "worktree-flow-adopt" => commands::flow_adopt::run(),
+                    "worktree-flow-eject" => commands::flow_eject::run(),
                     _ => commands::docs::run(),
                 }
             } else {

@@ -2,11 +2,30 @@
 ///
 /// Shows daft commands in git-style help format
 use anyhow::Result;
+use std::path::Path;
 
 pub fn run() -> Result<()> {
-    print!(
-        r#"usage: git daft <command> [<args>]
+    // Detect how we were invoked
+    let program_path = std::env::args()
+        .next()
+        .unwrap_or_else(|| "daft".to_string());
+    let program_name = Path::new(&program_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("daft");
 
+    let via_git = program_name == "git-daft";
+
+    if via_git {
+        println!("usage: git worktree-<command> [<args>]");
+        println!("   or: git-worktree-<command> [<args>]");
+    } else {
+        println!("usage: git-worktree-<command> [<args>]");
+        println!("   or: git worktree-<command> [<args>]");
+    }
+
+    print!(
+        r#"
 These are common daft commands used in various situations:
 
 start a worktree-based repository
@@ -29,9 +48,15 @@ maintain your worktrees
 manage hooks
    daft hooks        Manage repository hook trust settings
 
-'git <command> --help' to read about a specific command.
-See https://github.com/avihut/daft for documentation.
 "#
     );
+
+    if via_git {
+        println!("'git worktree-<command> --help' to read about a specific command.");
+    } else {
+        println!("'git-worktree-<command> --help' to read about a specific command.");
+    }
+    println!("See https://github.com/avihut/daft for documentation.");
+
     Ok(())
 }
