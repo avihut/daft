@@ -7,6 +7,7 @@ use clap::Parser;
 use pager::Pager;
 use serde::Serialize;
 use std::io::{self, IsTerminal, Write};
+use termimad::MadSkin;
 
 /// Embedded CHANGELOG.md content (compiled into the binary)
 const CHANGELOG: &str = include_str!("../../CHANGELOG.md");
@@ -224,31 +225,42 @@ fn output_list(releases: &[Release], no_pager: bool) -> Result<()> {
 
 /// Output full release notes
 fn output_full(releases: &[Release], no_pager: bool) -> Result<()> {
-    let mut output = String::new();
+    let mut markdown = String::new();
 
     for (i, release) in releases.iter().enumerate() {
         if i > 0 {
-            output.push('\n');
-            output.push_str(&"─".repeat(60));
-            output.push_str("\n\n");
+            markdown.push_str("\n---\n\n");
         }
 
         // Header
         if let Some(ref date) = release.date {
-            output.push_str(&format!("## [{}] - {}\n", release.version, date));
+            markdown.push_str(&format!("## [{}] - {}\n", release.version, date));
         } else {
-            output.push_str(&format!("## [{}]\n", release.version));
+            markdown.push_str(&format!("## [{}]\n", release.version));
         }
 
         // Content
         if !release.content.is_empty() {
-            output.push('\n');
-            output.push_str(&release.content);
+            markdown.push('\n');
+            markdown.push_str(&release.content);
         }
-        output.push('\n');
+        markdown.push('\n');
     }
 
+    // Render markdown if outputting to a terminal
+    let output = if io::stdout().is_terminal() {
+        render_markdown(&markdown)
+    } else {
+        markdown
+    };
+
     display_with_pager(&output, no_pager)
+}
+
+/// Render markdown to terminal-formatted text with colors
+fn render_markdown(markdown: &str) -> String {
+    let skin = MadSkin::default();
+    skin.term_text(markdown).to_string()
 }
 
 /// Display content using pager if appropriate
@@ -323,5 +335,16 @@ mod tests {
     fn test_embedded_changelog_parses() {
         let releases = parse_changelog(CHANGELOG).unwrap();
         assert!(!releases.is_empty(), "CHANGELOG.md should have releases");
+    }
+
+    #[test]
+    fn test_render_markdown_produces_ansi() {
+        let md = "## Heading\n\n**bold** text";
+        let rendered = render_markdown(md);
+        // Rendered output should contain ANSI escape codes (start with \x1b[)
+        assert!(
+            rendered.contains("\x1b["),
+            "Rendered markdown should contain ANSI codes"
+        );
     }
 }
