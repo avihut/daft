@@ -54,7 +54,9 @@ pub struct Args {
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse();
+    let args = Args::parse_from(daft::get_clap_args(
+        "git-worktree-checkout-branch-from-default",
+    ));
 
     // Initialize logging based on verbosity flag
     init_logging(args.verbose);

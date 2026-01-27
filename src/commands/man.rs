@@ -45,7 +45,7 @@ fn get_command_for_name(command_name: &str) -> Option<Command> {
 #[derive(Parser)]
 #[command(name = "daft-man")]
 #[command(about = "Generate man pages for daft commands")]
-struct Args {
+pub struct Args {
     #[arg(
         short,
         long,

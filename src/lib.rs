@@ -30,6 +30,36 @@ pub fn output_cd_path(path: &Path) {
     }
 }
 
+/// Returns args suitable for clap parsing, handling both symlink and subcommand invocation.
+///
+/// When invoked via symlink (e.g., `git-worktree-clone <url>`), returns args as-is.
+/// When invoked via `daft worktree-<cmd> <args>`, returns `["git-worktree-<cmd>", <args>...]`
+/// so clap sees the expected command name.
+///
+/// # Arguments
+/// * `expected_cmd` - The expected command name (e.g., "git-worktree-clone")
+pub fn get_clap_args(expected_cmd: &str) -> Vec<String> {
+    let args: Vec<String> = env::args().collect();
+
+    // Check if invoked as `daft worktree-*`
+    if args.len() >= 2 {
+        let program_name = Path::new(&args[0])
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        if program_name == "daft" && args[1].starts_with("worktree-") {
+            // Reconstruct args with the expected command name
+            let mut new_args = vec![expected_cmd.to_string()];
+            new_args.extend(args.into_iter().skip(2));
+            return new_args;
+        }
+    }
+
+    // Default: return args as-is (symlink invocation)
+    args
+}
+
 pub mod config;
 pub mod git;
 pub mod hints;

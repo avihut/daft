@@ -1,125 +1,187 @@
 /// Documentation command for `git daft`
 ///
-/// Shows comprehensive daft documentation, available commands, and project links
+/// Shows daft commands in git-style help format, dynamically extracting
+/// descriptions from clap command definitions.
 use anyhow::Result;
+use clap::{Command, CommandFactory};
+use std::path::Path;
+
+use crate::commands::{
+    branch, carry, checkout, checkout_branch, checkout_branch_from_default, clone, completions,
+    fetch, flow_adopt, flow_eject, hooks, init, man, multi_remote, prune, shell_init, shortcuts,
+};
+
+/// A category of commands with a title and list of commands.
+struct CommandCategory {
+    title: &'static str,
+    commands: Vec<CommandEntry>,
+}
+
+/// A single command entry with its display name and clap Command.
+struct CommandEntry {
+    display_name: &'static str,
+    command: Command,
+}
+
+/// Get all command categories with their commands.
+fn get_command_categories() -> Vec<CommandCategory> {
+    vec![
+        CommandCategory {
+            title: "start a worktree-based repository",
+            commands: vec![
+                CommandEntry {
+                    display_name: "worktree-clone",
+                    command: clone::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-init",
+                    command: init::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-flow-adopt",
+                    command: flow_adopt::Args::command(),
+                },
+            ],
+        },
+        CommandCategory {
+            title: "work on branches (each branch gets its own directory)",
+            commands: vec![
+                CommandEntry {
+                    display_name: "worktree-checkout",
+                    command: checkout::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-checkout-branch",
+                    command: checkout_branch::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-checkout-branch-from-default",
+                    command: checkout_branch_from_default::Args::command(),
+                },
+            ],
+        },
+        CommandCategory {
+            title: "share changes across worktrees",
+            commands: vec![CommandEntry {
+                display_name: "worktree-carry",
+                command: carry::Args::command(),
+            }],
+        },
+        CommandCategory {
+            title: "maintain your worktrees",
+            commands: vec![
+                CommandEntry {
+                    display_name: "worktree-prune",
+                    command: prune::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-fetch",
+                    command: fetch::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-flow-eject",
+                    command: flow_eject::Args::command(),
+                },
+            ],
+        },
+        CommandCategory {
+            title: "manage daft configuration",
+            commands: vec![
+                CommandEntry {
+                    display_name: "daft hooks",
+                    command: hooks::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft branch",
+                    command: branch::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft multi-remote",
+                    command: multi_remote::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft setup shortcuts",
+                    command: shortcuts::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft shell-init",
+                    command: shell_init::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft completions",
+                    command: completions::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft man",
+                    command: man::Args::command(),
+                },
+            ],
+        },
+    ]
+}
+
+/// Extract the short description (about) from a clap Command.
+fn get_about(cmd: &Command) -> String {
+    cmd.get_about()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "(no description)".to_string())
+}
+
+/// Calculate the maximum display name length for proper alignment.
+fn max_display_name_len(categories: &[CommandCategory]) -> usize {
+    categories
+        .iter()
+        .flat_map(|cat| cat.commands.iter())
+        .map(|entry| entry.display_name.len())
+        .max()
+        .unwrap_or(20)
+}
 
 pub fn run() -> Result<()> {
-    print!(
-        r#"
-╔════════════════════════════════════════════════════════════════╗
-║                    daft - Git Extensions Toolkit                ║
-╚════════════════════════════════════════════════════════════════╝
+    // Detect how we were invoked
+    let program_path = std::env::args()
+        .next()
+        .unwrap_or_else(|| "daft".to_string());
+    let program_name = Path::new(&program_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("daft");
 
-A comprehensive toolkit that extends Git functionality to enhance
-developer workflows. Starting with powerful worktree management and
-expanding to provide a suite of Git extensions that eliminate friction.
+    // Determine primary/secondary invocation style based on how we were called
+    let (primary, secondary) = if program_name == "git-daft" {
+        ("git", "daft")
+    } else {
+        ("daft", "git")
+    };
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-WORKTREE COMMANDS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    println!("usage: {primary} worktree-<command> [<args>]");
+    println!("   or: {secondary} worktree-<command> [<args>]");
 
-  git worktree-clone <repository-url>
-      Clone a repository with the worktree workflow structure
-      Examples:
-        git worktree-clone https://github.com/user/repo.git
-        git worktree-clone --quiet git@github.com:user/repo.git
-        git worktree-clone --all-branches https://github.com/user/repo.git
+    println!();
+    println!("These are common daft commands used in various situations:");
 
-  git worktree-init <repository-name>
-      Initialize a new repository with worktree structure
-      Examples:
-        git worktree-init my-project
-        git worktree-init --initial-branch main my-project
+    let categories = get_command_categories();
+    let max_len = max_display_name_len(&categories);
 
-  git worktree-checkout <branch-name>
-      Checkout an existing branch into a new worktree
-      Examples:
-        git worktree-checkout feature/new-feature
-        git worktree-checkout bugfix/critical-fix
+    for category in &categories {
+        println!();
+        println!("{}", category.title);
 
-  git worktree-checkout-branch <new-branch-name> [base-branch]
-      Create a new branch in a new worktree
-      Examples:
-        git worktree-checkout-branch feature/auth
-        git worktree-checkout-branch feature/ui develop
+        for entry in &category.commands {
+            let about = get_about(&entry.command);
+            // Pad the display name for alignment
+            println!(
+                "   {:width$}   {}",
+                entry.display_name,
+                about,
+                width = max_len
+            );
+        }
+    }
 
-  git worktree-checkout-branch-from-default <new-branch-name>
-      Create a new branch from remote's default branch in a new worktree
-      Examples:
-        git worktree-checkout-branch-from-default hotfix/security
+    println!();
+    println!("'{primary} worktree-<command> --help' to read about a specific command.");
+    println!("See https://github.com/avihut/daft for documentation.");
 
-  git worktree-prune
-      Remove worktrees for branches that have been deleted remotely
-      Examples:
-        git worktree-prune
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-HOOKS MANAGEMENT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  git daft hooks status
-      Show trust status and available hooks for current repository
-
-  git daft hooks trust [--prompt]
-      Trust current repository to run hooks
-      Examples:
-        git daft hooks trust           # Allow hooks to run automatically
-        git daft hooks trust --prompt  # Require confirmation before each hook
-
-  git daft hooks untrust
-      Revoke trust for current repository
-
-  git daft hooks list
-      List all trusted repositories
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-KEY FEATURES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  • One worktree per branch - work on multiple branches simultaneously
-  • No more git checkout or stashing - each branch has its own directory
-  • Lifecycle hooks - run custom scripts on worktree create/remove
-  • Smart branch detection - automatically detects main/master/develop
-  • Robust error handling - automatic cleanup on failures
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-WORKFLOW EXAMPLE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  $ git worktree-clone git@github.com:user/my-project.git
-  $ cd my-project/main
-
-  $ git worktree-checkout-branch feature/auth
-  # Now: my-project/feature/auth/ directory created
-
-  $ git worktree-checkout-branch bugfix/login
-  # Now: my-project/bugfix/login/ directory created
-
-  # Your project structure:
-  # my-project/
-  # ├── .git/
-  # ├── main/
-  # ├── feature/auth/
-  # └── bugfix/login/
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-HELP & DOCUMENTATION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  For detailed help on any command, use --help:
-    git worktree-clone --help
-    git worktree-checkout --help
-    git worktree-init --help
-    etc.
-
-  Documentation: https://github.com/avihut/daft
-  Report Issues:  https://github.com/avihut/daft/issues
-  License:        MIT
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-"#
-    );
-    println!("Built with Rust 🦀  |  Version {}\n", daft::VERSION);
     Ok(())
 }
