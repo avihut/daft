@@ -232,6 +232,12 @@ impl TrustDatabase {
         self.patterns.len() < initial_len
     }
 
+    /// Clear all trust entries and patterns.
+    pub fn clear(&mut self) {
+        self.repositories.clear();
+        self.patterns.clear();
+    }
+
     /// List all trusted repositories.
     pub fn list_trusted(&self) -> Vec<(&str, &TrustEntry)> {
         self.repositories

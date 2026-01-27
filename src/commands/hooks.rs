@@ -110,6 +110,12 @@ no longer be executed for this repository until trust is granted again.
         #[arg(long, help = "Include repositories with deny trust level")]
         all: bool,
     },
+
+    /// Clear all trust settings
+    ResetTrust {
+        #[arg(short = 'f', long, help = "Do not ask for confirmation")]
+        force: bool,
+    },
 }
 
 pub fn run() -> Result<()> {
@@ -124,6 +130,7 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::Untrust { path, force }) => cmd_untrust(&path, force),
         Some(HooksCommand::Status { path, short }) => cmd_status(&path, short),
         Some(HooksCommand::List { all }) => cmd_list(all),
+        Some(HooksCommand::ResetTrust { force }) => cmd_reset_trust(force),
         None => cmd_status(&std::path::PathBuf::from("."), false), // Default to status if no subcommand
     }
 }
@@ -460,6 +467,45 @@ fn cmd_list(show_all: bool) -> Result<()> {
             println!("  {} -> {}{comment}", pattern.pattern, pattern.level);
         }
     }
+
+    Ok(())
+}
+
+/// Clear all trust settings.
+fn cmd_reset_trust(force: bool) -> Result<()> {
+    let db = TrustDatabase::load().context("Failed to load trust database")?;
+
+    let repo_count = db.repositories.len();
+    let pattern_count = db.patterns.len();
+
+    if repo_count == 0 && pattern_count == 0 {
+        println!("Trust database is already empty.");
+        return Ok(());
+    }
+
+    // Show current status
+    println!("Current:");
+    println!("{repo_count} repositories, {pattern_count} patterns");
+
+    if !force {
+        print!("\nClear all trust settings? [y/N] ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let input = input.trim().to_lowercase();
+
+        if input != "y" && input != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    let mut db = db;
+    db.clear();
+    db.save().context("Failed to save trust database")?;
+
+    println!("0 repositories, 0 patterns");
 
     Ok(())
 }
