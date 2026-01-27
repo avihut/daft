@@ -1,0 +1,26 @@
+[workspace]
+# Create GitHub releases when version is published
+git_release_enable = true
+# Don't create as draft - publish immediately
+git_release_draft = false
+# We don't publish to crates.io
+publish = false
+# Disable strict semver - default to patch bumps for all changes
+# For minor/major releases, manually edit version in Cargo.toml
+semver_check = false
+
+[changelog]
+# Use git-cliff for changelog generation (matches cliff.toml)
+commit_parsers = [
+    { message = "^feat", group = "Features" },
+    { message = "^fix", group = "Bug Fixes" },
+    { message = "^doc", group = "Documentation" },
+    { message = "^perf", group = "Performance" },
+    { message = "^refactor", group = "Refactoring" },
+    { message = "^style", group = "Styling" },
+    { message = "^test", group = "Testing" },
+    { message = "^chore\\(release\\)", skip = true },
+    { message = "^chore: release", skip = true },
+    { message = "^chore", group = "Miscellaneous" },
+    { message = "^ci", group = "CI/CD" },
+]
