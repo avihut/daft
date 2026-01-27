@@ -9,32 +9,29 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use daft::hooks::{TrustDatabase, TrustLevel, PROJECT_HOOKS_DIR};
+use daft::styles::def;
 use daft::{get_git_common_dir, is_git_repository};
 use std::io::{self, Write};
 use std::path::Path;
 
+fn hooks_long_about() -> String {
+    [
+        "Manage trust settings for repository hooks in .daft/hooks/.",
+        "",
+        "Trust levels:",
+        &def("deny", "Do not run hooks (default)"),
+        &def("prompt", "Prompt before each hook"),
+        &def("allow", "Run hooks automatically"),
+        "",
+        "Trust applies to all worktrees. Without a subcommand, shows status.",
+    ]
+    .join("\n")
+}
+
 #[derive(Parser)]
 #[command(name = "hooks")]
 #[command(about = "Manage repository trust for hook execution")]
-#[command(long_about = r#"
-Manages trust settings that control whether lifecycle hooks are executed for
-a repository. Hooks are executable scripts stored in a repository's
-.daft/hooks/ directory that run during worktree operations such as clone,
-create, and remove.
-
-For security, hooks are only executed in repositories that have been
-explicitly trusted. Trust settings are stored in ~/.config/daft/trust.json
-and are not part of the repository itself.
-
-Trust levels:
-
-    deny    Do not run hooks (default for untrusted repositories)
-    prompt  Prompt for confirmation before each hook execution
-    allow   Run hooks without prompting
-
-When invoked without a subcommand, displays the trust status and available
-hooks for the current repository (equivalent to the status subcommand).
-"#)]
+#[command(long_about = hooks_long_about())]
 pub struct Args {
     #[command(subcommand)]
     command: Option<HooksCommand>,
@@ -55,6 +52,10 @@ Trust settings are stored in ~/.config/daft/trust.json and persist across
 sessions.
 "#)]
     Trust {
+        /// Path to repository (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: std::path::PathBuf,
+
         #[arg(
             long,
             help = "Set trust level to prompt; require confirmation before each hook"
@@ -71,12 +72,20 @@ Revokes trust from the current repository. After this command, hooks will
 no longer be executed for this repository until trust is granted again.
 "#)]
     Untrust {
+        /// Path to repository (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: std::path::PathBuf,
+
         #[arg(short = 'y', long, help = "Do not ask for confirmation")]
         yes: bool,
     },
 
     /// Display trust status and available hooks
-    Status,
+    Status {
+        /// Path to check (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: std::path::PathBuf,
+    },
 
     /// List all repositories with trust settings
     List {
@@ -90,195 +99,263 @@ pub fn run() -> Result<()> {
     let args = Args::parse_from(args);
 
     match args.command {
-        Some(HooksCommand::Trust { prompt, yes }) => cmd_trust(prompt, yes),
-        Some(HooksCommand::Untrust { yes }) => cmd_untrust(yes),
-        Some(HooksCommand::Status) => cmd_status(),
+        Some(HooksCommand::Trust { path, prompt, yes }) => cmd_trust(&path, prompt, yes),
+        Some(HooksCommand::Untrust { path, yes }) => cmd_untrust(&path, yes),
+        Some(HooksCommand::Status { path }) => cmd_status(&path),
         Some(HooksCommand::List { all }) => cmd_list(all),
-        None => cmd_status(), // Default to status if no subcommand
+        None => cmd_status(&std::path::PathBuf::from(".")), // Default to status if no subcommand
     }
 }
 
-/// Trust the current repository.
-fn cmd_trust(prompt_level: bool, skip_confirm: bool) -> Result<()> {
-    // Ensure we're in a git repository
-    if !is_git_repository()? {
-        anyhow::bail!("Not in a git repository");
-    }
+/// Trust the repository at the given path.
+fn cmd_trust(path: &Path, prompt_level: bool, skip_confirm: bool) -> Result<()> {
+    let abs_path = path
+        .canonicalize()
+        .with_context(|| format!("Path does not exist: {}", path.display()))?;
 
-    let git_dir = get_git_common_dir()?;
-    let level = if prompt_level {
-        TrustLevel::Prompt
-    } else {
-        TrustLevel::Allow
-    };
+    let original_dir = std::env::current_dir()?;
+    std::env::set_current_dir(&abs_path)
+        .with_context(|| format!("Cannot change to directory: {}", abs_path.display()))?;
 
-    // Show hooks that exist
-    let hooks = find_project_hooks(&git_dir)?;
-    if hooks.is_empty() {
-        println!("No hooks found in .daft/hooks/");
+    let result = (|| -> Result<()> {
+        if !is_git_repository()? {
+            anyhow::bail!("Not in a git repository: {}", abs_path.display());
+        }
+
+        let git_dir = get_git_common_dir()?;
+        let new_level = if prompt_level {
+            TrustLevel::Prompt
+        } else {
+            TrustLevel::Allow
+        };
+
+        // Show hooks that exist
+        let hooks = find_project_hooks(&git_dir)?;
+        if hooks.is_empty() {
+            println!("No hooks found in .daft/hooks/");
+            println!();
+            println!("To create hooks, add executable scripts to .daft/hooks/");
+            println!("Available hook types: post-clone, post-init, pre-create, post-create, pre-remove, post-remove");
+            return Ok(());
+        }
+
+        // Load database to show current trust level
+        let db = TrustDatabase::load().context("Failed to load trust database")?;
+        let current_level = db.get_trust_level(&git_dir);
+        let is_explicit = db.has_explicit_trust(&git_dir);
+        let project_root = git_dir.parent().context("Invalid git directory")?;
+
+        println!("Repository: {}", project_root.display());
         println!();
-        println!("To create hooks, add executable scripts to .daft/hooks/");
-        println!("Available hook types: post-clone, post-init, pre-create, post-create, pre-remove, post-remove");
-        return Ok(());
-    }
-
-    println!("Repository: {}", git_dir.display());
-    println!();
-    println!("Hooks found in {}:", PROJECT_HOOKS_DIR);
-    for hook in &hooks {
-        let size = std::fs::metadata(hook)
-            .map(|m| format_size(m.len()))
-            .unwrap_or_else(|_| "?".to_string());
-        let name = hook.file_name().unwrap_or_default().to_string_lossy();
-        println!("  - {name}  ({size})");
-    }
-    println!();
-
-    println!("Trusting this repository allows it to run arbitrary scripts");
-    println!("during worktree operations.");
-    println!();
-    println!("Trust level: {level}");
-
-    if !skip_confirm {
-        print!("\nTrust this repository? [y/N] ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let input = input.trim().to_lowercase();
-
-        if input != "y" && input != "yes" {
-            println!("Aborted.");
-            return Ok(());
+        println!("Hooks found in {}:", PROJECT_HOOKS_DIR);
+        for hook in &hooks {
+            let name = hook.file_name().unwrap_or_default().to_string_lossy();
+            println!("  - {name}");
         }
-    }
+        println!();
 
-    // Load, update, and save the trust database
-    let mut db = TrustDatabase::load().context("Failed to load trust database")?;
-    db.set_trust_level(&git_dir, level);
-    db.save().context("Failed to save trust database")?;
+        // Show current trust level
+        let current_source = if is_explicit { "" } else { " (default)" };
+        println!("Current trust level: {current_level}{current_source}");
+        println!("  {}", trust_level_description(current_level));
+        println!();
 
-    println!();
-    println!("Repository trusted with level: {level}");
-    if level == TrustLevel::Allow {
-        println!("Hooks will now run automatically.");
-    } else {
-        println!("You will be prompted before each hook execution.");
-    }
+        // Show new trust level
+        println!("New trust level: {new_level}");
+        println!("  {}", trust_level_description(new_level));
+        println!();
 
-    Ok(())
-}
+        println!("Trusting this repository allows it to run arbitrary scripts");
+        println!("during worktree operations.");
 
-/// Revoke trust for the current repository.
-fn cmd_untrust(skip_confirm: bool) -> Result<()> {
-    if !is_git_repository()? {
-        anyhow::bail!("Not in a git repository");
-    }
+        if !skip_confirm {
+            print!("\nTrust this repository? [y/N] ");
+            io::stdout().flush()?;
 
-    let git_dir = get_git_common_dir()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim().to_lowercase();
 
-    let db = TrustDatabase::load().context("Failed to load trust database")?;
-    let current_level = db.get_trust_level(&git_dir);
-
-    if current_level == TrustLevel::Deny && !db.has_explicit_trust(&git_dir) {
-        println!("Repository is not explicitly trusted.");
-        println!("Current trust level: {current_level} (default)");
-        return Ok(());
-    }
-
-    println!("Repository: {}", git_dir.display());
-    println!("Current trust level: {current_level}");
-
-    if !skip_confirm {
-        print!("\nRevoke trust for this repository? [y/N] ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let input = input.trim().to_lowercase();
-
-        if input != "y" && input != "yes" {
-            println!("Aborted.");
-            return Ok(());
+            if input != "y" && input != "yes" {
+                println!("Aborted.");
+                return Ok(());
+            }
         }
-    }
 
-    let mut db = db;
-    if db.remove_trust(&git_dir) {
+        // Update and save the trust database
+        let mut db = db;
+        db.set_trust_level(&git_dir, new_level);
         db.save().context("Failed to save trust database")?;
-        println!();
-        println!("Trust revoked. Hooks will no longer run for this repository.");
-    } else {
-        println!("Repository was not explicitly trusted.");
-    }
 
-    Ok(())
+        println!();
+        println!("Repository trusted with level: {new_level}");
+        println!("This applies to all worktrees in this repository.");
+
+        Ok(())
+    })();
+
+    std::env::set_current_dir(&original_dir)?;
+    result
+}
+
+/// Revoke trust for the repository at the given path.
+fn cmd_untrust(path: &Path, skip_confirm: bool) -> Result<()> {
+    let abs_path = path
+        .canonicalize()
+        .with_context(|| format!("Path does not exist: {}", path.display()))?;
+
+    let original_dir = std::env::current_dir()?;
+    std::env::set_current_dir(&abs_path)
+        .with_context(|| format!("Cannot change to directory: {}", abs_path.display()))?;
+
+    let result = (|| -> Result<()> {
+        if !is_git_repository()? {
+            anyhow::bail!("Not in a git repository: {}", abs_path.display());
+        }
+
+        let git_dir = get_git_common_dir()?;
+
+        let db = TrustDatabase::load().context("Failed to load trust database")?;
+        let current_level = db.get_trust_level(&git_dir);
+
+        if current_level == TrustLevel::Deny && !db.has_explicit_trust(&git_dir) {
+            println!("Repository is not explicitly trusted.");
+            println!("Current trust level: {current_level} (default)");
+            return Ok(());
+        }
+
+        let project_root = git_dir.parent().context("Invalid git directory")?;
+        println!("Repository: {}", project_root.display());
+        println!("Current trust level: {current_level}");
+
+        if !skip_confirm {
+            print!("\nRevoke trust for this repository? [y/N] ");
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim().to_lowercase();
+
+            if input != "y" && input != "yes" {
+                println!("Aborted.");
+                return Ok(());
+            }
+        }
+
+        let mut db = db;
+        if db.remove_trust(&git_dir) {
+            db.save().context("Failed to save trust database")?;
+            println!();
+            println!("Trust revoked. Hooks will no longer run for this repository.");
+        } else {
+            println!("Repository was not explicitly trusted.");
+        }
+
+        Ok(())
+    })();
+
+    std::env::set_current_dir(&original_dir)?;
+    result
 }
 
 /// Show trust status and available hooks.
-fn cmd_status() -> Result<()> {
-    if !is_git_repository()? {
-        anyhow::bail!("Not in a git repository");
+fn cmd_status(path: &Path) -> Result<()> {
+    // Resolve the path to absolute
+    let abs_path = path
+        .canonicalize()
+        .with_context(|| format!("Path does not exist: {}", path.display()))?;
+
+    // Change to that directory temporarily to run git commands
+    let original_dir = std::env::current_dir()?;
+    std::env::set_current_dir(&abs_path)
+        .with_context(|| format!("Cannot change to directory: {}", abs_path.display()))?;
+
+    // Ensure we're in a git repository
+    let result = (|| -> Result<()> {
+        if !is_git_repository()? {
+            anyhow::bail!("Not in a git repository: {}", abs_path.display());
+        }
+
+        let git_dir = get_git_common_dir()?;
+        let db = TrustDatabase::load().context("Failed to load trust database")?;
+        let trust_level = db.get_trust_level(&git_dir);
+        let is_explicit = db.has_explicit_trust(&git_dir);
+
+        // Determine path type and display
+        let project_root = git_dir.parent().context("Invalid git directory")?;
+        let is_repo_root = abs_path == project_root;
+        let path_type = if is_repo_root {
+            "repository"
+        } else if abs_path.starts_with(project_root) {
+            let relative = abs_path.strip_prefix(project_root).unwrap_or(&abs_path);
+            let components: Vec<_> = relative.components().collect();
+            if components.len() == 1 {
+                "worktree"
+            } else {
+                "subdirectory"
+            }
+        } else {
+            "unknown"
+        };
+
+        println!("{} ({path_type})", abs_path.display());
+        if !is_repo_root {
+            println!("{} (repository)", project_root.display());
+        }
+        println!();
+
+        // Trust status
+        let trust_source = if is_explicit { "" } else { " (default)" };
+        println!("Trust level: {trust_level}{trust_source}");
+        println!("  {}", trust_level_description(trust_level));
+        println!();
+
+        // Find hooks
+        let hooks = find_project_hooks(&git_dir)?;
+        if hooks.is_empty() {
+            println!("No hooks found in {}:", PROJECT_HOOKS_DIR);
+            println!("  (Create hooks by adding executable scripts to .daft/hooks/)");
+        } else {
+            println!("Hooks found in {}:", PROJECT_HOOKS_DIR);
+            for hook in &hooks {
+                let name = hook.file_name().unwrap_or_default().to_string_lossy();
+                let executable = is_executable(hook);
+                let status = if executable { "" } else { " (not executable)" };
+                println!("  - {name}{status}");
+            }
+        }
+
+        println!();
+
+        // Show commands
+        match trust_level {
+            TrustLevel::Deny => {
+                println!("To enable hooks:");
+                println!("  git daft hooks trust            # Allow hooks to run");
+                println!("  git daft hooks trust --prompt   # Require confirmation");
+            }
+            TrustLevel::Prompt | TrustLevel::Allow => {
+                println!("To revoke trust:");
+                println!("  git daft hooks untrust");
+            }
+        }
+
+        Ok(())
+    })();
+
+    // Restore original directory
+    std::env::set_current_dir(&original_dir)?;
+
+    result
+}
+
+/// Get a human-readable description for a trust level.
+fn trust_level_description(level: TrustLevel) -> &'static str {
+    match level {
+        TrustLevel::Deny => "Hooks will NOT run for this repository.",
+        TrustLevel::Prompt => "You will be prompted before each hook execution.",
+        TrustLevel::Allow => "Hooks will run automatically without prompting.",
     }
-
-    let git_dir = get_git_common_dir()?;
-    let db = TrustDatabase::load().context("Failed to load trust database")?;
-    let trust_level = db.get_trust_level(&git_dir);
-    let is_explicit = db.has_explicit_trust(&git_dir);
-
-    println!("Repository: {}", git_dir.display());
-    println!();
-
-    // Trust status
-    let trust_source = if is_explicit { "" } else { " (default)" };
-    println!("Trust level: {trust_level}{trust_source}");
-    match trust_level {
-        TrustLevel::Deny => {
-            println!("  Hooks will NOT run for this repository.");
-        }
-        TrustLevel::Prompt => {
-            println!("  You will be prompted before each hook execution.");
-        }
-        TrustLevel::Allow => {
-            println!("  Hooks will run automatically without prompting.");
-        }
-    }
-    println!();
-
-    // Find hooks
-    let hooks = find_project_hooks(&git_dir)?;
-    if hooks.is_empty() {
-        println!("No hooks found in {}:", PROJECT_HOOKS_DIR);
-        println!("  (Create hooks by adding executable scripts to .daft/hooks/)");
-    } else {
-        println!("Hooks found in {}:", PROJECT_HOOKS_DIR);
-        for hook in &hooks {
-            let size = std::fs::metadata(hook)
-                .map(|m| format_size(m.len()))
-                .unwrap_or_else(|_| "?".to_string());
-            let name = hook.file_name().unwrap_or_default().to_string_lossy();
-            let executable = is_executable(hook);
-            let status = if executable { "" } else { " (not executable)" };
-            println!("  - {name}  ({size}){status}");
-        }
-    }
-
-    println!();
-
-    // Show commands
-    match trust_level {
-        TrustLevel::Deny => {
-            println!("To enable hooks:");
-            println!("  git daft hooks trust       # Allow hooks to run");
-            println!("  git daft hooks trust --prompt  # Require confirmation");
-        }
-        TrustLevel::Prompt | TrustLevel::Allow => {
-            println!("To revoke trust:");
-            println!("  git daft hooks untrust");
-        }
-    }
-
-    Ok(())
 }
 
 /// List all trusted repositories.
@@ -386,17 +463,6 @@ fn find_project_hooks(git_dir: &Path) -> Result<Vec<std::path::PathBuf>> {
     });
 
     Ok(hooks)
-}
-
-/// Format a file size in human-readable form.
-fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    }
 }
 
 /// Check if a file is executable.
