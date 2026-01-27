@@ -100,6 +100,9 @@ no longer be executed for this repository until trust is granted again.
         /// Path to check (defaults to current directory)
         #[arg(default_value = ".")]
         path: std::path::PathBuf,
+
+        #[arg(short = 's', long, help = "Show compact one-line summary")]
+        short: bool,
     },
 
     /// List all repositories with trust settings
@@ -117,9 +120,9 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::Trust { path, force }) => cmd_set_trust(&path, TrustLevel::Allow, force),
         Some(HooksCommand::Prompt { path, force }) => cmd_set_trust(&path, TrustLevel::Prompt, force),
         Some(HooksCommand::Untrust { path, force }) => cmd_untrust(&path, force),
-        Some(HooksCommand::Status { path }) => cmd_status(&path),
+        Some(HooksCommand::Status { path, short }) => cmd_status(&path, short),
         Some(HooksCommand::List { all }) => cmd_list(all),
-        None => cmd_status(&std::path::PathBuf::from(".")), // Default to status if no subcommand
+        None => cmd_status(&std::path::PathBuf::from("."), false), // Default to status if no subcommand
     }
 }
 
@@ -270,7 +273,7 @@ fn cmd_untrust(path: &Path, force: bool) -> Result<()> {
 }
 
 /// Show trust status and available hooks.
-fn cmd_status(path: &Path) -> Result<()> {
+fn cmd_status(path: &Path, short: bool) -> Result<()> {
     // Resolve the path to absolute
     let abs_path = path
         .canonicalize()
@@ -309,54 +312,75 @@ fn cmd_status(path: &Path) -> Result<()> {
             "unknown"
         };
 
-        println!("{} ({path_type})", abs_path.display());
-        if !is_repo_root {
-            println!("{} (repository)", project_root.display());
-        }
-        println!();
-
-        // Trust status
-        let trust_source = if is_explicit { "" } else { " (default)" };
-        println!("Trust level: {trust_level}{trust_source}");
-        println!("  {}", trust_level_description(trust_level));
-        println!();
-
         // Find hooks
         let hooks = find_project_hooks(&git_dir)?;
-        if hooks.is_empty() {
-            println!("No hooks found in {}:", PROJECT_HOOKS_DIR);
-            println!("  (Create hooks by adding executable scripts to .daft/hooks/)");
-        } else {
-            println!("Hooks found in {}:", PROJECT_HOOKS_DIR);
-            for hook in &hooks {
-                let name = hook.file_name().unwrap_or_default().to_string_lossy();
-                let executable = is_executable(hook);
-                let status = if executable { "" } else { " (not executable)" };
-                println!("  - {name}{status}");
+
+        if short {
+            // Short format: PATH (type), optional repo line, then (LEVEL) hooks
+            println!("{} ({path_type})", abs_path.display());
+            if !is_repo_root {
+                println!("{} (repository)", project_root.display());
             }
-        }
-
-        println!();
-
-        // Show commands with relative path
-        // If we're inside the repo, "." works since trust resolves the git common dir
-        let path_arg = if original_dir.starts_with(project_root) || original_dir == project_root {
-            ".".to_string()
+            let hook_names: Vec<_> = hooks
+                .iter()
+                .filter_map(|h| h.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .collect();
+            let hooks_str = if hook_names.is_empty() {
+                "none".to_string()
+            } else {
+                hook_names.join(", ")
+            };
+            println!("{hooks_str} ({trust_level})");
         } else {
-            relative_path(&original_dir, project_root)
-                .display()
-                .to_string()
-        };
-
-        match trust_level {
-            TrustLevel::Deny => {
-                println!("To enable hooks:");
-                println!("  git daft hooks trust {path_arg}");
-                println!("  git daft hooks prompt {path_arg}");
+            // Full format
+            println!("{} ({path_type})", abs_path.display());
+            if !is_repo_root {
+                println!("{} (repository)", project_root.display());
             }
-            TrustLevel::Prompt | TrustLevel::Allow => {
-                println!("To revoke trust:");
-                println!("  git daft hooks untrust {path_arg}");
+            println!();
+
+            // Trust status
+            let trust_source = if is_explicit { "" } else { " (default)" };
+            println!("Trust level: {trust_level}{trust_source}");
+            println!("  {}", trust_level_description(trust_level));
+            println!();
+
+            if hooks.is_empty() {
+                println!("No hooks found in {}:", PROJECT_HOOKS_DIR);
+                println!("  (Create hooks by adding executable scripts to .daft/hooks/)");
+            } else {
+                println!("Hooks found in {}:", PROJECT_HOOKS_DIR);
+                for hook in &hooks {
+                    let name = hook.file_name().unwrap_or_default().to_string_lossy();
+                    let executable = is_executable(hook);
+                    let status = if executable { "" } else { " (not executable)" };
+                    println!("  - {name}{status}");
+                }
+            }
+
+            println!();
+
+            // Show commands with relative path
+            // If we're inside the repo, "." works since trust resolves the git common dir
+            let path_arg = if original_dir.starts_with(project_root) || original_dir == project_root {
+                ".".to_string()
+            } else {
+                relative_path(&original_dir, project_root)
+                    .display()
+                    .to_string()
+            };
+
+            match trust_level {
+                TrustLevel::Deny => {
+                    println!("To enable hooks:");
+                    println!("  git daft hooks trust {path_arg}");
+                    println!("  git daft hooks prompt {path_arg}");
+                }
+                TrustLevel::Prompt | TrustLevel::Allow => {
+                    println!("To revoke trust:");
+                    println!("  git daft hooks untrust {path_arg}");
+                }
             }
         }
 
