@@ -9,7 +9,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use daft::hooks::{TrustDatabase, TrustLevel, PROJECT_HOOKS_DIR};
+use daft::hooks::{TrustDatabase, TrustEntry, TrustLevel, PROJECT_HOOKS_DIR};
 use daft::styles::def;
 use daft::{get_git_common_dir, is_git_repository};
 use std::io::{self, IsTerminal, Write};
@@ -412,16 +412,13 @@ fn trust_level_description(level: TrustLevel) -> &'static str {
 fn cmd_list(show_all: bool) -> Result<()> {
     let db = TrustDatabase::load().context("Failed to load trust database")?;
 
-    let repos: Vec<_> = if show_all {
+    let repos: Vec<(&str, &TrustEntry)> = if show_all {
         db.repositories
             .iter()
-            .map(|(path, entry)| (path.as_str(), &entry.level, &entry.granted_at))
+            .map(|(p, e)| (p.as_str(), e))
             .collect()
     } else {
         db.list_trusted()
-            .into_iter()
-            .map(|(path, entry)| (path, &entry.level, &entry.granted_at))
-            .collect()
     };
 
     if repos.is_empty() {
@@ -447,16 +444,21 @@ fn cmd_list(show_all: bool) -> Result<()> {
     output.push_str(title);
     output.push_str("\n\n");
 
-    for (path, level, granted_at) in &repos {
+    for (path, entry) in &repos {
+        // Strip .git suffix if present to show repo path
+        let repo_path = path.strip_suffix("/.git").unwrap_or(path);
         // Truncate long paths
-        let display_path = if path.len() > 60 {
-            format!("...{}", &path[path.len() - 57..])
+        let display_path = if repo_path.len() > 60 {
+            format!("...{}", &repo_path[repo_path.len() - 57..])
         } else {
-            (*path).to_string()
+            repo_path.to_string()
         };
-        let display_time = format_timestamp(granted_at);
+        let display_time = entry.formatted_time();
         output.push_str(&format!("  {display_path}\n"));
-        output.push_str(&format!("    Level: {level}  (trusted: {display_time})\n"));
+        output.push_str(&format!(
+            "    Level: {}  (trusted: {display_time})\n",
+            entry.level
+        ));
     }
 
     // Show patterns if any
@@ -504,19 +506,6 @@ fn output_with_pager(text: &str) {
     // Fall back to direct output if pager fails
     if result.is_err() {
         print!("{text}");
-    }
-}
-
-/// Format an ISO 8601 timestamp for display.
-/// Converts "2026-02-08T07:28:54Z" to "2026-02-08 07:28".
-fn format_timestamp(iso: &str) -> String {
-    // Try to parse and reformat, fall back to original if it fails
-    if iso.len() >= 16 && iso.contains('T') {
-        let date = &iso[..10];
-        let time = &iso[11..16];
-        format!("{date} {time}")
-    } else {
-        iso.to_string()
     }
 }
 
