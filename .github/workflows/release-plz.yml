@@ -76,10 +76,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          # Get the release PR branch name
-          PR_BRANCH=$(gh pr list --label release --json headRefName --jq '.[0].headRefName')
+          # Wait briefly for GitHub to propagate the PR and labels
+          sleep 5
+
+          # Get the release PR branch name with retry logic
+          for i in 1 2 3; do
+            PR_BRANCH=$(gh pr list --label release --json headRefName --jq '.[0].headRefName')
+            if [ -n "$PR_BRANCH" ]; then
+              break
+            fi
+            echo "Attempt $i: Release PR not found yet, waiting..."
+            sleep 5
+          done
+
           if [ -z "$PR_BRANCH" ]; then
-            echo "No release PR found, skipping man page update"
+            echo "No release PR found after retries, skipping man page update"
             exit 0
           fi
 
