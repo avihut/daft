@@ -2,6 +2,8 @@
 # Don't create GitHub releases - cargo-dist handles this via release.yml
 # release-plz only creates the git tag, cargo-dist creates the release with binaries
 git_release_enable = false
+# Auto-label release PRs
+pr_labels = ["release"]
 # We don't publish to crates.io
 publish = false
 # Use git tags for version comparison instead of cargo registry
