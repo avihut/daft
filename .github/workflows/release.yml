@@ -308,37 +308,42 @@ jobs:
           pattern: artifacts-*
           path: Formula/
           merge-multiple: true
-      # Add post_install (man pages) and caveats to the formula
+      # Add man page generation to install block and caveats to the formula
       # cargo-dist doesn't support these natively
-      - name: Add post_install and caveats to formula
+      # IMPORTANT: Man pages must be generated in `install`, not `post_install`,
+      # because Homebrew only symlinks files created during `install`
+      - name: Add man pages and caveats to formula
         run: |
           FORMULA_FILE="Formula/daft.rb"
           if [ -f "$FORMULA_FILE" ]; then
-            # Remove the final 'end' and append post_install + caveats + end
+            # Insert man page generation before the end of the install method
+            # The install method ends with "pkgshare.install..." followed by "end"
+            # We insert the man page generation after pkgshare.install and before end
+            sed -i '/pkgshare\.install.*unless leftover_contents\.empty?/a\
+\
+    # Generate man pages (must be in install block to be symlinked)\
+    man1.mkpath\
+    system bin/"daft", "man", "--output-dir", man1' "$FORMULA_FILE"
+
+            # Remove the final 'end' and append caveats + end
             sed -i '$ d' "$FORMULA_FILE"
             cat >> "$FORMULA_FILE" << 'FORMULA_ADDITIONS'
 
-            def post_install
-              # Generate man pages directly to the man directory
-              man1.mkpath
-              system bin/"daft", "man", "--output-dir", man1
-            end
+  def caveats
+    <<~EOS
+      To complete setup (shell integration + shortcuts), run:
+        daft setup
 
-            def caveats
-              <<~EOS
-                To complete setup (shell integration + shortcuts), run:
-                  daft setup
+      This enables automatic cd into new worktrees and installs
+      git-style shortcuts (gwtco, gwtcb, gwtcbm, etc.)
 
-                This enables automatic cd into new worktrees and installs
-                git-style shortcuts (gwtco, gwtcb, gwtcbm, etc.)
-
-                For more information:
-                  daft --help
-              EOS
-            end
-          end
-          FORMULA_ADDITIONS
-            echo "Added post_install and caveats to $FORMULA_FILE"
+      For more information:
+        daft --help
+    EOS
+  end
+end
+FORMULA_ADDITIONS
+            echo "Added man pages to install block and caveats to $FORMULA_FILE"
           fi
       # This is extra complex because you can make your Formula name not match your app name
       # so we need to find releases with a *.rb file, and publish with that filename.
