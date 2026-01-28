@@ -2,9 +2,7 @@
 //!
 //! Provides `git daft multi-remote` subcommand for managing multi-remote mode.
 
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-use daft::{
+use crate::{
     get_project_root,
     git::GitCommand,
     is_git_repository,
@@ -15,6 +13,8 @@ use daft::{
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
 };
+use anyhow::Result;
+use clap::{Parser, Subcommand};
 use std::io::{self, Write};
 
 #[derive(Parser)]

@@ -4,10 +4,18 @@ This file provides guidance when working with code in this repository.
 
 ## Recent Changes
 
+**Man Pages Migrated to xtask (2026-01)**
+- Man page generation moved from user-facing `daft man` to cargo xtask
+- Man pages are pre-generated and committed to `man/` directory
+- Generate with `just gen-man` (uses `cargo xtask gen-man`)
+- Install with `just install-man` (copies pre-generated files)
+- Verify with `just verify-man` (checks if man pages are up-to-date)
+- `clap_mangen` dependency moved from main binary to xtask only
+- See "Documentation Requirements" section for best practices
+
 **Man Pages Added (2025-01)**
 - Added man page generation using `clap_mangen`
 - Man pages are auto-generated from clap command definitions
-- Generate with `just gen-man` or install with `just install-man`
 - See "Documentation Requirements" section for best practices
 
 **Hooks System Added (2025-01)**
@@ -625,9 +633,11 @@ These same checks run in GitHub Actions, so passing them locally ensures CI will
 
 ### Man Pages
 
-Man pages are **auto-generated from clap command definitions** using `clap_mangen`. This means:
+Man pages are **auto-generated from clap command definitions** using `clap_mangen` via the `xtask` package. Man pages are pre-generated and committed to the repository - users install them directly without needing to generate them.
 
-1. **No separate man page files to maintain** - Man pages are derived directly from the `#[command]` and `#[arg]` attributes in each command's `Args` struct.
+#### Key points:
+
+1. **Pre-generated and committed** - Man pages in `man/` are checked into the repository. They must be regenerated when command help text changes.
 
 2. **Write descriptive help text** - When adding or modifying commands, ensure you provide:
    - `#[command(about = "...")]` - Short one-line description (shown in man page NAME section)
@@ -652,18 +662,24 @@ Man pages are **auto-generated from clap command definitions** using `clap_mange
    }
    ```
 
-4. **Generation commands:**
+4. **Development commands:**
    ```bash
-   just gen-man       # Generate to man/ directory
+   just gen-man       # Generate/update man pages in man/ directory
    just install-man   # Install to ~/.local/share/man/man1/
-   daft man --help    # See all options
+   just verify-man    # Check if committed man pages are up-to-date
+   cargo xtask gen-man --output-dir=man  # Direct xtask invocation
    ```
 
 5. **When adding new commands:**
-   - Add the command to the `COMMANDS` array in `src/commands/man.rs`
-   - Add the command mapping in `get_command_for_name()` function
+   - Add the command to the `COMMANDS` array in `xtask/src/main.rs`
+   - Add the command mapping in `get_command_for_name()` function in `xtask/src/main.rs`
    - Ensure the command has proper `#[command]` and `#[arg]` documentation
    - **Add the command to the help output** in `src/commands/docs.rs` (add to imports and appropriate category in `get_command_categories()`)
+   - Run `just gen-man` and commit the new man page
+
+6. **CI verification:**
+   - The `xtask-test` job in `test.yml` verifies that committed man pages are up-to-date
+   - If you modify command help text, regenerate man pages before pushing
 
 ## Project History
 

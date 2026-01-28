@@ -1,6 +1,4 @@
-use anyhow::Result;
-use clap::Parser;
-use daft::{
+use crate::{
     config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT},
     get_current_branch, get_git_common_dir, get_project_root,
     git::GitCommand,
@@ -13,10 +11,12 @@ use daft::{
     utils::*,
     WorktreeConfig,
 };
+use anyhow::Result;
+use clap::Parser;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-checkout-branch")]
-#[command(version = daft::VERSION)]
+#[command(version = crate::VERSION)]
 #[command(about = "Create a worktree with a new branch")]
 #[command(long_about = r#"
 Creates a new branch and a corresponding worktree in a single operation. The
@@ -64,7 +64,7 @@ pub struct Args {
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(daft::get_clap_args("git-worktree-checkout-branch"));
+    let args = Args::parse_from(crate::get_clap_args("git-worktree-checkout-branch"));
 
     // Initialize logging based on verbosity flags
     logging::init_logging(args.verbose);

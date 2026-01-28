@@ -1,6 +1,4 @@
-use anyhow::Result;
-use clap::Parser;
-use daft::{
+use crate::{
     get_project_root,
     git::GitCommand,
     is_git_repository, log_error, log_info, log_warning,
@@ -10,11 +8,13 @@ use daft::{
     utils::*,
     WorktreeConfig,
 };
+use anyhow::Result;
+use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-carry")]
-#[command(version = daft::VERSION)]
+#[command(version = crate::VERSION)]
 #[command(about = "Transfer uncommitted changes to other worktrees")]
 #[command(long_about = r#"
 Transfers uncommitted changes (staged, unstaged, and untracked files) from
@@ -51,7 +51,7 @@ pub struct Args {
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(daft::get_clap_args("git-worktree-carry"));
+    let args = Args::parse_from(crate::get_clap_args("git-worktree-carry"));
 
     init_logging(args.verbose);
 

@@ -1,6 +1,4 @@
-use anyhow::{Context, Result};
-use clap::Parser;
-use daft::{
+use crate::{
     config::git::DEFAULT_EXIT_CODE,
     get_git_common_dir, is_git_repository,
     logging::init_logging,
@@ -9,11 +7,13 @@ use daft::{
     settings::DaftSettings,
     utils::*,
 };
+use anyhow::{Context, Result};
+use clap::Parser;
 use std::process::Command;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-checkout-branch-from-default")]
-#[command(version = daft::VERSION)]
+#[command(version = crate::VERSION)]
 #[command(about = "Create a worktree with a new branch based on the remote's default branch")]
 #[command(long_about = r#"
 Creates a new branch based on the remote's default branch (typically main or
@@ -54,7 +54,7 @@ pub struct Args {
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(daft::get_clap_args(
+    let args = Args::parse_from(crate::get_clap_args(
         "git-worktree-checkout-branch-from-default",
     ));
 

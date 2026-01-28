@@ -1,6 +1,4 @@
-use anyhow::{Context, Result};
-use clap::Parser;
-use daft::{
+use crate::{
     config::counters::{INITIAL_BRANCHES_DELETED, INITIAL_WORKTREES_REMOVED, OPERATION_INCREMENT},
     get_git_common_dir, get_project_root,
     git::GitCommand,
@@ -12,11 +10,13 @@ use daft::{
     settings::DaftSettings,
     WorktreeConfig,
 };
+use anyhow::{Context, Result};
+use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-prune")]
-#[command(version = daft::VERSION)]
+#[command(version = crate::VERSION)]
 #[command(about = "Remove worktrees and branches for deleted remote branches")]
 #[command(long_about = r#"
 Removes local branches whose corresponding remote tracking branches have been
@@ -37,7 +37,7 @@ pub struct Args {
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(daft::get_clap_args("git-worktree-prune"));
+    let args = Args::parse_from(crate::get_clap_args("git-worktree-prune"));
 
     // Initialize logging based on verbosity flag
     init_logging(args.verbose);

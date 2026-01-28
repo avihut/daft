@@ -3,17 +3,17 @@
 //! This command fetches and pulls updates for one or more worktrees by navigating
 //! to each target worktree and running `git pull` with configurable options.
 
-use anyhow::Result;
-use clap::Parser;
-use daft::{
+use crate::{
     get_project_root, git::GitCommand, is_git_repository, log_error, log_info, log_warning,
     logging::init_logging, settings::DaftSettings, utils::*, WorktreeConfig,
 };
+use anyhow::Result;
+use clap::Parser;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "git-worktree-fetch")]
-#[command(version = daft::VERSION)]
+#[command(version = crate::VERSION)]
 #[command(about = "Update worktree branches from their remote tracking branches")]
 #[command(long_about = r#"
 Updates worktree branches by pulling from their remote tracking branches.
@@ -87,7 +87,7 @@ struct FetchResult {
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(daft::get_clap_args("git-worktree-fetch"));
+    let args = Args::parse_from(crate::get_clap_args("git-worktree-fetch"));
 
     init_logging(args.verbose);
 

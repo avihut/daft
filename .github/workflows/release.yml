@@ -316,14 +316,13 @@ jobs:
         run: |
           FORMULA_FILE="Formula/daft.rb"
           if [ -f "$FORMULA_FILE" ]; then
-            # Insert man page generation before the end of the install method
+            # Insert pre-generated man page installation before the end of the install method
             # Use awk to insert after the pkgshare.install line
             awk '/pkgshare\.install.*unless leftover_contents\.empty\?/ {
               print
               print ""
-              print "    # Generate man pages (must be in install block to be symlinked)"
-              print "    man1.mkpath"
-              print "    system bin/\"daft\", \"man\", \"--output-dir\", man1"
+              print "    # Install pre-generated man pages"
+              print "    man1.install Dir[buildpath/\"man/*.1\"]"
               next
             }
             { print }' "$FORMULA_FILE" > "${FORMULA_FILE}.tmp" && mv "${FORMULA_FILE}.tmp" "$FORMULA_FILE"
@@ -339,7 +338,7 @@ jobs:
             printf '      For more information:\n' >> "$FORMULA_FILE"
             printf '        daft --help\n' >> "$FORMULA_FILE"
             printf '    EOS\n  end\nend\n' >> "$FORMULA_FILE"
-            echo "Added man pages to install block and caveats to $FORMULA_FILE"
+            echo "Added pre-generated man pages to install block and caveats to $FORMULA_FILE"
           fi
       # This is extra complex because you can make your Formula name not match your app name
       # so we need to find releases with a *.rb file, and publish with that filename.

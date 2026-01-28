@@ -16,7 +16,6 @@ pub mod flow_adopt;
 pub mod flow_eject;
 pub mod hooks;
 pub mod init;
-pub mod man;
 pub mod multi_remote;
 pub mod prune;
 pub mod release_notes;

@@ -7,11 +7,11 @@
 //! - `status` - Show trust status and available hooks
 //! - `list` - List all trusted repositories
 
+use crate::hooks::{TrustDatabase, TrustEntry, TrustLevel, PROJECT_HOOKS_DIR};
+use crate::styles::{bold, cyan, def, dim, green, red, yellow};
+use crate::{get_git_common_dir, is_git_repository};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use daft::hooks::{TrustDatabase, TrustEntry, TrustLevel, PROJECT_HOOKS_DIR};
-use daft::styles::{bold, cyan, def, dim, green, red, yellow};
-use daft::{get_git_common_dir, is_git_repository};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
