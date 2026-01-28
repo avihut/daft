@@ -63,8 +63,47 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run release-plz release-pr
+        id: release-plz
         uses: release-plz/action@v0.5
         with:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      # Regenerate man pages to match the new version in Cargo.toml
+      - name: Update man pages in release PR
+        if: steps.release-plz.outputs.prs_created == 'true'
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          # Get the release PR branch name
+          PR_BRANCH=$(gh pr list --label release --json headRefName --jq '.[0].headRefName')
+          if [ -z "$PR_BRANCH" ]; then
+            echo "No release PR found, skipping man page update"
+            exit 0
+          fi
+
+          echo "Found release PR branch: $PR_BRANCH"
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Checkout the release PR branch
+          git fetch origin "$PR_BRANCH"
+          git checkout "$PR_BRANCH"
+
+          # Regenerate man pages with new version
+          cargo run --package xtask -- gen-man --output-dir=man
+
+          # Check if man pages changed
+          if git diff --quiet man/; then
+            echo "Man pages are already up to date"
+            exit 0
+          fi
+
+          # Commit and push the updated man pages
+          git add man/
+          git commit -m "chore: regenerate man pages for new version"
+          git push origin "$PR_BRANCH"
+          echo "Man pages updated in release PR"
