@@ -1,0 +1,43 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH daft-release-notes 1  "daft-release-notes 1.0.11" 
+.SH NAME
+daft\-release\-notes \- Display release notes from the changelog
+.SH SYNOPSIS
+\fBdaft\-release\-notes\fR [\fB\-l\fR|\fB\-\-list\fR] [\fB\-n\fR|\fB\-\-latest\fR] [\fB\-\-json\fR] [\fB\-\-no\-pager\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIVERSION\fR] 
+.SH DESCRIPTION
+.PP
+Displays release notes from daft\*(Aqs changelog in a scrollable interface
+using the system pager (similar to how git displays man pages).
+.PP
+By default, shows all release notes. Use the VERSION argument to show
+notes for a specific version, or use \-\-list to see a summary of all
+available versions.
+.PP
+The pager can be navigated using standard less commands:
+  \- Space/Page Down: scroll down one page
+  \- b/Page Up: scroll up one page
+  \- /pattern: search for text
+  \- n: find next match
+  \- q: quit
+.SH OPTIONS
+.TP
+\fB\-l\fR, \fB\-\-list\fR
+List all versions without full notes
+.TP
+\fB\-n\fR, \fB\-\-latest\fR \fI<N>\fR
+Show only the latest N releases (default: all)
+.TP
+\fB\-\-json\fR
+Output as JSON for scripting
+.TP
+\fB\-\-no\-pager\fR
+Disable pager, print directly to stdout
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+[\fIVERSION\fR]
+Show notes for a specific version (e.g., "1.0.5" or "v1.0.5")
+.SH VERSION
+v1.0.11

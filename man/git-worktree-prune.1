@@ -1,0 +1,32 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-worktree-prune 1  "git-worktree-prune 1.0.11" 
+.SH NAME
+git\-worktree\-prune \- Remove worktrees and branches for deleted remote branches
+.SH SYNOPSIS
+\fBgit\-worktree\-prune\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+.SH DESCRIPTION
+.PP
+Removes local branches whose corresponding remote tracking branches have been
+deleted, along with any associated worktrees. This is useful for cleaning up
+after branches have been merged and deleted on the remote.
+.PP
+The command first fetches from the remote with pruning enabled to update the
+list of remote tracking branches. It then identifies local branches that were
+tracking now\-deleted remote branches, removes their worktrees (if any exist),
+and finally deletes the local branches.
+.PP
+Pre\-remove and post\-remove lifecycle hooks are executed for each worktree
+removal if the repository is trusted. See git\-daft(1) for hook management.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Be verbose; show detailed progress
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH VERSION
+v1.0.11
