@@ -308,14 +308,25 @@ jobs:
           pattern: artifacts-*
           path: Formula/
           merge-multiple: true
-      # Add caveats to the formula (cargo-dist doesn't support this natively)
-      - name: Add caveats to formula
+      # Add post_install (man pages) and caveats to the formula
+      # cargo-dist doesn't support these natively
+      - name: Add post_install and caveats to formula
         run: |
           FORMULA_FILE="Formula/daft.rb"
           if [ -f "$FORMULA_FILE" ]; then
-            # Remove the final 'end' and append caveats + end
+            # Remove the final 'end' and append post_install + caveats + end
             sed -i '$ d' "$FORMULA_FILE"
-            cat >> "$FORMULA_FILE" << 'CAVEATS'
+            cat >> "$FORMULA_FILE" << 'FORMULA_ADDITIONS'
+
+            def post_install
+              # Generate and install man pages using the daft binary
+              Dir.mktmpdir do |dir|
+                system bin/"daft", "man", "--output-dir", dir
+                Dir["#{dir}/*.1"].each do |man_file|
+                  man1.install man_file
+                end
+              end
+            end
 
             def caveats
               <<~EOS
@@ -330,8 +341,8 @@ jobs:
               EOS
             end
           end
-          CAVEATS
-            echo "Added caveats to $FORMULA_FILE"
+          FORMULA_ADDITIONS
+            echo "Added post_install and caveats to $FORMULA_FILE"
           fi
       # This is extra complex because you can make your Formula name not match your app name
       # so we need to find releases with a *.rb file, and publish with that filename.
