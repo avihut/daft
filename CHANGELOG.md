@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0](https://github.com/avihut/daft/compare/v1.0.7...v1.1.0) - 2026-01-28
+
+### Bug Fixes
+
+- resolve hooks trust mechanism issues ([#101](https://github.com/avihut/daft/pull/101))
+
+### CI/CD
+
+- migrate from release-please to release-plz ([#99](https://github.com/avihut/daft/pull/99))
+- remove redundant push trigger from test workflow ([#93](https://github.com/avihut/daft/pull/93))
+- *(deps)* bump extractions/setup-just in the github-actions group ([#92](https://github.com/avihut/daft/pull/92))
+- simplify release workflow with release-please ([#91](https://github.com/avihut/daft/pull/91))
+
+### Features
+
+- add daft release-notes command ([#100](https://github.com/avihut/daft/pull/100))
+- improve help system with git-like format and dynamic generation ([#98](https://github.com/avihut/daft/pull/98))
+
 ## [1.0.7] - 2026-01-24
 
 
