@@ -308,24 +308,34 @@ jobs:
           pattern: artifacts-*
           path: Formula/
           merge-multiple: true
-      # Add man page generation to install block and caveats to the formula
+      # Add man page installation and caveats to the formula
       # cargo-dist doesn't support these natively
-      # IMPORTANT: Man pages must be generated in `install`, not `post_install`,
+      # IMPORTANT: Man pages must be installed in `install`, not `post_install`,
       # because Homebrew only symlinks files created during `install`
       - name: Add man pages and caveats to formula
         run: |
           FORMULA_FILE="Formula/daft.rb"
           if [ -f "$FORMULA_FILE" ]; then
-            # Insert pre-generated man page installation before the end of the install method
-            # Use awk to insert after the pkgshare.install line
-            awk '/pkgshare\.install.*unless leftover_contents\.empty\?/ {
-              print
+            # Fix the formula to:
+            # 1. Exclude "man" from leftover_contents (so it doesn't get moved to pkgshare)
+            # 2. Install man pages BEFORE pkgshare.install
+            awk '
+            /leftover_contents = Dir\["\*"\] - doc_files/ {
+              # Replace the line to also exclude the man directory
+              print "    leftover_contents = Dir[\"*\"] - doc_files - [\"man\"]"
+              next
+            }
+            /pkgshare\.install.*unless leftover_contents\.empty\?/ {
+              # Insert man page installation BEFORE pkgshare.install
               print ""
               print "    # Install pre-generated man pages"
               print "    man1.install Dir[buildpath/\"man/*.1\"]"
+              print ""
+              print $0
               next
             }
-            { print }' "$FORMULA_FILE" > "${FORMULA_FILE}.tmp" && mv "${FORMULA_FILE}.tmp" "$FORMULA_FILE"
+            { print }
+            ' "$FORMULA_FILE" > "${FORMULA_FILE}.tmp" && mv "${FORMULA_FILE}.tmp" "$FORMULA_FILE"
 
             # Remove the final 'end' and append caveats + end
             sed -i '$ d' "$FORMULA_FILE"
