@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.12](https://github.com/avihut/daft/compare/v1.0.11...v1.0.12) - 2026-01-28
+
+### Bug Fixes
+
+- skip man page verification on release PRs
+- try disabling git_only for xtask
+- use package-specific tag format for xtask
+- disable release-plz for all packages except daft
+- exclude xtask from release-plz processing
+- resolve YAML syntax error in release workflow
+- correct git-worktree-clone syntax in test-homebrew workflow
+- move man page generation to install block in Homebrew formula
+
+### Documentation
+
+- dedupe changelog entries for v1.0.11
+
+### Refactoring
+
+- migrate man page generation to cargo xtask ([#109](https://github.com/avihut/daft/pull/109))
+
 ## [1.0.11](https://github.com/avihut/daft/compare/v1.0.10...v1.0.11) - 2026-01-28
 
 ### Bug Fixes
