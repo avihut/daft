@@ -405,6 +405,13 @@ jobs:
 
     - name: Verify committed man pages are up-to-date
       run: |
+        # Skip verification on release PRs - release-plz bumps version in Cargo.toml
+        # which causes man pages (that embed version) to appear outdated
+        if [[ "${{ github.head_ref }}" == release-plz-* ]]; then
+          echo "Skipping man page verification on release PR (version bump expected)"
+          exit 0
+        fi
+
         cargo run --package xtask -- gen-man --output-dir=man
         if ! git diff --exit-code man/; then
           echo "FAILED: Committed man pages are out of date!"
