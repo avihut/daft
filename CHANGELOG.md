@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.13](https://github.com/avihut/daft/compare/v1.0.12...v1.0.13) - 2026-01-28
+
+### Bug Fixes
+
+- include man pages in binary distribution archives ([#111](https://github.com/avihut/daft/pull/111))
+
 ## [1.0.12](https://github.com/avihut/daft/compare/v1.0.11...v1.0.12) - 2026-01-28
 
 ### Bug Fixes
