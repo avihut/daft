@@ -319,13 +319,9 @@ jobs:
             cat >> "$FORMULA_FILE" << 'FORMULA_ADDITIONS'
 
             def post_install
-              # Generate and install man pages using the daft binary
-              Dir.mktmpdir do |dir|
-                system bin/"daft", "man", "--output-dir", dir
-                Dir["#{dir}/*.1"].each do |man_file|
-                  man1.install man_file
-                end
-              end
+              # Generate man pages directly to the man directory
+              man1.mkpath
+              system bin/"daft", "man", "--output-dir", man1
             end
 
             def caveats
