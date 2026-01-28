@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.16](https://github.com/avihut/daft/compare/v1.0.15...v1.0.16) - 2026-01-28
+
+### Bug Fixes
+
+- add retry logic for release PR detection in man page update ([#117](https://github.com/avihut/daft/pull/117))
+
 ## [1.0.15](https://github.com/avihut/daft/compare/v1.0.14...v1.0.15) - 2026-01-28
 
 ### Bug Fixes
