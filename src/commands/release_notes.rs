@@ -4,6 +4,7 @@
 /// using the system pager (like git does).
 use anyhow::{Context, Result};
 use clap::Parser;
+#[cfg(unix)]
 use pager::Pager;
 use serde::Serialize;
 use std::io::{self, IsTerminal, Write};
@@ -308,6 +309,7 @@ fn create_daft_skin() -> MadSkin {
 /// Display content using pager if appropriate
 fn display_with_pager(content: &str, no_pager: bool) -> Result<()> {
     // Only use pager if: stdout is TTY AND --no-pager not set
+    #[cfg(unix)]
     if !no_pager && io::stdout().is_terminal() {
         // Set up pager with less-like options:
         // -F: quit if one screen
@@ -316,6 +318,10 @@ fn display_with_pager(content: &str, no_pager: bool) -> Result<()> {
         // -X: don't clear screen on exit
         Pager::with_pager("less -FIRX").setup();
     }
+
+    // Suppress unused variable warning on Windows
+    #[cfg(not(unix))]
+    let _ = no_pager;
 
     // After Pager::setup(), stdout goes to pager (if active)
     // or directly to terminal (if no pager)

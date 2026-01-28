@@ -30,9 +30,12 @@ url = "2.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-pager = "0.16"
 termimad = "0.34"
 version-migrate = "0.18"
+
+# pager is Unix-only (uses fork/pipes)
+[target.'cfg(unix)'.dependencies]
+pager = "0.16"
 
 [dev-dependencies]
 tempfile = "3.8"
