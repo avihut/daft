@@ -60,6 +60,7 @@ pub fn get_clap_args(expected_cmd: &str) -> Vec<String> {
     args
 }
 
+pub mod commands;
 pub mod config;
 pub mod git;
 pub mod hints;

@@ -1,0 +1,44 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-worktree-checkout-branch-from-default 1  "git-worktree-checkout-branch-from-default 1.0.11" 
+.SH NAME
+git\-worktree\-checkout\-branch\-from\-default \- Create a worktree with a new branch based on the remote\*(Aqs default branch
+.SH SYNOPSIS
+\fBgit\-worktree\-checkout\-branch\-from\-default\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fINEW_BRANCH_NAME\fR> 
+.SH DESCRIPTION
+.PP
+Creates a new branch based on the remote\*(Aqs default branch (typically main or
+master) and a corresponding worktree. This is equivalent to running
+git\-worktree\-checkout\-branch(1) with the default branch as the base.
+.PP
+The default branch is determined by querying the remote\*(Aqs HEAD reference.
+This command is useful when the current branch has diverged from the mainline
+and a fresh starting point is needed.
+.PP
+By default, uncommitted changes from the current worktree are carried to the
+new worktree; use \-\-no\-carry to disable this. The worktree is placed at the
+project root level as a sibling to other worktrees.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Be verbose; show detailed progress
+.TP
+\fB\-c\fR, \fB\-\-carry\fR
+Apply uncommitted changes to the new worktree (this is the default)
+.TP
+\fB\-\-no\-carry\fR
+Do not carry uncommitted changes to the new worktree
+.TP
+\fB\-r\fR, \fB\-\-remote\fR \fI<REMOTE>\fR
+Remote for worktree organization (multi\-remote mode)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+<\fINEW_BRANCH_NAME\fR>
+Name for the new branch (also used as the worktree directory name)
+.SH VERSION
+v1.0.11

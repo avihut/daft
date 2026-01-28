@@ -27,7 +27,7 @@ pub struct Release {
 
 #[derive(Parser)]
 #[command(name = "daft-release-notes")]
-#[command(version = daft::VERSION)]
+#[command(version = crate::VERSION, disable_version_flag = true)]
 #[command(about = "Display release notes from the changelog")]
 #[command(long_about = r#"
 Displays release notes from daft's changelog in a scrollable interface

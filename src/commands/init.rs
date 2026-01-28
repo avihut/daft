@@ -1,6 +1,4 @@
-use anyhow::{Context, Result};
-use clap::Parser;
-use daft::{
+use crate::{
     check_dependencies,
     git::GitCommand,
     hints::maybe_show_shell_hint,
@@ -12,11 +10,13 @@ use daft::{
     settings::DaftSettings,
     utils::*,
 };
+use anyhow::{Context, Result};
+use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-init")]
-#[command(version = daft::VERSION)]
+#[command(version = crate::VERSION)]
 #[command(about = "Initialize a new repository in the worktree-based directory structure")]
 #[command(long_about = r#"
 Initializes a new Git repository using the same directory structure as
@@ -75,7 +75,7 @@ pub struct Args {
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(daft::get_clap_args("git-worktree-init"));
+    let args = Args::parse_from(crate::get_clap_args("git-worktree-init"));
 
     // Initialize logging based on verbose flag
     init_logging(args.verbose);
@@ -173,8 +173,8 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
         // Set multi-remote config if --remote was provided
         if args.remote.is_some() {
             output.step("Enabling multi-remote mode for this repository...");
-            daft::multi_remote::config::set_multi_remote_enabled(&git, true)?;
-            daft::multi_remote::config::set_multi_remote_default(&git, &remote_for_path)?;
+            crate::multi_remote::config::set_multi_remote_enabled(&git, true)?;
+            crate::multi_remote::config::set_multi_remote_default(&git, &remote_for_path)?;
         }
 
         // Calculate the relative worktree path from parent_dir
@@ -275,7 +275,7 @@ fn run_post_init_hook(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daft::output::TestOutput;
+    use crate::output::TestOutput;
     use std::env;
     use tempfile::tempdir;
 

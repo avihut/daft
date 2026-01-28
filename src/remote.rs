@@ -190,18 +190,21 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore] // Requires network access to origin remote
     fn test_remote_branch_exists() {
         let result = remote_branch_exists("origin", "nonexistent-branch");
         assert!(result.is_ok());
     }
 
     #[test]
+    #[ignore] // Requires network access to origin remote
     fn test_get_remote_branches() {
         let result = get_remote_branches("origin");
         assert!(result.is_ok());
     }
 
     #[test]
+    #[ignore] // Requires network access to origin remote
     fn test_is_remote_empty() {
         // This is a basic test - the function itself is tested more thoroughly
         // in integration tests with actual empty repositories

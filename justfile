@@ -391,19 +391,28 @@ test-completions: build
 # Man Page Recipes
 # ============================================================================
 
-# Generate man pages to man/ directory
-gen-man: build
+# Generate man pages to man/ directory using xtask
+gen-man:
     @echo "Generating man pages..."
     @mkdir -p man
-    @./target/release/daft man --output-dir=man
+    cargo run --package xtask -- gen-man --output-dir=man
     @echo "Man pages generated in man/"
 
-# Install man pages to system location
-install-man: build
+# Install pre-generated man pages to system location
+install-man: gen-man
     @echo "Installing man pages..."
-    @./target/release/daft man --install
+    @mkdir -p ~/.local/share/man/man1
+    @cp man/*.1 ~/.local/share/man/man1/
+    @echo "Man pages installed to ~/.local/share/man/man1/"
     @echo ""
     @echo "Note: You may need to run 'mandb' or restart your shell for man to find the new pages"
+
+# Verify man pages are up-to-date with source
+verify-man:
+    @echo "Verifying man pages are up-to-date..."
+    cargo run --package xtask -- gen-man --output-dir=man
+    @git diff --exit-code man/ || (echo "Man pages out of date. Run 'just gen-man' and commit." && exit 1)
+    @echo "Man pages are up-to-date"
 
 # ============================================================================
 # Cleanup Recipes
@@ -498,8 +507,9 @@ help:
     @echo "  test-completions                  - Test completion generation"
     @echo ""
     @echo "Man pages:"
-    @echo "  gen-man                           - Generate man pages to man/"
-    @echo "  install-man                       - Install man pages to system location"
+    @echo "  gen-man                           - Generate man pages to man/ using xtask"
+    @echo "  install-man                       - Install pre-generated man pages to system location"
+    @echo "  verify-man                        - Verify man pages are up-to-date with source"
     @echo ""
     @echo "Cleanup:"
     @echo "  clean                             - Clean up all artifacts"

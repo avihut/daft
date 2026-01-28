@@ -1,6 +1,4 @@
-use anyhow::{Context, Result};
-use clap::Parser;
-use daft::{
+use crate::{
     get_git_common_dir,
     git::GitCommand,
     hooks::{HookContext, HookExecutor, HookType, HooksConfig, RemovalReason},
@@ -11,12 +9,14 @@ use daft::{
     settings::DaftSettings,
     utils::*,
 };
+use anyhow::{Context, Result};
+use clap::Parser;
 use std::fs;
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-flow-eject")]
-#[command(version = daft::VERSION)]
+#[command(version = crate::VERSION)]
 #[command(about = "Convert a worktree-based repository back to traditional layout")]
 #[command(long_about = r#"
 WHAT THIS COMMAND DOES
@@ -102,7 +102,7 @@ struct WorktreeInfo {
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(daft::get_clap_args("git-worktree-flow-eject"));
+    let args = Args::parse_from(crate::get_clap_args("git-worktree-flow-eject"));
 
     // Initialize logging based on verbose flag
     init_logging(args.verbose);

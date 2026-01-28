@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "xtask"]
+resolver = "2"
+
 [package]
 name = "daft"
 version = "1.0.11"
@@ -20,7 +24,6 @@ eula = false
 [dependencies]
 clap = { version = "4.5", features = ["derive", "cargo"] }
 clap_complete = "4.5"
-clap_mangen = "0.2"
 anyhow = "1.0"
 dirs = "6.0"
 which = "8.0"

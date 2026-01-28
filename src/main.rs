@@ -3,10 +3,9 @@
 /// A multicall binary that provides Git extensions through symlinks.
 /// Detects how it was invoked (via argv[0]) and routes to the appropriate command.
 use anyhow::Result;
+use daft::commands;
+use daft::shortcuts;
 use std::path::Path;
-
-mod commands;
-mod shortcuts;
 
 fn main() -> Result<()> {
     // Detect how we were invoked by checking argv[0]
@@ -70,7 +69,6 @@ fn main() -> Result<()> {
                     "completions" => commands::completions::run(),
                     "__complete" => commands::complete::run(),
                     "hooks" => commands::hooks::run(),
-                    "man" => commands::man::run(),
                     "multi-remote" => commands::multi_remote::run(),
                     "release-notes" => commands::release_notes::run(),
                     "setup" => {

@@ -1,0 +1,58 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-worktree-clone 1  "git-worktree-clone 1.0.11" 
+.SH NAME
+git\-worktree\-clone \- Clone a repository into a worktree\-based directory structure
+.SH SYNOPSIS
+\fBgit\-worktree\-clone\fR [\fB\-b\fR|\fB\-\-branch\fR] [\fB\-n\fR|\fB\-\-no\-checkout\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-a\fR|\fB\-\-all\-branches\fR] [\fB\-\-trust\-hooks\fR] [\fB\-\-no\-hooks\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPOSITORY_URL\fR> 
+.SH DESCRIPTION
+.PP
+Clones a repository into a directory structure optimized for worktree\-based
+development. The resulting layout is:
+.PP
+    <repository\-name>/.git    (bare repository metadata)
+    <repository\-name>/<branch>  (worktree for the checked\-out branch)
+.PP
+The command first queries the remote to determine the default branch (main,
+master, or other configured default), then performs a bare clone and creates
+the initial worktree. This structure allows multiple worktrees to be created
+as siblings, each containing a different branch.
+.PP
+If the repository contains a .daft/hooks/ directory and the repository is
+trusted, lifecycle hooks are executed. See git\-daft(1) for hook management.
+.SH OPTIONS
+.TP
+\fB\-b\fR, \fB\-\-branch\fR \fI<BRANCH>\fR
+Check out <branch> instead of the remote\*(Aqs default branch
+.TP
+\fB\-n\fR, \fB\-\-no\-checkout\fR
+Perform a bare clone only; do not create any worktree
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Operate quietly; suppress progress reporting
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Be verbose; show detailed progress
+.TP
+\fB\-a\fR, \fB\-\-all\-branches\fR
+Create a worktree for each remote branch, not just the default
+.TP
+\fB\-\-trust\-hooks\fR
+Trust the repository and allow hooks to run without prompting
+.TP
+\fB\-\-no\-hooks\fR
+Do not run any hooks from the repository
+.TP
+\fB\-r\fR, \fB\-\-remote\fR \fI<REMOTE>\fR
+Organize worktree under this remote folder (enables multi\-remote mode)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+<\fIREPOSITORY_URL\fR>
+The repository URL to clone (HTTPS or SSH)
+.SH VERSION
+v1.0.11

@@ -290,8 +290,8 @@ jobs:
           ln -sf daft "$PREFIX/bin/$cmd"
         done
 
-        # Generate and install man pages
-        "$PREFIX/bin/daft" man --output-dir "$PREFIX/share/man/man1"
+        # Install pre-generated man pages
+        cp man/*.1 "$PREFIX/share/man/man1/"
 
         echo "Installation complete. Installed files:"
         ls -la "$PREFIX/bin/"
@@ -355,3 +355,63 @@ jobs:
 
         echo "Git command discovery verified!"
         echo "Homebrew simulation test PASSED!"
+
+  # Test xtask man page generation
+  xtask-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Cache Rust dependencies
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ubuntu-latest-cargo-xtask-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ubuntu-latest-cargo-xtask-
+          ubuntu-latest-cargo-
+
+    - name: Test xtask gen-man
+      run: |
+        mkdir -p /tmp/man-test
+        cargo run --package xtask -- gen-man --output-dir=/tmp/man-test
+
+        # Verify all expected man pages were generated
+        for page in git-worktree-clone git-worktree-init git-worktree-checkout \
+                    git-worktree-checkout-branch git-worktree-checkout-branch-from-default \
+                    git-worktree-prune git-worktree-carry git-worktree-fetch \
+                    git-worktree-flow-adopt git-worktree-flow-eject daft-release-notes; do
+          if [ ! -f "/tmp/man-test/${page}.1" ]; then
+            echo "FAILED: Missing man page: ${page}.1"
+            exit 1
+          fi
+          # Verify it's valid groff format (has .TH header)
+          if ! head -20 "/tmp/man-test/${page}.1" | grep -q '\.TH'; then
+            echo "FAILED: Invalid man page format: ${page}.1"
+            exit 1
+          fi
+          echo "  ${page}.1 - OK"
+        done
+        echo "All man pages generated and validated!"
+
+    - name: Verify committed man pages are up-to-date
+      run: |
+        cargo run --package xtask -- gen-man --output-dir=man
+        if ! git diff --exit-code man/; then
+          echo "FAILED: Committed man pages are out of date!"
+          echo "Run 'just gen-man' locally and commit the changes."
+          exit 1
+        fi
+        echo "Committed man pages are up-to-date!"
+
+    - name: Run xtask unit tests
+      run: cargo test --package xtask

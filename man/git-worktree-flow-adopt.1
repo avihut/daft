@@ -1,0 +1,95 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-worktree-flow-adopt 1  "git-worktree-flow-adopt 1.0.11" 
+.SH NAME
+git\-worktree\-flow\-adopt \- Convert a traditional repository to worktree\-based layout
+.SH SYNOPSIS
+\fBgit\-worktree\-flow\-adopt\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-trust\-hooks\fR] [\fB\-\-no\-hooks\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIREPOSITORY_PATH\fR] 
+.SH DESCRIPTION
+.PP
+WHAT THIS COMMAND DOES
+.PP
+Converts your existing Git repository from the traditional layout to daft\*(Aqs
+worktree\-based layout. After conversion:
+.PP
+  Before:                    After:
+  my\-project/                my\-project/
+  ├── .git/                  ├── .git/        (bare repository)
+  ├── src/                   └── main/        (worktree)
+  └── README.md                  ├── src/
+                                 └── README.md
+.PP
+Your uncommitted changes (staged and unstaged) are preserved in the new
+worktree. The command is safe to run \- if anything fails, your repository
+is restored to its original state.
+.PP
+ABOUT THE WORKTREE WORKFLOW
+.PP
+The worktree workflow eliminates Git branch switching friction by giving
+each branch its own directory. Instead of switching branches within a
+single directory, you navigate between directories \- each containing
+a different branch.
+.PP
+BENEFITS
+.PP
+\- No more stashing: Each branch has its own working directory
+\- Parallel development: Work on multiple branches simultaneously
+\- Persistent context: Each worktree keeps its own IDE state, terminal
+  history, and environment (.envrc, node_modules, etc.)
+\- Instant switching: Just cd to another directory
+\- Safe experimentation: Changes in one worktree never affect another
+.PP
+HOW TO WORK WITH IT
+.PP
+After adopting, use these commands:
+.PP
+  git worktree\-checkout <branch>
+      Check out an existing branch into a new worktree
+.PP
+  git worktree\-checkout\-branch <new\-branch>
+      Create a new branch and worktree from current branch
+.PP
+  git worktree\-checkout\-branch\-from\-default <new\-branch>
+      Create a new branch from the remote\*(Aqs default branch
+.PP
+  git worktree\-prune
+      Clean up worktrees for merged/deleted branches
+.PP
+Your directory structure grows as you work:
+.PP
+  my\-project/
+  ├── .git/
+  ├── main/              # Default branch
+  ├── feature/auth/      # Feature branch
+  └── bugfix/login/      # Bugfix branch
+.PP
+REVERTING
+.PP
+To convert back to a traditional layout, use git\-worktree\-flow\-eject(1).
+.SH OPTIONS
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Operate quietly; suppress progress reporting
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Be verbose; show detailed progress
+.TP
+\fB\-\-trust\-hooks\fR
+Trust the repository and allow hooks to run without prompting
+.TP
+\fB\-\-no\-hooks\fR
+Do not run any hooks from the repository
+.TP
+\fB\-\-dry\-run\fR
+Show what would be done without making any changes
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+[\fIREPOSITORY_PATH\fR]
+Path to the repository to convert (defaults to current directory)
+.SH VERSION
+v1.0.11

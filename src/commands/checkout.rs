@@ -1,6 +1,4 @@
-use anyhow::Result;
-use clap::Parser;
-use daft::{
+use crate::{
     get_git_common_dir, get_project_root,
     git::GitCommand,
     hints::maybe_show_shell_hint,
@@ -13,11 +11,13 @@ use daft::{
     utils::*,
     WorktreeConfig,
 };
+use anyhow::Result;
+use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-checkout")]
-#[command(version = daft::VERSION)]
+#[command(version = crate::VERSION)]
 #[command(about = "Create a worktree for an existing branch")]
 #[command(long_about = r#"
 Creates a new worktree for an existing local or remote branch. The worktree
@@ -61,7 +61,7 @@ pub struct Args {
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(daft::get_clap_args("git-worktree-checkout"));
+    let args = Args::parse_from(crate::get_clap_args("git-worktree-checkout"));
 
     // Initialize logging based on verbosity flag
     init_logging(args.verbose);

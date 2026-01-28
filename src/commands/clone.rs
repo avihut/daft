@@ -1,6 +1,4 @@
-use anyhow::{Context, Result};
-use clap::Parser;
-use daft::{
+use crate::{
     check_dependencies, extract_repo_name,
     git::GitCommand,
     hints::maybe_show_shell_hint,
@@ -14,11 +12,13 @@ use daft::{
     utils::*,
     WorktreeConfig,
 };
+use anyhow::{Context, Result};
+use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-clone")]
-#[command(version = daft::VERSION)]
+#[command(version = crate::VERSION)]
 #[command(about = "Clone a repository into a worktree-based directory structure")]
 #[command(long_about = r#"
 Clones a repository into a directory structure optimized for worktree-based
@@ -92,7 +92,7 @@ pub struct Args {
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(daft::get_clap_args("git-worktree-clone"));
+    let args = Args::parse_from(crate::get_clap_args("git-worktree-clone"));
 
     // Initialize logging based on verbose flag
     init_logging(args.verbose);
@@ -263,8 +263,8 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     // Set multi-remote config if --remote was provided
     if args.remote.is_some() {
         output.step("Enabling multi-remote mode for this repository...");
-        daft::multi_remote::config::set_multi_remote_enabled(&git, true)?;
-        daft::multi_remote::config::set_multi_remote_default(&git, &remote_for_path)?;
+        crate::multi_remote::config::set_multi_remote_enabled(&git, true)?;
+        crate::multi_remote::config::set_multi_remote_default(&git, &remote_for_path)?;
     }
 
     // Create worktree if:

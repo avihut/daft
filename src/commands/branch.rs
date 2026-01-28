@@ -2,9 +2,7 @@
 //!
 //! Provides `git daft branch` subcommand for branch-related operations.
 
-use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
-use daft::{
+use crate::{
     get_project_root,
     git::GitCommand,
     is_git_repository,
@@ -12,6 +10,8 @@ use daft::{
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
 };
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
 use std::io::{self, Write};
 
 #[derive(Parser)]

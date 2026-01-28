@@ -1,0 +1,47 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-worktree-checkout 1  "git-worktree-checkout 1.0.11" 
+.SH NAME
+git\-worktree\-checkout \- Create a worktree for an existing branch
+.SH SYNOPSIS
+\fBgit\-worktree\-checkout\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> 
+.SH DESCRIPTION
+.PP
+Creates a new worktree for an existing local or remote branch. The worktree
+is placed at the project root level as a sibling to other worktrees, using
+the branch name as the directory name.
+.PP
+If the branch exists only on the remote, a local tracking branch is created
+automatically. If the branch exists both locally and on the remote, the local
+branch is checked out and upstream tracking is configured.
+.PP
+This command can be run from anywhere within the repository. If a worktree
+for the specified branch already exists, no new worktree is created; the
+working directory is changed to the existing worktree instead.
+.PP
+Lifecycle hooks from .daft/hooks/ are executed if the repository is trusted.
+See git\-daft(1) for hook management.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Be verbose; show detailed progress
+.TP
+\fB\-c\fR, \fB\-\-carry\fR
+Apply uncommitted changes from the current worktree to the new one
+.TP
+\fB\-\-no\-carry\fR
+Do not carry uncommitted changes (this is the default)
+.TP
+\fB\-r\fR, \fB\-\-remote\fR \fI<REMOTE>\fR
+Remote for worktree organization (multi\-remote mode)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+<\fIBRANCH_NAME\fR>
+Name of the branch to check out
+.SH VERSION
+v1.0.11

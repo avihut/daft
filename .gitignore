@@ -6,8 +6,7 @@
 **/*.rs.bk
 Cargo.lock
 
-# Generated files
-/man/
+# Generated files are tracked (see CLAUDE.md for details)
 
 # IDE and editor files
 .vscode/
