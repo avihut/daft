@@ -118,13 +118,13 @@ jobs:
           # Test git-worktree-clone
           echo ""
           echo "Testing git worktree-clone..."
-          git worktree-clone /tmp/test-daft/remote.git test-clone
+          git worktree-clone /tmp/test-daft/remote.git
 
-          # Verify the structure
+          # Verify the structure (directory is named after the repo without .git suffix)
           echo "Verifying clone structure..."
-          test -d test-clone/.git || { echo "FAILED: .git directory not found"; exit 1; }
+          test -d remote/.git || { echo "FAILED: .git directory not found"; exit 1; }
           # Find the worktree directory (could be main or master)
-          WORKTREE_DIR=$(ls -d test-clone/*/ 2>/dev/null | head -1)
+          WORKTREE_DIR=$(ls -d remote/*/ 2>/dev/null | head -1)
           test -n "$WORKTREE_DIR" || { echo "FAILED: No worktree directory found"; exit 1; }
           test -f "${WORKTREE_DIR}README.md" || { echo "FAILED: README.md not found in worktree"; exit 1; }
 
