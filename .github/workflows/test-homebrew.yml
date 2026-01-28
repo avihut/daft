@@ -1,89 +1,49 @@
 name: Test Homebrew Installation
 
 on:
-  # Trigger after Release workflow completes successfully
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
+  # Triggered by homebrew-daft repo when formula is updated
+  repository_dispatch:
+    types: [homebrew-formula-updated]
   # Allow manual triggering for testing
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to test (e.g., 1.0.9). If empty, uses latest release.'
-        required: false
+        description: 'Version to test (e.g., 1.0.9)'
+        required: true
         type: string
 
 jobs:
   test-homebrew:
     runs-on: macos-latest
-    # Only run if Release succeeded or manually triggered
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Get expected version
         id: version
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            # Manual trigger with specific version
-            VERSION="${{ inputs.version }}"
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            VERSION="${{ github.event.client_payload.version }}"
           else
-            # Get version from latest GitHub release
-            LATEST_TAG=$(gh release list --repo ${{ github.repository }} --limit 1 --json tagName --jq '.[0].tagName')
-            VERSION="${LATEST_TAG#v}"  # Remove 'v' prefix
+            VERSION="${{ inputs.version }}"
           fi
           echo "Expected version: $VERSION"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Wait for Homebrew tap to have correct version
-        run: |
-          EXPECTED="${{ steps.version.outputs.version }}"
-          echo "Waiting for Homebrew tap to have version $EXPECTED..."
-
-          for i in {1..15}; do
-            echo ""
-            echo "=== Attempt $i/15 ==="
-
-            # Tap and update
-            brew tap avihut/daft 2>/dev/null || true
-            brew update 2>/dev/null || true
-
-            # Get current version in tap
-            CURRENT=$(brew info avihut/daft/daft --json 2>/dev/null | jq -r '.[0].versions.stable' 2>/dev/null || echo "unknown")
-            echo "Tap has version: $CURRENT"
-            echo "Expected version: $EXPECTED"
-
-            if [ "$CURRENT" = "$EXPECTED" ]; then
-              echo "Version match! Proceeding with installation."
-              break
-            fi
-
-            if [ $i -eq 15 ]; then
-              echo ""
-              echo "ERROR: Timed out waiting for version $EXPECTED"
-              echo "Homebrew tap still has version $CURRENT"
-              exit 1
-            fi
-
-            echo "Version mismatch, waiting 30s before retry..."
-            sleep 30
-          done
-
       - name: Install via Homebrew
         run: |
-          echo "Installing daft..."
+          EXPECTED="${{ steps.version.outputs.version }}"
+          echo "Installing daft (expecting version $EXPECTED)..."
+
+          # Tap and install
+          brew tap avihut/daft
           brew install avihut/daft/daft
 
-      - name: Verify installed version matches expected
-        run: |
-          EXPECTED="${{ steps.version.outputs.version }}"
+          # Verify correct version was installed
           INSTALLED=$(daft --version | awk '{print $2}')
-
-          echo "Expected version: $EXPECTED"
           echo "Installed version: $INSTALLED"
 
           if [ "$INSTALLED" != "$EXPECTED" ]; then
-            echo "ERROR: Version mismatch!"
+            echo "ERROR: Version mismatch! Expected $EXPECTED but got $INSTALLED"
             exit 1
           fi
           echo "Version verified!"
