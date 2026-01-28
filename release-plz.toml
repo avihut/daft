@@ -27,8 +27,10 @@ changelog_update = true
 [[package]]
 name = "xtask"
 release = false
+publish = false
 changelog_update = false
 git_tag_name = "{{ package }}-v{{ version }}"
+git_only = false
 
 [changelog]
 # Use git-cliff for changelog generation (matches cliff.toml)
