@@ -13,6 +13,12 @@ git_only = true
 # For minor/major releases, manually edit version in Cargo.toml
 semver_check = false
 
+# Exclude xtask from release processing - it's an internal development tool
+[[package]]
+name = "xtask"
+release = false
+changelog_update = false
+
 [changelog]
 # Use git-cliff for changelog generation (matches cliff.toml)
 commit_parsers = [
