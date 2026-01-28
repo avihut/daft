@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.15](https://github.com/avihut/daft/compare/v1.0.14...v1.0.15) - 2026-01-28
+
+### Bug Fixes
+
+- sync man page versions with release workflow ([#115](https://github.com/avihut/daft/pull/115))
+
 ## [1.0.14](https://github.com/avihut/daft/compare/v1.0.13...v1.0.14) - 2026-01-28
 
 ### Bug Fixes
