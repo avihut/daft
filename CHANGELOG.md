@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.14](https://github.com/avihut/daft/compare/v1.0.13...v1.0.14) - 2026-01-28
+
+### Bug Fixes
+
+- install man pages before pkgshare.install in Homebrew formula ([#113](https://github.com/avihut/daft/pull/113))
+
 ## [1.0.13](https://github.com/avihut/daft/compare/v1.0.12...v1.0.13) - 2026-01-28
 
 ### Bug Fixes
