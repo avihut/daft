@@ -12,12 +12,15 @@ git_only = true
 # Disable strict semver - default to patch bumps for all changes
 # For minor/major releases, manually edit version in Cargo.toml
 semver_check = false
-
-# Exclude xtask from release processing - it's an internal development tool
-[[package]]
-name = "xtask"
+# Disable release by default - only enable for specific packages
+# This prevents release-plz from processing xtask (internal dev tool)
 release = false
-changelog_update = false
+
+# Only release the main daft package
+[[package]]
+name = "daft"
+release = true
+changelog_update = true
 
 [changelog]
 # Use git-cliff for changelog generation (matches cliff.toml)
