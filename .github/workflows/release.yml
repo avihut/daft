@@ -317,32 +317,28 @@ jobs:
           FORMULA_FILE="Formula/daft.rb"
           if [ -f "$FORMULA_FILE" ]; then
             # Insert man page generation before the end of the install method
-            # The install method ends with "pkgshare.install..." followed by "end"
-            # We insert the man page generation after pkgshare.install and before end
-            sed -i '/pkgshare\.install.*unless leftover_contents\.empty?/a\
-\
-    # Generate man pages (must be in install block to be symlinked)\
-    man1.mkpath\
-    system bin/"daft", "man", "--output-dir", man1' "$FORMULA_FILE"
+            # Use awk to insert after the pkgshare.install line
+            awk '/pkgshare\.install.*unless leftover_contents\.empty\?/ {
+              print
+              print ""
+              print "    # Generate man pages (must be in install block to be symlinked)"
+              print "    man1.mkpath"
+              print "    system bin/\"daft\", \"man\", \"--output-dir\", man1"
+              next
+            }
+            { print }' "$FORMULA_FILE" > "${FORMULA_FILE}.tmp" && mv "${FORMULA_FILE}.tmp" "$FORMULA_FILE"
 
             # Remove the final 'end' and append caveats + end
             sed -i '$ d' "$FORMULA_FILE"
-            cat >> "$FORMULA_FILE" << 'FORMULA_ADDITIONS'
-
-  def caveats
-    <<~EOS
-      To complete setup (shell integration + shortcuts), run:
-        daft setup
-
-      This enables automatic cd into new worktrees and installs
-      git-style shortcuts (gwtco, gwtcb, gwtcbm, etc.)
-
-      For more information:
-        daft --help
-    EOS
-  end
-end
-FORMULA_ADDITIONS
+            # Append caveats method using printf to avoid heredoc YAML issues
+            printf '\n  def caveats\n    <<~EOS\n' >> "$FORMULA_FILE"
+            printf '      To complete setup (shell integration + shortcuts), run:\n' >> "$FORMULA_FILE"
+            printf '        daft setup\n\n' >> "$FORMULA_FILE"
+            printf '      This enables automatic cd into new worktrees and installs\n' >> "$FORMULA_FILE"
+            printf '      git-style shortcuts (gwtco, gwtcb, gwtcbm, etc.)\n\n' >> "$FORMULA_FILE"
+            printf '      For more information:\n' >> "$FORMULA_FILE"
+            printf '        daft --help\n' >> "$FORMULA_FILE"
+            printf '    EOS\n  end\nend\n' >> "$FORMULA_FILE"
             echo "Added man pages to install block and caveats to $FORMULA_FILE"
           fi
       # This is extra complex because you can make your Formula name not match your app name
