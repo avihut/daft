@@ -1,6 +1,6 @@
 [package]
 name = "daft"
-version = "1.0.10"
+version = "1.0.11"
 edition = "2021"
 description = "A comprehensive Git extensions toolkit that enhances developer workflows, starting with powerful worktree management"
 authors = ["avihu <avihu@users.noreply.github.com>"]
