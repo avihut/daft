@@ -22,6 +22,14 @@ name = "daft"
 release = true
 changelog_update = true
 
+# xtask is an internal development tool - don't release it
+# Use package-specific tag format so release-plz finds xtask-v0.1.0
+[[package]]
+name = "xtask"
+release = false
+changelog_update = false
+git_tag_name = "{{ package }}-v{{ version }}"
+
 [changelog]
 # Use git-cliff for changelog generation (matches cliff.toml)
 commit_parsers = [
