@@ -1,8 +1,7 @@
 [workspace]
-# Create GitHub releases when version is published
-git_release_enable = true
-# Don't create as draft - publish immediately
-git_release_draft = false
+# Don't create GitHub releases - cargo-dist handles this via release.yml
+# release-plz only creates the git tag, cargo-dist creates the release with binaries
+git_release_enable = false
 # We don't publish to crates.io
 publish = false
 # Use git tags for version comparison instead of cargo registry
