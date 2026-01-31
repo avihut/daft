@@ -525,7 +525,7 @@ Runs on every PR to catch installation issues early:
 
 #### 2. Real Homebrew Installation (`test-homebrew.yml`)
 Runs after successful releases via `workflow_run` trigger:
-- Installs via `brew tap avihut/daft && brew install avihut/daft/daft`
+- Installs via `brew tap avihut/tap && brew install avihut/tap/daft`
 - Includes retry logic for tap propagation delays
 - Verifies all commands are in PATH
 - Verifies man pages are installed

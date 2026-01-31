@@ -116,7 +116,7 @@ installers = ["homebrew", "powershell", "msi"]
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc"]
 pr-run-mode = "plan"
 publish-jobs = ["homebrew"]
-tap = "avihut/daft"
+tap = "avihut/homebrew-tap"
 formula = "Formula/daft.rb"
 ```
 
@@ -331,7 +331,7 @@ Test the complete installation workflow.
 
 ```bash
 # Install from Homebrew
-brew install avihut/daft
+brew install avihut/tap/daft
 
 # Verify version
 daft --version
@@ -415,7 +415,7 @@ The Homebrew formula symlinks will persist automatically!
 **Fix:**
 1. Verify `dist-workspace.toml`:
    ```toml
-   tap = "avihut/daft"
+   tap = "avihut/homebrew-tap"
    formula = "Formula/daft.rb"
    ```
 2. Check token permissions
@@ -424,7 +424,7 @@ The Homebrew formula symlinks will persist automatically!
 ### Installation Fails
 
 **Symptoms:**
-- `brew install avihut/daft` fails
+- `brew install avihut/tap/daft` fails
 - Checksum mismatch error
 
 **Fix:**
@@ -478,7 +478,7 @@ install-path = "~/bin"  # Or other path
 After completing this setup:
 - ✅ Releases are fully automated
 - ✅ Push a tag → binaries built → Homebrew formula updated → Release created
-- ✅ Users can install with `brew install avihut/daft` (macOS)
+- ✅ Users can install with `brew install avihut/tap/daft` (macOS)
 - ✅ Users can install with PowerShell script (Windows)
 - ✅ Zero manual intervention required for releases
 

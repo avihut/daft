@@ -1,9 +1,9 @@
 name: Test Homebrew Installation
 
 on:
-  # Triggered by homebrew-daft repo when formula is updated
+  # Triggered by homebrew-tap repo when formula is updated
   repository_dispatch:
-    types: [homebrew-formula-updated]
+    types: [homebrew-tap-formula-updated]
   # Allow manual triggering for testing
   workflow_dispatch:
     inputs:
@@ -35,8 +35,8 @@ jobs:
           echo "Installing daft (expecting version $EXPECTED)..."
 
           # Tap and install
-          brew tap avihut/daft
-          brew install avihut/daft/daft
+          brew tap avihut/tap
+          brew install avihut/tap/daft
 
           # Verify correct version was installed
           INSTALLED=$(daft --version | awk '{print $2}')

@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/avihut/daft?label=release)](https://github.com/avihut/daft/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
-[![Homebrew](https://img.shields.io/badge/homebrew-avihut%2Fdaft-blueviolet)](https://github.com/avihut/homebrew-daft)
+[![Homebrew](https://img.shields.io/badge/homebrew-avihut%2Ftap-blueviolet)](https://github.com/avihut/homebrew-tap)
 [![macOS](https://img.shields.io/badge/macOS-supported-success)](https://github.com/avihut/daft/releases)
 [![Linux](https://img.shields.io/badge/Linux-supported-success)](https://github.com/avihut/daft/releases)
 [![Windows](https://img.shields.io/badge/Windows-supported%20(WSL)-success)](https://github.com/avihut/daft/releases)
@@ -29,7 +29,7 @@ my-project/
 
 ```bash
 # Install (macOS)
-brew install avihut/daft/daft
+brew install avihut/tap/daft
 
 # Clone a repo (creates my-project/main/)
 git worktree-clone git@github.com:user/my-project.git
@@ -97,7 +97,7 @@ Terminal 1 (feature-a/)     Terminal 2 (feature-b/)
 ### macOS (Homebrew)
 
 ```bash
-brew install avihut/daft/daft
+brew install avihut/tap/daft
 ```
 
 ### Windows
