@@ -20,8 +20,8 @@ fn main() -> Result<()> {
     // Resolve shortcut aliases to full command names
     let resolved = shortcuts::resolve(program_name);
 
-    // Handle --version/-V flag for the main daft command
-    if resolved == "daft" {
+    // Handle --version/-V flag for the main daft/git-daft command
+    if resolved == "daft" || resolved == "git-daft" {
         let args: Vec<String> = std::env::args().collect();
         if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
             println!("daft {}", daft::VERSION);
@@ -45,27 +45,13 @@ fn main() -> Result<()> {
         "git-worktree-flow-adopt" => commands::flow_adopt::run(),
         "git-worktree-flow-eject" => commands::flow_eject::run(),
 
-        // Documentation command (via git-daft symlink or direct invocation)
-        "git-daft" => {
-            // Check for subcommands like `git daft hooks`
-            let args: Vec<String> = std::env::args().collect();
-            if args.len() > 1 {
-                match args[1].as_str() {
-                    "--help" | "-h" => commands::docs::run(),
-                    "hooks" => commands::hooks::run(),
-                    _ => daft::suggest::handle_unknown_subcommand(
-                        "git daft",
-                        args[1].as_str(),
-                        daft::suggest::GIT_DAFT_SUBCOMMANDS,
-                    ),
-                }
+        // Main daft / git-daft command - check for subcommands
+        "git-daft" | "daft" => {
+            let label = if resolved == "git-daft" {
+                "git daft"
             } else {
-                commands::docs::run()
-            }
-        }
-
-        // Main daft command - check for subcommands
-        "daft" => {
+                "daft"
+            };
             // Check if a subcommand was provided
             let args: Vec<String> = std::env::args().collect();
             if args.len() > 1 {
@@ -100,7 +86,7 @@ fn main() -> Result<()> {
                     "worktree-flow-adopt" => commands::flow_adopt::run(),
                     "worktree-flow-eject" => commands::flow_eject::run(),
                     _ => daft::suggest::handle_unknown_subcommand(
-                        "daft",
+                        label,
                         args[1].as_str(),
                         daft::suggest::DAFT_SUBCOMMANDS,
                     ),
