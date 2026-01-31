@@ -168,6 +168,11 @@ test-integration-flow-eject: build
     @echo "Running Rust integration flow-eject tests..."
     @cd {{integration_tests_dir}} && ./test_flow_eject.sh
 
+# Run integration unknown-command tests
+test-integration-unknown-command: build
+    @echo "Running Rust integration unknown-command tests..."
+    @cd {{integration_tests_dir}} && ./test_unknown_command.sh
+
 # ============================================================================
 # Verbose Test Recipes
 # ============================================================================
@@ -484,6 +489,7 @@ help:
     @echo "  test-integration-config           - Run Rust integration config tests"
     @echo "  test-integration-hooks            - Run Rust integration hooks tests"
     @echo "  test-integration-fetch            - Run Rust integration fetch tests"
+    @echo "  test-integration-unknown-command  - Run Rust integration unknown-command tests"
     @echo ""
     @echo "Other test recipes:"
     @echo "  test-verbose                      - Run tests with verbose output"

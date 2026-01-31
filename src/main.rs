@@ -51,8 +51,13 @@ fn main() -> Result<()> {
             let args: Vec<String> = std::env::args().collect();
             if args.len() > 1 {
                 match args[1].as_str() {
+                    "--help" | "-h" => commands::docs::run(),
                     "hooks" => commands::hooks::run(),
-                    _ => commands::docs::run(),
+                    _ => daft::suggest::handle_unknown_subcommand(
+                        "git daft",
+                        args[1].as_str(),
+                        daft::suggest::GIT_DAFT_SUBCOMMANDS,
+                    ),
                 }
             } else {
                 commands::docs::run()
@@ -65,6 +70,7 @@ fn main() -> Result<()> {
             let args: Vec<String> = std::env::args().collect();
             if args.len() > 1 {
                 match args[1].as_str() {
+                    "--help" | "-h" => commands::docs::run(),
                     "branch" => commands::branch::run(),
                     "completions" => commands::completions::run(),
                     "__complete" => commands::complete::run(),
@@ -93,7 +99,11 @@ fn main() -> Result<()> {
                     "worktree-fetch" => commands::fetch::run(),
                     "worktree-flow-adopt" => commands::flow_adopt::run(),
                     "worktree-flow-eject" => commands::flow_eject::run(),
-                    _ => commands::docs::run(),
+                    _ => daft::suggest::handle_unknown_subcommand(
+                        "daft",
+                        args[1].as_str(),
+                        daft::suggest::DAFT_SUBCOMMANDS,
+                    ),
                 }
             } else {
                 commands::docs::run()
