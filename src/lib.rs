@@ -72,6 +72,7 @@ pub mod remote;
 pub mod settings;
 pub mod shortcuts;
 pub mod styles;
+pub mod suggest;
 pub mod utils;
 
 pub use settings::DaftSettings;
