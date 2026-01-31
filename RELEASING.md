@@ -168,7 +168,7 @@ After release, verify installations work:
 
 ```bash
 # Install from Homebrew
-brew install avihut/daft
+brew install avihut/tap/daft
 
 # Verify all commands
 daft --version
@@ -213,14 +213,14 @@ git-worktree-clone --help
 1. Verify GitHub secret is set: Settings → Secrets → Actions → `HOMEBREW_TAP_TOKEN`
 2. Check `dist-workspace.toml`:
    ```toml
-   tap = "avihut/daft"
+   tap = "avihut/homebrew-tap"
    formula = "Formula/daft.rb"
    ```
 3. Review publish-homebrew-formula job logs
 
 ### Installation Fails
 
-**Symptoms:** `brew install avihut/daft` fails with checksum mismatch
+**Symptoms:** `brew install avihut/tap/daft` fails with checksum mismatch
 
 **Cause:** Checksums in formula don't match downloaded artifacts
 

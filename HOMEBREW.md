@@ -284,14 +284,12 @@ After the formula is in place, users can install with:
 
 ```bash
 # Install from tap
-brew install avihut/daft
+brew install avihut/tap/daft
 
 # Or tap first, then install
-brew tap avihut/daft
+brew tap avihut/tap
 brew install daft
 ```
-
-The tap name matches the repository name, so the short form `brew install avihut/daft` works without explicitly tapping.
 
 ## Man Pages
 
