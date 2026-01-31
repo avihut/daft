@@ -24,9 +24,6 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "worktree-prune",
 ];
 
-/// Subcommands available via `git daft <subcmd>`.
-pub const GIT_DAFT_SUBCOMMANDS: &[&str] = &["hooks"];
-
 /// Compute Levenshtein edit distance between two strings.
 fn levenshtein_distance(a: &str, b: &str) -> usize {
     let a_len = a.len();
@@ -210,31 +207,10 @@ mod tests {
     }
 
     #[test]
-    fn test_git_daft_subcommands_sorted() {
-        let mut sorted = GIT_DAFT_SUBCOMMANDS.to_vec();
-        sorted.sort();
-        assert_eq!(
-            GIT_DAFT_SUBCOMMANDS,
-            &sorted[..],
-            "GIT_DAFT_SUBCOMMANDS should be in alphabetical order"
-        );
-    }
-
-    #[test]
     fn test_daft_subcommands_no_duplicates() {
         let mut seen = std::collections::HashSet::new();
         for cmd in DAFT_SUBCOMMANDS {
             assert!(seen.insert(cmd), "Duplicate subcommand: {cmd}");
-        }
-    }
-
-    #[test]
-    fn test_git_daft_subcommands_subset_of_daft() {
-        for cmd in GIT_DAFT_SUBCOMMANDS {
-            assert!(
-                DAFT_SUBCOMMANDS.contains(cmd),
-                "GIT_DAFT_SUBCOMMANDS entry '{cmd}' not found in DAFT_SUBCOMMANDS"
-            );
         }
     }
 }

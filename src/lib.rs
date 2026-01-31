@@ -48,7 +48,9 @@ pub fn get_clap_args(expected_cmd: &str) -> Vec<String> {
             .and_then(|n| n.to_str())
             .unwrap_or("");
 
-        if program_name == "daft" && args[1].starts_with("worktree-") {
+        if (program_name == "daft" || program_name == "git-daft")
+            && args[1].starts_with("worktree-")
+        {
             // Reconstruct args with the expected command name
             let mut new_args = vec![expected_cmd.to_string()];
             new_args.extend(args.into_iter().skip(2));
