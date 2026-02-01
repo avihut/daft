@@ -134,8 +134,9 @@ fn run_fetch(args: &Args, settings: &DaftSettings) -> Result<()> {
 
     for target_path in &targets {
         let worktree_name = target_path
-            .file_name()
-            .and_then(|n| n.to_str())
+            .strip_prefix(&project_root)
+            .ok()
+            .and_then(|p| p.to_str())
             .unwrap_or("unknown")
             .to_string();
 

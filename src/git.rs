@@ -696,12 +696,11 @@ impl GitCommand {
             worktrees.push((path, current_branch.take()));
         }
 
-        // First, check if target matches a worktree name (directory name)
+        // First, check if target is a path relative to project root (most precise)
+        let potential_path = project_root.join(target);
         for (path, _) in &worktrees {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name == target {
-                    return Ok(path.clone());
-                }
+            if path == &potential_path {
+                return Ok(path.clone());
             }
         }
 
@@ -714,11 +713,12 @@ impl GitCommand {
             }
         }
 
-        // Third, check if target is a path relative to project root
-        let potential_path = project_root.join(target);
+        // Third, check if target matches a worktree directory name (convenience shorthand)
         for (path, _) in &worktrees {
-            if path == &potential_path {
-                return Ok(path.clone());
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name == target {
+                    return Ok(path.clone());
+                }
             }
         }
 
