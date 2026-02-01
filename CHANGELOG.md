@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.17](https://github.com/avihut/daft/compare/v1.0.16...v1.0.17) - 2026-02-01
+
+### Bug Fixes
+
+- handle '+' marker in git branch -vv for linked worktree branches
+
+### Features
+
+- rename worktree hooks with deprecation support ([#131](https://github.com/avihut/daft/pull/131))
+
 ## [1.0.16](https://github.com/avihut/daft/compare/v1.0.15...v1.0.16) - 2026-01-31
 
 ### Bug Fixes
