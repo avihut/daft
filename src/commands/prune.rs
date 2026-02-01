@@ -7,7 +7,6 @@ use crate::{
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     remote::remote_branch_exists,
-    settings::DaftSettings,
     WorktreeConfig,
 };
 use anyhow::{Context, Result};
@@ -55,7 +54,6 @@ pub fn run() -> Result<()> {
 
 fn run_prune(output: &mut dyn Output) -> Result<()> {
     let config = WorktreeConfig::default();
-    let settings = DaftSettings::load()?;
     let git = GitCommand::new(output.is_quiet());
     let project_root = get_project_root()?;
     let git_dir = get_git_common_dir()?;
@@ -132,7 +130,6 @@ fn run_prune(output: &mut dyn Output) -> Result<()> {
     }
 
     if gone_branches.is_empty() {
-        output.result("Nothing to prune");
         return Ok(());
     }
 
@@ -225,10 +222,10 @@ fn run_prune(output: &mut dyn Output) -> Result<()> {
                 output.warning(&format!("Post-remove hook failed for {branch_name}: {e}"));
             }
 
-            // In multi-remote mode, clean up empty remote directories
-            if settings.multi_remote_enabled {
-                cleanup_empty_remote_dir(&project_root, &wt_path, output);
-            }
+            // Clean up empty parent directories left behind after worktree removal.
+            // For branches with slashes (e.g., feature/my-branch), removing the worktree
+            // only removes the leaf directory; this cleans up empty ancestors.
+            cleanup_empty_parent_dirs(&project_root, &wt_path, output);
         } else {
             output.step(&format!("No associated worktree found for {branch_name}"));
         }
@@ -249,8 +246,6 @@ fn run_prune(output: &mut dyn Output) -> Result<()> {
             "Pruned {} branches, removed {} worktrees",
             branches_deleted, worktrees_removed
         ));
-    } else {
-        output.result("Nothing pruned");
     }
 
     // Check if any worktrees might need manual pruning
@@ -322,41 +317,30 @@ fn run_post_remove_hook(
     Ok(())
 }
 
-/// Clean up empty remote directories after removing a worktree in multi-remote mode.
-fn cleanup_empty_remote_dir(
+/// Clean up empty parent directories after removing a worktree.
+///
+/// Walks up the directory tree from the removed worktree's parent directory,
+/// removing each directory if empty, until reaching the project root.
+/// This handles branches with slashes (e.g., `feature/my-branch`) where
+/// removing the worktree leaves empty intermediate directories.
+fn cleanup_empty_parent_dirs(
     project_root: &std::path::Path,
     worktree_path: &std::path::Path,
     output: &mut dyn Output,
 ) {
-    // Extract the remote directory from the worktree path
-    // In multi-remote mode, paths are like: project_root/remote/branch
-    if let Ok(relative) = worktree_path.strip_prefix(project_root) {
-        let components: Vec<_> = relative.components().collect();
-        if components.len() >= 2 {
-            // First component should be the remote name
-            if let Some(first) = components.first() {
-                let remote_dir = project_root.join(first.as_os_str());
-                if remote_dir.exists() {
-                    // Check if directory is empty
-                    if let Ok(mut entries) = std::fs::read_dir(&remote_dir) {
-                        if entries.next().is_none() {
-                            // Directory is empty, remove it
-                            if let Err(e) = std::fs::remove_dir(&remote_dir) {
-                                output.debug(&format!(
-                                    "Could not remove empty remote directory '{}': {}",
-                                    remote_dir.display(),
-                                    e
-                                ));
-                            } else {
-                                output.step(&format!(
-                                    "Removed empty remote directory '{}'",
-                                    remote_dir.display()
-                                ));
-                            }
-                        }
-                    }
-                }
+    let mut current = worktree_path.parent();
+    while let Some(dir) = current {
+        // Stop at or above the project root
+        if dir == project_root || !dir.starts_with(project_root) {
+            break;
+        }
+        // fs::remove_dir only succeeds on empty directories
+        match std::fs::remove_dir(dir) {
+            Ok(()) => {
+                output.step(&format!("Removed empty directory '{}'", dir.display()));
+                current = dir.parent();
             }
+            Err(_) => break,
         }
     }
 }
