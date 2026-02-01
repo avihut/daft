@@ -389,9 +389,7 @@ test_hooks_migrate_dry_run() {
     echo '#!/bin/bash' > .daft/hooks/pre-remove
     chmod +x .daft/hooks/pre-remove
 
-    cd ..
-
-    # Run migrate --dry-run
+    # Run migrate --dry-run from within the worktree
     local output=$(git-daft hooks migrate --dry-run 2>&1)
 
     # Should show what would be renamed
@@ -404,7 +402,7 @@ test_hooks_migrate_dry_run() {
     fi
 
     # Files should NOT have been renamed
-    if [[ -f "master/.daft/hooks/post-create" ]] && [[ -f "master/.daft/hooks/pre-remove" ]]; then
+    if [[ -f ".daft/hooks/post-create" ]] && [[ -f ".daft/hooks/pre-remove" ]]; then
         log_success "Migrate --dry-run did not modify files"
     else
         log_error "Migrate --dry-run unexpectedly modified files"
@@ -432,25 +430,23 @@ test_hooks_migrate_basic() {
     echo '#!/bin/bash' > .daft/hooks/pre-create
     chmod +x .daft/hooks/pre-create
 
-    cd ..
-
-    # Run migrate
+    # Run migrate from within the worktree
     local output=$(git-daft hooks migrate 2>&1)
 
     # Files should have been renamed
-    if [[ -f "master/.daft/hooks/worktree-post-create" ]] && \
-       [[ -f "master/.daft/hooks/worktree-pre-create" ]]; then
+    if [[ -f ".daft/hooks/worktree-post-create" ]] && \
+       [[ -f ".daft/hooks/worktree-pre-create" ]]; then
         log_success "Migrate renamed hook files correctly"
     else
         log_error "Migrate did not rename files"
         echo "Output was: $output"
-        ls -la master/.daft/hooks/ 2>/dev/null
+        ls -la .daft/hooks/ 2>/dev/null
         return 1
     fi
 
     # Old files should be gone
-    if [[ -f "master/.daft/hooks/post-create" ]] || \
-       [[ -f "master/.daft/hooks/pre-create" ]]; then
+    if [[ -f ".daft/hooks/post-create" ]] || \
+       [[ -f ".daft/hooks/pre-create" ]]; then
         log_error "Old hook files still exist after migrate"
         return 1
     fi
@@ -476,9 +472,7 @@ test_hooks_migrate_conflict() {
     echo '#!/bin/bash\n# new' > .daft/hooks/worktree-post-create
     chmod +x .daft/hooks/worktree-post-create
 
-    cd ..
-
-    # Run migrate
+    # Run migrate from within the worktree
     local output=$(git-daft hooks migrate 2>&1)
 
     # Should report conflict
@@ -491,8 +485,8 @@ test_hooks_migrate_conflict() {
     fi
 
     # Both files should still exist (old not deleted)
-    if [[ -f "master/.daft/hooks/post-create" ]] && \
-       [[ -f "master/.daft/hooks/worktree-post-create" ]]; then
+    if [[ -f ".daft/hooks/post-create" ]] && \
+       [[ -f ".daft/hooks/worktree-post-create" ]]; then
         log_success "Migrate preserved both files on conflict"
     else
         log_error "Migrate incorrectly modified files during conflict"

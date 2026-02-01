@@ -24,7 +24,7 @@ This file provides guidance when working with code in this repository.
 - `pre-remove` → `worktree-pre-remove`, `post-remove` → `worktree-post-remove`
 - `post-clone` and `post-init` remain unchanged (repo-scoped)
 - Old names still work with deprecation warnings until v2.0.0
-- `git daft hooks migrate` command to rename hook files automatically
+- `git daft hooks migrate` command to rename hook files in the current worktree
 
 **Hooks System Added (2025-01)**
 - Added flexible, project-managed hooks system for worktree lifecycle events
