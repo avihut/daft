@@ -206,7 +206,9 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
     };
 
     // Check for uncommitted changes and stash them if should_carry is true
-    let stash_created = if should_carry {
+    // Skip the check if we're not inside a work tree (e.g., running from the bare repo root)
+    let in_worktree = git.rev_parse_is_inside_work_tree().unwrap_or(false);
+    let stash_created = if should_carry && in_worktree {
         match git.has_uncommitted_changes() {
             Ok(true) => {
                 output.step("Stashing uncommitted changes...");
