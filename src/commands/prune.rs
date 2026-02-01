@@ -76,12 +76,16 @@ fn run_prune(output: &mut dyn Output) -> Result<()> {
     let branch_output = git.branch_list_verbose()?;
     for line in branch_output.lines() {
         if line.contains(": gone]") {
-            // Extract branch name - it's the first word, removing the * if current branch
+            // Extract branch name from the line.
+            // git branch -vv prefixes: '*' = current branch, '+' = checked out in linked worktree
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if let Some(branch_name) = parts.first() {
-                let branch_name = branch_name.trim_start_matches('*').trim();
-                if !branch_name.is_empty() {
-                    gone_branches.push(branch_name.to_string());
+            let branch_name = match parts.first() {
+                Some(&"*") | Some(&"+") => parts.get(1).copied(),
+                _ => parts.first().copied(),
+            };
+            if let Some(name) = branch_name {
+                if !name.is_empty() {
+                    gone_branches.push(name.to_string());
                 }
             }
         }
