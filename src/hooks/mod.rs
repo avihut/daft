@@ -9,10 +9,10 @@
 //! |------|---------|--------|
 //! | `post-clone` | After `git worktree-clone` | New default branch worktree |
 //! | `post-init` | After `git worktree-init` | New initial worktree |
-//! | `pre-create` | Before `git worktree add` | Source worktree |
-//! | `post-create` | After worktree created | New worktree |
-//! | `pre-remove` | Before `git worktree remove` | Worktree being removed |
-//! | `post-remove` | After worktree removed | Current worktree |
+//! | `worktree-pre-create` | Before `git worktree add` | Source worktree |
+//! | `worktree-post-create` | After worktree created | New worktree |
+//! | `worktree-pre-remove` | Before `git worktree remove` | Worktree being removed |
+//! | `worktree-post-remove` | After worktree removed | Current worktree |
 //!
 //! # Security
 //!
@@ -33,8 +33,8 @@
 //! ├── .daft/
 //! │   └── hooks/
 //! │       ├── post-clone
-//! │       ├── post-create
-//! │       └── pre-remove
+//! │       ├── worktree-post-create
+//! │       └── worktree-pre-remove
 //! └── src/
 //! ```
 //!
@@ -81,15 +81,43 @@ pub enum HookType {
 }
 
 impl HookType {
-    /// Returns the filename for this hook type.
+    /// Returns the canonical filename for this hook type.
     pub fn filename(&self) -> &'static str {
         match self {
             HookType::PostClone => "post-clone",
             HookType::PostInit => "post-init",
-            HookType::PreCreate => "pre-create",
-            HookType::PostCreate => "post-create",
-            HookType::PreRemove => "pre-remove",
-            HookType::PostRemove => "post-remove",
+            HookType::PreCreate => "worktree-pre-create",
+            HookType::PostCreate => "worktree-post-create",
+            HookType::PreRemove => "worktree-pre-remove",
+            HookType::PostRemove => "worktree-post-remove",
+        }
+    }
+
+    /// Returns the deprecated filename for this hook type, if it was renamed.
+    ///
+    /// Returns `None` for hooks that were not renamed (`post-clone`, `post-init`).
+    pub fn deprecated_filename(&self) -> Option<&'static str> {
+        match self {
+            HookType::PreCreate => Some("pre-create"),
+            HookType::PostCreate => Some("post-create"),
+            HookType::PreRemove => Some("pre-remove"),
+            HookType::PostRemove => Some("post-remove"),
+            HookType::PostClone | HookType::PostInit => None,
+        }
+    }
+
+    /// Maps a filename (new or deprecated) to its `HookType`.
+    ///
+    /// Returns `None` if the filename is not recognized.
+    pub fn from_filename(name: &str) -> Option<HookType> {
+        match name {
+            "post-clone" => Some(HookType::PostClone),
+            "post-init" => Some(HookType::PostInit),
+            "worktree-pre-create" | "pre-create" => Some(HookType::PreCreate),
+            "worktree-post-create" | "post-create" => Some(HookType::PostCreate),
+            "worktree-pre-remove" | "pre-remove" => Some(HookType::PreRemove),
+            "worktree-post-remove" | "post-remove" => Some(HookType::PostRemove),
+            _ => None,
         }
     }
 
@@ -98,10 +126,23 @@ impl HookType {
         match self {
             HookType::PostClone => "postClone",
             HookType::PostInit => "postInit",
-            HookType::PreCreate => "preCreate",
-            HookType::PostCreate => "postCreate",
-            HookType::PreRemove => "preRemove",
-            HookType::PostRemove => "postRemove",
+            HookType::PreCreate => "worktreePreCreate",
+            HookType::PostCreate => "worktreePostCreate",
+            HookType::PreRemove => "worktreePreRemove",
+            HookType::PostRemove => "worktreePostRemove",
+        }
+    }
+
+    /// Returns the deprecated config key for this hook type, if it was renamed.
+    ///
+    /// Returns `None` for hooks that were not renamed (`postClone`, `postInit`).
+    pub fn deprecated_config_key(&self) -> Option<&'static str> {
+        match self {
+            HookType::PreCreate => Some("preCreate"),
+            HookType::PostCreate => Some("postCreate"),
+            HookType::PreRemove => Some("preRemove"),
+            HookType::PostRemove => Some("postRemove"),
+            HookType::PostClone | HookType::PostInit => None,
         }
     }
 
@@ -202,10 +243,10 @@ pub struct HooksConfig {
     /// Per-hook configurations.
     pub post_clone: HookConfig,
     pub post_init: HookConfig,
-    pub pre_create: HookConfig,
-    pub post_create: HookConfig,
-    pub pre_remove: HookConfig,
-    pub post_remove: HookConfig,
+    pub worktree_pre_create: HookConfig,
+    pub worktree_post_create: HookConfig,
+    pub worktree_pre_remove: HookConfig,
+    pub worktree_post_remove: HookConfig,
 }
 
 impl Default for HooksConfig {
@@ -217,10 +258,10 @@ impl Default for HooksConfig {
             timeout_seconds: 300,
             post_clone: HookConfig::new(HookType::PostClone),
             post_init: HookConfig::new(HookType::PostInit),
-            pre_create: HookConfig::new(HookType::PreCreate),
-            post_create: HookConfig::new(HookType::PostCreate),
-            pre_remove: HookConfig::new(HookType::PreRemove),
-            post_remove: HookConfig::new(HookType::PostRemove),
+            worktree_pre_create: HookConfig::new(HookType::PreCreate),
+            worktree_post_create: HookConfig::new(HookType::PostCreate),
+            worktree_pre_remove: HookConfig::new(HookType::PreRemove),
+            worktree_post_remove: HookConfig::new(HookType::PostRemove),
         }
     }
 }
@@ -231,10 +272,10 @@ impl HooksConfig {
         match hook_type {
             HookType::PostClone => &self.post_clone,
             HookType::PostInit => &self.post_init,
-            HookType::PreCreate => &self.pre_create,
-            HookType::PostCreate => &self.post_create,
-            HookType::PreRemove => &self.pre_remove,
-            HookType::PostRemove => &self.post_remove,
+            HookType::PreCreate => &self.worktree_pre_create,
+            HookType::PostCreate => &self.worktree_post_create,
+            HookType::PreRemove => &self.worktree_pre_remove,
+            HookType::PostRemove => &self.worktree_post_remove,
         }
     }
 
@@ -243,10 +284,10 @@ impl HooksConfig {
         match hook_type {
             HookType::PostClone => &mut self.post_clone,
             HookType::PostInit => &mut self.post_init,
-            HookType::PreCreate => &mut self.pre_create,
-            HookType::PostCreate => &mut self.post_create,
-            HookType::PreRemove => &mut self.pre_remove,
-            HookType::PostRemove => &mut self.post_remove,
+            HookType::PreCreate => &mut self.worktree_pre_create,
+            HookType::PostCreate => &mut self.worktree_post_create,
+            HookType::PreRemove => &mut self.worktree_pre_remove,
+            HookType::PostRemove => &mut self.worktree_post_remove,
         }
     }
 }
@@ -262,41 +303,145 @@ fn default_user_hooks_dir() -> std::path::PathBuf {
 /// Path to project hooks directory within a worktree.
 pub const PROJECT_HOOKS_DIR: &str = ".daft/hooks";
 
+/// Version in which deprecated hook names will stop being executed.
+pub const DEPRECATED_HOOK_REMOVAL_VERSION: &str = "2.0.0";
+
+/// Whether to execute hooks found under their deprecated filenames.
+/// Set to `false` in v2.0.0+ to stop executing deprecated hooks.
+const EXECUTE_DEPRECATED_HOOKS: bool = true;
+
+/// A warning about a deprecated hook filename that was discovered.
+#[derive(Debug, Clone)]
+pub struct DeprecationWarning {
+    /// The old (deprecated) hook filename.
+    pub old_name: &'static str,
+    /// The new canonical hook filename.
+    pub new_name: &'static str,
+    /// The path to the deprecated hook file.
+    pub path: std::path::PathBuf,
+    /// Whether the new-name file also exists (i.e., old file is being ignored).
+    pub new_name_also_exists: bool,
+}
+
+/// Result of hook discovery, including found hooks and any deprecation warnings.
+#[derive(Debug, Clone)]
+pub struct HookDiscovery {
+    /// Hook file paths to execute, in execution order.
+    pub hooks: Vec<std::path::PathBuf>,
+    /// Deprecation warnings for hooks found under old filenames.
+    pub deprecation_warnings: Vec<DeprecationWarning>,
+}
+
 /// Find hook files for a given hook type.
 ///
-/// Returns a list of paths to hook files, in execution order:
-/// 1. Project hook (from worktree)
-/// 2. User hook (from user config directory)
+/// Returns a `HookDiscovery` containing hook paths and deprecation warnings.
+/// Hook execution order: project hook first, then user hook.
+///
+/// For hooks that have been renamed, the discovery logic is:
+/// 1. If only the new-name file exists: use it, no warning.
+/// 2. If only the old-name file exists: warn deprecated. Include in hooks
+///    list only if `EXECUTE_DEPRECATED_HOOKS` is `true`.
+/// 3. If both exist: use the new-name file, warn that old-name is ignored.
 pub fn find_hooks(
     hook_type: HookType,
     worktree_path: &Path,
     config: &HooksConfig,
-) -> Vec<std::path::PathBuf> {
+) -> HookDiscovery {
     let mut hooks = Vec::new();
+    let mut deprecation_warnings = Vec::new();
 
     // Project hook
-    let project_hook = worktree_path
-        .join(PROJECT_HOOKS_DIR)
-        .join(hook_type.filename());
-    if project_hook.exists() && is_executable(&project_hook) {
-        hooks.push(project_hook);
-    }
+    discover_hook_in_dir(
+        hook_type,
+        &worktree_path.join(PROJECT_HOOKS_DIR),
+        &mut hooks,
+        &mut deprecation_warnings,
+    );
 
     // User hook
-    let user_hook = config.user_directory.join(hook_type.filename());
-    if user_hook.exists() && is_executable(&user_hook) {
-        hooks.push(user_hook);
-    }
+    discover_hook_in_dir(
+        hook_type,
+        &config.user_directory,
+        &mut hooks,
+        &mut deprecation_warnings,
+    );
 
-    hooks
+    HookDiscovery {
+        hooks,
+        deprecation_warnings,
+    }
+}
+
+/// Discover a hook file in a directory, handling deprecated filenames.
+fn discover_hook_in_dir(
+    hook_type: HookType,
+    dir: &Path,
+    hooks: &mut Vec<std::path::PathBuf>,
+    warnings: &mut Vec<DeprecationWarning>,
+) {
+    let new_name = hook_type.filename();
+    let new_path = dir.join(new_name);
+    let new_exists = new_path.exists() && is_executable(&new_path);
+
+    if let Some(old_name) = hook_type.deprecated_filename() {
+        let old_path = dir.join(old_name);
+        let old_exists = old_path.exists() && is_executable(&old_path);
+
+        match (new_exists, old_exists) {
+            (true, true) => {
+                // Both exist: use new, warn about old being ignored
+                hooks.push(new_path);
+                warnings.push(DeprecationWarning {
+                    old_name,
+                    new_name,
+                    path: old_path,
+                    new_name_also_exists: true,
+                });
+            }
+            (true, false) => {
+                // Only new exists: use it, no warning
+                hooks.push(new_path);
+            }
+            (false, true) => {
+                // Only old exists: warn deprecated
+                warnings.push(DeprecationWarning {
+                    old_name,
+                    new_name,
+                    path: old_path.clone(),
+                    new_name_also_exists: false,
+                });
+                if EXECUTE_DEPRECATED_HOOKS {
+                    hooks.push(old_path);
+                }
+            }
+            (false, false) => {
+                // Neither exists
+            }
+        }
+    } else {
+        // Hook was not renamed, simple check
+        if new_exists {
+            hooks.push(new_path);
+        }
+    }
 }
 
 /// Check if a hook exists in the given worktree (project hooks only).
+///
+/// Checks both the canonical filename and the deprecated filename (if any).
 pub fn hook_exists(hook_type: HookType, worktree_path: &Path) -> bool {
-    let project_hook = worktree_path
-        .join(PROJECT_HOOKS_DIR)
-        .join(hook_type.filename());
-    project_hook.exists()
+    let hooks_dir = worktree_path.join(PROJECT_HOOKS_DIR);
+    let new_path = hooks_dir.join(hook_type.filename());
+    if new_path.exists() {
+        return true;
+    }
+    if let Some(old_name) = hook_type.deprecated_filename() {
+        let old_path = hooks_dir.join(old_name);
+        if old_path.exists() {
+            return true;
+        }
+    }
+    false
 }
 
 /// List all hooks that exist in the given worktree.
@@ -333,16 +478,113 @@ mod tests {
     fn test_hook_type_filename() {
         assert_eq!(HookType::PostClone.filename(), "post-clone");
         assert_eq!(HookType::PostInit.filename(), "post-init");
-        assert_eq!(HookType::PreCreate.filename(), "pre-create");
-        assert_eq!(HookType::PostCreate.filename(), "post-create");
-        assert_eq!(HookType::PreRemove.filename(), "pre-remove");
-        assert_eq!(HookType::PostRemove.filename(), "post-remove");
+        assert_eq!(HookType::PreCreate.filename(), "worktree-pre-create");
+        assert_eq!(HookType::PostCreate.filename(), "worktree-post-create");
+        assert_eq!(HookType::PreRemove.filename(), "worktree-pre-remove");
+        assert_eq!(HookType::PostRemove.filename(), "worktree-post-remove");
+    }
+
+    #[test]
+    fn test_hook_type_deprecated_filename() {
+        assert_eq!(HookType::PostClone.deprecated_filename(), None);
+        assert_eq!(HookType::PostInit.deprecated_filename(), None);
+        assert_eq!(
+            HookType::PreCreate.deprecated_filename(),
+            Some("pre-create")
+        );
+        assert_eq!(
+            HookType::PostCreate.deprecated_filename(),
+            Some("post-create")
+        );
+        assert_eq!(
+            HookType::PreRemove.deprecated_filename(),
+            Some("pre-remove")
+        );
+        assert_eq!(
+            HookType::PostRemove.deprecated_filename(),
+            Some("post-remove")
+        );
+    }
+
+    #[test]
+    fn test_hook_type_from_filename() {
+        // New canonical names
+        assert_eq!(
+            HookType::from_filename("post-clone"),
+            Some(HookType::PostClone)
+        );
+        assert_eq!(
+            HookType::from_filename("post-init"),
+            Some(HookType::PostInit)
+        );
+        assert_eq!(
+            HookType::from_filename("worktree-pre-create"),
+            Some(HookType::PreCreate)
+        );
+        assert_eq!(
+            HookType::from_filename("worktree-post-create"),
+            Some(HookType::PostCreate)
+        );
+        assert_eq!(
+            HookType::from_filename("worktree-pre-remove"),
+            Some(HookType::PreRemove)
+        );
+        assert_eq!(
+            HookType::from_filename("worktree-post-remove"),
+            Some(HookType::PostRemove)
+        );
+
+        // Deprecated names
+        assert_eq!(
+            HookType::from_filename("pre-create"),
+            Some(HookType::PreCreate)
+        );
+        assert_eq!(
+            HookType::from_filename("post-create"),
+            Some(HookType::PostCreate)
+        );
+        assert_eq!(
+            HookType::from_filename("pre-remove"),
+            Some(HookType::PreRemove)
+        );
+        assert_eq!(
+            HookType::from_filename("post-remove"),
+            Some(HookType::PostRemove)
+        );
+
+        // Unknown
+        assert_eq!(HookType::from_filename("unknown"), None);
     }
 
     #[test]
     fn test_hook_type_config_key() {
         assert_eq!(HookType::PostClone.config_key(), "postClone");
-        assert_eq!(HookType::PreCreate.config_key(), "preCreate");
+        assert_eq!(HookType::PreCreate.config_key(), "worktreePreCreate");
+        assert_eq!(HookType::PostCreate.config_key(), "worktreePostCreate");
+        assert_eq!(HookType::PreRemove.config_key(), "worktreePreRemove");
+        assert_eq!(HookType::PostRemove.config_key(), "worktreePostRemove");
+    }
+
+    #[test]
+    fn test_hook_type_deprecated_config_key() {
+        assert_eq!(HookType::PostClone.deprecated_config_key(), None);
+        assert_eq!(HookType::PostInit.deprecated_config_key(), None);
+        assert_eq!(
+            HookType::PreCreate.deprecated_config_key(),
+            Some("preCreate")
+        );
+        assert_eq!(
+            HookType::PostCreate.deprecated_config_key(),
+            Some("postCreate")
+        );
+        assert_eq!(
+            HookType::PreRemove.deprecated_config_key(),
+            Some("preRemove")
+        );
+        assert_eq!(
+            HookType::PostRemove.deprecated_config_key(),
+            Some("postRemove")
+        );
     }
 
     #[test]
@@ -375,10 +617,10 @@ mod tests {
         assert!(config.enabled);
         assert_eq!(config.default_trust, TrustLevel::Deny);
         assert_eq!(config.timeout_seconds, 300);
-        assert!(config.pre_create.enabled);
-        assert_eq!(config.pre_create.fail_mode, FailMode::Abort);
-        assert!(config.post_create.enabled);
-        assert_eq!(config.post_create.fail_mode, FailMode::Warn);
+        assert!(config.worktree_pre_create.enabled);
+        assert_eq!(config.worktree_pre_create.fail_mode, FailMode::Abort);
+        assert!(config.worktree_post_create.enabled);
+        assert_eq!(config.worktree_post_create.fail_mode, FailMode::Warn);
     }
 
     #[test]
@@ -396,7 +638,7 @@ mod tests {
     #[test]
     fn test_hook_type_display() {
         assert_eq!(format!("{}", HookType::PostClone), "post-clone");
-        assert_eq!(format!("{}", HookType::PreCreate), "pre-create");
+        assert_eq!(format!("{}", HookType::PreCreate), "worktree-pre-create");
     }
 
     #[test]
@@ -433,7 +675,7 @@ mod tests {
     fn test_hooks_config_get_hook_config_mut() {
         let mut config = HooksConfig::default();
         config.get_hook_config_mut(HookType::PostCreate).enabled = false;
-        assert!(!config.post_create.enabled);
+        assert!(!config.worktree_post_create.enabled);
     }
 
     // Helper to create an executable hook file
@@ -478,10 +720,23 @@ mod tests {
         let worktree = temp_dir.path().join("main");
         fs::create_dir_all(&worktree).unwrap();
 
-        create_executable_hook(&worktree, "post-create");
+        create_executable_hook(&worktree, "worktree-post-create");
 
         assert!(hook_exists(HookType::PostCreate, &worktree));
         assert!(!hook_exists(HookType::PreCreate, &worktree));
+    }
+
+    #[test]
+    fn test_hook_exists_with_deprecated_name() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        // Create hook with deprecated name
+        create_executable_hook(&worktree, "post-create");
+
+        // Should still be found via deprecated name
+        assert!(hook_exists(HookType::PostCreate, &worktree));
     }
 
     #[test]
@@ -500,8 +755,8 @@ mod tests {
         let worktree = temp_dir.path().join("main");
         fs::create_dir_all(&worktree).unwrap();
 
-        create_executable_hook(&worktree, "post-create");
-        create_executable_hook(&worktree, "pre-remove");
+        create_executable_hook(&worktree, "worktree-post-create");
+        create_executable_hook(&worktree, "worktree-pre-remove");
         create_executable_hook(&worktree, "post-clone");
 
         let hooks = list_hooks(&worktree);
@@ -518,8 +773,9 @@ mod tests {
         fs::create_dir_all(&worktree).unwrap();
 
         let config = HooksConfig::default();
-        let hooks = find_hooks(HookType::PostCreate, &worktree, &config);
-        assert!(hooks.is_empty());
+        let discovery = find_hooks(HookType::PostCreate, &worktree, &config);
+        assert!(discovery.hooks.is_empty());
+        assert!(discovery.deprecation_warnings.is_empty());
     }
 
     #[test]
@@ -528,12 +784,57 @@ mod tests {
         let worktree = temp_dir.path().join("main");
         fs::create_dir_all(&worktree).unwrap();
 
-        let hook_path = create_executable_hook(&worktree, "post-create");
+        let hook_path = create_executable_hook(&worktree, "worktree-post-create");
 
         let config = HooksConfig::default();
-        let hooks = find_hooks(HookType::PostCreate, &worktree, &config);
-        assert_eq!(hooks.len(), 1);
-        assert_eq!(hooks[0], hook_path);
+        let discovery = find_hooks(HookType::PostCreate, &worktree, &config);
+        assert_eq!(discovery.hooks.len(), 1);
+        assert_eq!(discovery.hooks[0], hook_path);
+        assert!(discovery.deprecation_warnings.is_empty());
+    }
+
+    #[test]
+    fn test_find_hooks_deprecated_name_discovered() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        // Create hook with deprecated name
+        create_executable_hook(&worktree, "post-create");
+
+        let config = HooksConfig::default();
+        let discovery = find_hooks(HookType::PostCreate, &worktree, &config);
+
+        // Should discover the hook (EXECUTE_DEPRECATED_HOOKS is true)
+        assert_eq!(discovery.hooks.len(), 1);
+        // Should have a deprecation warning
+        assert_eq!(discovery.deprecation_warnings.len(), 1);
+        assert_eq!(discovery.deprecation_warnings[0].old_name, "post-create");
+        assert_eq!(
+            discovery.deprecation_warnings[0].new_name,
+            "worktree-post-create"
+        );
+    }
+
+    #[test]
+    fn test_find_hooks_both_new_and_deprecated_exist() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        // Create both new and deprecated hook files
+        let new_hook = create_executable_hook(&worktree, "worktree-post-create");
+        create_executable_hook(&worktree, "post-create");
+
+        let config = HooksConfig::default();
+        let discovery = find_hooks(HookType::PostCreate, &worktree, &config);
+
+        // Should use the new-name hook only
+        assert_eq!(discovery.hooks.len(), 1);
+        assert_eq!(discovery.hooks[0], new_hook);
+        // Should warn about the old one being ignored
+        assert_eq!(discovery.deprecation_warnings.len(), 1);
+        assert_eq!(discovery.deprecation_warnings[0].old_name, "post-create");
     }
 
     #[test]
@@ -550,7 +851,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let user_hook = user_hooks_dir.join("post-create");
+            let user_hook = user_hooks_dir.join("worktree-post-create");
             fs::write(&user_hook, "#!/bin/bash\necho user").unwrap();
             let mut perms = fs::metadata(&user_hook).unwrap().permissions();
             perms.set_mode(0o755);
@@ -558,16 +859,20 @@ mod tests {
         }
         #[cfg(not(unix))]
         {
-            let user_hook = user_hooks_dir.join("post-create");
+            let user_hook = user_hooks_dir.join("worktree-post-create");
             fs::write(&user_hook, "@echo off\necho user").unwrap();
         }
 
         let mut config = HooksConfig::default();
         config.user_directory = user_hooks_dir.clone();
 
-        let hooks = find_hooks(HookType::PostCreate, &worktree, &config);
-        assert_eq!(hooks.len(), 1);
-        assert_eq!(hooks[0], user_hooks_dir.join("post-create"));
+        let discovery = find_hooks(HookType::PostCreate, &worktree, &config);
+        assert_eq!(discovery.hooks.len(), 1);
+        assert_eq!(
+            discovery.hooks[0],
+            user_hooks_dir.join("worktree-post-create")
+        );
+        assert!(discovery.deprecation_warnings.is_empty());
     }
 
     #[test]
@@ -577,7 +882,7 @@ mod tests {
         fs::create_dir_all(&worktree).unwrap();
 
         // Create project hook
-        let project_hook = create_executable_hook(&worktree, "post-create");
+        let project_hook = create_executable_hook(&worktree, "worktree-post-create");
 
         // Create user hooks directory and hook
         let user_hooks_dir = temp_dir.path().join("user_hooks");
@@ -586,7 +891,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let user_hook = user_hooks_dir.join("post-create");
+            let user_hook = user_hooks_dir.join("worktree-post-create");
             fs::write(&user_hook, "#!/bin/bash\necho user").unwrap();
             let mut perms = fs::metadata(&user_hook).unwrap().permissions();
             perms.set_mode(0o755);
@@ -594,18 +899,21 @@ mod tests {
         }
         #[cfg(not(unix))]
         {
-            let user_hook = user_hooks_dir.join("post-create");
+            let user_hook = user_hooks_dir.join("worktree-post-create");
             fs::write(&user_hook, "@echo off\necho user").unwrap();
         }
 
         let mut config = HooksConfig::default();
         config.user_directory = user_hooks_dir.clone();
 
-        let hooks = find_hooks(HookType::PostCreate, &worktree, &config);
+        let discovery = find_hooks(HookType::PostCreate, &worktree, &config);
         // Should find both hooks, project first then user
-        assert_eq!(hooks.len(), 2);
-        assert_eq!(hooks[0], project_hook);
-        assert_eq!(hooks[1], user_hooks_dir.join("post-create"));
+        assert_eq!(discovery.hooks.len(), 2);
+        assert_eq!(discovery.hooks[0], project_hook);
+        assert_eq!(
+            discovery.hooks[1],
+            user_hooks_dir.join("worktree-post-create")
+        );
     }
 
     #[test]
@@ -619,7 +927,7 @@ mod tests {
         fs::create_dir_all(&hooks_dir).unwrap();
 
         // Create a non-executable hook file
-        let hook_path = hooks_dir.join("post-create");
+        let hook_path = hooks_dir.join("worktree-post-create");
         fs::write(&hook_path, "#!/bin/bash\necho test").unwrap();
 
         // Explicitly set non-executable
@@ -628,8 +936,24 @@ mod tests {
         fs::set_permissions(&hook_path, perms).unwrap();
 
         let config = HooksConfig::default();
-        let hooks = find_hooks(HookType::PostCreate, &worktree, &config);
+        let discovery = find_hooks(HookType::PostCreate, &worktree, &config);
         // Non-executable hook should be ignored
-        assert!(hooks.is_empty());
+        assert!(discovery.hooks.is_empty());
+    }
+
+    #[test]
+    fn test_find_hooks_unrenamed_hook_no_deprecation() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        // post-clone was NOT renamed, so no deprecation logic applies
+        let hook_path = create_executable_hook(&worktree, "post-clone");
+
+        let config = HooksConfig::default();
+        let discovery = find_hooks(HookType::PostClone, &worktree, &config);
+        assert_eq!(discovery.hooks.len(), 1);
+        assert_eq!(discovery.hooks[0], hook_path);
+        assert!(discovery.deprecation_warnings.is_empty());
     }
 }

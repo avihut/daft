@@ -18,10 +18,18 @@ This file provides guidance when working with code in this repository.
 - Man pages are auto-generated from clap command definitions
 - See "Documentation Requirements" section for best practices
 
+**Hook Names Renamed (2026-02)**
+- Worktree-scoped hooks renamed with `worktree-` prefix for clarity
+- `pre-create` → `worktree-pre-create`, `post-create` → `worktree-post-create`
+- `pre-remove` → `worktree-pre-remove`, `post-remove` → `worktree-post-remove`
+- `post-clone` and `post-init` remain unchanged (repo-scoped)
+- Old names still work with deprecation warnings until v2.0.0
+- `git daft hooks migrate` command to rename hook files automatically
+
 **Hooks System Added (2025-01)**
 - Added flexible, project-managed hooks system for worktree lifecycle events
 - Replaces hardcoded direnv integration with configurable hooks
-- Six hook types: post-clone, post-init, pre-create, post-create, pre-remove, post-remove
+- Six hook types: post-clone, post-init, worktree-pre-create, worktree-post-create, worktree-pre-remove, worktree-post-remove
 - Trust-based security model with per-repository trust levels
 - Trust management via `git daft hooks` subcommand
 - Hooks stored in `.daft/hooks/` within repositories
@@ -147,7 +155,7 @@ The worktree commands are intended to be used as custom Git commands (e.g., `git
 
 - **Worktree-centric workflow**: One worktree per branch, with all worktrees for a repository organized under a common parent directory
 - **Directory structure**: Uses `<repo-name>/.git` at root with worktrees at `<repo-name>/<branch-name>/`
-- **Hooks system**: Project-managed lifecycle hooks for automation (post-clone, pre-create, post-create, pre-remove, etc.)
+- **Hooks system**: Project-managed lifecycle hooks for automation (post-clone, worktree-pre-create, worktree-post-create, worktree-pre-remove, etc.)
 - **Dynamic branch detection**: Commands query remote repositories to determine actual default branch (main, master, develop, etc.)
 
 ## Architecture

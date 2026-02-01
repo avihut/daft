@@ -6,8 +6,12 @@
 //! - `deny` - Revoke trust from a repository
 //! - `status` - Show trust status and available hooks
 //! - `list` - List all trusted repositories
+//! - `migrate` - Rename deprecated hook files to their new names
 
-use crate::hooks::{TrustDatabase, TrustEntry, TrustLevel, PROJECT_HOOKS_DIR};
+use crate::hooks::{
+    HookType, TrustDatabase, TrustEntry, TrustLevel, DEPRECATED_HOOK_REMOVAL_VERSION,
+    PROJECT_HOOKS_DIR,
+};
 use crate::styles::{bold, cyan, def, dim, green, red, yellow};
 use crate::{get_git_common_dir, is_git_repository};
 use anyhow::{Context, Result};
@@ -134,6 +138,30 @@ fn reset_trust_long_about() -> String {
     .join("\n")
 }
 
+fn migrate_long_about() -> String {
+    [
+        "Rename deprecated hook files to their new canonical names.",
+        "",
+        "In daft v1.x, worktree-scoped hooks were renamed with a 'worktree-' prefix:",
+        &def("pre-create", "worktree-pre-create"),
+        &def("post-create", "worktree-post-create"),
+        &def("pre-remove", "worktree-pre-remove"),
+        &def("post-remove", "worktree-post-remove"),
+        "",
+        "This command scans all worktrees in the repository and the user hooks",
+        "directory (~/.config/daft/hooks/) for deprecated names and renames them.",
+        "",
+        "If both old and new names exist in the same directory, the old file is",
+        "skipped (conflict). Resolve conflicts manually before re-running.",
+        "",
+        &format!(
+            "Use {} to preview changes without renaming.",
+            bold("--dry-run")
+        ),
+    ]
+    .join("\n")
+}
+
 #[derive(Parser)]
 #[command(name = "hooks")]
 #[command(about = "Manage repository trust for hook execution")]
@@ -202,6 +230,18 @@ enum HooksCommand {
         #[arg(short = 'f', long, help = "Do not ask for confirmation")]
         force: bool,
     },
+
+    /// Rename deprecated hook files to their new names
+    #[command(long_about = migrate_long_about())]
+    Migrate {
+        /// Path to repository (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: std::path::PathBuf,
+
+        /// Show what would be renamed without making changes
+        #[arg(long, help = "Preview renames without making changes")]
+        dry_run: bool,
+    },
 }
 
 pub fn run() -> Result<()> {
@@ -217,6 +257,7 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::Status { path, short }) => cmd_status(&path, short),
         Some(HooksCommand::List { all }) => cmd_list(all),
         Some(HooksCommand::ResetTrust { force }) => cmd_reset_trust(force),
+        Some(HooksCommand::Migrate { path, dry_run }) => cmd_migrate(&path, dry_run),
         None => cmd_status(&std::path::PathBuf::from("."), false), // Default to status if no subcommand
     }
 }
@@ -471,6 +512,37 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
                 }
             }
 
+            // Check for deprecated hook filenames among discovered hooks
+            let deprecated_hooks: Vec<_> = hooks
+                .iter()
+                .filter_map(|hook_path| {
+                    let name = hook_path.file_name()?.to_str()?;
+                    let hook_type = HookType::from_filename(name)?;
+                    let dep = hook_type.deprecated_filename()?;
+                    if name == dep {
+                        Some((dep, hook_type.filename()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !deprecated_hooks.is_empty() {
+                println!();
+                println!("{}", yellow("Deprecated hook names detected:"));
+                for (old_name, new_name) in &deprecated_hooks {
+                    println!("  {} -> {}", red(old_name), green(new_name));
+                }
+                println!("  Run '{}' to rename them.", cyan("git daft hooks migrate"));
+                println!(
+                    "  {}",
+                    dim(&format!(
+                        "Deprecated names will stop working in daft v{}.",
+                        DEPRECATED_HOOK_REMOVAL_VERSION
+                    ))
+                );
+            }
+
             println!();
 
             // Show commands with relative path
@@ -668,6 +740,154 @@ fn cmd_reset_trust(force: bool) -> Result<()> {
     println!("{} repositories, {} patterns", green("0"), green("0"));
 
     Ok(())
+}
+
+/// Migrate deprecated hook filenames to their new canonical names.
+fn cmd_migrate(path: &Path, dry_run: bool) -> Result<()> {
+    let abs_path = path
+        .canonicalize()
+        .with_context(|| format!("Path does not exist: {}", path.display()))?;
+
+    let original_dir = std::env::current_dir()?;
+    std::env::set_current_dir(&abs_path)
+        .with_context(|| format!("Cannot change to directory: {}", abs_path.display()))?;
+
+    let result = (|| -> Result<()> {
+        if !is_git_repository()? {
+            anyhow::bail!("Not in a git repository: {}", abs_path.display());
+        }
+
+        let git_dir = get_git_common_dir()?;
+        let project_root = git_dir.parent().context("Invalid git directory")?;
+
+        // Build the rename mapping: (old_name, new_name) for hooks that have deprecated names
+        let rename_map: Vec<(&str, &str)> = HookType::all()
+            .iter()
+            .filter_map(|ht| ht.deprecated_filename().map(|old| (old, ht.filename())))
+            .collect();
+
+        let mut renamed = 0u32;
+        let mut skipped = 0u32;
+        let mut conflicts = 0u32;
+
+        if dry_run {
+            println!("{}", bold("Dry run - no files will be changed"));
+            println!();
+        }
+
+        // Scan all worktree directories under project_root for .daft/hooks/
+        let mut scanned_dirs = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(project_root) {
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if entry_path.is_dir()
+                    && entry_path.file_name().map(|n| n != ".git").unwrap_or(false)
+                {
+                    let hooks_dir = entry_path.join(PROJECT_HOOKS_DIR);
+                    if hooks_dir.exists() && hooks_dir.is_dir() {
+                        scanned_dirs.push(hooks_dir);
+                    }
+                }
+            }
+        }
+
+        // Also scan user hooks directory
+        let user_hooks_dir = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("~/.config"))
+            .join("daft")
+            .join("hooks");
+        if user_hooks_dir.exists() && user_hooks_dir.is_dir() {
+            scanned_dirs.push(user_hooks_dir);
+        }
+
+        if scanned_dirs.is_empty() {
+            println!("{}", dim("No hook directories found."));
+            std::env::set_current_dir(&original_dir)?;
+            return Ok(());
+        }
+
+        for hooks_dir in &scanned_dirs {
+            for &(old_name, new_name) in &rename_map {
+                let old_path = hooks_dir.join(old_name);
+                let new_path = hooks_dir.join(new_name);
+
+                if !old_path.exists() {
+                    continue;
+                }
+
+                if new_path.exists() {
+                    // Conflict: both exist
+                    println!(
+                        "  {} {}: both '{}' and '{}' exist in {}",
+                        red("conflict"),
+                        bold(old_name),
+                        old_name,
+                        new_name,
+                        hooks_dir.display()
+                    );
+                    conflicts += 1;
+                    continue;
+                }
+
+                if dry_run {
+                    println!(
+                        "  {} {} -> {}  {}",
+                        yellow("would rename"),
+                        old_name,
+                        new_name,
+                        dim(&format!("({})", hooks_dir.display()))
+                    );
+                    renamed += 1;
+                } else {
+                    match std::fs::rename(&old_path, &new_path) {
+                        Ok(()) => {
+                            println!(
+                                "  {} {} -> {}  {}",
+                                green("renamed"),
+                                old_name,
+                                new_name,
+                                dim(&format!("({})", hooks_dir.display()))
+                            );
+                            renamed += 1;
+                        }
+                        Err(e) => {
+                            println!("  {} {} -> {}: {}", red("error"), old_name, new_name, e);
+                            skipped += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        println!();
+        if dry_run {
+            println!(
+                "{} would be renamed, {} conflicts",
+                bold(&renamed.to_string()),
+                bold(&conflicts.to_string())
+            );
+        } else if renamed == 0 && conflicts == 0 {
+            println!("{}", dim("No deprecated hook files found."));
+        } else {
+            println!(
+                "{} renamed, {} skipped, {} conflicts",
+                bold(&renamed.to_string()),
+                bold(&skipped.to_string()),
+                bold(&conflicts.to_string())
+            );
+            if renamed > 0 {
+                println!(
+                    "{}",
+                    dim("Remember to 'git add' the renamed files if they are tracked.")
+                );
+            }
+        }
+
+        Ok(())
+    })();
+
+    std::env::set_current_dir(&original_dir)?;
+    result
 }
 
 /// Find project hooks in the current repository.
