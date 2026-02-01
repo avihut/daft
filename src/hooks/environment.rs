@@ -248,7 +248,7 @@ mod tests {
         let ctx = make_test_context();
         let env = HookEnvironment::from_context(&ctx);
 
-        assert_eq!(env.get("DAFT_HOOK"), Some("post-create"));
+        assert_eq!(env.get("DAFT_HOOK"), Some("worktree-post-create"));
         assert_eq!(env.get("DAFT_COMMAND"), Some("checkout-branch"));
         assert_eq!(env.get("DAFT_PROJECT_ROOT"), Some("/project"));
         assert_eq!(env.get("DAFT_GIT_DIR"), Some("/project/.git"));

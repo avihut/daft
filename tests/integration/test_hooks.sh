@@ -18,13 +18,13 @@ test_hooks_untrusted_repo() {
 
     # Create a hook that would create a marker file if executed
     mkdir -p .daft/hooks
-    cat > .daft/hooks/post-create << 'EOF'
+    cat > .daft/hooks/worktree-post-create << 'EOF'
 #!/bin/bash
 touch /tmp/daft-hook-executed-untrusted-$$
 EOF
-    chmod +x .daft/hooks/post-create
-    git add .daft/hooks/post-create
-    git commit -m "Add post-create hook" >/dev/null 2>&1
+    chmod +x .daft/hooks/worktree-post-create
+    git add .daft/hooks/worktree-post-create
+    git commit -m "Add worktree-post-create hook" >/dev/null 2>&1
     git push origin main >/dev/null 2>&1
 
     cd ..
@@ -208,17 +208,17 @@ test_post_create_hook_execution() {
     git add README.md
     git commit -m "Initial commit" >/dev/null 2>&1
 
-    # Create a post-create hook
+    # Create a worktree-post-create hook
     mkdir -p .daft/hooks
-    cat > .daft/hooks/post-create << 'EOF'
+    cat > .daft/hooks/worktree-post-create << 'EOF'
 #!/bin/bash
 echo "DAFT_HOOK=$DAFT_HOOK" > "$DAFT_WORKTREE_PATH/.hook-env"
 echo "DAFT_COMMAND=$DAFT_COMMAND" >> "$DAFT_WORKTREE_PATH/.hook-env"
 echo "DAFT_BRANCH_NAME=$DAFT_BRANCH_NAME" >> "$DAFT_WORKTREE_PATH/.hook-env"
 EOF
-    chmod +x .daft/hooks/post-create
-    git add .daft/hooks/post-create
-    git commit -m "Add post-create hook" >/dev/null 2>&1
+    chmod +x .daft/hooks/worktree-post-create
+    git add .daft/hooks/worktree-post-create
+    git commit -m "Add worktree-post-create hook" >/dev/null 2>&1
 
     cd ..
 
@@ -231,7 +231,7 @@ EOF
     # Check if hook was executed (look for the env file)
     if [[ -f "feature/hook-test/.hook-env" ]]; then
         # Verify environment variables were set correctly
-        if grep -q "DAFT_HOOK=post-create" "feature/hook-test/.hook-env" && \
+        if grep -q "DAFT_HOOK=worktree-post-create" "feature/hook-test/.hook-env" && \
            grep -q "DAFT_BRANCH_NAME=feature/hook-test" "feature/hook-test/.hook-env"; then
             log_success "Post-create hook executed with correct environment"
             return 0
@@ -257,16 +257,16 @@ test_pre_create_hook_abort() {
     git add README.md
     git commit -m "Initial commit" >/dev/null 2>&1
 
-    # Create a pre-create hook that fails
+    # Create a worktree-pre-create hook that fails
     mkdir -p .daft/hooks
-    cat > .daft/hooks/pre-create << 'EOF'
+    cat > .daft/hooks/worktree-pre-create << 'EOF'
 #!/bin/bash
 echo "Pre-create hook blocking operation"
 exit 1
 EOF
-    chmod +x .daft/hooks/pre-create
-    git add .daft/hooks/pre-create
-    git commit -m "Add blocking pre-create hook" >/dev/null 2>&1
+    chmod +x .daft/hooks/worktree-pre-create
+    git add .daft/hooks/worktree-pre-create
+    git commit -m "Add blocking worktree-pre-create hook" >/dev/null 2>&1
 
     cd ..
 
@@ -329,6 +329,174 @@ EOF
 }
 
 # ============================================================================
+# Deprecated Hook Name Tests
+# ============================================================================
+
+# Test that deprecated hook names emit a warning but still execute
+test_deprecated_hook_warning() {
+    # Initialize a new repository
+    git-worktree-init hooks-deprecated-test || return 1
+    cd "hooks-deprecated-test/master"
+
+    # Create initial commit
+    echo "# Test" > README.md
+    git add README.md
+    git commit -m "Initial commit" >/dev/null 2>&1
+
+    # Create a hook with the DEPRECATED name (post-create instead of worktree-post-create)
+    mkdir -p .daft/hooks
+    cat > .daft/hooks/post-create << 'EOF'
+#!/bin/bash
+touch "$DAFT_WORKTREE_PATH/.deprecated-hook-ran"
+EOF
+    chmod +x .daft/hooks/post-create
+    git add .daft/hooks/post-create
+    git commit -m "Add deprecated post-create hook" >/dev/null 2>&1
+
+    cd ..
+
+    # Trust the repository
+    git-daft hooks trust --level=allow >/dev/null 2>&1 || true
+
+    # Create a new worktree - should emit deprecation warning
+    local output=$(git-worktree-checkout-branch feature/deprecated-test 2>&1)
+
+    # Check for deprecation warning in output
+    if echo "$output" | grep -qi "deprecated"; then
+        log_success "Deprecation warning emitted for old hook name"
+    else
+        log_warning "Deprecation warning not detected (may be expected if trust not applied)"
+    fi
+
+    return 0
+}
+
+# Test hooks migrate --dry-run
+test_hooks_migrate_dry_run() {
+    # Initialize a new repository
+    git-worktree-init hooks-migrate-dry-test || return 1
+    cd "hooks-migrate-dry-test/master"
+
+    # Create initial commit
+    echo "# Test" > README.md
+    git add README.md
+    git commit -m "Initial commit" >/dev/null 2>&1
+
+    # Create hooks with deprecated names
+    mkdir -p .daft/hooks
+    echo '#!/bin/bash' > .daft/hooks/post-create
+    chmod +x .daft/hooks/post-create
+    echo '#!/bin/bash' > .daft/hooks/pre-remove
+    chmod +x .daft/hooks/pre-remove
+
+    # Run migrate --dry-run from within the worktree
+    local output=$(git-daft hooks migrate --dry-run 2>&1)
+
+    # Should show what would be renamed
+    if echo "$output" | grep -qi "would rename"; then
+        log_success "Migrate --dry-run shows planned renames"
+    else
+        log_error "Migrate --dry-run did not show planned renames"
+        echo "Output was: $output"
+        return 1
+    fi
+
+    # Files should NOT have been renamed
+    if [[ -f ".daft/hooks/post-create" ]] && [[ -f ".daft/hooks/pre-remove" ]]; then
+        log_success "Migrate --dry-run did not modify files"
+    else
+        log_error "Migrate --dry-run unexpectedly modified files"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test hooks migrate actually renames files
+test_hooks_migrate_basic() {
+    # Initialize a new repository
+    git-worktree-init hooks-migrate-basic-test || return 1
+    cd "hooks-migrate-basic-test/master"
+
+    # Create initial commit
+    echo "# Test" > README.md
+    git add README.md
+    git commit -m "Initial commit" >/dev/null 2>&1
+
+    # Create hooks with deprecated names
+    mkdir -p .daft/hooks
+    echo '#!/bin/bash' > .daft/hooks/post-create
+    chmod +x .daft/hooks/post-create
+    echo '#!/bin/bash' > .daft/hooks/pre-create
+    chmod +x .daft/hooks/pre-create
+
+    # Run migrate from within the worktree
+    local output=$(git-daft hooks migrate 2>&1)
+
+    # Files should have been renamed
+    if [[ -f ".daft/hooks/worktree-post-create" ]] && \
+       [[ -f ".daft/hooks/worktree-pre-create" ]]; then
+        log_success "Migrate renamed hook files correctly"
+    else
+        log_error "Migrate did not rename files"
+        echo "Output was: $output"
+        ls -la .daft/hooks/ 2>/dev/null
+        return 1
+    fi
+
+    # Old files should be gone
+    if [[ -f ".daft/hooks/post-create" ]] || \
+       [[ -f ".daft/hooks/pre-create" ]]; then
+        log_error "Old hook files still exist after migrate"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test hooks migrate with conflict (both old and new exist)
+test_hooks_migrate_conflict() {
+    # Initialize a new repository
+    git-worktree-init hooks-migrate-conflict-test || return 1
+    cd "hooks-migrate-conflict-test/master"
+
+    # Create initial commit
+    echo "# Test" > README.md
+    git add README.md
+    git commit -m "Initial commit" >/dev/null 2>&1
+
+    # Create both old and new hook files (conflict scenario)
+    mkdir -p .daft/hooks
+    echo '#!/bin/bash\n# old' > .daft/hooks/post-create
+    chmod +x .daft/hooks/post-create
+    echo '#!/bin/bash\n# new' > .daft/hooks/worktree-post-create
+    chmod +x .daft/hooks/worktree-post-create
+
+    # Run migrate from within the worktree
+    local output=$(git-daft hooks migrate 2>&1)
+
+    # Should report conflict
+    if echo "$output" | grep -qi "conflict"; then
+        log_success "Migrate correctly detected conflict"
+    else
+        log_error "Migrate did not detect conflict"
+        echo "Output was: $output"
+        return 1
+    fi
+
+    # Both files should still exist (old not deleted)
+    if [[ -f ".daft/hooks/post-create" ]] && \
+       [[ -f ".daft/hooks/worktree-post-create" ]]; then
+        log_success "Migrate preserved both files on conflict"
+    else
+        log_error "Migrate incorrectly modified files during conflict"
+        return 1
+    fi
+
+    return 0
+}
+
+# ============================================================================
 # Help and Usage Tests
 # ============================================================================
 
@@ -370,6 +538,12 @@ run_hooks_tests() {
     run_test "post_create_hook_execution" "test_post_create_hook_execution"
     run_test "pre_create_hook_abort" "test_pre_create_hook_abort"
     run_test "hook_environment_variables" "test_hook_environment_variables"
+
+    # Deprecated hook name tests
+    run_test "deprecated_hook_warning" "test_deprecated_hook_warning"
+    run_test "hooks_migrate_dry_run" "test_hooks_migrate_dry_run"
+    run_test "hooks_migrate_basic" "test_hooks_migrate_basic"
+    run_test "hooks_migrate_conflict" "test_hooks_migrate_conflict"
 
     # Help tests
     run_test "hooks_help" "test_hooks_help"

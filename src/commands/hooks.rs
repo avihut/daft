@@ -6,8 +6,12 @@
 //! - `deny` - Revoke trust from a repository
 //! - `status` - Show trust status and available hooks
 //! - `list` - List all trusted repositories
+//! - `migrate` - Rename deprecated hook files to their new names
 
-use crate::hooks::{TrustDatabase, TrustEntry, TrustLevel, PROJECT_HOOKS_DIR};
+use crate::hooks::{
+    HookType, TrustDatabase, TrustEntry, TrustLevel, DEPRECATED_HOOK_REMOVAL_VERSION,
+    PROJECT_HOOKS_DIR,
+};
 use crate::styles::{bold, cyan, def, dim, green, red, yellow};
 use crate::{get_git_common_dir, is_git_repository};
 use anyhow::{Context, Result};
@@ -134,6 +138,30 @@ fn reset_trust_long_about() -> String {
     .join("\n")
 }
 
+fn migrate_long_about() -> String {
+    [
+        "Rename deprecated hook files to their new canonical names.",
+        "",
+        "In daft v1.x, worktree-scoped hooks were renamed with a 'worktree-' prefix:",
+        &def("pre-create", "worktree-pre-create"),
+        &def("post-create", "worktree-post-create"),
+        &def("pre-remove", "worktree-pre-remove"),
+        &def("post-remove", "worktree-post-remove"),
+        "",
+        "This command must be run from within a worktree. It renames deprecated",
+        "hook files in the current worktree's .daft/hooks/ directory.",
+        "",
+        "If both old and new names exist, the old file is skipped (conflict).",
+        "Resolve conflicts manually before re-running.",
+        "",
+        &format!(
+            "Use {} to preview changes without renaming.",
+            bold("--dry-run")
+        ),
+    ]
+    .join("\n")
+}
+
 #[derive(Parser)]
 #[command(name = "hooks")]
 #[command(about = "Manage repository trust for hook execution")]
@@ -202,6 +230,14 @@ enum HooksCommand {
         #[arg(short = 'f', long, help = "Do not ask for confirmation")]
         force: bool,
     },
+
+    /// Rename deprecated hook files to their new names
+    #[command(long_about = migrate_long_about())]
+    Migrate {
+        /// Show what would be renamed without making changes
+        #[arg(long, help = "Preview renames without making changes")]
+        dry_run: bool,
+    },
 }
 
 pub fn run() -> Result<()> {
@@ -217,6 +253,7 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::Status { path, short }) => cmd_status(&path, short),
         Some(HooksCommand::List { all }) => cmd_list(all),
         Some(HooksCommand::ResetTrust { force }) => cmd_reset_trust(force),
+        Some(HooksCommand::Migrate { dry_run }) => cmd_migrate(dry_run),
         None => cmd_status(&std::path::PathBuf::from("."), false), // Default to status if no subcommand
     }
 }
@@ -471,6 +508,37 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
                 }
             }
 
+            // Check for deprecated hook filenames among discovered hooks
+            let deprecated_hooks: Vec<_> = hooks
+                .iter()
+                .filter_map(|hook_path| {
+                    let name = hook_path.file_name()?.to_str()?;
+                    let hook_type = HookType::from_filename(name)?;
+                    let dep = hook_type.deprecated_filename()?;
+                    if name == dep {
+                        Some((dep, hook_type.filename()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !deprecated_hooks.is_empty() {
+                println!();
+                println!("{}", yellow("Deprecated hook names detected:"));
+                for (old_name, new_name) in &deprecated_hooks {
+                    println!("  {} -> {}", red(old_name), green(new_name));
+                }
+                println!("  Run '{}' to rename them.", cyan("git daft hooks migrate"));
+                println!(
+                    "  {}",
+                    dim(&format!(
+                        "Deprecated names will stop working in daft v{}.",
+                        DEPRECATED_HOOK_REMOVAL_VERSION
+                    ))
+                );
+            }
+
             println!();
 
             // Show commands with relative path
@@ -666,6 +734,129 @@ fn cmd_reset_trust(force: bool) -> Result<()> {
     db.save().context("Failed to save trust database")?;
 
     println!("{} repositories, {} patterns", green("0"), green("0"));
+
+    Ok(())
+}
+
+/// Migrate deprecated hook filenames to their new canonical names.
+///
+/// Must be run from within a worktree. Only migrates hooks in the
+/// current worktree's `.daft/hooks/` directory.
+fn cmd_migrate(dry_run: bool) -> Result<()> {
+    if !is_git_repository()? {
+        anyhow::bail!("Not in a git repository");
+    }
+
+    let git_dir = get_git_common_dir()?;
+    let project_root = git_dir.parent().context("Invalid git directory")?;
+
+    // Determine the current worktree using git rev-parse --show-toplevel
+    let toplevel_output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .context("Failed to execute git rev-parse")?;
+
+    if !toplevel_output.status.success() {
+        anyhow::bail!("Failed to determine current worktree");
+    }
+
+    let worktree_path = PathBuf::from(
+        String::from_utf8(toplevel_output.stdout)
+            .context("Failed to parse worktree path")?
+            .trim(),
+    );
+
+    // Verify we're inside a worktree, not at the project root
+    if worktree_path == project_root {
+        anyhow::bail!(
+            "Must be run from within a worktree, not the project root.\n\
+             cd into a worktree directory first (e.g., cd main/)."
+        );
+    }
+
+    let hooks_dir = worktree_path.join(PROJECT_HOOKS_DIR);
+
+    if !hooks_dir.exists() || !hooks_dir.is_dir() {
+        println!("{}", dim("No .daft/hooks/ directory in this worktree."));
+        return Ok(());
+    }
+
+    // Build the rename mapping: (old_name, new_name) for hooks that have deprecated names
+    let rename_map: Vec<(&str, &str)> = HookType::all()
+        .iter()
+        .filter_map(|ht| ht.deprecated_filename().map(|old| (old, ht.filename())))
+        .collect();
+
+    let mut renamed = 0u32;
+    let mut skipped = 0u32;
+    let mut conflicts = 0u32;
+
+    if dry_run {
+        println!("{}", bold("Dry run - no files will be changed"));
+        println!();
+    }
+
+    for &(old_name, new_name) in &rename_map {
+        let old_path = hooks_dir.join(old_name);
+        let new_path = hooks_dir.join(new_name);
+
+        if !old_path.exists() {
+            continue;
+        }
+
+        if new_path.exists() {
+            // Conflict: both exist
+            println!(
+                "  {} {}: both '{}' and '{}' exist",
+                red("conflict"),
+                bold(old_name),
+                old_name,
+                new_name,
+            );
+            conflicts += 1;
+            continue;
+        }
+
+        if dry_run {
+            println!("  {} {} -> {}", yellow("would rename"), old_name, new_name,);
+            renamed += 1;
+        } else {
+            match std::fs::rename(&old_path, &new_path) {
+                Ok(()) => {
+                    println!("  {} {} -> {}", green("renamed"), old_name, new_name,);
+                    renamed += 1;
+                }
+                Err(e) => {
+                    println!("  {} {} -> {}: {}", red("error"), old_name, new_name, e);
+                    skipped += 1;
+                }
+            }
+        }
+    }
+
+    println!();
+    if dry_run {
+        println!(
+            "{} would be renamed, {} conflicts",
+            bold(&renamed.to_string()),
+            bold(&conflicts.to_string())
+        );
+    } else if renamed == 0 && conflicts == 0 {
+        println!("{}", dim("No deprecated hook files found."));
+    } else {
+        println!(
+            "{} renamed, {} skipped, {} conflicts",
+            bold(&renamed.to_string()),
+            bold(&skipped.to_string()),
+            bold(&conflicts.to_string())
+        );
+        if renamed > 0 {
+            println!(
+                "{}",
+                dim("Remember to 'git add' the renamed files if they are tracked.")
+            );
+        }
+    }
 
     Ok(())
 }

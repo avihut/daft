@@ -405,18 +405,36 @@ pub fn load_hooks_config_global() -> Result<HooksConfig> {
 }
 
 /// Load configuration for a specific hook type.
+///
+/// Falls back to deprecated config keys if the new key is not found.
 fn load_hook_type_config(
     git: &GitCommand,
     hook_type: HookType,
     hook_config: &mut HookConfig,
 ) -> Result<()> {
     let enabled_key = keys::hooks::hook_key(hook_type.config_key(), "enabled");
-    if let Some(value) = git.config_get(&enabled_key)? {
+    let enabled_value = match (
+        git.config_get(&enabled_key)?,
+        hook_type.deprecated_config_key(),
+    ) {
+        (Some(v), _) => Some(v),
+        (None, Some(dep)) => git.config_get(&keys::hooks::hook_key(dep, "enabled"))?,
+        (None, None) => None,
+    };
+    if let Some(value) = enabled_value {
         hook_config.enabled = parse_bool(&value, true);
     }
 
     let fail_mode_key = keys::hooks::hook_key(hook_type.config_key(), "failMode");
-    if let Some(value) = git.config_get(&fail_mode_key)? {
+    let fail_mode_value = match (
+        git.config_get(&fail_mode_key)?,
+        hook_type.deprecated_config_key(),
+    ) {
+        (Some(v), _) => Some(v),
+        (None, Some(dep)) => git.config_get(&keys::hooks::hook_key(dep, "failMode"))?,
+        (None, None) => None,
+    };
+    if let Some(value) = fail_mode_value {
         if let Some(mode) = FailMode::parse(&value) {
             hook_config.fail_mode = mode;
         }
@@ -426,18 +444,36 @@ fn load_hook_type_config(
 }
 
 /// Load configuration for a specific hook type from global config only.
+///
+/// Falls back to deprecated config keys if the new key is not found.
 fn load_hook_type_config_global(
     git: &GitCommand,
     hook_type: HookType,
     hook_config: &mut HookConfig,
 ) -> Result<()> {
     let enabled_key = keys::hooks::hook_key(hook_type.config_key(), "enabled");
-    if let Some(value) = git.config_get_global(&enabled_key)? {
+    let enabled_value = match (
+        git.config_get_global(&enabled_key)?,
+        hook_type.deprecated_config_key(),
+    ) {
+        (Some(v), _) => Some(v),
+        (None, Some(dep)) => git.config_get_global(&keys::hooks::hook_key(dep, "enabled"))?,
+        (None, None) => None,
+    };
+    if let Some(value) = enabled_value {
         hook_config.enabled = parse_bool(&value, true);
     }
 
     let fail_mode_key = keys::hooks::hook_key(hook_type.config_key(), "failMode");
-    if let Some(value) = git.config_get_global(&fail_mode_key)? {
+    let fail_mode_value = match (
+        git.config_get_global(&fail_mode_key)?,
+        hook_type.deprecated_config_key(),
+    ) {
+        (Some(v), _) => Some(v),
+        (None, Some(dep)) => git.config_get_global(&keys::hooks::hook_key(dep, "failMode"))?,
+        (None, None) => None,
+    };
+    if let Some(value) = fail_mode_value {
         if let Some(mode) = FailMode::parse(&value) {
             hook_config.fail_mode = mode;
         }

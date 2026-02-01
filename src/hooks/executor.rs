@@ -5,7 +5,7 @@
 
 use super::{
     find_hooks, list_hooks, FailMode, HookConfig, HookContext, HookEnvironment, HookType,
-    HooksConfig, TrustDatabase, TrustLevel,
+    HooksConfig, TrustDatabase, TrustLevel, DEPRECATED_HOOK_REMOVAL_VERSION,
 };
 use crate::output::Output;
 use anyhow::{Context, Result};
@@ -130,9 +130,39 @@ impl HookExecutor {
         // Determine the worktree to read hooks from
         let hook_source_worktree = self.get_hook_source_worktree(ctx);
 
-        // Check if any hooks exist
-        let hooks = find_hooks(ctx.hook_type, &hook_source_worktree, &self.config);
-        if hooks.is_empty() {
+        // Discover hooks (handles deprecated filename resolution)
+        let discovery = find_hooks(ctx.hook_type, &hook_source_worktree, &self.config);
+
+        // Emit deprecation warnings
+        for warning in &discovery.deprecation_warnings {
+            if warning.new_name_also_exists {
+                output.warning(&format!(
+                    "Both '{}' and '{}' exist in '{}'. Using '{}'; remove '{}' or run 'git daft hooks migrate'.",
+                    warning.new_name,
+                    warning.old_name,
+                    warning.path.parent().unwrap_or(warning.path.as_path()).display(),
+                    warning.new_name,
+                    warning.old_name,
+                ));
+            } else {
+                output.warning(&format!(
+                    "Hook '{}' uses deprecated name '{}'. Rename to '{}' or run 'git daft hooks migrate'. \
+                     Deprecated names will stop working in daft v{}.",
+                    warning.path.display(),
+                    warning.old_name,
+                    warning.new_name,
+                    DEPRECATED_HOOK_REMOVAL_VERSION
+                ));
+            }
+        }
+
+        if discovery.hooks.is_empty() {
+            if !discovery.deprecation_warnings.is_empty() {
+                // Hooks exist but won't run (v2.0.0+ scenario)
+                return Ok(HookResult::skipped(
+                    "Deprecated hook files found but not executed. Run 'git daft hooks migrate' to rename them.",
+                ));
+            }
             output.debug(&format!("No {} hooks found", ctx.hook_type));
             return Ok(HookResult::skipped("No hook files found"));
         }
@@ -141,7 +171,10 @@ impl HookExecutor {
         let trust_level = self.trust_db.get_trust_level(&ctx.git_dir);
 
         // Only check project hooks for trust (user hooks are always trusted)
-        let has_project_hooks = hooks.iter().any(|h| h.starts_with(&hook_source_worktree));
+        let has_project_hooks = discovery
+            .hooks
+            .iter()
+            .any(|h| h.starts_with(&hook_source_worktree));
 
         if has_project_hooks {
             match trust_level {
@@ -153,7 +186,7 @@ impl HookExecutor {
                     return Ok(HookResult::skipped("Repository not trusted"));
                 }
                 TrustLevel::Prompt => {
-                    if !self.prompt_for_permission(ctx, &hooks, output) {
+                    if !self.prompt_for_permission(ctx, &discovery.hooks, output) {
                         return Ok(HookResult::skipped("User declined hook execution"));
                     }
                 }
@@ -169,7 +202,7 @@ impl HookExecutor {
         let env = HookEnvironment::from_context(ctx);
         let working_dir = env.working_directory(ctx);
 
-        for hook_path in &hooks {
+        for hook_path in &discovery.hooks {
             let result = self.execute_hook_file(hook_path, &env, working_dir, output)?;
 
             if !result.success {
@@ -461,7 +494,7 @@ mod tests {
         let worktree = temp_dir.path().join("main");
         fs::create_dir_all(&worktree).unwrap();
 
-        create_test_hook(&worktree, "post-create", "#!/bin/bash\necho test");
+        create_test_hook(&worktree, "worktree-post-create", "#!/bin/bash\necho test");
 
         let mut config = HooksConfig::default();
         config.enabled = false;
@@ -520,7 +553,7 @@ mod tests {
         let worktree = temp_dir.path().join("main");
         fs::create_dir_all(&worktree).unwrap();
 
-        create_test_hook(&worktree, "post-create", "#!/bin/bash\necho test");
+        create_test_hook(&worktree, "worktree-post-create", "#!/bin/bash\necho test");
 
         let config = HooksConfig::default();
         let executor = HookExecutor::with_trust_db(config, TrustDatabase::default());
@@ -553,7 +586,7 @@ mod tests {
 
         create_test_hook(
             &worktree,
-            "post-create",
+            "worktree-post-create",
             "#!/bin/bash\necho 'hook executed'",
         );
 
