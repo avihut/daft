@@ -424,6 +424,93 @@ test_prune_plus_marker_branch() {
     return 0
 }
 
+# Test prune cleans up empty parent directories for branches with slashes
+# Regression test for https://github.com/avihut/daft/issues/135
+test_prune_empty_parent_dir_cleanup() {
+    local remote_repo=$(create_test_remote "test-repo-prune-parent-cleanup" "main")
+
+    # Create two branches under the same prefix in remote
+    local temp_clone="$TEMP_BASE_DIR/temp_parent_cleanup_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git checkout -b feature/old >/dev/null 2>&1
+        echo "Old feature" > old.txt
+        git add old.txt >/dev/null 2>&1
+        git commit -m "Add old feature" >/dev/null 2>&1
+        git push origin feature/old >/dev/null 2>&1
+
+        git checkout -b feature/new >/dev/null 2>&1
+        echo "New feature" > new.txt
+        git add new.txt >/dev/null 2>&1
+        git commit -m "Add new feature" >/dev/null 2>&1
+        git push origin feature/new >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Clone and checkout both branches
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-prune-parent-cleanup"
+
+    git fetch origin >/dev/null 2>&1
+    git-worktree-checkout feature/old || return 1
+    git-worktree-checkout feature/new || return 1
+
+    # Verify both worktrees exist under feature/
+    assert_directory_exists "feature/old" || return 1
+    assert_directory_exists "feature/new" || return 1
+
+    # Delete only feature/old from remote
+    temp_clone="$TEMP_BASE_DIR/temp_parent_cleanup_delete1"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git push origin --delete feature/old >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Prune: should remove feature/old but keep feature/ (feature/new still exists)
+    git-worktree-prune || return 1
+
+    if [[ -d "feature/old" ]]; then
+        log_error "Prune should have removed feature/old worktree"
+        return 1
+    fi
+
+    assert_directory_exists "feature/new" || return 1
+    assert_directory_exists "feature" || return 1
+
+    # Now delete feature/new from remote
+    temp_clone="$TEMP_BASE_DIR/temp_parent_cleanup_delete2"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git push origin --delete feature/new >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Prune: should remove feature/new AND the now-empty feature/ directory
+    git-worktree-prune || return 1
+
+    if [[ -d "feature/new" ]]; then
+        log_error "Prune should have removed feature/new worktree"
+        return 1
+    fi
+
+    if [[ -d "feature" ]]; then
+        log_error "Prune should have removed the empty feature/ parent directory (issue #135)"
+        return 1
+    fi
+
+    return 0
+}
+
 # Test prune with remote configuration
 test_prune_remote_config() {
     local remote_repo=$(create_test_remote "test-repo-prune-remote-config" "main")
@@ -481,6 +568,7 @@ run_prune_tests() {
     run_test "prune_performance" "test_prune_performance"
     run_test "prune_many_worktrees" "test_prune_many_worktrees"
     run_test "prune_plus_marker_branch" "test_prune_plus_marker_branch"
+    run_test "prune_empty_parent_dir_cleanup" "test_prune_empty_parent_dir_cleanup"
     run_test "prune_remote_config" "test_prune_remote_config"
 }
 
