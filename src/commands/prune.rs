@@ -130,7 +130,6 @@ fn run_prune(output: &mut dyn Output) -> Result<()> {
     }
 
     if gone_branches.is_empty() {
-        output.result("Nothing to prune");
         return Ok(());
     }
 
@@ -247,8 +246,6 @@ fn run_prune(output: &mut dyn Output) -> Result<()> {
             "Pruned {} branches, removed {} worktrees",
             branches_deleted, worktrees_removed
         ));
-    } else {
-        output.result("Nothing pruned");
     }
 
     // Check if any worktrees might need manual pruning
