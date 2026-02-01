@@ -372,6 +372,58 @@ test_prune_many_worktrees() {
     return 0
 }
 
+# Test prune correctly handles branches shown with '+' marker in linked worktrees
+# Regression test for https://github.com/avihut/daft/issues/97
+test_prune_plus_marker_branch() {
+    local remote_repo=$(create_test_remote "test-repo-prune-plus" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-prune-plus"
+
+    # Create a worktree with a new branch - this branch will show with '+' prefix
+    # in git branch -vv because it is checked out in a linked worktree
+    git-worktree-checkout-branch feature/plus-test || return 1
+
+    # Verify the branch shows with '+' marker in git branch -vv
+    local branch_vv
+    branch_vv=$(cd main && git branch -vv)
+    if ! echo "$branch_vv" | grep -q '^+.*feature/plus-test'; then
+        log_error "Expected feature/plus-test to show with '+' marker in git branch -vv"
+        log_error "Actual output: $branch_vv"
+        return 1
+    fi
+
+    # Delete the branch from remote
+    local temp_clone="$TEMP_BASE_DIR/temp_prune_plus_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git push origin --delete feature/plus-test >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Run prune and capture output - should not contain error about branch '+'
+    local prune_output
+    prune_output=$(git-worktree-prune 2>&1) || true
+
+    if echo "$prune_output" | grep -q "branch '+'"; then
+        log_error "Prune incorrectly tried to delete a branch named '+' (issue #97)"
+        log_error "Output: $prune_output"
+        return 1
+    fi
+
+    # Verify the actual branch worktree was removed
+    if [[ -d "feature/plus-test" ]]; then
+        log_error "Prune should have removed feature/plus-test worktree"
+        return 1
+    fi
+
+    return 0
+}
+
 # Test prune with remote configuration
 test_prune_remote_config() {
     local remote_repo=$(create_test_remote "test-repo-prune-remote-config" "main")
@@ -428,6 +480,7 @@ run_prune_tests() {
     run_test "prune_nested_directories" "test_prune_nested_directories"
     run_test "prune_performance" "test_prune_performance"
     run_test "prune_many_worktrees" "test_prune_many_worktrees"
+    run_test "prune_plus_marker_branch" "test_prune_plus_marker_branch"
     run_test "prune_remote_config" "test_prune_remote_config"
 }
 
