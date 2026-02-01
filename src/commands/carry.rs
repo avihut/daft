@@ -136,8 +136,9 @@ fn run_carry(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     // Apply to each target
     for target_path in &resolved_targets {
         let target_name = target_path
-            .file_name()
-            .and_then(|n| n.to_str())
+            .strip_prefix(&project_root)
+            .ok()
+            .and_then(|p| p.to_str())
             .unwrap_or("unknown");
 
         println!("--> Applying changes to '{}'...", target_name);
