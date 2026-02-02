@@ -405,7 +405,25 @@ impl GitCommand {
             .output()
             .context("Failed to execute git rev-parse command")?;
 
-        // Git rev-parse --is-inside-work-tree returns exit code 0 when inside work tree
+        if !output.status.success() {
+            return Ok(false);
+        }
+
+        // In a bare repo root, git exits 0 but prints "false" to stdout.
+        // We must check the actual output, not just the exit code.
+        let stdout =
+            String::from_utf8(output.stdout).context("Failed to parse git rev-parse output")?;
+        Ok(stdout.trim() == "true")
+    }
+
+    /// Check if current directory is inside any Git repository (work tree or bare)
+    pub fn is_inside_git_repo(&self) -> Result<bool> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--git-dir"])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .context("Failed to execute git rev-parse command")?;
+
         Ok(output.status.success())
     }
 

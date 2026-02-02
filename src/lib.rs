@@ -97,7 +97,7 @@ impl Default for WorktreeConfig {
 
 pub fn is_git_repository() -> Result<bool> {
     let git = git::GitCommand::new(true); // Use quiet mode for this check
-    git.rev_parse_is_inside_work_tree()
+    git.is_inside_git_repo()
 }
 
 pub fn get_git_common_dir() -> Result<PathBuf> {
