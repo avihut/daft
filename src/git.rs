@@ -799,6 +799,23 @@ impl GitCommand {
         Ok(stdout.trim() == "true")
     }
 
+    /// Get the URL of a remote.
+    pub fn remote_get_url(&self, remote: &str) -> Result<String> {
+        let output = Command::new("git")
+            .args(["remote", "get-url", remote])
+            .output()
+            .context("Failed to execute git remote get-url command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git remote get-url failed: {}", stderr);
+        }
+
+        String::from_utf8(output.stdout)
+            .context("Failed to parse git remote get-url output")
+            .map(|s| s.trim().to_string())
+    }
+
     /// Move a worktree to a new location.
     pub fn worktree_move(&self, from: &Path, to: &Path) -> Result<()> {
         let mut cmd = Command::new("git");
