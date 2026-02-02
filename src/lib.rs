@@ -75,6 +75,7 @@ pub mod settings;
 pub mod shortcuts;
 pub mod styles;
 pub mod suggest;
+pub mod update_check;
 pub mod utils;
 
 pub use settings::DaftSettings;
