@@ -39,10 +39,20 @@ pub fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args = Args::parse_from(args);
 
-    let output = match args.shell {
+    let shell_name = match args.shell {
+        Shell::Bash => "bash",
+        Shell::Zsh => "zsh",
+        Shell::Fish => "fish",
+    };
+
+    let mut output = match args.shell {
         Shell::Bash | Shell::Zsh => generate_bash_zsh(args.aliases),
         Shell::Fish => generate_fish(args.aliases),
     };
+
+    // Append shell completions so users get tab completion out of the box
+    output.push_str("\n# Shell completions\n");
+    output.push_str(&super::completions::generate_all_completions(shell_name)?);
 
     println!("{output}");
     Ok(())

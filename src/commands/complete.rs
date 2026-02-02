@@ -79,8 +79,20 @@ fn complete(command: &str, position: usize, word: &str, verbose: bool) -> Result
         // git-worktree-init: repository name (no dynamic completion)
         ("git-worktree-init", 1) => Ok(vec![]),
 
+        // git-worktree-carry: complete existing branch/worktree names
+        ("git-worktree-carry", _) => complete_existing_branches(word, verbose),
+
+        // git-worktree-fetch: complete existing branch/worktree names
+        ("git-worktree-fetch", _) => complete_existing_branches(word, verbose),
+
         // git-worktree-prune: no arguments
         ("git-worktree-prune", _) => Ok(vec![]),
+
+        // git-worktree-flow-adopt: directory path (no dynamic completion)
+        ("git-worktree-flow-adopt", _) => Ok(vec![]),
+
+        // git-worktree-flow-eject: directory path (no dynamic completion)
+        ("git-worktree-flow-eject", _) => Ok(vec![]),
 
         // Default: no completions
         _ => Ok(vec![]),

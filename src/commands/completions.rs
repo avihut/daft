@@ -16,6 +16,10 @@ const COMMANDS: &[&str] = &[
     "git-worktree-checkout-branch",
     "git-worktree-checkout-branch-from-default",
     "git-worktree-prune",
+    "git-worktree-carry",
+    "git-worktree-fetch",
+    "git-worktree-flow-adopt",
+    "git-worktree-flow-eject",
 ];
 
 /// Get the clap Command for a given command name by using CommandFactory
@@ -29,6 +33,10 @@ fn get_command_for_name(command_name: &str) -> Option<Command> {
             Some(crate::commands::checkout_branch_from_default::Args::command())
         }
         "git-worktree-prune" => Some(crate::commands::prune::Args::command()),
+        "git-worktree-carry" => Some(crate::commands::carry::Args::command()),
+        "git-worktree-fetch" => Some(crate::commands::fetch::Args::command()),
+        "git-worktree-flow-adopt" => Some(crate::commands::flow_adopt::Args::command()),
+        "git-worktree-flow-eject" => Some(crate::commands::flow_eject::Args::command()),
         _ => None,
     }
 }
@@ -152,6 +160,23 @@ pub struct Args {
     install: bool,
 }
 
+/// Generate all completion scripts as a single string for embedding in shell-init output.
+pub fn generate_all_completions(shell_name: &str) -> Result<String> {
+    let shell = match shell_name {
+        "bash" => Shell::Bash,
+        "zsh" => Shell::Zsh,
+        "fish" => Shell::Fish,
+        _ => anyhow::bail!("Unsupported shell: {shell_name}"),
+    };
+
+    let mut output = String::new();
+    for command in COMMANDS {
+        output.push_str(&generate_completion_string_for_command(command, shell)?);
+        output.push('\n');
+    }
+    Ok(output)
+}
+
 pub fn run() -> Result<()> {
     // When called as a subcommand, skip "daft" and "completions" from args
     let mut args_vec: Vec<String> = std::env::args().collect();
@@ -208,7 +233,11 @@ fn generate_bash_completion_string(command_name: &str) -> Result<String> {
     let mut output = String::new();
     let has_branches = matches!(
         command_name,
-        "git-worktree-checkout" | "git-worktree-checkout-branch"
+        "git-worktree-checkout"
+            | "git-worktree-checkout-branch"
+            | "git-worktree-checkout-branch-from-default"
+            | "git-worktree-carry"
+            | "git-worktree-fetch"
     );
 
     let func_name = command_name.replace('-', "_");
@@ -220,10 +249,10 @@ fn generate_bash_completion_string(command_name: &str) -> Result<String> {
 
     if has_branches {
         output.push_str("    # Dynamic branch name completion for positional arguments\n");
-        output.push_str(&format!("    if [[ $cword -eq 1 ]] || [[ $cword -eq 2 && \"{}\" == *\"checkout-branch\"* ]]; then\n", command_name));
+        output.push_str("    if [[ \"$cur\" != -* ]]; then\n");
         output.push_str("        local branches\n");
         output.push_str(&format!(
-            "        branches=$(daft __complete \"{}\" \"$cur\" 2>/dev/null)\n",
+            "        branches=$(daft __complete \"{}\" \"$cur\" --position \"$cword\" 2>/dev/null)\n",
             command_name
         ));
         output.push_str("        if [[ -n \"$branches\" ]]; then\n");
@@ -268,6 +297,13 @@ fn generate_bash_completion_string(command_name: &str) -> Result<String> {
     ));
     output.push_str("fi\n");
 
+    // Register completions for shortcut aliases
+    for shortcut in crate::shortcuts::SHORTCUTS {
+        if shortcut.command == command_name {
+            output.push_str(&format!("complete -F _{func_name} {}\n", shortcut.alias));
+        }
+    }
+
     Ok(output)
 }
 
@@ -276,7 +312,11 @@ fn generate_zsh_completion_string(command_name: &str) -> Result<String> {
     let mut output = String::new();
     let has_branches = matches!(
         command_name,
-        "git-worktree-checkout" | "git-worktree-checkout-branch"
+        "git-worktree-checkout"
+            | "git-worktree-checkout-branch"
+            | "git-worktree-checkout-branch-from-default"
+            | "git-worktree-carry"
+            | "git-worktree-fetch"
     );
 
     let func_name = command_name.replace('-', "_");
@@ -286,8 +326,9 @@ fn generate_zsh_completion_string(command_name: &str) -> Result<String> {
 
     // Shared implementation function
     output.push_str(&format!("__{func_name}_impl() {{\n"));
-    output.push_str("    local curword\n");
+    output.push_str("    local curword cword\n");
     output.push_str("    curword=\"${words[$CURRENT]}\"\n");
+    output.push_str("    cword=$((CURRENT - 1))\n");
     output.push('\n');
 
     if has_branches {
@@ -295,7 +336,7 @@ fn generate_zsh_completion_string(command_name: &str) -> Result<String> {
         output.push_str("    if [[ $curword != -* ]]; then\n");
         output.push_str("        local -a branches\n");
         output.push_str(&format!(
-            "        branches=($(daft __complete \"{}\" \"$curword\" 2>/dev/null))\n",
+            "        branches=($(daft __complete \"{}\" \"$curword\" --position \"$cword\" 2>/dev/null))\n",
             command_name
         ));
         output.push_str("        if [[ ${#branches[@]} -gt 0 ]]; then\n");
@@ -340,6 +381,13 @@ fn generate_zsh_completion_string(command_name: &str) -> Result<String> {
     // Register both
     output.push_str(&format!("compdef _{func_name} {command_name}\n"));
 
+    // Register completions for shortcut aliases
+    for shortcut in crate::shortcuts::SHORTCUTS {
+        if shortcut.command == command_name {
+            output.push_str(&format!("compdef _{func_name} {}\n", shortcut.alias));
+        }
+    }
+
     Ok(output)
 }
 
@@ -348,7 +396,11 @@ fn generate_fish_completion_string(command_name: &str) -> Result<String> {
     let mut output = String::new();
     let has_branches = matches!(
         command_name,
-        "git-worktree-checkout" | "git-worktree-checkout-branch"
+        "git-worktree-checkout"
+            | "git-worktree-checkout-branch"
+            | "git-worktree-checkout-branch-from-default"
+            | "git-worktree-carry"
+            | "git-worktree-fetch"
     );
 
     // Extract git subcommand name for dual registration
@@ -413,6 +465,16 @@ fn generate_fish_completion_string(command_name: &str) -> Result<String> {
             output.push_str(&format!(
                 "complete -c git -n '__fish_seen_subcommand_from {}' -s {short_char} -d '{description}'\n",
                 git_subcommand
+            ));
+        }
+    }
+
+    // Register completions for shortcut aliases (wraps the full command)
+    for shortcut in crate::shortcuts::SHORTCUTS {
+        if shortcut.command == command_name {
+            output.push_str(&format!(
+                "complete -c {} -w {}\n",
+                shortcut.alias, command_name
             ));
         }
     }
