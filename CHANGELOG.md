@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.18](https://github.com/avihut/daft/compare/v1.0.17...v1.0.18) - 2026-02-02
+
+### Bug Fixes
+
+- include shell completions in shell-init and add Fig/Amazon Q support ([#142](https://github.com/avihut/daft/pull/142))
+- skip uncommitted changes check when not in a work tree ([#141](https://github.com/avihut/daft/pull/141))
+- display full branch path for worktrees with slashes ([#139](https://github.com/avihut/daft/pull/139))
+- clean up empty parent directories after pruning worktrees ([#137](https://github.com/avihut/daft/pull/137))
+
 ## [1.0.17](https://github.com/avihut/daft/compare/v1.0.16...v1.0.17) - 2026-02-01
 
 ### Bug Fixes
