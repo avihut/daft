@@ -126,6 +126,7 @@ git-worktree-checkout() { __daft_wrapper git-worktree-checkout "$@"; }
 git-worktree-checkout-branch() { __daft_wrapper git-worktree-checkout-branch "$@"; }
 git-worktree-checkout-branch-from-default() { __daft_wrapper git-worktree-checkout-branch-from-default "$@"; }
 git-worktree-carry() { __daft_wrapper git-worktree-carry "$@"; }
+git-worktree-prune() { __daft_wrapper git-worktree-prune "$@"; }
 git-worktree-flow-adopt() { __daft_wrapper git-worktree-flow-adopt "$@"; }
 git-worktree-flow-eject() { __daft_wrapper git-worktree-flow-eject "$@"; }
 
@@ -144,6 +145,8 @@ git() {
             shift; __daft_wrapper git-worktree-checkout-branch-from-default "$@" ;;
         worktree-carry)
             shift; __daft_wrapper git-worktree-carry "$@" ;;
+        worktree-prune)
+            shift; __daft_wrapper git-worktree-prune "$@" ;;
         worktree-flow-adopt)
             shift; __daft_wrapper git-worktree-flow-adopt "$@" ;;
         worktree-flow-eject)
@@ -262,6 +265,10 @@ function git-worktree-carry
     __daft_wrapper git-worktree-carry $argv
 end
 
+function git-worktree-prune
+    __daft_wrapper git-worktree-prune $argv
+end
+
 function git-worktree-flow-adopt
     __daft_wrapper git-worktree-flow-adopt $argv
 end
@@ -285,6 +292,8 @@ function git --wraps git
             __daft_wrapper git-worktree-checkout-branch-from-default $argv[2..-1]
         case worktree-carry
             __daft_wrapper git-worktree-carry $argv[2..-1]
+        case worktree-prune
+            __daft_wrapper git-worktree-prune $argv[2..-1]
         case worktree-flow-adopt
             __daft_wrapper git-worktree-flow-adopt $argv[2..-1]
         case worktree-flow-eject

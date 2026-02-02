@@ -511,6 +511,265 @@ test_prune_empty_parent_dir_cleanup() {
     return 0
 }
 
+# Test prune from current worktree (Scenario A: bare-repo layout)
+# When pruning from inside a worktree that is about to be removed,
+# the command should remove it last and emit __DAFT_CD__ to redirect the shell.
+test_prune_from_current_worktree() {
+    local remote_repo=$(create_test_remote "test-repo-prune-current-wt" "main")
+
+    # Clone the repository (creates bare-repo worktree layout)
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-prune-current-wt"
+
+    # Create a worktree for a feature branch
+    git-worktree-checkout feature/test-feature || return 1
+
+    # Verify worktree exists
+    assert_directory_exists "feature/test-feature" || return 1
+
+    # Delete the feature branch from remote
+    local temp_clone="$TEMP_BASE_DIR/temp_prune_current_wt_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git push origin --delete feature/test-feature >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Save the project root path for verification (resolve symlinks for macOS /tmp -> /private/tmp)
+    local project_root
+    project_root=$(cd "$(pwd)" && pwd -P)
+
+    # cd into the feature worktree (the one about to be pruned)
+    cd "feature/test-feature"
+
+    # Run prune with DAFT_SHELL_WRAPPER=1 from inside the worktree
+    local prune_output
+    prune_output=$(DAFT_SHELL_WRAPPER=1 git-worktree-prune 2>&1) || true
+
+    # Verify the worktree was removed
+    if [[ -d "$project_root/feature/test-feature" ]]; then
+        log_error "Prune should have removed feature/test-feature worktree"
+        return 1
+    fi
+
+    # Verify __DAFT_CD__ was emitted pointing to project root
+    if echo "$prune_output" | grep -q "__DAFT_CD__:"; then
+        log_success "Prune emitted __DAFT_CD__ marker for shell redirection"
+    else
+        log_error "Prune should have emitted __DAFT_CD__ marker when pruning current worktree"
+        log_error "Output: $prune_output"
+        return 1
+    fi
+
+    # Verify the CD path points to project root (resolve symlinks for comparison)
+    local cd_path
+    cd_path=$(echo "$prune_output" | grep '__DAFT_CD__:' | sed 's/__DAFT_CD__://')
+    if [[ "$cd_path" == "$project_root" ]]; then
+        log_success "CD path points to project root"
+    else
+        log_error "Expected CD path '$project_root', got '$cd_path'"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test prune from current worktree with cdTarget=default-branch
+test_prune_from_current_worktree_cd_default_branch() {
+    local remote_repo=$(create_test_remote "test-repo-prune-cd-default" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-prune-cd-default"
+
+    # Set the cdTarget config to default-branch
+    git config daft.prune.cdTarget default-branch
+
+    # Create a worktree for a feature branch
+    git-worktree-checkout feature/test-feature || return 1
+
+    # Verify worktree exists
+    assert_directory_exists "feature/test-feature" || return 1
+
+    # Delete the feature branch from remote
+    local temp_clone="$TEMP_BASE_DIR/temp_prune_cd_default_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git push origin --delete feature/test-feature >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Save paths for verification (resolve symlinks for macOS /tmp -> /private/tmp)
+    local project_root
+    project_root=$(cd "$(pwd)" && pwd -P)
+    local main_wt_path="$project_root/main"
+
+    # cd into the feature worktree
+    cd "feature/test-feature"
+
+    # Run prune
+    local prune_output
+    prune_output=$(DAFT_SHELL_WRAPPER=1 git-worktree-prune 2>&1) || true
+
+    # Verify __DAFT_CD__ points to default branch worktree
+    local cd_path
+    cd_path=$(echo "$prune_output" | grep '__DAFT_CD__:' | sed 's/__DAFT_CD__://')
+    if [[ "$cd_path" == "$main_wt_path" ]]; then
+        log_success "CD path points to default branch worktree (main)"
+    else
+        # May fall back to project root if default branch can't be determined
+        log_warning "CD path is '$cd_path' (expected '$main_wt_path' or '$project_root')"
+        if [[ "$cd_path" == "$project_root" ]]; then
+            log_success "CD path fell back to project root (acceptable)"
+        else
+            log_error "CD path does not match expected value"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+# Test prune in regular repo when current branch is being pruned (Scenario B)
+test_prune_regular_repo_current_branch() {
+    local remote_repo=$(create_test_remote "test-repo-prune-regular" "main")
+
+    # Clone normally (non-bare layout)
+    local clone_dir="$TEMP_BASE_DIR/temp_regular_clone"
+    git clone "$remote_repo" "test-repo-prune-regular-clone" >/dev/null 2>&1
+    cd "test-repo-prune-regular-clone"
+
+    # Set up remote HEAD for default branch detection
+    git remote set-head origin --auto >/dev/null 2>&1
+
+    # Checkout the feature branch
+    git checkout feature/test-feature >/dev/null 2>&1
+
+    # Verify we're on the feature branch
+    local current_branch
+    current_branch=$(git branch --show-current)
+    if [[ "$current_branch" != "feature/test-feature" ]]; then
+        log_error "Expected to be on feature/test-feature, got $current_branch"
+        return 1
+    fi
+
+    # Delete the feature branch from remote
+    local temp_clone="$TEMP_BASE_DIR/temp_prune_regular_delete_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git push origin --delete feature/test-feature >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Run prune (should checkout default branch first, then delete)
+    git-worktree-prune || return 1
+
+    # Verify we're now on the default branch (main)
+    current_branch=$(git branch --show-current)
+    if [[ "$current_branch" == "main" ]]; then
+        log_success "Prune switched to default branch (main)"
+    else
+        log_error "Expected to be on main after prune, got $current_branch"
+        return 1
+    fi
+
+    # Verify feature branch was deleted
+    if git show-ref --verify --quiet "refs/heads/feature/test-feature" 2>/dev/null; then
+        log_error "feature/test-feature branch should have been deleted"
+        return 1
+    fi
+
+    log_success "Feature branch was deleted successfully"
+    return 0
+}
+
+# Test prune in regular repo when pruned branch is NOT the current branch
+test_prune_regular_repo_not_current_branch() {
+    local remote_repo=$(create_test_remote "test-repo-prune-reg-other" "main")
+
+    # Clone normally
+    git clone "$remote_repo" "test-repo-prune-reg-other-clone" >/dev/null 2>&1
+    cd "test-repo-prune-reg-other-clone"
+
+    # Stay on main, feature branch exists locally via clone
+    git checkout main >/dev/null 2>&1
+
+    # Delete the feature branch from remote
+    local temp_clone="$TEMP_BASE_DIR/temp_prune_reg_other_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git push origin --delete feature/test-feature >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Run prune
+    git-worktree-prune || return 1
+
+    # Verify we're still on main
+    local current_branch
+    current_branch=$(git branch --show-current)
+    if [[ "$current_branch" != "main" ]]; then
+        log_error "Expected to still be on main, got $current_branch"
+        return 1
+    fi
+
+    log_success "Remained on main branch after pruning other branch"
+    return 0
+}
+
+# Test that shell wrappers include git-worktree-prune
+test_prune_shell_wrapper() {
+    # Check bash/zsh wrapper
+    local bash_output
+    bash_output=$(daft shell-init bash)
+
+    if echo "$bash_output" | grep -q "^git-worktree-prune()"; then
+        log_success "Bash wrapper contains git-worktree-prune function"
+    else
+        log_error "Bash wrapper missing git-worktree-prune function"
+        return 1
+    fi
+
+    if echo "$bash_output" | grep -q "worktree-prune)"; then
+        log_success "Bash git() wrapper handles worktree-prune"
+    else
+        log_error "Bash git() wrapper missing worktree-prune case"
+        return 1
+    fi
+
+    # Check fish wrapper
+    local fish_output
+    fish_output=$(daft shell-init fish)
+
+    if echo "$fish_output" | grep -q "function git-worktree-prune"; then
+        log_success "Fish wrapper contains git-worktree-prune function"
+    else
+        log_error "Fish wrapper missing git-worktree-prune function"
+        return 1
+    fi
+
+    if echo "$fish_output" | grep -q "case worktree-prune"; then
+        log_success "Fish git wrapper handles worktree-prune"
+    else
+        log_error "Fish git wrapper missing worktree-prune case"
+        return 1
+    fi
+
+    return 0
+}
+
 # Test prune with remote configuration
 test_prune_remote_config() {
     local remote_repo=$(create_test_remote "test-repo-prune-remote-config" "main")
@@ -570,6 +829,11 @@ run_prune_tests() {
     run_test "prune_plus_marker_branch" "test_prune_plus_marker_branch"
     run_test "prune_empty_parent_dir_cleanup" "test_prune_empty_parent_dir_cleanup"
     run_test "prune_remote_config" "test_prune_remote_config"
+    run_test "prune_from_current_worktree" "test_prune_from_current_worktree"
+    run_test "prune_from_current_worktree_cd_default_branch" "test_prune_from_current_worktree_cd_default_branch"
+    run_test "prune_regular_repo_current_branch" "test_prune_regular_repo_current_branch"
+    run_test "prune_regular_repo_not_current_branch" "test_prune_regular_repo_not_current_branch"
+    run_test "prune_shell_wrapper" "test_prune_shell_wrapper"
 }
 
 # Main execution

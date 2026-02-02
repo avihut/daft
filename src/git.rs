@@ -759,6 +759,46 @@ impl GitCommand {
         self.config_get(&key)
     }
 
+    /// Checkout a branch in the current working directory.
+    pub fn checkout(&self, branch: &str) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.args(["checkout"]);
+
+        if self.quiet {
+            cmd.arg("--quiet");
+        }
+
+        cmd.arg(branch);
+
+        let output = cmd
+            .output()
+            .context("Failed to execute git checkout command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git checkout failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
+    /// Check if the repository is a bare repository.
+    pub fn rev_parse_is_bare_repository(&self) -> Result<bool> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--is-bare-repository"])
+            .output()
+            .context("Failed to execute git rev-parse command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git rev-parse failed: {}", stderr);
+        }
+
+        let stdout =
+            String::from_utf8(output.stdout).context("Failed to parse git rev-parse output")?;
+        Ok(stdout.trim() == "true")
+    }
+
     /// Move a worktree to a new location.
     pub fn worktree_move(&self, from: &Path, to: &Path) -> Result<()> {
         let mut cmd = Command::new("git");
