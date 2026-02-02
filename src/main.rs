@@ -29,8 +29,11 @@ fn main() -> Result<()> {
         }
     }
 
+    // Check for updates (reads cache, spawns background check if stale)
+    let update_notification = daft::update_check::maybe_check_for_update();
+
     // Route to the appropriate command based on invocation name
-    match resolved {
+    let result = match resolved {
         // Git worktree extension commands (via symlinks)
         "git-worktree-clone" => commands::clone::run(),
         "git-worktree-init" => commands::init::run(),
@@ -60,6 +63,10 @@ fn main() -> Result<()> {
                     "branch" => commands::branch::run(),
                     "completions" => commands::completions::run(),
                     "__complete" => commands::complete::run(),
+                    "__check-update" => {
+                        let _ = daft::update_check::run_check_update();
+                        return Ok(());
+                    }
                     "hooks" => commands::hooks::run(),
                     "multi-remote" => commands::multi_remote::run(),
                     "release-notes" => commands::release_notes::run(),
@@ -102,5 +109,12 @@ fn main() -> Result<()> {
             eprintln!("Run 'daft' or 'git daft' for help.");
             std::process::exit(1);
         }
+    };
+
+    // Show update notification after command output (if available)
+    if let Some(notification) = update_notification {
+        daft::update_check::print_notification(&notification);
     }
+
+    result
 }

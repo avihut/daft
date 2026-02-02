@@ -14,6 +14,7 @@
 //! | `daft.remote` | `"origin"` | Default remote name |
 //! | `daft.checkoutBranch.carry` | `true` | Default carry for checkout-branch |
 //! | `daft.checkout.carry` | `false` | Default carry for checkout |
+//! | `daft.updateCheck` | `true` | Enable/disable new version notifications |
 //!
 //! # Hooks Config Keys
 //!
@@ -107,6 +108,9 @@ pub mod keys {
         /// Config key for multiRemote.defaultRemote setting.
         pub const DEFAULT_REMOTE: &str = "daft.multiRemote.defaultRemote";
     }
+
+    /// Config key for updateCheck setting.
+    pub const UPDATE_CHECK: &str = "daft.updateCheck";
 
     /// Hooks config keys.
     pub mod hooks {
