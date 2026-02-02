@@ -16,6 +16,13 @@ list of remote tracking branches. It then identifies local branches that were
 tracking now\-deleted remote branches, removes their worktrees (if any exist),
 and finally deletes the local branches.
 .PP
+If you are currently inside a worktree that is about to be pruned, the command
+handles this gracefully. In a bare\-repo worktree layout (created by daft), the
+current worktree is removed last and the shell is redirected to a safe location
+(project root by default, or the default branch worktree if configured via
+daft.prune.cdTarget). In a regular repository where the current branch is being
+pruned, the command checks out the default branch before deleting the old branch.
+.PP
 Pre\-remove and post\-remove lifecycle hooks are executed for each worktree
 removal if the repository is trusted. See git\-daft(1) for hook management.
 .SH OPTIONS

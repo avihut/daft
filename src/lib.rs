@@ -78,7 +78,7 @@ pub mod suggest;
 pub mod update_check;
 pub mod utils;
 
-pub use settings::DaftSettings;
+pub use settings::{DaftSettings, PruneCdTarget};
 
 #[derive(Debug, Clone)]
 pub struct WorktreeConfig {

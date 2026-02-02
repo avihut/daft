@@ -14,6 +14,7 @@
 //! | `daft.remote` | `"origin"` | Default remote name |
 //! | `daft.checkoutBranch.carry` | `true` | Default carry for checkout-branch |
 //! | `daft.checkout.carry` | `false` | Default carry for checkout |
+//! | `daft.prune.cdTarget` | `root` | Where to cd after pruning current worktree (`root` or `default-branch`) |
 //! | `daft.updateCheck` | `true` | Enable/disable new version notifications |
 //!
 //! # Hooks Config Keys
@@ -47,8 +48,30 @@ use crate::hooks::{FailMode, HookConfig, HookType, HooksConfig, TrustLevel};
 use anyhow::Result;
 use std::path::PathBuf;
 
+/// Where to cd after pruning the user's current worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PruneCdTarget {
+    /// CD to the project root directory.
+    Root,
+    /// CD to the default branch worktree directory.
+    DefaultBranch,
+}
+
+impl PruneCdTarget {
+    /// Parse a string value into a PruneCdTarget.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_lowercase().as_str() {
+            "root" => Some(Self::Root),
+            "default-branch" => Some(Self::DefaultBranch),
+            _ => None,
+        }
+    }
+}
+
 /// Default values for settings.
 pub mod defaults {
+    use super::PruneCdTarget;
+
     /// Default value for autocd setting.
     pub const AUTOCD: bool = true;
 
@@ -75,6 +98,9 @@ pub mod defaults {
 
     /// Default value for multiRemote.defaultRemote setting.
     pub const MULTI_REMOTE_DEFAULT_REMOTE: &str = "origin";
+
+    /// Default value for prune.cdTarget setting.
+    pub const PRUNE_CD_TARGET: PruneCdTarget = PruneCdTarget::Root;
 }
 
 /// Git config keys for daft settings.
@@ -108,6 +134,9 @@ pub mod keys {
         /// Config key for multiRemote.defaultRemote setting.
         pub const DEFAULT_REMOTE: &str = "daft.multiRemote.defaultRemote";
     }
+
+    /// Config key for prune.cdTarget setting.
+    pub const PRUNE_CD_TARGET: &str = "daft.prune.cdTarget";
 
     /// Config key for updateCheck setting.
     pub const UPDATE_CHECK: &str = "daft.updateCheck";
@@ -159,6 +188,9 @@ pub struct DaftSettings {
     /// Default carry setting for checkout command.
     pub checkout_carry: bool,
 
+    /// Where to cd after pruning the user's current worktree.
+    pub prune_cd_target: PruneCdTarget,
+
     /// Default arguments for git pull in fetch command.
     pub fetch_args: String,
 
@@ -178,6 +210,7 @@ impl Default for DaftSettings {
             remote: defaults::REMOTE.to_string(),
             checkout_branch_carry: defaults::CHECKOUT_BRANCH_CARRY,
             checkout_carry: defaults::CHECKOUT_CARRY,
+            prune_cd_target: defaults::PRUNE_CD_TARGET,
             fetch_args: defaults::FETCH_ARGS.to_string(),
             multi_remote_enabled: defaults::MULTI_REMOTE_ENABLED,
             multi_remote_default: defaults::MULTI_REMOTE_DEFAULT_REMOTE.to_string(),
@@ -220,6 +253,12 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get(keys::CHECKOUT_CARRY)? {
             settings.checkout_carry = parse_bool(&value, defaults::CHECKOUT_CARRY);
+        }
+
+        if let Some(value) = git.config_get(keys::PRUNE_CD_TARGET)? {
+            if let Some(target) = PruneCdTarget::parse(&value) {
+                settings.prune_cd_target = target;
+            }
         }
 
         if let Some(value) = git.config_get(keys::FETCH_ARGS)? {
@@ -273,6 +312,12 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get_global(keys::CHECKOUT_CARRY)? {
             settings.checkout_carry = parse_bool(&value, defaults::CHECKOUT_CARRY);
+        }
+
+        if let Some(value) = git.config_get_global(keys::PRUNE_CD_TARGET)? {
+            if let Some(target) = PruneCdTarget::parse(&value) {
+                settings.prune_cd_target = target;
+            }
         }
 
         if let Some(value) = git.config_get_global(keys::FETCH_ARGS)? {
@@ -499,9 +544,27 @@ mod tests {
         assert_eq!(settings.remote, "origin");
         assert!(settings.checkout_branch_carry);
         assert!(!settings.checkout_carry);
+        assert_eq!(settings.prune_cd_target, PruneCdTarget::Root);
         assert_eq!(settings.fetch_args, "--ff-only");
         assert!(!settings.multi_remote_enabled);
         assert_eq!(settings.multi_remote_default, "origin");
+    }
+
+    #[test]
+    fn test_prune_cd_target_parse() {
+        assert_eq!(PruneCdTarget::parse("root"), Some(PruneCdTarget::Root));
+        assert_eq!(PruneCdTarget::parse("Root"), Some(PruneCdTarget::Root));
+        assert_eq!(PruneCdTarget::parse("ROOT"), Some(PruneCdTarget::Root));
+        assert_eq!(
+            PruneCdTarget::parse("default-branch"),
+            Some(PruneCdTarget::DefaultBranch)
+        );
+        assert_eq!(
+            PruneCdTarget::parse("Default-Branch"),
+            Some(PruneCdTarget::DefaultBranch)
+        );
+        assert_eq!(PruneCdTarget::parse("invalid"), None);
+        assert_eq!(PruneCdTarget::parse(""), None);
     }
 
     #[test]
