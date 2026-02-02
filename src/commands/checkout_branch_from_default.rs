@@ -51,6 +51,9 @@ pub struct Args {
         help = "Remote for worktree organization (multi-remote mode)"
     )]
     remote: Option<String>,
+
+    #[arg(long, help = "Do not change directory to the new worktree")]
+    no_cd: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -68,7 +71,8 @@ pub fn run() -> Result<()> {
     // Load settings from git config
     let settings = DaftSettings::load()?;
 
-    let config = OutputConfig::with_autocd(false, args.verbose, settings.autocd);
+    let autocd = settings.autocd && !args.no_cd;
+    let config = OutputConfig::with_autocd(false, args.verbose, autocd);
     let mut output = CliOutput::new(config);
 
     let original_dir = get_current_directory()?;
@@ -127,6 +131,9 @@ fn run_checkout_branch_from_default(
     }
     if let Some(ref remote) = args.remote {
         cmd.arg("--remote").arg(remote);
+    }
+    if args.no_cd {
+        cmd.arg("--no-cd");
     }
 
     let status = cmd

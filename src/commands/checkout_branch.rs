@@ -61,6 +61,9 @@ pub struct Args {
         help = "Remote for worktree organization (multi-remote mode)"
     )]
     remote: Option<String>,
+
+    #[arg(long, help = "Do not change directory to the new worktree")]
+    no_cd: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -76,7 +79,8 @@ pub fn run() -> Result<()> {
     // Load settings from git config
     let settings = DaftSettings::load()?;
 
-    let config = OutputConfig::with_autocd(args.quiet, args.verbose, settings.autocd);
+    let autocd = settings.autocd && !args.no_cd;
+    let config = OutputConfig::with_autocd(args.quiet, args.verbose, autocd);
     let mut output = CliOutput::new(config);
 
     let original_dir = get_current_directory()?;

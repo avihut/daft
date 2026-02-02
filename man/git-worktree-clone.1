@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-clone \- Clone a repository into a worktree\-based directory structure
 .SH SYNOPSIS
-\fBgit\-worktree\-clone\fR [\fB\-b\fR|\fB\-\-branch\fR] [\fB\-n\fR|\fB\-\-no\-checkout\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-a\fR|\fB\-\-all\-branches\fR] [\fB\-\-trust\-hooks\fR] [\fB\-\-no\-hooks\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPOSITORY_URL\fR> 
+\fBgit\-worktree\-clone\fR [\fB\-b\fR|\fB\-\-branch\fR] [\fB\-n\fR|\fB\-\-no\-checkout\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-a\fR|\fB\-\-all\-branches\fR] [\fB\-\-trust\-hooks\fR] [\fB\-\-no\-hooks\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPOSITORY_URL\fR> 
 .SH DESCRIPTION
 .PP
 Clones a repository into a directory structure optimized for worktree\-based
@@ -45,6 +45,9 @@ Do not run any hooks from the repository
 .TP
 \fB\-r\fR, \fB\-\-remote\fR \fI<REMOTE>\fR
 Organize worktree under this remote folder (enables multi\-remote mode)
+.TP
+\fB\-\-no\-cd\fR
+Do not change directory to the new worktree
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
