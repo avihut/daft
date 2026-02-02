@@ -325,7 +325,7 @@ test_all_commands_generate() {
     run_test "All commands generate completions for all shells"
 
     local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-checkout-branch-from-default" "git-worktree-prune" "git-worktree-carry" "git-worktree-fetch" "git-worktree-flow-adopt" "git-worktree-flow-eject")
-    local shells=("bash" "zsh" "fish")
+    local shells=("bash" "zsh" "fish" "fig")
     local success=true
 
     for cmd in "${commands[@]}"; do
@@ -452,6 +452,64 @@ test_checkout_branch_from_default_dynamic_wiring() {
     fi
 }
 
+# Test: Fig completion generation
+test_fig_completion_generation() {
+    run_test "Fig completion generation"
+
+    local output
+    output=$("$DAFT_BIN" completions fig --command=git-worktree-checkout 2>&1)
+
+    if [[ "$output" == *"completionSpec"* ]] && \
+       [[ "$output" == *"generators"* ]] && \
+       [[ "$output" == *"__complete"* ]]; then
+        pass_test
+    else
+        fail_test "Fig completion output doesn't contain expected patterns (completionSpec, generators, __complete)"
+    fi
+}
+
+# Test: Fig prune spec has no generators (no dynamic completion)
+test_fig_no_generator_for_prune() {
+    run_test "Fig prune spec has no generators"
+
+    local output
+    output=$("$DAFT_BIN" completions fig --command=git-worktree-prune 2>&1)
+
+    if [[ "$output" == *"completionSpec"* ]] && [[ "$output" != *"generators"* ]]; then
+        pass_test
+    else
+        fail_test "Fig prune spec should not contain generators"
+    fi
+}
+
+# Test: Fig all commands output succeeds
+test_fig_all_commands() {
+    run_test "Fig all commands generation succeeds"
+
+    local output
+    output=$("$DAFT_BIN" completions fig 2>&1)
+
+    if [[ $? -eq 0 ]] && [[ "$output" == *"completionSpec"* ]] && [[ "$output" == *"daft.js"* ]]; then
+        pass_test
+    else
+        fail_test "Fig all commands generation failed or missing expected content"
+    fi
+}
+
+# Test: Fig shortcut aliases use loadSpec
+test_fig_shortcut_aliases() {
+    run_test "Fig shortcut aliases use loadSpec"
+
+    local output
+    output=$("$DAFT_BIN" completions fig 2>&1)
+
+    if [[ "$output" == *"gwtco"* ]] && [[ "$output" == *"loadSpec"* ]]; then
+        pass_test
+    else
+        fail_test "Fig output missing shortcut aliases with loadSpec"
+    fi
+}
+
 # Main test execution
 main() {
     echo "========================================="
@@ -486,6 +544,12 @@ main() {
     test_shortcut_alias_bash_completions
     test_carry_dynamic_completion
     test_checkout_branch_from_default_dynamic_wiring
+
+    # Fig completion tests
+    test_fig_completion_generation
+    test_fig_no_generator_for_prune
+    test_fig_all_commands
+    test_fig_shortcut_aliases
 
     # New comprehensive tests
     test_position_aware_completion

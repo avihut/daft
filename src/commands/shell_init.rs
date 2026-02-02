@@ -55,6 +55,10 @@ pub fn run() -> Result<()> {
     output.push_str(&super::completions::generate_all_completions(shell_name)?);
 
     println!("{output}");
+
+    // Silently install Fig/Amazon Q specs if the autocomplete directory exists
+    super::completions::maybe_install_fig_specs();
+
     Ok(())
 }
 
