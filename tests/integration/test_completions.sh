@@ -324,8 +324,8 @@ test_zsh_git_subcommand_registration() {
 test_all_commands_generate() {
     run_test "All commands generate completions for all shells"
 
-    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-checkout-branch-from-default" "git-worktree-prune")
-    local shells=("bash" "zsh" "fish")
+    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-checkout-branch-from-default" "git-worktree-prune" "git-worktree-carry" "git-worktree-fetch" "git-worktree-flow-adopt" "git-worktree-flow-eject")
+    local shells=("bash" "zsh" "fish" "fig")
     local success=true
 
     for cmd in "${commands[@]}"; do
@@ -366,6 +366,150 @@ test_flag_extraction_consistency() {
     fi
 }
 
+# Test: shell-init bash includes completions
+test_shell_init_includes_bash_completions() {
+    run_test "shell-init bash output includes completion functions"
+
+    local output
+    output=$("$DAFT_BIN" shell-init bash 2>&1)
+
+    if [[ "$output" == *"complete -F"* ]] && [[ "$output" == *"_git_worktree_checkout"* ]]; then
+        pass_test
+    else
+        fail_test "shell-init bash output does not include completion registrations"
+    fi
+}
+
+# Test: shell-init zsh includes completions
+test_shell_init_includes_zsh_completions() {
+    run_test "shell-init zsh output includes completion functions"
+
+    local output
+    output=$("$DAFT_BIN" shell-init zsh 2>&1)
+
+    if [[ "$output" == *"compdef"* ]] && [[ "$output" == *"_git_worktree_checkout"* ]]; then
+        pass_test
+    else
+        fail_test "shell-init zsh output does not include completion registrations"
+    fi
+}
+
+# Test: shell-init fish includes completions
+test_shell_init_includes_fish_completions() {
+    run_test "shell-init fish output includes completion functions"
+
+    local output
+    output=$("$DAFT_BIN" shell-init fish 2>&1)
+
+    if [[ "$output" == *"complete -c git-worktree-checkout"* ]]; then
+        pass_test
+    else
+        fail_test "shell-init fish output does not include completion registrations"
+    fi
+}
+
+# Test: Shortcut aliases get bash completions
+test_shortcut_alias_bash_completions() {
+    run_test "Shortcut aliases are registered for bash completions"
+
+    local output
+    output=$("$DAFT_BIN" completions bash 2>&1)
+
+    if [[ "$output" == *"complete -F _git_worktree_checkout gwtco"* ]] && \
+       [[ "$output" == *"complete -F _git_worktree_checkout gwco"* ]] && \
+       [[ "$output" == *"complete -F _git_worktree_checkout gcw"* ]]; then
+        pass_test
+    else
+        fail_test "Bash completions missing shortcut alias registrations"
+    fi
+}
+
+# Test: carry command gets dynamic completion
+test_carry_dynamic_completion() {
+    run_test "Carry command has dynamic branch completion"
+
+    local output
+    output=$("$DAFT_BIN" completions bash --command=git-worktree-carry 2>&1)
+
+    if [[ "$output" == *'daft __complete'* ]] && [[ "$output" == *'branches='* ]]; then
+        pass_test
+    else
+        fail_test "Carry command missing dynamic branch completion"
+    fi
+}
+
+# Test: checkout-branch-from-default has dynamic completion wiring
+test_checkout_branch_from_default_dynamic_wiring() {
+    run_test "checkout-branch-from-default has dynamic completion"
+
+    local output
+    output=$("$DAFT_BIN" completions bash --command=git-worktree-checkout-branch-from-default 2>&1)
+
+    if [[ "$output" == *'daft __complete'* ]] && [[ "$output" == *'branches='* ]]; then
+        pass_test
+    else
+        fail_test "checkout-branch-from-default missing dynamic branch completion"
+    fi
+}
+
+# Test: Fig completion generation
+test_fig_completion_generation() {
+    run_test "Fig completion generation"
+
+    local output
+    output=$("$DAFT_BIN" completions fig --command=git-worktree-checkout 2>&1)
+
+    if [[ "$output" == *"completionSpec"* ]] && \
+       [[ "$output" == *"generators"* ]] && \
+       [[ "$output" == *"__complete"* ]]; then
+        pass_test
+    else
+        fail_test "Fig completion output doesn't contain expected patterns (completionSpec, generators, __complete)"
+    fi
+}
+
+# Test: Fig prune spec has no generators (no dynamic completion)
+test_fig_no_generator_for_prune() {
+    run_test "Fig prune spec has no generators"
+
+    local output
+    output=$("$DAFT_BIN" completions fig --command=git-worktree-prune 2>&1)
+
+    if [[ "$output" == *"completionSpec"* ]] && [[ "$output" != *"generators"* ]]; then
+        pass_test
+    else
+        fail_test "Fig prune spec should not contain generators"
+    fi
+}
+
+# Test: Fig all commands output succeeds
+test_fig_all_commands() {
+    run_test "Fig all commands generation succeeds"
+
+    local output
+    output=$("$DAFT_BIN" completions fig 2>&1)
+
+    if [[ $? -eq 0 ]] && [[ "$output" == *"completionSpec"* ]] && [[ "$output" == *"daft.js"* ]]; then
+        pass_test
+    else
+        fail_test "Fig all commands generation failed or missing expected content"
+    fi
+}
+
+# Test: Fig shortcut aliases use loadSpec
+test_fig_shortcut_aliases() {
+    run_test "Fig shortcut aliases use loadSpec"
+
+    local output
+    output=$("$DAFT_BIN" completions fig 2>&1)
+
+    if [[ "$output" == *"gwtco"* ]] && [[ "$output" == *"loadSpec"* ]]; then
+        pass_test
+    else
+        fail_test "Fig output missing shortcut aliases with loadSpec"
+    fi
+}
+
 # Main test execution
 main() {
     echo "========================================="
@@ -392,6 +536,20 @@ main() {
     test_zsh_dynamic_wiring
     test_fish_dynamic_wiring
     test_prune_no_dynamic
+
+    # Shell-init completions tests
+    test_shell_init_includes_bash_completions
+    test_shell_init_includes_zsh_completions
+    test_shell_init_includes_fish_completions
+    test_shortcut_alias_bash_completions
+    test_carry_dynamic_completion
+    test_checkout_branch_from_default_dynamic_wiring
+
+    # Fig completion tests
+    test_fig_completion_generation
+    test_fig_no_generator_for_prune
+    test_fig_all_commands
+    test_fig_shortcut_aliases
 
     # New comprehensive tests
     test_position_aware_completion
