@@ -8,7 +8,7 @@ use crate::{
     output::{CliOutput, Output, OutputConfig},
     remote::{get_default_branch_local, remote_branch_exists},
     settings::PruneCdTarget,
-    DaftSettings, WorktreeConfig,
+    DaftSettings, WorktreeConfig, SHELL_WRAPPER_ENV,
 };
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -290,7 +290,11 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
         }
     }
 
-    // Process deferred branch (user's current worktree) last
+    // Process deferred branch (user's current worktree) last.
+    // Track the CD target so we can emit it as the very last output line
+    // (the shell wrapper parses stdout for __DAFT_CD__).
+    let mut deferred_cd_target: Option<PathBuf> = None;
+
     if let Some(ref branch_name) = deferred_branch {
         output.step(&format!(
             "Processing deferred branch: {branch_name} (current worktree)"
@@ -326,7 +330,7 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                 );
 
                 if removed {
-                    output.cd_path(&cd_target);
+                    deferred_cd_target = Some(cd_target);
                 }
             }
         }
@@ -346,6 +350,20 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
         output.warning(
             "Some prunable worktree data may exist. Run 'git worktree prune' to clean up.",
         );
+    }
+
+    // Emit the CD marker as the very last output. The shell wrapper captures
+    // all stdout and parses for __DAFT_CD__: lines to cd the parent shell.
+    // When no shell wrapper is active, tell the user to cd manually.
+    if let Some(ref cd_target) = deferred_cd_target {
+        if std::env::var(SHELL_WRAPPER_ENV).is_ok() {
+            output.cd_path(cd_target);
+        } else {
+            output.result(&format!(
+                "Run `cd {}` (your previous working directory was removed)",
+                cd_target.display()
+            ));
+        }
     }
 
     Ok(())
