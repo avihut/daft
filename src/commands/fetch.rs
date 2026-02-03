@@ -115,7 +115,7 @@ fn run_fetch(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         remote_name: settings.remote.clone(),
         quiet: args.quiet,
     };
-    let git = GitCommand::new(config.quiet);
+    let git = GitCommand::new(config.quiet).with_gitoxide(settings.use_gitoxide);
 
     // Save original directory to return to
     let original_dir = get_current_directory()?;

@@ -98,8 +98,9 @@ fn run_checkout_branch_from_default(
     ));
 
     let git_common_dir = get_git_common_dir()?;
-    let default_branch = get_default_branch_local(&git_common_dir, &settings.remote)
-        .context("Failed to determine default branch")?;
+    let default_branch =
+        get_default_branch_local(&git_common_dir, &settings.remote, settings.use_gitoxide)
+            .context("Failed to determine default branch")?;
 
     output.step(&format!(
         "Detected default origin branch: '{default_branch}'"

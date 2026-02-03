@@ -101,7 +101,7 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
     };
-    let git = GitCommand::new(output.is_quiet());
+    let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
 
     // Resolve remote for multi-remote mode
     let remote_for_path = resolve_remote_for_branch(

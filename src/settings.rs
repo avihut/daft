@@ -101,6 +101,9 @@ pub mod defaults {
 
     /// Default value for prune.cdTarget setting.
     pub const PRUNE_CD_TARGET: PruneCdTarget = PruneCdTarget::Root;
+
+    /// Default value for experimental.gitoxide setting.
+    pub const USE_GITOXIDE: bool = false;
 }
 
 /// Git config keys for daft settings.
@@ -140,6 +143,12 @@ pub mod keys {
 
     /// Config key for updateCheck setting.
     pub const UPDATE_CHECK: &str = "daft.updateCheck";
+
+    /// Experimental config keys.
+    pub mod experimental {
+        /// Config key for experimental.gitoxide setting.
+        pub const GITOXIDE: &str = "daft.experimental.gitoxide";
+    }
 
     /// Hooks config keys.
     pub mod hooks {
@@ -199,6 +208,9 @@ pub struct DaftSettings {
 
     /// Default remote for multi-remote mode.
     pub multi_remote_default: String,
+
+    /// Use gitoxide for supported git operations.
+    pub use_gitoxide: bool,
 }
 
 impl Default for DaftSettings {
@@ -214,6 +226,7 @@ impl Default for DaftSettings {
             fetch_args: defaults::FETCH_ARGS.to_string(),
             multi_remote_enabled: defaults::MULTI_REMOTE_ENABLED,
             multi_remote_default: defaults::MULTI_REMOTE_DEFAULT_REMOTE.to_string(),
+            use_gitoxide: defaults::USE_GITOXIDE,
         }
     }
 }
@@ -277,6 +290,10 @@ impl DaftSettings {
             }
         }
 
+        if let Some(value) = git.config_get(keys::experimental::GITOXIDE)? {
+            settings.use_gitoxide = parse_bool(&value, defaults::USE_GITOXIDE);
+        }
+
         Ok(settings)
     }
 
@@ -334,6 +351,10 @@ impl DaftSettings {
             if !value.is_empty() {
                 settings.multi_remote_default = value;
             }
+        }
+
+        if let Some(value) = git.config_get_global(keys::experimental::GITOXIDE)? {
+            settings.use_gitoxide = parse_bool(&value, defaults::USE_GITOXIDE);
         }
 
         Ok(settings)
@@ -548,6 +569,7 @@ mod tests {
         assert_eq!(settings.fetch_args, "--ff-only");
         assert!(!settings.multi_remote_enabled);
         assert_eq!(settings.multi_remote_default, "origin");
+        assert!(!settings.use_gitoxide);
     }
 
     #[test]

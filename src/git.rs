@@ -1,14 +1,52 @@
+use crate::git_oxide;
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Once, OnceLock};
+
+static GITOXIDE_NOTICE: Once = Once::new();
 
 pub struct GitCommand {
     quiet: bool,
+    use_gitoxide: bool,
+    gix_repo: OnceLock<gix::ThreadSafeRepository>,
 }
 
 impl GitCommand {
     pub fn new(quiet: bool) -> Self {
-        Self { quiet }
+        Self {
+            quiet,
+            use_gitoxide: false,
+            gix_repo: OnceLock::new(),
+        }
+    }
+
+    pub fn with_gitoxide(mut self, enabled: bool) -> Self {
+        self.use_gitoxide = enabled;
+        if enabled {
+            GITOXIDE_NOTICE.call_once(|| {
+                eprintln!("[experimental] Using gitoxide backend for git operations");
+            });
+        }
+        self
+    }
+
+    /// Lazily discover and open the git repository via gitoxide.
+    /// Returns a thread-local Repository handle.
+    fn gix_repo(&self) -> Result<gix::Repository> {
+        if let Some(ts) = self.gix_repo.get() {
+            return Ok(ts.to_thread_local());
+        }
+        let cwd = std::env::current_dir().context("Failed to get current working directory")?;
+        let ts = gix::ThreadSafeRepository::discover(&cwd)
+            .context("Failed to discover git repository via gitoxide")?;
+        // If another thread raced us via set(), that's fine - use whichever won
+        let _ = self.gix_repo.set(ts);
+        Ok(self
+            .gix_repo
+            .get()
+            .expect("OnceLock should be set")
+            .to_thread_local())
     }
 
     pub fn clone_bare(&self, repo_url: &str, target_dir: &Path) -> Result<()> {
@@ -272,6 +310,9 @@ impl GitCommand {
     }
 
     pub fn branch_list_verbose(&self) -> Result<String> {
+        if self.use_gitoxide {
+            return git_oxide::branch_list_verbose(&self.gix_repo()?);
+        }
         let output = Command::new("git")
             .args(["branch", "-vv"])
             .output()
@@ -286,6 +327,9 @@ impl GitCommand {
     }
 
     pub fn for_each_ref(&self, format: &str, refs: &str) -> Result<String> {
+        if self.use_gitoxide {
+            return git_oxide::for_each_ref(&self.gix_repo()?, format, refs);
+        }
         let output = Command::new("git")
             .args(["for-each-ref", &format!("--format={format}"), refs])
             .output()
@@ -300,6 +344,9 @@ impl GitCommand {
     }
 
     pub fn show_ref_exists(&self, ref_name: &str) -> Result<bool> {
+        if self.use_gitoxide {
+            return git_oxide::show_ref_exists(&self.gix_repo()?, ref_name);
+        }
         let output = Command::new("git")
             .args(["show-ref", "--verify", "--quiet", ref_name])
             .output()
@@ -309,6 +356,9 @@ impl GitCommand {
     }
 
     pub fn ls_remote_heads(&self, remote: &str, branch: Option<&str>) -> Result<String> {
+        if self.use_gitoxide {
+            return git_oxide::ls_remote_heads(&self.gix_repo()?, remote, branch);
+        }
         let mut cmd = Command::new("git");
         cmd.args(["ls-remote", "--heads", remote]);
 
@@ -329,6 +379,9 @@ impl GitCommand {
     }
 
     pub fn get_git_dir(&self) -> Result<String> {
+        if self.use_gitoxide {
+            return git_oxide::get_git_dir(&self.gix_repo()?);
+        }
         let output = Command::new("git")
             .args(["rev-parse", "--git-dir"])
             .output()
@@ -379,6 +432,9 @@ impl GitCommand {
     }
 
     pub fn rev_list_count(&self, range: &str) -> Result<u32> {
+        if self.use_gitoxide {
+            return git_oxide::rev_list_count(&self.gix_repo()?, range);
+        }
         let output = Command::new("git")
             .args(["rev-list", "--count", range])
             .output()
@@ -400,6 +456,9 @@ impl GitCommand {
 
     /// Check if current directory is inside a Git work tree
     pub fn rev_parse_is_inside_work_tree(&self) -> Result<bool> {
+        if self.use_gitoxide {
+            return git_oxide::rev_parse_is_inside_work_tree(&self.gix_repo()?);
+        }
         let output = Command::new("git")
             .args(["rev-parse", "--is-inside-work-tree"])
             .output()
@@ -418,6 +477,9 @@ impl GitCommand {
 
     /// Check if current directory is inside any Git repository (work tree or bare)
     pub fn is_inside_git_repo(&self) -> Result<bool> {
+        if self.use_gitoxide {
+            return git_oxide::is_inside_git_repo();
+        }
         let output = Command::new("git")
             .args(["rev-parse", "--git-dir"])
             .stderr(std::process::Stdio::null())
@@ -429,6 +491,9 @@ impl GitCommand {
 
     /// Get the Git common directory path
     pub fn rev_parse_git_common_dir(&self) -> Result<String> {
+        if self.use_gitoxide {
+            return git_oxide::rev_parse_git_common_dir(&self.gix_repo()?);
+        }
         let output = Command::new("git")
             .args(["rev-parse", "--git-common-dir"])
             .output()
@@ -446,6 +511,9 @@ impl GitCommand {
 
     /// Get the short name of the current branch
     pub fn symbolic_ref_short_head(&self) -> Result<String> {
+        if self.use_gitoxide {
+            return git_oxide::symbolic_ref_short_head(&self.gix_repo()?);
+        }
         let output = Command::new("git")
             .args(["symbolic-ref", "--short", "HEAD"])
             .output()
@@ -463,6 +531,9 @@ impl GitCommand {
 
     /// Execute git ls-remote with symref to get remote HEAD
     pub fn ls_remote_symref(&self, remote_url: &str) -> Result<String> {
+        if self.use_gitoxide {
+            return git_oxide::ls_remote_symref(&self.gix_repo()?, remote_url);
+        }
         let output = Command::new("git")
             .args(["ls-remote", "--symref", remote_url, "HEAD"])
             .output()
@@ -478,6 +549,9 @@ impl GitCommand {
 
     /// Check if specific remote branch exists
     pub fn ls_remote_branch_exists(&self, remote_name: &str, branch: &str) -> Result<bool> {
+        if self.use_gitoxide {
+            return git_oxide::ls_remote_branch_exists(&self.gix_repo()?, remote_name, branch);
+        }
         let output = Command::new("git")
             .args([
                 "ls-remote",
@@ -500,6 +574,16 @@ impl GitCommand {
 
     /// Check if working directory has uncommitted or untracked changes
     pub fn has_uncommitted_changes(&self) -> Result<bool> {
+        if self.use_gitoxide {
+            let repo = self.gix_repo()?;
+            // Fall back to subprocess if the cached repo is bare (no workdir).
+            // This happens when the repo was discovered from the project root in
+            // a bare-repo worktree layout (e.g., flow-eject changes CWD to the
+            // project root, then later CDs into individual worktrees).
+            if repo.workdir().is_some() {
+                return git_oxide::has_uncommitted_changes(&repo);
+            }
+        }
         let output = Command::new("git")
             .args(["status", "--porcelain"])
             .output()
@@ -601,6 +685,9 @@ impl GitCommand {
 
     /// Get a git config value from the current repository (respects local + global config)
     pub fn config_get(&self, key: &str) -> Result<Option<String>> {
+        if self.use_gitoxide {
+            return git_oxide::config_get(&self.gix_repo()?, key);
+        }
         let output = Command::new("git")
             .args(["config", "--get", key])
             .output()
@@ -620,6 +707,9 @@ impl GitCommand {
 
     /// Get a git config value from global config only
     pub fn config_get_global(&self, key: &str) -> Result<Option<String>> {
+        if self.use_gitoxide {
+            return git_oxide::config_get_global(key);
+        }
         let output = Command::new("git")
             .args(["config", "--global", "--get", key])
             .output()
@@ -689,6 +779,9 @@ impl GitCommand {
 
     /// Get the path of the current worktree
     pub fn get_current_worktree_path(&self) -> Result<std::path::PathBuf> {
+        if self.use_gitoxide {
+            return git_oxide::get_current_worktree_path(&self.gix_repo()?);
+        }
         let output = Command::new("git")
             .args(["rev-parse", "--show-toplevel"])
             .output()
@@ -772,6 +865,9 @@ impl GitCommand {
 
     /// List all configured remotes.
     pub fn remote_list(&self) -> Result<Vec<String>> {
+        if self.use_gitoxide {
+            return git_oxide::remote_list(&self.gix_repo()?);
+        }
         let output = Command::new("git")
             .args(["remote"])
             .output()
@@ -829,6 +925,9 @@ impl GitCommand {
 
     /// Check if the repository is a bare repository.
     pub fn rev_parse_is_bare_repository(&self) -> Result<bool> {
+        if self.use_gitoxide {
+            return git_oxide::rev_parse_is_bare_repository(&self.gix_repo()?);
+        }
         let output = Command::new("git")
             .args(["rev-parse", "--is-bare-repository"])
             .output()
@@ -846,6 +945,9 @@ impl GitCommand {
 
     /// Get the URL of a remote.
     pub fn remote_get_url(&self, remote: &str) -> Result<String> {
+        if self.use_gitoxide {
+            return git_oxide::remote_get_url(&self.gix_repo()?, remote);
+        }
         let output = Command::new("git")
             .args(["remote", "get-url", remote])
             .output()
@@ -888,8 +990,21 @@ mod tests {
     fn test_git_command_new() {
         let git = GitCommand::new(true);
         assert!(git.quiet);
+        assert!(!git.use_gitoxide);
 
         let git = GitCommand::new(false);
         assert!(!git.quiet);
+        assert!(!git.use_gitoxide);
+    }
+
+    #[test]
+    fn test_git_command_with_gitoxide() {
+        let git = GitCommand::new(false).with_gitoxide(true);
+        assert!(!git.quiet);
+        assert!(git.use_gitoxide);
+
+        let git = GitCommand::new(true).with_gitoxide(false);
+        assert!(git.quiet);
+        assert!(!git.use_gitoxide);
     }
 }

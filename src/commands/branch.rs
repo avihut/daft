@@ -110,7 +110,7 @@ fn cmd_move(
     let mut output = CliOutput::new(config);
 
     let project_root = get_project_root()?;
-    let git = GitCommand::new(false);
+    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
 
     // Verify multi-remote mode is enabled
     if !settings.multi_remote_enabled {
