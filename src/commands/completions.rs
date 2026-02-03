@@ -5,6 +5,7 @@
 /// - Dynamic completions for branch names (via daft __complete helper)
 use anyhow::{Context, Result};
 use clap::{Command, CommandFactory, Parser, ValueEnum};
+use serde::Serialize;
 use std::path::PathBuf;
 
 /// Completion targets supported by daft
@@ -183,16 +184,24 @@ pub fn maybe_install_fig_specs() {
         None => return,
     };
 
-    let amazon_q_dir = home.join(".amazon-q/autocomplete");
-    let fig_dir = home.join(".fig/autocomplete");
+    // Detect which parent directory exists (~/.amazon-q/ or ~/.fig/)
+    // and install to the autocomplete/build/ subdirectory within it.
+    // Kiro / Amazon Q loads specs from autocomplete/build/, not autocomplete/.
+    let amazon_q_parent = home.join(".amazon-q");
+    let fig_parent = home.join(".fig");
 
-    let install_dir = if amazon_q_dir.is_dir() {
-        amazon_q_dir
-    } else if fig_dir.is_dir() {
-        fig_dir
+    let install_dir = if amazon_q_parent.is_dir() {
+        amazon_q_parent.join("autocomplete/build")
+    } else if fig_parent.is_dir() {
+        fig_parent.join("autocomplete/build")
     } else {
-        return; // No autocomplete directory found — nothing to do
+        return; // No Amazon Q / Fig installation found — nothing to do
     };
+
+    // Create the build/ directory if it doesn't exist yet
+    if std::fs::create_dir_all(&install_dir).is_err() {
+        return;
+    }
 
     // Write each command spec
     for command in COMMANDS {
@@ -580,6 +589,97 @@ fn generate_fish_completion_string(command_name: &str) -> Result<String> {
     Ok(output)
 }
 
+// ── Fig/Amazon Q serialization types ──────────────────────────────
+
+#[derive(Serialize)]
+struct FigSpec {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    args: Option<FigArgs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<Vec<FigOption>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subcommands: Option<Vec<FigSubcommand>>,
+    #[serde(rename = "loadSpec", skip_serializing_if = "Option::is_none")]
+    load_spec: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum FigArgs {
+    Single(FigArg),
+    Multiple(Vec<FigArg>),
+}
+
+#[derive(Serialize)]
+struct FigArg {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generators: Option<FigGenerator>,
+}
+
+#[derive(Serialize)]
+struct FigGenerator {
+    script: Vec<String>,
+    #[serde(rename = "splitOn")]
+    split_on: String,
+}
+
+#[derive(Serialize)]
+struct FigOption {
+    name: FigName,
+    description: String,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum FigName {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+#[derive(Serialize)]
+struct FigSubcommand {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(rename = "loadSpec", skip_serializing_if = "Option::is_none")]
+    load_spec: Option<String>,
+}
+
+// ── Fig shared helpers ────────────────────────────────────────────
+
+/// Wrap a serialized spec into ESM module format
+fn wrap_esm(filename: &str, spec: &impl Serialize) -> Result<String> {
+    let json =
+        serde_json::to_string_pretty(spec).context("Failed to serialize Fig completion spec")?;
+    Ok(format!(
+        "// {filename}.js\nconst completionSpec = {json};\nexport default completionSpec;\n"
+    ))
+}
+
+/// Build a FigGenerator for dynamic branch completion
+fn build_fig_generator(command_name: &str, position: usize) -> FigGenerator {
+    let mut script = vec![
+        "daft".into(),
+        "__complete".into(),
+        command_name.to_string(),
+        String::new(),
+    ];
+    if position > 1 {
+        script.push("--position".into());
+        script.push(position.to_string());
+    }
+    FigGenerator {
+        script,
+        split_on: "\n".to_string(),
+    }
+}
+
 /// Generate a Fig/Amazon Q completion spec for a command
 fn generate_fig_completion_string(command_name: &str) -> Result<String> {
     let cmd =
@@ -594,111 +694,85 @@ fn generate_fig_completion_string(command_name: &str) -> Result<String> {
             | "git-worktree-fetch"
     );
 
-    let about = cmd.get_about().map(|a| a.to_string()).unwrap_or_default();
+    let about = cmd.get_about().map(|a| a.to_string());
 
-    let mut output = String::new();
-    output.push_str(&format!("// {command_name}.js\n"));
-    output.push_str("var completionSpec = {\n");
-    output.push_str(&format!("  name: \"{command_name}\",\n"));
-    output.push_str(&format!(
-        "  description: \"{}\",\n",
-        escape_js_string(&about)
-    ));
-
-    // Generate args
+    // Build positional args
     let positional_args = get_positional_args(&cmd);
-    if !positional_args.is_empty() {
-        if positional_args.len() == 1 {
-            let (arg_name, arg_help, arg_index) = &positional_args[0];
-            output.push_str("  args: {\n");
-            output.push_str(&format!("    name: \"{arg_name}\",\n"));
-            if !arg_help.is_empty() {
-                output.push_str(&format!(
-                    "    description: \"{}\",\n",
-                    escape_js_string(arg_help)
-                ));
-            }
-            if has_branches {
-                output.push_str(&fig_generator_block(command_name, *arg_index));
-            }
-            output.push_str("  },\n");
+    let args = if positional_args.is_empty() {
+        None
+    } else {
+        let fig_args: Vec<FigArg> = positional_args
+            .iter()
+            .map(|(name, help, index)| FigArg {
+                name: name.clone(),
+                description: if help.is_empty() {
+                    None
+                } else {
+                    Some(help.clone())
+                },
+                generators: if has_branches {
+                    Some(build_fig_generator(command_name, *index))
+                } else {
+                    None
+                },
+            })
+            .collect();
+        Some(if fig_args.len() == 1 {
+            FigArgs::Single(fig_args.into_iter().next().unwrap())
         } else {
-            output.push_str("  args: [\n");
-            for (arg_name, arg_help, arg_index) in &positional_args {
-                output.push_str("    {\n");
-                output.push_str(&format!("      name: \"{arg_name}\",\n"));
-                if !arg_help.is_empty() {
-                    output.push_str(&format!(
-                        "      description: \"{}\",\n",
-                        escape_js_string(arg_help)
-                    ));
-                }
-                if has_branches {
-                    output.push_str(&fig_generator_block_indented(command_name, *arg_index, 6));
-                }
-                output.push_str("    },\n");
-            }
-            output.push_str("  ],\n");
-        }
-    }
+            FigArgs::Multiple(fig_args)
+        })
+    };
 
-    // Generate options from flags
+    // Build options from flags
     let flag_descriptions = get_flag_descriptions(&cmd);
-    if !flag_descriptions.is_empty() {
-        output.push_str("  options: [\n");
-        for (short, long, desc) in &flag_descriptions {
-            let description = desc.as_deref().unwrap_or("");
-            let mut names = Vec::new();
-            if !short.is_empty() {
-                names.push(format!("\"{}\"", short));
+    let options: Vec<FigOption> = flag_descriptions
+        .into_iter()
+        .map(|(short, long, desc)| {
+            let name = match (short.is_empty(), long.is_empty()) {
+                (false, false) => FigName::Multiple(vec![short, long]),
+                (true, false) => FigName::Single(long),
+                (false, true) => FigName::Single(short),
+                _ => FigName::Single(String::new()),
+            };
+            FigOption {
+                name,
+                description: desc.unwrap_or_default(),
             }
-            if !long.is_empty() {
-                names.push(format!("\"{}\"", long));
-            }
-            if names.len() == 1 {
-                output.push_str(&format!(
-                    "    {{ name: {}, description: \"{}\" }},\n",
-                    names[0],
-                    escape_js_string(description)
-                ));
-            } else {
-                output.push_str(&format!(
-                    "    {{ name: [{}], description: \"{}\" }},\n",
-                    names.join(", "),
-                    escape_js_string(description)
-                ));
-            }
-        }
-        output.push_str("  ],\n");
-    }
+        })
+        .collect();
 
-    output.push_str("};\n");
-    output.push_str("module.exports = completionSpec;\n");
+    let spec = FigSpec {
+        name: command_name.to_string(),
+        description: about,
+        args,
+        options: if options.is_empty() {
+            None
+        } else {
+            Some(options)
+        },
+        subcommands: None,
+        load_spec: None,
+    };
 
-    Ok(output)
+    wrap_esm(command_name, &spec)
 }
 
 /// Generate a Fig alias spec that loads another command's spec
 fn generate_fig_alias_string(alias: &str, command_name: &str) -> String {
-    let mut output = String::new();
-    output.push_str(&format!("// {alias}.js\n"));
-    output.push_str("var completionSpec = {\n");
-    output.push_str(&format!("  name: \"{alias}\",\n"));
-    output.push_str(&format!("  loadSpec: \"{command_name}\",\n"));
-    output.push_str("};\n");
-    output.push_str("module.exports = completionSpec;\n");
-    output
+    let spec = FigSpec {
+        name: alias.to_string(),
+        description: None,
+        args: None,
+        options: None,
+        subcommands: None,
+        load_spec: Some(command_name.to_string()),
+    };
+    wrap_esm(alias, &spec).unwrap()
 }
 
 /// Generate the daft.js umbrella spec with subcommands
 fn generate_fig_daft_spec() -> Result<String> {
-    let mut output = String::new();
-    output.push_str("// daft.js\n");
-    output.push_str("var completionSpec = {\n");
-    output.push_str("  name: \"daft\",\n");
-    output.push_str("  description: \"Git Extensions Toolkit\",\n");
-    output.push_str("  subcommands: [\n");
-
     // Daft's own subcommands
     let daft_subcommands = [
         ("shell-init", "Generate shell initialization scripts"),
@@ -710,49 +784,57 @@ fn generate_fig_daft_spec() -> Result<String> {
         ("release-notes", "Generate release notes"),
     ];
 
-    for (name, desc) in &daft_subcommands {
-        output.push_str(&format!(
-            "    {{ name: \"{name}\", description: \"{desc}\" }},\n"
-        ));
-    }
+    let mut subcommands: Vec<FigSubcommand> = daft_subcommands
+        .iter()
+        .map(|(name, desc)| FigSubcommand {
+            name: name.to_string(),
+            description: Some(desc.to_string()),
+            load_spec: None,
+        })
+        .collect();
 
     // Worktree commands accessible via daft worktree-*
     for command in COMMANDS {
         let subcommand_name = command.trim_start_matches("git-");
-        let cmd = get_command_for_name(command);
-        let about = cmd
-            .and_then(|c| c.get_about().map(|a| a.to_string()))
-            .unwrap_or_default();
-        output.push_str(&format!(
-            "    {{ name: \"{subcommand_name}\", loadSpec: \"{command}\" }},\n"
-        ));
-        // Suppress unused variable warning
-        let _ = about;
+        subcommands.push(FigSubcommand {
+            name: subcommand_name.to_string(),
+            description: None,
+            load_spec: Some(command.to_string()),
+        });
     }
 
-    output.push_str("  ],\n");
-    output.push_str("  options: [\n");
-    output.push_str(
-        "    { name: [\"--version\", \"-V\"], description: \"Print version information\" },\n",
-    );
-    output.push_str("    { name: [\"--help\", \"-h\"], description: \"Print help\" },\n");
-    output.push_str("  ],\n");
-    output.push_str("};\n");
-    output.push_str("module.exports = completionSpec;\n");
+    let spec = FigSpec {
+        name: "daft".to_string(),
+        description: Some("Git Extensions Toolkit".to_string()),
+        args: None,
+        options: Some(vec![
+            FigOption {
+                name: FigName::Multiple(vec!["--version".to_string(), "-V".to_string()]),
+                description: "Print version information".to_string(),
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--help".to_string(), "-h".to_string()]),
+                description: "Print help".to_string(),
+            },
+        ]),
+        subcommands: Some(subcommands),
+        load_spec: None,
+    };
 
-    Ok(output)
+    wrap_esm("daft", &spec)
 }
 
 /// Generate a git-daft.js spec that loads the daft spec
 fn generate_fig_git_daft_spec() -> String {
-    let mut output = String::new();
-    output.push_str("// git-daft.js\n");
-    output.push_str("var completionSpec = {\n");
-    output.push_str("  name: \"git-daft\",\n");
-    output.push_str("  loadSpec: \"daft\",\n");
-    output.push_str("};\n");
-    output.push_str("module.exports = completionSpec;\n");
-    output
+    let spec = FigSpec {
+        name: "git-daft".to_string(),
+        description: None,
+        args: None,
+        options: None,
+        subcommands: None,
+        load_spec: Some("daft".to_string()),
+    };
+    wrap_esm("git-daft", &spec).unwrap()
 }
 
 /// Get positional arguments from a clap Command
@@ -780,46 +862,6 @@ fn get_positional_args(cmd: &Command) -> Vec<(String, String, usize)> {
     }
 
     args
-}
-
-/// Generate a Fig generators block for dynamic completion
-fn fig_generator_block(command_name: &str, position: usize) -> String {
-    let mut s = String::new();
-    s.push_str("    generators: {\n");
-    s.push_str(&format!(
-        "      script: [\"daft\", \"__complete\", \"{command_name}\", \"\""
-    ));
-    if position > 1 {
-        s.push_str(&format!(", \"--position\", \"{position}\""));
-    }
-    s.push_str("],\n");
-    s.push_str("      splitOn: \"\\n\",\n");
-    s.push_str("    },\n");
-    s
-}
-
-/// Generate a Fig generators block with custom indentation
-fn fig_generator_block_indented(command_name: &str, position: usize, indent: usize) -> String {
-    let pad = " ".repeat(indent);
-    let mut s = String::new();
-    s.push_str(&format!("{pad}generators: {{\n"));
-    s.push_str(&format!(
-        "{pad}  script: [\"daft\", \"__complete\", \"{command_name}\", \"\""
-    ));
-    if position > 1 {
-        s.push_str(&format!(", \"--position\", \"{position}\""));
-    }
-    s.push_str("],\n");
-    s.push_str(&format!("{pad}  splitOn: \"\\n\",\n"));
-    s.push_str(&format!("{pad}}},\n"));
-    s
-}
-
-/// Escape a string for use in JavaScript string literals
-fn escape_js_string(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
 }
 
 /// Install completions to standard locations
@@ -864,16 +906,17 @@ fn install_shell_completions(target: &CompletionTarget) -> Result<()> {
 fn install_fig_completions() -> Result<()> {
     let home = dirs::home_dir().context("Could not determine home directory")?;
 
-    // Prefer ~/.amazon-q/autocomplete/ if it exists, else ~/.fig/autocomplete/, else create ~/.amazon-q/autocomplete/
-    let amazon_q_dir = home.join(".amazon-q/autocomplete");
-    let fig_dir = home.join(".fig/autocomplete");
+    // Kiro / Amazon Q loads specs from autocomplete/build/, not autocomplete/.
+    // Detect which parent directory exists, default to ~/.amazon-q/ if neither.
+    let amazon_q_parent = home.join(".amazon-q");
+    let fig_parent = home.join(".fig");
 
-    let install_dir = if amazon_q_dir.exists() {
-        amazon_q_dir
-    } else if fig_dir.exists() {
-        fig_dir
+    let install_dir = if amazon_q_parent.exists() {
+        amazon_q_parent.join("autocomplete/build")
+    } else if fig_parent.exists() {
+        fig_parent.join("autocomplete/build")
     } else {
-        amazon_q_dir
+        amazon_q_parent.join("autocomplete/build")
     };
 
     std::fs::create_dir_all(&install_dir)
@@ -995,4 +1038,130 @@ fn print_post_install_message(target: &CompletionTarget) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: assert a spec string uses ESM format (const + export default)
+    /// and does NOT use CommonJS (var + module.exports).
+    fn assert_esm_format(spec: &str, label: &str) {
+        assert!(
+            spec.contains("const completionSpec"),
+            "{label}: should use 'const completionSpec'"
+        );
+        assert!(
+            spec.contains("export default completionSpec"),
+            "{label}: should use 'export default completionSpec'"
+        );
+        assert!(
+            !spec.contains("var completionSpec"),
+            "{label}: should NOT use 'var completionSpec'"
+        );
+        assert!(
+            !spec.contains("module.exports"),
+            "{label}: should NOT use 'module.exports'"
+        );
+    }
+
+    #[test]
+    fn fig_command_spec_uses_esm_format() {
+        let spec = generate_fig_completion_string("git-worktree-checkout").unwrap();
+        assert_esm_format(&spec, "generate_fig_completion_string");
+    }
+
+    #[test]
+    fn fig_alias_spec_uses_esm_format() {
+        let spec = generate_fig_alias_string("gwtco", "git-worktree-checkout");
+        assert_esm_format(&spec, "generate_fig_alias_string");
+    }
+
+    #[test]
+    fn fig_daft_spec_uses_esm_format() {
+        let spec = generate_fig_daft_spec().unwrap();
+        assert_esm_format(&spec, "generate_fig_daft_spec");
+    }
+
+    #[test]
+    fn fig_git_daft_spec_uses_esm_format() {
+        let spec = generate_fig_git_daft_spec();
+        assert_esm_format(&spec, "generate_fig_git_daft_spec");
+    }
+
+    #[test]
+    fn fig_checkout_spec_has_generators() {
+        let spec = generate_fig_completion_string("git-worktree-checkout").unwrap();
+        assert!(
+            spec.contains("generators"),
+            "checkout spec should have generators"
+        );
+        assert!(
+            spec.contains("__complete"),
+            "checkout spec should reference __complete"
+        );
+        assert!(
+            spec.contains("splitOn"),
+            "checkout spec should have splitOn"
+        );
+    }
+
+    #[test]
+    fn fig_prune_spec_has_no_generators() {
+        let spec = generate_fig_completion_string("git-worktree-prune").unwrap();
+        assert!(
+            !spec.contains("generators"),
+            "prune spec should not have generators"
+        );
+    }
+
+    #[test]
+    fn fig_checkout_branch_spec_has_position() {
+        let spec = generate_fig_completion_string("git-worktree-checkout-branch").unwrap();
+        assert!(
+            spec.contains("--position"),
+            "checkout-branch spec should have --position for second arg"
+        );
+    }
+
+    #[test]
+    fn fig_alias_spec_has_load_spec() {
+        let spec = generate_fig_alias_string("gwtco", "git-worktree-checkout");
+        assert!(spec.contains("loadSpec"), "alias spec should have loadSpec");
+        assert!(
+            spec.contains("git-worktree-checkout"),
+            "alias spec should reference target command"
+        );
+    }
+
+    #[test]
+    fn fig_daft_spec_has_subcommands() {
+        let spec = generate_fig_daft_spec().unwrap();
+        assert!(
+            spec.contains("subcommands"),
+            "daft spec should have subcommands"
+        );
+        assert!(
+            spec.contains("shell-init"),
+            "daft spec should include shell-init subcommand"
+        );
+        assert!(
+            spec.contains("worktree-checkout"),
+            "daft spec should include worktree-checkout subcommand"
+        );
+    }
+
+    #[test]
+    fn fig_spec_output_is_valid_json_in_esm() {
+        let spec = generate_fig_completion_string("git-worktree-checkout").unwrap();
+        // Extract JSON between "const completionSpec = " and ";\nexport"
+        let json_start =
+            spec.find("const completionSpec = ").unwrap() + "const completionSpec = ".len();
+        let json_end = spec.find(";\nexport").unwrap();
+        let json_str = &spec[json_start..json_end];
+        let parsed: serde_json::Value =
+            serde_json::from_str(json_str).expect("Fig spec should contain valid JSON");
+        assert!(parsed.is_object(), "Parsed spec should be a JSON object");
+        assert_eq!(parsed["name"], "git-worktree-checkout");
+    }
 }
