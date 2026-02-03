@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0](https://github.com/avihut/daft/compare/v1.0.18...v1.1.0) - 2026-02-03
+
+### Bug Fixes
+
+- correctly detect bare repo root to suppress carry warning
+
+### CI/CD
+
+- *(deps)* bump the github-actions group with 2 updates ([#145](https://github.com/avihut/daft/pull/145))
+
+### Features
+
+- *(fetch)* emit git-fetch-like output with real-time progress ([#158](https://github.com/avihut/daft/pull/158))
+- add --no-cd flag to worktree-creating commands
+- *(prune)* add streaming per-branch output in git-remote-prune style
+- handle pruning when inside the worktree being removed ([#148](https://github.com/avihut/daft/pull/148))
+- add background update check with new version notifications ([#143](https://github.com/avihut/daft/pull/143))
+
 ## [1.0.18](https://github.com/avihut/daft/compare/v1.0.17...v1.0.18) - 2026-02-02
 
 ### Bug Fixes
