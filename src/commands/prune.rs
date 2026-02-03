@@ -1,5 +1,4 @@
 use crate::{
-    config::counters::{INITIAL_BRANCHES_DELETED, INITIAL_WORKTREES_REMOVED, OPERATION_INCREMENT},
     get_git_common_dir, get_project_root,
     git::GitCommand,
     hooks::{HookContext, HookExecutor, HookType, HooksConfig, RemovalReason},
@@ -168,8 +167,14 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
     let current_wt_path = git.get_current_worktree_path().ok();
     let current_branch = git.symbolic_ref_short_head().ok();
 
-    let mut branches_deleted = INITIAL_BRANCHES_DELETED;
-    let mut worktrees_removed = INITIAL_WORKTREES_REMOVED;
+    // Print header (shown in default mode when there are branches to prune)
+    output.info(&format!("Pruning {}", ctx.remote_name));
+    if let Ok(url) = git.remote_get_url(&ctx.remote_name) {
+        output.info(&format!("URL: {url}"));
+    }
+
+    let mut branches_deleted: u32 = 0;
+    let mut worktrees_removed: u32 = 0;
     let mut deferred_branch: Option<String> = None;
 
     for branch_name in &gone_branches {
@@ -186,6 +191,7 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                 ));
 
                 let is_current = current_branch.as_deref() == Some(branch_name.as_str());
+                let mut wt_removed = false;
 
                 if is_current {
                     match get_default_branch_local(&ctx.git_dir, &ctx.remote_name) {
@@ -220,11 +226,23 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                     if !remove_worktree(&ctx, wt_path, branch_name, output) {
                         continue;
                     }
-                    worktrees_removed += OPERATION_INCREMENT;
+                    wt_removed = true;
+                    worktrees_removed += 1;
                 }
 
                 // Delete the branch (no worktree removal needed for Scenario B current branch)
-                delete_branch(&git, branch_name, output, &mut branches_deleted);
+                if delete_branch(&git, branch_name, output) {
+                    branches_deleted += 1;
+                    let annotation = if wt_removed {
+                        " (worktree removed)"
+                    } else {
+                        ""
+                    };
+                    output.info(&format!(
+                        " * [pruned] {}/{branch_name}{annotation}",
+                        ctx.remote_name
+                    ));
+                }
             }
             Some((ref wt_path, _)) if !is_bare_layout => {
                 // Linked worktree in a non-bare repo
@@ -241,14 +259,22 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                     continue;
                 }
 
-                remove_worktree_and_delete_branch(
-                    &ctx,
-                    wt_path,
-                    branch_name,
-                    output,
-                    &mut worktrees_removed,
-                    &mut branches_deleted,
-                );
+                let result = remove_worktree_and_delete_branch(&ctx, wt_path, branch_name, output);
+                if result.worktree_removed {
+                    worktrees_removed += 1;
+                }
+                if result.branch_deleted {
+                    branches_deleted += 1;
+                    let annotation = if result.worktree_removed {
+                        " (worktree removed)"
+                    } else {
+                        ""
+                    };
+                    output.info(&format!(
+                        " * [pruned] {}/{branch_name}{annotation}",
+                        ctx.remote_name
+                    ));
+                }
             }
             Some((ref wt_path, is_main)) => {
                 // Bare layout: all worktrees are "linked" except the bare dir itself
@@ -256,7 +282,10 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                 if is_main {
                     // The first entry in a bare repo is the bare dir, not a real worktree
                     output.step(&format!("No associated worktree found for {branch_name}"));
-                    delete_branch(&git, branch_name, output, &mut branches_deleted);
+                    if delete_branch(&git, branch_name, output) {
+                        branches_deleted += 1;
+                        output.info(&format!(" * [pruned] {}/{branch_name}", ctx.remote_name));
+                    }
                     continue;
                 }
 
@@ -273,19 +302,30 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                     continue;
                 }
 
-                remove_worktree_and_delete_branch(
-                    &ctx,
-                    wt_path,
-                    branch_name,
-                    output,
-                    &mut worktrees_removed,
-                    &mut branches_deleted,
-                );
+                let result = remove_worktree_and_delete_branch(&ctx, wt_path, branch_name, output);
+                if result.worktree_removed {
+                    worktrees_removed += 1;
+                }
+                if result.branch_deleted {
+                    branches_deleted += 1;
+                    let annotation = if result.worktree_removed {
+                        " (worktree removed)"
+                    } else {
+                        ""
+                    };
+                    output.info(&format!(
+                        " * [pruned] {}/{branch_name}{annotation}",
+                        ctx.remote_name
+                    ));
+                }
             }
             None => {
                 // No worktree found for this branch
                 output.step(&format!("No associated worktree found for {branch_name}"));
-                delete_branch(&git, branch_name, output, &mut branches_deleted);
+                if delete_branch(&git, branch_name, output) {
+                    branches_deleted += 1;
+                    output.info(&format!(" * [pruned] {}/{branch_name}", ctx.remote_name));
+                }
             }
         }
     }
@@ -320,28 +360,45 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                     cd_target.display()
                 ));
             } else {
-                let removed = remove_worktree_and_delete_branch(
-                    &ctx,
-                    wt_path,
-                    branch_name,
-                    output,
-                    &mut worktrees_removed,
-                    &mut branches_deleted,
-                );
+                let result = remove_worktree_and_delete_branch(&ctx, wt_path, branch_name, output);
 
-                if removed {
+                if result.worktree_removed {
+                    worktrees_removed += 1;
                     deferred_cd_target = Some(cd_target);
+                }
+                if result.branch_deleted {
+                    branches_deleted += 1;
+                    let annotation = if result.worktree_removed {
+                        " (worktree removed)"
+                    } else {
+                        ""
+                    };
+                    output.info(&format!(
+                        " * [pruned] {}/{branch_name}{annotation}",
+                        ctx.remote_name
+                    ));
                 }
             }
         }
     }
 
-    // Git-like result message
+    // Pluralized summary
     if branches_deleted > 0 || worktrees_removed > 0 {
-        output.result(&format!(
-            "Pruned {} branches, removed {} worktrees",
-            branches_deleted, worktrees_removed
-        ));
+        let branch_word = if branches_deleted == 1 {
+            "branch"
+        } else {
+            "branches"
+        };
+        let mut summary = format!("Pruned {branches_deleted} {branch_word}");
+        if worktrees_removed > 0 {
+            let wt_word = if worktrees_removed == 1 {
+                "worktree"
+            } else {
+                "worktrees"
+            };
+            summary.push_str(&format!(", removed {worktrees_removed} {wt_word}"));
+        }
+        output.info(&summary);
     }
 
     // Check if any worktrees might need manual pruning
@@ -408,19 +465,15 @@ fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeEntry>> {
     Ok(entries)
 }
 
-/// Delete a local branch with force, updating counters.
-fn delete_branch(
-    git: &GitCommand,
-    branch_name: &str,
-    output: &mut dyn Output,
-    branches_deleted: &mut u32,
-) {
+/// Delete a local branch with force. Returns `true` on success.
+fn delete_branch(git: &GitCommand, branch_name: &str, output: &mut dyn Output) -> bool {
     output.step(&format!("Deleting local branch {branch_name}..."));
     if let Err(e) = git.branch_delete(branch_name, true) {
         output.error(&format!("Failed to delete branch {branch_name}: {e}"));
+        false
     } else {
         output.step(&format!("Branch {branch_name} deleted"));
-        *branches_deleted += OPERATION_INCREMENT;
+        true
     }
 }
 
@@ -487,29 +540,37 @@ fn remove_worktree(
     true
 }
 
+/// Result of a single prune operation (worktree removal + branch deletion).
+struct PruneResult {
+    worktree_removed: bool,
+    branch_deleted: bool,
+}
+
 /// Remove a worktree and delete the associated branch.
-/// Returns true if the worktree was successfully removed (branch deletion may still fail).
 fn remove_worktree_and_delete_branch(
     ctx: &PruneContext,
     wt_path: &Path,
     branch_name: &str,
     output: &mut dyn Output,
-    worktrees_removed: &mut u32,
-    branches_deleted: &mut u32,
-) -> bool {
+) -> PruneResult {
     output.step(&format!(
         "Found associated worktree for {branch_name} at: {}",
         wt_path.display()
     ));
 
     if !remove_worktree(ctx, wt_path, branch_name, output) {
-        return false;
+        return PruneResult {
+            worktree_removed: false,
+            branch_deleted: false,
+        };
     }
-    *worktrees_removed += OPERATION_INCREMENT;
 
-    delete_branch(ctx.git, branch_name, output, branches_deleted);
+    let branch_deleted = delete_branch(ctx.git, branch_name, output);
 
-    true
+    PruneResult {
+        worktree_removed: true,
+        branch_deleted,
+    }
 }
 
 /// Resolve where to cd after pruning the user's current worktree.
