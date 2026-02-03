@@ -298,6 +298,12 @@ git worktree-prune
 
 ## Development Notes
 
+### Repository Layout
+
+This project uses a **worktree-based layout** managed with **daft** itself. Each branch gets its own worktree directory under the repo root. Use daft commands (`daft worktree-checkout`, `daft worktree-checkout-branch`, etc.) to create and manage worktrees. This is the preferred development workflow for this project.
+
+### General
+
 - Commands can be executed from anywhere within the Git repository (including deep subdirectories)
 - New worktrees are always created at the project root level (alongside the `.git` directory)
 - Commands use `git rev-parse --git-common-dir` to locate the project root regardless of execution location
