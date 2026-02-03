@@ -23,7 +23,8 @@ pub fn rev_parse_git_common_dir(repo: &Repository) -> Result<String> {
 
 /// gitoxide equivalent of `git rev-parse --git-dir` (success = inside a repo)
 pub fn is_inside_git_repo() -> Result<bool> {
-    Ok(gix::discover(".").is_ok())
+    let cwd = std::env::current_dir().context("Failed to get current working directory")?;
+    Ok(gix::discover(&cwd).is_ok())
 }
 
 /// gitoxide equivalent of `git rev-parse --is-inside-work-tree`
@@ -569,6 +570,106 @@ mod tests {
         let (_dir, repo) = create_test_repo();
         let result = remote_list(&repo).unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn test_worktree_path_matches_git_in_bare_layout() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        // Create bare repo layout like daft does
+        let git_dir = root.join(".git");
+        Command::new("git")
+            .args(["init", "--bare"])
+            .arg(&git_dir)
+            .output()
+            .unwrap();
+
+        // Add main worktree
+        let main_wt = root.join("main");
+        Command::new("git")
+            .args(["worktree", "add", "--orphan", "-b", "main"])
+            .arg(&main_wt)
+            .current_dir(&git_dir)
+            .output()
+            .unwrap();
+
+        // Create initial commit
+        std::fs::write(main_wt.join("file.txt"), "hello").unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(&main_wt)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&main_wt)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&main_wt)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&main_wt)
+            .output()
+            .unwrap();
+
+        // Add linked worktree
+        let test_wt = root.join("test-1");
+        Command::new("git")
+            .args(["worktree", "add", "-b", "test-1"])
+            .arg(&test_wt)
+            .arg("main")
+            .current_dir(&git_dir)
+            .output()
+            .unwrap();
+
+        // Set CWD to the linked worktree and discover with gix
+        // Using current_dir() (absolute) rather than "." to ensure absolute paths
+        std::env::set_current_dir(&test_wt).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let repo = gix::ThreadSafeRepository::discover(&cwd)
+            .unwrap()
+            .to_thread_local();
+        let gix_workdir = repo.workdir().unwrap().to_path_buf();
+
+        // Get path from git rev-parse --show-toplevel
+        let git_output = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(&test_wt)
+            .output()
+            .unwrap();
+        let git_toplevel = PathBuf::from(String::from_utf8(git_output.stdout).unwrap().trim());
+
+        // Get path from git worktree list --porcelain
+        let wt_list_output = Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(&test_wt)
+            .output()
+            .unwrap();
+        let wt_list_str = String::from_utf8(wt_list_output.stdout).unwrap();
+        let porcelain_path = wt_list_str
+            .lines()
+            .find(|l| l.starts_with("worktree ") && l.contains("test-1"))
+            .map(|l| PathBuf::from(l.strip_prefix("worktree ").unwrap()))
+            .unwrap();
+
+        eprintln!("gix workdir:          {:?}", gix_workdir);
+        eprintln!("git --show-toplevel:  {:?}", git_toplevel);
+        eprintln!("git worktree list:    {:?}", porcelain_path);
+
+        assert_eq!(
+            gix_workdir, git_toplevel,
+            "gix workdir doesn't match git show-toplevel"
+        );
+        assert_eq!(
+            gix_workdir, porcelain_path,
+            "gix workdir doesn't match git worktree list porcelain"
+        );
     }
 
     #[test]

@@ -37,7 +37,8 @@ impl GitCommand {
         if let Some(ts) = self.gix_repo.get() {
             return Ok(ts.to_thread_local());
         }
-        let ts = gix::ThreadSafeRepository::discover(".")
+        let cwd = std::env::current_dir().context("Failed to get current working directory")?;
+        let ts = gix::ThreadSafeRepository::discover(&cwd)
             .context("Failed to discover git repository via gitoxide")?;
         // If another thread raced us via set(), that's fine - use whichever won
         let _ = self.gix_repo.set(ts);
