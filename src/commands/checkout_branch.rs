@@ -236,8 +236,11 @@ fn run_checkout_branch(
                 false
             }
         }
-    } else {
+    } else if !should_carry {
         output.step("Skipping carry (--no-carry flag set or carry disabled in config)");
+        false
+    } else {
+        output.step("Skipping carry (not inside a worktree)");
         false
     };
 
