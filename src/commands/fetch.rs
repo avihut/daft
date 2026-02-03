@@ -4,8 +4,14 @@
 //! to each target worktree and running `git pull` with configurable options.
 
 use crate::{
-    get_project_root, git::GitCommand, is_git_repository, log_error, log_info, log_warning,
-    logging::init_logging, settings::DaftSettings, utils::*, WorktreeConfig,
+    get_project_root,
+    git::GitCommand,
+    is_git_repository,
+    logging::init_logging,
+    output::{CliOutput, Output, OutputConfig},
+    settings::DaftSettings,
+    utils::*,
+    WorktreeConfig,
 };
 use anyhow::Result;
 use clap::Parser;
@@ -98,10 +104,13 @@ pub fn run() -> Result<()> {
     // Load settings from git config
     let settings = DaftSettings::load()?;
 
-    run_fetch(&args, &settings)
+    let config = OutputConfig::new(args.quiet, args.verbose);
+    let mut output = CliOutput::new(config);
+
+    run_fetch(&args, &settings, &mut output)
 }
 
-fn run_fetch(args: &Args, settings: &DaftSettings) -> Result<()> {
+fn run_fetch(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
     let config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: args.quiet,
@@ -113,20 +122,22 @@ fn run_fetch(args: &Args, settings: &DaftSettings) -> Result<()> {
     let project_root = get_project_root()?;
 
     // Determine targets
-    let targets = determine_targets(args, &git, &project_root)?;
+    let targets = determine_targets(args, &git, &project_root, output)?;
 
     if targets.is_empty() {
-        if !args.quiet {
-            println!("No worktrees to update.");
-        }
+        output.info("No worktrees to update.");
         return Ok(());
     }
 
     // Build pull arguments from config and CLI flags
     let pull_args = build_pull_args(args, settings);
 
-    if args.verbose && !args.quiet {
-        println!("--> Pull arguments: {}", pull_args.join(" "));
+    output.step(&format!("Pull arguments: {}", pull_args.join(" ")));
+
+    // Print header
+    output.info(&format!("Fetching {}", config.remote_name));
+    if let Ok(url) = git.remote_get_url(&config.remote_name) {
+        output.info(&format!("URL: {url}"));
     }
 
     // Process each target
@@ -140,16 +151,7 @@ fn run_fetch(args: &Args, settings: &DaftSettings) -> Result<()> {
             .unwrap_or("unknown")
             .to_string();
 
-        let result = process_worktree(
-            &git,
-            target_path,
-            &worktree_name,
-            &pull_args,
-            args.force,
-            args.dry_run,
-            args.quiet,
-            args.verbose,
-        );
+        let result = process_worktree(&git, target_path, &worktree_name, &pull_args, args, output);
 
         results.push(result);
     }
@@ -158,7 +160,7 @@ fn run_fetch(args: &Args, settings: &DaftSettings) -> Result<()> {
     change_directory(&original_dir)?;
 
     // Print summary
-    print_summary(&results, args.quiet, args.verbose);
+    print_summary(&results, output);
 
     // Check if any failures occurred
     let failures = results.iter().filter(|r| !r.success && !r.skipped).count();
@@ -170,7 +172,12 @@ fn run_fetch(args: &Args, settings: &DaftSettings) -> Result<()> {
 }
 
 /// Determine which worktrees to update based on arguments
-fn determine_targets(args: &Args, git: &GitCommand, project_root: &Path) -> Result<Vec<PathBuf>> {
+fn determine_targets(
+    args: &Args,
+    git: &GitCommand,
+    project_root: &Path,
+    output: &mut dyn Output,
+) -> Result<Vec<PathBuf>> {
     if args.all {
         // Get all worktrees
         get_all_worktrees(git)
@@ -192,7 +199,7 @@ fn determine_targets(args: &Args, git: &GitCommand, project_root: &Path) -> Resu
 
         if !errors.is_empty() {
             for error in &errors {
-                log_error!("Failed to resolve target {}", error);
+                output.error(&format!("Failed to resolve target {error}"));
             }
             anyhow::bail!("Failed to resolve {} target(s)", errors.len());
         }
@@ -281,27 +288,26 @@ fn build_pull_args(args: &Args, settings: &DaftSettings) -> Vec<String> {
 }
 
 /// Process a single worktree
-#[allow(clippy::too_many_arguments)]
 fn process_worktree(
     git: &GitCommand,
     target_path: &Path,
     worktree_name: &str,
     pull_args: &[String],
-    force: bool,
-    dry_run: bool,
-    quiet: bool,
-    verbose: bool,
+    args: &Args,
+    output: &mut dyn Output,
 ) -> FetchResult {
-    if !quiet {
-        println!("--> Processing '{}'...", worktree_name);
-    }
+    output.step(&format!("Processing '{worktree_name}'..."));
 
     // Change to worktree directory
     if let Err(e) = change_directory(target_path) {
+        output.error(&format!(
+            "Failed to change to directory for '{worktree_name}': {e}"
+        ));
+        output.info(&format!(" * [failed] {worktree_name}"));
         return FetchResult {
             worktree_name: worktree_name.to_string(),
             success: false,
-            message: format!("Failed to change to directory: {}", e),
+            message: format!("Failed to change to directory: {e}"),
             skipped: false,
         };
     }
@@ -309,13 +315,13 @@ fn process_worktree(
     // Check for uncommitted changes
     match git.has_uncommitted_changes() {
         Ok(has_changes) => {
-            if has_changes && !force {
-                if !quiet {
-                    log_warning!(
-                        "Skipping '{}': has uncommitted changes (use --force to update anyway)",
-                        worktree_name
-                    );
-                }
+            if has_changes && !args.force {
+                output.warning(&format!(
+                    "Skipping '{worktree_name}': has uncommitted changes (use --force to update anyway)"
+                ));
+                output.info(&format!(
+                    " * [skipped] {worktree_name} (uncommitted changes)"
+                ));
                 return FetchResult {
                     worktree_name: worktree_name.to_string(),
                     success: true,
@@ -325,10 +331,14 @@ fn process_worktree(
             }
         }
         Err(e) => {
+            output.error(&format!(
+                "Failed to check status for '{worktree_name}': {e}"
+            ));
+            output.info(&format!(" * [failed] {worktree_name}"));
             return FetchResult {
                 worktree_name: worktree_name.to_string(),
                 success: false,
-                message: format!("Failed to check status: {}", e),
+                message: format!("Failed to check status: {e}"),
                 skipped: false,
             };
         }
@@ -336,12 +346,12 @@ fn process_worktree(
 
     // Check if branch has an upstream
     if check_has_upstream(git).is_err() {
-        if !quiet {
-            log_warning!(
-                "Skipping '{}': no tracking branch configured",
-                worktree_name
-            );
-        }
+        output.warning(&format!(
+            "Skipping '{worktree_name}': no tracking branch configured"
+        ));
+        output.info(&format!(
+            " * [skipped] {worktree_name} (no tracking branch)"
+        ));
         return FetchResult {
             worktree_name: worktree_name.to_string(),
             success: true,
@@ -351,14 +361,11 @@ fn process_worktree(
     }
 
     // Dry run mode
-    if dry_run {
-        if !quiet {
-            log_info!(
-                "Would update '{}' with: git pull {}",
-                worktree_name,
-                pull_args.join(" ")
-            );
-        }
+    if args.dry_run {
+        output.info(&format!(
+            " * [dry run] {worktree_name} (would pull with: git pull {})",
+            pull_args.join(" ")
+        ));
         return FetchResult {
             worktree_name: worktree_name.to_string(),
             success: true,
@@ -369,12 +376,18 @@ fn process_worktree(
 
     // Run git pull
     let pull_args_refs: Vec<&str> = pull_args.iter().map(|s| s.as_str()).collect();
-    match git.pull(&pull_args_refs) {
-        Ok(output) => {
-            if verbose && !quiet && !output.trim().is_empty() {
-                println!("{}", output);
-            }
-            log_info!("Updated '{}'", worktree_name);
+
+    let pull_result = if output.is_quiet() {
+        // In quiet mode, capture output (suppress git's progress)
+        git.pull(&pull_args_refs).map(|_| ())
+    } else {
+        // In normal/verbose mode, let git's output flow to the terminal
+        git.pull_passthrough(&pull_args_refs)
+    };
+
+    match pull_result {
+        Ok(()) => {
+            output.info(&format!(" * [fetched] {worktree_name}"));
             FetchResult {
                 worktree_name: worktree_name.to_string(),
                 success: true,
@@ -383,11 +396,12 @@ fn process_worktree(
             }
         }
         Err(e) => {
-            log_error!("Failed to update '{}': {}", worktree_name, e);
+            output.error(&format!("Failed to update '{worktree_name}': {e}"));
+            output.info(&format!(" * [failed] {worktree_name}"));
             FetchResult {
                 worktree_name: worktree_name.to_string(),
                 success: false,
-                message: format!("Failed: {}", e),
+                message: format!("Failed: {e}"),
                 skipped: false,
             }
         }
@@ -410,59 +424,93 @@ fn check_has_upstream(git: &GitCommand) -> Result<()> {
 }
 
 /// Print summary of fetch operations
-fn print_summary(results: &[FetchResult], quiet: bool, verbose: bool) {
-    if quiet {
-        return;
+fn print_summary(results: &[FetchResult], output: &mut dyn Output) {
+    let updated = results.iter().filter(|r| r.success && !r.skipped).count();
+    let skipped = results.iter().filter(|r| r.skipped).count();
+    let failed = results.iter().filter(|r| !r.success && !r.skipped).count();
+
+    // Verbose details
+    if output.is_verbose() {
+        let updated_list: Vec<_> = results.iter().filter(|r| r.success && !r.skipped).collect();
+        let skipped_list: Vec<_> = results.iter().filter(|r| r.skipped).collect();
+        let failed_list: Vec<_> = results
+            .iter()
+            .filter(|r| !r.success && !r.skipped)
+            .collect();
+
+        if !updated_list.is_empty() {
+            output.step("Updated:");
+            for r in &updated_list {
+                output.step(&format!("  {} - {}", r.worktree_name, r.message));
+            }
+        }
+        if !skipped_list.is_empty() {
+            output.step("Skipped:");
+            for r in &skipped_list {
+                output.step(&format!("  {} - {}", r.worktree_name, r.message));
+            }
+        }
+        if !failed_list.is_empty() {
+            output.step("Failed:");
+            for r in &failed_list {
+                output.step(&format!("  {} - {}", r.worktree_name, r.message));
+            }
+        }
     }
 
-    let updated: Vec<_> = results.iter().filter(|r| r.success && !r.skipped).collect();
-    let skipped: Vec<_> = results.iter().filter(|r| r.skipped).collect();
-    let failed: Vec<_> = results
-        .iter()
-        .filter(|r| !r.success && !r.skipped)
-        .collect();
+    // Pluralized summary line
+    if failed == 0 {
+        let mut parts: Vec<String> = Vec::new();
 
-    // In verbose mode, show details for each worktree
-    if verbose {
-        if !updated.is_empty() {
-            println!("Updated:");
-            for r in &updated {
-                println!("  {} - {}", r.worktree_name, r.message);
-            }
+        if updated > 0 {
+            let word = if updated == 1 {
+                "worktree"
+            } else {
+                "worktrees"
+            };
+            parts.push(format!("Fetched {updated} {word}"));
         }
-        if !skipped.is_empty() {
-            println!("Skipped:");
-            for r in &skipped {
-                println!("  {} - {}", r.worktree_name, r.message);
-            }
-        }
-        if !failed.is_empty() {
-            println!("Failed:");
-            for r in &failed {
-                println!("  {} - {}", r.worktree_name, r.message);
-            }
-        }
-    }
 
-    println!("---");
-    if failed.is_empty() {
-        if updated.is_empty() && !skipped.is_empty() {
-            println!("Done! {} worktree(s) skipped, none updated.", skipped.len());
-        } else if !skipped.is_empty() {
-            println!(
-                "Done! {} worktree(s) updated, {} skipped.",
-                updated.len(),
-                skipped.len()
-            );
+        if skipped > 0 {
+            let word = if skipped == 1 {
+                "worktree"
+            } else {
+                "worktrees"
+            };
+            if parts.is_empty() {
+                parts.push(format!("Skipped {skipped} {word}"));
+            } else {
+                parts.push(format!("skipped {skipped} {word}"));
+            }
+        }
+
+        if parts.is_empty() {
+            output.info("Nothing to update");
         } else {
-            println!("Done! {} worktree(s) updated.", updated.len());
+            output.info(&parts.join(", "));
         }
     } else {
-        eprintln!(
-            "Completed with {} updated, {} skipped, {} failed.",
-            updated.len(),
-            skipped.len(),
-            failed.len()
-        );
+        let mut parts: Vec<String> = Vec::new();
+
+        if updated > 0 {
+            let word = if updated == 1 {
+                "worktree"
+            } else {
+                "worktrees"
+            };
+            parts.push(format!("{updated} {word} fetched"));
+        }
+        if skipped > 0 {
+            let word = if skipped == 1 {
+                "worktree"
+            } else {
+                "worktrees"
+            };
+            parts.push(format!("{skipped} {word} skipped"));
+        }
+        let word = if failed == 1 { "worktree" } else { "worktrees" };
+        parts.push(format!("{failed} {word} failed"));
+
+        output.error(&parts.join(", "));
     }
 }
