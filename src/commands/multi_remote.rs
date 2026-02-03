@@ -133,7 +133,7 @@ fn cmd_enable(default_remote: Option<String>, dry_run: bool, skip_confirm: bool)
     let mut output = CliOutput::new(config);
 
     let project_root = get_project_root()?;
-    let git = GitCommand::new(false);
+    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
 
     // Check if already enabled
     if settings.multi_remote_enabled {
@@ -226,7 +226,7 @@ fn cmd_disable(dry_run: bool, skip_confirm: bool) -> Result<()> {
     let mut output = CliOutput::new(config);
 
     let project_root = get_project_root()?;
-    let git = GitCommand::new(false);
+    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
 
     // Check if already disabled
     if !settings.multi_remote_enabled {
@@ -304,7 +304,7 @@ fn cmd_status() -> Result<()> {
 
     let settings = DaftSettings::load()?;
     let project_root = get_project_root()?;
-    let git = GitCommand::new(true);
+    let git = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
 
     println!("Repository: {}", project_root.display());
     println!();
@@ -389,7 +389,8 @@ fn cmd_set_default(remote: &str) -> Result<()> {
         anyhow::bail!("Not in a git repository");
     }
 
-    let git = GitCommand::new(true);
+    let settings = DaftSettings::load()?;
+    let git = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
 
     // Verify remote exists
     let remotes = git.remote_list()?;

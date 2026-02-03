@@ -35,6 +35,12 @@ serde_json = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 termimad = "0.34"
 version-migrate = "0.18"
+gix = { version = "0.72", default-features = false, features = [
+    "blocking-network-client",
+    "blocking-http-transport-reqwest-rust-tls",
+    "status",
+    "revparse-regex",
+] }
 
 # pager is Unix-only (uses fork/pipes)
 [target.'cfg(unix)'.dependencies]

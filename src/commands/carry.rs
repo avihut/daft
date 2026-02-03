@@ -73,7 +73,7 @@ fn run_carry(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         remote_name: settings.remote.clone(),
         quiet: false,
     };
-    let git = GitCommand::new(config.quiet);
+    let git = GitCommand::new(config.quiet).with_gitoxide(settings.use_gitoxide);
 
     // Get the current worktree path before we start
     let source_worktree = git.get_current_worktree_path()?;

@@ -151,7 +151,7 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         anyhow::bail!("Not inside a Git repository");
     }
 
-    let git = GitCommand::new(output.is_quiet());
+    let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
 
     // Check if in worktree layout
     if !is_worktree_layout(&git)? {
@@ -208,7 +208,8 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         }
     } else {
         // No branch specified - try default, then main/master, then first available
-        let default_branch = get_default_branch_from_remote_head(&settings.remote).ok();
+        let default_branch =
+            get_default_branch_from_remote_head(&settings.remote, settings.use_gitoxide).ok();
 
         // Try remote's default branch first
         if let Some(ref branch) = default_branch {

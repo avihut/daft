@@ -143,7 +143,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     // If this fails, check if the repository is empty (no commits).
     // This order ensures invalid URLs fail properly instead of being treated as empty repos.
     let (default_branch, target_branch, branch_exists, is_empty) =
-        match get_default_branch_remote(&args.repository_url) {
+        match get_default_branch_remote(&args.repository_url, settings.use_gitoxide) {
             Ok(default_branch) => {
                 // Normal repo with commits - proceed with standard flow
                 output.step(&format!("Default branch detected: '{default_branch}'"));
@@ -155,7 +155,8 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
                         "Checking if branch '{}' exists on remote...",
                         specified_branch
                     ));
-                    let git = GitCommand::new(output.is_quiet());
+                    let git =
+                        GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
                     let exists = git
                         .ls_remote_branch_exists(&args.repository_url, specified_branch)
                         .unwrap_or(false);
@@ -174,7 +175,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             }
             Err(e) => {
                 // Failed to get default branch - check if repo is empty
-                if is_remote_empty(&args.repository_url).unwrap_or(false) {
+                if is_remote_empty(&args.repository_url, settings.use_gitoxide).unwrap_or(false) {
                     // Empty repo: use local default branch config
                     let local_default = resolve_initial_branch(&args.branch);
                     output.step(&format!(
@@ -233,7 +234,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     create_directory(&parent_dir)?;
 
     let git_dir = parent_dir.join(".git");
-    let git = GitCommand::new(output.is_quiet());
+    let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
 
     output.step(&format!(
         "Cloning bare repository into './{}'...",
@@ -297,6 +298,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
                 &default_branch,
                 use_multi_remote,
                 &remote_for_path,
+                settings.use_gitoxide,
                 output,
             )?;
         } else if is_empty {
@@ -455,13 +457,14 @@ fn create_all_worktrees(
     _default_branch: &str,
     use_multi_remote: bool,
     remote_for_path: &str,
+    use_gitoxide: bool,
     output: &mut dyn Output,
 ) -> Result<()> {
     output.step("Fetching all remote branches...");
     git.fetch(&config.remote_name, false)?;
 
-    let remote_branches =
-        get_remote_branches(&config.remote_name).context("Failed to get remote branches")?;
+    let remote_branches = get_remote_branches(&config.remote_name, use_gitoxide)
+        .context("Failed to get remote branches")?;
 
     if remote_branches.is_empty() {
         anyhow::bail!("No remote branches found");

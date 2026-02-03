@@ -155,7 +155,7 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
     create_directory(&parent_dir)?;
 
     let git_dir = parent_dir.join(".git");
-    let git = GitCommand::new(output.is_quiet());
+    let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
 
     output.step(&format!(
         "Initializing bare repository in './{}'...",

@@ -130,7 +130,7 @@ pub fn run() -> Result<()> {
 
     let original_dir = get_current_directory()?;
 
-    if let Err(e) = run_adopt(&args, &mut output) {
+    if let Err(e) = run_adopt(&args, &settings, &mut output) {
         change_directory(&original_dir).ok();
         return Err(e);
     }
@@ -138,7 +138,7 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn run_adopt(args: &Args, output: &mut dyn Output) -> Result<()> {
+fn run_adopt(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
     // Change to repository path if provided
     if let Some(ref repo_path) = args.repository_path {
         if !repo_path.exists() {
@@ -152,7 +152,7 @@ fn run_adopt(args: &Args, output: &mut dyn Output) -> Result<()> {
         anyhow::bail!("Not inside a Git repository");
     }
 
-    let git = GitCommand::new(output.is_quiet());
+    let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
 
     // Check if already in worktree layout
     if is_worktree_layout(&git)? {

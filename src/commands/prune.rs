@@ -79,7 +79,7 @@ pub fn run() -> Result<()> {
 
 fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
     let config = WorktreeConfig::default();
-    let git = GitCommand::new(output.is_quiet());
+    let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
     let ctx = PruneContext {
         git: &git,
         project_root: get_project_root()?,
@@ -141,7 +141,7 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
         }
 
         if worktree_map.contains_key(branch_name)
-            && !remote_branch_exists(&ctx.remote_name, branch_name)?
+            && !remote_branch_exists(&ctx.remote_name, branch_name, settings.use_gitoxide)?
             && !gone_branches.contains(&branch_name.to_string())
         {
             gone_branches.push(branch_name.to_string());
@@ -194,7 +194,11 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                 let mut wt_removed = false;
 
                 if is_current {
-                    match get_default_branch_local(&ctx.git_dir, &ctx.remote_name) {
+                    match get_default_branch_local(
+                        &ctx.git_dir,
+                        &ctx.remote_name,
+                        settings.use_gitoxide,
+                    ) {
                         Ok(default_branch) => {
                             output
                                 .step(&format!("Checking out default branch {default_branch}..."));
@@ -350,6 +354,7 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                 &ctx.project_root,
                 &ctx.git_dir,
                 &ctx.remote_name,
+                settings.use_gitoxide,
                 output,
             );
 
@@ -579,30 +584,33 @@ fn resolve_prune_cd_target(
     project_root: &Path,
     git_dir: &Path,
     remote_name: &str,
+    use_gitoxide: bool,
     output: &mut dyn Output,
 ) -> PathBuf {
     match cd_target {
         PruneCdTarget::Root => project_root.to_path_buf(),
-        PruneCdTarget::DefaultBranch => match get_default_branch_local(git_dir, remote_name) {
-            Ok(default_branch) => {
-                let branch_dir = project_root.join(&default_branch);
-                if branch_dir.is_dir() {
-                    branch_dir
-                } else {
-                    output.step(&format!(
+        PruneCdTarget::DefaultBranch => {
+            match get_default_branch_local(git_dir, remote_name, use_gitoxide) {
+                Ok(default_branch) => {
+                    let branch_dir = project_root.join(&default_branch);
+                    if branch_dir.is_dir() {
+                        branch_dir
+                    } else {
+                        output.step(&format!(
                         "Default branch worktree directory '{}' not found, falling back to project root",
                         branch_dir.display()
                     ));
+                        project_root.to_path_buf()
+                    }
+                }
+                Err(e) => {
+                    output.warning(&format!(
+                    "Cannot determine default branch for cd target: {e}. Falling back to project root."
+                ));
                     project_root.to_path_buf()
                 }
             }
-            Err(e) => {
-                output.warning(&format!(
-                    "Cannot determine default branch for cd target: {e}. Falling back to project root."
-                ));
-                project_root.to_path_buf()
-            }
-        },
+        }
     }
 }
 
