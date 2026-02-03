@@ -575,7 +575,14 @@ impl GitCommand {
     /// Check if working directory has uncommitted or untracked changes
     pub fn has_uncommitted_changes(&self) -> Result<bool> {
         if self.use_gitoxide {
-            return git_oxide::has_uncommitted_changes(&self.gix_repo()?);
+            let repo = self.gix_repo()?;
+            // Fall back to subprocess if the cached repo is bare (no workdir).
+            // This happens when the repo was discovered from the project root in
+            // a bare-repo worktree layout (e.g., flow-eject changes CWD to the
+            // project root, then later CDs into individual worktrees).
+            if repo.workdir().is_some() {
+                return git_oxide::has_uncommitted_changes(&repo);
+            }
         }
         let output = Command::new("git")
             .args(["status", "--porcelain"])
