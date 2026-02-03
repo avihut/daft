@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 pub struct GitCommand {
     quiet: bool,
@@ -658,6 +658,33 @@ impl GitCommand {
         }
 
         String::from_utf8(output.stdout).context("Failed to parse git pull output")
+    }
+
+    /// Pull from remote with inherited stdio, so git's progress output flows to the terminal.
+    ///
+    /// Unlike `pull()`, this does not capture output. It uses `Stdio::inherit()` for both
+    /// stdout and stderr, making git's remote progress and ref update lines visible.
+    pub fn pull_passthrough(&self, args: &[&str]) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.arg("pull");
+
+        for arg in args {
+            cmd.arg(arg);
+        }
+
+        if self.quiet {
+            cmd.arg("--quiet");
+        }
+
+        cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+
+        let status = cmd.status().context("Failed to execute git pull command")?;
+
+        if !status.success() {
+            anyhow::bail!("Git pull failed with exit code: {}", status);
+        }
+
+        Ok(())
     }
 
     /// Get the path of the current worktree
