@@ -496,6 +496,68 @@ test_fig_all_commands() {
     fi
 }
 
+# Test: Fig specs use ESM format (const + export default, not var + module.exports)
+test_fig_esm_format() {
+    run_test "Fig single-command spec uses ESM format"
+
+    local output
+    output=$("$DAFT_BIN" completions fig --command=git-worktree-checkout 2>&1)
+
+    local success=true
+
+    if [[ "$output" != *"const completionSpec"* ]]; then
+        success=false
+        fail_test "Fig spec missing 'const completionSpec'"
+        return
+    fi
+    if [[ "$output" != *"export default completionSpec"* ]]; then
+        success=false
+        fail_test "Fig spec missing 'export default completionSpec'"
+        return
+    fi
+    if [[ "$output" == *"var completionSpec"* ]]; then
+        success=false
+        fail_test "Fig spec should not use 'var completionSpec'"
+        return
+    fi
+    if [[ "$output" == *"module.exports"* ]]; then
+        success=false
+        fail_test "Fig spec should not use 'module.exports'"
+        return
+    fi
+
+    if $success; then
+        pass_test
+    fi
+}
+
+# Test: Fig all-commands output uses ESM format throughout
+test_fig_all_esm_format() {
+    run_test "Fig all-commands output uses ESM format throughout"
+
+    local output
+    output=$("$DAFT_BIN" completions fig 2>&1)
+
+    if [[ "$output" == *"var completionSpec"* ]]; then
+        fail_test "Fig all-commands output contains 'var completionSpec'"
+        return
+    fi
+    if [[ "$output" == *"module.exports"* ]]; then
+        fail_test "Fig all-commands output contains 'module.exports'"
+        return
+    fi
+    if [[ "$output" != *"const completionSpec"* ]]; then
+        fail_test "Fig all-commands output missing 'const completionSpec'"
+        return
+    fi
+    if [[ "$output" != *"export default completionSpec"* ]]; then
+        fail_test "Fig all-commands output missing 'export default completionSpec'"
+        return
+    fi
+
+    pass_test
+}
+
 # Test: Fig shortcut aliases use loadSpec
 test_fig_shortcut_aliases() {
     run_test "Fig shortcut aliases use loadSpec"
@@ -550,6 +612,8 @@ main() {
     test_fig_no_generator_for_prune
     test_fig_all_commands
     test_fig_shortcut_aliases
+    test_fig_esm_format
+    test_fig_all_esm_format
 
     # New comprehensive tests
     test_position_aware_completion
