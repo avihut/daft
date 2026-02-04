@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.20](https://github.com/avihut/daft/compare/v1.0.19...v1.0.20) - 2026-02-03
+
+### Features
+
+- add experimental gitoxide backend for git operations ([#161](https://github.com/avihut/daft/pull/161))
+
+### Refactoring
+
+- *(completions)* replace Fig spec string concatenation with serde_json ([#159](https://github.com/avihut/daft/pull/159))
+
 ## [1.0.19](https://github.com/avihut/daft/compare/v1.0.18...v1.0.19) - 2026-02-03
 
 ### Bug Fixes
