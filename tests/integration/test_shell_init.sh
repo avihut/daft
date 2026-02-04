@@ -351,6 +351,81 @@ test_git_wrapper_intercepts_subcommand() {
     return 0
 }
 
+test_daft_wrapper_function_exists() {
+    log "Testing: daft shell-init generates daft() wrapper function"
+
+    local output
+    output=$(daft shell-init bash)
+
+    # Check that it contains the daft wrapper function
+    if echo "$output" | grep -q "^daft()"; then
+        log_success "Output contains daft() wrapper function"
+    else
+        log_error "Output missing daft() wrapper function"
+        return 1
+    fi
+
+    # Check that it intercepts worktree-checkout
+    if echo "$output" | grep -q "worktree-checkout)"; then
+        log_success "daft() wrapper intercepts worktree-checkout"
+    else
+        log_error "daft() wrapper missing worktree-checkout interception"
+        return 1
+    fi
+
+    # Check that it has passthrough for other commands
+    if echo "$output" | grep -q 'command daft "\$@"'; then
+        log_success "daft() wrapper passes through other commands"
+    else
+        log_error "daft() wrapper missing passthrough"
+        return 1
+    fi
+
+    return 0
+}
+
+test_daft_wrapper_passthrough() {
+    log "Testing: daft() wrapper passes through regular daft commands"
+
+    # Source the shell wrappers in a subshell and test
+    local version_output
+    version_output=$(bash -c '
+        eval "$(daft shell-init bash)"
+        daft --version
+    ' 2>&1)
+
+    if echo "$version_output" | grep -q "daft"; then
+        log_success "daft --version works through wrapper"
+    else
+        log_error "daft --version failed through wrapper"
+        echo "Output: $version_output"
+        return 1
+    fi
+
+    return 0
+}
+
+test_daft_wrapper_intercepts_subcommand() {
+    log "Testing: daft() wrapper intercepts 'daft worktree-checkout' subcommand"
+
+    # Source the shell wrappers and check that daft is a function
+    local type_output
+    type_output=$(bash -c '
+        eval "$(daft shell-init bash)"
+        type daft | head -1
+    ' 2>&1)
+
+    if echo "$type_output" | grep -q "function"; then
+        log_success "daft is defined as a function after sourcing wrappers"
+    else
+        log_error "daft is not a function after sourcing wrappers"
+        echo "Output: $type_output"
+        return 1
+    fi
+
+    return 0
+}
+
 # --- Main Test Runner ---
 
 main() {
@@ -376,6 +451,9 @@ main() {
     run_test "git_wrapper_function_exists" test_git_wrapper_function_exists
     run_test "git_wrapper_passthrough" test_git_wrapper_passthrough
     run_test "git_wrapper_intercepts_subcommand" test_git_wrapper_intercepts_subcommand
+    run_test "daft_wrapper_function_exists" test_daft_wrapper_function_exists
+    run_test "daft_wrapper_passthrough" test_daft_wrapper_passthrough
+    run_test "daft_wrapper_intercepts_subcommand" test_daft_wrapper_intercepts_subcommand
 
     print_summary
 }
