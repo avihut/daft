@@ -6,6 +6,12 @@
 //! 3. If the cache is stale (>24h) or missing, spawns a detached background process to check
 //! 4. The background process fetches GitHub Releases API via `curl` and writes the cache
 //!
+//! Notification throttling: the "new version available" banner is shown at most once
+//! per 24 hours for the same version. If a different newer version appears, the banner
+//! is shown again immediately. State is tracked in a separate file
+//! (~/.config/daft/update-notification.json) to avoid race conditions with the
+//! background update process.
+//!
 //! Zero latency impact on commands — the check never blocks.
 
 use anyhow::{Context, Result};
@@ -28,8 +34,14 @@ const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/avihut/daft/rele
 /// How long (in seconds) before the cache is considered stale.
 const CACHE_TTL_SECONDS: i64 = 24 * 60 * 60; // 24 hours
 
+/// How long (in seconds) before the notification for the same version is shown again.
+const NOTIFICATION_TTL_SECONDS: i64 = 24 * 60 * 60; // 24 hours
+
 /// Current cache schema version.
 const CACHE_VERSION: u32 = 1;
+
+/// Current notification state schema version.
+const NOTIFICATION_STATE_VERSION: u32 = 1;
 
 /// Cached result from a previous update check.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +52,20 @@ pub struct UpdateCheckCache {
     pub checked_at: i64,
     /// The latest version string (without 'v' prefix).
     pub latest_version: String,
+}
+
+/// Tracks when/what version was last shown to the user, so we can throttle
+/// the "new version available" notification to once per 24 hours per version.
+/// Stored separately from `UpdateCheckCache` because the cache is written by
+/// a background process while this state is written by the foreground.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationState {
+    /// Schema version for future migrations.
+    pub version: u32,
+    /// The version string that was last shown to the user.
+    pub notified_version: String,
+    /// Unix timestamp of when the notification was last shown.
+    pub notified_at: i64,
 }
 
 /// Minimal GitHub release response — only the fields we need.
@@ -146,6 +172,11 @@ fn maybe_check_for_update_inner() -> Option<UpdateNotification> {
     let current = crate::VERSION;
 
     if is_newer_version(current, &cache.latest_version) {
+        // Throttle: show at most once per 24h per version
+        if should_suppress_notification(&cache.latest_version) {
+            return None;
+        }
+
         let method = detect_install_method();
         Some(UpdateNotification {
             current_version: current.to_string(),
@@ -183,6 +214,95 @@ fn save_cache_to(cache: &UpdateCheckCache, path: &PathBuf) -> Result<()> {
         .with_context(|| format!("Failed to write cache to {}", path.display()))?;
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Notification state persistence and throttling
+// ---------------------------------------------------------------------------
+
+/// Returns the path to the notification state file.
+fn notification_state_path() -> Result<PathBuf> {
+    let config_dir = dirs::config_dir().context("Could not determine config directory")?;
+    Ok(config_dir.join("daft").join("update-notification.json"))
+}
+
+/// Load the notification state from disk. Returns `None` on any error.
+fn load_notification_state() -> Option<NotificationState> {
+    let path = notification_state_path().ok()?;
+    let contents = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
+/// Save the notification state to disk, creating parent directories as needed.
+fn save_notification_state(state: &NotificationState) -> Result<()> {
+    let path = notification_state_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory {}", parent.display()))?;
+    }
+
+    let contents =
+        serde_json::to_string_pretty(state).context("Failed to serialize notification state")?;
+
+    fs::write(&path, contents)
+        .with_context(|| format!("Failed to write notification state to {}", path.display()))?;
+
+    Ok(())
+}
+
+/// Pure logic: returns `true` if the notification should be suppressed.
+///
+/// Suppresses when:
+/// - Same version was notified less than 24 hours ago
+/// - Future timestamp (clock skew) for the same version — treat as recently notified
+///
+/// Does NOT suppress when:
+/// - No prior state (first time)
+/// - Different version (new release detected)
+/// - Same version but 24+ hours have passed
+fn should_suppress_for_state(state: Option<&NotificationState>, latest_version: &str) -> bool {
+    let state = match state {
+        Some(s) => s,
+        None => return false, // No prior state → show
+    };
+
+    if state.notified_version != latest_version {
+        return false; // Different version → show immediately
+    }
+
+    // Same version — check time elapsed
+    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(_) => return false, // Clock error → show to be safe
+    };
+
+    let age = now - state.notified_at;
+
+    // Suppress if within TTL window or future timestamp (clock skew)
+    age < NOTIFICATION_TTL_SECONDS
+}
+
+/// Check if the notification for `latest_version` should be suppressed.
+fn should_suppress_notification(latest_version: &str) -> bool {
+    let state = load_notification_state();
+    should_suppress_for_state(state.as_ref(), latest_version)
+}
+
+/// Record that a notification was shown for the given version.
+/// Silently ignores any errors (best-effort).
+pub fn record_notification_shown(version: &str) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let state = NotificationState {
+        version: NOTIFICATION_STATE_VERSION,
+        notified_version: version.to_string(),
+        notified_at: now,
+    };
+
+    let _ = save_notification_state(&state);
 }
 
 /// Returns `true` if the cache is older than 24 hours or has a future timestamp.
@@ -527,6 +647,104 @@ mod tests {
     fn test_ci_detection_does_not_panic() {
         // Just ensure it doesn't panic regardless of environment
         let _ = is_ci_environment();
+    }
+
+    // -- Notification state persistence tests --
+
+    #[test]
+    fn test_notification_state_save_load_roundtrip() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("update-notification.json");
+
+        let state = NotificationState {
+            version: NOTIFICATION_STATE_VERSION,
+            notified_version: "1.0.22".to_string(),
+            notified_at: 1700000000,
+        };
+
+        let contents = serde_json::to_string_pretty(&state).unwrap();
+        fs::write(&path, &contents).unwrap();
+
+        let loaded_contents = fs::read_to_string(&path).unwrap();
+        let loaded: NotificationState = serde_json::from_str(&loaded_contents).unwrap();
+        assert_eq!(loaded.version, NOTIFICATION_STATE_VERSION);
+        assert_eq!(loaded.notified_version, "1.0.22");
+        assert_eq!(loaded.notified_at, 1700000000);
+    }
+
+    // -- Notification throttling tests --
+
+    #[test]
+    fn test_no_prior_state_does_not_suppress() {
+        assert!(!should_suppress_for_state(None, "1.0.22"));
+    }
+
+    #[test]
+    fn test_different_version_does_not_suppress() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let state = NotificationState {
+            version: NOTIFICATION_STATE_VERSION,
+            notified_version: "1.0.21".to_string(),
+            notified_at: now - 60, // 1 minute ago
+        };
+
+        // Different version → should NOT suppress, even if recent
+        assert!(!should_suppress_for_state(Some(&state), "1.0.22"));
+    }
+
+    #[test]
+    fn test_same_version_recent_suppresses() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let state = NotificationState {
+            version: NOTIFICATION_STATE_VERSION,
+            notified_version: "1.0.22".to_string(),
+            notified_at: now - 60, // 1 minute ago
+        };
+
+        // Same version, shown recently → should suppress
+        assert!(should_suppress_for_state(Some(&state), "1.0.22"));
+    }
+
+    #[test]
+    fn test_same_version_expired_does_not_suppress() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let state = NotificationState {
+            version: NOTIFICATION_STATE_VERSION,
+            notified_version: "1.0.22".to_string(),
+            notified_at: now - NOTIFICATION_TTL_SECONDS - 1, // just past TTL
+        };
+
+        // Same version, but enough time has passed → should NOT suppress
+        assert!(!should_suppress_for_state(Some(&state), "1.0.22"));
+    }
+
+    #[test]
+    fn test_future_timestamp_suppresses() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let state = NotificationState {
+            version: NOTIFICATION_STATE_VERSION,
+            notified_version: "1.0.22".to_string(),
+            notified_at: now + 3600, // 1 hour in the future (clock skew)
+        };
+
+        // Future timestamp for same version → treat as recently notified (suppress)
+        assert!(should_suppress_for_state(Some(&state), "1.0.22"));
     }
 
     // -- maybe_check_for_update smoke test --
