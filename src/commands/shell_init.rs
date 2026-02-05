@@ -156,6 +156,34 @@ git() {
     esac
 }
 
+# daft wrapper to intercept "daft worktree-*" subcommands
+daft() {
+    case "$1" in
+        worktree-clone)
+            shift; __daft_wrapper git-worktree-clone "$@" ;;
+        worktree-init)
+            shift; __daft_wrapper git-worktree-init "$@" ;;
+        worktree-checkout)
+            shift; __daft_wrapper git-worktree-checkout "$@" ;;
+        worktree-checkout-branch)
+            shift; __daft_wrapper git-worktree-checkout-branch "$@" ;;
+        worktree-checkout-branch-from-default)
+            shift; __daft_wrapper git-worktree-checkout-branch-from-default "$@" ;;
+        worktree-carry)
+            shift; __daft_wrapper git-worktree-carry "$@" ;;
+        worktree-prune)
+            shift; __daft_wrapper git-worktree-prune "$@" ;;
+        worktree-fetch)
+            shift; __daft_wrapper git-worktree-fetch "$@" ;;
+        worktree-flow-adopt)
+            shift; __daft_wrapper git-worktree-flow-adopt "$@" ;;
+        worktree-flow-eject)
+            shift; __daft_wrapper git-worktree-flow-eject "$@" ;;
+        *)
+            command daft "$@" ;;
+    esac
+}
+
 # Shortcut wrappers - these override symlinks to enable cd behavior
 # Git-style shortcuts
 gwtclone() { __daft_wrapper git-worktree-clone "$@"; }
@@ -300,6 +328,34 @@ function git --wraps git
             __daft_wrapper git-worktree-flow-eject $argv[2..-1]
         case '*'
             command git $argv
+    end
+end
+
+# daft wrapper to intercept "daft worktree-*" subcommands
+function daft --wraps daft
+    switch $argv[1]
+        case worktree-clone
+            __daft_wrapper git-worktree-clone $argv[2..-1]
+        case worktree-init
+            __daft_wrapper git-worktree-init $argv[2..-1]
+        case worktree-checkout
+            __daft_wrapper git-worktree-checkout $argv[2..-1]
+        case worktree-checkout-branch
+            __daft_wrapper git-worktree-checkout-branch $argv[2..-1]
+        case worktree-checkout-branch-from-default
+            __daft_wrapper git-worktree-checkout-branch-from-default $argv[2..-1]
+        case worktree-carry
+            __daft_wrapper git-worktree-carry $argv[2..-1]
+        case worktree-prune
+            __daft_wrapper git-worktree-prune $argv[2..-1]
+        case worktree-fetch
+            __daft_wrapper git-worktree-fetch $argv[2..-1]
+        case worktree-flow-adopt
+            __daft_wrapper git-worktree-flow-adopt $argv[2..-1]
+        case worktree-flow-eject
+            __daft_wrapper git-worktree-flow-eject $argv[2..-1]
+        case '*'
+            command daft $argv
     end
 end
 
