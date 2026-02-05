@@ -69,6 +69,21 @@ fn main() -> Result<()> {
                         return Ok(());
                     }
                     "hooks" => commands::hooks::run(),
+                    "run" => {
+                        // daft run <hook-name> [-- args...]
+                        if args.len() < 3 {
+                            eprintln!("Usage: daft run <hook-name> [-- args...]");
+                            std::process::exit(1);
+                        }
+                        let hook_name = &args[2];
+                        let hook_args: Vec<String> =
+                            if let Some(pos) = args.iter().position(|a| a == "--") {
+                                args[pos + 1..].to_vec()
+                            } else {
+                                args[3..].to_vec()
+                            };
+                        commands::hooks::run_hook(hook_name, &hook_args)
+                    }
                     "multi-remote" => commands::multi_remote::run(),
                     "release-notes" => commands::release_notes::run(),
                     "setup" => {

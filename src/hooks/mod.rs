@@ -42,6 +42,7 @@
 
 mod environment;
 mod executor;
+pub mod shim;
 pub mod template;
 mod trust;
 mod trust_dto;
@@ -109,6 +110,21 @@ impl HookType {
             HookType::PostCreate => "worktree-post-create",
             HookType::PreRemove => "worktree-pre-remove",
             HookType::PostRemove => "worktree-post-remove",
+        }
+    }
+
+    /// Look up a HookType by its YAML config key name.
+    ///
+    /// Returns `None` for git hooks (pre-commit, etc.) that are not daft lifecycle hooks.
+    pub fn from_yaml_name(name: &str) -> Option<Self> {
+        match name {
+            "post-clone" => Some(HookType::PostClone),
+            "post-init" => Some(HookType::PostInit),
+            "worktree-pre-create" => Some(HookType::PreCreate),
+            "worktree-post-create" => Some(HookType::PostCreate),
+            "worktree-pre-remove" => Some(HookType::PreRemove),
+            "worktree-post-remove" => Some(HookType::PostRemove),
+            _ => None,
         }
     }
 

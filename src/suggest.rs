@@ -11,6 +11,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "hooks",
     "multi-remote",
     "release-notes",
+    "run",
     "setup",
     "shell-init",
     "worktree-carry",

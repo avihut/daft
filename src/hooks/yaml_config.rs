@@ -3,7 +3,7 @@
 //! This module defines the serde-deserializable structs that represent
 //! a `daft.yml` configuration file.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Known hook names that are recognized by the system.
@@ -29,7 +29,7 @@ pub const KNOWN_HOOK_NAMES: &[&str] = &[
 /// The main `daft.yml` file maps to this struct. Hook definitions are
 /// stored in the `hooks` map, keyed by hook name (e.g., "post-clone",
 /// "pre-commit").
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct YamlConfig {
     /// Minimum daft version required to use this config.
@@ -61,7 +61,7 @@ pub struct YamlConfig {
 }
 
 /// Output setting: either a list of hook names or false to suppress.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum OutputSetting {
     /// Suppress all hook output.
@@ -71,7 +71,7 @@ pub enum OutputSetting {
 }
 
 /// Definition for a single hook type.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct HookDef {
     /// Run jobs in parallel.
@@ -112,7 +112,7 @@ pub struct HookDef {
 }
 
 /// A single job definition within a hook.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct JobDef {
     /// Optional name for the job (used for merging and display).
@@ -177,7 +177,7 @@ pub struct JobDef {
 }
 
 /// Legacy command definition (alias for JobDef).
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct CommandDef {
     pub run: Option<String>,
@@ -209,7 +209,7 @@ impl CommandDef {
 }
 
 /// Glob pattern: either a single string or a list.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum GlobPattern {
     Single(String),
@@ -227,7 +227,7 @@ impl GlobPattern {
 }
 
 /// File type filter: either a single string or a list.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FileTypeFilter {
     Single(String),
@@ -245,7 +245,7 @@ impl FileTypeFilter {
 }
 
 /// Skip condition: bool, string, or list of skip rules.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SkipCondition {
     /// Always skip (true) or never skip (false).
@@ -257,7 +257,7 @@ pub enum SkipCondition {
 }
 
 /// A single skip rule.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SkipRule {
     /// Named condition: "merge" or "rebase".
@@ -267,7 +267,7 @@ pub enum SkipRule {
 }
 
 /// Structured skip rule.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkipRuleStructured {
     /// Skip if current ref matches this pattern.
     #[serde(rename = "ref")]
@@ -279,7 +279,7 @@ pub struct SkipRuleStructured {
 }
 
 /// Only condition: mirrors SkipCondition but with inverse semantics.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum OnlyCondition {
     /// Only run if true, never run if false.
@@ -291,7 +291,7 @@ pub enum OnlyCondition {
 }
 
 /// A single only rule.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum OnlyRule {
     /// Named condition: "merge" or "rebase".
@@ -301,7 +301,7 @@ pub enum OnlyRule {
 }
 
 /// Structured only rule.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OnlyRuleStructured {
     /// Only run if current ref matches this pattern.
     #[serde(rename = "ref")]
@@ -313,7 +313,7 @@ pub struct OnlyRuleStructured {
 }
 
 /// A group of jobs that runs as a unit.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct GroupDef {
     /// Run grouped jobs in parallel.
