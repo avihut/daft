@@ -112,8 +112,9 @@ fn main() -> Result<()> {
     };
 
     // Show update notification after command output (if available)
-    if let Some(notification) = update_notification {
-        daft::update_check::print_notification(&notification);
+    if let Some(ref notification) = update_notification {
+        daft::update_check::print_notification(notification);
+        daft::update_check::record_notification_shown(&notification.latest_version);
     }
 
     result
