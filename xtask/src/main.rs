@@ -21,6 +21,7 @@ const COMMANDS: &[&str] = &[
     "git-worktree-fetch",
     "git-worktree-flow-adopt",
     "git-worktree-flow-eject",
+    "daft-doctor",
     "daft-release-notes",
 ];
 
@@ -40,6 +41,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-worktree-fetch" => Some(daft::commands::fetch::Args::command()),
         "git-worktree-flow-adopt" => Some(daft::commands::flow_adopt::Args::command()),
         "git-worktree-flow-eject" => Some(daft::commands::flow_eject::Args::command()),
+        "daft-doctor" => Some(daft::commands::doctor::Args::command()),
         "daft-release-notes" => Some(daft::commands::release_notes::Args::command()),
         _ => None,
     }

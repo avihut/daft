@@ -1,0 +1,28 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH daft-doctor 1  "daft-doctor " 
+.SH NAME
+daft\-doctor \- Diagnose daft installation and configuration issues
+.SH SYNOPSIS
+\fBdaft\-doctor\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-fix\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Diagnose daft installation and configuration issues.
+.PP
+Runs health checks on your daft installation, repository setup,
+and hooks configuration. Reports issues with actionable suggestions.
+.PP
+When run outside a git repository, only installation checks are performed.
+Inside a daft\-managed repository, repository and hooks checks run too.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show detailed output for each check
+.TP
+\fB\-\-fix\fR
+Auto\-fix issues that can be resolved automatically
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Only show warnings and errors
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

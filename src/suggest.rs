@@ -7,6 +7,7 @@
 pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "branch",
     "completions",
+    "doctor",
     "hooks",
     "multi-remote",
     "release-notes",

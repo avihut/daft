@@ -62,6 +62,7 @@ fn main() -> Result<()> {
                     "--help" | "-h" => commands::docs::run(),
                     "branch" => commands::branch::run(),
                     "completions" => commands::completions::run(),
+                    "doctor" => commands::doctor::run(),
                     "__complete" => commands::complete::run(),
                     "__check-update" => {
                         let _ = daft::update_check::run_check_update();
