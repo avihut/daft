@@ -205,35 +205,44 @@ fn execute_parallel(
     let (interactive, parallel): (Vec<_>, Vec<_>) =
         jobs.iter().partition(|j| j.interactive == Some(true));
 
-    // Collect job data for threads
-    let job_data: Vec<ParallelJobData> = parallel
-        .iter()
-        .map(|job| {
-            let name = job.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
-            let cmd = resolve_command(
-                job,
-                exec.hook_ctx,
-                Some(&name),
-                exec.hook_args,
-                exec.source_dir,
-            );
-            let mut env = exec.hook_env.clone();
-            if let Some(ref job_env) = job.env {
-                env.extend(job_env.clone());
+    // Collect job data for threads (file filtering done on main thread)
+    let mut job_data: Vec<ParallelJobData> = Vec::new();
+    for job in &parallel {
+        let name = job.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
+
+        // File filtering
+        let filtered = resolve_file_list(job, exec)?;
+        if let Some(ref files) = filtered {
+            if files.is_empty() {
+                output.debug(&format!("Skipping job '{name}': no matching files"));
+                continue;
             }
-            let wd = job
-                .root
-                .as_ref()
-                .map(|r| exec.working_dir.join(r))
-                .unwrap_or_else(|| exec.working_dir.to_path_buf());
-            ParallelJobData {
-                name,
-                cmd,
-                env,
-                working_dir: wd,
-            }
-        })
-        .collect();
+        }
+
+        let cmd = resolve_command_with_files(
+            job,
+            exec.hook_ctx,
+            Some(&name),
+            exec.hook_args,
+            exec.source_dir,
+            filtered.as_deref(),
+        );
+        let mut env = exec.hook_env.clone();
+        if let Some(ref job_env) = job.env {
+            env.extend(job_env.clone());
+        }
+        let wd = job
+            .root
+            .as_ref()
+            .map(|r| exec.working_dir.join(r))
+            .unwrap_or_else(|| exec.working_dir.to_path_buf());
+        job_data.push(ParallelJobData {
+            name,
+            cmd,
+            env,
+            working_dir: wd,
+        });
+    }
 
     let ctx_clone = exec.hook_ctx.clone();
     type ParallelResults = Vec<(String, Result<HookResult>)>;
@@ -311,12 +320,23 @@ fn execute_single_job(
     output: &mut dyn Output,
 ) -> Result<HookResult> {
     let job_name = job.name.as_deref().unwrap_or("(unnamed)");
-    let cmd = resolve_command(
+
+    // File filtering: get file list, filter by glob/type/exclude, skip if empty
+    let filtered_files = resolve_file_list(job, exec)?;
+    if let Some(ref files) = filtered_files {
+        if files.is_empty() {
+            output.debug(&format!("Skipping job '{job_name}': no matching files"));
+            return Ok(HookResult::skipped("No matching files"));
+        }
+    }
+
+    let cmd = resolve_command_with_files(
         job,
         exec.hook_ctx,
         Some(job_name),
         exec.hook_args,
         exec.source_dir,
+        filtered_files.as_deref(),
     );
 
     if cmd.is_empty() {
@@ -341,7 +361,45 @@ fn execute_single_job(
     run_shell_command(&cmd, &env, &wd, exec.hook_ctx, Duration::from_secs(300))
 }
 
+/// Resolve the file list for a job, applying glob/file_type/exclude filters.
+///
+/// Returns `None` if no file filtering is configured (job runs unconditionally).
+/// Returns `Some(files)` if filtering is active (job skips if empty).
+fn resolve_file_list(job: &JobDef, exec: &ExecContext<'_>) -> Result<Option<Vec<String>>> {
+    use super::files;
+
+    let has_filter = job.glob.is_some() || job.file_types.is_some() || job.files.is_some();
+    if !has_filter {
+        return Ok(None);
+    }
+
+    // Get the base file list
+    let mut file_list = if let Some(ref cmd) = job.files {
+        files::custom_file_command(exec.working_dir, cmd)?
+    } else {
+        files::staged_files(exec.working_dir)?
+    };
+
+    // Apply glob filter
+    if let Some(ref glob) = job.glob {
+        file_list = files::filter_by_glob(&file_list, glob)?;
+    }
+
+    // Apply file type filter
+    if let Some(ref ft) = job.file_types {
+        file_list = files::filter_by_file_type(&file_list, ft);
+    }
+
+    // Apply exclude filter
+    if let Some(ref exclude) = job.exclude {
+        file_list = files::exclude_files(&file_list, exclude)?;
+    }
+
+    Ok(Some(file_list))
+}
+
 /// Resolve the shell command for a job, handling both `run` and `script`.
+#[cfg(test)]
 fn resolve_command(
     job: &JobDef,
     ctx: &HookContext,
@@ -349,8 +407,20 @@ fn resolve_command(
     hook_args: &[String],
     source_dir: &str,
 ) -> String {
+    resolve_command_with_files(job, ctx, job_name, hook_args, source_dir, None)
+}
+
+/// Resolve the shell command with optional filtered file list.
+fn resolve_command_with_files(
+    job: &JobDef,
+    ctx: &HookContext,
+    job_name: Option<&str>,
+    hook_args: &[String],
+    source_dir: &str,
+    filtered_files: Option<&[String]>,
+) -> String {
     if let Some(ref run) = job.run {
-        template::substitute(run, ctx, job_name, hook_args)
+        template::substitute_with_files(run, ctx, job_name, hook_args, filtered_files)
     } else if let Some(ref script) = job.script {
         let script_path = format!("{source_dir}/{script}");
         if let Some(ref runner) = job.runner {
@@ -360,7 +430,7 @@ fn resolve_command(
             } else {
                 format!("{runner} {script_path} {args}")
             };
-            template::substitute(&cmd, ctx, job_name, hook_args)
+            template::substitute_with_files(&cmd, ctx, job_name, hook_args, filtered_files)
         } else {
             let args = job.args.as_deref().unwrap_or("");
             let cmd = if args.is_empty() {
@@ -368,7 +438,7 @@ fn resolve_command(
             } else {
                 format!("{script_path} {args}")
             };
-            template::substitute(&cmd, ctx, job_name, hook_args)
+            template::substitute_with_files(&cmd, ctx, job_name, hook_args, filtered_files)
         }
     } else {
         String::new()

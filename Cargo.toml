@@ -42,6 +42,7 @@ gix = { version = "0.72", default-features = false, features = [
     "status",
     "revparse-regex",
 ] }
+globset = "0.4.18"
 
 # pager is Unix-only (uses fork/pipes)
 [target.'cfg(unix)'.dependencies]

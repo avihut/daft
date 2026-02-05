@@ -19,12 +19,28 @@ use super::environment::HookContext;
 /// - `{0}` — all hook arguments space-joined
 /// - `{1}`, `{2}`, ... — individual positional hook arguments
 ///
-/// File templates (`{staged_files}`, etc.) are handled separately in Phase 4.
+/// File templates are resolved lazily: `{staged_files}`, `{push_files}`, and
+/// `{all_files}` are only computed when the placeholder actually appears.
 pub fn substitute(
     command: &str,
     ctx: &HookContext,
     job_name: Option<&str>,
     hook_args: &[String],
+) -> String {
+    substitute_with_files(command, ctx, job_name, hook_args, None)
+}
+
+/// Substitute template variables, with an optional pre-filtered file list.
+///
+/// If `filtered_files` is provided, `{files}` resolves to that list.
+/// Otherwise, `{staged_files}`, `{push_files}`, `{all_files}` are computed
+/// lazily from git.
+pub fn substitute_with_files(
+    command: &str,
+    ctx: &HookContext,
+    job_name: Option<&str>,
+    hook_args: &[String],
+    filtered_files: Option<&[String]>,
 ) -> String {
     let mut result = command.to_string();
 
@@ -50,6 +66,29 @@ pub fn substitute(
 
     if let Some(ref branch) = ctx.default_branch {
         result = result.replace("{default_branch}", branch);
+    }
+
+    // File templates — resolved lazily
+    if let Some(files) = filtered_files {
+        result = result.replace("{files}", &files.join(" "));
+    }
+    if result.contains("{staged_files}") {
+        let files = super::files::staged_files(&ctx.worktree_path)
+            .unwrap_or_default()
+            .join(" ");
+        result = result.replace("{staged_files}", &files);
+    }
+    if result.contains("{push_files}") {
+        let files = super::files::push_files(&ctx.worktree_path)
+            .unwrap_or_default()
+            .join(" ");
+        result = result.replace("{push_files}", &files);
+    }
+    if result.contains("{all_files}") {
+        let files = super::files::all_files(&ctx.worktree_path)
+            .unwrap_or_default()
+            .join(" ");
+        result = result.replace("{all_files}", &files);
     }
 
     // Hook argument templates: {0} = all args, {1}, {2}, etc.
