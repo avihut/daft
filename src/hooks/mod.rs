@@ -98,6 +98,20 @@ impl HookType {
         }
     }
 
+    /// Returns the YAML config key name for this hook type.
+    ///
+    /// This is the key used in `daft.yml` under `hooks:`.
+    pub fn yaml_name(&self) -> &'static str {
+        match self {
+            HookType::PostClone => "post-clone",
+            HookType::PostInit => "post-init",
+            HookType::PreCreate => "worktree-pre-create",
+            HookType::PostCreate => "worktree-post-create",
+            HookType::PreRemove => "worktree-pre-remove",
+            HookType::PostRemove => "worktree-post-remove",
+        }
+    }
+
     /// Returns the deprecated filename for this hook type, if it was renamed.
     ///
     /// Returns `None` for hooks that were not renamed (`post-clone`, `post-init`).
