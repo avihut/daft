@@ -64,6 +64,8 @@ struct ExecContext<'a> {
     hook_env: &'a HashMap<String, String>,
     source_dir: &'a str,
     working_dir: &'a Path,
+    /// Shell RC file to source before commands (from config `rc` field).
+    rc: Option<&'a str>,
 }
 
 /// Execute a YAML-defined hook.
@@ -76,6 +78,30 @@ pub fn execute_yaml_hook(
     hook_args: &[String],
     source_dir: &str,
     working_dir: &Path,
+) -> Result<HookResult> {
+    execute_yaml_hook_with_rc(
+        hook_name,
+        hook_def,
+        ctx,
+        output,
+        hook_args,
+        source_dir,
+        working_dir,
+        None,
+    )
+}
+
+/// Execute a YAML-defined hook with optional RC file.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_yaml_hook_with_rc(
+    hook_name: &str,
+    hook_def: &HookDef,
+    ctx: &HookContext,
+    output: &mut dyn Output,
+    hook_args: &[String],
+    source_dir: &str,
+    working_dir: &Path,
+    rc: Option<&str>,
 ) -> Result<HookResult> {
     // Check hook-level skip/only conditions
     if let Some(ref skip) = hook_def.skip {
@@ -91,15 +117,28 @@ pub fn execute_yaml_hook(
         }
     }
 
-    let jobs = get_effective_jobs(hook_def);
+    let mut jobs = get_effective_jobs(hook_def);
 
     if jobs.is_empty() {
         return Ok(HookResult::skipped("No jobs defined"));
     }
 
+    // Filter out jobs matching exclude_tags
+    if let Some(ref exclude_tags) = hook_def.exclude_tags {
+        jobs.retain(|job| {
+            if let Some(ref tags) = job.tags {
+                !tags.iter().any(|t| exclude_tags.contains(t))
+            } else {
+                true
+            }
+        });
+        if jobs.is_empty() {
+            return Ok(HookResult::skipped("All jobs excluded by tags"));
+        }
+    }
+
     // Sort by priority if set
-    let mut sorted_jobs = jobs;
-    sorted_jobs.sort_by_key(|j| j.priority.unwrap_or(0));
+    jobs.sort_by_key(|j| j.priority.unwrap_or(0));
 
     let mode = ExecutionMode::from_hook_def(hook_def);
 
@@ -112,9 +151,25 @@ pub fn execute_yaml_hook(
         hook_env: &HashMap::new(),
         source_dir,
         working_dir,
+        rc,
     };
 
-    execute_jobs(&sorted_jobs, mode, &exec, output)
+    let result = execute_jobs(&jobs, mode, &exec, output)?;
+
+    // Check fail_on_changes after all jobs complete
+    if hook_def.fail_on_changes == Some(true)
+        && result.success
+        && has_unstaged_changes(working_dir)?
+    {
+        output.warning("Working tree has unstaged changes after hook execution");
+        return Ok(HookResult::failed(
+            1,
+            String::new(),
+            "fail_on_changes: working tree has unstaged changes".to_string(),
+        ));
+    }
+
+    Ok(result)
 }
 
 fn mode_label(mode: ExecutionMode) -> &'static str {
@@ -411,7 +466,27 @@ fn execute_single_job(
         exec.working_dir.to_path_buf()
     };
 
-    run_shell_command(&cmd, &env, &wd, exec.hook_ctx, Duration::from_secs(300))
+    // Wrap command with RC file if configured
+    let cmd = if let Some(rc) = exec.rc {
+        format!("source {rc} && {cmd}")
+    } else {
+        cmd
+    };
+
+    let is_interactive = job.interactive == Some(true) || job.use_stdin == Some(true);
+
+    let result = if is_interactive {
+        run_interactive_command(&cmd, &env, &wd, exec.hook_ctx)
+    } else {
+        run_shell_command(&cmd, &env, &wd, exec.hook_ctx, Duration::from_secs(300))
+    }?;
+
+    // stage_fixed: re-stage modified files after successful run
+    if job.stage_fixed == Some(true) && result.success {
+        stage_fixed_files(exec.working_dir)?;
+    }
+
+    Ok(result)
 }
 
 /// Resolve the file list for a job, applying glob/file_type/exclude filters.
@@ -592,6 +667,99 @@ fn wait_with_timeout(
             }
         }
     }
+}
+
+/// Run a command with stdin/stdout inherited (for interactive jobs).
+fn run_interactive_command(
+    cmd: &str,
+    extra_env: &HashMap<String, String>,
+    working_dir: &Path,
+    ctx: &HookContext,
+) -> Result<HookResult> {
+    let mut command = Command::new("sh");
+    command.args(["-c", cmd]);
+    command.current_dir(working_dir);
+
+    let hook_env = super::environment::HookEnvironment::from_context(ctx);
+    command.envs(hook_env.vars());
+    command.envs(extra_env);
+
+    // Inherit stdin/stdout/stderr for interactive mode
+    command.stdin(Stdio::inherit());
+    command.stdout(Stdio::inherit());
+    command.stderr(Stdio::inherit());
+
+    let status = command
+        .status()
+        .with_context(|| format!("Failed to run interactive command: {cmd}"))?;
+
+    let exit_code = status.code().unwrap_or(-1);
+    if status.success() {
+        Ok(HookResult {
+            success: true,
+            exit_code: Some(exit_code),
+            stdout: String::new(),
+            stderr: String::new(),
+            skipped: false,
+            skip_reason: None,
+        })
+    } else {
+        Ok(HookResult::failed(exit_code, String::new(), String::new()))
+    }
+}
+
+/// Check if the working tree has unstaged changes.
+fn has_unstaged_changes(worktree: &Path) -> Result<bool> {
+    let status = std::process::Command::new("git")
+        .args(["diff", "--quiet"])
+        .current_dir(worktree)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("Failed to check for unstaged changes")?;
+    Ok(!status.success())
+}
+
+/// Re-stage files that were previously staged and modified by a job.
+fn stage_fixed_files(worktree: &Path) -> Result<()> {
+    // Get the list of staged files, then add any that have been modified
+    let staged = super::files::staged_files(worktree)?;
+    if staged.is_empty() {
+        return Ok(());
+    }
+
+    // Check which staged files have been modified (unstaged changes)
+    let output = std::process::Command::new("git")
+        .args(["diff", "--name-only"])
+        .current_dir(worktree)
+        .output()
+        .context("Failed to check modified files")?;
+
+    let modified: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect();
+
+    // Re-stage files that were both staged and modified
+    let to_restage: Vec<&String> = staged.iter().filter(|f| modified.contains(f)).collect();
+    if to_restage.is_empty() {
+        return Ok(());
+    }
+
+    let args: Vec<&str> = std::iter::once("add")
+        .chain(to_restage.iter().map(|s| s.as_str()))
+        .collect();
+
+    std::process::Command::new("git")
+        .args(&args)
+        .current_dir(worktree)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("Failed to re-stage fixed files")?;
+
+    Ok(())
 }
 
 #[cfg(test)]

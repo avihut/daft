@@ -211,11 +211,12 @@ impl HookExecutor {
         }
 
         let source_dir = yaml_config.source_dir.as_deref().unwrap_or(".daft");
+        let rc = yaml_config.rc.as_deref();
 
         let env = HookEnvironment::from_context(ctx);
         let working_dir = env.working_directory(ctx);
 
-        let result = yaml_executor::execute_yaml_hook(
+        let result = yaml_executor::execute_yaml_hook_with_rc(
             hook_name,
             hook_def,
             ctx,
@@ -223,6 +224,7 @@ impl HookExecutor {
             hook_args,
             source_dir,
             working_dir,
+            rc,
         )?;
 
         if !result.success && !result.skipped {
