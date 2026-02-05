@@ -185,6 +185,7 @@ fn execute_sequential(
 }
 
 /// Data needed to run a single job in a thread.
+#[derive(Clone)]
 struct ParallelJobData {
     name: String,
     cmd: String,
@@ -245,50 +246,74 @@ fn execute_parallel(
     }
 
     let ctx_clone = exec.hook_ctx.clone();
-    type ParallelResults = Vec<(String, Result<HookResult>)>;
-    let results: Arc<Mutex<ParallelResults>> = Arc::new(Mutex::new(Vec::new()));
 
-    let handles: Vec<_> = job_data
-        .into_iter()
-        .map(|data| {
-            let results = Arc::clone(&results);
-            let ctx_for_thread = ctx_clone.clone();
+    // Use indexed results to preserve definition order in output
+    type IndexedResult = (usize, String, Result<HookResult>);
+    let results: Arc<Mutex<Vec<IndexedResult>>> = Arc::new(Mutex::new(Vec::new()));
 
-            thread::spawn(move || {
-                let result = run_shell_command(
-                    &data.cmd,
-                    &data.env,
-                    &data.working_dir,
-                    &ctx_for_thread,
-                    Duration::from_secs(300),
-                );
-                results.lock().unwrap().push((data.name, result));
+    // Limit concurrency to avoid thread explosion
+    let max_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+
+    // Process in batches if many jobs
+    for batch in job_data.chunks(max_threads) {
+        let handles: Vec<_> = batch
+            .iter()
+            .enumerate()
+            .map(|(batch_idx, data)| {
+                let results = Arc::clone(&results);
+                let ctx_for_thread = ctx_clone.clone();
+                let data = data.clone();
+                let idx = batch_idx;
+
+                thread::spawn(move || {
+                    let result = run_shell_command(
+                        &data.cmd,
+                        &data.env,
+                        &data.working_dir,
+                        &ctx_for_thread,
+                        Duration::from_secs(300),
+                    );
+                    results.lock().unwrap().push((idx, data.name, result));
+                })
             })
-        })
-        .collect();
+            .collect();
 
-    // Wait for all threads
-    for handle in handles {
-        handle
-            .join()
-            .map_err(|_| anyhow::anyhow!("Thread panicked"))?;
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("Thread panicked"))?;
+        }
     }
 
-    // Collect results
-    let results = Arc::try_unwrap(results)
+    // Collect results in definition order
+    let mut results = Arc::try_unwrap(results)
         .map_err(|_| anyhow::anyhow!("Failed to unwrap results"))?
         .into_inner()
         .map_err(|_| anyhow::anyhow!("Mutex poisoned"))?;
+    results.sort_by_key(|(idx, _, _)| *idx);
 
+    // Report results in definition order (buffered output)
     let mut any_failed = false;
-    for (name, result) in &results {
+    for (_, name, result) in &results {
         match result {
             Ok(r) if !r.success => {
+                if !r.stderr.is_empty() {
+                    output.warning(&format!("Job '{name}' output:\n{}", r.stderr.trim()));
+                }
                 output.warning(&format!(
                     "Job '{name}' failed (exit code: {})",
                     r.exit_code.unwrap_or(-1)
                 ));
                 any_failed = true;
+            }
+            Ok(r) if !r.stdout.is_empty() || !r.stderr.is_empty() => {
+                output.debug(&format!(
+                    "Job '{name}' completed (stdout: {} bytes, stderr: {} bytes)",
+                    r.stdout.len(),
+                    r.stderr.len()
+                ));
             }
             Err(e) => {
                 output.error(&format!("Job '{name}' error: {e}"));
