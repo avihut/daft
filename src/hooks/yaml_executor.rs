@@ -77,6 +77,20 @@ pub fn execute_yaml_hook(
     source_dir: &str,
     working_dir: &Path,
 ) -> Result<HookResult> {
+    // Check hook-level skip/only conditions
+    if let Some(ref skip) = hook_def.skip {
+        if let Some(reason) = super::conditions::should_skip(skip, working_dir) {
+            output.debug(&format!("Skipping {hook_name}: {reason}"));
+            return Ok(HookResult::skipped(reason));
+        }
+    }
+    if let Some(ref only) = hook_def.only {
+        if let Some(reason) = super::conditions::should_only_skip(only, working_dir) {
+            output.debug(&format!("Skipping {hook_name}: {reason}"));
+            return Ok(HookResult::skipped(reason));
+        }
+    }
+
     let jobs = get_effective_jobs(hook_def);
 
     if jobs.is_empty() {
@@ -345,6 +359,20 @@ fn execute_single_job(
     output: &mut dyn Output,
 ) -> Result<HookResult> {
     let job_name = job.name.as_deref().unwrap_or("(unnamed)");
+
+    // Job-level skip/only conditions
+    if let Some(ref skip) = job.skip {
+        if let Some(reason) = super::conditions::should_skip(skip, exec.working_dir) {
+            output.debug(&format!("Skipping job '{job_name}': {reason}"));
+            return Ok(HookResult::skipped(reason));
+        }
+    }
+    if let Some(ref only) = job.only {
+        if let Some(reason) = super::conditions::should_only_skip(only, exec.working_dir) {
+            output.debug(&format!("Skipping job '{job_name}': {reason}"));
+            return Ok(HookResult::skipped(reason));
+        }
+    }
 
     // File filtering: get file list, filter by glob/type/exclude, skip if empty
     let filtered_files = resolve_file_list(job, exec)?;
