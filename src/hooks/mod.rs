@@ -42,8 +42,13 @@
 
 mod environment;
 mod executor;
+pub mod template;
 mod trust;
 mod trust_dto;
+pub mod yaml_config;
+pub mod yaml_config_loader;
+pub mod yaml_config_validate;
+pub mod yaml_executor;
 
 pub use environment::{HookContext, HookEnvironment, RemovalReason};
 pub use executor::{HookExecutor, HookResult};
