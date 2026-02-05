@@ -93,6 +93,11 @@ fn get_command_categories() -> Vec<CommandCategory> {
                     command: hooks::Args::command(),
                 },
                 CommandEntry {
+                    display_name: "daft run",
+                    command: Command::new("run")
+                        .about("Run a hook from YAML config (used by git hook shims)"),
+                },
+                CommandEntry {
                     display_name: "daft branch",
                     command: branch::Args::command(),
                 },
