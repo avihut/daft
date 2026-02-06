@@ -116,18 +116,6 @@ impl HookExecutor {
     /// 4. Checking trust level for the repository
     /// 5. Handling success/failure based on fail mode
     pub fn execute(&self, ctx: &HookContext, output: &mut dyn Output) -> Result<HookResult> {
-        self.execute_with_args(ctx, output, &[])
-    }
-
-    /// Execute a hook with the given context and optional hook arguments.
-    ///
-    /// Hook arguments are forwarded from git hook shims (e.g., pre-commit args).
-    pub fn execute_with_args(
-        &self,
-        ctx: &HookContext,
-        output: &mut dyn Output,
-        hook_args: &[String],
-    ) -> Result<HookResult> {
         // Check if hooks are globally enabled
         if !self.config.enabled {
             return Ok(HookResult::skipped("Hooks are globally disabled"));
@@ -146,7 +134,7 @@ impl HookExecutor {
         let hook_source_worktree = self.get_hook_source_worktree(ctx);
 
         // Try YAML config first
-        match self.try_yaml_hook(ctx, &hook_source_worktree, hook_config, output, hook_args) {
+        match self.try_yaml_hook(ctx, &hook_source_worktree, hook_config, output) {
             Ok(Some(result)) => return Ok(result),
             Ok(None) => {} // No YAML config or no definition for this hook — fall through to legacy
             Err(e) => {
@@ -170,7 +158,6 @@ impl HookExecutor {
         hook_source_worktree: &Path,
         hook_config: &HookConfig,
         output: &mut dyn Output,
-        hook_args: &[String],
     ) -> Result<Option<HookResult>> {
         let yaml_config = match yaml_config_loader::load_merged_config(hook_source_worktree)? {
             Some(config) => config,
@@ -221,7 +208,6 @@ impl HookExecutor {
             hook_def,
             ctx,
             output,
-            hook_args,
             source_dir,
             working_dir,
             rc,

@@ -16,32 +16,10 @@ use super::environment::HookContext;
 /// - `{source_worktree}` — source worktree path
 /// - `{git_dir}` — path to .git directory
 /// - `{remote}` — remote name (usually "origin")
-/// - `{0}` — all hook arguments space-joined
-/// - `{1}`, `{2}`, ... — individual positional hook arguments
-///
-/// File templates are resolved lazily: `{staged_files}`, `{push_files}`, and
-/// `{all_files}` are only computed when the placeholder actually appears.
-pub fn substitute(
-    command: &str,
-    ctx: &HookContext,
-    job_name: Option<&str>,
-    hook_args: &[String],
-) -> String {
-    substitute_with_files(command, ctx, job_name, hook_args, None)
-}
-
-/// Substitute template variables, with an optional pre-filtered file list.
-///
-/// If `filtered_files` is provided, `{files}` resolves to that list.
-/// Otherwise, `{staged_files}`, `{push_files}`, `{all_files}` are computed
-/// lazily from git.
-pub fn substitute_with_files(
-    command: &str,
-    ctx: &HookContext,
-    job_name: Option<&str>,
-    hook_args: &[String],
-    filtered_files: Option<&[String]>,
-) -> String {
+/// - `{base_branch}` — base branch name (if set)
+/// - `{repository_url}` — repository URL (if set)
+/// - `{default_branch}` — default branch name (if set)
+pub fn substitute(command: &str, ctx: &HookContext, job_name: Option<&str>) -> String {
     let mut result = command.to_string();
 
     result = result.replace("{worktree_path}", &ctx.worktree_path.to_string_lossy());
@@ -66,41 +44,6 @@ pub fn substitute_with_files(
 
     if let Some(ref branch) = ctx.default_branch {
         result = result.replace("{default_branch}", branch);
-    }
-
-    // File templates — resolved lazily
-    if let Some(files) = filtered_files {
-        result = result.replace("{files}", &files.join(" "));
-    }
-    if result.contains("{staged_files}") {
-        let files = super::files::staged_files(&ctx.worktree_path)
-            .unwrap_or_default()
-            .join(" ");
-        result = result.replace("{staged_files}", &files);
-    }
-    if result.contains("{push_files}") {
-        let files = super::files::push_files(&ctx.worktree_path)
-            .unwrap_or_default()
-            .join(" ");
-        result = result.replace("{push_files}", &files);
-    }
-    if result.contains("{all_files}") {
-        let files = super::files::all_files(&ctx.worktree_path)
-            .unwrap_or_default()
-            .join(" ");
-        result = result.replace("{all_files}", &files);
-    }
-
-    // Hook argument templates: {0} = all args, {1}, {2}, etc.
-    if result.contains("{0}") {
-        let all_args = hook_args.join(" ");
-        result = result.replace("{0}", &all_args);
-    }
-
-    // Replace individual positional args {1}, {2}, etc.
-    for (i, arg) in hook_args.iter().enumerate() {
-        let placeholder = format!("{{{}}}", i + 1);
-        result = result.replace(&placeholder, arg);
     }
 
     result
@@ -128,19 +71,14 @@ mod tests {
     #[test]
     fn test_basic_substitution() {
         let ctx = make_ctx();
-        let result = substitute("echo {branch}", &ctx, None, &[]);
+        let result = substitute("echo {branch}", &ctx, None);
         assert_eq!(result, "echo feature/new");
     }
 
     #[test]
     fn test_multiple_templates() {
         let ctx = make_ctx();
-        let result = substitute(
-            "cd {worktree_path} && git checkout {branch}",
-            &ctx,
-            None,
-            &[],
-        );
+        let result = substitute("cd {worktree_path} && git checkout {branch}", &ctx, None);
         assert_eq!(
             result,
             "cd /project/feature/new && git checkout feature/new"
@@ -150,51 +88,28 @@ mod tests {
     #[test]
     fn test_job_name() {
         let ctx = make_ctx();
-        let result = substitute("echo {job_name}", &ctx, Some("lint"), &[]);
+        let result = substitute("echo {job_name}", &ctx, Some("lint"));
         assert_eq!(result, "echo lint");
     }
 
     #[test]
     fn test_no_templates() {
         let ctx = make_ctx();
-        let result = substitute("echo hello world", &ctx, None, &[]);
+        let result = substitute("echo hello world", &ctx, None);
         assert_eq!(result, "echo hello world");
     }
 
     #[test]
     fn test_worktree_root() {
         let ctx = make_ctx();
-        let result = substitute("ls {worktree_root}", &ctx, None, &[]);
+        let result = substitute("ls {worktree_root}", &ctx, None);
         assert_eq!(result, "ls /project");
     }
 
     #[test]
     fn test_base_branch() {
         let ctx = make_ctx();
-        let result = substitute("git diff {base_branch}", &ctx, None, &[]);
+        let result = substitute("git diff {base_branch}", &ctx, None);
         assert_eq!(result, "git diff main");
-    }
-
-    #[test]
-    fn test_hook_args_all() {
-        let ctx = make_ctx();
-        let args = vec!["arg1".to_string(), "arg2".to_string()];
-        let result = substitute("echo {0}", &ctx, None, &args);
-        assert_eq!(result, "echo arg1 arg2");
-    }
-
-    #[test]
-    fn test_hook_args_positional() {
-        let ctx = make_ctx();
-        let args = vec!["foo".to_string(), "bar".to_string(), "baz".to_string()];
-        let result = substitute("echo {1} {3}", &ctx, None, &args);
-        assert_eq!(result, "echo foo baz");
-    }
-
-    #[test]
-    fn test_hook_args_empty() {
-        let ctx = make_ctx();
-        let result = substitute("echo {0}", &ctx, None, &[]);
-        assert_eq!(result, "echo ");
     }
 }

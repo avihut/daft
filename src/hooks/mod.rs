@@ -43,8 +43,6 @@
 pub mod conditions;
 mod environment;
 mod executor;
-pub mod files;
-pub mod shim;
 pub mod template;
 mod trust;
 mod trust_dto;

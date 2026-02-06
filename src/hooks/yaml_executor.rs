@@ -60,7 +60,6 @@ impl ExecutionMode {
 /// Groups together the many parameters that would otherwise be separate function arguments.
 struct ExecContext<'a> {
     hook_ctx: &'a HookContext,
-    hook_args: &'a [String],
     hook_env: &'a HashMap<String, String>,
     source_dir: &'a str,
     working_dir: &'a Path,
@@ -69,13 +68,11 @@ struct ExecContext<'a> {
 }
 
 /// Execute a YAML-defined hook.
-#[allow(clippy::too_many_arguments)]
 pub fn execute_yaml_hook(
     hook_name: &str,
     hook_def: &HookDef,
     ctx: &HookContext,
     output: &mut dyn Output,
-    hook_args: &[String],
     source_dir: &str,
     working_dir: &Path,
 ) -> Result<HookResult> {
@@ -84,7 +81,6 @@ pub fn execute_yaml_hook(
         hook_def,
         ctx,
         output,
-        hook_args,
         source_dir,
         working_dir,
         None,
@@ -98,7 +94,6 @@ pub fn execute_yaml_hook_with_rc(
     hook_def: &HookDef,
     ctx: &HookContext,
     output: &mut dyn Output,
-    hook_args: &[String],
     source_dir: &str,
     working_dir: &Path,
     rc: Option<&str>,
@@ -147,7 +142,6 @@ pub fn execute_yaml_hook_with_rc(
 
     let exec = ExecContext {
         hook_ctx: ctx,
-        hook_args,
         hook_env: &HashMap::new(),
         source_dir,
         working_dir,
@@ -155,19 +149,6 @@ pub fn execute_yaml_hook_with_rc(
     };
 
     let result = execute_jobs(&jobs, mode, &exec, output)?;
-
-    // Check fail_on_changes after all jobs complete
-    if hook_def.fail_on_changes == Some(true)
-        && result.success
-        && has_unstaged_changes(working_dir)?
-    {
-        output.warning("Working tree has unstaged changes after hook execution");
-        return Ok(HookResult::failed(
-            1,
-            String::new(),
-            "fail_on_changes: working tree has unstaged changes".to_string(),
-        ));
-    }
 
     Ok(result)
 }
@@ -275,28 +256,12 @@ fn execute_parallel(
     let (interactive, parallel): (Vec<_>, Vec<_>) =
         jobs.iter().partition(|j| j.interactive == Some(true));
 
-    // Collect job data for threads (file filtering done on main thread)
+    // Collect job data for threads
     let mut job_data: Vec<ParallelJobData> = Vec::new();
     for job in &parallel {
         let name = job.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
 
-        // File filtering
-        let filtered = resolve_file_list(job, exec)?;
-        if let Some(ref files) = filtered {
-            if files.is_empty() {
-                output.debug(&format!("Skipping job '{name}': no matching files"));
-                continue;
-            }
-        }
-
-        let cmd = resolve_command_with_files(
-            job,
-            exec.hook_ctx,
-            Some(&name),
-            exec.hook_args,
-            exec.source_dir,
-            filtered.as_deref(),
-        );
+        let cmd = resolve_command(job, exec.hook_ctx, Some(&name), exec.source_dir);
         let mut env = exec.hook_env.clone();
         if let Some(ref job_env) = job.env {
             env.extend(job_env.clone());
@@ -429,23 +394,7 @@ fn execute_single_job(
         }
     }
 
-    // File filtering: get file list, filter by glob/type/exclude, skip if empty
-    let filtered_files = resolve_file_list(job, exec)?;
-    if let Some(ref files) = filtered_files {
-        if files.is_empty() {
-            output.debug(&format!("Skipping job '{job_name}': no matching files"));
-            return Ok(HookResult::skipped("No matching files"));
-        }
-    }
-
-    let cmd = resolve_command_with_files(
-        job,
-        exec.hook_ctx,
-        Some(job_name),
-        exec.hook_args,
-        exec.source_dir,
-        filtered_files.as_deref(),
-    );
+    let cmd = resolve_command(job, exec.hook_ctx, Some(job_name), exec.source_dir);
 
     if cmd.is_empty() {
         return Ok(HookResult::skipped("Empty command"));
@@ -473,7 +422,7 @@ fn execute_single_job(
         cmd
     };
 
-    let is_interactive = job.interactive == Some(true) || job.use_stdin == Some(true);
+    let is_interactive = job.interactive == Some(true);
 
     let result = if is_interactive {
         run_interactive_command(&cmd, &env, &wd, exec.hook_ctx)
@@ -481,74 +430,18 @@ fn execute_single_job(
         run_shell_command(&cmd, &env, &wd, exec.hook_ctx, Duration::from_secs(300))
     }?;
 
-    // stage_fixed: re-stage modified files after successful run
-    if job.stage_fixed == Some(true) && result.success {
-        stage_fixed_files(exec.working_dir)?;
-    }
-
     Ok(result)
 }
 
-/// Resolve the file list for a job, applying glob/file_type/exclude filters.
-///
-/// Returns `None` if no file filtering is configured (job runs unconditionally).
-/// Returns `Some(files)` if filtering is active (job skips if empty).
-fn resolve_file_list(job: &JobDef, exec: &ExecContext<'_>) -> Result<Option<Vec<String>>> {
-    use super::files;
-
-    let has_filter = job.glob.is_some() || job.file_types.is_some() || job.files.is_some();
-    if !has_filter {
-        return Ok(None);
-    }
-
-    // Get the base file list
-    let mut file_list = if let Some(ref cmd) = job.files {
-        files::custom_file_command(exec.working_dir, cmd)?
-    } else {
-        files::staged_files(exec.working_dir)?
-    };
-
-    // Apply glob filter
-    if let Some(ref glob) = job.glob {
-        file_list = files::filter_by_glob(&file_list, glob)?;
-    }
-
-    // Apply file type filter
-    if let Some(ref ft) = job.file_types {
-        file_list = files::filter_by_file_type(&file_list, ft);
-    }
-
-    // Apply exclude filter
-    if let Some(ref exclude) = job.exclude {
-        file_list = files::exclude_files(&file_list, exclude)?;
-    }
-
-    Ok(Some(file_list))
-}
-
 /// Resolve the shell command for a job, handling both `run` and `script`.
-#[cfg(test)]
 fn resolve_command(
     job: &JobDef,
     ctx: &HookContext,
     job_name: Option<&str>,
-    hook_args: &[String],
     source_dir: &str,
-) -> String {
-    resolve_command_with_files(job, ctx, job_name, hook_args, source_dir, None)
-}
-
-/// Resolve the shell command with optional filtered file list.
-fn resolve_command_with_files(
-    job: &JobDef,
-    ctx: &HookContext,
-    job_name: Option<&str>,
-    hook_args: &[String],
-    source_dir: &str,
-    filtered_files: Option<&[String]>,
 ) -> String {
     if let Some(ref run) = job.run {
-        template::substitute_with_files(run, ctx, job_name, hook_args, filtered_files)
+        template::substitute(run, ctx, job_name)
     } else if let Some(ref script) = job.script {
         let script_path = format!("{source_dir}/{script}");
         if let Some(ref runner) = job.runner {
@@ -558,7 +451,7 @@ fn resolve_command_with_files(
             } else {
                 format!("{runner} {script_path} {args}")
             };
-            template::substitute_with_files(&cmd, ctx, job_name, hook_args, filtered_files)
+            template::substitute(&cmd, ctx, job_name)
         } else {
             let args = job.args.as_deref().unwrap_or("");
             let cmd = if args.is_empty() {
@@ -566,7 +459,7 @@ fn resolve_command_with_files(
             } else {
                 format!("{script_path} {args}")
             };
-            template::substitute_with_files(&cmd, ctx, job_name, hook_args, filtered_files)
+            template::substitute(&cmd, ctx, job_name)
         }
     } else {
         String::new()
@@ -708,60 +601,6 @@ fn run_interactive_command(
     }
 }
 
-/// Check if the working tree has unstaged changes.
-fn has_unstaged_changes(worktree: &Path) -> Result<bool> {
-    let status = std::process::Command::new("git")
-        .args(["diff", "--quiet"])
-        .current_dir(worktree)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("Failed to check for unstaged changes")?;
-    Ok(!status.success())
-}
-
-/// Re-stage files that were previously staged and modified by a job.
-fn stage_fixed_files(worktree: &Path) -> Result<()> {
-    // Get the list of staged files, then add any that have been modified
-    let staged = super::files::staged_files(worktree)?;
-    if staged.is_empty() {
-        return Ok(());
-    }
-
-    // Check which staged files have been modified (unstaged changes)
-    let output = std::process::Command::new("git")
-        .args(["diff", "--name-only"])
-        .current_dir(worktree)
-        .output()
-        .context("Failed to check modified files")?;
-
-    let modified: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(String::from)
-        .collect();
-
-    // Re-stage files that were both staged and modified
-    let to_restage: Vec<&String> = staged.iter().filter(|f| modified.contains(f)).collect();
-    if to_restage.is_empty() {
-        return Ok(());
-    }
-
-    let args: Vec<&str> = std::iter::once("add")
-        .chain(to_restage.iter().map(|s| s.as_str()))
-        .collect();
-
-    std::process::Command::new("git")
-        .args(&args)
-        .current_dir(worktree)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("Failed to re-stage fixed files")?;
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -815,7 +654,7 @@ mod tests {
             ..Default::default()
         };
         let ctx = make_ctx();
-        let cmd = resolve_command(&job, &ctx, Some("test"), &[], ".daft");
+        let cmd = resolve_command(&job, &ctx, Some("test"), ".daft");
         assert_eq!(cmd, "echo feature/new");
     }
 
@@ -827,7 +666,7 @@ mod tests {
             ..Default::default()
         };
         let ctx = make_ctx();
-        let cmd = resolve_command(&job, &ctx, Some("test"), &[], ".daft");
+        let cmd = resolve_command(&job, &ctx, Some("test"), ".daft");
         assert_eq!(cmd, "bash .daft/hooks/setup.sh");
     }
 
@@ -840,7 +679,7 @@ mod tests {
             ..Default::default()
         };
         let ctx = make_ctx();
-        let cmd = resolve_command(&job, &ctx, Some("test"), &[], ".daft");
+        let cmd = resolve_command(&job, &ctx, Some("test"), ".daft");
         assert_eq!(cmd, "bash .daft/hooks/setup.sh --verbose");
     }
 
@@ -855,7 +694,6 @@ mod tests {
             &hook_def,
             &ctx,
             &mut output,
-            &[],
             ".daft",
             Path::new("/tmp"),
         )
@@ -882,7 +720,6 @@ mod tests {
             &hook_def,
             &ctx,
             &mut output,
-            &[],
             ".daft",
             Path::new("/tmp"),
         )
@@ -909,7 +746,6 @@ mod tests {
             &hook_def,
             &ctx,
             &mut output,
-            &[],
             ".daft",
             Path::new("/tmp"),
         )
@@ -944,7 +780,6 @@ mod tests {
             &hook_def,
             &ctx,
             &mut output,
-            &[],
             ".daft",
             Path::new("/tmp"),
         )
@@ -979,7 +814,6 @@ mod tests {
             &hook_def,
             &ctx,
             &mut output,
-            &[],
             ".daft",
             Path::new("/tmp"),
         )
@@ -1011,7 +845,6 @@ mod tests {
             &hook_def,
             &ctx,
             &mut output,
-            &[],
             ".daft",
             Path::new("/tmp"),
         )

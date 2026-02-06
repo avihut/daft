@@ -7,14 +7,12 @@
 //! - `status` - Show trust status and available hooks
 //! - `list` - List all trusted repositories
 //! - `migrate` - Rename deprecated hook files to their new names
-//! - `install` - Install git hook shims
-//! - `uninstall` - Remove git hook shims
+//! - `install` - Scaffold a daft.yml with hook definitions
 //! - `validate` - Validate YAML hook configuration
 //! - `dump` - Dump merged YAML hook configuration
-//! - `init` - Create a starter daft.yml
 
 use crate::hooks::{
-    shim, yaml_config_loader, yaml_config_validate, HookType, TrustDatabase, TrustEntry,
+    yaml_config, yaml_config_loader, yaml_config_validate, HookType, TrustDatabase, TrustEntry,
     TrustLevel, DEPRECATED_HOOK_REMOVAL_VERSION, PROJECT_HOOKS_DIR,
 };
 use crate::styles::{bold, cyan, def, dim, green, red, yellow};
@@ -169,28 +167,16 @@ fn migrate_long_about() -> String {
 
 fn install_long_about() -> String {
     [
-        "Install git hook shims into .git/hooks/ for hooks defined in daft.yml.",
+        "Scaffold a daft.yml configuration with hook definitions.",
         "",
-        "Shims are small shell scripts that delegate to 'daft run <hook>'.",
-        "Only standard git hooks are installed (pre-commit, commit-msg, etc.);",
-        "daft lifecycle hooks (post-clone, worktree-post-create) do not need shims.",
+        "Creates a daft.yml file with placeholder jobs for the specified hooks.",
+        "If no hook names are provided, all daft lifecycle hooks are scaffolded.",
         "",
-        &format!(
-            "Existing hooks not managed by daft are {} by default.",
-            bold("skipped")
-        ),
-        &format!("Use {} to overwrite existing hooks.", bold("-f/--force")),
-    ]
-    .join("\n")
-}
-
-fn uninstall_long_about() -> String {
-    [
-        "Remove all daft-managed git hook shims from .git/hooks/.",
+        "If daft.yml already exists, only hooks not already defined are added.",
         "",
-        "Only removes hooks that were installed by daft (detected by a",
-        "'Managed by daft' marker). Hooks installed by other tools or",
-        "manually are left untouched.",
+        "Valid hook names:",
+        "  post-clone, post-init, worktree-pre-create, worktree-post-create,",
+        "  worktree-pre-remove, worktree-post-remove",
     ]
     .join("\n")
 }
@@ -218,16 +204,6 @@ fn dump_long_about() -> String {
         "Merges all config sources (main file, extends, per-hook files,",
         "local overrides) and outputs the final effective configuration",
         "as YAML.",
-    ]
-    .join("\n")
-}
-
-fn init_long_about() -> String {
-    [
-        "Create a starter daft.yml configuration file.",
-        "",
-        "Generates a minimal configuration template with example hooks.",
-        &format!("Will {} overwrite an existing config file.", bold("not")),
     ]
     .join("\n")
 }
@@ -309,16 +285,14 @@ enum HooksCommand {
         dry_run: bool,
     },
 
-    /// Install git hook shims for YAML-configured hooks
+    /// Scaffold a daft.yml configuration with hook definitions
     #[command(long_about = install_long_about())]
     Install {
-        #[arg(short = 'f', long, help = "Overwrite existing non-daft hooks")]
-        force: bool,
+        /// Hook names to scaffold (e.g., post-clone worktree-post-create).
+        /// If omitted, scaffolds all hooks.
+        #[arg(help = "Hook names to add (omit for all hooks)")]
+        hooks: Vec<String>,
     },
-
-    /// Remove daft-managed git hook shims
-    #[command(long_about = uninstall_long_about())]
-    Uninstall,
 
     /// Validate the YAML hooks configuration
     #[command(long_about = validate_long_about())]
@@ -327,10 +301,6 @@ enum HooksCommand {
     /// Dump the merged YAML hooks configuration
     #[command(long_about = dump_long_about())]
     Dump,
-
-    /// Create a starter daft.yml configuration
-    #[command(long_about = init_long_about())]
-    Init,
 }
 
 pub fn run() -> Result<()> {
@@ -347,11 +317,9 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::List { all }) => cmd_list(all),
         Some(HooksCommand::ResetTrust { force }) => cmd_reset_trust(force),
         Some(HooksCommand::Migrate { dry_run }) => cmd_migrate(dry_run),
-        Some(HooksCommand::Install { force }) => cmd_install(force),
-        Some(HooksCommand::Uninstall) => cmd_uninstall(),
+        Some(HooksCommand::Install { hooks }) => cmd_install(&hooks),
         Some(HooksCommand::Validate) => cmd_validate(),
         Some(HooksCommand::Dump) => cmd_dump(),
-        Some(HooksCommand::Init) => cmd_init(),
         None => cmd_status(&std::path::PathBuf::from("."), false), // Default to status if no subcommand
     }
 }
@@ -1065,85 +1033,104 @@ fn relative_path(from: &Path, to: &Path) -> PathBuf {
     }
 }
 
-/// Install git hook shims for YAML-configured hooks.
-fn cmd_install(force: bool) -> Result<()> {
-    if !is_git_repository()? {
-        anyhow::bail!("Not in a git repository");
-    }
-
-    // Find the worktree root to load config from
+/// Scaffold a daft.yml configuration with hook definitions.
+fn cmd_install(hooks: &[String]) -> Result<()> {
     let worktree_root = find_worktree_root()?;
 
-    let config = yaml_config_loader::load_merged_config(&worktree_root)
-        .context("Failed to load YAML config")?;
-
-    let config = match config {
-        Some(c) => c,
-        None => {
-            println!(
-                "{}",
-                dim("No daft.yml found. Run 'daft hooks init' to create one.")
-            );
-            return Ok(());
+    // Determine which hooks to scaffold
+    let hook_names: Vec<&str> = if hooks.is_empty() {
+        yaml_config::KNOWN_HOOK_NAMES.to_vec()
+    } else {
+        // Validate all provided names
+        for name in hooks {
+            if !yaml_config::KNOWN_HOOK_NAMES.contains(&name.as_str()) {
+                anyhow::bail!(
+                    "Unknown hook name: '{name}'. Valid hooks: {}",
+                    yaml_config::KNOWN_HOOK_NAMES.join(", ")
+                );
+            }
         }
+        hooks.iter().map(|s| s.as_str()).collect()
     };
 
-    let configured_hooks: Vec<String> = config.hooks.keys().cloned().collect();
+    // Check if config already exists
+    let existing_config = yaml_config_loader::load_merged_config(&worktree_root)
+        .context("Failed to load YAML config")?;
 
-    if configured_hooks.is_empty() {
-        println!("{}", dim("No hooks defined in config."));
-        return Ok(());
-    }
+    let config_path = worktree_root.join("daft.yml");
 
-    let (installed, skipped) = shim::install_shims(&configured_hooks, force)?;
+    if let Some(ref config) = existing_config {
+        // Config exists — add only hooks not already defined
+        let mut added = Vec::new();
+        let mut skipped = Vec::new();
 
-    if installed.is_empty() && skipped.is_empty() {
-        println!(
-            "{}",
-            dim("No git hooks to install (only daft lifecycle hooks defined).")
-        );
-        return Ok(());
-    }
-
-    for name in &installed {
-        println!("  {} {name}", green("installed"));
-    }
-    for name in &skipped {
-        println!(
-            "  {} {name} {}",
-            yellow("skipped"),
-            dim("(existing hook — use --force to overwrite)")
-        );
-    }
-
-    if !installed.is_empty() {
-        println!(
-            "\n{} hook shim(s) installed.",
-            bold(&installed.len().to_string())
-        );
-    }
-
-    Ok(())
-}
-
-/// Uninstall daft-managed git hook shims.
-fn cmd_uninstall() -> Result<()> {
-    if !is_git_repository()? {
-        anyhow::bail!("Not in a git repository");
-    }
-
-    let removed = shim::uninstall_shims()?;
-
-    if removed.is_empty() {
-        println!("{}", dim("No daft-managed hooks found."));
-    } else {
-        for name in &removed {
-            println!("  {} {name}", red("removed"));
+        for &name in &hook_names {
+            if config.hooks.contains_key(name) {
+                skipped.push(name);
+            } else {
+                added.push(name);
+            }
         }
-        println!(
-            "\n{} hook shim(s) removed.",
-            bold(&removed.len().to_string())
+
+        if added.is_empty() {
+            for name in &skipped {
+                println!(
+                    "  {} {name} {}",
+                    yellow("skipped"),
+                    dim("(already defined)")
+                );
+            }
+            println!("\n{}", dim("No new hooks to add."));
+            return Ok(());
+        }
+
+        // Append new hooks to the existing file
+        let mut content = std::fs::read_to_string(&config_path)
+            .with_context(|| format!("Failed to read {}", config_path.display()))?;
+
+        // Ensure trailing newline before appending
+        if !content.ends_with('\n') {
+            content.push('\n');
+        }
+
+        for name in &added {
+            content.push_str(&format!(
+                "\n  {name}:\n    jobs:\n      - name: setup\n        run: echo \"TODO: add your {name} command\"\n"
+            ));
+        }
+
+        std::fs::write(&config_path, &content)
+            .with_context(|| format!("Failed to write {}", config_path.display()))?;
+
+        for name in &added {
+            println!("  {} {name}", green("added"));
+        }
+        for name in &skipped {
+            println!(
+                "  {} {name} {}",
+                yellow("skipped"),
+                dim("(already defined)")
+            );
+        }
+    } else {
+        // No config — create new file
+        let mut content = String::from(
+            "# daft hooks configuration\n# See: https://github.com/avihut/daft\n\nhooks:\n",
         );
+
+        for name in &hook_names {
+            content.push_str(&format!(
+                "  {name}:\n    jobs:\n      - name: setup\n        run: echo \"TODO: add your {name} command\"\n"
+            ));
+        }
+
+        std::fs::write(&config_path, &content)
+            .with_context(|| format!("Failed to write {}", config_path.display()))?;
+
+        println!("{} {}", green("Created"), config_path.display());
+        for name in &hook_names {
+            println!("  {} {name}", green("added"));
+        }
     }
 
     Ok(())
@@ -1217,98 +1204,6 @@ fn cmd_dump() -> Result<()> {
     Ok(())
 }
 
-/// Create a starter daft.yml configuration.
-fn cmd_init() -> Result<()> {
-    let worktree_root = find_worktree_root()?;
-
-    // Check if a config already exists
-    if yaml_config_loader::find_config_file(&worktree_root).is_some() {
-        anyhow::bail!(
-            "Configuration file already exists. Use 'daft hooks dump' to view the current config."
-        );
-    }
-
-    let config_path = worktree_root.join("daft.yml");
-    std::fs::write(&config_path, STARTER_CONFIG)
-        .with_context(|| format!("Failed to write {}", config_path.display()))?;
-
-    println!("{} {}", green("Created"), config_path.display());
-    println!(
-        "{}",
-        dim("Edit the file to configure your hooks, then run 'daft hooks install'.")
-    );
-
-    Ok(())
-}
-
-/// Run a specific hook by name from YAML config.
-///
-/// This is called by git hook shims and by `daft run <hook>`.
-pub fn run_hook(hook_name: &str, hook_args: &[String]) -> Result<()> {
-    let worktree_root = find_worktree_root()?;
-
-    let config = yaml_config_loader::load_merged_config(&worktree_root)
-        .context("Failed to load YAML config")?;
-
-    let config = match config {
-        Some(c) => c,
-        None => {
-            // No config — silently exit (shims may fire in repos without daft.yml)
-            return Ok(());
-        }
-    };
-
-    let hook_def = match config.hooks.get(hook_name) {
-        Some(def) => def,
-        None => {
-            // Hook not defined — silently exit
-            return Ok(());
-        }
-    };
-
-    let git_dir = get_git_common_dir()?;
-    let source_dir = config.source_dir.as_deref().unwrap_or(".daft");
-    let branch = current_branch_name().unwrap_or_default();
-
-    // Build a minimal HookContext for YAML execution
-    let ctx = crate::hooks::HookContext {
-        hook_type: HookType::from_yaml_name(hook_name).unwrap_or(HookType::PostCreate), // fallback for git hooks
-        command: "run".to_string(),
-        project_root: git_dir
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf(),
-        git_dir: git_dir.clone(),
-        remote: "origin".to_string(),
-        source_worktree: worktree_root.clone(),
-        worktree_path: worktree_root.clone(),
-        branch_name: branch,
-        is_new_branch: false,
-        base_branch: None,
-        repository_url: None,
-        default_branch: None,
-        removal_reason: None,
-    };
-
-    let mut output = crate::output::CliOutput::default_output();
-
-    let result = crate::hooks::yaml_executor::execute_yaml_hook(
-        hook_name,
-        hook_def,
-        &ctx,
-        &mut output,
-        hook_args,
-        source_dir,
-        &worktree_root,
-    )?;
-
-    if !result.success {
-        std::process::exit(result.exit_code.unwrap_or(1));
-    }
-
-    Ok(())
-}
-
 /// Find the worktree root directory.
 fn find_worktree_root() -> Result<PathBuf> {
     let output = std::process::Command::new("git")
@@ -1326,27 +1221,3 @@ fn find_worktree_root() -> Result<PathBuf> {
             .trim(),
     ))
 }
-
-/// Get the current branch name (best-effort).
-fn current_branch_name() -> Option<String> {
-    std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-}
-
-const STARTER_CONFIG: &str = r#"# daft hooks configuration
-# See: https://github.com/avihut/daft
-
-hooks:
-  pre-commit:
-    parallel: true
-    jobs:
-      - name: lint
-        run: echo "Add your linter here"
-      - name: test
-        run: echo "Add your test command here"
-"#;

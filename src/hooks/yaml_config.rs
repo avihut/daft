@@ -14,14 +14,6 @@ pub const KNOWN_HOOK_NAMES: &[&str] = &[
     "worktree-post-create",
     "worktree-pre-remove",
     "worktree-post-remove",
-    // Git hooks
-    "pre-commit",
-    "commit-msg",
-    "pre-push",
-    "post-checkout",
-    "post-merge",
-    "post-rewrite",
-    "prepare-commit-msg",
 ];
 
 /// Top-level YAML configuration.
@@ -83,15 +75,6 @@ pub struct HookDef {
     /// Run jobs sequentially, continue on failure.
     pub follow: Option<bool>,
 
-    /// File filter command or pattern at the hook level.
-    pub files: Option<String>,
-
-    /// Fail if working tree has changes after all jobs complete.
-    pub fail_on_changes: Option<bool>,
-
-    /// Custom diff command for fail_on_changes check.
-    pub fail_on_changes_diff: Option<String>,
-
     /// Tags to exclude at hook level.
     pub exclude_tags: Option<Vec<String>>,
 
@@ -130,18 +113,6 @@ pub struct JobDef {
     /// Arguments to pass to the script.
     pub args: Option<String>,
 
-    /// Glob pattern(s) to filter files.
-    pub glob: Option<GlobPattern>,
-
-    /// File filter command.
-    pub files: Option<String>,
-
-    /// File type filter(s).
-    pub file_types: Option<FileTypeFilter>,
-
-    /// Glob patterns to exclude.
-    pub exclude: Option<Vec<String>>,
-
     /// Working directory (relative to worktree root).
     pub root: Option<String>,
 
@@ -157,17 +128,11 @@ pub struct JobDef {
     /// Extra environment variables.
     pub env: Option<HashMap<String, String>>,
 
-    /// Auto-stage fixed files after successful run.
-    pub stage_fixed: Option<bool>,
-
     /// Custom failure message.
     pub fail_text: Option<String>,
 
     /// Whether this job needs TTY/stdin (forces sequential).
     pub interactive: Option<bool>,
-
-    /// Whether to pipe stdin to the job.
-    pub use_stdin: Option<bool>,
 
     /// Priority for execution ordering (lower runs first).
     pub priority: Option<i32>,
@@ -183,8 +148,6 @@ pub struct CommandDef {
     pub run: Option<String>,
     pub script: Option<String>,
     pub runner: Option<String>,
-    pub glob: Option<GlobPattern>,
-    pub files: Option<String>,
     pub tags: Option<Vec<String>>,
     pub skip: Option<SkipCondition>,
     pub env: Option<HashMap<String, String>>,
@@ -198,48 +161,10 @@ impl CommandDef {
             run: self.run.clone(),
             script: self.script.clone(),
             runner: self.runner.clone(),
-            glob: self.glob.clone(),
-            files: self.files.clone(),
             tags: self.tags.clone(),
             skip: self.skip.clone(),
             env: self.env.clone(),
             ..Default::default()
-        }
-    }
-}
-
-/// Glob pattern: either a single string or a list.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum GlobPattern {
-    Single(String),
-    Multiple(Vec<String>),
-}
-
-impl GlobPattern {
-    /// Get all patterns as a vec.
-    pub fn patterns(&self) -> Vec<&str> {
-        match self {
-            GlobPattern::Single(s) => vec![s.as_str()],
-            GlobPattern::Multiple(v) => v.iter().map(String::as_str).collect(),
-        }
-    }
-}
-
-/// File type filter: either a single string or a list.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum FileTypeFilter {
-    Single(String),
-    Multiple(Vec<String>),
-}
-
-impl FileTypeFilter {
-    /// Get all file types as a vec.
-    pub fn types(&self) -> Vec<&str> {
-        match self {
-            FileTypeFilter::Single(s) => vec![s.as_str()],
-            FileTypeFilter::Multiple(v) => v.iter().map(String::as_str).collect(),
         }
     }
 }
@@ -364,18 +289,16 @@ source_dir: ".daft"
 extends:
   - shared.yml
 hooks:
-  pre-commit:
+  worktree-pre-create:
     parallel: true
     jobs:
       - name: lint
         run: cargo clippy
-        glob: "*.rs"
         tags:
           - lint
         priority: 1
       - name: format
         run: cargo fmt --check
-        glob: "*.rs"
         tags:
           - format
         priority: 2
@@ -390,9 +313,9 @@ hooks:
         assert_eq!(config.colors, Some(true));
         assert_eq!(config.extends.as_ref().unwrap().len(), 1);
 
-        let pre_commit = &config.hooks["pre-commit"];
-        assert_eq!(pre_commit.parallel, Some(true));
-        let jobs = pre_commit.jobs.as_ref().unwrap();
+        let pre_create = &config.hooks["worktree-pre-create"];
+        assert_eq!(pre_create.parallel, Some(true));
+        let jobs = pre_create.jobs.as_ref().unwrap();
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].priority, Some(1));
         assert_eq!(jobs[1].priority, Some(2));
@@ -408,59 +331,17 @@ hooks:
     }
 
     #[test]
-    fn test_glob_pattern_single() {
-        let yaml = r#"
-hooks:
-  pre-commit:
-    jobs:
-      - name: test
-        run: echo test
-        glob: "*.rs"
-"#;
-        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
-        let job = &config.hooks["pre-commit"].jobs.as_ref().unwrap()[0];
-        match &job.glob {
-            Some(GlobPattern::Single(s)) => assert_eq!(s, "*.rs"),
-            other => panic!("Expected Single, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_glob_pattern_multiple() {
-        let yaml = r#"
-hooks:
-  pre-commit:
-    jobs:
-      - name: test
-        run: echo test
-        glob:
-          - "*.rs"
-          - "*.toml"
-"#;
-        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
-        let job = &config.hooks["pre-commit"].jobs.as_ref().unwrap()[0];
-        match &job.glob {
-            Some(GlobPattern::Multiple(v)) => {
-                assert_eq!(v.len(), 2);
-                assert_eq!(v[0], "*.rs");
-                assert_eq!(v[1], "*.toml");
-            }
-            other => panic!("Expected Multiple, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn test_skip_condition_bool() {
         let yaml = r#"
 hooks:
-  pre-commit:
+  worktree-post-create:
     jobs:
       - name: test
         run: echo test
         skip: true
 "#;
         let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
-        let job = &config.hooks["pre-commit"].jobs.as_ref().unwrap()[0];
+        let job = &config.hooks["worktree-post-create"].jobs.as_ref().unwrap()[0];
         match &job.skip {
             Some(SkipCondition::Bool(true)) => {}
             other => panic!("Expected Bool(true), got {other:?}"),
@@ -471,7 +352,7 @@ hooks:
     fn test_skip_condition_rules() {
         let yaml = r#"
 hooks:
-  pre-commit:
+  worktree-post-create:
     skip:
       - merge
       - ref: "release/*"
@@ -482,7 +363,7 @@ hooks:
         run: echo test
 "#;
         let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
-        let hook = &config.hooks["pre-commit"];
+        let hook = &config.hooks["worktree-post-create"];
         match &hook.skip {
             Some(SkipCondition::Rules(rules)) => {
                 assert_eq!(rules.len(), 4);
@@ -505,7 +386,7 @@ hooks:
     fn test_commands_legacy_alias() {
         let yaml = r#"
 hooks:
-  pre-commit:
+  worktree-post-create:
     commands:
       lint:
         run: cargo clippy
@@ -513,7 +394,7 @@ hooks:
         run: cargo fmt --check
 "#;
         let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
-        let hook = &config.hooks["pre-commit"];
+        let hook = &config.hooks["worktree-post-create"];
         let cmds = hook.commands.as_ref().unwrap();
         assert_eq!(cmds.len(), 2);
         assert!(cmds.contains_key("lint"));
@@ -524,7 +405,7 @@ hooks:
     fn test_group_def() {
         let yaml = r#"
 hooks:
-  pre-commit:
+  worktree-post-create:
     jobs:
       - name: checks
         group:
@@ -536,7 +417,7 @@ hooks:
               run: cargo fmt --check
 "#;
         let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
-        let job = &config.hooks["pre-commit"].jobs.as_ref().unwrap()[0];
+        let job = &config.hooks["worktree-post-create"].jobs.as_ref().unwrap()[0];
         let group = job.group.as_ref().unwrap();
         assert_eq!(group.parallel, Some(true));
         assert_eq!(group.jobs.as_ref().unwrap().len(), 2);
@@ -559,15 +440,15 @@ hooks: {}
     fn test_output_setting_hooks_list() {
         let yaml = r#"
 output:
-  - pre-commit
-  - pre-push
+  - worktree-post-create
+  - post-clone
 hooks: {}
 "#;
         let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
         match &config.output {
             Some(OutputSetting::Hooks(h)) => {
                 assert_eq!(h.len(), 2);
-                assert_eq!(h[0], "pre-commit");
+                assert_eq!(h[0], "worktree-post-create");
             }
             other => panic!("Expected Hooks list, got {other:?}"),
         }
@@ -577,7 +458,7 @@ hooks: {}
     fn test_env_vars_on_job() {
         let yaml = r#"
 hooks:
-  pre-commit:
+  worktree-post-create:
     jobs:
       - name: test
         run: echo test
@@ -586,7 +467,7 @@ hooks:
           MY_VAR: hello
 "#;
         let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
-        let job = &config.hooks["pre-commit"].jobs.as_ref().unwrap()[0];
+        let job = &config.hooks["worktree-post-create"].jobs.as_ref().unwrap()[0];
         let env = job.env.as_ref().unwrap();
         assert_eq!(env.get("RUST_BACKTRACE").unwrap(), "1");
         assert_eq!(env.get("MY_VAR").unwrap(), "hello");
@@ -596,31 +477,11 @@ hooks:
     fn test_command_def_to_job_def() {
         let cmd = CommandDef {
             run: Some("cargo test".to_string()),
-            glob: Some(GlobPattern::Single("*.rs".to_string())),
             tags: Some(vec!["test".to_string()]),
             ..Default::default()
         };
         let job = cmd.to_job_def("my-test");
         assert_eq!(job.name.as_deref(), Some("my-test"));
         assert_eq!(job.run.as_deref(), Some("cargo test"));
-        assert!(job.glob.is_some());
-    }
-
-    #[test]
-    fn test_file_type_filter() {
-        let yaml = r#"
-hooks:
-  pre-commit:
-    jobs:
-      - name: test
-        run: echo test
-        file_types: rust
-"#;
-        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
-        let job = &config.hooks["pre-commit"].jobs.as_ref().unwrap()[0];
-        match &job.file_types {
-            Some(FileTypeFilter::Single(s)) => assert_eq!(s, "rust"),
-            other => panic!("Expected Single, got {other:?}"),
-        }
     }
 }

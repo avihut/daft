@@ -36,13 +36,6 @@ const PER_HOOK_NAMES: &[&str] = &[
     "worktree-post-create",
     "worktree-pre-remove",
     "worktree-post-remove",
-    "pre-commit",
-    "commit-msg",
-    "pre-push",
-    "post-checkout",
-    "post-merge",
-    "post-rewrite",
-    "prepare-commit-msg",
 ];
 
 /// Find the main config file in the given repository root.
@@ -235,15 +228,6 @@ pub fn merge_hook_defs(base: HookDef, overlay: HookDef) -> HookDef {
     if overlay.follow.is_some() {
         merged.follow = overlay.follow;
     }
-    if overlay.files.is_some() {
-        merged.files = overlay.files;
-    }
-    if overlay.fail_on_changes.is_some() {
-        merged.fail_on_changes = overlay.fail_on_changes;
-    }
-    if overlay.fail_on_changes_diff.is_some() {
-        merged.fail_on_changes_diff = overlay.fail_on_changes_diff;
-    }
     if overlay.exclude_tags.is_some() {
         merged.exclude_tags = overlay.exclude_tags;
     }
@@ -432,13 +416,13 @@ mod tests {
         fs::create_dir_all(&daft_dir).unwrap();
         write_file(
             &daft_dir,
-            "pre-commit.yml",
+            "post-clone.yml",
             "jobs:\n  - name: test\n    run: echo test",
         );
 
         let result = find_per_hook_configs(dir.path(), &ConfigLocation::DotConfig);
         assert_eq!(result.len(), 1);
-        assert!(result.contains_key("pre-commit"));
+        assert!(result.contains_key("post-clone"));
     }
 
     #[test]
@@ -601,7 +585,7 @@ jobs:
 extends:
   - shared.yml
 hooks:
-  pre-commit:
+  worktree-post-create:
     jobs:
       - name: local-lint
         run: cargo clippy
@@ -612,7 +596,7 @@ hooks:
             "shared.yml",
             r#"
 hooks:
-  pre-commit:
+  worktree-post-create:
     jobs:
       - name: shared-lint
         run: eslint .
@@ -620,7 +604,7 @@ hooks:
         );
 
         let config = load_merged_config(dir.path()).unwrap().unwrap();
-        let jobs = config.hooks["pre-commit"].jobs.as_ref().unwrap();
+        let jobs = config.hooks["worktree-post-create"].jobs.as_ref().unwrap();
         // shared-lint from extends + local-lint from main
         assert_eq!(jobs.len(), 2);
     }
@@ -633,7 +617,7 @@ hooks:
             "daft.yml",
             r#"
 hooks:
-  pre-commit:
+  worktree-post-create:
     commands:
       lint:
         run: cargo clippy
@@ -643,7 +627,7 @@ hooks:
         );
 
         let config = load_merged_config(dir.path()).unwrap().unwrap();
-        let hook = &config.hooks["pre-commit"];
+        let hook = &config.hooks["worktree-post-create"];
         // commands should have been converted to jobs
         assert!(hook.commands.is_none());
         let jobs = hook.jobs.as_ref().unwrap();
