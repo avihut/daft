@@ -1,4 +1,4 @@
-//! Trust management commands for the hooks system.
+//! Trust management and YAML hooks commands.
 //!
 //! Provides `git daft hooks` subcommand with:
 //! - `trust` - Trust a repository to run hooks automatically
@@ -7,10 +7,13 @@
 //! - `status` - Show trust status and available hooks
 //! - `list` - List all trusted repositories
 //! - `migrate` - Rename deprecated hook files to their new names
+//! - `install` - Scaffold a daft.yml with hook definitions
+//! - `validate` - Validate YAML hook configuration
+//! - `dump` - Dump merged YAML hook configuration
 
 use crate::hooks::{
-    HookType, TrustDatabase, TrustEntry, TrustLevel, DEPRECATED_HOOK_REMOVAL_VERSION,
-    PROJECT_HOOKS_DIR,
+    yaml_config, yaml_config_loader, yaml_config_validate, HookType, TrustDatabase, TrustEntry,
+    TrustLevel, DEPRECATED_HOOK_REMOVAL_VERSION, PROJECT_HOOKS_DIR,
 };
 use crate::styles::{bold, cyan, def, dim, green, red, yellow};
 use crate::{get_git_common_dir, is_git_repository};
@@ -162,6 +165,49 @@ fn migrate_long_about() -> String {
     .join("\n")
 }
 
+fn install_long_about() -> String {
+    [
+        "Scaffold a daft.yml configuration with hook definitions.",
+        "",
+        "Creates a daft.yml file with placeholder jobs for the specified hooks.",
+        "If no hook names are provided, all daft lifecycle hooks are scaffolded.",
+        "",
+        "If daft.yml already exists, only hooks not already defined are added.",
+        "",
+        "Valid hook names:",
+        "  post-clone, post-init, worktree-pre-create, worktree-post-create,",
+        "  worktree-pre-remove, worktree-post-remove",
+    ]
+    .join("\n")
+}
+
+fn validate_long_about() -> String {
+    [
+        "Validate the YAML hooks configuration file.",
+        "",
+        "Loads and parses daft.yml (or equivalent), then runs semantic",
+        "validation checks including:",
+        &def("version", "min_version compatibility check"),
+        &def("modes", "Mutually exclusive execution modes"),
+        &def("jobs", "Each job has a run, script, or group"),
+        &def("groups", "Group definitions are valid"),
+        "",
+        "Exits with code 1 if there are validation errors.",
+    ]
+    .join("\n")
+}
+
+fn dump_long_about() -> String {
+    [
+        "Load and display the fully merged YAML hooks configuration.",
+        "",
+        "Merges all config sources (main file, extends, per-hook files,",
+        "local overrides) and outputs the final effective configuration",
+        "as YAML.",
+    ]
+    .join("\n")
+}
+
 #[derive(Parser)]
 #[command(name = "hooks")]
 #[command(about = "Manage repository trust for hook execution")]
@@ -238,6 +284,23 @@ enum HooksCommand {
         #[arg(long, help = "Preview renames without making changes")]
         dry_run: bool,
     },
+
+    /// Scaffold a daft.yml configuration with hook definitions
+    #[command(long_about = install_long_about())]
+    Install {
+        /// Hook names to scaffold (e.g., post-clone worktree-post-create).
+        /// If omitted, scaffolds all hooks.
+        #[arg(help = "Hook names to add (omit for all hooks)")]
+        hooks: Vec<String>,
+    },
+
+    /// Validate the YAML hooks configuration
+    #[command(long_about = validate_long_about())]
+    Validate,
+
+    /// Dump the merged YAML hooks configuration
+    #[command(long_about = dump_long_about())]
+    Dump,
 }
 
 pub fn run() -> Result<()> {
@@ -254,6 +317,9 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::List { all }) => cmd_list(all),
         Some(HooksCommand::ResetTrust { force }) => cmd_reset_trust(force),
         Some(HooksCommand::Migrate { dry_run }) => cmd_migrate(dry_run),
+        Some(HooksCommand::Install { hooks }) => cmd_install(&hooks),
+        Some(HooksCommand::Validate) => cmd_validate(),
+        Some(HooksCommand::Dump) => cmd_dump(),
         None => cmd_status(&std::path::PathBuf::from("."), false), // Default to status if no subcommand
     }
 }
@@ -965,4 +1031,193 @@ fn relative_path(from: &Path, to: &Path) -> PathBuf {
     } else {
         path
     }
+}
+
+/// Scaffold a daft.yml configuration with hook definitions.
+fn cmd_install(hooks: &[String]) -> Result<()> {
+    let worktree_root = find_worktree_root()?;
+
+    // Determine which hooks to scaffold
+    let hook_names: Vec<&str> = if hooks.is_empty() {
+        yaml_config::KNOWN_HOOK_NAMES.to_vec()
+    } else {
+        // Validate all provided names
+        for name in hooks {
+            if !yaml_config::KNOWN_HOOK_NAMES.contains(&name.as_str()) {
+                anyhow::bail!(
+                    "Unknown hook name: '{name}'. Valid hooks: {}",
+                    yaml_config::KNOWN_HOOK_NAMES.join(", ")
+                );
+            }
+        }
+        hooks.iter().map(|s| s.as_str()).collect()
+    };
+
+    // Check if config already exists
+    let existing_config = yaml_config_loader::load_merged_config(&worktree_root)
+        .context("Failed to load YAML config")?;
+
+    let config_path = worktree_root.join("daft.yml");
+
+    if let Some(ref config) = existing_config {
+        // Config exists — add only hooks not already defined
+        let mut added = Vec::new();
+        let mut skipped = Vec::new();
+
+        for &name in &hook_names {
+            if config.hooks.contains_key(name) {
+                skipped.push(name);
+            } else {
+                added.push(name);
+            }
+        }
+
+        if added.is_empty() {
+            for name in &skipped {
+                println!(
+                    "  {} {name} {}",
+                    yellow("skipped"),
+                    dim("(already defined)")
+                );
+            }
+            println!("\n{}", dim("No new hooks to add."));
+            return Ok(());
+        }
+
+        // Append new hooks to the existing file
+        let mut content = std::fs::read_to_string(&config_path)
+            .with_context(|| format!("Failed to read {}", config_path.display()))?;
+
+        // Ensure trailing newline before appending
+        if !content.ends_with('\n') {
+            content.push('\n');
+        }
+
+        for name in &added {
+            content.push_str(&format!(
+                "\n  {name}:\n    jobs:\n      - name: setup\n        run: echo \"TODO: add your {name} command\"\n"
+            ));
+        }
+
+        std::fs::write(&config_path, &content)
+            .with_context(|| format!("Failed to write {}", config_path.display()))?;
+
+        for name in &added {
+            println!("  {} {name}", green("added"));
+        }
+        for name in &skipped {
+            println!(
+                "  {} {name} {}",
+                yellow("skipped"),
+                dim("(already defined)")
+            );
+        }
+    } else {
+        // No config — create new file
+        let mut content = String::from(
+            "# daft hooks configuration\n# See: https://github.com/avihut/daft\n\nhooks:\n",
+        );
+
+        for name in &hook_names {
+            content.push_str(&format!(
+                "  {name}:\n    jobs:\n      - name: setup\n        run: echo \"TODO: add your {name} command\"\n"
+            ));
+        }
+
+        std::fs::write(&config_path, &content)
+            .with_context(|| format!("Failed to write {}", config_path.display()))?;
+
+        println!("{} {}", green("Created"), config_path.display());
+        for name in &hook_names {
+            println!("  {} {name}", green("added"));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate the YAML hooks configuration.
+fn cmd_validate() -> Result<()> {
+    let worktree_root = find_worktree_root()?;
+
+    let config = yaml_config_loader::load_merged_config(&worktree_root)
+        .context("Failed to load YAML config")?;
+
+    let config = match config {
+        Some(c) => c,
+        None => {
+            println!("{}", dim("No daft.yml found."));
+            return Ok(());
+        }
+    };
+
+    let result = yaml_config_validate::validate_config(&config)?;
+
+    for warning in &result.warnings {
+        println!("  {} {warning}", yellow("warning:"));
+    }
+
+    for error in &result.errors {
+        println!("  {} {error}", red("error:"));
+    }
+
+    if result.is_ok() {
+        if result.warnings.is_empty() {
+            println!("{}", green("Configuration is valid."));
+        } else {
+            println!(
+                "\n{} ({} warning(s))",
+                green("Configuration is valid"),
+                result.warnings.len()
+            );
+        }
+        Ok(())
+    } else {
+        println!(
+            "\n{} ({} error(s), {} warning(s))",
+            red("Configuration has errors"),
+            result.errors.len(),
+            result.warnings.len()
+        );
+        std::process::exit(1);
+    }
+}
+
+/// Dump the merged YAML hooks configuration.
+fn cmd_dump() -> Result<()> {
+    let worktree_root = find_worktree_root()?;
+
+    let config = yaml_config_loader::load_merged_config(&worktree_root)
+        .context("Failed to load YAML config")?;
+
+    let config = match config {
+        Some(c) => c,
+        None => {
+            println!("{}", dim("No daft.yml found."));
+            return Ok(());
+        }
+    };
+
+    let yaml = serde_yaml::to_string(&config).context("Failed to serialize config")?;
+    print!("{yaml}");
+
+    Ok(())
+}
+
+/// Find the worktree root directory.
+fn find_worktree_root() -> Result<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .context("Failed to execute git rev-parse")?;
+
+    if !output.status.success() {
+        anyhow::bail!("Not in a git worktree");
+    }
+
+    Ok(PathBuf::from(
+        String::from_utf8(output.stdout)
+            .context("Invalid UTF-8 in git output")?
+            .trim(),
+    ))
 }

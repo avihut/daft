@@ -40,10 +40,16 @@
 //!
 //! User-global hooks can be placed at `~/.config/daft/hooks/`.
 
+pub mod conditions;
 mod environment;
 mod executor;
+pub mod template;
 mod trust;
 mod trust_dto;
+pub mod yaml_config;
+pub mod yaml_config_loader;
+pub mod yaml_config_validate;
+pub mod yaml_executor;
 
 pub use environment::{HookContext, HookEnvironment, RemovalReason};
 pub use executor::{HookExecutor, HookResult};
@@ -90,6 +96,35 @@ impl HookType {
             HookType::PostCreate => "worktree-post-create",
             HookType::PreRemove => "worktree-pre-remove",
             HookType::PostRemove => "worktree-post-remove",
+        }
+    }
+
+    /// Returns the YAML config key name for this hook type.
+    ///
+    /// This is the key used in `daft.yml` under `hooks:`.
+    pub fn yaml_name(&self) -> &'static str {
+        match self {
+            HookType::PostClone => "post-clone",
+            HookType::PostInit => "post-init",
+            HookType::PreCreate => "worktree-pre-create",
+            HookType::PostCreate => "worktree-post-create",
+            HookType::PreRemove => "worktree-pre-remove",
+            HookType::PostRemove => "worktree-post-remove",
+        }
+    }
+
+    /// Look up a HookType by its YAML config key name.
+    ///
+    /// Returns `None` for git hooks (pre-commit, etc.) that are not daft lifecycle hooks.
+    pub fn from_yaml_name(name: &str) -> Option<Self> {
+        match name {
+            "post-clone" => Some(HookType::PostClone),
+            "post-init" => Some(HookType::PostInit),
+            "worktree-pre-create" => Some(HookType::PreCreate),
+            "worktree-post-create" => Some(HookType::PostCreate),
+            "worktree-pre-remove" => Some(HookType::PreRemove),
+            "worktree-post-remove" => Some(HookType::PostRemove),
+            _ => None,
         }
     }
 

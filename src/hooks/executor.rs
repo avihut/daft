@@ -3,6 +3,8 @@
 //! This module provides the `HookExecutor` which handles discovering,
 //! validating, and executing hooks with proper security checks.
 
+use super::yaml_config_loader;
+use super::yaml_executor;
 use super::{
     find_hooks, list_hooks, FailMode, HookConfig, HookContext, HookEnvironment, HookType,
     HooksConfig, TrustDatabase, TrustLevel, DEPRECATED_HOOK_REMOVAL_VERSION,
@@ -109,9 +111,10 @@ impl HookExecutor {
     ///
     /// This method handles:
     /// 1. Checking if hooks are enabled
-    /// 2. Checking trust level for the repository
-    /// 3. Finding and executing hook files
-    /// 4. Handling success/failure based on fail mode
+    /// 2. Trying YAML config first (if `daft.yml` exists and defines this hook)
+    /// 3. Falling back to legacy script execution
+    /// 4. Checking trust level for the repository
+    /// 5. Handling success/failure based on fail mode
     pub fn execute(&self, ctx: &HookContext, output: &mut dyn Output) -> Result<HookResult> {
         // Check if hooks are globally enabled
         if !self.config.enabled {
@@ -130,8 +133,108 @@ impl HookExecutor {
         // Determine the worktree to read hooks from
         let hook_source_worktree = self.get_hook_source_worktree(ctx);
 
+        // Try YAML config first
+        match self.try_yaml_hook(ctx, &hook_source_worktree, hook_config, output) {
+            Ok(Some(result)) => return Ok(result),
+            Ok(None) => {} // No YAML config or no definition for this hook — fall through to legacy
+            Err(e) => {
+                output.warning(&format!(
+                    "Error loading YAML config, falling back to script hooks: {e}"
+                ));
+            }
+        }
+
+        // Fallback: legacy script execution
+        self.execute_legacy(ctx, hook_config, &hook_source_worktree, output)
+    }
+
+    /// Try to execute a hook via YAML configuration.
+    ///
+    /// Returns `Ok(Some(result))` if YAML config exists and defines this hook.
+    /// Returns `Ok(None)` if no YAML config or no definition for this hook type.
+    fn try_yaml_hook(
+        &self,
+        ctx: &HookContext,
+        hook_source_worktree: &Path,
+        hook_config: &HookConfig,
+        output: &mut dyn Output,
+    ) -> Result<Option<HookResult>> {
+        let yaml_config = match yaml_config_loader::load_merged_config(hook_source_worktree)? {
+            Some(config) => config,
+            None => return Ok(None),
+        };
+
+        let hook_name = ctx.hook_type.yaml_name();
+
+        let hook_def = match yaml_config.hooks.get(hook_name) {
+            Some(def) => def,
+            None => return Ok(None), // YAML exists but no definition for this hook
+        };
+
+        // Check trust level
+        let trust_level = self.trust_db.get_trust_level(&ctx.git_dir);
+        match trust_level {
+            TrustLevel::Deny => {
+                output.debug(&format!(
+                    "Skipping {hook_name} YAML hooks: repository not trusted"
+                ));
+                return Ok(Some(HookResult::skipped("Repository not trusted")));
+            }
+            TrustLevel::Prompt => {
+                let prompt_msg =
+                    format!("Repository has YAML hook config for '{hook_name}'. Execute?");
+                if let Some(ref callback) = self.prompt_callback {
+                    if !callback(&prompt_msg) {
+                        return Ok(Some(HookResult::skipped("User declined hook execution")));
+                    }
+                } else {
+                    output.warning(&format!(
+                        "YAML hooks exist but no permission callback configured. Skipping {hook_name}."
+                    ));
+                    return Ok(Some(HookResult::skipped("No permission callback")));
+                }
+            }
+            TrustLevel::Allow => {}
+        }
+
+        let source_dir = yaml_config.source_dir.as_deref().unwrap_or(".daft");
+        let rc = yaml_config.rc.as_deref();
+
+        let env = HookEnvironment::from_context(ctx);
+        let working_dir = env.working_directory(ctx);
+
+        let result = yaml_executor::execute_yaml_hook_with_rc(
+            hook_name,
+            hook_def,
+            ctx,
+            output,
+            source_dir,
+            working_dir,
+            rc,
+        )?;
+
+        if !result.success && !result.skipped {
+            return Ok(Some(self.handle_hook_failure(
+                ctx.hook_type,
+                hook_config,
+                result,
+                output,
+            )?));
+        }
+
+        Ok(Some(result))
+    }
+
+    /// Execute legacy script-based hooks.
+    fn execute_legacy(
+        &self,
+        ctx: &HookContext,
+        hook_config: &HookConfig,
+        hook_source_worktree: &Path,
+        output: &mut dyn Output,
+    ) -> Result<HookResult> {
         // Discover hooks (handles deprecated filename resolution)
-        let discovery = find_hooks(ctx.hook_type, &hook_source_worktree, &self.config);
+        let discovery = find_hooks(ctx.hook_type, hook_source_worktree, &self.config);
 
         // Emit deprecation warnings
         for warning in &discovery.deprecation_warnings {
@@ -158,7 +261,6 @@ impl HookExecutor {
 
         if discovery.hooks.is_empty() {
             if !discovery.deprecation_warnings.is_empty() {
-                // Hooks exist but won't run (v2.0.0+ scenario)
                 return Ok(HookResult::skipped(
                     "Deprecated hook files found but not executed. Run 'git daft hooks migrate' to rename them.",
                 ));
@@ -170,11 +272,10 @@ impl HookExecutor {
         // Check trust level
         let trust_level = self.trust_db.get_trust_level(&ctx.git_dir);
 
-        // Only check project hooks for trust (user hooks are always trusted)
         let has_project_hooks = discovery
             .hooks
             .iter()
-            .any(|h| h.starts_with(&hook_source_worktree));
+            .any(|h| h.starts_with(hook_source_worktree));
 
         if has_project_hooks {
             match trust_level {

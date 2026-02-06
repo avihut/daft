@@ -21,7 +21,7 @@ features:
   - title: Seamless Git Integration
     details: Works as native Git subcommands. Your existing Git knowledge applies - just add worktree power.
   - title: Lifecycle Hooks
-    details: Project-managed hooks automate setup for each new worktree - direnv, nvm, custom scripts.
+    details: YAML-configured hooks automate setup for each new worktree — parallel jobs, dependencies, skip conditions, and more.
 ---
 
 # daft - Git Extensions Toolkit
