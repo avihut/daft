@@ -8,8 +8,8 @@ on:
       - 'docs/**'
 
 jobs:
-  # Fast feedback: unit tests, linting, formatting on Ubuntu only
-  unit-tests:
+  # Fast feedback: formatting, linting, unit tests (debug mode only - no release build needed)
+  lint:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
@@ -22,75 +22,18 @@ jobs:
         components: rustfmt, clippy
 
     - name: Cache Rust dependencies
-      uses: actions/cache@v5
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ubuntu-latest-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ubuntu-latest-cargo-
-
-    - name: Build Rust binaries
-      run: cargo build --release
-
-    - name: Clean old binaries from cache
-      run: |
-        # Remove any old binaries that might be in cache from before src/bin/ was removed
-        rm -f target/release/git-worktree-*
-        echo "Cleaned old binaries from cache"
-
-    - name: Verify single binary architecture
-      run: |
-        echo "Verifying single binary architecture..."
-        # Count executables in target/release (excluding .d files, .dSYM, and symlinks)
-        # Use a portable approach: find files and test if executable with shell
-        BINARY_COUNT=0
-        for file in target/release/*; do
-          if [ -f "$file" ] && [ ! -L "$file" ] && [ -x "$file" ]; then
-            case "$file" in
-              *.d) ;;  # Skip .d files
-              *) BINARY_COUNT=$((BINARY_COUNT + 1)) ;;
-            esac
-          fi
-        done
-        echo "Found $BINARY_COUNT binary executable(s)"
-
-        # Verify exactly 1 binary exists
-        if [ "$BINARY_COUNT" -ne 1 ]; then
-          echo "ERROR: Expected exactly 1 binary, found $BINARY_COUNT"
-          echo "Binaries found:"
-          for file in target/release/*; do
-            if [ -f "$file" ] && [ ! -L "$file" ] && [ -x "$file" ]; then
-              case "$file" in
-                *.d) ;;
-                *) ls -lh "$file" ;;
-              esac
-            fi
-          done
-          exit 1
-        fi
-
-        # Verify it's named 'daft'
-        if [ ! -f target/release/daft ]; then
-          echo "ERROR: Binary 'daft' not found"
-          exit 1
-        fi
-
-        echo "Single binary architecture verified: daft binary exists"
-        ls -lh target/release/daft
-
-    - name: Run Rust unit tests
-      run: cargo test --lib
-
-    - name: Run Rust clippy
-      run: cargo clippy -- -D warnings
+      uses: Swatinem/rust-cache@v2
 
     - name: Check Rust formatting
       run: cargo fmt -- --check
 
-  # Cross-platform integration tests (where platform differences matter)
+    - name: Run Rust clippy
+      run: cargo clippy -- -D warnings
+
+    - name: Run Rust unit tests
+      run: cargo test --lib
+
+  # Cross-platform integration tests + Homebrew simulation on macOS
   integration-tests:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -113,15 +56,7 @@ jobs:
         override: true
 
     - name: Cache Rust dependencies
-      uses: actions/cache@v5
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ matrix.os }}-cargo-
+      uses: Swatinem/rust-cache@v2
 
     - name: Build Rust binaries
       run: cargo build --release
@@ -236,44 +171,9 @@ jobs:
         ./target/release/daft | head -20
         ./target/release/git-daft | head -20
 
-    - name: Upload test results
-      uses: actions/upload-artifact@v6
-      if: always()
-      with:
-        name: test-results-${{ matrix.os }}
-        path: |
-          tests/test-results.log
-        retention-days: 7
-        if-no-files-found: ignore
-
-  # Simulate Homebrew installation to catch formula issues before release
-  homebrew-simulation:
-    runs-on: macos-latest
-    steps:
-    - uses: actions/checkout@v6
-
-    - name: Set up Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        override: true
-
-    - name: Cache Rust dependencies
-      uses: actions/cache@v5
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: macos-latest-cargo-homebrew-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          macos-latest-cargo-homebrew-
-          macos-latest-cargo-
-
-    - name: Build Rust binaries
-      run: cargo build --release
-
+    # Homebrew simulation steps (macOS only)
     - name: Simulate Homebrew installation
+      if: matrix.os == 'macos-latest'
       run: |
         PREFIX="$HOME/.local"
         mkdir -p "$PREFIX/bin" "$PREFIX/share/man/man1"
@@ -297,7 +197,8 @@ jobs:
         ls -la "$PREFIX/bin/"
         ls -la "$PREFIX/share/man/man1/"
 
-    - name: Verify symlinks work
+    - name: Verify Homebrew symlinks work
+      if: matrix.os == 'macos-latest'
       run: |
         PREFIX="$HOME/.local"
         export PATH="$PREFIX/bin:$PATH"
@@ -317,6 +218,7 @@ jobs:
         echo "All symlinked commands verified!"
 
     - name: Verify man pages
+      if: matrix.os == 'macos-latest'
       run: |
         PREFIX="$HOME/.local"
 
@@ -341,7 +243,8 @@ jobs:
 
         echo "All man pages verified!"
 
-    - name: Test installation with git prefix
+    - name: Test Homebrew installation with git prefix
+      if: matrix.os == 'macos-latest'
       run: |
         PREFIX="$HOME/.local"
         export PATH="$PREFIX/bin:$PATH"
@@ -356,6 +259,16 @@ jobs:
         echo "Git command discovery verified!"
         echo "Homebrew simulation test PASSED!"
 
+    - name: Upload test results
+      uses: actions/upload-artifact@v6
+      if: always()
+      with:
+        name: test-results-${{ matrix.os }}
+        path: |
+          tests/test-results.log
+        retention-days: 7
+        if-no-files-found: ignore
+
   # Test xtask man page generation
   xtask-test:
     runs-on: ubuntu-latest
@@ -369,16 +282,7 @@ jobs:
         override: true
 
     - name: Cache Rust dependencies
-      uses: actions/cache@v5
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ubuntu-latest-cargo-xtask-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ubuntu-latest-cargo-xtask-
-          ubuntu-latest-cargo-
+      uses: Swatinem/rust-cache@v2
 
     - name: Test xtask gen-man
       run: |
