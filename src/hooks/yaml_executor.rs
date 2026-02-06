@@ -19,9 +19,9 @@ use std::time::Duration;
 /// Execution mode for a set of jobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMode {
-    /// Run jobs one at a time (default).
+    /// Run jobs one at a time.
     Sequential,
-    /// Run all jobs concurrently.
+    /// Run all jobs concurrently (default).
     Parallel,
     /// Run sequentially, stop on first failure.
     Piped,
@@ -32,25 +32,25 @@ pub enum ExecutionMode {
 impl ExecutionMode {
     /// Determine execution mode from a hook definition.
     pub fn from_hook_def(hook: &HookDef) -> Self {
-        if hook.parallel == Some(true) {
-            ExecutionMode::Parallel
-        } else if hook.piped == Some(true) {
+        if hook.piped == Some(true) {
             ExecutionMode::Piped
         } else if hook.follow == Some(true) {
             ExecutionMode::Follow
-        } else {
+        } else if hook.parallel == Some(false) {
             ExecutionMode::Sequential
+        } else {
+            ExecutionMode::Parallel
         }
     }
 
     /// Determine execution mode from a group definition.
     pub fn from_group_def(group: &GroupDef) -> Self {
-        if group.parallel == Some(true) {
-            ExecutionMode::Parallel
-        } else if group.piped == Some(true) {
+        if group.piped == Some(true) {
             ExecutionMode::Piped
-        } else {
+        } else if group.parallel == Some(false) {
             ExecutionMode::Sequential
+        } else {
+            ExecutionMode::Parallel
         }
     }
 }
@@ -641,6 +641,12 @@ mod tests {
         assert_eq!(ExecutionMode::from_hook_def(&def), ExecutionMode::Follow);
 
         let def = HookDef::default();
+        assert_eq!(ExecutionMode::from_hook_def(&def), ExecutionMode::Parallel);
+
+        let def = HookDef {
+            parallel: Some(false),
+            ..Default::default()
+        };
         assert_eq!(
             ExecutionMode::from_hook_def(&def),
             ExecutionMode::Sequential
