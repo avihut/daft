@@ -42,8 +42,8 @@ Thank you for your interest in contributing to daft!
 3. Run quality checks before committing:
 
    ```bash
-   cargo fmt
-   cargo clippy -- -D warnings
+   mise run fmt
+   mise run clippy
    mise run test-unit
    ```
 
@@ -53,9 +53,9 @@ Thank you for your interest in contributing to daft!
 
 All PRs must pass these checks (enforced in CI):
 
-- **Formatting:** `cargo fmt -- --check`
-- **Linting:** `cargo clippy -- -D warnings` (zero warnings)
-- **Unit tests:** `cargo test --lib`
+- **Formatting:** `mise run fmt-check`
+- **Linting:** `mise run clippy` (zero warnings)
+- **Unit tests:** `mise run test-unit`
 - **Integration tests:** `mise run test-integration`
 
 Run the full CI simulation locally:

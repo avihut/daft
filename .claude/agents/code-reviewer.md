@@ -68,7 +68,7 @@ When CLAUDE.md or project context is available:
 - Verify adherence to testing requirements and quality checks
 
 For Rust code specifically (if present in context):
-- Enforce Clippy compliance (`cargo clippy -- -D warnings`)
+- Enforce Clippy compliance (`mise run clippy`)
 - Verify rustfmt adherence
 - Check error handling patterns
 - Validate against project's Rust idioms

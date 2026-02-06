@@ -351,8 +351,20 @@ echo "Rust code and integration tests validated successfully"
 """
 
 # ============================================================================
-# Lint Tasks
+# Formatting & Linting Tasks
 # ============================================================================
+
+[tasks.fmt]
+description = "Auto-format Rust code"
+run = "cargo fmt"
+
+[tasks.fmt-check]
+description = "Check Rust code formatting"
+run = "cargo fmt -- --check"
+
+[tasks.clippy]
+description = "Run Rust clippy linter (zero warnings)"
+run = "cargo clippy -- -D warnings"
 
 [tasks.lint]
 description = "Run all linting tools"

@@ -14,13 +14,13 @@ mise run dev                # Build + create symlinks (quick dev setup)
 mise run test               # Run all tests (unit + integration)
 mise run test-unit          # Rust unit tests only
 mise run test-integration   # Integration tests only
-cargo clippy -- -D warnings  # Lint (must pass with zero warnings)
-cargo fmt               # Auto-format code
-cargo fmt -- --check    # Verify formatting
+mise run clippy             # Lint (must pass with zero warnings)
+mise run fmt                # Auto-format code
+mise run fmt-check          # Verify formatting
 mise run ci                 # Simulate full CI locally
 ```
 
-IMPORTANT: Before committing, always run `cargo fmt`, `cargo clippy -- -D warnings`, and `mise run test-unit`. These checks are required and enforced in CI.
+IMPORTANT: Before committing, always run `mise run fmt`, `mise run clippy`, and `mise run test-unit`. These checks are required and enforced in CI.
 
 ## Architecture
 

@@ -89,8 +89,8 @@ Issue references should be in the PR body, not the title.
 
 4. **Run quality checks**:
    ```bash
-   cargo fmt
-   cargo clippy -- -D warnings
+   mise run fmt
+   mise run clippy
    mise run test
    ```
 
@@ -101,8 +101,8 @@ Issue references should be in the PR body, not the title.
 Before submitting, ensure:
 
 - [ ] All tests pass: `mise run test`
-- [ ] No clippy warnings: `cargo clippy -- -D warnings`
-- [ ] Code is formatted: `cargo fmt --check`
+- [ ] No clippy warnings: `mise run clippy`
+- [ ] Code is formatted: `mise run fmt-check`
 - [ ] Documentation is updated if needed
 
 ## Testing
