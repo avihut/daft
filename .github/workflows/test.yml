@@ -420,5 +420,50 @@ jobs:
         fi
         echo "Committed man pages are up-to-date!"
 
+    - name: Test xtask gen-cli-docs
+      run: |
+        mkdir -p /tmp/cli-docs-test
+        cargo run --package xtask -- gen-cli-docs --output-dir=/tmp/cli-docs-test
+
+        # Verify all expected CLI docs were generated
+        for page in git-worktree-clone git-worktree-init git-worktree-checkout \
+                    git-worktree-checkout-branch git-worktree-checkout-branch-from-default \
+                    git-worktree-prune git-worktree-carry git-worktree-fetch \
+                    git-worktree-flow-adopt git-worktree-flow-eject \
+                    daft-doctor daft-release-notes; do
+          if [ ! -f "/tmp/cli-docs-test/${page}.md" ]; then
+            echo "FAILED: Missing CLI doc: ${page}.md"
+            exit 1
+          fi
+          # Verify it has valid markdown structure (frontmatter and Usage section)
+          if ! head -5 "/tmp/cli-docs-test/${page}.md" | grep -q '^---'; then
+            echo "FAILED: CLI doc missing frontmatter: ${page}.md"
+            exit 1
+          fi
+          if ! grep -q '## Usage' "/tmp/cli-docs-test/${page}.md"; then
+            echo "FAILED: CLI doc missing Usage section: ${page}.md"
+            exit 1
+          fi
+          echo "  ${page}.md - OK"
+        done
+        echo "All CLI docs generated and validated!"
+
+    - name: Verify committed CLI docs are up-to-date
+      run: |
+        # Skip verification on release PRs - release-plz bumps version in Cargo.toml
+        # which causes CLI docs (that embed version) to appear outdated
+        if [[ "${{ github.head_ref }}" == release-plz-* ]]; then
+          echo "Skipping CLI docs verification on release PR (version bump expected)"
+          exit 0
+        fi
+
+        cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
+        if ! git diff --exit-code docs/cli/; then
+          echo "FAILED: Committed CLI docs are out of date!"
+          echo "Run 'just gen-cli-docs' locally and commit the changes."
+          exit 1
+        fi
+        echo "Committed CLI docs are up-to-date!"
+
     - name: Run xtask unit tests
       run: cargo test --package xtask

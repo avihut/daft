@@ -104,17 +104,18 @@ jobs:
           git fetch origin "$PR_BRANCH"
           git checkout "$PR_BRANCH"
 
-          # Regenerate man pages with new version
+          # Regenerate man pages and CLI docs with new version
           cargo run --package xtask -- gen-man --output-dir=man
+          cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
 
-          # Check if man pages changed
-          if git diff --quiet man/; then
-            echo "Man pages are already up to date"
+          # Check if anything changed
+          if git diff --quiet man/ docs/cli/; then
+            echo "Man pages and CLI docs are already up to date"
             exit 0
           fi
 
-          # Commit and push the updated man pages
-          git add man/
-          git commit -m "chore: regenerate man pages for new version"
+          # Commit and push the updated files
+          git add man/ docs/cli/
+          git commit -m "chore: regenerate man pages and CLI docs for new version"
           git push origin "$PR_BRANCH"
-          echo "Man pages updated in release PR"
+          echo "Man pages and CLI docs updated in release PR"

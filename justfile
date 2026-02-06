@@ -420,6 +420,24 @@ verify-man:
     @echo "Man pages are up-to-date"
 
 # ============================================================================
+# CLI Docs Recipes
+# ============================================================================
+
+# Generate CLI reference docs to docs/cli/ directory using xtask
+gen-cli-docs:
+    @echo "Generating CLI reference docs..."
+    @mkdir -p docs/cli
+    cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
+    @echo "CLI docs generated in docs/cli/"
+
+# Verify CLI docs are up-to-date with source
+verify-cli-docs:
+    @echo "Verifying CLI docs are up-to-date..."
+    cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
+    @git diff --exit-code docs/cli/ || (echo "CLI docs out of date. Run 'just gen-cli-docs' and commit." && exit 1)
+    @echo "CLI docs are up-to-date"
+
+# ============================================================================
 # Cleanup Recipes
 # ============================================================================
 
@@ -516,6 +534,10 @@ help:
     @echo "  gen-man                           - Generate man pages to man/ using xtask"
     @echo "  install-man                       - Install pre-generated man pages to system location"
     @echo "  verify-man                        - Verify man pages are up-to-date with source"
+    @echo ""
+    @echo "CLI docs:"
+    @echo "  gen-cli-docs                      - Generate CLI reference docs to docs/cli/"
+    @echo "  verify-cli-docs                   - Verify CLI docs are up-to-date with source"
     @echo ""
     @echo "Cleanup:"
     @echo "  clean                             - Clean up all artifacts"
