@@ -65,3 +65,13 @@ Pre-generated in `man/` and committed. Regenerate after changing command help te
 just gen-man      # Generate/update man pages
 just verify-man   # Check if man pages are up-to-date (also runs in CI)
 ```
+
+## Documentation Site
+
+`docs/` contains the project documentation (VitePress/Markdown). Update when adding or changing user-facing features.
+
+- `docs/getting-started/` — installation, quick start, shell integration
+- `docs/guide/` — in-depth guides (hooks, configuration, workflow, shortcuts)
+- `docs/cli/` — one reference page per command, follow `docs/cli/daft-doctor.md` as template
+- Every page needs `title` and `description` YAML frontmatter
+- No emoji in docs
