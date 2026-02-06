@@ -137,6 +137,9 @@ pub struct JobDef {
     /// Priority for execution ordering (lower runs first).
     pub priority: Option<i32>,
 
+    /// Names of jobs that must complete before this job runs.
+    pub needs: Option<Vec<String>>,
+
     /// Nested group of jobs.
     pub group: Option<GroupDef>,
 }
@@ -483,5 +486,56 @@ hooks:
         let job = cmd.to_job_def("my-test");
         assert_eq!(job.name.as_deref(), Some("my-test"));
         assert_eq!(job.run.as_deref(), Some("cargo test"));
+        assert!(job.needs.is_none());
+    }
+
+    #[test]
+    fn test_needs_deserialize() {
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: install-npm
+        run: npm install
+      - name: npm-build
+        run: npm run build
+        needs: [install-npm]
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let jobs = config.hooks["worktree-post-create"].jobs.as_ref().unwrap();
+        assert!(jobs[0].needs.is_none());
+        assert_eq!(
+            jobs[1].needs.as_deref().unwrap(),
+            &["install-npm".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_needs_absent() {
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: test
+        run: echo test
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["worktree-post-create"].jobs.as_ref().unwrap()[0];
+        assert!(job.needs.is_none());
+    }
+
+    #[test]
+    fn test_needs_empty() {
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: test
+        run: echo test
+        needs: []
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["worktree-post-create"].jobs.as_ref().unwrap()[0];
+        assert!(job.needs.as_ref().unwrap().is_empty());
     }
 }

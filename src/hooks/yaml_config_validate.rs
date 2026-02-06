@@ -115,6 +115,9 @@ fn validate_hook_def(name: &str, hook: &HookDef, result: &mut ValidationResult) 
                 result.warn(&path, format!("Duplicate job name: {name}"));
             }
         }
+
+        // Validate job dependencies (needs)
+        validate_job_dependencies(&path, jobs, result);
     }
 
     // Warn if both jobs and commands are set
@@ -184,6 +187,129 @@ fn validate_job(path: &str, job: &JobDef, result: &mut ValidationResult) {
             result.error(path, "'group' cannot be combined with 'run' or 'script'");
         }
     }
+}
+
+/// Validate job dependency (`needs`) declarations.
+///
+/// Checks:
+/// 1. Jobs with `needs` must have a `name`
+/// 2. All `needs` references must point to existing named jobs
+/// 3. No dependency cycles
+fn validate_job_dependencies(path: &str, jobs: &[JobDef], result: &mut ValidationResult) {
+    use std::collections::{HashMap, HashSet};
+
+    // Build set of named jobs
+    let named_jobs: HashSet<&str> = jobs.iter().filter_map(|j| j.name.as_deref()).collect();
+
+    // Check each job's needs
+    for (i, job) in jobs.iter().enumerate() {
+        let needs = match job.needs.as_ref() {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+
+        let job_path = if let Some(ref name) = job.name {
+            format!("{path}.jobs[{name}]")
+        } else {
+            format!("{path}.jobs[{i}]")
+        };
+
+        // 1. Jobs with needs must have a name
+        if job.name.is_none() {
+            result.error(&job_path, "Job with 'needs' must have a 'name'");
+            continue;
+        }
+
+        // 2. All needs references must exist
+        for dep in needs {
+            if !named_jobs.contains(dep.as_str()) {
+                result.error(&job_path, format!("Unknown dependency in 'needs': '{dep}'"));
+            }
+        }
+    }
+
+    // 3. Check for cycles using DFS (white/gray/black coloring)
+    // Build adjacency list: job name -> list of names it depends on
+    let mut deps: HashMap<&str, Vec<&str>> = HashMap::new();
+    for job in jobs {
+        if let (Some(ref name), Some(ref needs)) = (&job.name, &job.needs) {
+            deps.insert(name.as_str(), needs.iter().map(|s| s.as_str()).collect());
+        }
+    }
+
+    if let Some(cycle) = check_dependency_cycles(&deps) {
+        result.error(path, format!("Dependency cycle detected: {cycle}"));
+    }
+}
+
+/// Check for cycles in the dependency graph using DFS with white/gray/black coloring.
+///
+/// Returns `Some(description)` if a cycle is found, `None` if the graph is acyclic.
+fn check_dependency_cycles(deps: &std::collections::HashMap<&str, Vec<&str>>) -> Option<String> {
+    use std::collections::HashSet;
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Color {
+        White, // unvisited
+        Gray,  // in current DFS path
+        Black, // fully processed
+    }
+
+    let mut colors: std::collections::HashMap<&str, Color> = std::collections::HashMap::new();
+
+    // Initialize all nodes as white
+    for &node in deps.keys() {
+        colors.insert(node, Color::White);
+        for &dep in deps.get(node).into_iter().flatten() {
+            colors.entry(dep).or_insert(Color::White);
+        }
+    }
+
+    fn dfs<'a>(
+        node: &'a str,
+        deps: &std::collections::HashMap<&str, Vec<&'a str>>,
+        colors: &mut std::collections::HashMap<&'a str, Color>,
+        path: &mut Vec<&'a str>,
+    ) -> Option<String> {
+        colors.insert(node, Color::Gray);
+        path.push(node);
+
+        if let Some(neighbors) = deps.get(node) {
+            for &neighbor in neighbors {
+                match colors.get(neighbor) {
+                    Some(Color::Gray) => {
+                        // Found a cycle - build description
+                        let cycle_start = path.iter().position(|&n| n == neighbor).unwrap();
+                        let mut cycle: Vec<&str> = path[cycle_start..].to_vec();
+                        cycle.push(neighbor);
+                        return Some(cycle.join(" -> "));
+                    }
+                    Some(Color::White) | None => {
+                        if let Some(cycle) = dfs(neighbor, deps, colors, path) {
+                            return Some(cycle);
+                        }
+                    }
+                    Some(Color::Black) => {} // already fully processed
+                }
+            }
+        }
+
+        path.pop();
+        colors.insert(node, Color::Black);
+        None
+    }
+
+    let nodes: HashSet<&str> = colors.keys().copied().collect();
+    let mut path = Vec::new();
+    for node in &nodes {
+        if colors.get(node) == Some(&Color::White) {
+            if let Some(cycle) = dfs(node, deps, &mut colors, &mut path) {
+                return Some(cycle);
+            }
+        }
+    }
+
+    None
 }
 
 /// Check if the current version satisfies the minimum version requirement.
@@ -429,5 +555,174 @@ mod tests {
         assert!(result.is_ok()); // warnings don't count as errors
         assert_eq!(result.warnings.len(), 1);
         assert!(result.warnings[0].message.contains("Duplicate"));
+    }
+
+    #[test]
+    fn test_validate_needs_unknown_ref() {
+        let config = YamlConfig {
+            hooks: {
+                let mut map = std::collections::HashMap::new();
+                map.insert(
+                    "post-clone".to_string(),
+                    HookDef {
+                        jobs: Some(vec![
+                            JobDef {
+                                name: Some("a".to_string()),
+                                run: Some("echo a".to_string()),
+                                ..Default::default()
+                            },
+                            JobDef {
+                                name: Some("b".to_string()),
+                                run: Some("echo b".to_string()),
+                                needs: Some(vec!["nonexistent".to_string()]),
+                                ..Default::default()
+                            },
+                        ]),
+                        ..Default::default()
+                    },
+                );
+                map
+            },
+            ..Default::default()
+        };
+        let result = validate_config(&config).unwrap();
+        assert!(!result.is_ok());
+        assert!(result.errors[0].message.contains("Unknown dependency"));
+        assert!(result.errors[0].message.contains("nonexistent"));
+    }
+
+    #[test]
+    fn test_validate_needs_cycle() {
+        let config = YamlConfig {
+            hooks: {
+                let mut map = std::collections::HashMap::new();
+                map.insert(
+                    "post-clone".to_string(),
+                    HookDef {
+                        jobs: Some(vec![
+                            JobDef {
+                                name: Some("a".to_string()),
+                                run: Some("echo a".to_string()),
+                                needs: Some(vec!["b".to_string()]),
+                                ..Default::default()
+                            },
+                            JobDef {
+                                name: Some("b".to_string()),
+                                run: Some("echo b".to_string()),
+                                needs: Some(vec!["a".to_string()]),
+                                ..Default::default()
+                            },
+                        ]),
+                        ..Default::default()
+                    },
+                );
+                map
+            },
+            ..Default::default()
+        };
+        let result = validate_config(&config).unwrap();
+        assert!(!result.is_ok());
+        assert!(result.errors.iter().any(|e| e.message.contains("cycle")));
+    }
+
+    #[test]
+    fn test_validate_needs_self_ref() {
+        let config = YamlConfig {
+            hooks: {
+                let mut map = std::collections::HashMap::new();
+                map.insert(
+                    "post-clone".to_string(),
+                    HookDef {
+                        jobs: Some(vec![JobDef {
+                            name: Some("a".to_string()),
+                            run: Some("echo a".to_string()),
+                            needs: Some(vec!["a".to_string()]),
+                            ..Default::default()
+                        }]),
+                        ..Default::default()
+                    },
+                );
+                map
+            },
+            ..Default::default()
+        };
+        let result = validate_config(&config).unwrap();
+        assert!(!result.is_ok());
+        assert!(result.errors.iter().any(|e| e.message.contains("cycle")));
+    }
+
+    #[test]
+    fn test_validate_needs_without_name() {
+        let config = YamlConfig {
+            hooks: {
+                let mut map = std::collections::HashMap::new();
+                map.insert(
+                    "post-clone".to_string(),
+                    HookDef {
+                        jobs: Some(vec![
+                            JobDef {
+                                name: Some("a".to_string()),
+                                run: Some("echo a".to_string()),
+                                ..Default::default()
+                            },
+                            JobDef {
+                                run: Some("echo b".to_string()),
+                                needs: Some(vec!["a".to_string()]),
+                                ..Default::default()
+                            },
+                        ]),
+                        ..Default::default()
+                    },
+                );
+                map
+            },
+            ..Default::default()
+        };
+        let result = validate_config(&config).unwrap();
+        assert!(!result.is_ok());
+        assert!(result.errors[0].message.contains("must have a 'name'"));
+    }
+
+    #[test]
+    fn test_validate_needs_valid() {
+        let config = YamlConfig {
+            hooks: {
+                let mut map = std::collections::HashMap::new();
+                map.insert(
+                    "post-clone".to_string(),
+                    HookDef {
+                        jobs: Some(vec![
+                            JobDef {
+                                name: Some("install-npm".to_string()),
+                                run: Some("npm install".to_string()),
+                                ..Default::default()
+                            },
+                            JobDef {
+                                name: Some("install-uv".to_string()),
+                                run: Some("pip install uv".to_string()),
+                                ..Default::default()
+                            },
+                            JobDef {
+                                name: Some("npm-build".to_string()),
+                                run: Some("npm run build".to_string()),
+                                needs: Some(vec!["install-npm".to_string()]),
+                                ..Default::default()
+                            },
+                            JobDef {
+                                name: Some("uv-sync".to_string()),
+                                run: Some("uv sync".to_string()),
+                                needs: Some(vec!["install-uv".to_string()]),
+                                ..Default::default()
+                            },
+                        ]),
+                        ..Default::default()
+                    },
+                );
+                map
+            },
+            ..Default::default()
+        };
+        let result = validate_config(&config).unwrap();
+        assert!(result.is_ok());
     }
 }
