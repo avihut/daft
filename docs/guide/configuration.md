@@ -78,6 +78,13 @@ Default fail modes:
 - `worktreePreCreate`: `abort` (setup must succeed before creating worktree)
 - All others: `warn` (don't block operations)
 
+### YAML Hooks Configuration
+
+Hooks can also be configured through a `daft.yml` file for richer features including
+multiple jobs, execution modes, job dependencies, and conditional execution.
+
+See the [Hooks guide](./hooks.md#yaml-configuration) for the complete `daft.yml` reference.
+
 ## Examples
 
 ```bash

@@ -5,21 +5,9 @@ description: Automate worktree lifecycle events with project-managed hooks
 
 # Hooks
 
-daft provides a hooks system that runs scripts at worktree lifecycle events. Hooks are stored in the repository and shared with your team, with a trust-based security model.
+daft provides a hooks system that runs automation at worktree lifecycle events. Hooks are stored in the repository and shared with your team, with a trust-based security model.
 
-## Overview
-
-Hooks are executable scripts placed in `.daft/hooks/` within your repository. They run automatically when worktrees are created, removed, or cloned.
-
-```
-my-project/
-├── .daft/
-│   └── hooks/
-│       ├── post-clone            # Runs after cloning the repo
-│       ├── worktree-post-create  # Runs after creating a worktree
-│       └── worktree-pre-remove   # Runs before removing a worktree
-└── src/
-```
+The recommended approach is a **YAML configuration file** (`daft.yml`) that supports multiple jobs, parallel execution, dependencies, conditional skipping, and more. For simple cases, you can also use **executable shell scripts** in `.daft/hooks/`.
 
 ## Hook Types
 
@@ -66,11 +54,402 @@ git daft hooks list
 git daft hooks reset-trust
 ```
 
-## Writing a Hook
+## Quick Start
 
-Hooks are executable scripts. They can be written in any language.
+1. **Scaffold a configuration file:**
 
-### Example: Auto-allow direnv
+   ```bash
+   git daft hooks install
+   ```
+
+   This creates a `daft.yml` at your worktree root with placeholder jobs for all hook types.
+
+2. **Edit `daft.yml`** with your actual commands:
+
+   ```yaml
+   hooks:
+     worktree-post-create:
+       jobs:
+         - name: install-deps
+           run: npm install
+         - name: setup-env
+           run: cp .env.example .env
+   ```
+
+3. **Trust the repository** so hooks can run:
+
+   ```bash
+   git daft hooks trust
+   ```
+
+4. **Validate your configuration:**
+
+   ```bash
+   git daft hooks validate
+   ```
+
+That's it. The next time a worktree is created, your hooks will run automatically.
+
+## YAML Configuration
+
+### Config File Locations
+
+daft searches for configuration files in the following order (first match wins):
+
+| File | Location |
+|------|----------|
+| `daft.yml` | Repo root |
+| `daft.yaml` | Repo root |
+| `.daft.yml` | Repo root (hidden) |
+| `.daft.yaml` | Repo root (hidden) |
+| `.config/daft.yml` | XDG-style config directory |
+| `.config/daft.yaml` | XDG-style config directory |
+
+Additionally:
+- **Local overrides** (`daft-local.yml`) — same directory as the main config, not committed to git. Useful for machine-specific settings.
+- **Per-hook files** (`worktree-post-create.yml`, `post-clone.yml`, etc.) — same directory as the main config. Each file defines a single hook and is merged into the main config.
+
+### Top-Level Settings
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `min_version` | string | Minimum daft version required (e.g., `"1.5.0"`) |
+| `colors` | bool | Enable/disable colored output |
+| `no_tty` | bool | Disable TTY detection |
+| `rc` | string | Shell RC file to source before running hooks |
+| `output` | bool / list | `false` to suppress all output, or list of hook names to show output for |
+| `extends` | list | Additional config files to merge (e.g., `["shared.yml"]`) |
+| `source_dir` | string | Directory for script files (default: `".daft"`) |
+| `source_dir_local` | string | Directory for local (gitignored) script files (default: `".daft-local"`) |
+| `hooks` | map | Hook definitions, keyed by hook name |
+
+### Hook Definition
+
+Each hook is defined under the `hooks` key:
+
+```yaml
+hooks:
+  worktree-post-create:
+    parallel: true
+    jobs:
+      - name: install
+        run: npm install
+      - name: build
+        run: npm run build
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `parallel` | bool | `true` | Run jobs in parallel |
+| `piped` | bool | | Run jobs sequentially, stop on first failure |
+| `follow` | bool | | Run jobs sequentially, continue on failure |
+| `exclude_tags` | list | | Tags to exclude at hook level |
+| `exclude` | list | | Glob patterns to exclude |
+| `skip` | bool / string / list | | Skip condition (see [Skip and Only Conditions](#skip-and-only-conditions)) |
+| `only` | bool / string / list | | Only condition (see [Skip and Only Conditions](#skip-and-only-conditions)) |
+| `jobs` | list | | Jobs to execute |
+
+### Jobs
+
+Each job in the `jobs` list supports:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Job name (used for display, merging, and dependency references) |
+| `run` | string | Inline shell command to execute |
+| `script` | string | Script file to run (relative to `source_dir`) |
+| `runner` | string | Interpreter for script files (e.g., `"bash"`, `"python"`) |
+| `args` | string | Arguments to pass to the script |
+| `root` | string | Working directory (relative to worktree root) |
+| `tags` | list | Tags for filtering with `exclude_tags` |
+| `skip` | bool / string / list | Skip condition |
+| `only` | bool / string / list | Only condition |
+| `env` | map | Extra environment variables |
+| `fail_text` | string | Custom failure message |
+| `interactive` | bool | Job needs TTY/stdin (forces sequential execution) |
+| `priority` | int | Execution ordering (lower runs first) |
+| `needs` | list | Names of jobs that must complete before this job runs |
+| `group` | object | Nested group of jobs (see [Groups](#groups)) |
+
+A job must have exactly one of `run`, `script`, or `group`.
+
+#### Example: Inline command
+
+```yaml
+- name: lint
+  run: cargo clippy -- -D warnings
+```
+
+#### Example: Script with runner
+
+```yaml
+- name: setup
+  script: setup.sh
+  runner: bash
+  args: --verbose
+```
+
+#### Example: Environment variables and failure text
+
+```yaml
+- name: test
+  run: npm test
+  env:
+    NODE_ENV: test
+    CI: "true"
+  fail_text: "Tests failed! Fix before continuing."
+```
+
+## Execution Modes
+
+Each hook runs its jobs in one of three modes. Only one can be set at a time.
+
+| Mode | Field | Behavior |
+|------|-------|----------|
+| Parallel | `parallel: true` | All jobs run concurrently (default) |
+| Piped | `piped: true` | Jobs run sequentially; stop on first failure |
+| Follow | `follow: true` | Jobs run sequentially; continue even if one fails |
+
+### Parallel (default)
+
+```yaml
+hooks:
+  worktree-post-create:
+    parallel: true
+    jobs:
+      - name: install-npm
+        run: npm install
+      - name: install-pip
+        run: pip install -r requirements.txt
+```
+
+Both jobs start at the same time.
+
+### Piped
+
+```yaml
+hooks:
+  worktree-post-create:
+    piped: true
+    jobs:
+      - name: install
+        run: npm install
+      - name: build
+        run: npm run build
+```
+
+`build` only runs if `install` succeeds.
+
+### Follow
+
+```yaml
+hooks:
+  worktree-post-create:
+    follow: true
+    jobs:
+      - name: optional-lint
+        run: npm run lint
+      - name: required-build
+        run: npm run build
+```
+
+`required-build` runs even if `optional-lint` fails.
+
+## Job Dependencies
+
+For complex workflows where some jobs depend on others, use `needs` to declare dependencies. Jobs with `needs` wait for all their dependencies to complete before starting. Independent jobs still run in parallel.
+
+```yaml
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: install-npm
+        run: npm install
+      - name: install-pip
+        run: pip install -r requirements.txt
+      - name: build
+        run: npm run build
+        needs: [install-npm]
+      - name: deploy
+        run: ./deploy.sh
+        needs: [build, install-pip]
+```
+
+In this example:
+- `install-npm` and `install-pip` start immediately (in parallel)
+- `build` starts after `install-npm` completes
+- `deploy` starts after both `build` and `install-pip` complete
+
+### Dependency rules
+
+- `needs` requires each job to have a `name`
+- Circular dependencies are rejected during validation
+- References to non-existent job names are rejected
+- If a dependency **fails**, all jobs that depend on it are marked as `dep-failed` and do not run
+- If a dependency is **skipped**, downstream jobs still run (skipped deps are considered satisfied)
+
+## Skip and Only Conditions
+
+`skip` and `only` control whether a hook or job runs. They can be set at either the hook level or the job level.
+
+- **`skip`**: If any condition matches, the hook/job is skipped
+- **`only`**: All conditions must match for the hook/job to run
+
+### Three forms
+
+**Boolean** — always skip or always run:
+
+```yaml
+skip: true    # Always skip this job
+only: false   # Never run this job
+```
+
+**Environment variable** — skip/run based on an env var being set and truthy:
+
+```yaml
+skip: CI              # Skip when $CI is set
+only: DEPLOY_ENABLED  # Only run when $DEPLOY_ENABLED is set
+```
+
+An env var is "truthy" if it is set, non-empty, not `"0"`, and not `"false"`.
+
+**Structured rules** — a list of conditions:
+
+```yaml
+skip:
+  - merge                      # Named: skip during merge
+  - rebase                     # Named: skip during rebase
+  - ref: "release/*"           # Ref: skip if branch matches glob
+  - env: SKIP_HOOKS            # Env: skip if env var is truthy
+  - run: "test -f .skip-hooks" # Run: skip if command exits 0
+```
+
+### Named conditions
+
+| Name | Triggers when |
+|------|---------------|
+| `merge` | Git is in a merge state (`MERGE_HEAD` exists) |
+| `rebase` | Git is in a rebase state (`rebase-merge` or `rebase-apply` exists) |
+
+### Structured condition fields
+
+| Field | Description |
+|-------|-------------|
+| `ref` | Glob pattern matched against the current branch name |
+| `env` | Environment variable name; truthy = condition met |
+| `run` | Shell command; exit code 0 = condition met |
+
+### Hook-level vs job-level
+
+```yaml
+hooks:
+  worktree-post-create:
+    skip:
+      - merge    # Skip ALL jobs in this hook during merge
+    jobs:
+      - name: lint
+        run: cargo clippy
+        skip: CI   # Additionally skip this job when $CI is set
+      - name: build
+        run: cargo build
+```
+
+## Groups
+
+A job can contain a nested `group` of sub-jobs instead of a `run` or `script`. The group runs as a unit with its own execution mode.
+
+```yaml
+hooks:
+  worktree-post-create:
+    piped: true
+    jobs:
+      - name: checks
+        group:
+          parallel: true
+          jobs:
+            - name: lint
+              run: cargo clippy
+            - name: format
+              run: cargo fmt --check
+      - name: build
+        run: cargo build
+```
+
+In this example, `lint` and `format` run in parallel within the group. The outer hook uses `piped` mode, so `build` only starts after the entire `checks` group completes successfully.
+
+| Group field | Type | Description |
+|-------------|------|-------------|
+| `parallel` | bool | Run group jobs in parallel |
+| `piped` | bool | Run group jobs sequentially, stop on first failure |
+| `jobs` | list | Jobs within the group |
+
+## Template Variables
+
+Commands (`run`) support template variables that are replaced with values from the execution context:
+
+| Variable | Description |
+|----------|-------------|
+| `{branch}` | Target branch name (alias for `{worktree_branch}`) |
+| `{worktree_path}` | Path to the target worktree |
+| `{worktree_root}` | Project root directory |
+| `{worktree_branch}` | Target branch name |
+| `{source_worktree}` | Path to the source worktree (where command was invoked) |
+| `{git_dir}` | Path to the `.git` directory |
+| `{remote}` | Remote name (usually `"origin"`) |
+| `{job_name}` | Name of the current job |
+| `{base_branch}` | Base branch name (for `checkout-branch` commands) |
+| `{repository_url}` | Repository URL (for `post-clone`) |
+| `{default_branch}` | Default branch name (for `post-clone`) |
+
+### Example
+
+```yaml
+jobs:
+  - name: log
+    run: echo "Setting up worktree for {branch} at {worktree_path}"
+  - name: diff
+    run: git diff {base_branch}...{branch}
+```
+
+## Config Merging
+
+When multiple config sources exist, they are merged in this order (lowest to highest precedence):
+
+1. **Main config** (`daft.yml`)
+2. **Extends files** (listed in `extends`)
+3. **Per-hook files** (`worktree-post-create.yml`, etc.)
+4. **Local override** (`daft-local.yml`)
+
+Merging rules:
+- **Scalar fields** (e.g., `min_version`, `colors`): higher-precedence value wins
+- **Named jobs**: jobs with the same `name` are replaced by the higher-precedence version
+- **Unnamed jobs**: appended from the overlay
+
+Use `git daft hooks dump` to inspect the fully merged configuration:
+
+```bash
+git daft hooks dump
+```
+
+## Shell Script Hooks
+
+For simple automation, you can use executable scripts in `.daft/hooks/` instead of (or in addition to) YAML configuration. Shell scripts run before YAML-configured jobs.
+
+### Writing a shell script hook
+
+Hooks are executable scripts placed in `.daft/hooks/` within your repository. They can be written in any language.
+
+```
+my-project/
+├── .daft/
+│   └── hooks/
+│       ├── post-clone            # Runs after cloning the repo
+│       ├── worktree-post-create  # Runs after creating a worktree
+│       └── worktree-pre-remove   # Runs before removing a worktree
+└── src/
+```
+
+#### Example: Auto-allow direnv
 
 ```bash
 #!/bin/bash
@@ -80,7 +459,7 @@ if [ -f ".envrc" ] && command -v direnv &>/dev/null; then
 fi
 ```
 
-### Example: Install dependencies
+#### Example: Install dependencies
 
 ```bash
 #!/bin/bash
@@ -94,7 +473,7 @@ elif [ -f "requirements.txt" ]; then
 fi
 ```
 
-### Example: Use correct Node version
+#### Example: Use correct Node version
 
 ```bash
 #!/bin/bash
@@ -112,7 +491,7 @@ chmod +x .daft/hooks/worktree-post-create
 
 ## Environment Variables
 
-Hooks receive context via environment variables:
+Hooks receive context via environment variables. These are available to both YAML jobs and shell script hooks.
 
 ### Universal (all hooks)
 
