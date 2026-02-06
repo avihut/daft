@@ -129,7 +129,7 @@ pub fn check_man_pages() -> CheckResult {
     match found_in {
         Some(dir) => CheckResult::pass("Man pages installed", &format!("{}", dir.display())),
         None => CheckResult::warning("Man pages not installed", "man pages not found")
-            .with_suggestion("Run 'just install-man' to install man pages"),
+            .with_suggestion("Run 'mise run install-man' to install man pages"),
     }
 }
 

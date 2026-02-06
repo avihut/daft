@@ -1,0 +1,597 @@
+# mise configuration for daft
+# Run `mise tasks` to see available tasks
+
+[tools]
+rust = "stable"
+
+[env]
+INTEGRATION_TESTS_DIR = "tests/integration"
+INTEGRATION_TEMP_DIR = "/tmp/git-worktree-integration-tests"
+
+# ============================================================================
+# Build Tasks
+# ============================================================================
+
+[tasks.build]
+description = "Build Rust binaries (release mode)"
+run = """
+echo "Building Rust binaries..."
+cargo build --release
+"""
+
+# Alias for build (backwards compatibility)
+[tasks.build-rust]
+description = "Build Rust binaries (alias for build)"
+depends = ["build"]
+
+# ============================================================================
+# Development Tasks
+# ============================================================================
+
+[tasks.dev]
+description = "Quick development cycle: setup + verify"
+depends = ["dev-setup", "dev-verify"]
+run = 'echo "Development environment ready and verified!"'
+
+[tasks.dev-setup]
+description = "Build binary and create symlinks in target/release/"
+depends = ["setup-rust"]
+
+[tasks.dev-clean]
+description = "Remove development symlinks (keeps binary)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Cleaning development symlinks..."
+cd target/release && rm -f \
+    git-worktree-clone \
+    git-worktree-init \
+    git-worktree-checkout \
+    git-worktree-checkout-branch \
+    git-worktree-checkout-branch-from-default \
+    git-worktree-prune \
+    git-worktree-carry \
+    git-worktree-fetch \
+    git-worktree-flow-adopt \
+    git-worktree-flow-eject \
+    git-daft \
+    gwtclone gwtinit gwtco gwtcb gwtcbm gwtprune gwtcarry gwtfetch \
+    gwco gwcob gwcobd \
+    gclone gcw gcbw gcbdw gprune
+echo "Symlinks removed (binary preserved)"
+"""
+
+[tasks.dev-verify]
+description = "Verify dev setup is working"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Verifying development setup..."
+test -f target/release/daft || (echo "Binary not found" && exit 1)
+test -L target/release/git-worktree-clone || (echo "Symlinks not created" && exit 1)
+./target/release/daft >/dev/null 2>&1 || (echo "Direct invocation failed" && exit 1)
+./target/release/git-worktree-clone --help >/dev/null 2>&1 || (echo "Symlink invocation failed" && exit 1)
+echo "All checks passed"
+"""
+
+[tasks.dev-test]
+description = "Full dev test: setup + run all tests"
+depends = ["dev-setup", "test"]
+run = 'echo "Development setup tested successfully!"'
+
+# ============================================================================
+# Test Tasks
+# ============================================================================
+
+[tasks.test]
+description = "Run all tests (default)"
+depends = ["test-all"]
+run = 'echo "All tests completed"'
+alias = "t"
+
+[tasks.test-all]
+description = "Run all tests (unit + integration)"
+depends = ["test-unit", "test-integration"]
+run = 'echo "Running all tests (unit + integration)..."'
+
+[tasks.test-unit]
+description = "Run Rust unit tests"
+run = """
+echo "Running Rust unit tests..."
+cargo test --lib
+"""
+
+[tasks.test-rust]
+description = "Run Rust integration tests (alias)"
+depends = ["test-integration"]
+run = 'echo "Rust integration tests completed"'
+
+[tasks.test-integration]
+description = "Run Rust integration tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration tests..."
+cd tests/integration && ./test_all.sh
+"""
+
+# ============================================================================
+# Individual Integration Test Tasks
+# ============================================================================
+
+[tasks.test-integration-clone]
+description = "Run integration clone tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration clone tests..."
+cd tests/integration && ./test_clone.sh
+"""
+
+[tasks.test-integration-checkout]
+description = "Run integration checkout tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration checkout tests..."
+cd tests/integration && ./test_checkout.sh
+"""
+
+[tasks.test-integration-checkout-branch]
+description = "Run integration checkout-branch tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration checkout-branch tests..."
+cd tests/integration && ./test_checkout_branch.sh
+"""
+
+[tasks.test-integration-checkout-branch-from-default]
+description = "Run integration checkout-branch-from-default tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration checkout-branch-from-default tests..."
+cd tests/integration && ./test_checkout_branch_from_default.sh
+"""
+
+[tasks.test-integration-init]
+description = "Run integration init tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration init tests..."
+cd tests/integration && ./test_init.sh
+"""
+
+[tasks.test-integration-prune]
+description = "Run integration prune tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration prune tests..."
+cd tests/integration && ./test_prune.sh
+"""
+
+[tasks.test-integration-shell-init]
+description = "Run integration shell-init tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration shell-init tests..."
+cd tests/integration && ./test_shell_init.sh
+"""
+
+[tasks.test-integration-setup]
+description = "Run integration setup tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration setup tests..."
+cd tests/integration && ./test_setup.sh
+"""
+
+[tasks.test-integration-config]
+description = "Run integration config tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration config tests..."
+cd tests/integration && ./test_config.sh
+"""
+
+[tasks.test-integration-hooks]
+description = "Run integration hooks tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration hooks tests..."
+cd tests/integration && ./test_hooks.sh
+"""
+
+[tasks.test-integration-fetch]
+description = "Run integration fetch tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration fetch tests..."
+cd tests/integration && ./test_fetch.sh
+"""
+
+[tasks.test-integration-flow-adopt]
+description = "Run integration flow-adopt tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration flow-adopt tests..."
+cd tests/integration && ./test_flow_adopt.sh
+"""
+
+[tasks.test-integration-flow-eject]
+description = "Run integration flow-eject tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration flow-eject tests..."
+cd tests/integration && ./test_flow_eject.sh
+"""
+
+[tasks.test-integration-unknown-command]
+description = "Run integration unknown-command tests"
+depends = ["build"]
+run = """
+echo "Running Rust integration unknown-command tests..."
+cd tests/integration && ./test_unknown_command.sh
+"""
+
+# ============================================================================
+# Verbose Test Tasks
+# ============================================================================
+
+[tasks.test-verbose]
+description = "Run tests with verbose output"
+depends = ["test-integration-verbose"]
+run = 'echo "All verbose tests completed"'
+
+[tasks.test-integration-verbose]
+description = "Run integration tests with verbose output"
+depends = ["build"]
+env = { VERBOSE = "1" }
+run = """
+echo "Running integration tests with verbose output..."
+cd tests/integration && ./test_all.sh
+"""
+
+# ============================================================================
+# Performance Test Tasks
+# ============================================================================
+
+[tasks.test-perf]
+description = "Run performance tests"
+depends = ["test-perf-integration"]
+run = 'echo "All performance tests completed"'
+
+[tasks.test-perf-integration]
+description = "Run integration performance tests"
+depends = ["build"]
+run = """
+echo "Running integration performance tests..."
+cd tests/integration && time ./test_all.sh
+"""
+
+# ============================================================================
+# Setup Tasks
+# ============================================================================
+
+[tasks.setup]
+description = "Setup development environment"
+depends = ["setup-rust"]
+run = 'echo "Development environment setup completed"'
+
+[tasks.setup-rust]
+description = "Setup Rust development environment"
+depends = ["build"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Setting up Rust development environment..."
+chmod +x tests/integration/*.sh
+echo "Creating symlinks in target/release/..."
+cd target/release
+# Core command symlinks
+ln -sf daft git-worktree-clone
+ln -sf daft git-worktree-init
+ln -sf daft git-worktree-checkout
+ln -sf daft git-worktree-checkout-branch
+ln -sf daft git-worktree-checkout-branch-from-default
+ln -sf daft git-worktree-prune
+ln -sf daft git-worktree-carry
+ln -sf daft git-worktree-fetch
+ln -sf daft git-worktree-flow-adopt
+ln -sf daft git-worktree-flow-eject
+ln -sf daft git-daft
+# Git-style shortcuts (default for development)
+ln -sf daft gwtclone
+ln -sf daft gwtinit
+ln -sf daft gwtco
+ln -sf daft gwtcb
+ln -sf daft gwtcbm
+ln -sf daft gwtprune
+ln -sf daft gwtcarry
+ln -sf daft gwtfetch
+cd ../..
+echo "Development environment ready!"
+echo ""
+# Cross-platform binary size display
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    size=$(stat -f '%z' target/release/daft 2>/dev/null || echo "0")
+else
+    size=$(stat -c '%s' target/release/daft 2>/dev/null || echo "0")
+fi
+echo "Binary size: $(awk "BEGIN {printf \\"%.0f KB\\", $size/1024}")"
+echo ""
+echo "Add to PATH for Git integration:"
+echo "  export PATH=\\"$PWD/target/release:\\$PATH\\""
+echo ""
+echo "Quick test:"
+echo "  ./target/release/daft"
+echo "  ./target/release/git-worktree-clone --help"
+echo "  ./target/release/gwtco --help  # Git-style shortcut"
+"""
+
+# ============================================================================
+# Validation Tasks
+# ============================================================================
+
+[tasks.validate]
+description = "Validate all code"
+depends = ["validate-rust"]
+run = 'echo "All validation completed"'
+
+[tasks.validate-rust]
+description = "Validate Rust code and integration tests"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Validating Rust code and integration tests..."
+cargo check
+for script in tests/integration/*.sh; do
+    if [ -f "$script" ]; then
+        echo "Validating $script"
+        bash -n "$script" || exit 1
+    fi
+done
+echo "Rust code and integration tests validated successfully"
+"""
+
+# ============================================================================
+# Lint Tasks
+# ============================================================================
+
+[tasks.lint]
+description = "Run all linting tools"
+depends = ["lint-rust"]
+run = 'echo "All linting completed"'
+alias = "l"
+
+[tasks.lint-rust]
+description = "Run Rust linting (clippy + fmt + shellcheck)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Running Rust linting..."
+cargo clippy -- -D warnings
+cargo fmt --check
+if command -v shellcheck >/dev/null 2>&1; then
+    shellcheck tests/integration/*.sh
+else
+    echo "shellcheck not available, skipping integration test lint..."
+fi
+"""
+
+# ============================================================================
+# Watch Tasks (requires: cargo install cargo-watch)
+# ============================================================================
+
+[tasks.watch]
+description = "Watch and run unit tests on changes (alias for watch-unit)"
+depends = ["watch-unit"]
+
+[tasks.watch-unit]
+description = "Watch and run unit tests on changes"
+run = """
+#!/usr/bin/env bash
+if command -v cargo-watch >/dev/null 2>&1; then
+    cargo watch -c -x "test --lib"
+else
+    echo "cargo-watch not installed. Install with: cargo install cargo-watch"
+    exit 1
+fi
+"""
+
+[tasks.watch-clippy]
+description = "Watch and run clippy + unit tests on changes"
+run = """
+#!/usr/bin/env bash
+if command -v cargo-watch >/dev/null 2>&1; then
+    cargo watch -c -x "clippy -- -D warnings" -x "test --lib"
+else
+    echo "cargo-watch not installed. Install with: cargo install cargo-watch"
+    exit 1
+fi
+"""
+
+[tasks.watch-check]
+description = "Watch and run cargo check on changes"
+run = """
+#!/usr/bin/env bash
+if command -v cargo-watch >/dev/null 2>&1; then
+    cargo watch -c -x check
+else
+    echo "cargo-watch not installed. Install with: cargo install cargo-watch"
+    exit 1
+fi
+"""
+
+# ============================================================================
+# Shell Completion Tasks
+# ============================================================================
+
+[tasks.install-completions]
+description = "Install shell completions for bash/zsh/fish"
+depends = ["build"]
+run = """
+echo "Installing shell completions..."
+./target/release/daft completions bash --install
+./target/release/daft completions zsh --install
+./target/release/daft completions fish --install
+echo "Completions installed successfully!"
+echo ""
+echo "Restart your shell or source your shell config file to enable completions"
+"""
+
+[tasks.gen-completions-bash]
+description = "Generate bash completions to /tmp/"
+depends = ["build"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Generating bash completions..."
+for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-checkout-branch-from-default git-worktree-prune; do
+    echo "  $cmd"
+    ./target/release/daft completions bash --command="$cmd" > /tmp/completion-$cmd.bash
+done
+echo "Bash completions generated in /tmp/"
+"""
+
+[tasks.gen-completions-zsh]
+description = "Generate zsh completions to /tmp/"
+depends = ["build"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Generating zsh completions..."
+for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-checkout-branch-from-default git-worktree-prune; do
+    echo "  $cmd"
+    ./target/release/daft completions zsh --command="$cmd" > /tmp/completion-_$cmd.zsh
+done
+echo "Zsh completions generated in /tmp/"
+"""
+
+[tasks.gen-completions-fish]
+description = "Generate fish completions to /tmp/"
+depends = ["build"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Generating fish completions..."
+for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-checkout-branch-from-default git-worktree-prune; do
+    echo "  $cmd"
+    ./target/release/daft completions fish --command="$cmd" > /tmp/completion-$cmd.fish
+done
+echo "Fish completions generated in /tmp/"
+"""
+
+[tasks.test-completions]
+description = "Test shell completions"
+depends = ["build"]
+run = """
+#!/usr/bin/env bash
+echo "Testing shell completions..."
+if [ -f tests/integration/test_completions.sh ]; then
+    tests/integration/test_completions.sh
+else
+    echo "Completion tests not yet implemented"
+fi
+"""
+
+# ============================================================================
+# Man Page Tasks
+# ============================================================================
+
+[tasks.gen-man]
+description = "Generate man pages to man/ directory using xtask"
+run = """
+echo "Generating man pages..."
+mkdir -p man
+cargo run --package xtask -- gen-man --output-dir=man
+echo "Man pages generated in man/"
+"""
+
+[tasks.install-man]
+description = "Install pre-generated man pages to system location"
+depends = ["gen-man"]
+run = """
+echo "Installing man pages..."
+mkdir -p ~/.local/share/man/man1
+cp man/*.1 ~/.local/share/man/man1/
+echo "Man pages installed to ~/.local/share/man/man1/"
+echo ""
+echo "Note: You may need to run 'mandb' or restart your shell for man to find the new pages"
+"""
+
+[tasks.verify-man]
+description = "Verify man pages are up-to-date with source"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Verifying man pages are up-to-date..."
+cargo run --package xtask -- gen-man --output-dir=man
+git diff --exit-code man/ || (echo "Man pages out of date. Run 'mise run gen-man' and commit." && exit 1)
+echo "Man pages are up-to-date"
+"""
+
+# ============================================================================
+# CLI Docs Tasks
+# ============================================================================
+
+[tasks.gen-cli-docs]
+description = "Generate CLI reference docs to docs/cli/ directory using xtask"
+run = """
+echo "Generating CLI reference docs..."
+mkdir -p docs/cli
+cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
+echo "CLI docs generated in docs/cli/"
+"""
+
+[tasks.verify-cli-docs]
+description = "Verify CLI docs are up-to-date with source"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Verifying CLI docs are up-to-date..."
+cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
+git diff --exit-code docs/cli/ || (echo "CLI docs out of date. Run 'mise run gen-cli-docs' and commit." && exit 1)
+echo "CLI docs are up-to-date"
+"""
+
+# ============================================================================
+# Cleanup Tasks
+# ============================================================================
+
+[tasks.clean]
+description = "Clean up all artifacts"
+depends = ["clean-tests", "clean-rust", "dev-clean"]
+run = 'echo "All artifacts cleaned"'
+
+[tasks.clean-tests]
+description = "Clean up test artifacts"
+run = """
+echo "Cleaning up test artifacts..."
+rm -rf /tmp/git-worktree-integration-tests
+echo "Test artifacts cleaned"
+"""
+
+[tasks.clean-rust]
+description = "Clean Rust build artifacts"
+run = """
+echo "Cleaning Rust build artifacts..."
+cargo clean
+"""
+
+# ============================================================================
+# CI Tasks
+# ============================================================================
+
+[tasks.ci]
+description = "Run CI simulation"
+depends = ["setup", "validate", "test"]
+run = 'echo "CI simulation completed successfully"'
+
+# ============================================================================
+# Aliases
+# ============================================================================
+
+[tasks.b]
+description = "Alias for build"
+depends = ["build"]
+
+[tasks.default]
+description = "Default task (runs test)"
+depends = ["test"]

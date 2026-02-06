@@ -132,10 +132,8 @@ jobs:
         echo "${{ github.workspace }}/target/release" >> $GITHUB_PATH
         echo "PATH=${{ github.workspace }}/target/release:$PATH" >> $GITHUB_ENV
 
-    - name: Install just
-      uses: extractions/setup-just@v3
-      with:
-        just-version: 1.37.0
+    - name: Install mise
+      uses: jdx/mise-action@v2
 
     - name: Test script dependencies
       run: |
@@ -146,7 +144,7 @@ jobs:
         echo "All dependencies found"
 
     - name: Run Rust integration tests
-      run: just test-integration
+      run: mise run test-integration
 
     - name: Test shell completions
       run: |
@@ -319,7 +317,7 @@ jobs:
         cargo run --package xtask -- gen-man --output-dir=man
         if ! git diff --exit-code man/; then
           echo "FAILED: Committed man pages are out of date!"
-          echo "Run 'just gen-man' locally and commit the changes."
+          echo "Run 'mise run gen-man' locally and commit the changes."
           exit 1
         fi
         echo "Committed man pages are up-to-date!"
@@ -364,7 +362,7 @@ jobs:
         cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
         if ! git diff --exit-code docs/cli/; then
           echo "FAILED: Committed CLI docs are out of date!"
-          echo "Run 'just gen-cli-docs' locally and commit the changes."
+          echo "Run 'mise run gen-cli-docs' locally and commit the changes."
           exit 1
         fi
         echo "Committed CLI docs are up-to-date!"

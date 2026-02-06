@@ -91,7 +91,7 @@ Issue references should be in the PR body, not the title.
    ```bash
    cargo fmt
    cargo clippy -- -D warnings
-   just test
+   mise run test
    ```
 
 5. **Submit a pull request** with a conventional commit title
@@ -100,7 +100,7 @@ Issue references should be in the PR body, not the title.
 
 Before submitting, ensure:
 
-- [ ] All tests pass: `just test`
+- [ ] All tests pass: `mise run test`
 - [ ] No clippy warnings: `cargo clippy -- -D warnings`
 - [ ] Code is formatted: `cargo fmt --check`
 - [ ] Documentation is updated if needed
@@ -111,11 +111,11 @@ The project has a two-tier testing architecture:
 
 ```bash
 # Run all tests
-just test
+mise run test
 
 # Run specific test suites
-just test-unit          # Rust unit tests
-just test-integration   # End-to-end tests
+mise run test-unit          # Rust unit tests
+mise run test-integration   # End-to-end tests
 ```
 
 ## Getting Help
