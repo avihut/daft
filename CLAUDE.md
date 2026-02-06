@@ -33,7 +33,7 @@ IMPORTANT: Before committing, always run `cargo fmt`, `cargo clippy -- -D warnin
 ## Branch Naming & PRs
 
 - Branch names: `daft-<issue number>/<shortened issue name>`
-- PRs target `master`
+- PRs target `master` and are always **squash merged** (linear history required)
 - PR titles use conventional commit format: `feat: add dark mode toggle`
 - Issue references go in PR body, not title: `Fixes #42`
 
