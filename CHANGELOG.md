@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.23](https://github.com/avihut/daft/compare/v1.0.22...v1.0.23) - 2026-02-07
+
+### Documentation
+
+- *(skill)* teach agents to use daft binary directly instead of git subcommands ([#191](https://github.com/avihut/daft/pull/191))
+- add daft-worktree-workflow agent skill ([#188](https://github.com/avihut/daft/pull/188))
+
+### Miscellaneous
+
+- improve daft.yml hooks for full worktree automation ([#190](https://github.com/avihut/daft/pull/190))
+
 ## [1.0.22](https://github.com/avihut/daft/compare/v1.0.21...v1.0.22) - 2026-02-07
 
 ### Bug Fixes
