@@ -1,5 +1,25 @@
 hooks:
+  post-clone:
+    jobs:
+      - name: mise-trust
+        run: mise trust
+      - name: mise-install
+        run: mise install
+        needs: [mise-trust]
+      - name: dev-setup
+        run: mise run dev-setup
+        needs: [mise-install]
+      - name: lefthook-install
+        run: lefthook install
+        needs: [mise-install]
+
   worktree-post-create:
     jobs:
       - name: mise-trust
         run: mise trust
+      - name: mise-install
+        run: mise install
+        needs: [mise-trust]
+      - name: dev-setup
+        run: mise run dev-setup
+        needs: [mise-install]
