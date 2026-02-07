@@ -90,3 +90,4 @@ mise run verify-man   # Check if man pages are up-to-date (also runs in CI)
 - `docs/cli/` — one reference page per command, follow `docs/cli/daft-doctor.md` as template
 - Every page needs `title` and `description` YAML frontmatter
 - No emoji in docs
+- **Update `SKILL.md`** when changes affect how an agent should interact with daft — new or removed commands, changed feature behavior, configuration format changes (e.g., hooks moving from shell scripts to YAML), renamed hook types, new template variables, etc. The skill is what teaches AI coding agents to use daft correctly.
