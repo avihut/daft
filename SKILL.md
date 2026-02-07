@@ -43,33 +43,51 @@ Key indicators:
 
 If you see this layout, the user is using daft. Apply worktree-aware guidance throughout the session.
 
+## Invocation Forms
+
+daft commands can be invoked in three ways:
+
+| Form | Example | Requires |
+|------|---------|----------|
+| Git subcommand | `git worktree-checkout feature/auth` | `git-worktree-checkout` symlink on PATH |
+| Direct binary | `daft worktree-checkout feature/auth` | Only the `daft` binary |
+| Shortcut alias | `gwtco feature/auth` | Shortcut symlink on PATH |
+
+The git subcommand form (`git worktree-*`) is what users type in their terminals and what documentation references. Shortcuts are optional short aliases managed via `daft setup shortcuts`.
+
+**Agent execution rule**: When running daft commands, always use the direct binary form (`daft <subcommand>`). The git subcommand form requires symlinks and shell wrappers that are not available in most agent shell sandboxes. When explaining daft usage to users, reference the git subcommand form (`git worktree-*`) or shortcuts, as these are what users interact with in their configured terminals.
+
+After creating a worktree with `daft`, the shell does not automatically `cd` into it (that requires shell wrappers). Navigate to the new worktree using the layout convention: `cd ../<branch-name>/` relative to any existing worktree.
+
 ## Command Reference
+
+All commands below use the `daft` binary form for agent execution. Users know these as `git` subcommands (e.g., `daft worktree-checkout` is `git worktree-checkout` to the user).
 
 ### Worktree Lifecycle
 
 | Command | Description |
 |---------|-------------|
-| `git worktree-clone <url>` | Clone a remote repository into daft's worktree layout |
-| `git worktree-init <name>` | Initialize a new local repository in worktree layout |
-| `git worktree-checkout <branch>` | Create a worktree for an existing local or remote branch |
-| `git worktree-checkout-branch <new-branch> [base]` | Create a new branch and worktree from current or specified base |
-| `git worktree-checkout-branch-from-default <new-branch>` | Create a new branch and worktree from the remote's default branch |
-| `git worktree-prune` | Remove worktrees whose remote branches have been deleted |
-| `git worktree-carry <targets>` | Transfer uncommitted changes to one or more other worktrees |
-| `git worktree-fetch [targets]` | Pull remote updates into worktree branches |
+| `daft worktree-clone <url>` | Clone a remote repository into daft's worktree layout |
+| `daft worktree-init <name>` | Initialize a new local repository in worktree layout |
+| `daft worktree-checkout <branch>` | Create a worktree for an existing local or remote branch |
+| `daft worktree-checkout-branch <new-branch> [base]` | Create a new branch and worktree from current or specified base |
+| `daft worktree-checkout-branch-from-default <new-branch>` | Create a new branch and worktree from the remote's default branch |
+| `daft worktree-prune` | Remove worktrees whose remote branches have been deleted |
+| `daft worktree-carry <targets>` | Transfer uncommitted changes to one or more other worktrees |
+| `daft worktree-fetch [targets]` | Pull remote updates into worktree branches |
 
 ### Adoption and Ejection
 
 | Command | Description |
 |---------|-------------|
-| `git worktree-flow-adopt [path]` | Convert a traditional repository to daft's worktree layout |
-| `git worktree-flow-eject` | Convert back to a traditional repository layout |
+| `daft worktree-flow-adopt [path]` | Convert a traditional repository to daft's worktree layout |
+| `daft worktree-flow-eject` | Convert back to a traditional repository layout |
 
 ### Management
 
 | Command | Description |
 |---------|-------------|
-| `git daft hooks <subcommand>` | Manage hooks trust and configuration (`trust`, `deny`, `prompt`, `status`, `list`, `reset-trust`, `migrate`, `install`, `validate`, `dump`) |
+| `daft hooks <subcommand>` | Manage hooks trust and configuration (`trust`, `deny`, `prompt`, `status`, `list`, `reset-trust`, `migrate`, `install`, `validate`, `dump`) |
 | `daft doctor` | Diagnose installation and configuration issues |
 | `daft setup shortcuts <subcommand>` | Manage command shortcut symlinks |
 | `daft shell-init <shell>` | Generate shell integration wrappers |
@@ -102,8 +120,8 @@ Hooks automate worktree lifecycle events. The recommended approach is a `daft.ym
 
 | Hook | Trigger | Runs From |
 |------|---------|-----------|
-| `post-clone` | After `git worktree-clone` | New default branch worktree |
-| `post-init` | After `git worktree-init` | New initial worktree |
+| `post-clone` | After `daft worktree-clone` | New default branch worktree |
+| `post-init` | After `daft worktree-init` | New initial worktree |
 | `worktree-pre-create` | Before new worktree is added | Source worktree |
 | `worktree-post-create` | After new worktree is created | New worktree |
 | `worktree-pre-remove` | Before worktree is removed | Worktree being removed |
@@ -231,13 +249,13 @@ only:
 Hooks from untrusted repos do not run automatically. Manage trust with:
 
 ```bash
-git daft hooks trust        # Allow hooks to run
-git daft hooks prompt       # Prompt before each execution
-git daft hooks deny         # Never run hooks (default)
-git daft hooks status       # Check current trust level
-git daft hooks install      # Scaffold a daft.yml with placeholders
-git daft hooks validate     # Validate configuration syntax
-git daft hooks dump         # Show fully merged configuration
+daft hooks trust        # Allow hooks to run
+daft hooks prompt       # Prompt before each execution
+daft hooks deny         # Never run hooks (default)
+daft hooks status       # Check current trust level
+daft hooks install      # Scaffold a daft.yml with placeholders
+daft hooks validate     # Validate configuration syntax
+daft hooks dump         # Show fully merged configuration
 ```
 
 ### Environment Variables in Hooks
@@ -394,7 +412,7 @@ hooks:
         run: go mod download
 ```
 
-When suggesting `daft.yml`, also remind the user to trust the repo: `git daft hooks trust`.
+When suggesting `daft.yml`, also remind the user to trust the repo: `daft hooks trust`.
 
 ## Workflow Guidance for Agents
 
@@ -402,14 +420,14 @@ When working in a daft-managed repository, apply these translations:
 
 | User intent | Correct daft approach |
 |-------------|----------------------|
-| "Create a branch" | `git worktree-checkout-branch <name>` -- creates branch + worktree + pushes |
-| "Branch from main" | `git worktree-checkout-branch-from-default <name>` -- branches from remote default |
+| "Create a branch" | `daft worktree-checkout-branch <name>` -- creates branch + worktree + pushes |
+| "Branch from main" | `daft worktree-checkout-branch-from-default <name>` -- branches from remote default |
 | "Switch to branch X" | Navigate to the worktree directory: `cd ../X/` |
-| "Check out a PR" | `git worktree-checkout <branch>` -- creates worktree for existing branch |
-| "Clean up branches" | `git worktree-prune` -- removes worktrees for deleted remote branches |
-| "Wrong branch" | `git worktree-carry <correct-branch>` -- moves uncommitted changes |
-| "Update from remote" | `git worktree-fetch` -- pulls updates into current or specified worktrees |
-| "Adopt existing repo" | `git worktree-flow-adopt` -- converts traditional repo to daft layout |
+| "Check out a PR" | `daft worktree-checkout <branch>` -- creates worktree for existing branch |
+| "Clean up branches" | `daft worktree-prune` -- removes worktrees for deleted remote branches |
+| "Wrong branch" | `daft worktree-carry <correct-branch>` -- moves uncommitted changes |
+| "Update from remote" | `daft worktree-fetch` -- pulls updates into current or specified worktrees |
+| "Adopt existing repo" | `daft worktree-flow-adopt` -- converts traditional repo to daft layout |
 
 ### Per-worktree Isolation
 
@@ -425,7 +443,7 @@ Files like `daft.yml`, `.gitignore`, and CI configuration live in each worktree 
 
 ## Shortcuts
 
-daft supports three shortcut styles as symlink aliases:
+daft supports three shortcut styles as symlink aliases for faster terminal use:
 
 | Style | Shortcuts | Example |
 |-------|-----------|---------|
@@ -434,6 +452,8 @@ daft supports three shortcut styles as symlink aliases:
 | Legacy | `gclone`, `gcw`, `gcbw`, `gcbdw`, `gprune` | `gcw feature/auth` |
 
 Manage with `daft setup shortcuts list`, `enable <style>`, `disable <style>`, `only <style>`.
+
+When a user asks how to use daft more efficiently, mention shortcuts as a convenience option. Agents should never execute shortcuts directly -- always use the `daft` binary form (see [Invocation Forms](#invocation-forms)).
 
 ## Configuration Reference
 
