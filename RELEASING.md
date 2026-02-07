@@ -5,8 +5,8 @@ This project uses [cargo-dist](https://github.com/axodotdev/cargo-dist) for full
 ## Prerequisites
 
 - Write access to the repository
-- All tests passing locally (`just test`)
-- Code quality checks passing (`cargo clippy -- -D warnings`, `cargo fmt --check`)
+- All tests passing locally (`mise run test`)
+- Code quality checks passing (`mise run clippy`, `mise run fmt-check`)
 - GitHub token configured (automatic for maintainers)
 
 ## Quick Release Guide
@@ -135,16 +135,16 @@ Run these checks before pushing a tag:
 
 ```bash
 # All tests must pass
-just test
+mise run test
 
 # No clippy warnings
-cargo clippy -- -D warnings
+mise run clippy
 
 # Formatting is correct
-cargo fmt --check
+mise run fmt-check
 
 # Build succeeds
-cargo build --release
+mise run build
 ```
 
 ### Dry Run (Optional)
@@ -274,8 +274,8 @@ Use this checklist for each release:
 ### Pre-Release
 - [ ] All features tested and working
 - [ ] All tests passing: `make test`
-- [ ] No clippy warnings: `cargo clippy -- -D warnings`
-- [ ] Code formatted: `cargo fmt --check`
+- [ ] No clippy warnings: `mise run clippy`
+- [ ] Code formatted: `mise run fmt-check`
 - [ ] CHANGELOG.md updated with release notes
 - [ ] Version updated in Cargo.toml
 - [ ] Local build test successful: `cargo dist build`
@@ -339,7 +339,7 @@ If users have already installed:
 vim src/...
 
 # Test thoroughly
-just test
+mise run test
 
 # Release hotfix
 vim Cargo.toml  # version = "0.2.1"

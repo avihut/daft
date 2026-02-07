@@ -18,7 +18,7 @@ Thank you for your interest in contributing to daft!
 2. **Build and set up the development environment:**
 
    ```bash
-   just dev
+   mise run dev
    ```
 
    This builds the binary, creates all symlinks in `target/release/`, and verifies the setup.
@@ -42,9 +42,9 @@ Thank you for your interest in contributing to daft!
 3. Run quality checks before committing:
 
    ```bash
-   cargo fmt
-   cargo clippy -- -D warnings
-   just test-unit
+   mise run fmt
+   mise run clippy
+   mise run test-unit
    ```
 
 4. Submit a pull request targeting `master`.
@@ -53,15 +53,15 @@ Thank you for your interest in contributing to daft!
 
 All PRs must pass these checks (enforced in CI):
 
-- **Formatting:** `cargo fmt -- --check`
-- **Linting:** `cargo clippy -- -D warnings` (zero warnings)
-- **Unit tests:** `cargo test --lib`
-- **Integration tests:** `just test-integration`
+- **Formatting:** `mise run fmt-check`
+- **Linting:** `mise run clippy` (zero warnings)
+- **Unit tests:** `mise run test-unit`
+- **Integration tests:** `mise run test-integration`
 
 Run the full CI simulation locally:
 
 ```bash
-just ci
+mise run ci
 ```
 
 ## Commit Messages
@@ -108,9 +108,9 @@ daft-15/branch-search
 ## Testing
 
 ```bash
-just test              # Run all tests
-just test-unit         # Rust unit tests only
-just test-integration  # End-to-end tests
+mise run test              # Run all tests
+mise run test-unit         # Rust unit tests only
+mise run test-integration  # End-to-end tests
 ```
 
 See [CLAUDE.md](https://github.com/avihut/daft/blob/master/CLAUDE.md) in the repository for the complete testing architecture.
@@ -122,7 +122,7 @@ See [CLAUDE.md](https://github.com/avihut/daft/blob/master/CLAUDE.md) in the rep
 3. Add routing in `src/main.rs`
 4. Add to `COMMANDS` array and `get_command_for_name()` in `xtask/src/main.rs`
 5. Add to help output in `src/commands/docs.rs` (`get_command_categories()`)
-6. Run `just gen-man` and `just gen-cli-docs` and commit the generated files
+6. Run `mise run gen-man` and `mise run gen-cli-docs` and commit the generated files
 7. Add integration tests in `tests/integration/`
 
 ## License

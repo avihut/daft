@@ -167,16 +167,16 @@ tar -tzf target/distrib/daft-aarch64-apple-darwin.tar.xz
 
 ```bash
 # All tests pass
-make test
+mise run test
 
 # No clippy warnings
-cargo clippy -- -D warnings
+mise run clippy
 
 # Formatting correct
-cargo fmt --check
+mise run fmt-check
 
 # Build succeeds
-cargo build --release
+mise run build
 ```
 
 ## Step 5: Create First Release

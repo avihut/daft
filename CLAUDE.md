@@ -10,17 +10,17 @@ IMPORTANT: These rules must NEVER be violated:
 ## Build, Test & Lint Commands
 
 ```bash
-just dev                # Build + create symlinks (quick dev setup)
-just test               # Run all tests (unit + integration)
-just test-unit          # Rust unit tests only
-just test-integration   # Integration tests only
-cargo clippy -- -D warnings  # Lint (must pass with zero warnings)
-cargo fmt               # Auto-format code
-cargo fmt -- --check    # Verify formatting
-just ci                 # Simulate full CI locally
+mise run dev                # Build + create symlinks (quick dev setup)
+mise run test               # Run all tests (unit + integration)
+mise run test-unit          # Rust unit tests only
+mise run test-integration   # Integration tests only
+mise run clippy             # Lint (must pass with zero warnings)
+mise run fmt                # Auto-format code
+mise run fmt-check          # Verify formatting
+mise run ci                 # Simulate full CI locally
 ```
 
-IMPORTANT: Before committing, always run `cargo fmt`, `cargo clippy -- -D warnings`, and `just test-unit`. These checks are required and enforced in CI.
+IMPORTANT: Before committing, always run `mise run fmt`, `mise run clippy`, and `mise run test-unit`. These checks are required and enforced in CI.
 
 ## Architecture
 
@@ -54,7 +54,7 @@ Uses [release-plz](https://release-plz.dev/): push to master → Release PR auto
 3. Add routing in `src/main.rs`
 4. Add to `COMMANDS` array and `get_command_for_name()` in `xtask/src/main.rs`
 5. Add to help output in `src/commands/docs.rs` (`get_command_categories()`)
-6. Run `just gen-man` and commit the generated man page
+6. Run `mise run gen-man` and commit the generated man page
 7. Add integration tests in `tests/integration/` following existing patterns
 
 ## Man Pages
@@ -62,8 +62,8 @@ Uses [release-plz](https://release-plz.dev/): push to master → Release PR auto
 Pre-generated in `man/` and committed. Regenerate after changing command help text:
 
 ```bash
-just gen-man      # Generate/update man pages
-just verify-man   # Check if man pages are up-to-date (also runs in CI)
+mise run gen-man      # Generate/update man pages
+mise run verify-man   # Check if man pages are up-to-date (also runs in CI)
 ```
 
 ## Documentation Site
