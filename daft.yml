@@ -1,0 +1,5 @@
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: mise-trust
+        run: mise trust
