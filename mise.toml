@@ -99,7 +99,7 @@ run = 'echo "Running all tests (unit + integration)..."'
 description = "Run Rust unit tests"
 run = """
 echo "Running Rust unit tests..."
-cargo test --lib
+cargo test --lib --tests
 """
 
 [tasks.test-rust]
@@ -371,7 +371,7 @@ run = "cargo fmt -- --check"
 
 [tasks.clippy]
 description = "Run Rust clippy linter (zero warnings)"
-run = "cargo clippy -- -D warnings"
+run = "cargo clippy --tests -- -D warnings"
 
 [tasks.lint]
 description = "Run all linting tools"
@@ -385,7 +385,7 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 echo "Running Rust linting..."
-cargo clippy -- -D warnings
+cargo clippy --tests -- -D warnings
 cargo fmt --check
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck tests/integration/*.sh

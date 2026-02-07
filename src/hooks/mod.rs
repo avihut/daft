@@ -898,8 +898,10 @@ mod tests {
             fs::write(&user_hook, "@echo off\necho user").unwrap();
         }
 
-        let mut config = HooksConfig::default();
-        config.user_directory = user_hooks_dir.clone();
+        let config = HooksConfig {
+            user_directory: user_hooks_dir.clone(),
+            ..Default::default()
+        };
 
         let discovery = find_hooks(HookType::PostCreate, &worktree, &config);
         assert_eq!(discovery.hooks.len(), 1);
@@ -938,8 +940,10 @@ mod tests {
             fs::write(&user_hook, "@echo off\necho user").unwrap();
         }
 
-        let mut config = HooksConfig::default();
-        config.user_directory = user_hooks_dir.clone();
+        let config = HooksConfig {
+            user_directory: user_hooks_dir.clone(),
+            ..Default::default()
+        };
 
         let discovery = find_hooks(HookType::PostCreate, &worktree, &config);
         // Should find both hooks, project first then user
