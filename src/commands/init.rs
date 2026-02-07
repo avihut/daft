@@ -280,8 +280,26 @@ fn run_post_init_hook(
 mod tests {
     use super::*;
     use crate::output::TestOutput;
+    use serial_test::serial;
     use std::env;
     use tempfile::tempdir;
+
+    /// Strip git environment variables from the current process so that
+    /// `GitCommand` (which inherits process env) isn't redirected to the
+    /// host repo when tests run inside a git hook (e.g., pre-push).
+    fn strip_git_env() {
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_CEILING_DIRECTORIES",
+        ] {
+            env::remove_var(var);
+        }
+    }
 
     fn create_test_args(repo_name: &str, bare: bool, quiet: bool, verbose: bool) -> Args {
         Args {
@@ -296,8 +314,11 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_init_output_messages() {
+        strip_git_env();
         let temp_dir = tempdir().unwrap();
+        let saved_cwd = env::current_dir().unwrap();
         env::set_current_dir(temp_dir.path()).unwrap();
 
         let args = create_test_args("test-repo", false, false, true);
@@ -313,11 +334,15 @@ mod tests {
             assert!(output.has_result("Initialized repository"));
             assert!(output.get_cd_path().is_some());
         }
+        let _ = env::set_current_dir(&saved_cwd);
     }
 
     #[test]
+    #[serial]
     fn test_init_bare_mode_output() {
+        strip_git_env();
         let temp_dir = tempdir().unwrap();
+        let saved_cwd = env::current_dir().unwrap();
         env::set_current_dir(temp_dir.path()).unwrap();
 
         let args = create_test_args("test-bare-repo", true, false, true);
@@ -331,11 +356,15 @@ mod tests {
             // Bare mode should NOT output cd_path
             assert!(output.get_cd_path().is_none());
         }
+        let _ = env::set_current_dir(&saved_cwd);
     }
 
     #[test]
+    #[serial]
     fn test_init_quiet_mode_suppresses_output() {
+        strip_git_env();
         let temp_dir = tempdir().unwrap();
+        let saved_cwd = env::current_dir().unwrap();
         env::set_current_dir(temp_dir.path()).unwrap();
 
         let args = create_test_args("quiet-repo", true, true, false);
@@ -346,6 +375,7 @@ mod tests {
         // In quiet mode, all messages should be suppressed
         assert!(output.steps().is_empty());
         assert!(output.results().is_empty());
+        let _ = env::set_current_dir(&saved_cwd);
     }
 
     #[test]
