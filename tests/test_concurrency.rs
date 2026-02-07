@@ -243,10 +243,7 @@ fn test_concurrent_worktree_operations() -> Result<()> {
                     .args(["worktree", "list", "--porcelain"])
                     .output();
 
-                match result {
-                    Ok(_) => {}
-                    Err(_) => {}
-                }
+                let _ = result;
 
                 thread::sleep(Duration::from_millis(2));
             }

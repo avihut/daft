@@ -597,8 +597,10 @@ mod tests {
 
         create_test_hook(&worktree, "worktree-post-create", "#!/bin/bash\necho test");
 
-        let mut config = HooksConfig::default();
-        config.enabled = false;
+        let config = HooksConfig {
+            enabled: false,
+            ..Default::default()
+        };
 
         let executor = HookExecutor::with_trust_db(config, TrustDatabase::default());
         let mut output = TestOutput::default();

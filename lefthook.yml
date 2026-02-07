@@ -3,10 +3,10 @@ pre-commit:
   commands:
     fmt-check:
       glob: "*.rs"
-      run: cargo fmt -- --check
+      run: mise run fmt-check
     clippy:
       glob: "*.rs"
-      run: cargo clippy -- -D warnings
+      run: mise run clippy
     verify-man:
       glob: "*.rs"
       run: mise run verify-man
@@ -33,4 +33,4 @@ pre-push:
   commands:
     unit-tests:
       glob: "*.rs"
-      run: cargo test --lib
+      run: mise run test-unit

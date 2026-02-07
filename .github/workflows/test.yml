@@ -24,14 +24,17 @@ jobs:
     - name: Cache Rust dependencies
       uses: Swatinem/rust-cache@v2
 
+    - name: Install mise
+      uses: jdx/mise-action@v2
+
     - name: Check Rust formatting
-      run: cargo fmt -- --check
+      run: mise run fmt-check
 
     - name: Run Rust clippy
-      run: cargo clippy -- -D warnings
+      run: mise run clippy
 
     - name: Run Rust unit tests
-      run: cargo test --lib
+      run: mise run test-unit
 
   # Cross-platform integration tests + Homebrew simulation on macOS
   integration-tests:
