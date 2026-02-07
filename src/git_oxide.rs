@@ -288,6 +288,12 @@ pub fn remote_get_url(repo: &Repository, remote_name: &str) -> Result<String> {
 }
 
 // --- Group 6: Remote Network ---
+//
+// NOTE: These functions require a real, discovered Repository — they cannot
+// work with an ephemeral bare repo because gitoxide's `ref_map()` does not
+// properly negotiate refs with anonymous remotes on freshly-initialized repos.
+// When no local repo exists (e.g. during clone), the callers in git.rs fall
+// through to the git CLI subprocess path instead.
 
 /// gitoxide equivalent of `git ls-remote --symref <remote_url> HEAD`
 ///
@@ -414,31 +420,71 @@ mod tests {
     use std::process::Command;
     use tempfile::tempdir;
 
+    /// Git environment variables that must be stripped from test subprocesses.
+    /// When tests run inside a git hook (e.g., pre-push), git sets these
+    /// variables, which would redirect test git commands to the host repo
+    /// instead of the temp test repo — causing commits, config writes, and
+    /// other mutations to land in the host repo.
+    const GIT_ENV_VARS: &[&str] = &[
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CEILING_DIRECTORIES",
+    ];
+
+    /// Create a git Command with hook-inherited environment variables stripped.
+    fn git_cmd() -> Command {
+        let mut cmd = Command::new("git");
+        for var in GIT_ENV_VARS {
+            cmd.env_remove(var);
+        }
+        cmd
+    }
+
+    /// Strip git environment variables from the current process.
+    ///
+    /// This prevents `gix::open`/`gix::discover` from being influenced by
+    /// a parent git hook's environment. Only safe in `#[serial]` tests.
+    fn strip_git_env() {
+        for var in GIT_ENV_VARS {
+            std::env::remove_var(var);
+        }
+    }
+
     /// Helper to create a test repo with a commit.
-    /// Sets CWD to the temp dir before opening with gix, because gix::open
-    /// internally calls std::env::current_dir() which can fail if other tests
-    /// (e.g., init tests) have changed CWD to a since-deleted temp directory.
+    ///
+    /// NOTE: All git CLI commands use `git_cmd()` to strip hook-inherited
+    /// env vars and explicit `current_dir(&path)` to avoid accidentally
+    /// running in the host repo. CWD is only set temporarily for
+    /// `gix::open` (which internally calls `current_dir()`) and restored
+    /// immediately after. Tests using this helper must be `#[serial]` to
+    /// avoid CWD races with parallel tests.
     fn create_test_repo() -> (tempfile::TempDir, Repository) {
         let dir = tempdir().unwrap();
         let path = dir.path().canonicalize().unwrap();
 
-        // Set CWD to the temp dir so gix::open can resolve current_dir()
-        std::env::set_current_dir(&path).unwrap();
+        // Strip git env vars from process so gix::open isn't affected either
+        strip_git_env();
 
-        // Initialize with git CLI for reliable setup
-        Command::new("git")
+        // Initialize with git CLI for reliable setup — all commands use
+        // git_cmd() (strips GIT_DIR etc.) and explicit current_dir.
+        git_cmd()
             .args(["init", "-b", "main"])
             .arg(&path)
+            .current_dir(&path)
             .output()
             .unwrap();
 
-        Command::new("git")
+        git_cmd()
             .args(["config", "user.email", "test@test.com"])
             .current_dir(&path)
             .output()
             .unwrap();
 
-        Command::new("git")
+        git_cmd()
             .args(["config", "user.name", "Test"])
             .current_dir(&path)
             .output()
@@ -446,18 +492,25 @@ mod tests {
 
         // Create initial commit
         std::fs::write(path.join("file.txt"), "hello").unwrap();
-        Command::new("git")
+        git_cmd()
             .args(["add", "."])
             .current_dir(&path)
             .output()
             .unwrap();
-        Command::new("git")
+        git_cmd()
             .args(["commit", "-m", "initial"])
             .current_dir(&path)
             .output()
             .unwrap();
 
+        // gix::open internally calls current_dir() — temporarily set CWD to
+        // the temp dir so it doesn't fail if another test deleted its temp dir.
+        let saved_cwd = std::env::current_dir().ok();
+        std::env::set_current_dir(&path).unwrap();
         let repo = gix::open(&path).unwrap();
+        if let Some(cwd) = saved_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
         (dir, repo)
     }
 
@@ -472,9 +525,14 @@ mod tests {
     #[test]
     #[serial]
     fn test_is_inside_git_repo() {
-        // Create a test repo and set CWD to it, then verify detection works
+        // This test genuinely needs set_current_dir because is_inside_git_repo()
+        // uses std::env::current_dir() internally. Save and restore CWD to avoid
+        // polluting other tests.
+        let saved_cwd = std::env::current_dir().unwrap();
         let (_dir, _repo) = create_test_repo();
+        std::env::set_current_dir(_dir.path()).unwrap();
         let result = is_inside_git_repo().unwrap();
+        std::env::set_current_dir(&saved_cwd).unwrap();
         assert!(result);
     }
 
@@ -575,12 +633,13 @@ mod tests {
     #[test]
     #[serial]
     fn test_worktree_path_matches_git_in_bare_layout() {
+        strip_git_env();
         let dir = tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
 
         // Create bare repo layout like daft does
         let git_dir = root.join(".git");
-        Command::new("git")
+        git_cmd()
             .args(["init", "--bare"])
             .arg(&git_dir)
             .output()
@@ -588,7 +647,7 @@ mod tests {
 
         // Add main worktree
         let main_wt = root.join("main");
-        Command::new("git")
+        git_cmd()
             .args(["worktree", "add", "--orphan", "-b", "main"])
             .arg(&main_wt)
             .current_dir(&git_dir)
@@ -597,22 +656,22 @@ mod tests {
 
         // Create initial commit
         std::fs::write(main_wt.join("file.txt"), "hello").unwrap();
-        Command::new("git")
+        git_cmd()
             .args(["config", "user.email", "test@test.com"])
             .current_dir(&main_wt)
             .output()
             .unwrap();
-        Command::new("git")
+        git_cmd()
             .args(["config", "user.name", "Test"])
             .current_dir(&main_wt)
             .output()
             .unwrap();
-        Command::new("git")
+        git_cmd()
             .args(["add", "."])
             .current_dir(&main_wt)
             .output()
             .unwrap();
-        Command::new("git")
+        git_cmd()
             .args(["commit", "-m", "initial"])
             .current_dir(&main_wt)
             .output()
@@ -620,7 +679,7 @@ mod tests {
 
         // Add linked worktree
         let test_wt = root.join("test-1");
-        Command::new("git")
+        git_cmd()
             .args(["worktree", "add", "-b", "test-1"])
             .arg(&test_wt)
             .arg("main")
@@ -628,17 +687,19 @@ mod tests {
             .output()
             .unwrap();
 
-        // Set CWD to the linked worktree and discover with gix
-        // Using current_dir() (absolute) rather than "." to ensure absolute paths
+        // gix::discover internally calls current_dir() — temporarily set CWD
+        let saved_cwd = std::env::current_dir().ok();
         std::env::set_current_dir(&test_wt).unwrap();
-        let cwd = std::env::current_dir().unwrap();
-        let repo = gix::ThreadSafeRepository::discover(&cwd)
+        let repo = gix::ThreadSafeRepository::discover(&test_wt)
             .unwrap()
             .to_thread_local();
+        if let Some(cwd) = saved_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
         let gix_workdir = repo.workdir().unwrap().to_path_buf();
 
         // Get path from git rev-parse --show-toplevel
-        let git_output = Command::new("git")
+        let git_output = git_cmd()
             .args(["rev-parse", "--show-toplevel"])
             .current_dir(&test_wt)
             .output()
@@ -646,7 +707,7 @@ mod tests {
         let git_toplevel = PathBuf::from(String::from_utf8(git_output.stdout).unwrap().trim());
 
         // Get path from git worktree list --porcelain
-        let wt_list_output = Command::new("git")
+        let wt_list_output = git_cmd()
             .args(["worktree", "list", "--porcelain"])
             .current_dir(&test_wt)
             .output()
@@ -678,21 +739,25 @@ mod tests {
         let (dir, _repo) = create_test_repo();
         // Add another commit
         std::fs::write(dir.path().join("file2.txt"), "hello2").unwrap();
-        Command::new("git")
+        git_cmd()
             .args(["add", "."])
             .current_dir(dir.path())
             .output()
             .unwrap();
-        Command::new("git")
+        git_cmd()
             .args(["commit", "-m", "second"])
             .current_dir(dir.path())
             .output()
             .unwrap();
 
-        // Re-open to see new commit
+        // Re-open to see new commit — set CWD temporarily for gix::open
         let path = dir.path().canonicalize().unwrap();
+        let saved_cwd = std::env::current_dir().ok();
         std::env::set_current_dir(&path).unwrap();
         let repo = gix::open(&path).unwrap();
+        if let Some(cwd) = saved_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
         let count = rev_list_count(&repo, "HEAD").unwrap();
         assert_eq!(count, 2);
     }

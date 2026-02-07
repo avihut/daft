@@ -152,14 +152,16 @@ impl GitCommand {
 
     pub fn worktree_add_orphan(&self, path: &Path, branch_name: &str) -> Result<()> {
         let mut cmd = Command::new("git");
-        cmd.args(["worktree", "add"]);
+        cmd.args(["worktree", "add", "--orphan"]);
 
         if self.quiet {
             cmd.arg("--quiet");
         }
 
-        // Explicitly specify the branch name to avoid Git's path-based inference
-        cmd.arg(path).arg("-b").arg(branch_name);
+        // --orphan creates a worktree with an unborn branch, which is needed
+        // for empty repos where the bare clone's HEAD already references the
+        // default branch name (causing -b to fail with "already exists").
+        cmd.arg("-b").arg(branch_name).arg(path);
 
         let output = cmd
             .output()
@@ -357,7 +359,10 @@ impl GitCommand {
 
     pub fn ls_remote_heads(&self, remote: &str, branch: Option<&str>) -> Result<String> {
         if self.use_gitoxide {
-            return git_oxide::ls_remote_heads(&self.gix_repo()?, remote, branch);
+            if let Ok(repo) = self.gix_repo() {
+                return git_oxide::ls_remote_heads(&repo, remote, branch);
+            }
+            // No local repo (e.g. during clone) — fall through to git CLI
         }
         let mut cmd = Command::new("git");
         cmd.args(["ls-remote", "--heads", remote]);
@@ -532,7 +537,10 @@ impl GitCommand {
     /// Execute git ls-remote with symref to get remote HEAD
     pub fn ls_remote_symref(&self, remote_url: &str) -> Result<String> {
         if self.use_gitoxide {
-            return git_oxide::ls_remote_symref(&self.gix_repo()?, remote_url);
+            if let Ok(repo) = self.gix_repo() {
+                return git_oxide::ls_remote_symref(&repo, remote_url);
+            }
+            // No local repo (e.g. during clone) — fall through to git CLI
         }
         let output = Command::new("git")
             .args(["ls-remote", "--symref", remote_url, "HEAD"])
@@ -550,7 +558,10 @@ impl GitCommand {
     /// Check if specific remote branch exists
     pub fn ls_remote_branch_exists(&self, remote_name: &str, branch: &str) -> Result<bool> {
         if self.use_gitoxide {
-            return git_oxide::ls_remote_branch_exists(&self.gix_repo()?, remote_name, branch);
+            if let Ok(repo) = self.gix_repo() {
+                return git_oxide::ls_remote_branch_exists(&repo, remote_name, branch);
+            }
+            // No local repo (e.g. during clone) — fall through to git CLI
         }
         let output = Command::new("git")
             .args([
