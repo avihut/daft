@@ -176,6 +176,16 @@ git daft hooks trust
 
 Hooks require explicit trust for security. See `git daft hooks --help` for details.
 
+## AI Agent Skill
+
+daft ships an [Agent Skill](https://github.com/anthropics/agent-skills) that teaches AI coding agents (Claude Code, Cursor, Windsurf, and others) the worktree workflow -- commands, hooks, environment tooling, and worktree-aware Git operations.
+
+```bash
+npx skills add avihut/daft
+```
+
+See the [Agent Skill guide](https://avihu.dev/daft/guide/claude-skill) for manual installation options.
+
 ## Requirements
 
 - **Git** 2.5+ (for worktree support)
