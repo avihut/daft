@@ -288,6 +288,12 @@ pub fn remote_get_url(repo: &Repository, remote_name: &str) -> Result<String> {
 }
 
 // --- Group 6: Remote Network ---
+//
+// NOTE: These functions require a real, discovered Repository — they cannot
+// work with an ephemeral bare repo because gitoxide's `ref_map()` does not
+// properly negotiate refs with anonymous remotes on freshly-initialized repos.
+// When no local repo exists (e.g. during clone), the callers in git.rs fall
+// through to the git CLI subprocess path instead.
 
 /// gitoxide equivalent of `git ls-remote --symref <remote_url> HEAD`
 ///
