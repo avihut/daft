@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.22](https://github.com/avihut/daft/compare/v1.0.21...v1.0.22) - 2026-02-07
+
+### Bug Fixes
+
+- *(clone)* fall back to git CLI for remote ops when no local repo exists ([#184](https://github.com/avihut/daft/pull/184))
+
+### CI/CD
+
+- run Rust integration tests and clippy on test code in CI ([#187](https://github.com/avihut/daft/pull/187))
+
 ## [1.0.21](https://github.com/avihut/daft/compare/v1.0.20...v1.0.21) - 2026-02-07
 
 ### CI/CD
