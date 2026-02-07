@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "daft"
-version = "1.1.0"
+version = "1.0.21"
 edition = "2021"
 description = "A comprehensive Git extensions toolkit that enhances developer workflows, starting with powerful worktree management"
 authors = ["avihu <avihu@users.noreply.github.com>"]

@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.1.0](https://github.com/avihut/daft/compare/v1.0.20...v1.1.0) - 2026-02-07
+## [1.0.21](https://github.com/avihut/daft/compare/v1.0.20...v1.0.21) - 2026-02-07
 
 ### CI/CD
 
