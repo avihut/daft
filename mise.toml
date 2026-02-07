@@ -3,6 +3,7 @@
 
 [tools]
 rust = "stable"
+lefthook = "latest"
 
 [env]
 INTEGRATION_TESTS_DIR = "tests/integration"
@@ -272,7 +273,13 @@ cd tests/integration && time ./test_all.sh
 [tasks.setup]
 description = "Setup development environment"
 depends = ["setup-rust"]
-run = 'echo "Development environment setup completed"'
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Installing lefthook git hooks..."
+lefthook install
+echo "Development environment setup completed"
+"""
 
 [tasks.setup-rust]
 description = "Setup Rust development environment"
