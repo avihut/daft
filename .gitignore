@@ -22,3 +22,6 @@ Thumbs.db
 # Claude Code settings
 .claude/settings.*
 .aider*
+
+# Lefthook local overrides
+.lefthook-local.yml
