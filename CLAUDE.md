@@ -7,6 +7,21 @@ IMPORTANT: These rules must NEVER be violated:
 1. **Never modify global git config** — Do not change global git user name, email, or any other global settings. This applies to both manual work and automated tests. Tests must use local config only.
 2. **Never use this repository for testing** — This project's own git repo must never be used as a test subject for worktree commands. Tests must always create isolated temporary repositories.
 
+## Safe Local Testing with Git
+
+When manually testing git operations (e.g. cloning, worktree creation) in scratch directories:
+
+- **Never run `git config --global`** — not even temporarily. Use `git config --local` or per-command env vars instead.
+- **Set test identity via environment variables**, not config:
+  ```bash
+  GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+  GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+  git commit -m "test"
+  ```
+- **Never commit to this repo's branches from scratch/temp directories** — stray commits from test repos must not leak onto working branches.
+- **Always `cd` back to the worktree directory after testing** — a deleted temp directory as cwd will silently break subsequent shell commands.
+- **Clean up temp directories** when done: `rm -rf /tmp/daft-test-*` or use `mktemp -d`.
+
 ## Build, Test & Lint Commands
 
 ```bash
