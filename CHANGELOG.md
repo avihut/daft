@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.21](https://github.com/avihut/daft/compare/v1.0.20...v1.0.21) - 2026-02-07
+
+### CI/CD
+
+- optimize test workflow to reduce CI runtime ([#180](https://github.com/avihut/daft/pull/180))
+
+### Documentation
+
+- add comprehensive documentation and CLI reference generation ([#179](https://github.com/avihut/daft/pull/179))
+- rewrite CLAUDE.md following best practices ([#178](https://github.com/avihut/daft/pull/178))
+
+### Features
+
+- add lefthook git hooks for local code quality checks ([#183](https://github.com/avihut/daft/pull/183))
+- migrate from just to mise task runner ([#182](https://github.com/avihut/daft/pull/182))
+- *(hooks)* add YAML hooks system ([#181](https://github.com/avihut/daft/pull/181))
+- add `daft doctor` diagnostic command ([#169](https://github.com/avihut/daft/pull/169))
+- *(update-check)* throttle new version notification to once per 24 hours ([#168](https://github.com/avihut/daft/pull/168))
+- *(shell-init)* add daft() shell wrapper for cd into worktrees ([#165](https://github.com/avihut/daft/pull/165))
+
 ## [1.0.20](https://github.com/avihut/daft/compare/v1.0.19...v1.0.20) - 2026-02-03
 
 ### Features
