@@ -156,25 +156,32 @@ daft setup shortcuts list          # See all available shortcuts
 
 ## Hooks
 
-Automate worktree lifecycle events with project-managed hooks in `.daft/hooks/`:
+Automate worktree lifecycle events with a `daft.yml` configuration file:
 
 | Hook | Trigger |
 |------|---------|
 | `post-clone` | After repository clone |
-| `post-create` | After worktree created |
-| `pre-remove` | Before worktree removal |
+| `worktree-post-create` | After worktree created |
+| `worktree-pre-remove` | Before worktree removal |
 
-**Example** - auto-allow direnv in new worktrees:
+**Example** - install dependencies and auto-allow direnv in new worktrees:
+
+```yaml
+# daft.yml
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: install-deps
+        run: npm install
+      - name: direnv-allow
+        run: direnv allow .
+```
 
 ```bash
-mkdir -p .daft/hooks
-echo '#!/bin/bash
-[ -f ".envrc" ] && command -v direnv &>/dev/null && direnv allow .' > .daft/hooks/post-create
-chmod +x .daft/hooks/post-create
 git daft hooks trust
 ```
 
-Hooks require explicit trust for security. See `git daft hooks --help` for details.
+Hooks require explicit trust for security. See the [hooks guide](https://avihu.dev/daft/guide/hooks) for details.
 
 ## AI Agent Skill
 
