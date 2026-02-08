@@ -36,13 +36,9 @@ jobs:
     - name: Run Rust unit tests
       run: mise run test-unit
 
-  # Cross-platform integration tests + Homebrew simulation on macOS
+  # Integration tests (Linux only)
   integration-tests:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v6
@@ -73,7 +69,7 @@ jobs:
     - name: Verify single binary architecture
       run: |
         echo "Verifying single binary architecture..."
-        # Count executables in target/release (excluding .d files, .dSYM, and symlinks)
+        # Count executables in target/release (excluding .d files and symlinks)
         # Use a portable approach: find files and test if executable with shell
         BINARY_COUNT=0
         for file in target/release/*; do
@@ -172,9 +168,36 @@ jobs:
         ./target/release/daft | head -20
         ./target/release/git-daft | head -20
 
-    # Homebrew simulation steps (macOS only)
+    - name: Upload test results
+      uses: actions/upload-artifact@v6
+      if: always()
+      with:
+        name: test-results
+        path: |
+          tests/test-results.log
+        retention-days: 7
+        if-no-files-found: ignore
+
+  # Homebrew installation simulation (macOS)
+  homebrew-simulation:
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Cache Rust dependencies
+      uses: Swatinem/rust-cache@v2
+
+    - name: Build Rust binaries
+      run: cargo build --release
+
     - name: Simulate Homebrew installation
-      if: matrix.os == 'macos-latest'
       run: |
         PREFIX="$HOME/.local"
         mkdir -p "$PREFIX/bin" "$PREFIX/share/man/man1"
@@ -199,7 +222,6 @@ jobs:
         ls -la "$PREFIX/share/man/man1/"
 
     - name: Verify Homebrew symlinks work
-      if: matrix.os == 'macos-latest'
       run: |
         PREFIX="$HOME/.local"
         export PATH="$PREFIX/bin:$PATH"
@@ -219,7 +241,6 @@ jobs:
         echo "All symlinked commands verified!"
 
     - name: Verify man pages
-      if: matrix.os == 'macos-latest'
       run: |
         PREFIX="$HOME/.local"
 
@@ -245,7 +266,6 @@ jobs:
         echo "All man pages verified!"
 
     - name: Test Homebrew installation with git prefix
-      if: matrix.os == 'macos-latest'
       run: |
         PREFIX="$HOME/.local"
         export PATH="$PREFIX/bin:$PATH"
@@ -259,16 +279,6 @@ jobs:
 
         echo "Git command discovery verified!"
         echo "Homebrew simulation test PASSED!"
-
-    - name: Upload test results
-      uses: actions/upload-artifact@v6
-      if: always()
-      with:
-        name: test-results-${{ matrix.os }}
-        path: |
-          tests/test-results.log
-        retention-days: 7
-        if-no-files-found: ignore
 
   # Test xtask man page generation
   xtask-test:
