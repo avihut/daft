@@ -8,10 +8,9 @@ updates:
     directory: "/"
     target-branch: "master"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "daily"
       time: "09:00"
-      timezone: "UTC"
+      timezone: "Asia/Jerusalem"
     # Group all Cargo updates into a single PR when possible
     groups:
       cargo-dependencies:
@@ -20,7 +19,6 @@ updates:
     # Automatically add labels to PRs
     labels:
       - "dependencies"
-      - "rust"
     # Limit number of open PRs
     open-pull-requests-limit: 5
     # Commit message configuration
@@ -36,10 +34,9 @@ updates:
     directory: "/"
     target-branch: "master"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "daily"
       time: "09:00"
-      timezone: "UTC"
+      timezone: "Asia/Jerusalem"
     # Group all GitHub Actions updates into a single PR
     groups:
       github-actions:
