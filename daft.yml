@@ -6,6 +6,9 @@ hooks:
       - name: mise-install
         run: mise install
         needs: [mise-trust]
+      - name: bun-install
+        run: bun install
+        needs: [mise-install]
       - name: dev-setup
         run: mise run dev-setup
         needs: [mise-install]
@@ -20,6 +23,9 @@ hooks:
       - name: mise-install
         run: mise install
         needs: [mise-trust]
+      - name: bun-install
+        run: bun install
+        needs: [mise-install]
       - name: dev-setup
         run: mise run dev-setup
         needs: [mise-install]

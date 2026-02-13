@@ -4,10 +4,25 @@
 [tools]
 rust = "stable"
 lefthook = "latest"
+bun = "latest"
 
 [env]
 INTEGRATION_TESTS_DIR = "tests/integration"
 INTEGRATION_TEMP_DIR = "/tmp/git-worktree-integration-tests"
+
+# Auto-install JS dependencies (Prettier) when package.json changes
+[hooks]
+enter = """
+mkdir -p .mise
+hashfile=".mise/deps_hash"
+current_hash=$(cat package.json bun.lock 2>/dev/null | md5 -q 2>/dev/null || cat package.json bun.lock 2>/dev/null | md5sum | cut -d' ' -f1)
+if [ ! -d "node_modules" ] || [ ! -f "$hashfile" ] || [ "$(cat "$hashfile" 2>/dev/null)" != "$current_hash" ]; then
+  echo "[mise] Installing JS dependencies..."
+  bun install --frozen-lockfile 2>/dev/null || bun install
+  current_hash=$(cat package.json bun.lock 2>/dev/null | md5 -q 2>/dev/null || cat package.json bun.lock 2>/dev/null | md5sum | cut -d' ' -f1)
+  echo "$current_hash" > "$hashfile"
+fi
+"""
 
 # ============================================================================
 # Build Tasks
@@ -362,12 +377,26 @@ echo "Rust code and integration tests validated successfully"
 # ============================================================================
 
 [tasks.fmt]
-description = "Auto-format Rust code"
-run = "cargo fmt"
+description = "Auto-format all code (Rust + docs/YAML)"
+run = """
+cargo fmt
+bun run prettier --write '**/*.md' '**/*.{yml,yaml}'
+"""
 
 [tasks.fmt-check]
-description = "Check Rust code formatting"
-run = "cargo fmt -- --check"
+description = "Check all code formatting (Rust + docs/YAML)"
+run = """
+cargo fmt -- --check
+bun run prettier --check '**/*.md' '**/*.{yml,yaml}'
+"""
+
+[tasks.fmt-docs]
+description = "Format docs and YAML files with Prettier"
+run = "bun run prettier --write '**/*.md' '**/*.{yml,yaml}'"
+
+[tasks.fmt-docs-check]
+description = "Check docs and YAML formatting"
+run = "bun run prettier --check '**/*.md' '**/*.{yml,yaml}'"
 
 [tasks.clippy]
 description = "Run Rust clippy linter (zero warnings)"
@@ -556,6 +585,7 @@ run = """
 echo "Generating CLI reference docs..."
 mkdir -p docs/cli
 cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
+bun run prettier --write 'docs/cli/*.md'
 echo "CLI docs generated in docs/cli/"
 """
 
@@ -566,6 +596,7 @@ run = """
 set -euo pipefail
 echo "Verifying CLI docs are up-to-date..."
 cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
+bun run prettier --write 'docs/cli/*.md'
 git diff --exit-code docs/cli/ || (echo "CLI docs out of date. Run 'mise run gen-cli-docs' and commit." && exit 1)
 echo "CLI docs are up-to-date"
 """

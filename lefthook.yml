@@ -13,6 +13,10 @@ pre-commit:
     verify-cli-docs:
       glob: "*.rs"
       run: mise run verify-cli-docs
+    prettier-format:
+      glob: "*.{md,yml,yaml}"
+      run: bun run prettier --write {staged_files}
+      stage_fixed: true
 
 commit-msg:
   commands:

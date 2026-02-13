@@ -2,383 +2,389 @@ name: Test Git Worktree Workflow
 
 on:
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
     paths-ignore:
-      - '*.md'
-      - 'docs/**'
+      - "*.md"
+      - "docs/**"
 
 jobs:
   # Fast feedback: formatting, linting, unit tests (debug mode only - no release build needed)
   lint:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
-    - name: Set up Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        override: true
-        components: rustfmt, clippy
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
 
-    - name: Cache Rust dependencies
-      uses: Swatinem/rust-cache@v2
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
 
-    - name: Install mise
-      uses: jdx/mise-action@v2
+      - name: Install mise
+        uses: jdx/mise-action@v2
 
-    - name: Check Rust formatting
-      run: mise run fmt-check
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
 
-    - name: Run Rust clippy
-      run: mise run clippy
+      - name: Check Rust formatting
+        run: cargo fmt -- --check
 
-    - name: Run Rust unit tests
-      run: mise run test-unit
+      - name: Check docs formatting
+        run: bun run prettier --check '**/*.md' '**/*.{yml,yaml}'
+
+      - name: Run Rust clippy
+        run: mise run clippy
+
+      - name: Run Rust unit tests
+        run: mise run test-unit
 
   # Integration tests (Linux only)
   integration-tests:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
-    - name: Set up Git
-      run: |
-        git config --global user.name "Test User"
-        git config --global user.email "test@example.com"
+      - name: Set up Git
+        run: |
+          git config --global user.name "Test User"
+          git config --global user.email "test@example.com"
 
-    - name: Set up Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        override: true
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
 
-    - name: Cache Rust dependencies
-      uses: Swatinem/rust-cache@v2
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
 
-    - name: Build Rust binaries
-      run: cargo build --release
+      - name: Build Rust binaries
+        run: cargo build --release
 
-    - name: Clean old binaries from cache
-      run: |
-        # Remove any old binaries that might be in cache from before src/bin/ was removed
-        rm -f target/release/git-worktree-*
-        echo "Cleaned old binaries from cache"
+      - name: Clean old binaries from cache
+        run: |
+          # Remove any old binaries that might be in cache from before src/bin/ was removed
+          rm -f target/release/git-worktree-*
+          echo "Cleaned old binaries from cache"
 
-    - name: Verify single binary architecture
-      run: |
-        echo "Verifying single binary architecture..."
-        # Count executables in target/release (excluding .d files and symlinks)
-        # Use a portable approach: find files and test if executable with shell
-        BINARY_COUNT=0
-        for file in target/release/*; do
-          if [ -f "$file" ] && [ ! -L "$file" ] && [ -x "$file" ]; then
-            case "$file" in
-              *.d) ;;  # Skip .d files
-              *) BINARY_COUNT=$((BINARY_COUNT + 1)) ;;
-            esac
-          fi
-        done
-        echo "Found $BINARY_COUNT binary executable(s)"
-
-        # Verify exactly 1 binary exists
-        if [ "$BINARY_COUNT" -ne 1 ]; then
-          echo "ERROR: Expected exactly 1 binary, found $BINARY_COUNT"
-          echo "Binaries found:"
+      - name: Verify single binary architecture
+        run: |
+          echo "Verifying single binary architecture..."
+          # Count executables in target/release (excluding .d files and symlinks)
+          # Use a portable approach: find files and test if executable with shell
+          BINARY_COUNT=0
           for file in target/release/*; do
             if [ -f "$file" ] && [ ! -L "$file" ] && [ -x "$file" ]; then
               case "$file" in
-                *.d) ;;
-                *) ls -lh "$file" ;;
+                *.d) ;;  # Skip .d files
+                *) BINARY_COUNT=$((BINARY_COUNT + 1)) ;;
               esac
             fi
           done
-          exit 1
-        fi
+          echo "Found $BINARY_COUNT binary executable(s)"
 
-        # Verify it's named 'daft'
-        if [ ! -f target/release/daft ]; then
-          echo "ERROR: Binary 'daft' not found"
-          exit 1
-        fi
+          # Verify exactly 1 binary exists
+          if [ "$BINARY_COUNT" -ne 1 ]; then
+            echo "ERROR: Expected exactly 1 binary, found $BINARY_COUNT"
+            echo "Binaries found:"
+            for file in target/release/*; do
+              if [ -f "$file" ] && [ ! -L "$file" ] && [ -x "$file" ]; then
+                case "$file" in
+                  *.d) ;;
+                  *) ls -lh "$file" ;;
+                esac
+              fi
+            done
+            exit 1
+          fi
 
-        echo "Single binary architecture verified: daft binary exists"
-        ls -lh target/release/daft
+          # Verify it's named 'daft'
+          if [ ! -f target/release/daft ]; then
+            echo "ERROR: Binary 'daft' not found"
+            exit 1
+          fi
 
-    - name: Make test scripts executable
-      run: chmod +x tests/integration/*.sh
+          echo "Single binary architecture verified: daft binary exists"
+          ls -lh target/release/daft
 
-    - name: Create symlinks for Rust binaries
-      run: |
-        # Create symlinks for the new multicall binary
-        cd target/release
-        ln -sf daft git-worktree-clone
-        ln -sf daft git-worktree-init
-        ln -sf daft git-worktree-checkout
-        ln -sf daft git-worktree-checkout-branch
-        ln -sf daft git-worktree-checkout-branch-from-default
-        ln -sf daft git-worktree-prune
-        ln -sf daft git-worktree-carry
-        ln -sf daft git-worktree-fetch
-        ln -sf daft git-worktree-flow-adopt
-        ln -sf daft git-worktree-flow-eject
-        ln -sf daft git-daft
-        cd ../..
+      - name: Make test scripts executable
+        run: chmod +x tests/integration/*.sh
 
-    - name: Add Rust binaries to PATH
-      run: |
-        echo "${{ github.workspace }}/target/release" >> $GITHUB_PATH
-        echo "PATH=${{ github.workspace }}/target/release:$PATH" >> $GITHUB_ENV
+      - name: Create symlinks for Rust binaries
+        run: |
+          # Create symlinks for the new multicall binary
+          cd target/release
+          ln -sf daft git-worktree-clone
+          ln -sf daft git-worktree-init
+          ln -sf daft git-worktree-checkout
+          ln -sf daft git-worktree-checkout-branch
+          ln -sf daft git-worktree-checkout-branch-from-default
+          ln -sf daft git-worktree-prune
+          ln -sf daft git-worktree-carry
+          ln -sf daft git-worktree-fetch
+          ln -sf daft git-worktree-flow-adopt
+          ln -sf daft git-worktree-flow-eject
+          ln -sf daft git-daft
+          cd ../..
 
-    - name: Install mise
-      uses: jdx/mise-action@v2
+      - name: Add Rust binaries to PATH
+        run: |
+          echo "${{ github.workspace }}/target/release" >> $GITHUB_PATH
+          echo "PATH=${{ github.workspace }}/target/release:$PATH" >> $GITHUB_ENV
 
-    - name: Test script dependencies
-      run: |
-        echo "Testing required dependencies..."
-        which git || { echo "Git not found"; exit 1; }
-        which awk || { echo "AWK not found"; exit 1; }
-        which basename || { echo "basename not found"; exit 1; }
-        echo "All dependencies found"
+      - name: Install mise
+        uses: jdx/mise-action@v2
 
-    - name: Run Rust integration tests
-      run: mise run test-integration
+      - name: Test script dependencies
+        run: |
+          echo "Testing required dependencies..."
+          which git || { echo "Git not found"; exit 1; }
+          which awk || { echo "AWK not found"; exit 1; }
+          which basename || { echo "basename not found"; exit 1; }
+          echo "All dependencies found"
 
-    - name: Test shell completions
-      run: |
-        echo "Testing completion generation..."
-        ./tests/integration/test_completions.sh
+      - name: Run Rust integration tests
+        run: mise run test-integration
 
-    - name: Test help commands
-      run: |
-        # Test Rust binary help (via symlinks)
-        ./target/release/git-worktree-clone --help
-        ./target/release/git-worktree-checkout --help
-        ./target/release/git-worktree-checkout-branch --help
-        ./target/release/git-worktree-checkout-branch-from-default --help
-        ./target/release/git-worktree-init --help
-        ./target/release/git-worktree-prune --help
-        ./target/release/git-worktree-carry --help
-        ./target/release/git-worktree-fetch --help
-        ./target/release/git-worktree-flow-adopt --help
-        ./target/release/git-worktree-flow-eject --help
+      - name: Test shell completions
+        run: |
+          echo "Testing completion generation..."
+          ./tests/integration/test_completions.sh
 
-        # Test git daft documentation command
-        ./target/release/daft | head -20
-        ./target/release/git-daft | head -20
+      - name: Test help commands
+        run: |
+          # Test Rust binary help (via symlinks)
+          ./target/release/git-worktree-clone --help
+          ./target/release/git-worktree-checkout --help
+          ./target/release/git-worktree-checkout-branch --help
+          ./target/release/git-worktree-checkout-branch-from-default --help
+          ./target/release/git-worktree-init --help
+          ./target/release/git-worktree-prune --help
+          ./target/release/git-worktree-carry --help
+          ./target/release/git-worktree-fetch --help
+          ./target/release/git-worktree-flow-adopt --help
+          ./target/release/git-worktree-flow-eject --help
 
-    - name: Upload test results
-      uses: actions/upload-artifact@v6
-      if: always()
-      with:
-        name: test-results
-        path: |
-          tests/test-results.log
-        retention-days: 7
-        if-no-files-found: ignore
+          # Test git daft documentation command
+          ./target/release/daft | head -20
+          ./target/release/git-daft | head -20
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: test-results
+          path: |
+            tests/test-results.log
+          retention-days: 7
+          if-no-files-found: ignore
 
   # Homebrew installation simulation (macOS)
   homebrew-simulation:
     runs-on: macos-latest
 
     steps:
-    - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
-    - name: Set up Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        override: true
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
 
-    - name: Cache Rust dependencies
-      uses: Swatinem/rust-cache@v2
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
 
-    - name: Build Rust binaries
-      run: cargo build --release
+      - name: Build Rust binaries
+        run: cargo build --release
 
-    - name: Simulate Homebrew installation
-      run: |
-        PREFIX="$HOME/.local"
-        mkdir -p "$PREFIX/bin" "$PREFIX/share/man/man1"
+      - name: Simulate Homebrew installation
+        run: |
+          PREFIX="$HOME/.local"
+          mkdir -p "$PREFIX/bin" "$PREFIX/share/man/man1"
 
-        # Install main binary
-        cp target/release/daft "$PREFIX/bin/"
-        chmod +x "$PREFIX/bin/daft"
+          # Install main binary
+          cp target/release/daft "$PREFIX/bin/"
+          chmod +x "$PREFIX/bin/daft"
 
-        # Create symlinks for all commands (matching Homebrew formula)
-        for cmd in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
-                   git-worktree-checkout-branch-from-default git-worktree-init \
-                   git-worktree-prune git-worktree-carry git-worktree-fetch \
-                   git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
-          ln -sf daft "$PREFIX/bin/$cmd"
-        done
+          # Create symlinks for all commands (matching Homebrew formula)
+          for cmd in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
+                     git-worktree-checkout-branch-from-default git-worktree-init \
+                     git-worktree-prune git-worktree-carry git-worktree-fetch \
+                     git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
+            ln -sf daft "$PREFIX/bin/$cmd"
+          done
 
-        # Install pre-generated man pages
-        cp man/*.1 "$PREFIX/share/man/man1/"
+          # Install pre-generated man pages
+          cp man/*.1 "$PREFIX/share/man/man1/"
 
-        echo "Installation complete. Installed files:"
-        ls -la "$PREFIX/bin/"
-        ls -la "$PREFIX/share/man/man1/"
+          echo "Installation complete. Installed files:"
+          ls -la "$PREFIX/bin/"
+          ls -la "$PREFIX/share/man/man1/"
 
-    - name: Verify Homebrew symlinks work
-      run: |
-        PREFIX="$HOME/.local"
-        export PATH="$PREFIX/bin:$PATH"
+      - name: Verify Homebrew symlinks work
+        run: |
+          PREFIX="$HOME/.local"
+          export PATH="$PREFIX/bin:$PATH"
 
-        echo "Verifying daft binary..."
-        daft --version
+          echo "Verifying daft binary..."
+          daft --version
 
-        echo "Verifying all symlinked commands..."
-        for cmd in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
-                   git-worktree-checkout-branch-from-default git-worktree-init \
-                   git-worktree-prune git-worktree-carry git-worktree-fetch \
-                   git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
-          echo "  Testing $cmd..."
-          "$PREFIX/bin/$cmd" --help > /dev/null || { echo "FAILED: $cmd --help"; exit 1; }
-        done
+          echo "Verifying all symlinked commands..."
+          for cmd in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
+                     git-worktree-checkout-branch-from-default git-worktree-init \
+                     git-worktree-prune git-worktree-carry git-worktree-fetch \
+                     git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
+            echo "  Testing $cmd..."
+            "$PREFIX/bin/$cmd" --help > /dev/null || { echo "FAILED: $cmd --help"; exit 1; }
+          done
 
-        echo "All symlinked commands verified!"
+          echo "All symlinked commands verified!"
 
-    - name: Verify man pages
-      run: |
-        PREFIX="$HOME/.local"
+      - name: Verify man pages
+        run: |
+          PREFIX="$HOME/.local"
 
-        echo "Verifying man pages exist and are valid..."
-        # Only git-worktree-* commands have man pages (not daft or git-daft)
-        for page in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
-                    git-worktree-checkout-branch-from-default git-worktree-init \
-                    git-worktree-prune git-worktree-carry git-worktree-fetch \
-                    git-worktree-flow-adopt git-worktree-flow-eject; do
-          MANFILE="$PREFIX/share/man/man1/${page}.1"
-          if [ ! -f "$MANFILE" ]; then
-            echo "FAILED: Missing man page: $page"
-            exit 1
-          fi
-          # Verify it's valid groff format (has .TH header)
-          if ! head -20 "$MANFILE" | grep -q '\.TH'; then
-            echo "FAILED: Invalid man page format: $page"
-            exit 1
-          fi
-          echo "  $page.1 - OK"
-        done
+          echo "Verifying man pages exist and are valid..."
+          # Only git-worktree-* commands have man pages (not daft or git-daft)
+          for page in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
+                      git-worktree-checkout-branch-from-default git-worktree-init \
+                      git-worktree-prune git-worktree-carry git-worktree-fetch \
+                      git-worktree-flow-adopt git-worktree-flow-eject; do
+            MANFILE="$PREFIX/share/man/man1/${page}.1"
+            if [ ! -f "$MANFILE" ]; then
+              echo "FAILED: Missing man page: $page"
+              exit 1
+            fi
+            # Verify it's valid groff format (has .TH header)
+            if ! head -20 "$MANFILE" | grep -q '\.TH'; then
+              echo "FAILED: Invalid man page format: $page"
+              exit 1
+            fi
+            echo "  $page.1 - OK"
+          done
 
-        echo "All man pages verified!"
+          echo "All man pages verified!"
 
-    - name: Test Homebrew installation with git prefix
-      run: |
-        PREFIX="$HOME/.local"
-        export PATH="$PREFIX/bin:$PATH"
+      - name: Test Homebrew installation with git prefix
+        run: |
+          PREFIX="$HOME/.local"
+          export PATH="$PREFIX/bin:$PATH"
 
-        # Verify git can discover the commands
-        # Use -h instead of --help because macOS git opens man pages for --help
-        echo "Testing git command discovery..."
-        git worktree-clone -h > /dev/null || { echo "FAILED: git worktree-clone not found"; exit 1; }
-        git worktree-checkout -h > /dev/null || { echo "FAILED: git worktree-checkout not found"; exit 1; }
-        git daft -h > /dev/null || { echo "FAILED: git daft not found"; exit 1; }
+          # Verify git can discover the commands
+          # Use -h instead of --help because macOS git opens man pages for --help
+          echo "Testing git command discovery..."
+          git worktree-clone -h > /dev/null || { echo "FAILED: git worktree-clone not found"; exit 1; }
+          git worktree-checkout -h > /dev/null || { echo "FAILED: git worktree-checkout not found"; exit 1; }
+          git daft -h > /dev/null || { echo "FAILED: git daft not found"; exit 1; }
 
-        echo "Git command discovery verified!"
-        echo "Homebrew simulation test PASSED!"
+          echo "Git command discovery verified!"
+          echo "Homebrew simulation test PASSED!"
 
   # Test xtask man page generation
   xtask-test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
-    - name: Set up Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        override: true
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
 
-    - name: Cache Rust dependencies
-      uses: Swatinem/rust-cache@v2
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
 
-    - name: Test xtask gen-man
-      run: |
-        mkdir -p /tmp/man-test
-        cargo run --package xtask -- gen-man --output-dir=/tmp/man-test
+      - name: Test xtask gen-man
+        run: |
+          mkdir -p /tmp/man-test
+          cargo run --package xtask -- gen-man --output-dir=/tmp/man-test
 
-        # Verify all expected man pages were generated
-        for page in git-worktree-clone git-worktree-init git-worktree-checkout \
-                    git-worktree-checkout-branch git-worktree-checkout-branch-from-default \
-                    git-worktree-prune git-worktree-carry git-worktree-fetch \
-                    git-worktree-flow-adopt git-worktree-flow-eject daft-release-notes; do
-          if [ ! -f "/tmp/man-test/${page}.1" ]; then
-            echo "FAILED: Missing man page: ${page}.1"
+          # Verify all expected man pages were generated
+          for page in git-worktree-clone git-worktree-init git-worktree-checkout \
+                      git-worktree-checkout-branch git-worktree-checkout-branch-from-default \
+                      git-worktree-prune git-worktree-carry git-worktree-fetch \
+                      git-worktree-flow-adopt git-worktree-flow-eject daft-release-notes; do
+            if [ ! -f "/tmp/man-test/${page}.1" ]; then
+              echo "FAILED: Missing man page: ${page}.1"
+              exit 1
+            fi
+            # Verify it's valid groff format (has .TH header)
+            if ! head -20 "/tmp/man-test/${page}.1" | grep -q '\.TH'; then
+              echo "FAILED: Invalid man page format: ${page}.1"
+              exit 1
+            fi
+            echo "  ${page}.1 - OK"
+          done
+          echo "All man pages generated and validated!"
+
+      - name: Verify committed man pages are up-to-date
+        run: |
+          # Skip verification on release PRs - release-plz bumps version in Cargo.toml
+          # which causes man pages (that embed version) to appear outdated
+          if [[ "${{ github.head_ref }}" == release-plz-* ]]; then
+            echo "Skipping man page verification on release PR (version bump expected)"
+            exit 0
+          fi
+
+          cargo run --package xtask -- gen-man --output-dir=man
+          if ! git diff --exit-code man/; then
+            echo "FAILED: Committed man pages are out of date!"
+            echo "Run 'mise run gen-man' locally and commit the changes."
             exit 1
           fi
-          # Verify it's valid groff format (has .TH header)
-          if ! head -20 "/tmp/man-test/${page}.1" | grep -q '\.TH'; then
-            echo "FAILED: Invalid man page format: ${page}.1"
+          echo "Committed man pages are up-to-date!"
+
+      - name: Test xtask gen-cli-docs
+        run: |
+          mkdir -p /tmp/cli-docs-test
+          cargo run --package xtask -- gen-cli-docs --output-dir=/tmp/cli-docs-test
+
+          # Verify all expected CLI docs were generated
+          for page in git-worktree-clone git-worktree-init git-worktree-checkout \
+                      git-worktree-checkout-branch git-worktree-checkout-branch-from-default \
+                      git-worktree-prune git-worktree-carry git-worktree-fetch \
+                      git-worktree-flow-adopt git-worktree-flow-eject \
+                      daft-doctor daft-release-notes; do
+            if [ ! -f "/tmp/cli-docs-test/${page}.md" ]; then
+              echo "FAILED: Missing CLI doc: ${page}.md"
+              exit 1
+            fi
+            # Verify it has valid markdown structure (frontmatter and Usage section)
+            if ! head -5 "/tmp/cli-docs-test/${page}.md" | grep -q '^---'; then
+              echo "FAILED: CLI doc missing frontmatter: ${page}.md"
+              exit 1
+            fi
+            if ! grep -q '## Usage' "/tmp/cli-docs-test/${page}.md"; then
+              echo "FAILED: CLI doc missing Usage section: ${page}.md"
+              exit 1
+            fi
+            echo "  ${page}.md - OK"
+          done
+          echo "All CLI docs generated and validated!"
+
+      - name: Verify committed CLI docs are up-to-date
+        run: |
+          # Skip verification on release PRs - release-plz bumps version in Cargo.toml
+          # which causes CLI docs (that embed version) to appear outdated
+          if [[ "${{ github.head_ref }}" == release-plz-* ]]; then
+            echo "Skipping CLI docs verification on release PR (version bump expected)"
+            exit 0
+          fi
+
+          cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
+          if ! git diff --exit-code docs/cli/; then
+            echo "FAILED: Committed CLI docs are out of date!"
+            echo "Run 'mise run gen-cli-docs' locally and commit the changes."
             exit 1
           fi
-          echo "  ${page}.1 - OK"
-        done
-        echo "All man pages generated and validated!"
+          echo "Committed CLI docs are up-to-date!"
 
-    - name: Verify committed man pages are up-to-date
-      run: |
-        # Skip verification on release PRs - release-plz bumps version in Cargo.toml
-        # which causes man pages (that embed version) to appear outdated
-        if [[ "${{ github.head_ref }}" == release-plz-* ]]; then
-          echo "Skipping man page verification on release PR (version bump expected)"
-          exit 0
-        fi
-
-        cargo run --package xtask -- gen-man --output-dir=man
-        if ! git diff --exit-code man/; then
-          echo "FAILED: Committed man pages are out of date!"
-          echo "Run 'mise run gen-man' locally and commit the changes."
-          exit 1
-        fi
-        echo "Committed man pages are up-to-date!"
-
-    - name: Test xtask gen-cli-docs
-      run: |
-        mkdir -p /tmp/cli-docs-test
-        cargo run --package xtask -- gen-cli-docs --output-dir=/tmp/cli-docs-test
-
-        # Verify all expected CLI docs were generated
-        for page in git-worktree-clone git-worktree-init git-worktree-checkout \
-                    git-worktree-checkout-branch git-worktree-checkout-branch-from-default \
-                    git-worktree-prune git-worktree-carry git-worktree-fetch \
-                    git-worktree-flow-adopt git-worktree-flow-eject \
-                    daft-doctor daft-release-notes; do
-          if [ ! -f "/tmp/cli-docs-test/${page}.md" ]; then
-            echo "FAILED: Missing CLI doc: ${page}.md"
-            exit 1
-          fi
-          # Verify it has valid markdown structure (frontmatter and Usage section)
-          if ! head -5 "/tmp/cli-docs-test/${page}.md" | grep -q '^---'; then
-            echo "FAILED: CLI doc missing frontmatter: ${page}.md"
-            exit 1
-          fi
-          if ! grep -q '## Usage' "/tmp/cli-docs-test/${page}.md"; then
-            echo "FAILED: CLI doc missing Usage section: ${page}.md"
-            exit 1
-          fi
-          echo "  ${page}.md - OK"
-        done
-        echo "All CLI docs generated and validated!"
-
-    - name: Verify committed CLI docs are up-to-date
-      run: |
-        # Skip verification on release PRs - release-plz bumps version in Cargo.toml
-        # which causes CLI docs (that embed version) to appear outdated
-        if [[ "${{ github.head_ref }}" == release-plz-* ]]; then
-          echo "Skipping CLI docs verification on release PR (version bump expected)"
-          exit 0
-        fi
-
-        cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
-        if ! git diff --exit-code docs/cli/; then
-          echo "FAILED: Committed CLI docs are out of date!"
-          echo "Run 'mise run gen-cli-docs' locally and commit the changes."
-          exit 1
-        fi
-        echo "Committed CLI docs are up-to-date!"
-
-    - name: Run xtask unit tests
-      run: cargo test --package xtask
+      - name: Run xtask unit tests
+        run: cargo test --package xtask

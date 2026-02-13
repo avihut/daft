@@ -1,0 +1,5 @@
+target/
+man/
+node_modules/
+CHANGELOG.md
+.claude/

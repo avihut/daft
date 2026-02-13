@@ -25,3 +25,9 @@ Thumbs.db
 
 # Lefthook local overrides
 .lefthook-local.yml
+
+# JS dependencies (Prettier)
+node_modules/
+
+# Mise hook state
+.mise/
