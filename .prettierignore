@@ -3,3 +3,5 @@ man/
 node_modules/
 CHANGELOG.md
 .claude/
+docs/.vitepress/dist/
+docs/.vitepress/cache/

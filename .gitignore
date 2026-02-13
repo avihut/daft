@@ -31,3 +31,7 @@ node_modules/
 
 # Mise hook state
 .mise/
+
+# Docs site build artifacts
+docs/.vitepress/dist/
+docs/.vitepress/cache/

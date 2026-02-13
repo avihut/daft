@@ -121,3 +121,20 @@ adding or changing user-facing features.
   changes (e.g., hooks moving from shell scripts to YAML), renamed hook types,
   new template variables, etc. The skill is what teaches AI coding agents to use
   daft correctly.
+
+### Docs Site (VitePress)
+
+The docs site at `daft.avihu.dev` is built from `docs/` using VitePress + Biome,
+with Bun as the package manager.
+
+```bash
+mise run docs:site          # Dev server at localhost:5173
+mise run docs:site-build    # Build the site
+mise run docs:site-preview  # Preview built site
+mise run docs:site-check    # Lint config with Biome
+mise run docs:site-format   # Auto-fix config with Biome
+```
+
+- **Prettier** (root): `*.{md,yml,yaml}` files everywhere
+- **Biome** (docs): `docs/.vitepress/**/*.{ts,js,json}` files only
+- Auto-deploys to Cloudflare Pages on push to `master` when `docs/**` changes

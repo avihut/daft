@@ -602,6 +602,45 @@ echo "CLI docs are up-to-date"
 """
 
 # ============================================================================
+# Documentation Site Tasks
+# ============================================================================
+
+[tasks."docs:site"]
+description = "Start docs dev server at localhost:5173"
+dir = "docs"
+depends = ["docs:site-setup"]
+run = "bunx vitepress dev"
+
+[tasks."docs:site-setup"]
+description = "Install docs site dependencies"
+dir = "docs"
+run = "bun install"
+
+[tasks."docs:site-build"]
+description = "Build the docs site"
+dir = "docs"
+depends = ["docs:site-setup"]
+run = "bunx vitepress build"
+
+[tasks."docs:site-preview"]
+description = "Preview the built docs site"
+dir = "docs"
+depends = ["docs:site-build"]
+run = "bunx vitepress preview"
+
+[tasks."docs:site-check"]
+description = "Lint and format check docs site config"
+dir = "docs"
+depends = ["docs:site-setup"]
+run = "bunx biome check"
+
+[tasks."docs:site-format"]
+description = "Lint and format docs site config (auto-fix)"
+dir = "docs"
+depends = ["docs:site-setup"]
+run = "bunx biome check --write"
+
+# ============================================================================
 # Cleanup Tasks
 # ============================================================================
 

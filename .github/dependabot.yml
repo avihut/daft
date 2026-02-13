@@ -50,3 +50,23 @@ updates:
       prefix: "ci"
       include: "scope"
     rebase-strategy: "auto"
+
+  - package-ecosystem: "npm"
+    directory: "/docs"
+    target-branch: "master"
+    schedule:
+      interval: "daily"
+      time: "09:00"
+      timezone: "Asia/Jerusalem"
+    groups:
+      docs-dependencies:
+        patterns:
+          - "*"
+    labels:
+      - "dependencies"
+      - "docs"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(docs)"
+      include: "scope"
+    rebase-strategy: "auto"
