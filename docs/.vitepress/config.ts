@@ -25,6 +25,49 @@ export default defineConfig({
         }
         return defaultRender(tokens, idx, options, env, self);
       };
+
+      // Reformat changelog version headings:
+      //   ## [1.0.22] - 2026-02-07  →  version without brackets, date on next line muted
+      const defaultHeadingOpen =
+        md.renderer.rules.heading_open ||
+        ((tokens, idx, options, _env, self) =>
+          self.renderToken(tokens, idx, options));
+      md.renderer.rules.heading_open = (tokens, idx, options, env, self) => {
+        if (tokens[idx].tag !== "h2") {
+          return defaultHeadingOpen(tokens, idx, options, env, self);
+        }
+        const inline = tokens[idx + 1];
+        if (!inline || inline.type !== "inline") {
+          return defaultHeadingOpen(tokens, idx, options, env, self);
+        }
+        const match = inline.content.match(
+          /^\[(.+?)\]\s*-\s*(\d{4}-\d{2}-\d{2})$/,
+        );
+        if (!match) {
+          return defaultHeadingOpen(tokens, idx, options, env, self);
+        }
+        const [, version, date] = match;
+        inline.content = version;
+        inline.children = inline.children || [];
+        inline.children = [{ ...inline.children[0], content: version }];
+        // Append date as a span after the heading via raw HTML
+        const closeToken = tokens[idx + 2];
+        if (closeToken && closeToken.type === "heading_close") {
+          closeToken.attrSet = closeToken.attrSet || (() => {});
+          const origClose =
+            md.renderer.rules.heading_close ||
+            ((t, i, o, _e, s) => s.renderToken(t, i, o));
+          const origCloseOnce = origClose;
+          md.renderer.rules.heading_close = (t, i, o, e, s) => {
+            if (t[i] === closeToken) {
+              md.renderer.rules.heading_close = origCloseOnce;
+              return `</h2>\n<p class="changelog-date">${date}</p>\n`;
+            }
+            return origCloseOnce(t, i, o, e, s);
+          };
+        }
+        return defaultHeadingOpen(tokens, idx, options, env, self);
+      };
     },
   },
   themeConfig: {
