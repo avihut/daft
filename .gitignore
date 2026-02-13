@@ -35,3 +35,6 @@ node_modules/
 # Docs site build artifacts
 docs/.vitepress/dist/
 docs/.vitepress/cache/
+
+# Playwright MCP artifacts
+.playwright-mcp/
