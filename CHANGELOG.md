@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 
 ### Miscellaneous
 
+- Filter CI, deps, docs, and style commits from changelog
 - Add Prettier formatting with Bun for docs and YAML
 - Remove unused install.sh script (#192)
 - Improve daft.yml hooks for full worktree automation (#190)
@@ -116,18 +117,8 @@ All notable changes to this project will be documented in this file.
 - Skip man page verification on release PRs
 - Try disabling git_only for xtask
 - Use package-specific tag format for xtask
-## [xtask-v0.1.0] - 2026-01-28
-
-
-### Bug Fixes
-
 - Disable release-plz for all packages except daft
 - Exclude xtask from release-plz processing
-## [daft-v1.0.11] - 2026-01-28
-
-
-### Bug Fixes
-
 - Resolve YAML syntax error in release workflow
 - Correct git-worktree-clone syntax in test-homebrew workflow
 - Move man page generation to install block in Homebrew formula
