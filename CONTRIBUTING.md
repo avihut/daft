@@ -1,10 +1,12 @@
 # Contributing to daft
 
-Thank you for your interest in contributing to daft! This document provides guidelines for contributing to the project.
+Thank you for your interest in contributing to daft! This document provides
+guidelines for contributing to the project.
 
 ## Commit Message Convention
 
-This project uses [Conventional Commits](https://www.conventionalcommits.org/) for automatic changelog generation via git-cliff.
+This project uses [Conventional Commits](https://www.conventionalcommits.org/)
+for automatic changelog generation via git-cliff.
 
 ### Format
 
@@ -18,17 +20,17 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/) f
 
 ### Types
 
-| Type | Description | Changelog Section |
-|------|-------------|-------------------|
-| `feat` | A new feature | Features |
-| `fix` | A bug fix | Bug Fixes |
-| `docs` | Documentation only changes | Documentation |
-| `style` | Code style changes (formatting, etc.) | Styling |
-| `refactor` | Code changes that neither fix bugs nor add features | Refactoring |
-| `perf` | Performance improvements | Performance |
-| `test` | Adding or correcting tests | Testing |
-| `chore` | Maintenance tasks, dependency updates | Miscellaneous |
-| `ci` | CI/CD configuration changes | CI/CD |
+| Type       | Description                                         | Changelog Section |
+| ---------- | --------------------------------------------------- | ----------------- |
+| `feat`     | A new feature                                       | Features          |
+| `fix`      | A bug fix                                           | Bug Fixes         |
+| `docs`     | Documentation only changes                          | Documentation     |
+| `style`    | Code style changes (formatting, etc.)               | Styling           |
+| `refactor` | Code changes that neither fix bugs nor add features | Refactoring       |
+| `perf`     | Performance improvements                            | Performance       |
+| `test`     | Adding or correcting tests                          | Testing           |
+| `chore`    | Maintenance tasks, dependency updates               | Miscellaneous     |
+| `ci`       | CI/CD configuration changes                         | CI/CD             |
 
 ### Examples
 
@@ -81,6 +83,7 @@ Issue references should be in the PR body, not the title.
 1. **Fork the repository** (external contributors)
 
 2. **Create a feature branch**:
+
    ```bash
    git worktree-checkout-branch daft-XX/feature-name
    ```
@@ -88,6 +91,7 @@ Issue references should be in the PR body, not the title.
 3. **Make changes** following the commit conventions above
 
 4. **Run quality checks**:
+
    ```bash
    mise run fmt
    mise run clippy
@@ -126,4 +130,5 @@ mise run test-integration   # End-to-end tests
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the MIT License.
+By contributing, you agree that your contributions will be licensed under the
+MIT License.

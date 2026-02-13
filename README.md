@@ -8,13 +8,14 @@
 [![Homebrew](https://img.shields.io/badge/homebrew-avihut%2Ftap-blueviolet)](https://github.com/avihut/homebrew-tap)
 [![macOS](https://img.shields.io/badge/macOS-supported-success)](https://github.com/avihut/daft/releases)
 [![Linux](https://img.shields.io/badge/Linux-supported-success)](https://github.com/avihut/daft/releases)
-[![Windows](https://img.shields.io/badge/Windows-supported%20(WSL)-success)](https://github.com/avihut/daft/releases)
+[![Windows](<https://img.shields.io/badge/Windows-supported%20(WSL)-success>)](https://github.com/avihut/daft/releases)
 
 > Stop switching branches. Work on multiple branches simultaneously.
 
 ![daft demo](https://github.com/user-attachments/assets/0ea922d5-6f01-4cdb-9b15-18d8a6112499)
 
-**daft** gives each Git branch its own directory. No more stashing, no more context switching, no more waiting for builds to restart.
+**daft** gives each Git branch its own directory. No more stashing, no more
+context switching, no more waiting for builds to restart.
 
 ```
 my-project/
@@ -38,7 +39,9 @@ git worktree-clone git@github.com:user/my-project.git
 git worktree-checkout-branch feature/auth
 ```
 
-Each directory is a full working copy. Run different branches in different terminals. Your IDE state, node_modules, build artifacts - all isolated per branch.
+Each directory is a full working copy. Run different branches in different
+terminals. Your IDE state, node_modules, build artifacts - all isolated per
+branch.
 
 ## Adopt Existing Repositories
 
@@ -50,6 +53,7 @@ git worktree-flow-adopt
 ```
 
 This restructures your repo:
+
 ```
 my-project/                 my-project/
 ├── .git/                   ├── .git/        (bare repository)
@@ -67,6 +71,7 @@ git worktree-flow-eject      # Converts back to traditional layout
 ## Why daft?
 
 **Traditional Git workflow:**
+
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  $ git stash                                            │
@@ -81,6 +86,7 @@ git worktree-flow-eject      # Converts back to traditional layout
 ```
 
 **With daft:**
+
 ```
 Terminal 1 (feature-a/)     Terminal 2 (feature-b/)
 ┌───────────────────────┐   ┌───────────────────────┐
@@ -108,14 +114,17 @@ irm https://github.com/avihut/daft/releases/latest/download/daft-installer.ps1 |
 
 ### Linux / From Source
 
-Download binaries from [GitHub Releases](https://github.com/avihut/daft/releases/latest) or build from source:
+Download binaries from
+[GitHub Releases](https://github.com/avihut/daft/releases/latest) or build from
+source:
 
 ```bash
 git clone https://github.com/avihut/daft.git
 cd daft && cargo build --release
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed installation and symlink setup.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed installation and symlink
+setup.
 
 ### Shell Integration
 
@@ -131,17 +140,17 @@ daft shell-init fish | source
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `git worktree-clone <url>` | Clone a repo into the worktree structure |
-| `git worktree-init <name>` | Initialize a new repo in the worktree structure |
-| `git worktree-checkout <branch>` | Create worktree from existing branch |
-| `git worktree-checkout-branch <branch>` | Create new branch + worktree |
-| `git worktree-checkout-branch-from-default <branch>` | Create branch from remote default |
-| `git worktree-prune` | Remove worktrees for deleted remote branches |
-| `git worktree-carry` | Carry uncommitted changes to other worktrees |
-| `git worktree-flow-adopt` | Convert traditional repo to worktree layout |
-| `git worktree-flow-eject` | Convert back to traditional layout |
+| Command                                              | Description                                     |
+| ---------------------------------------------------- | ----------------------------------------------- |
+| `git worktree-clone <url>`                           | Clone a repo into the worktree structure        |
+| `git worktree-init <name>`                           | Initialize a new repo in the worktree structure |
+| `git worktree-checkout <branch>`                     | Create worktree from existing branch            |
+| `git worktree-checkout-branch <branch>`              | Create new branch + worktree                    |
+| `git worktree-checkout-branch-from-default <branch>` | Create branch from remote default               |
+| `git worktree-prune`                                 | Remove worktrees for deleted remote branches    |
+| `git worktree-carry`                                 | Carry uncommitted changes to other worktrees    |
+| `git worktree-flow-adopt`                            | Convert traditional repo to worktree layout     |
+| `git worktree-flow-eject`                            | Convert back to traditional layout              |
 
 Run any command with `--help` for full options.
 
@@ -158,11 +167,11 @@ daft setup shortcuts list          # See all available shortcuts
 
 Automate worktree lifecycle events with a `daft.yml` configuration file:
 
-| Hook | Trigger |
-|------|---------|
-| `post-clone` | After repository clone |
-| `worktree-post-create` | After worktree created |
-| `worktree-pre-remove` | Before worktree removal |
+| Hook                   | Trigger                 |
+| ---------------------- | ----------------------- |
+| `post-clone`           | After repository clone  |
+| `worktree-post-create` | After worktree created  |
+| `worktree-pre-remove`  | Before worktree removal |
 
 **Example** - install dependencies and auto-allow direnv in new worktrees:
 
@@ -181,17 +190,22 @@ hooks:
 git daft hooks trust
 ```
 
-Hooks require explicit trust for security. See the [hooks guide](https://avihu.dev/daft/guide/hooks) for details.
+Hooks require explicit trust for security. See the
+[hooks guide](https://avihu.dev/daft/guide/hooks) for details.
 
 ## AI Agent Skill
 
-daft ships an [Agent Skill](https://github.com/anthropics/agent-skills) that teaches AI coding agents (Claude Code, Cursor, Windsurf, and others) the worktree workflow -- commands, hooks, environment tooling, and worktree-aware Git operations.
+daft ships an [Agent Skill](https://github.com/anthropics/agent-skills) that
+teaches AI coding agents (Claude Code, Cursor, Windsurf, and others) the
+worktree workflow -- commands, hooks, environment tooling, and worktree-aware
+Git operations.
 
 ```bash
 npx skills add avihut/daft
 ```
 
-See the [Agent Skill guide](https://avihu.dev/daft/guide/claude-skill) for manual installation options.
+See the [Agent Skill guide](https://avihu.dev/daft/guide/claude-skill) for
+manual installation options.
 
 ## Requirements
 
@@ -208,4 +222,6 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-**Pro Tip**: This workflow is powerful for frontend development, code reviews, hotfixes, and any project with complex build processes that benefit from isolation.
+**Pro Tip**: This workflow is powerful for frontend development, code reviews,
+hotfixes, and any project with complex build processes that benefit from
+isolation.

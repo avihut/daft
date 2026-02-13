@@ -5,7 +5,8 @@ description: Get up and running with daft in minutes
 
 # Quick Start
 
-This guide walks you through the core daft workflow: cloning a repo, creating branches, and cleaning up.
+This guide walks you through the core daft workflow: cloning a repo, creating
+branches, and cleaning up.
 
 ## 1. Clone a Repository
 
@@ -42,7 +43,8 @@ my-project/
     └── ... (project files)
 ```
 
-You're now in `my-project/feature/auth/`. Your `main/` directory is completely untouched.
+You're now in `my-project/feature/auth/`. Your `main/` directory is completely
+untouched.
 
 ## 3. Switch Between Branches
 
@@ -104,6 +106,7 @@ git worktree-prune
 ```
 
 This automatically:
+
 - Fetches from remote and prunes stale tracking branches
 - Identifies local branches whose remotes were deleted
 - Removes associated worktrees
@@ -118,12 +121,15 @@ cd my-existing-project
 git worktree-flow-adopt
 ```
 
-This restructures your repo into the worktree layout. Uncommitted changes are preserved.
+This restructures your repo into the worktree layout. Uncommitted changes are
+preserved.
 
 ## What's Next
 
-- [Shell Integration](./shell-integration.md) - Enable auto-cd into new worktrees
-- [Worktree Workflow](../guide/worktree-workflow.md) - Deep dive into the worktree-centric approach
+- [Shell Integration](./shell-integration.md) - Enable auto-cd into new
+  worktrees
+- [Worktree Workflow](../guide/worktree-workflow.md) - Deep dive into the
+  worktree-centric approach
 - [Hooks](../guide/hooks.md) - Automate worktree lifecycle events
 - [Shortcuts](../guide/shortcuts.md) - Enable short command aliases
 - [Configuration](../guide/configuration.md) - Customize daft's behavior

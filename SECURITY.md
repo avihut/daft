@@ -2,11 +2,13 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in daft, please report it privately by emailing:
+If you discover a security vulnerability in daft, please report it privately by
+emailing:
 
 **security@avihu.dev**
 
 Please include:
+
 - Description of the vulnerability
 - Steps to reproduce
 - Potential impact
@@ -21,6 +23,7 @@ Please include:
 ## Scope
 
 This policy covers vulnerabilities in:
+
 - The daft binary and its commands
 - The hooks system trust model
 - Installation scripts
@@ -33,4 +36,5 @@ This policy covers vulnerabilities in:
 
 ## Disclosure
 
-We follow coordinated disclosure. Once a fix is released, we'll credit reporters (unless anonymity is preferred) in the release notes.
+We follow coordinated disclosure. Once a fix is released, we'll credit reporters
+(unless anonymity is preferred) in the release notes.

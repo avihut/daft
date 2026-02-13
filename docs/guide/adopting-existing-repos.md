@@ -5,13 +5,16 @@ description: Convert traditional repositories to the worktree-based layout
 
 # Adopting Existing Repositories
 
-Already have a traditional Git repository? You can convert it to the worktree layout without losing any work.
+Already have a traditional Git repository? You can convert it to the worktree
+layout without losing any work.
 
 ## What flow-adopt Does
 
-`git worktree-flow-adopt` restructures a traditional repository into daft's worktree layout:
+`git worktree-flow-adopt` restructures a traditional repository into daft's
+worktree layout:
 
 **Before:**
+
 ```
 my-project/
 ├── .git/            # Regular git directory
@@ -21,6 +24,7 @@ my-project/
 ```
 
 **After:**
+
 ```
 my-project/
 ├── .git/            # Bare repository
@@ -53,7 +57,8 @@ git worktree-flow-adopt --dry-run
 
 ## Uncommitted Changes Are Preserved
 
-Any staged, unstaged, or untracked changes in your working directory are carried into the new worktree. You won't lose any work.
+Any staged, unstaged, or untracked changes in your working directory are carried
+into the new worktree. You won't lose any work.
 
 ## Reverting with flow-eject
 
@@ -66,6 +71,7 @@ git worktree-flow-eject
 This converts back to a traditional repository layout:
 
 **Before:**
+
 ```
 my-project/
 ├── .git/            # Bare repository
@@ -78,6 +84,7 @@ my-project/
 ```
 
 **After:**
+
 ```
 my-project/
 ├── .git/            # Regular git directory
@@ -85,22 +92,26 @@ my-project/
 └── README.md
 ```
 
-By default, `flow-eject` keeps the remote's default branch. Use `--branch` to specify a different one:
+By default, `flow-eject` keeps the remote's default branch. Use `--branch` to
+specify a different one:
 
 ```bash
 git worktree-flow-eject --branch feature/auth
 ```
 
-Other worktrees are removed. If any have uncommitted changes, the command fails unless you pass `--force`.
+Other worktrees are removed. If any have uncommitted changes, the command fails
+unless you pass `--force`.
 
 ## When to Adopt vs Clone Fresh
 
 **Use `flow-adopt`** when:
+
 - You have an existing local repository with work in progress
 - You want to try the worktree workflow without re-cloning
 - You have local branches or stashes you want to preserve
 
 **Use `worktree-clone`** when:
+
 - Starting fresh from a remote repository
 - Setting up a new development environment
 - The repository has no local-only work to preserve

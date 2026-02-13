@@ -5,7 +5,9 @@ description: Organize worktrees by remote for fork-based workflows
 
 # Multi-Remote Mode
 
-When working with multiple remotes (e.g., a fork workflow with `origin` and `upstream`), multi-remote mode organizes worktrees into remote-prefixed directories.
+When working with multiple remotes (e.g., a fork workflow with `origin` and
+`upstream`), multi-remote mode organizes worktrees into remote-prefixed
+directories.
 
 ## Directory Layouts
 
@@ -57,7 +59,8 @@ This flattens the directory structure back to the standard layout.
 
 ## Using --remote on Commands
 
-When multi-remote mode is enabled, you can specify which remote to organize under:
+When multi-remote mode is enabled, you can specify which remote to organize
+under:
 
 ```bash
 # Create worktree under origin/
@@ -75,7 +78,7 @@ git worktree-clone git@github.com:user/project.git --remote origin
 
 ## Configuration
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `daft.multiRemote.enabled` | `false` | Enable multi-remote mode |
+| Key                              | Default  | Description                     |
+| -------------------------------- | -------- | ------------------------------- |
+| `daft.multiRemote.enabled`       | `false`  | Enable multi-remote mode        |
 | `daft.multiRemote.defaultRemote` | `origin` | Default remote for new branches |

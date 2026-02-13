@@ -25,7 +25,8 @@ irm https://github.com/avihut/daft/releases/latest/download/daft-installer.ps1 |
 
 ## Linux
 
-Download the latest binary from [GitHub Releases](https://github.com/avihut/daft/releases/latest):
+Download the latest binary from
+[GitHub Releases](https://github.com/avihut/daft/releases/latest):
 
 ```bash
 # Download and extract
@@ -71,7 +72,8 @@ After installing, verify everything is working:
 daft doctor
 ```
 
-This runs health checks on your installation and reports any issues with actionable suggestions.
+This runs health checks on your installation and reports any issues with
+actionable suggestions.
 
 You can also verify individual commands:
 
@@ -82,7 +84,8 @@ git worktree-clone --help
 
 ## Post-Install: Shell Integration
 
-For the best experience, enable shell integration so that daft can automatically `cd` you into new worktrees:
+For the best experience, enable shell integration so that daft can automatically
+`cd` you into new worktrees:
 
 ```bash
 # Bash/Zsh: Add to your shell config

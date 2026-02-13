@@ -4,23 +4,32 @@
 
 IMPORTANT: These rules must NEVER be violated:
 
-1. **Never modify global git config** — Do not change global git user name, email, or any other global settings. This applies to both manual work and automated tests. Tests must use local config only.
-2. **Never use this repository for testing** — This project's own git repo must never be used as a test subject for worktree commands. Tests must always create isolated temporary repositories.
+1. **Never modify global git config** — Do not change global git user name,
+   email, or any other global settings. This applies to both manual work and
+   automated tests. Tests must use local config only.
+2. **Never use this repository for testing** — This project's own git repo must
+   never be used as a test subject for worktree commands. Tests must always
+   create isolated temporary repositories.
 
 ## Safe Local Testing with Git
 
-When manually testing git operations (e.g. cloning, worktree creation) in scratch directories:
+When manually testing git operations (e.g. cloning, worktree creation) in
+scratch directories:
 
-- **Never run `git config --global`** — not even temporarily. Use `git config --local` or per-command env vars instead.
+- **Never run `git config --global`** — not even temporarily. Use
+  `git config --local` or per-command env vars instead.
 - **Set test identity via environment variables**, not config:
   ```bash
   GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
   GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
   git commit -m "test"
   ```
-- **Never commit to this repo's branches from scratch/temp directories** — stray commits from test repos must not leak onto working branches.
-- **Always `cd` back to the worktree directory after testing** — a deleted temp directory as cwd will silently break subsequent shell commands.
-- **Clean up temp directories** when done: `rm -rf /tmp/daft-test-*` or use `mktemp -d`.
+- **Never commit to this repo's branches from scratch/temp directories** — stray
+  commits from test repos must not leak onto working branches.
+- **Always `cd` back to the worktree directory after testing** — a deleted temp
+  directory as cwd will silently break subsequent shell commands.
+- **Clean up temp directories** when done: `rm -rf /tmp/daft-test-*` or use
+  `mktemp -d`.
 
 ## Build, Test & Lint Commands
 
@@ -35,15 +44,25 @@ mise run fmt-check          # Verify formatting
 mise run ci                 # Simulate full CI locally
 ```
 
-IMPORTANT: Before committing, always run `mise run fmt`, `mise run clippy`, and `mise run test-unit`. These checks are required and enforced in CI.
+IMPORTANT: Before committing, always run `mise run fmt`, `mise run clippy`, and
+`mise run test-unit`. These checks are required and enforced in CI.
 
 ## Architecture
 
-**Multicall binary**: All commands route through a single `daft` binary (`src/main.rs`). The binary examines `argv[0]` to determine which command was invoked, then dispatches to the matching module in `src/commands/`. Symlinks like `git-worktree-clone → daft` enable Git subcommand discovery. Shortcut aliases (e.g., `gwtco`) are resolved in `src/shortcuts.rs` before routing.
+**Multicall binary**: All commands route through a single `daft` binary
+(`src/main.rs`). The binary examines `argv[0]` to determine which command was
+invoked, then dispatches to the matching module in `src/commands/`. Symlinks
+like `git-worktree-clone → daft` enable Git subcommand discovery. Shortcut
+aliases (e.g., `gwtco`) are resolved in `src/shortcuts.rs` before routing.
 
-**Shell integration**: `daft shell-init` generates shell wrappers that set `DAFT_SHELL_WRAPPER=1`. When set, commands output `__DAFT_CD__:/path` markers that wrappers parse to `cd` into new worktrees.
+**Shell integration**: `daft shell-init` generates shell wrappers that set
+`DAFT_SHELL_WRAPPER=1`. When set, commands output `__DAFT_CD__:/path` markers
+that wrappers parse to `cd` into new worktrees.
 
-**Hooks system**: Lifecycle hooks in `.daft/hooks/` with trust-based security. Hook types: `post-clone`, `post-init`, `worktree-pre-create`, `worktree-post-create`, `worktree-pre-remove`, `worktree-post-remove`. Old names without `worktree-` prefix are deprecated (removed in v2.0.0).
+**Hooks system**: Lifecycle hooks in `.daft/hooks/` with trust-based security.
+Hook types: `post-clone`, `post-init`, `worktree-pre-create`,
+`worktree-post-create`, `worktree-pre-remove`, `worktree-post-remove`. Old names
+without `worktree-` prefix are deprecated (removed in v2.0.0).
 
 ## Branch Naming & PRs
 
@@ -54,17 +73,21 @@ IMPORTANT: Before committing, always run `mise run fmt`, `mise run clippy`, and 
 
 ## Commits
 
-[Conventional Commits](https://www.conventionalcommits.org/) format: `<type>[scope]: <description>`
+[Conventional Commits](https://www.conventionalcommits.org/) format:
+`<type>[scope]: <description>`
 
 Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`
 
 ## Release Process
 
-Uses [release-plz](https://release-plz.dev/): push to master → Release PR auto-created → merge it → GitHub Release + tag → binary builds. All commits produce patch bumps; edit `Cargo.toml` in the Release PR for minor/major bumps.
+Uses [release-plz](https://release-plz.dev/): push to master → Release PR
+auto-created → merge it → GitHub Release + tag → binary builds. All commits
+produce patch bumps; edit `Cargo.toml` in the Release PR for minor/major bumps.
 
 ## Adding a New Command
 
-1. Create `src/commands/<name>.rs` with clap `Args` struct (include `about`, `long_about`, `arg(help)` attributes for man pages)
+1. Create `src/commands/<name>.rs` with clap `Args` struct (include `about`,
+   `long_about`, `arg(help)` attributes for man pages)
 2. Add module to `src/commands/mod.rs`
 3. Add routing in `src/main.rs`
 4. Add to `COMMANDS` array and `get_command_for_name()` in `xtask/src/main.rs`
@@ -74,7 +97,8 @@ Uses [release-plz](https://release-plz.dev/): push to master → Release PR auto
 
 ## Man Pages
 
-Pre-generated in `man/` and committed. Regenerate after changing command help text:
+Pre-generated in `man/` and committed. Regenerate after changing command help
+text:
 
 ```bash
 mise run gen-man      # Generate/update man pages
@@ -83,11 +107,17 @@ mise run verify-man   # Check if man pages are up-to-date (also runs in CI)
 
 ## Documentation Site
 
-`docs/` contains the project documentation (VitePress/Markdown). Update when adding or changing user-facing features.
+`docs/` contains the project documentation (VitePress/Markdown). Update when
+adding or changing user-facing features.
 
 - `docs/getting-started/` — installation, quick start, shell integration
 - `docs/guide/` — in-depth guides (hooks, configuration, workflow, shortcuts)
-- `docs/cli/` — one reference page per command, follow `docs/cli/daft-doctor.md` as template
+- `docs/cli/` — one reference page per command, follow `docs/cli/daft-doctor.md`
+  as template
 - Every page needs `title` and `description` YAML frontmatter
 - No emoji in docs
-- **Update `SKILL.md`** when changes affect how an agent should interact with daft — new or removed commands, changed feature behavior, configuration format changes (e.g., hooks moving from shell scripts to YAML), renamed hook types, new template variables, etc. The skill is what teaches AI coding agents to use daft correctly.
+- **Update `SKILL.md`** when changes affect how an agent should interact with
+  daft — new or removed commands, changed feature behavior, configuration format
+  changes (e.g., hooks moving from shell scripts to YAML), renamed hook types,
+  new template variables, etc. The skill is what teaches AI coding agents to use
+  daft correctly.

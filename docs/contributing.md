@@ -3,8 +3,6 @@ title: Contributing
 description: Guidelines for contributing to daft
 ---
 
-# Contributing
-
 Thank you for your interest in contributing to daft!
 
 ## Development Setup
@@ -21,7 +19,8 @@ Thank you for your interest in contributing to daft!
    mise run dev
    ```
 
-   This builds the binary, creates all symlinks in `target/release/`, and verifies the setup.
+   This builds the binary, creates all symlinks in `target/release/`, and
+   verifies the setup.
 
 3. **Add the binary to your PATH:**
 
@@ -66,21 +65,22 @@ mise run ci
 
 ## Commit Messages
 
-This project uses [Conventional Commits](https://www.conventionalcommits.org/) for automatic changelog generation.
+This project uses [Conventional Commits](https://www.conventionalcommits.org/)
+for automatic changelog generation.
 
 Format: `<type>[scope]: <description>`
 
-| Type | Description |
-|------|-------------|
-| `feat` | New feature |
-| `fix` | Bug fix |
-| `docs` | Documentation changes |
-| `style` | Code style (no logic change) |
-| `refactor` | Code refactoring |
-| `perf` | Performance improvement |
-| `test` | Adding/updating tests |
-| `chore` | Maintenance tasks |
-| `ci` | CI/CD changes |
+| Type       | Description                  |
+| ---------- | ---------------------------- |
+| `feat`     | New feature                  |
+| `fix`      | Bug fix                      |
+| `docs`     | Documentation changes        |
+| `style`    | Code style (no logic change) |
+| `refactor` | Code refactoring             |
+| `perf`     | Performance improvement      |
+| `test`     | Adding/updating tests        |
+| `chore`    | Maintenance tasks            |
+| `ci`       | CI/CD changes                |
 
 Examples:
 
@@ -113,18 +113,22 @@ mise run test-unit         # Rust unit tests only
 mise run test-integration  # End-to-end tests
 ```
 
-See [CLAUDE.md](https://github.com/avihut/daft/blob/master/CLAUDE.md) in the repository for the complete testing architecture.
+See [CLAUDE.md](https://github.com/avihut/daft/blob/master/CLAUDE.md) in the
+repository for the complete testing architecture.
 
 ## Adding a New Command
 
-1. Create `src/commands/<name>.rs` with a clap `Args` struct (include `about`, `long_about`, `arg(help)` attributes)
+1. Create `src/commands/<name>.rs` with a clap `Args` struct (include `about`,
+   `long_about`, `arg(help)` attributes)
 2. Add the module to `src/commands/mod.rs`
 3. Add routing in `src/main.rs`
 4. Add to `COMMANDS` array and `get_command_for_name()` in `xtask/src/main.rs`
 5. Add to help output in `src/commands/docs.rs` (`get_command_categories()`)
-6. Run `mise run gen-man` and `mise run gen-cli-docs` and commit the generated files
+6. Run `mise run gen-man` and `mise run gen-cli-docs` and commit the generated
+   files
 7. Add integration tests in `tests/integration/`
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the MIT License.
+By contributing, you agree that your contributions will be licensed under the
+MIT License.

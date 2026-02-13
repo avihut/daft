@@ -7,7 +7,9 @@ description: Enable automatic directory changes when creating worktrees
 
 ## Why It's Needed
 
-When daft creates a new worktree, the Rust binary changes directory internally - but your parent shell stays in the original directory. Shell integration solves this by wrapping daft commands so the shell follows along.
+When daft creates a new worktree, the Rust binary changes directory internally -
+but your parent shell stays in the original directory. Shell integration solves
+this by wrapping daft commands so the shell follows along.
 
 ## Setup
 
@@ -41,11 +43,15 @@ daft shell-init fish --aliases | source
 
 ## How It Works
 
-1. The shell wrappers set `DAFT_SHELL_WRAPPER=1` before calling the underlying command
-2. When this env var is set, commands output a `__DAFT_CD__:/path/to/worktree` marker
-3. The wrapper parses this marker and uses the shell's builtin `cd` to change directory
+1. The shell wrappers set `DAFT_SHELL_WRAPPER=1` before calling the underlying
+   command
+2. When this env var is set, commands output a `__DAFT_CD__:/path/to/worktree`
+   marker
+3. The wrapper parses this marker and uses the shell's builtin `cd` to change
+   directory
 
-This means the binary does the heavy lifting (cloning, branching, etc.) and the wrapper just handles the final `cd`.
+This means the binary does the heavy lifting (cloning, branching, etc.) and the
+wrapper just handles the final `cd`.
 
 ## Disabling Auto-CD
 

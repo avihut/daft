@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to test (e.g., 1.0.9)'
+        description: "Version to test (e.g., 1.0.9)"
         required: true
         type: string
 

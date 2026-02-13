@@ -7,9 +7,12 @@ description: Understanding the worktree-centric development approach
 
 ## What Is a Git Worktree?
 
-A Git worktree is an additional working directory linked to the same repository. Git 2.5+ supports multiple worktrees sharing a single `.git` directory, so each branch can have its own files on disk simultaneously.
+A Git worktree is an additional working directory linked to the same repository.
+Git 2.5+ supports multiple worktrees sharing a single `.git` directory, so each
+branch can have its own files on disk simultaneously.
 
-daft structures this into a consistent layout and provides commands to manage the lifecycle.
+daft structures this into a consistent layout and provides commands to manage
+the lifecycle.
 
 ## The daft Directory Layout
 
@@ -33,7 +36,9 @@ my-project/
 ```
 
 Key properties:
-- `.git/` is a bare repository at the project root - it holds all shared Git data
+
+- `.git/` is a bare repository at the project root - it holds all shared Git
+  data
 - Each branch lives in its own directory as a sibling to `.git/`
 - All worktrees share the same Git history, remotes, and configuration
 - Each worktree has its own working files, index, and HEAD
@@ -42,7 +47,8 @@ Key properties:
 
 ### No Context Switching
 
-Traditional Git requires `git checkout` to switch branches, which replaces all files in your working directory. With worktrees, branches coexist:
+Traditional Git requires `git checkout` to switch branches, which replaces all
+files in your working directory. With worktrees, branches coexist:
 
 ```bash
 # Traditional: sequential, with context loss
@@ -61,6 +67,7 @@ cd ../feature-a/
 ### Full Isolation
 
 Each worktree has its own:
+
 - Working files and build artifacts (`node_modules/`, `target/`, etc.)
 - IDE state and configuration (`.vscode/`, `.idea/`)
 - Environment files (`.envrc`, `.env`)
@@ -127,4 +134,7 @@ git worktree-prune
 
 ## How Commands Find the Project Root
 
-daft commands use `git rev-parse --git-common-dir` to locate the shared `.git` directory regardless of which worktree you're in. This means you can run commands from any directory within any worktree - they always find the project root and create new worktrees as siblings.
+daft commands use `git rev-parse --git-common-dir` to locate the shared `.git`
+directory regardless of which worktree you're in. This means you can run
+commands from any directory within any worktree - they always find the project
+root and create new worktrees as siblings.

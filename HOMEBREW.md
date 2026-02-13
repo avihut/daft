@@ -1,14 +1,18 @@
 # Homebrew Formula Customization Guide
 
-This document explains the Homebrew formula setup for daft and how to customize it for the multicall binary architecture.
+This document explains the Homebrew formula setup for daft and how to customize
+it for the multicall binary architecture.
 
 ## Overview
 
-daft uses cargo-dist to automatically generate and maintain a Homebrew formula in this repository at `Formula/daft.rb`. The formula is automatically updated on each release.
+daft uses cargo-dist to automatically generate and maintain a Homebrew formula
+in this repository at `Formula/daft.rb`. The formula is automatically updated on
+each release.
 
 ## Multicall Binary Architecture
 
 daft uses a **single binary with multiple symlinks** (like BusyBox):
+
 - Single binary: `daft` (~589KB)
 - Symlinks for Git commands:
   - `git-worktree-clone` → `daft`
@@ -21,13 +25,16 @@ daft uses a **single binary with multiple symlinks** (like BusyBox):
   - `git-worktree-fetch` → `daft`
   - `git-daft` → `daft`
 - Git-style shortcuts (default):
-  - `gwtclone`, `gwtinit`, `gwtco`, `gwtcb`, `gwtcbm`, `gwtprune`, `gwtcarry`, `gwtfetch`
+  - `gwtclone`, `gwtinit`, `gwtco`, `gwtcb`, `gwtcbm`, `gwtprune`, `gwtcarry`,
+    `gwtfetch`
 
 ## Formula Customization
 
 ### After First Release
 
-When the first release is created (e.g., `v0.1.0`), cargo-dist will generate the initial formula. You'll need to manually add the symlink creation to the `install` block.
+When the first release is created (e.g., `v0.1.0`), cargo-dist will generate the
+initial formula. You'll need to manually add the symlink creation to the
+`install` block.
 
 **Location:** `Formula/daft.rb`
 
@@ -229,6 +236,7 @@ end
 ### Automatic Updates
 
 The GitHub Actions workflow (`publish-homebrew-formula` job) will:
+
 1. Download the generated formula from cargo-dist
 2. Update version and checksums
 3. **Preserve your custom `install` and `caveats` blocks**
@@ -237,12 +245,16 @@ The GitHub Actions workflow (`publish-homebrew-formula` job) will:
 
 ### Important Notes
 
-**The workflow preserves manually added code**, so your symlink creation and completions installation will persist across releases. The workflow only updates:
+**The workflow preserves manually added code**, so your symlink creation and
+completions installation will persist across releases. The workflow only
+updates:
+
 - Version number
 - SHA256 checksums
 - Download URLs
 
-**However, you should verify after the first few releases** that customizations are preserved correctly.
+**However, you should verify after the first few releases** that customizations
+are preserved correctly.
 
 ## Testing the Formula
 
@@ -293,11 +305,13 @@ brew install daft
 
 ## Man Pages
 
-The formula generates and installs man pages during installation using `daft man --output-dir`. This ensures:
+The formula generates and installs man pages during installation using
+`daft man --output-dir`. This ensures:
 
 - Man pages are always in sync with the installed binary version
 - `man git-worktree-clone` works immediately after installation
-- Man pages are installed to Homebrew's standard location (`$(brew --prefix)/share/man/man1/`)
+- Man pages are installed to Homebrew's standard location
+  (`$(brew --prefix)/share/man/man1/`)
 
 ### Man Page Installation
 
@@ -310,6 +324,7 @@ man1.install Dir["#{buildpath}/man/*.1"]
 ```
 
 This generates man pages for all commands:
+
 - `git-worktree-clone.1`
 - `git-worktree-checkout.1`
 - `git-worktree-checkout-branch.1`
@@ -335,7 +350,8 @@ man -w git-worktree-clone
 
 ### Including Completions in Release
 
-To include shell completions in the release artifacts, you need to generate them and include them in the tarball.
+To include shell completions in the release artifacts, you need to generate them
+and include them in the tarball.
 
 **Option 1: Pre-generate before tagging**
 
@@ -358,6 +374,7 @@ Create `build.rs` to generate completions at build time (future enhancement).
 ### Completion Installation Paths
 
 Homebrew installs completions to standard locations:
+
 - **Bash**: `$(brew --prefix)/etc/bash_completion.d/`
 - **Zsh**: `$(brew --prefix)/share/zsh/site-functions/`
 - **Fish**: `$(brew --prefix)/share/fish/vendor_completions.d/`
@@ -379,11 +396,13 @@ These are automatically loaded by properly configured shells.
 **Symptom:** Tab completion doesn't work for daft commands
 
 **Causes:**
+
 1. Completions not included in release tarball
 2. Completions not installed by formula
 3. Shell not configured to load Homebrew completions
 
 **Fix:**
+
 1. Verify `completions/` directory exists in release artifacts
 2. Check formula includes completion installation commands
 3. For bash, ensure `.bash_profile` or `.bashrc` sources Homebrew completions:
@@ -397,22 +416,28 @@ These are automatically loaded by properly configured shells.
 
 **Cause:** Homebrew detected wrong CPU architecture
 
-**Fix:** Formula's `on_macos` and `Hardware::CPU.arm?` check should handle this automatically. Verify the formula structure matches the example above.
+**Fix:** Formula's `on_macos` and `Hardware::CPU.arm?` check should handle this
+automatically. Verify the formula structure matches the example above.
 
 ## Future: Homebrew-core Submission
 
-After the tap is stable and has significant adoption (~1000+ installs), we can submit to [homebrew-core](https://github.com/Homebrew/homebrew-core) for official inclusion.
+After the tap is stable and has significant adoption (~1000+ installs), we can
+submit to [homebrew-core](https://github.com/Homebrew/homebrew-core) for
+official inclusion.
 
 **Requirements:**
+
 - Stable version (1.0.0+)
 - Proven track record
 - Active maintenance
 - No major issues reported
 
 **Benefits:**
+
 - Users can install with just `brew install daft` (no tap needed)
 - Wider discoverability
 - Official Homebrew stamp of approval
 - Automatic updates via Homebrew
 
-See [Homebrew's Acceptable Formulae](https://docs.brew.sh/Acceptable-Formulae) for submission guidelines.
+See [Homebrew's Acceptable Formulae](https://docs.brew.sh/Acceptable-Formulae)
+for submission guidelines.

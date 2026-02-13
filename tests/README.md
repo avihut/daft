@@ -1,6 +1,7 @@
 # Git Worktree Workflow Test Suite
 
-This directory contains comprehensive integration tests for the daft toolkit's Rust binary implementation.
+This directory contains comprehensive integration tests for the daft toolkit's
+Rust binary implementation.
 
 ## Test Structure
 
@@ -71,7 +72,8 @@ The test suite uses a sophisticated test framework with:
 
 - **Isolated test environments**: Each test runs in its own temporary directory
 - **Mock remote repositories**: Create realistic Git repositories for testing
-- **Comprehensive assertions**: File existence, directory structure, Git state validation
+- **Comprehensive assertions**: File existence, directory structure, Git state
+  validation
 - **Cleanup on exit**: Automatic cleanup of test artifacts
 - **Colored output**: Clear success/failure indication
 - **Performance tracking**: Timing for performance-sensitive operations
@@ -80,6 +82,7 @@ The test suite uses a sophisticated test framework with:
 ## Test Coverage
 
 ### Integration Tests
+
 - **80+ test scenarios** covering all Rust binary commands
 - **Real-world workflows**: Clone, checkout, branch creation, pruning
 - **Error handling**: Invalid inputs, missing dependencies, cleanup
@@ -90,16 +93,19 @@ The test suite uses a sophisticated test framework with:
 ## Test Environment
 
 ### Prerequisites
+
 - **Git**: Version 2.5+ (for worktree support)
 - **Bash**: Version 4.0+ (for shell script execution)
 - **Rust**: Version 1.70+ (for building test targets)
 - **Standard Unix tools**: `awk`, `basename`, `dirname`, `sed`, `cut`
 
 ### Optional Dependencies
+
 - **direnv**: For environment setup testing
 - **shellcheck**: For shell script linting
 
 ### Temporary Directories
+
 - Integration tests: `/tmp/git-worktree-integration-tests`
 
 ## CI/CD Integration

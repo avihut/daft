@@ -1,21 +1,27 @@
 ---
 title: Website Bootstrap Guide
-description: Guide for setting up the daft documentation website in a separate repository
+description:
+  Guide for setting up the daft documentation website in a separate repository
 ---
 
 # Website Bootstrap Guide
 
-This guide covers setting up a documentation website that renders the markdown content from `daft/docs/`.
+This guide covers setting up a documentation website that renders the markdown
+content from `daft/docs/`.
 
 ## Architecture
 
-- **Content lives here**: All markdown documentation lives in `daft/docs/` and is maintained alongside the code
-- **Website lives separately**: The static site generator and deployment config live in a separate repository
-- **CLI docs are auto-generated**: The `docs/cli/` files are generated from clap definitions and committed to this repo
+- **Content lives here**: All markdown documentation lives in `daft/docs/` and
+  is maintained alongside the code
+- **Website lives separately**: The static site generator and deployment config
+  live in a separate repository
+- **CLI docs are auto-generated**: The `docs/cli/` files are generated from clap
+  definitions and committed to this repo
 
 ## Option A: VitePress
 
-[VitePress](https://vitepress.dev/) is a Vue-powered static site generator designed for documentation.
+[VitePress](https://vitepress.dev/) is a Vue-powered static site generator
+designed for documentation.
 
 ### Setup
 
@@ -29,92 +35,105 @@ cd daft-docs
 `.vitepress/config.ts`:
 
 ```ts
-import { defineConfig } from 'vitepress'
+import { defineConfig } from "vitepress";
 
 export default defineConfig({
-  title: 'daft',
-  description: 'Git Extensions Toolkit',
-  base: '/daft/',
+  title: "daft",
+  description: "Git Extensions Toolkit",
+  base: "/daft/",
   themeConfig: {
     nav: [
-      { text: 'Guide', link: '/getting-started/installation' },
-      { text: 'CLI Reference', link: '/cli/git-worktree-clone' },
-      { text: 'GitHub', link: 'https://github.com/avihut/daft' },
+      { text: "Guide", link: "/getting-started/installation" },
+      { text: "CLI Reference", link: "/cli/git-worktree-clone" },
+      { text: "GitHub", link: "https://github.com/avihut/daft" },
     ],
     sidebar: [
       {
-        text: 'Getting Started',
+        text: "Getting Started",
         items: [
-          { text: 'Installation', link: '/getting-started/installation' },
-          { text: 'Quick Start', link: '/getting-started/quick-start' },
-          { text: 'Shell Integration', link: '/getting-started/shell-integration' },
+          { text: "Installation", link: "/getting-started/installation" },
+          { text: "Quick Start", link: "/getting-started/quick-start" },
+          {
+            text: "Shell Integration",
+            link: "/getting-started/shell-integration",
+          },
         ],
       },
       {
-        text: 'Guide',
+        text: "Guide",
         items: [
-          { text: 'Worktree Workflow', link: '/guide/worktree-workflow' },
-          { text: 'Adopting Existing Repos', link: '/guide/adopting-existing-repos' },
-          { text: 'Hooks', link: '/guide/hooks' },
-          { text: 'Shortcuts', link: '/guide/shortcuts' },
-          { text: 'Multi-Remote', link: '/guide/multi-remote' },
-          { text: 'Configuration', link: '/guide/configuration' },
+          { text: "Worktree Workflow", link: "/guide/worktree-workflow" },
+          {
+            text: "Adopting Existing Repos",
+            link: "/guide/adopting-existing-repos",
+          },
+          { text: "Hooks", link: "/guide/hooks" },
+          { text: "Shortcuts", link: "/guide/shortcuts" },
+          { text: "Multi-Remote", link: "/guide/multi-remote" },
+          { text: "Configuration", link: "/guide/configuration" },
         ],
       },
       {
-        text: 'CLI Reference',
+        text: "CLI Reference",
         collapsed: false,
         items: [
-          { text: 'Overview', items: [] },
+          { text: "Overview", items: [] },
           {
-            text: 'Setup',
+            text: "Setup",
             items: [
-              { text: 'worktree-clone', link: '/cli/git-worktree-clone' },
-              { text: 'worktree-init', link: '/cli/git-worktree-init' },
-              { text: 'flow-adopt', link: '/cli/git-worktree-flow-adopt' },
+              { text: "worktree-clone", link: "/cli/git-worktree-clone" },
+              { text: "worktree-init", link: "/cli/git-worktree-init" },
+              { text: "flow-adopt", link: "/cli/git-worktree-flow-adopt" },
             ],
           },
           {
-            text: 'Branching',
+            text: "Branching",
             items: [
-              { text: 'worktree-checkout', link: '/cli/git-worktree-checkout' },
-              { text: 'worktree-checkout-branch', link: '/cli/git-worktree-checkout-branch' },
-              { text: 'worktree-checkout-branch-from-default', link: '/cli/git-worktree-checkout-branch-from-default' },
+              { text: "worktree-checkout", link: "/cli/git-worktree-checkout" },
+              {
+                text: "worktree-checkout-branch",
+                link: "/cli/git-worktree-checkout-branch",
+              },
+              {
+                text: "worktree-checkout-branch-from-default",
+                link: "/cli/git-worktree-checkout-branch-from-default",
+              },
             ],
           },
           {
-            text: 'Maintenance',
+            text: "Maintenance",
             items: [
-              { text: 'worktree-prune', link: '/cli/git-worktree-prune' },
-              { text: 'worktree-fetch', link: '/cli/git-worktree-fetch' },
-              { text: 'worktree-carry', link: '/cli/git-worktree-carry' },
-              { text: 'flow-eject', link: '/cli/git-worktree-flow-eject' },
+              { text: "worktree-prune", link: "/cli/git-worktree-prune" },
+              { text: "worktree-fetch", link: "/cli/git-worktree-fetch" },
+              { text: "worktree-carry", link: "/cli/git-worktree-carry" },
+              { text: "flow-eject", link: "/cli/git-worktree-flow-eject" },
             ],
           },
           {
-            text: 'Utilities',
+            text: "Utilities",
             items: [
-              { text: 'doctor', link: '/cli/daft-doctor' },
-              { text: 'release-notes', link: '/cli/daft-release-notes' },
+              { text: "doctor", link: "/cli/daft-doctor" },
+              { text: "release-notes", link: "/cli/daft-release-notes" },
             ],
           },
         ],
       },
       {
-        text: 'Project',
+        text: "Project",
         items: [
-          { text: 'Contributing', link: '/contributing' },
-          { text: 'Changelog', link: '/changelog' },
+          { text: "Contributing", link: "/contributing" },
+          { text: "Changelog", link: "/changelog" },
         ],
       },
     ],
   },
-})
+});
 ```
 
 ## Option B: Starlight (Astro)
 
-[Starlight](https://starlight.astro.build/) is an Astro-powered documentation framework.
+[Starlight](https://starlight.astro.build/) is an Astro-powered documentation
+framework.
 
 ### Setup
 
@@ -128,54 +147,61 @@ cd daft-docs
 `astro.config.mjs`:
 
 ```js
-import { defineConfig } from 'astro/config'
-import starlight from '@astrojs/starlight'
+import { defineConfig } from "astro/config";
+import starlight from "@astrojs/starlight";
 
 export default defineConfig({
   integrations: [
     starlight({
-      title: 'daft',
-      social: { github: 'https://github.com/avihut/daft' },
+      title: "daft",
+      social: { github: "https://github.com/avihut/daft" },
       sidebar: [
         {
-          label: 'Getting Started',
+          label: "Getting Started",
           items: [
-            { label: 'Installation', slug: 'getting-started/installation' },
-            { label: 'Quick Start', slug: 'getting-started/quick-start' },
-            { label: 'Shell Integration', slug: 'getting-started/shell-integration' },
+            { label: "Installation", slug: "getting-started/installation" },
+            { label: "Quick Start", slug: "getting-started/quick-start" },
+            {
+              label: "Shell Integration",
+              slug: "getting-started/shell-integration",
+            },
           ],
         },
         {
-          label: 'Guide',
+          label: "Guide",
           items: [
-            { label: 'Worktree Workflow', slug: 'guide/worktree-workflow' },
-            { label: 'Adopting Existing Repos', slug: 'guide/adopting-existing-repos' },
-            { label: 'Hooks', slug: 'guide/hooks' },
-            { label: 'Shortcuts', slug: 'guide/shortcuts' },
-            { label: 'Multi-Remote', slug: 'guide/multi-remote' },
-            { label: 'Configuration', slug: 'guide/configuration' },
+            { label: "Worktree Workflow", slug: "guide/worktree-workflow" },
+            {
+              label: "Adopting Existing Repos",
+              slug: "guide/adopting-existing-repos",
+            },
+            { label: "Hooks", slug: "guide/hooks" },
+            { label: "Shortcuts", slug: "guide/shortcuts" },
+            { label: "Multi-Remote", slug: "guide/multi-remote" },
+            { label: "Configuration", slug: "guide/configuration" },
           ],
         },
         {
-          label: 'CLI Reference',
-          autogenerate: { directory: 'cli' },
+          label: "CLI Reference",
+          autogenerate: { directory: "cli" },
         },
         {
-          label: 'Project',
+          label: "Project",
           items: [
-            { label: 'Contributing', slug: 'contributing' },
-            { label: 'Changelog', slug: 'changelog' },
+            { label: "Contributing", slug: "contributing" },
+            { label: "Changelog", slug: "changelog" },
           ],
         },
       ],
     }),
   ],
-})
+});
 ```
 
 ## Content Sourcing
 
-The recommended approach is a CI-based copy: a GitHub Action in the docs repo clones the daft repo and copies `docs/` into the site's content directory.
+The recommended approach is a CI-based copy: a GitHub Action in the docs repo
+clones the daft repo and copies `docs/` into the site's content directory.
 
 ### CI Copy Approach (Recommended)
 
@@ -215,8 +241,10 @@ jobs:
 
 ### Alternatives
 
-- **Git submodule**: Add `daft` as a submodule in the docs repo. Requires manual submodule updates.
-- **npm package**: Publish docs as an npm package. Adds complexity with little benefit.
+- **Git submodule**: Add `daft` as a submodule in the docs repo. Requires manual
+  submodule updates.
+- **npm package**: Publish docs as an npm package. Adds complexity with little
+  benefit.
 
 ## Triggering Docs Rebuild from daft Releases
 
@@ -239,6 +267,8 @@ This ensures the docs site rebuilds whenever a new daft version is released.
 The recommended sidebar organization groups content by user journey:
 
 1. **Getting Started** - Installation, Quick Start, Shell Integration
-2. **Guide** - Worktree Workflow, Adopting Repos, Hooks, Shortcuts, Multi-Remote, Configuration
-3. **CLI Reference** - 12 commands grouped by category (Setup, Branching, Maintenance, Utilities)
+2. **Guide** - Worktree Workflow, Adopting Repos, Hooks, Shortcuts,
+   Multi-Remote, Configuration
+3. **CLI Reference** - 12 commands grouped by category (Setup, Branching,
+   Maintenance, Utilities)
 4. **Project** - Contributing, Changelog

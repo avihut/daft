@@ -1,6 +1,7 @@
 # Release Process
 
-This project uses [cargo-dist](https://github.com/axodotdev/cargo-dist) for fully automated cross-platform releases.
+This project uses [cargo-dist](https://github.com/axodotdev/cargo-dist) for
+fully automated cross-platform releases.
 
 ## Prerequisites
 
@@ -28,14 +29,17 @@ Edit `CHANGELOG.md` (create if it doesn't exist) with release notes:
 ## [0.2.0] - 2025-10-19
 
 ### Added
+
 - Windows support via PowerShell installer and MSI
 - Homebrew formula auto-updates
 - Cross-platform release automation
 
 ### Changed
+
 - Improved installation documentation
 
 ### Fixed
+
 - Bug fixes from Issue #X
 ```
 
@@ -56,16 +60,19 @@ git push origin main --tags
 The GitHub Actions workflow will automatically:
 
 1. **Build** binaries for:
+
    - macOS Intel (x86_64-apple-darwin)
    - macOS Apple Silicon (aarch64-apple-darwin)
    - Windows 64-bit (x86_64-pc-windows-msvc)
 
 2. **Generate** installers:
+
    - PowerShell installer script (`daft-installer.ps1`)
    - MSI installer for Windows
    - Homebrew formula (`Formula/daft.rb`)
 
 3. **Create** GitHub Release with:
+
    - Compiled binaries (tar.xz for macOS, zip for Windows)
    - Installers
    - Checksums (`SHA256SUMS`)
@@ -83,9 +90,11 @@ Typical completion time: **8-12 minutes**
 
 ### GitHub Actions Workflow
 
-The release is triggered when you push a tag matching the pattern `v*.*.*` (e.g., `v0.2.0`, `v1.0.0-beta.1`).
+The release is triggered when you push a tag matching the pattern `v*.*.*`
+(e.g., `v0.2.0`, `v1.0.0-beta.1`).
 
 **Jobs:**
+
 1. **plan**: Determines what needs to be built
 2. **build-local-artifacts**: Builds binaries for each platform in parallel
 3. **host**: Creates GitHub Release and uploads artifacts
@@ -106,11 +115,13 @@ For each release, the following artifacts are created:
 ### Homebrew Formula Updates
 
 The formula is automatically updated with:
+
 - New version number
 - SHA256 checksums for macOS binaries
 - URLs pointing to new release artifacts
 
-The updated formula is committed back to the `Formula/` directory in the main repository.
+The updated formula is committed back to the `Formula/` directory in the main
+repository.
 
 ## Testing Before Release
 
@@ -196,6 +207,7 @@ git-worktree-clone --help
 3. Review error messages in the job output
 
 **Common issues:**
+
 - Missing dependencies on target platform
 - Cross-compilation toolchain problems (handled by GitHub runners)
 - Platform-specific code issues
@@ -205,12 +217,15 @@ git-worktree-clone --help
 **Symptoms:** Formula file in repository not updated after release
 
 **Possible causes:**
+
 1. `HOMEBREW_TAP_TOKEN` secret not configured
 2. Formula path incorrect in `dist-workspace.toml`
 3. publish-homebrew-formula job failed
 
 **Solutions:**
-1. Verify GitHub secret is set: Settings → Secrets → Actions → `HOMEBREW_TAP_TOKEN`
+
+1. Verify GitHub secret is set: Settings → Secrets → Actions →
+   `HOMEBREW_TAP_TOKEN`
 2. Check `dist-workspace.toml`:
    ```toml
    tap = "avihut/homebrew-tap"
@@ -225,6 +240,7 @@ git-worktree-clone --help
 **Cause:** Checksums in formula don't match downloaded artifacts
 
 **Solution:**
+
 1. Verify formula was updated correctly in `Formula/daft.rb`
 2. Check SHA256 values match those in release artifacts
 3. If mismatch, manually update formula or re-run release
@@ -236,6 +252,7 @@ git-worktree-clone --help
 **Cause:** WiX configuration issues
 
 **Check:**
+
 1. Review `wix/main.wxs` configuration
 2. Verify GUIDs are unique and stable
 3. Test MSI locally before release (requires Windows machine)
@@ -250,7 +267,8 @@ The release workflow requires this GitHub secret:
 
 **How to create:**
 
-1. Go to GitHub Settings → Developer Settings → Personal Access Tokens → Tokens (classic)
+1. Go to GitHub Settings → Developer Settings → Personal Access Tokens → Tokens
+   (classic)
 2. Click "Generate new token (classic)"
 3. Name: `daft-homebrew-updater`
 4. Scopes:
@@ -265,13 +283,15 @@ The release workflow requires this GitHub secret:
    - Value: paste the token
    - Click "Add secret"
 
-**Note:** This token allows the workflow to push commits to your repository. Keep it secure!
+**Note:** This token allows the workflow to push commits to your repository.
+Keep it secure!
 
 ## Release Checklist
 
 Use this checklist for each release:
 
 ### Pre-Release
+
 - [ ] All features tested and working
 - [ ] All tests passing: `make test`
 - [ ] No clippy warnings: `mise run clippy`
@@ -281,6 +301,7 @@ Use this checklist for each release:
 - [ ] Local build test successful: `cargo dist build`
 
 ### Release
+
 - [ ] Changes committed: `git add . && git commit -m "chore: release vX.Y.Z"`
 - [ ] Tag created and pushed: `git tag vX.Y.Z && git push origin main --tags`
 - [ ] GitHub Actions workflow triggered
@@ -289,6 +310,7 @@ Use this checklist for each release:
 - [ ] Formula/daft.rb updated in repository
 
 ### Post-Release
+
 - [ ] macOS Intel installation tested
 - [ ] macOS Apple Silicon installation tested
 - [ ] Windows installation tested (PowerShell and/or MSI)
@@ -307,6 +329,7 @@ Follow [Semantic Versioning](https://semver.org/):
   - **PATCH**: Bug fixes (backwards compatible)
 
 **Pre-release versions:**
+
 - Alpha: `v0.2.0-alpha.1`
 - Beta: `v0.2.0-beta.1`
 - Release candidate: `v0.2.0-rc.1`
@@ -352,6 +375,7 @@ git push origin main --tags
 ## Support
 
 For issues with the release process:
+
 - Check https://opensource.axo.dev/cargo-dist/book/
 - Open issue: https://github.com/avihut/daft/issues
 - Review cargo-dist docs: https://github.com/axodotdev/cargo-dist
