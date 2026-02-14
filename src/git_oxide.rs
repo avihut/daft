@@ -97,7 +97,7 @@ pub fn for_each_ref(repo: &Repository, format: &str, refs_prefix: &str) -> Resul
             None => {
                 // Symbolic ref - try to peel
                 let mut peelable = reference;
-                match peelable.peel_to_id_in_place() {
+                match peelable.peel_to_id() {
                     Ok(id) => id.to_string(),
                     Err(_) => String::new(),
                 }
@@ -137,7 +137,7 @@ pub fn branch_list_verbose(repo: &Repository) -> Result<String> {
         let is_current = current_branch.as_deref() == Some(&branch_name);
         let marker = if is_current { '*' } else { ' ' };
 
-        let oid = match reference.peel_to_id_in_place() {
+        let oid = match reference.peel_to_id() {
             Ok(id) => id.to_hex().to_string(),
             Err(_) => "?".repeat(7),
         };
