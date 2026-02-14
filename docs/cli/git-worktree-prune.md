@@ -23,8 +23,7 @@ handles this gracefully. In a bare-repo worktree layout (created by daft), the
 current worktree is removed last and the shell is redirected to a safe location
 (project root by default, or the default branch worktree if configured via
 daft.prune.cdTarget). In a regular repository where the current branch is being
-pruned, the command checks out the default branch before deleting the old
-branch.
+pruned, the command checks out the default branch before deleting the old branch.
 
 Pre-remove and post-remove lifecycle hooks are executed for each worktree
 removal if the repository is trusted. See git-daft(1) for hook management.
@@ -37,18 +36,19 @@ git worktree-prune [OPTIONS]
 
 ## Options
 
-| Option          | Description                        | Default |
-| --------------- | ---------------------------------- | ------- |
-| `-v, --verbose` | Be verbose; show detailed progress |         |
+| Option | Description | Default |
+|--------|-------------|----------|
+| `-v, --verbose` | Be verbose; show detailed progress |  |
 
 ## Global Options
 
-| Option            | Description               |
-| ----------------- | ------------------------- |
-| `-h`, `--help`    | Print help information    |
+| Option | Description |
+|--------|-------------|
+| `-h`, `--help` | Print help information |
 | `-V`, `--version` | Print version information |
 
 ## See Also
 
 - [git-worktree-fetch](./git-worktree-fetch.md)
 - [git-worktree-flow-eject](./git-worktree-flow-eject.md)
+
