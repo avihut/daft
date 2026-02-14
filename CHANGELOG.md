@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.23](https://github.com/avihut/daft/compare/v1.0.22...v1.0.23) - 2026-02-14
+
+### Miscellaneous
+
+- add Prettier formatting with Bun for docs and YAML
+- remove unused install.sh script ([#192](https://github.com/avihut/daft/pull/192))
+- improve daft.yml hooks for full worktree automation ([#190](https://github.com/avihut/daft/pull/190))
+
 
 ### Miscellaneous
 
