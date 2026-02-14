@@ -161,14 +161,18 @@ impl HookExecutor {
     ) -> Result<Option<HookResult>> {
         let yaml_config = match yaml_config_loader::load_merged_config(hook_source_worktree)? {
             Some(config) => config,
-            None => return Ok(None),
+            None => {
+                return Ok(None);
+            }
         };
 
         let hook_name = ctx.hook_type.yaml_name();
 
         let hook_def = match yaml_config.hooks.get(hook_name) {
             Some(def) => def,
-            None => return Ok(None), // YAML exists but no definition for this hook
+            None => {
+                return Ok(None);
+            }
         };
 
         // Check trust level
