@@ -136,5 +136,8 @@ mise run docs:site-format   # Auto-fix config with Biome
 ```
 
 - **Prettier** (root): `*.{md,yml,yaml}` files everywhere
-- **Biome** (docs): `docs/.vitepress/**/*.{ts,js,json}` files only
+- **Biome** (docs): `docs/.vitepress/config.ts` and `docs/.vitepress/theme/`
+  only
 - Auto-deploys to Cloudflare Pages on push to `master` when `docs/**` changes
+- **Playwright screenshots**: Save to `.playwright-mcp/` directory (gitignored),
+  not the project root. Use filename like `.playwright-mcp/screenshot.png`.
