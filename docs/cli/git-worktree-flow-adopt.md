@@ -51,7 +51,7 @@ After adopting, use these commands:
   git worktree-checkout-branch <new-branch>
       Create a new branch and worktree from current branch
 
-  git worktree-checkout-branch-from-default <new-branch>
+  git worktree-checkout-branch --from-default <new-branch>
       Create a new branch from the remote's default branch
 
   git worktree-prune

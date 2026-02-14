@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Integration tests for git-worktree-checkout-branch-from-default Rust binary
+# Integration tests for git-worktree-checkout-branch --from-default
 
 source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 
@@ -17,7 +17,7 @@ test_checkout_branch_from_default_basic() {
     cd "develop"
     
     # Test checkout-branch-from-default (should create branch from main, not develop)
-    git-worktree-checkout-branch-from-default feature/from-default || return 1
+    git-worktree-checkout-branch --from-default feature/from-default || return 1
     
     # Verify structure
     assert_directory_exists "../feature/from-default" || return 1
@@ -35,7 +35,7 @@ test_checkout_branch_from_default_develop() {
     cd "test-repo-checkout-branch-from-default-develop"
     
     # Test checkout-branch-from-default with develop as default
-    git-worktree-checkout-branch-from-default feature/from-develop || return 1
+    git-worktree-checkout-branch --from-default feature/from-develop || return 1
     
     # Verify structure
     assert_directory_exists "feature/from-develop" || return 1
@@ -57,7 +57,7 @@ test_checkout_branch_from_default_subdir() {
     cd "main/subdir/deeper"
     
     # Test checkout-branch-from-default from deep subdirectory
-    git-worktree-checkout-branch-from-default feature/from-subdir || return 1
+    git-worktree-checkout-branch --from-default feature/from-subdir || return 1
     
     # Verify structure (should be created at repository root)
     assert_directory_exists "../../../feature/from-subdir" || return 1
@@ -75,14 +75,14 @@ test_checkout_branch_from_default_errors() {
     cd "test-repo-checkout-branch-from-default-errors"
     
     # Test checkout-branch-from-default with no branch name
-    assert_command_failure "git-worktree-checkout-branch-from-default" "Should fail without branch name"
+    assert_command_failure "git-worktree-checkout-branch --from-default" "Should fail without branch name"
     
     # Test checkout-branch-from-default with invalid branch name
-    assert_command_failure "git-worktree-checkout-branch-from-default 'invalid branch name'" "Should fail with invalid branch name"
+    assert_command_failure "git-worktree-checkout-branch --from-default 'invalid branch name'" "Should fail with invalid branch name"
     
     # Test checkout-branch-from-default with existing branch
-    git-worktree-checkout-branch-from-default feature/test || return 1
-    assert_command_failure "git-worktree-checkout-branch-from-default feature/test" "Should fail with existing branch"
+    git-worktree-checkout-branch --from-default feature/test || return 1
+    assert_command_failure "git-worktree-checkout-branch --from-default feature/test" "Should fail with existing branch"
     
     return 0
 }
@@ -99,7 +99,7 @@ test_checkout_branch_from_default_naming() {
     local branch_names=("feature/user-auth" "bugfix-123" "hotfix_urgent" "release-v1.0.0" "chore/update-deps")
     
     for branch in "${branch_names[@]}"; do
-        git-worktree-checkout-branch-from-default "$branch" || return 1
+        git-worktree-checkout-branch --from-default "$branch" || return 1
         assert_directory_exists "$branch" || return 1
         assert_git_worktree "$branch" "$branch" || return 1
     done
@@ -116,7 +116,7 @@ test_checkout_branch_from_default_direnv() {
     cd "test-repo-checkout-branch-from-default-direnv"
     
     # Create a branch with .envrc
-    git-worktree-checkout-branch-from-default feature/with-envrc || return 1
+    git-worktree-checkout-branch --from-default feature/with-envrc || return 1
     
     # Add .envrc file
     echo "export TEST_VAR=feature_value" > "feature/with-envrc/.envrc"
@@ -131,16 +131,16 @@ test_checkout_branch_from_default_direnv() {
 # Test checkout-branch-from-default outside git repository
 test_checkout_branch_from_default_outside_repo() {
     # Test checkout-branch-from-default command outside git repository
-    assert_command_failure "git-worktree-checkout-branch-from-default some-branch" "Should fail outside git repository"
+    assert_command_failure "git-worktree-checkout-branch --from-default some-branch" "Should fail outside git repository"
     
     return 0
 }
 
 # Test checkout-branch-from-default help functionality
 test_checkout_branch_from_default_help() {
-    # Test help commands
-    assert_command_help "git-worktree-checkout-branch-from-default" || return 1
-    assert_command_version "git-worktree-checkout-branch-from-default" || return 1
+    # Test help commands (--from-default is a flag on git-worktree-checkout-branch)
+    assert_command_help "git-worktree-checkout-branch" || return 1
+    assert_command_version "git-worktree-checkout-branch" || return 1
     
     return 0
 }
@@ -168,7 +168,7 @@ test_checkout_branch_from_default_modified() {
     cd "test-repo-checkout-branch-from-default-modified"
     
     # Create branch from modified default
-    git-worktree-checkout-branch-from-default feature/from-modified || return 1
+    git-worktree-checkout-branch --from-default feature/from-modified || return 1
     
     # Verify structure and content
     assert_directory_exists "feature/from-modified" || return 1
@@ -188,7 +188,7 @@ test_checkout_branch_from_default_performance() {
     
     # Test checkout-branch-from-default performance
     local start_time=$(date +%s)
-    git-worktree-checkout-branch-from-default feature/performance-test || return 1
+    git-worktree-checkout-branch --from-default feature/performance-test || return 1
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
     
@@ -231,7 +231,7 @@ test_checkout_branch_from_default_large_repo() {
     cd "test-repo-checkout-branch-from-default-large"
     
     # Test checkout-branch-from-default with large repository
-    git-worktree-checkout-branch-from-default feature/large-test || return 1
+    git-worktree-checkout-branch --from-default feature/large-test || return 1
     
     # Verify structure and some files
     assert_directory_exists "feature/large-test" || return 1
@@ -267,7 +267,7 @@ test_checkout_branch_from_default_remote_updates() {
     git fetch origin >/dev/null 2>&1
     
     # Create branch from updated default
-    git-worktree-checkout-branch-from-default feature/from-updated || return 1
+    git-worktree-checkout-branch --from-default feature/from-updated || return 1
     
     # Verify structure and content
     assert_directory_exists "feature/from-updated" || return 1
@@ -286,8 +286,8 @@ test_checkout_branch_from_default_security() {
     cd "test-repo-checkout-branch-from-default-security"
     
     # Test that path traversal attempts are handled safely
-    assert_command_failure "git-worktree-checkout-branch-from-default ../../../etc/passwd" "Should fail with path traversal attempt"
-    assert_command_failure "git-worktree-checkout-branch-from-default ..\\..\\..\\windows\\system32" "Should fail with Windows path traversal"
+    assert_command_failure "git-worktree-checkout-branch --from-default ../../../etc/passwd" "Should fail with path traversal attempt"
+    assert_command_failure "git-worktree-checkout-branch --from-default ..\\..\\..\\windows\\system32" "Should fail with Windows path traversal"
     
     # Verify no directories were created outside the repository
     if [[ -d "../../../etc" ]] || [[ -d "..\\..\\..\\windows" ]]; then
@@ -317,7 +317,7 @@ test_checkout_branch_from_default_carry_default() {
     echo "carry content" > carry_file.txt
 
     # Create new branch from default (should carry by default)
-    git-worktree-checkout-branch-from-default feature/carry-test || return 1
+    git-worktree-checkout-branch --from-default feature/carry-test || return 1
 
     cd "$repo_root/feature/carry-test"
 
@@ -343,7 +343,7 @@ test_checkout_branch_from_default_carry_explicit() {
     echo "explicit carry" > explicit_file.txt
 
     # Create new branch with explicit --carry
-    git-worktree-checkout-branch-from-default --carry feature/explicit-carry || return 1
+    git-worktree-checkout-branch --from-default --carry feature/explicit-carry || return 1
 
     cd "$repo_root/feature/explicit-carry"
 
@@ -368,7 +368,7 @@ test_checkout_branch_from_default_carry_shorthand() {
     echo "shorthand content" > shorthand_file.txt
 
     # Create new branch with -c shorthand
-    git-worktree-checkout-branch-from-default -c feature/shorthand-carry || return 1
+    git-worktree-checkout-branch --from-default -c feature/shorthand-carry || return 1
 
     cd "$repo_root/feature/shorthand-carry"
 
@@ -393,7 +393,7 @@ test_checkout_branch_from_default_no_carry() {
     echo "no carry content" > no_carry_file.txt
 
     # Create new branch with --no-carry
-    git-worktree-checkout-branch-from-default --no-carry feature/no-carry || return 1
+    git-worktree-checkout-branch --from-default --no-carry feature/no-carry || return 1
 
     cd "$repo_root"
 
@@ -424,7 +424,7 @@ test_checkout_branch_from_default_carry_mixed() {
     echo "untracked" > untracked.txt
 
     # Create new branch from default (carries all by default)
-    git-worktree-checkout-branch-from-default feature/mixed-carry || return 1
+    git-worktree-checkout-branch --from-default feature/mixed-carry || return 1
 
     cd "$repo_root/feature/mixed-carry"
 
@@ -440,7 +440,7 @@ test_checkout_branch_from_default_carry_mixed() {
 test_checkout_branch_from_default_carry_help() {
     # Verify --carry and --no-carry appear in help
     local help_output
-    help_output=$(git-worktree-checkout-branch-from-default --help 2>&1)
+    help_output=$(git-worktree-checkout-branch --from-default --help 2>&1)
 
     if echo "$help_output" | grep -q "\-\-carry"; then
         log_success "--carry flag appears in help"
@@ -468,7 +468,7 @@ test_checkout_branch_from_default_carry_help() {
 
 # Run all checkout-branch-from-default tests
 run_checkout_branch_from_default_tests() {
-    log "Running git-worktree-checkout-branch-from-default integration tests..."
+    log "Running git-worktree-checkout-branch --from-default integration tests..."
 
     run_test "checkout_branch_from_default_basic" "test_checkout_branch_from_default_basic"
     run_test "checkout_branch_from_default_develop" "test_checkout_branch_from_default_develop"

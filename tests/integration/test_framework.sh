@@ -46,18 +46,14 @@ log_warning() {
 # Build Rust binaries if they don't exist or are outdated
 ensure_rust_binaries() {
     local cargo_toml="$PROJECT_ROOT/Cargo.toml"
-    local binary_names=("git-worktree-clone" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-checkout-branch-from-default" "git-worktree-init" "git-worktree-prune")
+    local daft_binary="$RUST_BINARY_DIR/daft"
     local need_build=false
-    
-    # Check if any binary is missing or outdated
-    for binary in "${binary_names[@]}"; do
-        local binary_path="$RUST_BINARY_DIR/$binary"
-        if [[ ! -f "$binary_path" ]] || [[ "$cargo_toml" -nt "$binary_path" ]]; then
-            need_build=true
-            break
-        fi
-    done
-    
+
+    # Check if main binary is missing or outdated
+    if [[ ! -f "$daft_binary" ]] || [[ "$cargo_toml" -nt "$daft_binary" ]]; then
+        need_build=true
+    fi
+
     if [[ "$need_build" == "true" ]]; then
         log "Building Rust binaries..."
         (cd "$PROJECT_ROOT" && cargo build --release) || {
@@ -68,6 +64,14 @@ ensure_rust_binaries() {
     else
         log "Rust binaries are up to date"
     fi
+
+    # Create symlinks for the multicall binary (ensures tests use locally built binary)
+    local symlink_names=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-prune" "git-worktree-carry" "git-worktree-fetch" "git-worktree-flow-adopt" "git-worktree-flow-eject" "git-daft" "gwtclone" "gwtinit" "gwtco" "gwtcb" "gwtcbm" "gwtprune" "gwtcarry" "gwtfetch")
+    for name in "${symlink_names[@]}"; do
+        if [[ ! -L "$RUST_BINARY_DIR/$name" ]]; then
+            ln -sf daft "$RUST_BINARY_DIR/$name"
+        fi
+    done
 }
 
 # Clean up function
@@ -102,7 +106,7 @@ setup() {
     export GIT_COMMITTER_EMAIL="test@example.com"
 
     # Verify all binaries are available
-    local binary_names=("git-worktree-clone" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-checkout-branch-from-default" "git-worktree-init" "git-worktree-prune")
+    local binary_names=("git-worktree-clone" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-init" "git-worktree-prune")
     for binary in "${binary_names[@]}"; do
         if ! command -v "$binary" >/dev/null 2>&1; then
             log_error "Binary $binary not found in PATH"

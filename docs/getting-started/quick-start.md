@@ -71,7 +71,7 @@ git worktree-checkout bugfix/login-issue
 When you need a fresh branch from `main` (regardless of where you are):
 
 ```bash
-git worktree-checkout-branch-from-default hotfix/critical-fix
+git worktree-checkout-branch --from-default hotfix/critical-fix
 ```
 
 Your directory structure becomes:

@@ -91,16 +91,16 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 
 ### Worktree Lifecycle
 
-| Command                                                   | Description                                                       |
-| --------------------------------------------------------- | ----------------------------------------------------------------- |
-| `daft worktree-clone <url>`                               | Clone a remote repository into daft's worktree layout             |
-| `daft worktree-init <name>`                               | Initialize a new local repository in worktree layout              |
-| `daft worktree-checkout <branch>`                         | Create a worktree for an existing local or remote branch          |
-| `daft worktree-checkout-branch <new-branch> [base]`       | Create a new branch and worktree from current or specified base   |
-| `daft worktree-checkout-branch-from-default <new-branch>` | Create a new branch and worktree from the remote's default branch |
-| `daft worktree-prune`                                     | Remove worktrees whose remote branches have been deleted          |
-| `daft worktree-carry <targets>`                           | Transfer uncommitted changes to one or more other worktrees       |
-| `daft worktree-fetch [targets]`                           | Pull remote updates into worktree branches                        |
+| Command                                                     | Description                                                       |
+| ----------------------------------------------------------- | ----------------------------------------------------------------- |
+| `daft worktree-clone <url>`                                 | Clone a remote repository into daft's worktree layout             |
+| `daft worktree-init <name>`                                 | Initialize a new local repository in worktree layout              |
+| `daft worktree-checkout <branch>`                           | Create a worktree for an existing local or remote branch          |
+| `daft worktree-checkout-branch <new-branch> [base]`         | Create a new branch and worktree from current or specified base   |
+| `daft worktree-checkout-branch --from-default <new-branch>` | Create a new branch and worktree from the remote's default branch |
+| `daft worktree-prune`                                       | Remove worktrees whose remote branches have been deleted          |
+| `daft worktree-carry <targets>`                             | Transfer uncommitted changes to one or more other worktrees       |
+| `daft worktree-fetch [targets]`                             | Pull remote updates into worktree branches                        |
 
 ### Adoption and Ejection
 
@@ -469,16 +469,16 @@ When suggesting `daft.yml`, also remind the user to trust the repo:
 
 When working in a daft-managed repository, apply these translations:
 
-| User intent           | Correct daft approach                                                               |
-| --------------------- | ----------------------------------------------------------------------------------- |
-| "Create a branch"     | `daft worktree-checkout-branch <name>` -- creates branch + worktree + pushes        |
-| "Branch from main"    | `daft worktree-checkout-branch-from-default <name>` -- branches from remote default |
-| "Switch to branch X"  | Navigate to the worktree directory: `cd ../X/`                                      |
-| "Check out a PR"      | `daft worktree-checkout <branch>` -- creates worktree for existing branch           |
-| "Clean up branches"   | `daft worktree-prune` -- removes worktrees for deleted remote branches              |
-| "Wrong branch"        | `daft worktree-carry <correct-branch>` -- moves uncommitted changes                 |
-| "Update from remote"  | `daft worktree-fetch` -- pulls updates into current or specified worktrees          |
-| "Adopt existing repo" | `daft worktree-flow-adopt` -- converts traditional repo to daft layout              |
+| User intent           | Correct daft approach                                                                 |
+| --------------------- | ------------------------------------------------------------------------------------- |
+| "Create a branch"     | `daft worktree-checkout-branch <name>` -- creates branch + worktree + pushes          |
+| "Branch from main"    | `daft worktree-checkout-branch --from-default <name>` -- branches from remote default |
+| "Switch to branch X"  | Navigate to the worktree directory: `cd ../X/`                                        |
+| "Check out a PR"      | `daft worktree-checkout <branch>` -- creates worktree for existing branch             |
+| "Clean up branches"   | `daft worktree-prune` -- removes worktrees for deleted remote branches                |
+| "Wrong branch"        | `daft worktree-carry <correct-branch>` -- moves uncommitted changes                   |
+| "Update from remote"  | `daft worktree-fetch` -- pulls updates into current or specified worktrees            |
+| "Adopt existing repo" | `daft worktree-flow-adopt` -- converts traditional repo to daft layout                |
 
 ### Per-worktree Isolation
 

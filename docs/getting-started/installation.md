@@ -38,7 +38,7 @@ sudo mv daft /usr/local/bin/
 # Create command symlinks
 cd /usr/local/bin
 for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
-           git-worktree-checkout-branch git-worktree-checkout-branch-from-default \
+           git-worktree-checkout-branch \
            git-worktree-prune git-worktree-carry git-worktree-fetch \
            git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
   sudo ln -sf daft "$cmd"

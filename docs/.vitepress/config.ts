@@ -140,10 +140,6 @@ export default defineConfig({
                 text: "worktree-checkout-branch",
                 link: "/cli/git-worktree-checkout-branch",
               },
-              {
-                text: "worktree-checkout-branch-from-default",
-                link: "/cli/git-worktree-checkout-branch-from-default",
-              },
             ],
           },
           {
