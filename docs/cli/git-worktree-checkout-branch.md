@@ -45,6 +45,7 @@ git worktree-checkout-branch [OPTIONS] <NEW_BRANCH_NAME> [BASE_BRANCH_NAME]
 | `--no-carry` | Do not carry uncommitted changes to the new worktree |  |
 | `-r, --remote <REMOTE>` | Remote for worktree organization (multi-remote mode) |  |
 | `--no-cd` | Do not change directory to the new worktree |  |
+| `-m, --from-default` | Use the remote's default branch as the base |  |
 
 ## Global Options
 
@@ -56,6 +57,5 @@ git worktree-checkout-branch [OPTIONS] <NEW_BRANCH_NAME> [BASE_BRANCH_NAME]
 ## See Also
 
 - [git-worktree-checkout](./git-worktree-checkout.md)
-- [git-worktree-checkout-branch-from-default](./git-worktree-checkout-branch-from-default.md)
 - [git-worktree-carry](./git-worktree-carry.md)
 

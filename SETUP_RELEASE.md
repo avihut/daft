@@ -223,7 +223,6 @@ All notable changes to this project will be documented in this file.
   - `git-worktree-init`: Initialize new repository
   - `git-worktree-checkout`: Checkout existing branch to new worktree
   - `git-worktree-checkout-branch`: Create new branch and worktree
-  - `git-worktree-checkout-branch-from-default`: Branch from default
   - `git-worktree-prune`: Clean up deleted branches
 - Multicall binary architecture (single 589KB binary)
 - Shell completions for bash, zsh, fish
@@ -303,7 +302,6 @@ def install
   bin.install_symlink bin/"daft" => "git-worktree-clone"
   bin.install_symlink bin/"daft" => "git-worktree-checkout"
   bin.install_symlink bin/"daft" => "git-worktree-checkout-branch"
-  bin.install_symlink bin/"daft" => "git-worktree-checkout-branch-from-default"
   bin.install_symlink bin/"daft" => "git-worktree-init"
   bin.install_symlink bin/"daft" => "git-worktree-prune"
   bin.install_symlink bin/"daft" => "git-daft"

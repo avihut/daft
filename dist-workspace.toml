@@ -34,7 +34,6 @@ daft = [
     "git-worktree-init",
     "git-worktree-checkout",
     "git-worktree-checkout-branch",
-    "git-worktree-checkout-branch-from-default",
     "git-worktree-prune",
     "git-worktree-carry",
     "git-worktree-fetch",

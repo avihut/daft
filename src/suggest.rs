@@ -16,7 +16,6 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "worktree-carry",
     "worktree-checkout",
     "worktree-checkout-branch",
-    "worktree-checkout-branch-from-default",
     "worktree-clone",
     "worktree-fetch",
     "worktree-flow-adopt",

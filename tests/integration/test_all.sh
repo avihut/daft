@@ -203,7 +203,7 @@ test_integration_security_path_traversal() {
 # Test binary availability and help functionality
 test_integration_binaries_availability() {
     # Test that all Rust binaries are available and working
-    local binaries=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-checkout-branch-from-default" "git-worktree-prune")
+    local binaries=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-prune")
     
     for binary in "${binaries[@]}"; do
         assert_command_success "command -v $binary" "Binary $binary should be available" || return 1
@@ -264,7 +264,7 @@ test_integration_real_world_scenarios() {
     cd ..
     
     # Hotfix workflow
-    git-worktree-checkout-branch-from-default hotfix/security-fix || return 1
+    git-worktree-checkout-branch --from-default hotfix/security-fix || return 1
     
     # Add hotfix
     cd "hotfix/security-fix"

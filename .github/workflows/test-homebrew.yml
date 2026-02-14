@@ -56,8 +56,7 @@ jobs:
           echo ""
           echo "Command locations:"
           for cmd in daft git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
-                     git-worktree-checkout-branch-from-default git-worktree-init \
-                     git-worktree-prune git-worktree-carry git-worktree-fetch \
+                     git-worktree-init git-worktree-prune git-worktree-carry git-worktree-fetch \
                      git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
             echo "  $cmd: $(which $cmd)"
           done
@@ -66,8 +65,7 @@ jobs:
           echo ""
           echo "Testing --help for all commands..."
           for cmd in daft git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
-                     git-worktree-checkout-branch-from-default git-worktree-init \
-                     git-worktree-prune git-worktree-carry git-worktree-fetch \
+                     git-worktree-init git-worktree-prune git-worktree-carry git-worktree-fetch \
                      git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
             echo "  $cmd --help..."
             $cmd --help > /dev/null || { echo "FAILED: $cmd --help"; exit 1; }
@@ -82,8 +80,7 @@ jobs:
 
           # Man pages are generated for git-worktree-* commands and daft-release-notes
           for page in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
-                      git-worktree-checkout-branch-from-default git-worktree-init \
-                      git-worktree-prune git-worktree-carry git-worktree-fetch \
+                      git-worktree-init git-worktree-prune git-worktree-carry git-worktree-fetch \
                       git-worktree-flow-adopt git-worktree-flow-eject daft-release-notes; do
             echo "  Checking man $page..."
             man -w $page > /dev/null 2>&1 || { echo "FAILED: man page not found for $page"; exit 1; }

@@ -23,7 +23,6 @@ const COMMANDS: &[&str] = &[
     "git-worktree-init",
     "git-worktree-checkout",
     "git-worktree-checkout-branch",
-    "git-worktree-checkout-branch-from-default",
     "git-worktree-prune",
     "git-worktree-carry",
     "git-worktree-fetch",
@@ -38,9 +37,6 @@ fn get_command_for_name(command_name: &str) -> Option<Command> {
         "git-worktree-init" => Some(crate::commands::init::Args::command()),
         "git-worktree-checkout" => Some(crate::commands::checkout::Args::command()),
         "git-worktree-checkout-branch" => Some(crate::commands::checkout_branch::Args::command()),
-        "git-worktree-checkout-branch-from-default" => {
-            Some(crate::commands::checkout_branch_from_default::Args::command())
-        }
         "git-worktree-prune" => Some(crate::commands::prune::Args::command()),
         "git-worktree-carry" => Some(crate::commands::carry::Args::command()),
         "git-worktree-fetch" => Some(crate::commands::fetch::Args::command()),
@@ -342,7 +338,6 @@ fn generate_bash_completion_string(command_name: &str) -> Result<String> {
         command_name,
         "git-worktree-checkout"
             | "git-worktree-checkout-branch"
-            | "git-worktree-checkout-branch-from-default"
             | "git-worktree-carry"
             | "git-worktree-fetch"
     );
@@ -421,7 +416,6 @@ fn generate_zsh_completion_string(command_name: &str) -> Result<String> {
         command_name,
         "git-worktree-checkout"
             | "git-worktree-checkout-branch"
-            | "git-worktree-checkout-branch-from-default"
             | "git-worktree-carry"
             | "git-worktree-fetch"
     );
@@ -505,7 +499,6 @@ fn generate_fish_completion_string(command_name: &str) -> Result<String> {
         command_name,
         "git-worktree-checkout"
             | "git-worktree-checkout-branch"
-            | "git-worktree-checkout-branch-from-default"
             | "git-worktree-carry"
             | "git-worktree-fetch"
     );
@@ -689,7 +682,6 @@ fn generate_fig_completion_string(command_name: &str) -> Result<String> {
         command_name,
         "git-worktree-checkout"
             | "git-worktree-checkout-branch"
-            | "git-worktree-checkout-branch-from-default"
             | "git-worktree-carry"
             | "git-worktree-fetch"
     );

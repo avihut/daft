@@ -124,7 +124,6 @@ git-worktree-clone() { __daft_wrapper git-worktree-clone "$@"; }
 git-worktree-init() { __daft_wrapper git-worktree-init "$@"; }
 git-worktree-checkout() { __daft_wrapper git-worktree-checkout "$@"; }
 git-worktree-checkout-branch() { __daft_wrapper git-worktree-checkout-branch "$@"; }
-git-worktree-checkout-branch-from-default() { __daft_wrapper git-worktree-checkout-branch-from-default "$@"; }
 git-worktree-carry() { __daft_wrapper git-worktree-carry "$@"; }
 git-worktree-prune() { __daft_wrapper git-worktree-prune "$@"; }
 git-worktree-flow-adopt() { __daft_wrapper git-worktree-flow-adopt "$@"; }
@@ -141,8 +140,6 @@ git() {
             shift; __daft_wrapper git-worktree-checkout "$@" ;;
         worktree-checkout-branch)
             shift; __daft_wrapper git-worktree-checkout-branch "$@" ;;
-        worktree-checkout-branch-from-default)
-            shift; __daft_wrapper git-worktree-checkout-branch-from-default "$@" ;;
         worktree-carry)
             shift; __daft_wrapper git-worktree-carry "$@" ;;
         worktree-prune)
@@ -167,8 +164,6 @@ daft() {
             shift; __daft_wrapper git-worktree-checkout "$@" ;;
         worktree-checkout-branch)
             shift; __daft_wrapper git-worktree-checkout-branch "$@" ;;
-        worktree-checkout-branch-from-default)
-            shift; __daft_wrapper git-worktree-checkout-branch-from-default "$@" ;;
         worktree-carry)
             shift; __daft_wrapper git-worktree-carry "$@" ;;
         worktree-prune)
@@ -190,7 +185,7 @@ gwtclone() { __daft_wrapper git-worktree-clone "$@"; }
 gwtinit() { __daft_wrapper git-worktree-init "$@"; }
 gwtco() { __daft_wrapper git-worktree-checkout "$@"; }
 gwtcb() { __daft_wrapper git-worktree-checkout-branch "$@"; }
-gwtcbm() { __daft_wrapper git-worktree-checkout-branch-from-default "$@"; }
+gwtcbm() { __daft_wrapper git-worktree-checkout-branch --from-default "$@"; }
 gwtprune() { __daft_wrapper git-worktree-prune "$@"; }
 gwtcarry() { __daft_wrapper git-worktree-carry "$@"; }
 gwtfetch() { __daft_wrapper git-worktree-fetch "$@"; }
@@ -198,13 +193,13 @@ gwtfetch() { __daft_wrapper git-worktree-fetch "$@"; }
 # Shell-style shortcuts
 gwco() { __daft_wrapper git-worktree-checkout "$@"; }
 gwcob() { __daft_wrapper git-worktree-checkout-branch "$@"; }
-gwcobd() { __daft_wrapper git-worktree-checkout-branch-from-default "$@"; }
+gwcobd() { __daft_wrapper git-worktree-checkout-branch --from-default "$@"; }
 
 # Legacy-style shortcuts
 gclone() { __daft_wrapper git-worktree-clone "$@"; }
 gcw() { __daft_wrapper git-worktree-checkout "$@"; }
 gcbw() { __daft_wrapper git-worktree-checkout-branch "$@"; }
-gcbdw() { __daft_wrapper git-worktree-checkout-branch-from-default "$@"; }
+gcbdw() { __daft_wrapper git-worktree-checkout-branch --from-default "$@"; }
 gprune() { __daft_wrapper git-worktree-prune "$@"; }
 "#;
 
@@ -214,7 +209,7 @@ alias gwclone='git-worktree-clone'
 alias gwinit='git-worktree-init'
 alias gwco='git-worktree-checkout'
 alias gwcob='git-worktree-checkout-branch'
-alias gwcobd='git-worktree-checkout-branch-from-default'
+alias gwcobd='git-worktree-checkout-branch --from-default'
 alias gwcarry='git-worktree-carry'
 alias gwprune='git-worktree-prune'
 "#;
@@ -285,10 +280,6 @@ function git-worktree-checkout-branch
     __daft_wrapper git-worktree-checkout-branch $argv
 end
 
-function git-worktree-checkout-branch-from-default
-    __daft_wrapper git-worktree-checkout-branch-from-default $argv
-end
-
 function git-worktree-carry
     __daft_wrapper git-worktree-carry $argv
 end
@@ -316,8 +307,6 @@ function git --wraps git
             __daft_wrapper git-worktree-checkout $argv[2..-1]
         case worktree-checkout-branch
             __daft_wrapper git-worktree-checkout-branch $argv[2..-1]
-        case worktree-checkout-branch-from-default
-            __daft_wrapper git-worktree-checkout-branch-from-default $argv[2..-1]
         case worktree-carry
             __daft_wrapper git-worktree-carry $argv[2..-1]
         case worktree-prune
@@ -342,8 +331,6 @@ function daft --wraps daft
             __daft_wrapper git-worktree-checkout $argv[2..-1]
         case worktree-checkout-branch
             __daft_wrapper git-worktree-checkout-branch $argv[2..-1]
-        case worktree-checkout-branch-from-default
-            __daft_wrapper git-worktree-checkout-branch-from-default $argv[2..-1]
         case worktree-carry
             __daft_wrapper git-worktree-carry $argv[2..-1]
         case worktree-prune
@@ -378,7 +365,7 @@ function gwtcb
 end
 
 function gwtcbm
-    __daft_wrapper git-worktree-checkout-branch-from-default $argv
+    __daft_wrapper git-worktree-checkout-branch --from-default $argv
 end
 
 function gwtprune
@@ -403,7 +390,7 @@ function gwcob
 end
 
 function gwcobd
-    __daft_wrapper git-worktree-checkout-branch-from-default $argv
+    __daft_wrapper git-worktree-checkout-branch --from-default $argv
 end
 
 # Legacy-style shortcuts
@@ -420,7 +407,7 @@ function gcbw
 end
 
 function gcbdw
-    __daft_wrapper git-worktree-checkout-branch-from-default $argv
+    __daft_wrapper git-worktree-checkout-branch --from-default $argv
 end
 
 function gprune
@@ -434,7 +421,7 @@ alias gwclone='git-worktree-clone'
 alias gwinit='git-worktree-init'
 alias gwco='git-worktree-checkout'
 alias gwcob='git-worktree-checkout-branch'
-alias gwcobd='git-worktree-checkout-branch-from-default'
+alias gwcobd='git-worktree-checkout-branch --from-default'
 alias gwcarry='git-worktree-carry'
 alias gwprune='git-worktree-prune'
 "#;

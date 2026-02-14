@@ -324,7 +324,7 @@ test_zsh_git_subcommand_registration() {
 test_all_commands_generate() {
     run_test "All commands generate completions for all shells"
 
-    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-checkout-branch-from-default" "git-worktree-prune" "git-worktree-carry" "git-worktree-fetch" "git-worktree-flow-adopt" "git-worktree-flow-eject")
+    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-prune" "git-worktree-carry" "git-worktree-fetch" "git-worktree-flow-adopt" "git-worktree-flow-eject")
     local shells=("bash" "zsh" "fish" "fig")
     local success=true
 
@@ -435,20 +435,6 @@ test_carry_dynamic_completion() {
         pass_test
     else
         fail_test "Carry command missing dynamic branch completion"
-    fi
-}
-
-# Test: checkout-branch-from-default has dynamic completion wiring
-test_checkout_branch_from_default_dynamic_wiring() {
-    run_test "checkout-branch-from-default has dynamic completion"
-
-    local output
-    output=$("$DAFT_BIN" completions bash --command=git-worktree-checkout-branch-from-default 2>&1)
-
-    if [[ "$output" == *'daft __complete'* ]] && [[ "$output" == *'branches='* ]]; then
-        pass_test
-    else
-        fail_test "checkout-branch-from-default missing dynamic branch completion"
     fi
 }
 
@@ -605,7 +591,6 @@ main() {
     test_shell_init_includes_fish_completions
     test_shortcut_alias_bash_completions
     test_carry_dynamic_completion
-    test_checkout_branch_from_default_dynamic_wiring
 
     # Fig completion tests
     test_fig_completion_generation

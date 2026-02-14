@@ -123,7 +123,6 @@ jobs:
           ln -sf daft git-worktree-init
           ln -sf daft git-worktree-checkout
           ln -sf daft git-worktree-checkout-branch
-          ln -sf daft git-worktree-checkout-branch-from-default
           ln -sf daft git-worktree-prune
           ln -sf daft git-worktree-carry
           ln -sf daft git-worktree-fetch
@@ -162,7 +161,6 @@ jobs:
           ./target/release/git-worktree-clone --help
           ./target/release/git-worktree-checkout --help
           ./target/release/git-worktree-checkout-branch --help
-          ./target/release/git-worktree-checkout-branch-from-default --help
           ./target/release/git-worktree-init --help
           ./target/release/git-worktree-prune --help
           ./target/release/git-worktree-carry --help
@@ -214,8 +212,7 @@ jobs:
 
           # Create symlinks for all commands (matching Homebrew formula)
           for cmd in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
-                     git-worktree-checkout-branch-from-default git-worktree-init \
-                     git-worktree-prune git-worktree-carry git-worktree-fetch \
+                     git-worktree-init git-worktree-prune git-worktree-carry git-worktree-fetch \
                      git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
             ln -sf daft "$PREFIX/bin/$cmd"
           done
@@ -237,8 +234,7 @@ jobs:
 
           echo "Verifying all symlinked commands..."
           for cmd in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
-                     git-worktree-checkout-branch-from-default git-worktree-init \
-                     git-worktree-prune git-worktree-carry git-worktree-fetch \
+                     git-worktree-init git-worktree-prune git-worktree-carry git-worktree-fetch \
                      git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
             echo "  Testing $cmd..."
             "$PREFIX/bin/$cmd" --help > /dev/null || { echo "FAILED: $cmd --help"; exit 1; }
@@ -253,8 +249,7 @@ jobs:
           echo "Verifying man pages exist and are valid..."
           # Only git-worktree-* commands have man pages (not daft or git-daft)
           for page in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
-                      git-worktree-checkout-branch-from-default git-worktree-init \
-                      git-worktree-prune git-worktree-carry git-worktree-fetch \
+                      git-worktree-init git-worktree-prune git-worktree-carry git-worktree-fetch \
                       git-worktree-flow-adopt git-worktree-flow-eject; do
             MANFILE="$PREFIX/share/man/man1/${page}.1"
             if [ ! -f "$MANFILE" ]; then
@@ -308,9 +303,9 @@ jobs:
 
           # Verify all expected man pages were generated
           for page in git-worktree-clone git-worktree-init git-worktree-checkout \
-                      git-worktree-checkout-branch git-worktree-checkout-branch-from-default \
-                      git-worktree-prune git-worktree-carry git-worktree-fetch \
-                      git-worktree-flow-adopt git-worktree-flow-eject daft-release-notes; do
+                      git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
+                      git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
+                      daft-release-notes; do
             if [ ! -f "/tmp/man-test/${page}.1" ]; then
               echo "FAILED: Missing man page: ${page}.1"
               exit 1
@@ -348,9 +343,8 @@ jobs:
 
           # Verify all expected CLI docs were generated
           for page in git-worktree-clone git-worktree-init git-worktree-checkout \
-                      git-worktree-checkout-branch git-worktree-checkout-branch-from-default \
-                      git-worktree-prune git-worktree-carry git-worktree-fetch \
-                      git-worktree-flow-adopt git-worktree-flow-eject \
+                      git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
+                      git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
                       daft-doctor daft-release-notes; do
             if [ ! -f "/tmp/cli-docs-test/${page}.md" ]; then
               echo "FAILED: Missing CLI doc: ${page}.md"

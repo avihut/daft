@@ -16,38 +16,38 @@ Three styles are available. Enable the one that fits your preference.
 
 Prefix: `gwt` (Git Worktree)
 
-| Shortcut   | Full Command                                |
-| ---------- | ------------------------------------------- |
-| `gwtclone` | `git-worktree-clone`                        |
-| `gwtinit`  | `git-worktree-init`                         |
-| `gwtco`    | `git-worktree-checkout`                     |
-| `gwtcb`    | `git-worktree-checkout-branch`              |
-| `gwtcbm`   | `git-worktree-checkout-branch-from-default` |
-| `gwtprune` | `git-worktree-prune`                        |
-| `gwtcarry` | `git-worktree-carry`                        |
-| `gwtfetch` | `git-worktree-fetch`                        |
+| Shortcut   | Full Command                                  |
+| ---------- | --------------------------------------------- |
+| `gwtclone` | `git-worktree-clone`                          |
+| `gwtinit`  | `git-worktree-init`                           |
+| `gwtco`    | `git-worktree-checkout`                       |
+| `gwtcb`    | `git-worktree-checkout-branch`                |
+| `gwtcbm`   | `git-worktree-checkout-branch --from-default` |
+| `gwtprune` | `git-worktree-prune`                          |
+| `gwtcarry` | `git-worktree-carry`                          |
+| `gwtfetch` | `git-worktree-fetch`                          |
 
 ### Shell Style
 
 Prefix: `gw` (shorter, shell-friendly)
 
-| Shortcut | Full Command                                |
-| -------- | ------------------------------------------- |
-| `gwco`   | `git-worktree-checkout`                     |
-| `gwcob`  | `git-worktree-checkout-branch`              |
-| `gwcobd` | `git-worktree-checkout-branch-from-default` |
+| Shortcut | Full Command                                  |
+| -------- | --------------------------------------------- |
+| `gwco`   | `git-worktree-checkout`                       |
+| `gwcob`  | `git-worktree-checkout-branch`                |
+| `gwcobd` | `git-worktree-checkout-branch --from-default` |
 
 ### Legacy Style
 
 From earlier versions of daft:
 
-| Shortcut | Full Command                                |
-| -------- | ------------------------------------------- |
-| `gclone` | `git-worktree-clone`                        |
-| `gcw`    | `git-worktree-checkout`                     |
-| `gcbw`   | `git-worktree-checkout-branch`              |
-| `gcbdw`  | `git-worktree-checkout-branch-from-default` |
-| `gprune` | `git-worktree-prune`                        |
+| Shortcut | Full Command                                  |
+| -------- | --------------------------------------------- |
+| `gclone` | `git-worktree-clone`                          |
+| `gcw`    | `git-worktree-checkout`                       |
+| `gcbw`   | `git-worktree-checkout-branch`                |
+| `gcbdw`  | `git-worktree-checkout-branch --from-default` |
+| `gprune` | `git-worktree-prune`                          |
 
 ## Managing Shortcuts
 

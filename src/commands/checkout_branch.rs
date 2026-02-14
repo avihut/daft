@@ -7,11 +7,12 @@ use crate::{
     is_git_repository, logging,
     multi_remote::path::{calculate_worktree_path, resolve_remote_for_branch},
     output::{CliOutput, Output, OutputConfig},
+    remote::get_default_branch_local,
     settings::DaftSettings,
     utils::*,
     WorktreeConfig,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 #[derive(Parser)]
@@ -64,10 +65,23 @@ pub struct Args {
 
     #[arg(long, help = "Do not change directory to the new worktree")]
     no_cd: bool,
+
+    #[arg(
+        short = 'm',
+        long = "from-default",
+        help = "Use the remote's default branch as the base"
+    )]
+    from_default: bool,
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(crate::get_clap_args("git-worktree-checkout-branch"));
+    run_with_extra_args(&[])
+}
+
+pub fn run_with_extra_args(extra: &[&str]) -> Result<()> {
+    let mut clap_args = crate::get_clap_args("git-worktree-checkout-branch");
+    clap_args.extend(extra.iter().map(|s| s.to_string()));
+    let args = Args::parse_from(clap_args);
 
     // Initialize logging based on verbosity flags
     logging::init_logging(args.verbose);
@@ -100,18 +114,37 @@ fn run_checkout_branch(
 ) -> Result<()> {
     validate_branch_name(&args.new_branch_name)?;
 
-    let base_branch = match &args.base_branch_name {
-        Some(branch) => {
-            output.step(&format!(
-                "Using explicitly provided base branch: '{branch}'"
-            ));
-            branch.clone()
-        }
-        None => {
-            output.step("Base branch not specified, using current branch...");
-            let current = get_current_branch()?;
-            output.step(&format!("Using current branch as base: '{current}'"));
-            current
+    if args.from_default && args.base_branch_name.is_some() {
+        anyhow::bail!("Cannot use --from-default together with an explicit base branch");
+    }
+
+    let base_branch = if args.from_default {
+        let git_common_dir = get_git_common_dir()?;
+        output.step(&format!(
+            "Determining default branch for remote '{}'...",
+            settings.remote
+        ));
+        let default_branch =
+            get_default_branch_local(&git_common_dir, &settings.remote, settings.use_gitoxide)
+                .context("Failed to determine default branch")?;
+        output.step(&format!(
+            "Detected default origin branch: '{default_branch}'"
+        ));
+        default_branch
+    } else {
+        match &args.base_branch_name {
+            Some(branch) => {
+                output.step(&format!(
+                    "Using explicitly provided base branch: '{branch}'"
+                ));
+                branch.clone()
+            }
+            None => {
+                output.step("Base branch not specified, using current branch...");
+                let current = get_current_branch()?;
+                output.step(&format!("Using current branch as base: '{current}'"));
+                current
+            }
         }
     };
 

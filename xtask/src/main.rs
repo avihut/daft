@@ -15,7 +15,6 @@ const COMMANDS: &[&str] = &[
     "git-worktree-init",
     "git-worktree-checkout",
     "git-worktree-checkout-branch",
-    "git-worktree-checkout-branch-from-default",
     "git-worktree-prune",
     "git-worktree-carry",
     "git-worktree-fetch",
@@ -33,9 +32,6 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-worktree-init" => Some(daft::commands::init::Args::command()),
         "git-worktree-checkout" => Some(daft::commands::checkout::Args::command()),
         "git-worktree-checkout-branch" => Some(daft::commands::checkout_branch::Args::command()),
-        "git-worktree-checkout-branch-from-default" => {
-            Some(daft::commands::checkout_branch_from_default::Args::command())
-        }
         "git-worktree-prune" => Some(daft::commands::prune::Args::command()),
         "git-worktree-carry" => Some(daft::commands::carry::Args::command()),
         "git-worktree-fetch" => Some(daft::commands::fetch::Args::command()),
@@ -67,21 +63,8 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
             "git-worktree-flow-eject",
         ],
         // Branching cluster
-        "git-worktree-checkout" => vec![
-            "git-worktree-checkout-branch",
-            "git-worktree-checkout-branch-from-default",
-            "git-worktree-carry",
-        ],
-        "git-worktree-checkout-branch" => vec![
-            "git-worktree-checkout",
-            "git-worktree-checkout-branch-from-default",
-            "git-worktree-carry",
-        ],
-        "git-worktree-checkout-branch-from-default" => vec![
-            "git-worktree-checkout",
-            "git-worktree-checkout-branch",
-            "git-worktree-carry",
-        ],
+        "git-worktree-checkout" => vec!["git-worktree-checkout-branch", "git-worktree-carry"],
+        "git-worktree-checkout-branch" => vec!["git-worktree-checkout", "git-worktree-carry"],
         // Maintenance cluster
         "git-worktree-prune" => vec!["git-worktree-fetch", "git-worktree-flow-eject"],
         "git-worktree-fetch" => vec!["git-worktree-prune", "git-worktree-carry"],

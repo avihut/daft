@@ -64,7 +64,6 @@ cd target/release && rm -f \
     git-worktree-init \
     git-worktree-checkout \
     git-worktree-checkout-branch \
-    git-worktree-checkout-branch-from-default \
     git-worktree-prune \
     git-worktree-carry \
     git-worktree-fetch \
@@ -124,7 +123,7 @@ run = 'echo "Rust integration tests completed"'
 
 [tasks.test-integration]
 description = "Run Rust integration tests"
-depends = ["build"]
+depends = ["dev-setup"]
 run = """
 echo "Running Rust integration tests..."
 cd tests/integration && ./test_all.sh
@@ -311,7 +310,6 @@ ln -sf daft git-worktree-clone
 ln -sf daft git-worktree-init
 ln -sf daft git-worktree-checkout
 ln -sf daft git-worktree-checkout-branch
-ln -sf daft git-worktree-checkout-branch-from-default
 ln -sf daft git-worktree-prune
 ln -sf daft git-worktree-carry
 ln -sf daft git-worktree-fetch
@@ -491,7 +489,7 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 echo "Generating bash completions..."
-for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-checkout-branch-from-default git-worktree-prune; do
+for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-prune; do
     echo "  $cmd"
     ./target/release/daft completions bash --command="$cmd" > /tmp/completion-$cmd.bash
 done
@@ -505,7 +503,7 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 echo "Generating zsh completions..."
-for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-checkout-branch-from-default git-worktree-prune; do
+for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-prune; do
     echo "  $cmd"
     ./target/release/daft completions zsh --command="$cmd" > /tmp/completion-_$cmd.zsh
 done
@@ -519,7 +517,7 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 echo "Generating fish completions..."
-for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-checkout-branch-from-default git-worktree-prune; do
+for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-prune; do
     echo "  $cmd"
     ./target/release/daft completions fish --command="$cmd" > /tmp/completion-$cmd.fish
 done

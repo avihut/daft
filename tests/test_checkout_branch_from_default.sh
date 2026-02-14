@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Tests for git-worktree-checkout-branch-from-default command
+# Tests for git-worktree-checkout-branch --from-default
 
 source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 
@@ -28,7 +28,7 @@ test_checkout_branch_from_default_basic() {
     local repo_dir=$(setup_test_repo "checkout-default-basic-test" "main")
     
     # Test checkout-branch-from-default
-    git worktree-checkout-branch-from-default feature/from-default || return 1
+    git worktree-checkout-branch --from-default feature/from-default || return 1
     
     # Verify structure
     assert_directory_exists "$repo_dir/feature/from-default" || return 1
@@ -55,7 +55,7 @@ test_checkout_branch_from_default_master() {
     local repo_dir=$(setup_test_repo "checkout-default-master-test" "master")
     
     # Test checkout-branch-from-default
-    git worktree-checkout-branch-from-default feature/from-master || return 1
+    git worktree-checkout-branch --from-default feature/from-master || return 1
     
     # Verify structure
     assert_directory_exists "$repo_dir/feature/from-master" || return 1
@@ -81,7 +81,7 @@ test_checkout_branch_from_default_develop() {
     local repo_dir=$(setup_test_repo "checkout-default-develop-test" "develop")
     
     # Test checkout-branch-from-default
-    git worktree-checkout-branch-from-default feature/from-develop || return 1
+    git worktree-checkout-branch --from-default feature/from-develop || return 1
     
     # Verify structure
     assert_directory_exists "$repo_dir/feature/from-develop" || return 1
@@ -111,7 +111,7 @@ test_checkout_branch_from_default_different_worktree() {
     
     # From develop worktree, create new branch from default
     cd "develop"
-    git worktree-checkout-branch-from-default feature/from-default-in-develop || return 1
+    git worktree-checkout-branch --from-default feature/from-default-in-develop || return 1
     
     # Verify structure
     assert_directory_exists "$repo_dir/feature/from-default-in-develop" || return 1
@@ -137,7 +137,7 @@ test_checkout_branch_from_default_no_name() {
     local repo_dir=$(setup_test_repo "checkout-default-no-name-test" "main")
     
     # Test without branch name should fail
-    assert_command_failure "git worktree-checkout-branch-from-default" "Should fail with no branch name"
+    assert_command_failure "git worktree-checkout-branch --from-default" "Should fail with no branch name"
     
     return 0
 }
@@ -147,10 +147,10 @@ test_checkout_branch_from_default_existing_name() {
     local repo_dir=$(setup_test_repo "checkout-default-existing-test" "main")
     
     # Create branch first
-    git worktree-checkout-branch-from-default feature/existing || return 1
+    git worktree-checkout-branch --from-default feature/existing || return 1
     
     # Try to create same branch again should fail
-    assert_command_failure "git worktree-checkout-branch-from-default feature/existing" "Should fail with existing branch name"
+    assert_command_failure "git worktree-checkout-branch --from-default feature/existing" "Should fail with existing branch name"
     
     return 0
 }
@@ -163,7 +163,7 @@ test_checkout_branch_from_default_no_remote_head() {
     rm -f ".git/refs/remotes/origin/HEAD"
     
     # Test should fail gracefully
-    assert_command_failure "git worktree-checkout-branch-from-default feature/no-head" "Should fail without remote HEAD"
+    assert_command_failure "git worktree-checkout-branch --from-default feature/no-head" "Should fail without remote HEAD"
     
     return 0
 }
@@ -174,7 +174,7 @@ test_checkout_branch_from_default_outside_repo() {
     cd "$WORK_DIR"
     
     # Test should fail
-    assert_command_failure "git worktree-checkout-branch-from-default feature/test" "Should fail outside git repository"
+    assert_command_failure "git worktree-checkout-branch --from-default feature/test" "Should fail outside git repository"
     
     return 0
 }
@@ -184,7 +184,7 @@ test_checkout_branch_from_default_nested() {
     local repo_dir=$(setup_test_repo "checkout-default-nested-test" "main")
     
     # Test with deeply nested branch name
-    git worktree-checkout-branch-from-default feature/ui/components/from-default || return 1
+    git worktree-checkout-branch --from-default feature/ui/components/from-default || return 1
     
     # Verify structure
     assert_directory_exists "$repo_dir/feature/ui/components/from-default" || return 1
@@ -202,7 +202,7 @@ test_checkout_branch_from_default_from_subdirectory() {
     cd "main/deep/nested/dir"
     
     # Test checkout-branch-from-default from deep subdirectory
-    git worktree-checkout-branch-from-default feature/from-subdir || return 1
+    git worktree-checkout-branch --from-default feature/from-subdir || return 1
     
     # Verify structure (should create at repo root, not in subdirectory)
     assert_directory_exists "$repo_dir/feature/from-subdir" || return 1
@@ -216,7 +216,7 @@ test_checkout_branch_from_default_special_characters() {
     local repo_dir=$(setup_test_repo "checkout-default-special-test" "main")
     
     # Test with branch names containing special characters
-    git worktree-checkout-branch-from-default "feature/test-123_v2.0" || return 1
+    git worktree-checkout-branch --from-default "feature/test-123_v2.0" || return 1
     
     # Verify structure
     assert_directory_exists "$repo_dir/feature/test-123_v2.0" || return 1
@@ -230,7 +230,7 @@ test_checkout_branch_from_default_remote_tracking() {
     local repo_dir=$(setup_test_repo "checkout-default-remote-test" "main")
     
     # Test checkout-branch-from-default
-    git worktree-checkout-branch-from-default feature/remote-tracking || return 1
+    git worktree-checkout-branch --from-default feature/remote-tracking || return 1
     
     # Verify remote tracking was set up (this is handled by checkout-branch)
     cd "$repo_dir/feature/remote-tracking"
@@ -252,7 +252,7 @@ test_checkout_branch_from_default_delegation() {
     # This is tested by verifying the end result is the same as calling checkout-branch directly
     
     # Create branch using checkout-branch-from-default
-    git worktree-checkout-branch-from-default feature/delegated || return 1
+    git worktree-checkout-branch --from-default feature/delegated || return 1
     
     # Verify structure (same as what checkout-branch would create)
     assert_directory_exists "$repo_dir/feature/delegated" || return 1
@@ -278,7 +278,7 @@ test_checkout_branch_from_default_corrupted_head() {
     echo "invalid content" > ".git/refs/remotes/origin/HEAD"
     
     # Test should fail gracefully
-    assert_command_failure "git worktree-checkout-branch-from-default feature/corrupted" "Should fail with corrupted remote HEAD"
+    assert_command_failure "git worktree-checkout-branch --from-default feature/corrupted" "Should fail with corrupted remote HEAD"
     
     return 0
 }
@@ -293,7 +293,7 @@ test_checkout_branch_from_default_error_handling() {
     # Most characters are valid in Git branch names, so this tests general error handling
     
     # Create a branch name that might cause issues
-    git worktree-checkout-branch-from-default "feature/test-error" || return 1
+    git worktree-checkout-branch --from-default "feature/test-error" || return 1
     
     # Verify structure was created successfully
     assert_directory_exists "$repo_dir/feature/test-error" || return 1
@@ -305,7 +305,7 @@ test_checkout_branch_from_default_error_handling() {
 
 # Run all checkout-branch-from-default tests
 run_checkout_branch_from_default_tests() {
-    log "Running git-worktree-checkout-branch-from-default tests..."
+    log "Running git-worktree-checkout-branch --from-default tests..."
     
     run_test "checkout_branch_from_default_basic" "test_checkout_branch_from_default_basic"
     run_test "checkout_branch_from_default_master" "test_checkout_branch_from_default_master"

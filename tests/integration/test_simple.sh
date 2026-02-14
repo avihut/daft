@@ -34,7 +34,7 @@ test_simple_file_operations() {
 # Test Rust binary availability
 test_simple_rust_binaries() {
     # Test that all Rust binaries are available
-    local binaries=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-checkout-branch-from-default" "git-worktree-prune")
+    local binaries=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-prune")
     
     for binary in "${binaries[@]}"; do
         assert_command_success "command -v $binary" "Binary $binary should be available" || return 1

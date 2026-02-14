@@ -14,7 +14,7 @@ tests/
 │   ├── test_init.sh     # Integration tests for git-worktree-init
 │   ├── test_checkout.sh # Integration tests for git-worktree-checkout
 │   ├── test_checkout_branch.sh # Integration tests for git-worktree-checkout-branch
-│   ├── test_checkout_branch_from_default.sh # Integration tests for git-worktree-checkout-branch-from-default
+│   ├── test_checkout_branch_from_default.sh # Integration tests for git-worktree-checkout-branch --from-default
 │   ├── test_prune.sh    # Integration tests for git-worktree-prune
 │   └── test_simple.sh   # Simple validation tests for Rust binaries
 └── README.md           # This file
