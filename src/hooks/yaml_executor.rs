@@ -598,7 +598,6 @@ fn execute_dag_parallel(
                         Ok(r) if r.success => JobStatus::Succeeded,
                         _ => JobStatus::Failed,
                     };
-
                     // Record result
                     results_collector
                         .lock()
@@ -1107,6 +1106,9 @@ fn run_shell_command(
     // Set extra environment variables
     command.envs(extra_env);
 
+    // Non-interactive commands must not inherit stdin — a child process
+    // (e.g. mise, cargo) might block waiting for input that will never come.
+    command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
@@ -1117,27 +1119,41 @@ fn run_shell_command(
     let stdout_handle = child.stdout.take();
     let stderr_handle = child.stderr.take();
 
-    let mut stdout_content = String::new();
-    let mut stderr_content = String::new();
-
-    if let Some(stdout) = stdout_handle {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            stdout_content.push_str(&line);
-            stdout_content.push('\n');
+    // Read stdout and stderr in separate threads so they don't block the
+    // timeout.  Previously the reads were sequential on the main thread,
+    // which meant `wait_with_timeout` was unreachable until the child
+    // closed its pipes — effectively making the timeout dead code.
+    let stdout_thread = std::thread::spawn(move || {
+        let mut content = String::new();
+        if let Some(stdout) = stdout_handle {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                content.push_str(&line);
+                content.push('\n');
+            }
         }
-    }
+        content
+    });
 
-    if let Some(stderr) = stderr_handle {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines().map_while(Result::ok) {
-            stderr_content.push_str(&line);
-            stderr_content.push('\n');
+    let stderr_thread = std::thread::spawn(move || {
+        let mut content = String::new();
+        if let Some(stderr) = stderr_handle {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                content.push_str(&line);
+                content.push('\n');
+            }
         }
-    }
+        content
+    });
 
+    // Wait with timeout — if the child exceeds the deadline it is killed,
+    // which closes the pipes and unblocks the reader threads above.
     let status = wait_with_timeout(&mut child, timeout)
         .with_context(|| format!("Command execution failed: {cmd}"))?;
+
+    let stdout_content = stdout_thread.join().unwrap_or_default();
+    let stderr_content = stderr_thread.join().unwrap_or_default();
 
     let exit_code = status.code().unwrap_or(-1);
 

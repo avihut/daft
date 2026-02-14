@@ -9,9 +9,6 @@ hooks:
       - name: bun-install
         run: bun install
         needs: [mise-install]
-      - name: dev-setup
-        run: mise run dev-setup
-        needs: [mise-install]
       - name: lefthook-install
         run: lefthook install
         needs: [mise-install]
@@ -25,7 +22,4 @@ hooks:
         needs: [mise-trust]
       - name: bun-install
         run: bun install
-        needs: [mise-install]
-      - name: dev-setup
-        run: mise run dev-setup
         needs: [mise-install]
