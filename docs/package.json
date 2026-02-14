@@ -1,0 +1,9 @@
+{
+  "name": "daft-docs",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.15",
+    "vitepress": "^1.6.4"
+  }
+}

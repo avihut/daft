@@ -37,13 +37,14 @@ git_only = false
 commit_parsers = [
     { message = "^feat", group = "Features" },
     { message = "^fix", group = "Bug Fixes" },
-    { message = "^doc", group = "Documentation" },
+    { message = "^doc", skip = true },
     { message = "^perf", group = "Performance" },
     { message = "^refactor", group = "Refactoring" },
-    { message = "^style", group = "Styling" },
+    { message = "^style", skip = true },
     { message = "^test", group = "Testing" },
     { message = "^chore\\(release\\)", skip = true },
     { message = "^chore: release", skip = true },
     { message = "^chore", group = "Miscellaneous" },
-    { message = "^ci", group = "CI/CD" },
+    { message = "^ci", skip = true },
+    { message = "^deps", skip = true },
 ]

@@ -3,7 +3,7 @@ title: Changelog
 description: Release history and notable changes
 ---
 
-The full changelog is maintained in the repository's [CHANGELOG.md](https://github.com/avihut/daft/blob/master/CHANGELOG.md) file, which is automatically updated by [release-plz](https://release-plz.dev/) with each release.
+<!--@include: ../CHANGELOG.md-->
 
 You can also view release notes from the command line:
 

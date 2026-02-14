@@ -2,4 +2,7 @@ target/
 man/
 node_modules/
 CHANGELOG.md
+docs/cli/
 .claude/
+docs/.vitepress/dist/
+docs/.vitepress/cache/

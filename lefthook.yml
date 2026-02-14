@@ -17,6 +17,11 @@ pre-commit:
       glob: "*.{md,yml,yaml}"
       run: bun run prettier --write {staged_files}
       stage_fixed: true
+    biome-check:
+      glob: "docs/.vitepress/**/*.{ts,js,json}"
+      root: "docs/"
+      run: bunx biome check --write {staged_files}
+      stage_fixed: true
 
 commit-msg:
   commands:
