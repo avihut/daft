@@ -1,4 +1,12 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { defineConfig } from "vitepress";
+
+const cargoToml = readFileSync(
+  resolve(import.meta.dirname, "../../Cargo.toml"),
+  "utf-8",
+);
+const version = cargoToml.match(/^version\s*=\s*"(.+?)"/m)?.[1] ?? "unknown";
 
 export default defineConfig({
   vite: {
@@ -46,10 +54,10 @@ export default defineConfig({
         if (!match) {
           return defaultHeadingOpen(tokens, idx, options, env, self);
         }
-        const [, version, date] = match;
-        inline.content = version;
+        const [, ver, date] = match;
+        inline.content = ver;
         inline.children = inline.children || [];
-        inline.children = [{ ...inline.children[0], content: version }];
+        inline.children = [{ ...inline.children[0], content: ver }];
         // Append date as a span after the heading via raw HTML
         const closeToken = tokens[idx + 2];
         if (closeToken && closeToken.type === "heading_close") {
@@ -77,8 +85,14 @@ export default defineConfig({
     nav: [
       { text: "Guide", link: "/getting-started/installation" },
       { text: "CLI Reference", link: "/cli/git-worktree-clone" },
+      { text: `v${version}`, link: "/changelog" },
       { text: "GitHub", link: "https://github.com/avihut/daft" },
     ],
+    footer: {
+      message:
+        'Released under the <a href="https://github.com/avihut/daft/blob/master/LICENSE">MIT License</a>.',
+      copyright: "Copyright © 2025-present Avihu Turzion",
+    },
     sidebar: [
       {
         text: "Getting Started",
