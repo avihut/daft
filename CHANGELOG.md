@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.24](https://github.com/avihut/daft/compare/v1.0.23...v1.0.24) - 2026-02-14
+
+### Bug Fixes
+
+- prevent hook commands from hanging on long-running tasks ([#205](https://github.com/avihut/daft/pull/205))
+
 ## [1.0.23](https://github.com/avihut/daft/compare/v1.0.22...v1.0.23) - 2026-02-14
 
 ### Miscellaneous
