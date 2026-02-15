@@ -129,6 +129,14 @@ echo "Running Rust integration tests..."
 cd tests/integration && ./test_all.sh
 """
 
+[tasks.test-integration-gitoxide]
+description = "Run integration tests with gitoxide backend"
+depends = ["dev-setup"]
+run = """
+echo "Running integration tests with gitoxide backend..."
+cd tests/integration && DAFT_TEST_GITOXIDE=1 ./test_all.sh
+"""
+
 # ============================================================================
 # Individual Integration Test Tasks
 # ============================================================================

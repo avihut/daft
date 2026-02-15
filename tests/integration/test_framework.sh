@@ -105,6 +105,12 @@ setup() {
     export GIT_COMMITTER_NAME="Test User"
     export GIT_COMMITTER_EMAIL="test@example.com"
 
+    # Isolate tests from user's global git config to prevent settings
+    # like daft.experimental.gitoxide from leaking into tests.
+    DAFT_TEST_GLOBAL_CONFIG="$TEMP_BASE_DIR/.gitconfig-test"
+    touch "$DAFT_TEST_GLOBAL_CONFIG"
+    export GIT_CONFIG_GLOBAL="$DAFT_TEST_GLOBAL_CONFIG"
+
     # Verify all binaries are available
     local binary_names=("git-worktree-clone" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-init" "git-worktree-prune")
     for binary in "${binary_names[@]}"; do
@@ -391,6 +397,36 @@ print_summary() {
         log_error "Some integration tests failed!"
         return 1
     fi
+}
+
+# Enable gitoxide for commands that use DaftSettings::load() (post-clone)
+enable_gitoxide() {
+    git config daft.experimental.gitoxide true
+}
+
+# Enable gitoxide for commands that use DaftSettings::load_global() (clone/init)
+enable_gitoxide_global() {
+    git config --global daft.experimental.gitoxide true
+}
+
+# Clean the work directory for a fresh test pass without resetting config
+cleanup_work_dir() {
+    if [[ -d "$WORK_DIR" ]]; then
+        rm -rf "$WORK_DIR"
+    fi
+    mkdir -p "$WORK_DIR"
+    if [[ -d "$REMOTE_REPO_DIR" ]]; then
+        rm -rf "$REMOTE_REPO_DIR"
+    fi
+    mkdir -p "$REMOTE_REPO_DIR"
+}
+
+# Reset test counters for a new pass
+reset_test_counters() {
+    TESTS_RUN=0
+    TESTS_PASSED=0
+    TESTS_FAILED=0
+    FAILED_TESTS=()
 }
 
 # Trap to ensure cleanup on exit
