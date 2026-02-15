@@ -28,13 +28,21 @@ pub fn is_inside_git_repo() -> Result<bool> {
 }
 
 /// gitoxide equivalent of `git rev-parse --is-inside-work-tree`
+///
+/// Note: We check only `workdir().is_some()` rather than `!is_bare()` because
+/// gitoxide reports `is_bare() == true` for linked worktrees of bare repos,
+/// even though those worktrees have a valid working directory.
 pub fn rev_parse_is_inside_work_tree(repo: &Repository) -> Result<bool> {
-    Ok(!repo.is_bare() && repo.workdir().is_some())
+    Ok(repo.workdir().is_some())
 }
 
 /// gitoxide equivalent of `git rev-parse --is-bare-repository`
+///
+/// Note: We use `workdir().is_none()` instead of `is_bare()` because gitoxide
+/// reports `is_bare() == true` for linked worktrees of bare repos, but git CLI
+/// reports `false` since the worktree has a working directory.
 pub fn rev_parse_is_bare_repository(repo: &Repository) -> Result<bool> {
-    Ok(repo.is_bare())
+    Ok(repo.workdir().is_none())
 }
 
 /// gitoxide equivalent of `git rev-parse --git-dir`
@@ -194,13 +202,28 @@ pub fn config_get_global(key: &str) -> Result<Option<String>> {
 // --- Group 4: Status & Commit Info ---
 
 /// gitoxide equivalent of `git status --porcelain` (checking for non-empty output)
+///
+/// Checks both HEAD-vs-index (staged changes) and index-vs-worktree (unstaged
+/// changes + untracked files). Uses the full status iterator to match git CLI
+/// behavior.
 pub fn has_uncommitted_changes(repo: &Repository) -> Result<bool> {
-    // Use gix status to check for any changes
+    use gix::status::UntrackedFiles;
+
     let status = repo
         .status(gix::progress::Discard)
         .context("Failed to get repository status")?;
+
+    // Use the full iterator which checks both tree-index (staged) and
+    // index-worktree (unstaged + untracked) changes. This matches
+    // `git status --porcelain` which reports all of these.
+    //
+    // Use UntrackedFiles::Files to emit individual untracked files rather
+    // than collapsing directories, and disable empty directory emission to
+    // match git CLI behavior (git ignores empty directories).
     let mut iter = status
-        .into_index_worktree_iter(Vec::<gix::bstr::BString>::new())
+        .untracked_files(UntrackedFiles::Files)
+        .dirwalk_options(|opts| opts.emit_empty_directories(false))
+        .into_iter(Vec::<gix::bstr::BString>::new())
         .context("Failed to iterate status")?;
 
     // If there's at least one item, there are uncommitted changes
@@ -228,16 +251,23 @@ pub fn rev_list_count(repo: &Repository, range: &str) -> Result<u32> {
             .rev_parse_single(from_str.as_bytes())
             .with_context(|| format!("Failed to resolve '{from_str}'"))?;
 
+        // Find the merge base between the two refs. Commits reachable from
+        // `to_id` but not from `from_id` are those between `to_id` and the
+        // merge base. If no merge base exists, count all ancestors of `to_id`.
+        let merge_base = repo
+            .merge_base(from_id.detach(), to_id.detach())
+            .ok()
+            .map(|id| id.detach());
+
         let mut count: u32 = 0;
         let walk = repo
             .rev_walk([to_id.detach()])
             .all()
             .context("Failed to start revision walk")?;
 
-        let from_oid = from_id.detach();
         for info_result in walk {
             let info = info_result.context("Failed during revision walk")?;
-            if info.id == from_oid {
+            if Some(info.id) == merge_base {
                 break;
             }
             count += 1;
@@ -624,6 +654,62 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_has_uncommitted_changes_staged() {
+        let (dir, _repo) = create_test_repo();
+        let path = dir.path().canonicalize().unwrap();
+        // Create and stage a new file (but don't commit)
+        std::fs::write(path.join("staged.txt"), "staged content").unwrap();
+        git_cmd()
+            .args(["add", "staged.txt"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Re-open to see index changes
+        let saved_cwd = std::env::current_dir().ok();
+        std::env::set_current_dir(&path).unwrap();
+        let repo = gix::open(&path).unwrap();
+        if let Some(cwd) = saved_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
+        let result = has_uncommitted_changes(&repo).unwrap();
+        assert!(result, "Should detect staged (index) changes");
+    }
+
+    #[test]
+    #[serial]
+    fn test_has_uncommitted_changes_untracked() {
+        let (dir, repo) = create_test_repo();
+        // Add an untracked file (not git-added)
+        std::fs::write(dir.path().join("untracked.txt"), "new file").unwrap();
+        let result = has_uncommitted_changes(&repo).unwrap();
+        assert!(result, "Should detect untracked files");
+    }
+
+    #[test]
+    #[serial]
+    fn test_has_uncommitted_changes_empty_dirs() {
+        let (dir, _repo) = create_test_repo();
+        let path = dir.path().canonicalize().unwrap();
+        // Create empty directories (git ignores these)
+        std::fs::create_dir_all(path.join("subdir/deep")).unwrap();
+        // Re-open to pick up filesystem changes
+        let saved_cwd = std::env::current_dir().ok();
+        std::env::set_current_dir(&path).unwrap();
+        let repo = gix::open(&path).unwrap();
+        if let Some(cwd) = saved_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
+
+        let result = has_uncommitted_changes(&repo).unwrap();
+        assert!(
+            !result,
+            "Empty directories should NOT count as changes (matches git behavior)"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn test_remote_list_empty() {
         let (_dir, repo) = create_test_repo();
         let result = remote_list(&repo).unwrap();
@@ -735,6 +821,75 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_is_inside_work_tree_linked_worktree() {
+        // Test that linked worktrees of bare repos are NOT considered bare
+        strip_git_env();
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        // Create bare repo layout like daft does
+        let git_dir = root.join(".git");
+        git_cmd()
+            .args(["init", "--bare"])
+            .arg(&git_dir)
+            .output()
+            .unwrap();
+
+        let main_wt = root.join("main");
+        git_cmd()
+            .args(["worktree", "add", "--orphan", "-b", "main"])
+            .arg(&main_wt)
+            .current_dir(&git_dir)
+            .output()
+            .unwrap();
+
+        std::fs::write(main_wt.join("file.txt"), "hello").unwrap();
+        git_cmd()
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(&main_wt)
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["config", "user.name", "Test"])
+            .current_dir(&main_wt)
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["add", "."])
+            .current_dir(&main_wt)
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["commit", "-m", "initial"])
+            .current_dir(&main_wt)
+            .output()
+            .unwrap();
+
+        // Discover from linked worktree
+        let saved_cwd = std::env::current_dir().ok();
+        std::env::set_current_dir(&main_wt).unwrap();
+        let repo = gix::ThreadSafeRepository::discover(&main_wt)
+            .unwrap()
+            .to_thread_local();
+        if let Some(cwd) = saved_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
+
+        eprintln!("is_bare: {}", repo.is_bare());
+        eprintln!("workdir: {:?}", repo.workdir());
+        eprintln!("git_dir: {:?}", repo.git_dir());
+
+        let result = rev_parse_is_inside_work_tree(&repo).unwrap();
+        assert!(
+            result,
+            "Linked worktree should be inside work tree, is_bare={}, workdir={:?}",
+            repo.is_bare(),
+            repo.workdir()
+        );
+    }
+
+    #[test]
+    #[serial]
     fn test_rev_list_count() {
         let (dir, _repo) = create_test_repo();
         // Add another commit
@@ -760,5 +915,47 @@ mod tests {
         }
         let count = rev_list_count(&repo, "HEAD").unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    #[serial]
+    fn test_rev_list_count_range() {
+        let (dir, _repo) = create_test_repo();
+        let path = dir.path().canonicalize().unwrap();
+
+        // Create a branch, add a commit to main, then check the range
+        git_cmd()
+            .args(["branch", "feature"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Add commit only to main (not feature)
+        std::fs::write(path.join("file2.txt"), "hello2").unwrap();
+        git_cmd()
+            .args(["add", "."])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["commit", "-m", "second"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        let saved_cwd = std::env::current_dir().ok();
+        std::env::set_current_dir(&path).unwrap();
+        let repo = gix::open(&path).unwrap();
+        if let Some(cwd) = saved_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
+
+        // main has 1 commit ahead of feature
+        let count = rev_list_count(&repo, "feature..main").unwrap();
+        assert_eq!(count, 1, "main should be 1 commit ahead of feature");
+
+        // feature has 0 commits ahead of main
+        let count = rev_list_count(&repo, "main..feature").unwrap();
+        assert_eq!(count, 0, "feature should be 0 commits ahead of main");
     }
 }

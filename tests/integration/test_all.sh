@@ -319,11 +319,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     setup
     run_all_integration_tests
     print_summary
-    
-    # Exit with appropriate code
-    if [[ $TESTS_FAILED -eq 0 ]]; then
-        exit 0
-    else
-        exit 1
-    fi
+    exit $?
 fi

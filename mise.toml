@@ -122,12 +122,24 @@ depends = ["test-integration"]
 run = 'echo "Rust integration tests completed"'
 
 [tasks.test-integration]
-description = "Run Rust integration tests"
+description = "Run integration tests (full matrix)"
+depends = ["dev-setup"]
+run = "cargo run --package xtask -- test-matrix"
+
+[tasks.test-integration-matrix]
+description = "Run integration tests for specific matrix entry"
 depends = ["dev-setup"]
 run = """
-echo "Running Rust integration tests..."
-cd tests/integration && ./test_all.sh
+#!/usr/bin/env bash
+set -euo pipefail
+entry="${1:?Usage: mise run test-integration-matrix <entry-name>}"
+cargo run --package xtask -- test-matrix --entry "$entry"
 """
+
+[tasks.test-integration-gitoxide]
+description = "Run integration tests with gitoxide backend"
+depends = ["dev-setup"]
+run = "cargo run --package xtask -- test-matrix --entry gitoxide"
 
 # ============================================================================
 # Individual Integration Test Tasks
