@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.24](https://github.com/avihut/daft/compare/v1.0.23...v1.0.24) - 2026-02-15
+
+### Bug Fixes
+
+- prevent hook commands from hanging on long-running tasks ([#205](https://github.com/avihut/daft/pull/205))
+
+### Refactoring
+
+- absorb checkout-branch-from-default into --from-default flag ([#206](https://github.com/avihut/daft/pull/206))
+
+### Testing
+
+- add gitoxide integration test coverage and move matrix to Rust xtask ([#208](https://github.com/avihut/daft/pull/208))
+
 ## [1.0.23](https://github.com/avihut/daft/compare/v1.0.22...v1.0.23) - 2026-02-14
 
 ### Miscellaneous
