@@ -3,11 +3,13 @@
 //! This binary provides development-time tasks that don't need to be
 //! included in the distributed binary.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use clap_mangen::Man;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
+use std::time::Instant;
 
 /// Available daft commands that need man pages
 const COMMANDS: &[&str] = &[
@@ -22,6 +24,24 @@ const COMMANDS: &[&str] = &[
     "git-worktree-flow-eject",
     "daft-doctor",
     "daft-release-notes",
+];
+
+/// A matrix entry defines a configuration variant for integration tests
+struct MatrixEntry {
+    name: &'static str,
+    /// Git config key=value pairs to set at global scope before running tests
+    config: &'static [(&'static str, &'static str)],
+}
+
+const MATRIX: &[MatrixEntry] = &[
+    MatrixEntry {
+        name: "default",
+        config: &[],
+    },
+    MatrixEntry {
+        name: "gitoxide",
+        config: &[("daft.experimental.gitoxide", "true")],
+    },
 ];
 
 /// Get the clap Command for a given command name
@@ -116,6 +136,17 @@ enum Commands {
         #[arg(long)]
         command: Option<String>,
     },
+
+    /// Run integration tests across a matrix of configurations
+    TestMatrix {
+        /// Run only specific matrix entries (can be repeated)
+        #[arg(long)]
+        entry: Vec<String>,
+
+        /// List available matrix entries and exit
+        #[arg(long)]
+        list: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -130,6 +161,7 @@ fn main() -> Result<()> {
             output_dir,
             command,
         } => generate_cli_docs(&output_dir, command.as_deref()),
+        Commands::TestMatrix { entry, list } => run_test_matrix(&entry, list),
     }
 }
 
@@ -388,6 +420,143 @@ fn build_usage_string(command_name: &str, cmd: &clap::Command, display_name: &st
     parts.join(" ")
 }
 
+/// Run integration tests across a matrix of configurations
+fn run_test_matrix(entries: &[String], list: bool) -> Result<()> {
+    if list {
+        println!("Available matrix entries:");
+        for entry in MATRIX {
+            if entry.config.is_empty() {
+                println!("  {:<12} (no extra config)", entry.name);
+            } else {
+                let pairs: Vec<String> = entry
+                    .config
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect();
+                println!("  {:<12} {}", entry.name, pairs.join(", "));
+            }
+        }
+        return Ok(());
+    }
+
+    // Select entries: all if none specified, otherwise filter
+    let selected: Vec<&MatrixEntry> = if entries.is_empty() {
+        MATRIX.iter().collect()
+    } else {
+        let mut selected = Vec::new();
+        for name in entries {
+            let entry = MATRIX
+                .iter()
+                .find(|e| e.name == name.as_str())
+                .with_context(|| {
+                    let available: Vec<&str> = MATRIX.iter().map(|e| e.name).collect();
+                    format!(
+                        "Unknown matrix entry: '{}'. Available: {}",
+                        name,
+                        available.join(", ")
+                    )
+                })?;
+            selected.push(entry);
+        }
+        selected
+    };
+
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask should be inside project root")
+        .to_path_buf();
+
+    let test_script = project_root.join("tests/integration/test_all.sh");
+    if !test_script.exists() {
+        bail!("Test script not found: {}", test_script.display());
+    }
+
+    struct EntryResult {
+        name: String,
+        success: bool,
+        elapsed: std::time::Duration,
+    }
+
+    let mut results: Vec<EntryResult> = Vec::new();
+
+    for entry in &selected {
+        println!();
+        println!("=============================================");
+        println!("  Matrix entry: {}", entry.name);
+        if !entry.config.is_empty() {
+            for (k, v) in entry.config {
+                println!("    {k} = {v}");
+            }
+        }
+        println!("=============================================");
+        println!();
+
+        // Create a temp file for GIT_CONFIG_GLOBAL
+        let config_path =
+            std::env::temp_dir().join(format!("daft-test-matrix-{}.gitconfig", entry.name));
+        fs::write(&config_path, "")
+            .with_context(|| format!("Failed to create temp config: {}", config_path.display()))?;
+
+        // Write config values using git config --file
+        for (key, value) in entry.config {
+            let status = Command::new("git")
+                .args(["config", "--file"])
+                .arg(&config_path)
+                .args([key, value])
+                .status()
+                .with_context(|| format!("Failed to run git config for {key}={value}"))?;
+            if !status.success() {
+                bail!("git config --file failed for {key}={value}");
+            }
+        }
+
+        let start = Instant::now();
+
+        let status = Command::new("bash")
+            .arg(&test_script)
+            .env("GIT_CONFIG_GLOBAL", &config_path)
+            .current_dir(&project_root)
+            .status()
+            .with_context(|| format!("Failed to invoke test script for entry '{}'", entry.name))?;
+
+        let elapsed = start.elapsed();
+
+        results.push(EntryResult {
+            name: entry.name.to_string(),
+            success: status.success(),
+            elapsed,
+        });
+
+        // Clean up temp config
+        let _ = fs::remove_file(&config_path);
+    }
+
+    // Print summary table
+    println!();
+    println!("=========================================================");
+    println!("  Test Matrix Summary");
+    println!("=========================================================");
+    for result in &results {
+        let status_str = if result.success { "PASS" } else { "FAIL" };
+        println!(
+            "  {:<12} {} ({:.1}s)",
+            result.name,
+            status_str,
+            result.elapsed.as_secs_f64()
+        );
+    }
+    println!("=========================================================");
+
+    let failed: Vec<&EntryResult> = results.iter().filter(|r| !r.success).collect();
+    if failed.is_empty() {
+        println!("All matrix entries passed!");
+        Ok(())
+    } else {
+        let names: Vec<&str> = failed.iter().map(|r| r.name.as_str()).collect();
+        bail!("Matrix entries failed: {}", names.join(", "));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,5 +707,43 @@ mod tests {
     fn test_related_commands_unknown_returns_empty() {
         let related = related_commands("unknown-command");
         assert!(related.is_empty());
+    }
+
+    #[test]
+    fn test_matrix_entries_have_unique_names() {
+        let mut names: Vec<&str> = MATRIX.iter().map(|e| e.name).collect();
+        let original_len = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            original_len,
+            "Matrix entries must have unique names"
+        );
+    }
+
+    #[test]
+    fn test_matrix_has_default_entry() {
+        assert!(
+            MATRIX.iter().any(|e| e.name == "default"),
+            "Matrix must have a 'default' entry"
+        );
+    }
+
+    #[test]
+    fn test_matrix_list_does_not_error() {
+        // --list should succeed without running any tests
+        run_test_matrix(&[], true).unwrap();
+    }
+
+    #[test]
+    fn test_matrix_unknown_entry_errors() {
+        let result = run_test_matrix(&["nonexistent".to_string()], false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Unknown matrix entry"),
+            "Error should mention unknown entry, got: {err}"
+        );
     }
 }

@@ -317,54 +317,7 @@ run_all_integration_tests() {
 # Main execution
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     setup
-
-    OVERALL_EXIT=0
-
-    # --- Pass 1: Standard (git CLI backend) ---
-    if [[ -z "${DAFT_TEST_GITOXIDE:-}" ]]; then
-        echo
-        echo "============================================="
-        echo "  Pass 1: git CLI backend (default)"
-        echo "============================================="
-        echo
-        run_all_integration_tests
-
-        PASS1_RUN=$TESTS_RUN
-        PASS1_PASSED=$TESTS_PASSED
-        PASS1_FAILED=$TESTS_FAILED
-        PASS1_FAILED_TESTS=("${FAILED_TESTS[@]}")
-
-        print_summary || OVERALL_EXIT=1
-    fi
-
-    # --- Pass 2: Gitoxide backend ---
-    echo
-    echo "============================================="
-    echo "  Pass 2: gitoxide backend (experimental)"
-    echo "============================================="
-    echo
-    enable_gitoxide_global
-    reset_test_counters
-    cleanup_work_dir
     run_all_integration_tests
-
-    PASS2_RUN=$TESTS_RUN
-    PASS2_PASSED=$TESTS_PASSED
-    PASS2_FAILED=$TESTS_FAILED
-    PASS2_FAILED_TESTS=("${FAILED_TESTS[@]}")
-
-    print_summary || OVERALL_EXIT=1
-
-    # --- Combined summary ---
-    if [[ -z "${DAFT_TEST_GITOXIDE:-}" ]]; then
-        echo
-        echo "========================================================="
-        echo "Combined Results"
-        echo "========================================================="
-        echo "Pass 1 (git CLI):  $PASS1_PASSED/$PASS1_RUN passed"
-        echo "Pass 2 (gitoxide): $PASS2_PASSED/$PASS2_RUN passed"
-        echo "========================================================="
-    fi
-
-    exit $OVERALL_EXIT
+    print_summary
+    exit $?
 fi
