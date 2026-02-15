@@ -18,7 +18,6 @@ daft uses a **single binary with multiple symlinks** (like BusyBox):
   - `git-worktree-clone` → `daft`
   - `git-worktree-checkout` → `daft`
   - `git-worktree-checkout-branch` → `daft`
-  - `git-worktree-checkout-branch-from-default` → `daft`
   - `git-worktree-init` → `daft`
   - `git-worktree-prune` → `daft`
   - `git-worktree-carry` → `daft`
@@ -81,7 +80,6 @@ def install
   bin.install_symlink bin/"daft" => "git-worktree-clone"
   bin.install_symlink bin/"daft" => "git-worktree-checkout"
   bin.install_symlink bin/"daft" => "git-worktree-checkout-branch"
-  bin.install_symlink bin/"daft" => "git-worktree-checkout-branch-from-default"
   bin.install_symlink bin/"daft" => "git-worktree-init"
   bin.install_symlink bin/"daft" => "git-worktree-prune"
   bin.install_symlink bin/"daft" => "git-worktree-carry"
@@ -167,8 +165,7 @@ class Daft < Formula
     bin.install_symlink bin/"daft" => "git-worktree-clone"
     bin.install_symlink bin/"daft" => "git-worktree-checkout"
     bin.install_symlink bin/"daft" => "git-worktree-checkout-branch"
-    bin.install_symlink bin/"daft" => "git-worktree-checkout-branch-from-default"
-    bin.install_symlink bin/"daft" => "git-worktree-init"
+      bin.install_symlink bin/"daft" => "git-worktree-init"
     bin.install_symlink bin/"daft" => "git-worktree-prune"
     bin.install_symlink bin/"daft" => "git-worktree-carry"
     bin.install_symlink bin/"daft" => "git-worktree-fetch"
@@ -328,7 +325,6 @@ This generates man pages for all commands:
 - `git-worktree-clone.1`
 - `git-worktree-checkout.1`
 - `git-worktree-checkout-branch.1`
-- `git-worktree-checkout-branch-from-default.1`
 - `git-worktree-init.1`
 - `git-worktree-prune.1`
 - `git-worktree-carry.1`

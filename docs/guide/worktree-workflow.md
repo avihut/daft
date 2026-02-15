@@ -113,7 +113,7 @@ When your current branch has diverged and you need a fresh start:
 
 ```bash
 # Always branches from origin's default branch (main/master/develop)
-git worktree-checkout-branch-from-default hotfix/critical-fix
+git worktree-checkout-branch --from-default hotfix/critical-fix
 ```
 
 ### Moving Uncommitted Work

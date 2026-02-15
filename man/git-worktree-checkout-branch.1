@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-checkout\-branch \- Create a worktree with a new branch
 .SH SYNOPSIS
-\fBgit\-worktree\-checkout\-branch\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fINEW_BRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
+\fBgit\-worktree\-checkout\-branch\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-m\fR|\fB\-\-from\-default\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fINEW_BRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
 .SH DESCRIPTION
 .PP
 Creates a new branch and a corresponding worktree in a single operation. The
@@ -38,6 +38,9 @@ Remote for worktree organization (multi\-remote mode)
 .TP
 \fB\-\-no\-cd\fR
 Do not change directory to the new worktree
+.TP
+\fB\-m\fR, \fB\-\-from\-default\fR
+Use the remote\*(Aqs default branch as the base
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

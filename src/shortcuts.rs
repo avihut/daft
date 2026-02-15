@@ -80,6 +80,8 @@ pub struct Shortcut {
     pub command: &'static str,
     /// The style this shortcut belongs to
     pub style: ShortcutStyle,
+    /// Extra arguments to pass to the command (e.g., &["--from-default"])
+    pub extra_args: &'static [&'static str],
 }
 
 /// All available shortcuts across all styles.
@@ -89,83 +91,99 @@ pub const SHORTCUTS: &[Shortcut] = &[
         alias: "gwtclone",
         command: "git-worktree-clone",
         style: ShortcutStyle::Git,
+        extra_args: &[],
     },
     Shortcut {
         alias: "gwtinit",
         command: "git-worktree-init",
         style: ShortcutStyle::Git,
+        extra_args: &[],
     },
     Shortcut {
         alias: "gwtco",
         command: "git-worktree-checkout",
         style: ShortcutStyle::Git,
+        extra_args: &[],
     },
     Shortcut {
         alias: "gwtcb",
         command: "git-worktree-checkout-branch",
         style: ShortcutStyle::Git,
+        extra_args: &[],
     },
     Shortcut {
         alias: "gwtcbm",
-        command: "git-worktree-checkout-branch-from-default",
+        command: "git-worktree-checkout-branch",
         style: ShortcutStyle::Git,
+        extra_args: &["--from-default"],
     },
     Shortcut {
         alias: "gwtprune",
         command: "git-worktree-prune",
         style: ShortcutStyle::Git,
+        extra_args: &[],
     },
     Shortcut {
         alias: "gwtcarry",
         command: "git-worktree-carry",
         style: ShortcutStyle::Git,
+        extra_args: &[],
     },
     Shortcut {
         alias: "gwtfetch",
         command: "git-worktree-fetch",
         style: ShortcutStyle::Git,
+        extra_args: &[],
     },
     // Shell style (3 shortcuts)
     Shortcut {
         alias: "gwco",
         command: "git-worktree-checkout",
         style: ShortcutStyle::Shell,
+        extra_args: &[],
     },
     Shortcut {
         alias: "gwcob",
         command: "git-worktree-checkout-branch",
         style: ShortcutStyle::Shell,
+        extra_args: &[],
     },
     Shortcut {
         alias: "gwcobd",
-        command: "git-worktree-checkout-branch-from-default",
+        command: "git-worktree-checkout-branch",
         style: ShortcutStyle::Shell,
+        extra_args: &["--from-default"],
     },
     // Legacy style (5 shortcuts)
     Shortcut {
         alias: "gclone",
         command: "git-worktree-clone",
         style: ShortcutStyle::Legacy,
+        extra_args: &[],
     },
     Shortcut {
         alias: "gcw",
         command: "git-worktree-checkout",
         style: ShortcutStyle::Legacy,
+        extra_args: &[],
     },
     Shortcut {
         alias: "gcbw",
         command: "git-worktree-checkout-branch",
         style: ShortcutStyle::Legacy,
+        extra_args: &[],
     },
     Shortcut {
         alias: "gcbdw",
-        command: "git-worktree-checkout-branch-from-default",
+        command: "git-worktree-checkout-branch",
         style: ShortcutStyle::Legacy,
+        extra_args: &["--from-default"],
     },
     Shortcut {
         alias: "gprune",
         command: "git-worktree-prune",
         style: ShortcutStyle::Legacy,
+        extra_args: &[],
     },
 ];
 
@@ -179,6 +197,18 @@ pub fn resolve(name: &str) -> &str {
         }
     }
     name
+}
+
+/// Resolves a shortcut alias to its full command name and any extra arguments.
+///
+/// Returns the original name with empty extra args if no shortcut matches.
+pub fn resolve_with_args(name: &str) -> (&str, &'static [&'static str]) {
+    for shortcut in SHORTCUTS {
+        if shortcut.alias == name {
+            return (shortcut.command, shortcut.extra_args);
+        }
+    }
+    (name, &[])
 }
 
 /// Returns all shortcuts for a given style.
@@ -196,10 +226,7 @@ mod tests {
         assert_eq!(resolve("gwtclone"), "git-worktree-clone");
         assert_eq!(resolve("gwtco"), "git-worktree-checkout");
         assert_eq!(resolve("gwtcb"), "git-worktree-checkout-branch");
-        assert_eq!(
-            resolve("gwtcbm"),
-            "git-worktree-checkout-branch-from-default"
-        );
+        assert_eq!(resolve("gwtcbm"), "git-worktree-checkout-branch");
         assert_eq!(resolve("gwtprune"), "git-worktree-prune");
         assert_eq!(resolve("gwtcarry"), "git-worktree-carry");
         assert_eq!(resolve("gwtfetch"), "git-worktree-fetch");
@@ -210,10 +237,7 @@ mod tests {
     fn test_resolve_shell_style() {
         assert_eq!(resolve("gwco"), "git-worktree-checkout");
         assert_eq!(resolve("gwcob"), "git-worktree-checkout-branch");
-        assert_eq!(
-            resolve("gwcobd"),
-            "git-worktree-checkout-branch-from-default"
-        );
+        assert_eq!(resolve("gwcobd"), "git-worktree-checkout-branch");
     }
 
     #[test]
@@ -221,10 +245,7 @@ mod tests {
         assert_eq!(resolve("gclone"), "git-worktree-clone");
         assert_eq!(resolve("gcw"), "git-worktree-checkout");
         assert_eq!(resolve("gcbw"), "git-worktree-checkout-branch");
-        assert_eq!(
-            resolve("gcbdw"),
-            "git-worktree-checkout-branch-from-default"
-        );
+        assert_eq!(resolve("gcbdw"), "git-worktree-checkout-branch");
         assert_eq!(resolve("gprune"), "git-worktree-prune");
     }
 
@@ -253,7 +274,6 @@ mod tests {
             "git-worktree-init",
             "git-worktree-checkout",
             "git-worktree-checkout-branch",
-            "git-worktree-checkout-branch-from-default",
             "git-worktree-prune",
             "git-worktree-carry",
             "git-worktree-fetch",
@@ -267,6 +287,32 @@ mod tests {
                 shortcut.command
             );
         }
+    }
+
+    #[test]
+    fn test_resolve_with_args_from_default_shortcuts() {
+        let (cmd, args) = resolve_with_args("gwtcbm");
+        assert_eq!(cmd, "git-worktree-checkout-branch");
+        assert_eq!(args, &["--from-default"]);
+
+        let (cmd, args) = resolve_with_args("gwcobd");
+        assert_eq!(cmd, "git-worktree-checkout-branch");
+        assert_eq!(args, &["--from-default"]);
+
+        let (cmd, args) = resolve_with_args("gcbdw");
+        assert_eq!(cmd, "git-worktree-checkout-branch");
+        assert_eq!(args, &["--from-default"]);
+    }
+
+    #[test]
+    fn test_resolve_with_args_no_extra_args() {
+        let (cmd, args) = resolve_with_args("gwtco");
+        assert_eq!(cmd, "git-worktree-checkout");
+        assert!(args.is_empty());
+
+        let (cmd, args) = resolve_with_args("unknown");
+        assert_eq!(cmd, "unknown");
+        assert!(args.is_empty());
     }
 
     #[test]

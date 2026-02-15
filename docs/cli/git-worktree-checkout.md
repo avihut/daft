@@ -56,6 +56,5 @@ git worktree-checkout [OPTIONS] <BRANCH_NAME>
 ## See Also
 
 - [git-worktree-checkout-branch](./git-worktree-checkout-branch.md)
-- [git-worktree-checkout-branch-from-default](./git-worktree-checkout-branch-from-default.md)
 - [git-worktree-carry](./git-worktree-carry.md)
 

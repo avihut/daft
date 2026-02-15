@@ -26,7 +26,7 @@ test_shell_init_bash_output() {
     fi
 
     # Check that it contains wrapper functions for each command
-    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-checkout-branch-from-default" "git-worktree-carry")
+    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-carry")
     for cmd in "${commands[@]}"; do
         if echo "$output" | grep -q "^${cmd}()"; then
             log_success "Output contains ${cmd} function"
@@ -92,7 +92,7 @@ test_shell_init_fish_output() {
     fi
 
     # Check that it contains wrapper functions for each command
-    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-checkout-branch-from-default" "git-worktree-carry")
+    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-carry")
     for cmd in "${commands[@]}"; do
         if echo "$output" | grep -q "function ${cmd}"; then
             log_success "Output contains ${cmd} function"
