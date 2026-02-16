@@ -134,7 +134,7 @@ test_shell_init_bash_aliases() {
     output=$(daft shell-init bash --aliases)
 
     # Check for short aliases
-    local aliases=("gwclone" "gwinit" "gwco" "gwcob" "gwcobd" "gwcarry" "gwprune")
+    local aliases=("gwclone" "gwinit" "gwco" "gwcob" "gwcarry" "gwprune")
     for alias_name in "${aliases[@]}"; do
         if echo "$output" | grep -q "alias ${alias_name}="; then
             log_success "Output contains ${alias_name} alias"
@@ -154,7 +154,7 @@ test_shell_init_fish_aliases() {
     output=$(daft shell-init fish --aliases)
 
     # Check for short aliases
-    local aliases=("gwclone" "gwinit" "gwco" "gwcob" "gwcobd" "gwcarry" "gwprune")
+    local aliases=("gwclone" "gwinit" "gwco" "gwcob" "gwcarry" "gwprune")
     for alias_name in "${aliases[@]}"; do
         if echo "$output" | grep -q "alias ${alias_name}="; then
             log_success "Output contains ${alias_name} alias"

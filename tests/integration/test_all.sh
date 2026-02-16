@@ -9,7 +9,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_clone.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_init.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_checkout.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_checkout_branch.sh"
-source "$(dirname "${BASH_SOURCE[0]}")/test_checkout_branch_from_default.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_prune.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_branch_delete.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_fetch.sh"
@@ -264,8 +263,8 @@ test_integration_real_world_scenarios() {
     git commit -m "Implement user authentication" >/dev/null 2>&1
     cd ..
     
-    # Hotfix workflow
-    git-worktree-checkout-branch --from-default hotfix/security-fix || return 1
+    # Hotfix workflow (branch from main)
+    git-worktree-checkout-branch hotfix/security-fix main || return 1
     
     # Add hotfix
     cd "hotfix/security-fix"
@@ -296,7 +295,6 @@ run_all_integration_tests() {
     run_init_tests
     run_checkout_tests
     run_checkout_branch_tests
-    run_checkout_branch_from_default_tests
     run_prune_tests
     run_branch_delete_tests
     run_fetch_tests

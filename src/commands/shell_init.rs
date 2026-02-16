@@ -185,7 +185,6 @@ gwtclone() { __daft_wrapper git-worktree-clone "$@"; }
 gwtinit() { __daft_wrapper git-worktree-init "$@"; }
 gwtco() { __daft_wrapper git-worktree-checkout "$@"; }
 gwtcb() { __daft_wrapper git-worktree-checkout-branch "$@"; }
-gwtcbm() { __daft_wrapper git-worktree-checkout-branch --from-default "$@"; }
 gwtprune() { __daft_wrapper git-worktree-prune "$@"; }
 gwtcarry() { __daft_wrapper git-worktree-carry "$@"; }
 gwtfetch() { __daft_wrapper git-worktree-fetch "$@"; }
@@ -193,14 +192,56 @@ gwtfetch() { __daft_wrapper git-worktree-fetch "$@"; }
 # Shell-style shortcuts
 gwco() { __daft_wrapper git-worktree-checkout "$@"; }
 gwcob() { __daft_wrapper git-worktree-checkout-branch "$@"; }
-gwcobd() { __daft_wrapper git-worktree-checkout-branch --from-default "$@"; }
 
 # Legacy-style shortcuts
 gclone() { __daft_wrapper git-worktree-clone "$@"; }
 gcw() { __daft_wrapper git-worktree-checkout "$@"; }
 gcbw() { __daft_wrapper git-worktree-checkout-branch "$@"; }
-gcbdw() { __daft_wrapper git-worktree-checkout-branch --from-default "$@"; }
 gprune() { __daft_wrapper git-worktree-prune "$@"; }
+
+# Default branch helper (shared by default-branch shortcuts)
+__daft_default_branch() {
+  local remote
+  remote=$(git config daft.remote 2>/dev/null || echo origin)
+  git symbolic-ref "refs/remotes/$remote/HEAD" 2>/dev/null | sed "s|^refs/remotes/$remote/||"
+}
+
+# Default-branch shortcuts (shell-init only - resolve default branch dynamically)
+gwtcm() {
+  local branch
+  branch=$(__daft_default_branch)
+  if [ -z "$branch" ]; then
+    echo "error: could not determine default branch" >&2; return 1
+  fi
+  __daft_wrapper git-worktree-checkout "$branch" "$@"
+}
+
+gwtcbm() {
+  local branch
+  branch=$(__daft_default_branch)
+  if [ -z "$branch" ]; then
+    echo "error: could not determine default branch" >&2; return 1
+  fi
+  __daft_wrapper git-worktree-checkout-branch "$@" "$branch"
+}
+
+gwcobd() {
+  local branch
+  branch=$(__daft_default_branch)
+  if [ -z "$branch" ]; then
+    echo "error: could not determine default branch" >&2; return 1
+  fi
+  __daft_wrapper git-worktree-checkout-branch "$@" "$branch"
+}
+
+gcbdw() {
+  local branch
+  branch=$(__daft_default_branch)
+  if [ -z "$branch" ]; then
+    echo "error: could not determine default branch" >&2; return 1
+  fi
+  __daft_wrapper git-worktree-checkout-branch "$@" "$branch"
+}
 "#;
 
 const BASH_ZSH_ALIASES: &str = r#"
@@ -209,7 +250,6 @@ alias gwclone='git-worktree-clone'
 alias gwinit='git-worktree-init'
 alias gwco='git-worktree-checkout'
 alias gwcob='git-worktree-checkout-branch'
-alias gwcobd='git-worktree-checkout-branch --from-default'
 alias gwcarry='git-worktree-carry'
 alias gwprune='git-worktree-prune'
 "#;
@@ -364,10 +404,6 @@ function gwtcb
     __daft_wrapper git-worktree-checkout-branch $argv
 end
 
-function gwtcbm
-    __daft_wrapper git-worktree-checkout-branch --from-default $argv
-end
-
 function gwtprune
     __daft_wrapper git-worktree-prune $argv
 end
@@ -389,10 +425,6 @@ function gwcob
     __daft_wrapper git-worktree-checkout-branch $argv
 end
 
-function gwcobd
-    __daft_wrapper git-worktree-checkout-branch --from-default $argv
-end
-
 # Legacy-style shortcuts
 function gclone
     __daft_wrapper git-worktree-clone $argv
@@ -406,12 +438,47 @@ function gcbw
     __daft_wrapper git-worktree-checkout-branch $argv
 end
 
-function gcbdw
-    __daft_wrapper git-worktree-checkout-branch --from-default $argv
-end
-
 function gprune
     __daft_wrapper git-worktree-prune $argv
+end
+
+# Default branch helper (shared by default-branch shortcuts)
+function __daft_default_branch
+    set -l remote (git config daft.remote 2>/dev/null; or echo origin)
+    git symbolic-ref "refs/remotes/$remote/HEAD" 2>/dev/null | string replace "refs/remotes/$remote/" ""
+end
+
+# Default-branch shortcuts (shell-init only - resolve default branch dynamically)
+function gwtcm
+    set -l branch (__daft_default_branch)
+    if test -z "$branch"
+        echo "error: could not determine default branch" >&2; return 1
+    end
+    __daft_wrapper git-worktree-checkout "$branch" $argv
+end
+
+function gwtcbm
+    set -l branch (__daft_default_branch)
+    if test -z "$branch"
+        echo "error: could not determine default branch" >&2; return 1
+    end
+    __daft_wrapper git-worktree-checkout-branch $argv "$branch"
+end
+
+function gwcobd
+    set -l branch (__daft_default_branch)
+    if test -z "$branch"
+        echo "error: could not determine default branch" >&2; return 1
+    end
+    __daft_wrapper git-worktree-checkout-branch $argv "$branch"
+end
+
+function gcbdw
+    set -l branch (__daft_default_branch)
+    if test -z "$branch"
+        echo "error: could not determine default branch" >&2; return 1
+    end
+    __daft_wrapper git-worktree-checkout-branch $argv "$branch"
 end
 "#;
 
@@ -421,7 +488,6 @@ alias gwclone='git-worktree-clone'
 alias gwinit='git-worktree-init'
 alias gwco='git-worktree-checkout'
 alias gwcob='git-worktree-checkout-branch'
-alias gwcobd='git-worktree-checkout-branch --from-default'
 alias gwcarry='git-worktree-carry'
 alias gwprune='git-worktree-prune'
 "#;

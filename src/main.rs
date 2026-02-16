@@ -17,8 +17,8 @@ fn main() -> Result<()> {
         .and_then(|n| n.to_str())
         .unwrap_or("daft");
 
-    // Resolve shortcut aliases to full command names (with optional extra args)
-    let (resolved, shortcut_extra_args) = shortcuts::resolve_with_args(program_name);
+    // Resolve shortcut aliases to full command names
+    let resolved = shortcuts::resolve(program_name);
 
     // Handle --version/-V flag for the main daft/git-daft command
     if resolved == "daft" || resolved == "git-daft" {
@@ -38,9 +38,7 @@ fn main() -> Result<()> {
         "git-worktree-clone" => commands::clone::run(),
         "git-worktree-init" => commands::init::run(),
         "git-worktree-checkout" => commands::checkout::run(),
-        "git-worktree-checkout-branch" => {
-            commands::checkout_branch::run_with_extra_args(shortcut_extra_args)
-        }
+        "git-worktree-checkout-branch" => commands::checkout_branch::run(),
         "git-worktree-prune" => commands::prune::run(),
         "git-worktree-carry" => commands::carry::run(),
         "git-worktree-branch-delete" => commands::branch_delete::run(),

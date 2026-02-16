@@ -140,17 +140,17 @@ daft shell-init fish | source
 
 ## Commands
 
-| Command                                                | Description                                     |
-| ------------------------------------------------------ | ----------------------------------------------- |
-| `git worktree-clone <url>`                             | Clone a repo into the worktree structure        |
-| `git worktree-init <name>`                             | Initialize a new repo in the worktree structure |
-| `git worktree-checkout <branch>`                       | Create worktree from existing branch            |
-| `git worktree-checkout-branch <branch>`                | Create new branch + worktree                    |
-| `git worktree-checkout-branch --from-default <branch>` | Create branch from remote default               |
-| `git worktree-prune`                                   | Remove worktrees for deleted remote branches    |
-| `git worktree-carry`                                   | Carry uncommitted changes to other worktrees    |
-| `git worktree-flow-adopt`                              | Convert traditional repo to worktree layout     |
-| `git worktree-flow-eject`                              | Convert back to traditional layout              |
+| Command                                      | Description                                     |
+| -------------------------------------------- | ----------------------------------------------- |
+| `git worktree-clone <url>`                   | Clone a repo into the worktree structure        |
+| `git worktree-init <name>`                   | Initialize a new repo in the worktree structure |
+| `git worktree-checkout <branch>`             | Create worktree from existing branch            |
+| `git worktree-checkout-branch <branch>`      | Create new branch + worktree                    |
+| `git worktree-checkout-branch <branch> main` | Create branch from a specific base              |
+| `git worktree-prune`                         | Remove worktrees for deleted remote branches    |
+| `git worktree-carry`                         | Carry uncommitted changes to other worktrees    |
+| `git worktree-flow-adopt`                    | Convert traditional repo to worktree layout     |
+| `git worktree-flow-eject`                    | Convert back to traditional layout              |
 
 Run any command with `--help` for full options.
 

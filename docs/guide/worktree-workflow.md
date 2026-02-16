@@ -112,8 +112,11 @@ git worktree-checkout feature/teammate-work
 When your current branch has diverged and you need a fresh start:
 
 ```bash
-# Always branches from origin's default branch (main/master/develop)
-git worktree-checkout-branch --from-default hotfix/critical-fix
+# With shell integration (daft shell-init) - resolves default branch automatically
+gwtcbm hotfix/critical-fix
+
+# Or specify the base branch explicitly
+git worktree-checkout-branch hotfix/critical-fix main
 ```
 
 ### Moving Uncommitted Work

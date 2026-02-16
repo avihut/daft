@@ -68,10 +68,15 @@ git worktree-checkout bugfix/login-issue
 
 ## 4. Branch From Default
 
-When you need a fresh branch from `main` (regardless of where you are):
+When you need a fresh branch from `main` (regardless of where you are), use the
+`gwtcbm` shortcut from shell integration:
 
 ```bash
-git worktree-checkout-branch --from-default hotfix/critical-fix
+# With shell integration (daft shell-init)
+gwtcbm hotfix/critical-fix
+
+# Or specify the base branch explicitly
+git worktree-checkout-branch hotfix/critical-fix main
 ```
 
 Your directory structure becomes:

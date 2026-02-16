@@ -17,9 +17,12 @@ use crate::shortcuts::{shortcuts_for_style, ShortcutStyle, SHORTCUTS};
 Manage shortcut symlinks for daft commands.
 
 Shortcuts provide short aliases for frequently used commands:
-  - Git style:    gwtclone, gwtco, gwtcb, gwtcbm, gwtprune, gwtcarry, gwtfetch, gwtinit
-  - Shell style:  gwco, gwcob, gwcobd
-  - Legacy style: gclone, gcw, gcbw, gcbdw, gprune
+  - Git style:    gwtclone, gwtco, gwtcb, gwtprune, gwtcarry, gwtfetch, gwtinit, gwtbd
+  - Shell style:  gwco, gwcob
+  - Legacy style: gclone, gcw, gcbw, gprune
+
+Default-branch shortcuts (gwtcm, gwtcbm, gwcobd, gcbdw) are available
+via shell integration only (daft shell-init).
 
 Examples:
   daft setup shortcuts                    # Show current status

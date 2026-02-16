@@ -91,18 +91,17 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 
 ### Worktree Lifecycle
 
-| Command                                                     | Description                                                                      |
-| ----------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `daft worktree-clone <url>`                                 | Clone a remote repository into daft's worktree layout                            |
-| `daft worktree-init <name>`                                 | Initialize a new local repository in worktree layout                             |
-| `daft worktree-checkout <branch>`                           | Create a worktree for an existing local or remote branch                         |
-| `daft worktree-checkout-branch <new-branch> [base]`         | Create a new branch and worktree from current or specified base                  |
-| `daft worktree-checkout-branch --from-default <new-branch>` | Create a new branch and worktree from the remote's default branch                |
-| `daft worktree-branch-delete <branch>`                      | Fully delete a branch: its worktree, local branch, and remote tracking branch    |
-| `daft worktree-branch-delete -D <branch>`                   | Force-delete a branch bypassing safety checks (except default branch protection) |
-| `daft worktree-prune`                                       | Remove worktrees whose remote branches have been deleted                         |
-| `daft worktree-carry <targets>`                             | Transfer uncommitted changes to one or more other worktrees                      |
-| `daft worktree-fetch [targets]`                             | Pull remote updates into worktree branches                                       |
+| Command                                             | Description                                                                      |
+| --------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `daft worktree-clone <url>`                         | Clone a remote repository into daft's worktree layout                            |
+| `daft worktree-init <name>`                         | Initialize a new local repository in worktree layout                             |
+| `daft worktree-checkout <branch>`                   | Create a worktree for an existing local or remote branch                         |
+| `daft worktree-checkout-branch <new-branch> [base]` | Create a new branch and worktree from current or specified base                  |
+| `daft worktree-branch-delete <branch>`              | Fully delete a branch: its worktree, local branch, and remote tracking branch    |
+| `daft worktree-branch-delete -D <branch>`           | Force-delete a branch bypassing safety checks (except default branch protection) |
+| `daft worktree-prune`                               | Remove worktrees whose remote branches have been deleted                         |
+| `daft worktree-carry <targets>`                     | Transfer uncommitted changes to one or more other worktrees                      |
+| `daft worktree-fetch [targets]`                     | Pull remote updates into worktree branches                                       |
 
 ### Adoption and Ejection
 
@@ -474,7 +473,7 @@ When working in a daft-managed repository, apply these translations:
 | User intent           | Correct daft approach                                                                                |
 | --------------------- | ---------------------------------------------------------------------------------------------------- |
 | "Create a branch"     | `daft worktree-checkout-branch <name>` -- creates branch + worktree + pushes                         |
-| "Branch from main"    | `daft worktree-checkout-branch --from-default <name>` -- branches from remote default                |
+| "Branch from main"    | `daft worktree-checkout-branch <name> main` -- branches from the specified base                      |
 | "Switch to branch X"  | Navigate to the worktree directory: `cd ../X/`                                                       |
 | "Check out a PR"      | `daft worktree-checkout <branch>` -- creates worktree for existing branch                            |
 | "Delete a branch"     | `daft worktree-branch-delete <branch>` -- removes worktree, local branch, and remote tracking branch |
@@ -507,11 +506,15 @@ in one worktree must be committed and merged to propagate to other worktrees.
 
 daft supports three shortcut styles as symlink aliases for faster terminal use:
 
-| Style         | Shortcuts                                                                                      | Example              |
-| ------------- | ---------------------------------------------------------------------------------------------- | -------------------- |
-| Git (default) | `gwtclone`, `gwtinit`, `gwtco`, `gwtcb`, `gwtcbm`, `gwtbd`, `gwtprune`, `gwtcarry`, `gwtfetch` | `gwtco feature/auth` |
-| Shell         | `gwco`, `gwcob`, `gwcobd`                                                                      | `gwco feature/auth`  |
-| Legacy        | `gclone`, `gcw`, `gcbw`, `gcbdw`, `gprune`                                                     | `gcw feature/auth`   |
+| Style         | Shortcuts                                                                            | Example              |
+| ------------- | ------------------------------------------------------------------------------------ | -------------------- |
+| Git (default) | `gwtclone`, `gwtinit`, `gwtco`, `gwtcb`, `gwtbd`, `gwtprune`, `gwtcarry`, `gwtfetch` | `gwtco feature/auth` |
+| Shell         | `gwco`, `gwcob`                                                                      | `gwco feature/auth`  |
+| Legacy        | `gclone`, `gcw`, `gcbw`, `gprune`                                                    | `gcw feature/auth`   |
+
+Default-branch shortcuts (`gwtcm`, `gwtcbm`, `gwcobd`, `gcbdw`) are available
+via shell integration only (`daft shell-init`). They resolve the remote's
+default branch dynamically.
 
 Manage with `daft setup shortcuts list`, `enable <style>`, `disable <style>`,
 `only <style>`.
