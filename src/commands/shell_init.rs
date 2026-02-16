@@ -102,10 +102,12 @@ __daft_wrapper() {
     # Only capture stdout (where __DAFT_CD__ markers go).
     # Let stderr pass through to the terminal so hook progress
     # spinners and colors render correctly.
+    # CLICOLOR_FORCE=1 tells daft to emit colors even though stdout
+    # is a pipe — the wrapper echoes the output to the real terminal.
     if [ -n "$daft_bin" ]; then
-        output=$(DAFT_SHELL_WRAPPER=1 exec -a "$cmd" "$daft_bin" "$@")
+        output=$(CLICOLOR_FORCE=1 DAFT_SHELL_WRAPPER=1 exec -a "$cmd" "$daft_bin" "$@")
     else
-        output=$(DAFT_SHELL_WRAPPER=1 command "$cmd" "$@")
+        output=$(CLICOLOR_FORCE=1 DAFT_SHELL_WRAPPER=1 command "$cmd" "$@")
     fi
     exit_code=$?
     echo "$output" | grep -v '^__DAFT_CD__:'
@@ -273,11 +275,13 @@ function __daft_wrapper
     # Only capture stdout (where __DAFT_CD__ markers go).
     # Let stderr pass through to the terminal so hook progress
     # spinners and colors render correctly.
+    # CLICOLOR_FORCE=1 tells daft to emit colors even though stdout
+    # is a pipe — the wrapper echoes the output to the real terminal.
     # Fish doesn't have exec -a, so we use a bash subshell for this.
     if test -n "$daft_bin"
-        set output (env DAFT_SHELL_WRAPPER=1 bash -c 'exec -a "$0" "$1" "${@:2}"' "$cmd" "$daft_bin" $args)
+        set output (env CLICOLOR_FORCE=1 DAFT_SHELL_WRAPPER=1 bash -c 'exec -a "$0" "$1" "${@:2}"' "$cmd" "$daft_bin" $args)
     else
-        set output (env DAFT_SHELL_WRAPPER=1 command $cmd $args)
+        set output (env CLICOLOR_FORCE=1 DAFT_SHELL_WRAPPER=1 command $cmd $args)
     end
     set exit_code $status
 

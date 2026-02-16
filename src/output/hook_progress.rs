@@ -12,6 +12,14 @@ const ORANGE: &str = "\x1b[38;5;208m";
 const GREY: &str = "\x1b[38;5;245m";
 const BRIGHT_WHITE: &str = "\x1b[97m";
 
+/// Check if hook visual output should be suppressed (e.g. during tests).
+///
+/// Returns true when running unit tests (`cfg!(test)`) or when `DAFT_TESTING`
+/// env var is set (for integration tests that invoke the binary as a subprocess).
+fn output_suppressed() -> bool {
+    cfg!(test) || std::env::var("DAFT_TESTING").is_ok()
+}
+
 /// Entry recording a completed job for the summary.
 #[derive(Debug, Clone)]
 pub struct JobResultEntry {
@@ -113,6 +121,7 @@ pub struct HookProgressRenderer {
     finished_jobs: Vec<JobResultEntry>,
     use_color: bool,
     pipe_str: String,
+    arrow_str: String,
     spinner_style: ProgressStyle,
     spinner_style_with_timer: ProgressStyle,
     tail_style: ProgressStyle,
@@ -127,7 +136,6 @@ impl HookProgressRenderer {
         )
     }
 
-    #[cfg(test)]
     pub fn new_hidden(config: &HookOutputConfig) -> Self {
         Self::create(
             config,
@@ -144,7 +152,7 @@ impl HookProgressRenderer {
         };
 
         let arrow = if use_color {
-            format!("{GREY}\u{276f}{}", styles::RESET)
+            format!("{ORANGE}\u{276f}{}", styles::RESET)
         } else {
             "\u{276f}".to_string()
         };
@@ -174,6 +182,7 @@ impl HookProgressRenderer {
             finished_jobs: Vec::new(),
             use_color,
             pipe_str,
+            arrow_str: arrow,
             spinner_style,
             spinner_style_with_timer,
             tail_style,
@@ -302,7 +311,8 @@ impl HookProgressRenderer {
             name.to_string()
         };
         state.spinner.set_style(
-            ProgressStyle::with_template(&format!("{}  {{msg}}", self.pipe_str)).unwrap(),
+            ProgressStyle::with_template(&format!("{}  {{msg}} {}", self.pipe_str, self.arrow_str))
+                .unwrap(),
         );
         state.spinner.finish_with_message(finished_name);
 
@@ -422,7 +432,11 @@ pub enum HookRenderer {
 
 impl HookRenderer {
     /// Auto-detect: use rich renderer if stderr is a TTY, plain otherwise.
+    /// Returns a hidden renderer when `DAFT_TESTING` is set to keep test output clean.
     pub fn auto(config: &HookOutputConfig) -> Self {
+        if output_suppressed() {
+            return HookRenderer::Progress(Box::new(HookProgressRenderer::new_hidden(config)));
+        }
         use std::io::IsTerminal;
         if std::io::stderr().is_terminal() {
             HookRenderer::Progress(Box::new(HookProgressRenderer::new(config)))
@@ -500,14 +514,22 @@ impl HookRenderer {
 /// Print the hook execution header to stderr.
 ///
 /// Displays a dark-grey framed box with the hook name, version, and hook type.
+/// Suppressed when `DAFT_TESTING` env var is set (keeps test output clean).
 pub fn print_hook_header(hook_name: &str) {
+    if output_suppressed() {
+        return;
+    }
     for line in format_header_lines(hook_name, styles::colors_enabled_stderr()) {
         eprintln!("{line}");
     }
 }
 
 /// Print the summary section after all hook jobs have completed.
+/// Suppressed when `DAFT_TESTING` env var is set (keeps test output clean).
 pub fn print_hook_summary(job_results: &[JobResultEntry], total_duration: Duration) {
+    if output_suppressed() {
+        return;
+    }
     for line in format_summary_lines(job_results, total_duration, styles::colors_enabled_stderr()) {
         eprintln!("{line}");
     }

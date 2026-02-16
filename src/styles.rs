@@ -7,17 +7,45 @@ use std::io::IsTerminal;
 use std::sync::OnceLock;
 
 /// Whether colors are enabled for stdout (cached on first call).
+///
+/// Checks (in order):
+/// 1. `NO_COLOR` set → disabled
+/// 2. `CLICOLOR_FORCE` set and non-zero → enabled (even when piped)
+/// 3. stdout is a TTY → enabled
 pub fn colors_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED
-        .get_or_init(|| std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none())
+    *ENABLED.get_or_init(|| {
+        if std::env::var_os("NO_COLOR").is_some() {
+            return false;
+        }
+        if is_env_force_color() {
+            return true;
+        }
+        std::io::stdout().is_terminal()
+    })
 }
 
 /// Whether colors are enabled for stderr (cached on first call).
+///
+/// Same precedence as [`colors_enabled`] but checks stderr TTY status.
 pub fn colors_enabled_stderr() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED
-        .get_or_init(|| std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none())
+    *ENABLED.get_or_init(|| {
+        if std::env::var_os("NO_COLOR").is_some() {
+            return false;
+        }
+        if is_env_force_color() {
+            return true;
+        }
+        std::io::stderr().is_terminal()
+    })
+}
+
+/// Check if `CLICOLOR_FORCE` is set to a non-zero value.
+fn is_env_force_color() -> bool {
+    std::env::var("CLICOLOR_FORCE")
+        .map(|v| v != "0")
+        .unwrap_or(false)
 }
 
 /// ANSI escape code for bold text.
