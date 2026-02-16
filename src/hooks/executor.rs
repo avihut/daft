@@ -215,6 +215,7 @@ impl HookExecutor {
             source_dir,
             working_dir,
             rc,
+            &self.config.output,
         )?;
 
         if !result.success && !result.skipped {
