@@ -3,6 +3,23 @@
 //! Provides clean abstractions for ANSI terminal styling, keeping escape codes
 //! isolated from application code.
 
+use std::io::IsTerminal;
+use std::sync::OnceLock;
+
+/// Whether colors are enabled for stdout (cached on first call).
+pub fn colors_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED
+        .get_or_init(|| std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none())
+}
+
+/// Whether colors are enabled for stderr (cached on first call).
+pub fn colors_enabled_stderr() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED
+        .get_or_init(|| std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none())
+}
+
 /// ANSI escape code for bold text.
 pub const BOLD: &str = "\x1b[1m";
 
