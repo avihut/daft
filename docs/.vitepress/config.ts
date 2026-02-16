@@ -18,7 +18,54 @@ export default defineConfig({
   title: "daft",
   description: "Git Extensions Toolkit",
   srcExclude: ["WEBSITE-BOOTSTRAP.md", "HISTORY.md"],
-  ignoreDeadLinks: true,
+  ignoreDeadLinks: false,
+  cleanUrls: true,
+  lastUpdated: true,
+  sitemap: {
+    hostname: "https://daft.avihu.dev",
+  },
+  head: [
+    ["link", { rel: "icon", type: "image/png", href: "/favicon.png" }],
+    ["meta", { property: "og:type", content: "website" }],
+    ["meta", { property: "og:site_name", content: "daft" }],
+    ["meta", { property: "og:locale", content: "en_US" }],
+    [
+      "meta",
+      {
+        property: "og:image",
+        content: "https://daft.avihu.dev/og-image.png",
+      },
+    ],
+    ["meta", { property: "og:image:width", content: "1200" }],
+    ["meta", { property: "og:image:height", content: "630" }],
+    ["meta", { name: "twitter:card", content: "summary_large_image" }],
+    [
+      "meta",
+      {
+        name: "twitter:image",
+        content: "https://daft.avihu.dev/og-image.png",
+      },
+    ],
+  ],
+  transformPageData(pageData) {
+    const canonicalPath = pageData.relativePath
+      .replace(/index\.md$/, "")
+      .replace(/\.md$/, "");
+    const canonicalUrl = `https://daft.avihu.dev/${canonicalPath}`;
+    const title = pageData.frontmatter.title || pageData.title;
+    const description =
+      pageData.frontmatter.description || "Git Extensions Toolkit";
+
+    pageData.frontmatter.head ??= [];
+    pageData.frontmatter.head.push(
+      ["link", { rel: "canonical", href: canonicalUrl }],
+      ["meta", { property: "og:title", content: title }],
+      ["meta", { property: "og:description", content: description }],
+      ["meta", { property: "og:url", content: canonicalUrl }],
+      ["meta", { name: "twitter:title", content: title }],
+      ["meta", { name: "twitter:description", content: description }],
+    );
+  },
   markdown: {
     config: (md) => {
       // Escape angle-bracket placeholders like <branch>, <name>, etc.
