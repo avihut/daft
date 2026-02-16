@@ -70,9 +70,9 @@ cd target/release && rm -f \
     git-worktree-flow-adopt \
     git-worktree-flow-eject \
     git-daft \
-    gwtclone gwtinit gwtco gwtcb gwtcbm gwtprune gwtcarry gwtfetch \
-    gwco gwcob gwcobd \
-    gclone gcw gcbw gcbdw gprune
+    gwtclone gwtinit gwtco gwtcb gwtprune gwtcarry gwtfetch \
+    gwco gwcob \
+    gclone gcw gcbw gprune
 echo "Symlinks removed (binary preserved)"
 """
 
@@ -167,14 +167,6 @@ depends = ["build"]
 run = """
 echo "Running Rust integration checkout-branch tests..."
 cd tests/integration && ./test_checkout_branch.sh
-"""
-
-[tasks.test-integration-checkout-branch-from-default]
-description = "Run integration checkout-branch-from-default tests"
-depends = ["build"]
-run = """
-echo "Running Rust integration checkout-branch-from-default tests..."
-cd tests/integration && ./test_checkout_branch_from_default.sh
 """
 
 [tasks.test-integration-init]
@@ -333,7 +325,6 @@ ln -sf daft gwtclone
 ln -sf daft gwtinit
 ln -sf daft gwtco
 ln -sf daft gwtcb
-ln -sf daft gwtcbm
 ln -sf daft gwtprune
 ln -sf daft gwtcarry
 ln -sf daft gwtfetch

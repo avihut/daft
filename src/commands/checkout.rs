@@ -91,7 +91,9 @@ pub fn run() -> Result<()> {
 }
 
 fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
-    validate_branch_name(&args.branch_name)?;
+    let branch_name = &args.branch_name;
+
+    validate_branch_name(branch_name)?;
 
     let project_root = get_project_root()?;
     let git_dir = get_git_common_dir()?;
@@ -106,7 +108,7 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
     // Resolve remote for multi-remote mode
     let remote_for_path = resolve_remote_for_branch(
         &git,
-        &args.branch_name,
+        branch_name,
         args.remote.as_deref(),
         &settings.multi_remote_default,
     )?;
@@ -114,7 +116,7 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
     // Calculate worktree path based on multi-remote mode
     let worktree_path = calculate_worktree_path(
         &project_root,
-        &args.branch_name,
+        branch_name,
         &remote_for_path,
         settings.multi_remote_enabled,
     );
@@ -122,23 +124,20 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
     output.step(&format!(
         "Path: {}, Branch: {}, Project Root: {}",
         worktree_path.display(),
-        args.branch_name,
+        branch_name,
         project_root.display()
     ));
 
     // Check if worktree already exists for this branch
-    if let Some(existing_path) = find_existing_worktree_for_branch(&git, &args.branch_name)? {
+    if let Some(existing_path) = find_existing_worktree_for_branch(&git, branch_name)? {
         output.step(&format!(
             "Branch '{}' already has a worktree at '{}'",
-            args.branch_name,
+            branch_name,
             existing_path.display()
         ));
         output.step("Changing to existing worktree...");
         change_directory(&existing_path)?;
-        output.result(&format!(
-            "Switched to existing worktree '{}'",
-            args.branch_name
-        ));
+        output.result(&format!("Switched to existing worktree '{}'", branch_name));
         output.cd_path(&get_current_directory()?);
         maybe_show_shell_hint(output)?;
         return Ok(());
@@ -159,25 +158,25 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
     // Also fetch the specific branch to ensure remote tracking branch is updated
     output.step(&format!(
         "Fetching specific branch '{}' from remote '{}'...",
-        args.branch_name, config.remote_name
+        branch_name, config.remote_name
     ));
     if let Err(e) = git.fetch_refspec(
         &config.remote_name,
-        &format!("{}:{}", args.branch_name, args.branch_name),
+        &format!("{}:{}", branch_name, branch_name),
     ) {
         output.warning(&format!("Failed to fetch specific branch: {e}"));
     }
 
     // Check if local and/or remote branch exists
-    let local_branch_ref = format!("refs/heads/{}", args.branch_name);
-    let remote_branch_ref = format!("refs/remotes/{}/{}", config.remote_name, args.branch_name);
+    let local_branch_ref = format!("refs/heads/{}", branch_name);
+    let remote_branch_ref = format!("refs/remotes/{}/{}", config.remote_name, branch_name);
     let local_exists = git.show_ref_exists(&local_branch_ref)?;
     let remote_exists = git.show_ref_exists(&remote_branch_ref)?;
 
     if !local_exists && !remote_exists {
         anyhow::bail!(
             "Branch '{}' does not exist locally or on remote '{}'",
-            args.branch_name,
+            branch_name,
             config.remote_name
         );
     }
@@ -186,13 +185,13 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
     let use_local_branch = if local_exists {
         output.step(&format!(
             "Local branch '{}' found, using it for worktree creation",
-            args.branch_name
+            branch_name
         ));
         true
     } else {
         output.step(&format!(
             "Local branch '{}' not found, will create from remote '{}/{}'",
-            args.branch_name, config.remote_name, args.branch_name
+            branch_name, config.remote_name, branch_name
         ));
         false
     };
@@ -241,18 +240,18 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
         &config.remote_name,
         &source_worktree,
         &worktree_path,
-        &args.branch_name,
+        branch_name,
         false, // not a new branch (existing branch checkout)
         output,
     )?;
 
     // Create worktree: use local branch directly, or create local branch from remote
     let worktree_result = if use_local_branch {
-        git.worktree_add(&worktree_path, &args.branch_name)
+        git.worktree_add(&worktree_path, branch_name)
     } else {
         // Create a new local branch tracking the remote branch
-        let remote_ref = format!("{}/{}", config.remote_name, args.branch_name);
-        git.worktree_add_new_branch(&worktree_path, &args.branch_name, &remote_ref)
+        let remote_ref = format!("{}/{}", config.remote_name, branch_name);
+        git.worktree_add_new_branch(&worktree_path, branch_name, &remote_ref)
     };
 
     if let Err(e) = worktree_result {
@@ -278,7 +277,7 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
     output.step(&format!(
         "Worktree created at '{}' checking out branch '{}'",
         worktree_path.display(),
-        args.branch_name
+        branch_name
     ));
 
     output.step(&format!(
@@ -301,19 +300,19 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
 
     // Set upstream only if checkout_upstream is enabled
     if settings.checkout_upstream {
-        let remote_branch_ref = format!("refs/remotes/{}/{}", config.remote_name, args.branch_name);
+        let remote_branch_ref = format!("refs/remotes/{}/{}", config.remote_name, branch_name);
         output.step(&format!(
             "Checking for remote branch '{}/{}'...",
-            config.remote_name, args.branch_name
+            config.remote_name, branch_name
         ));
 
         if git.show_ref_exists(&remote_branch_ref)? {
             output.step(&format!(
                 "Setting upstream to '{}/{}'...",
-                config.remote_name, args.branch_name
+                config.remote_name, branch_name
             ));
 
-            if let Err(e) = git.set_upstream(&config.remote_name, &args.branch_name) {
+            if let Err(e) = git.set_upstream(&config.remote_name, branch_name) {
                 output.warning(&format!(
                     "Failed to set upstream tracking: {}. Worktree created, but upstream may need manual configuration.",
                     e
@@ -321,13 +320,13 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
             } else {
                 output.step(&format!(
                     "Upstream tracking set to '{}/{}'",
-                    config.remote_name, args.branch_name
+                    config.remote_name, branch_name
                 ));
             }
         } else {
             output.step(&format!(
                 "Remote branch '{}/{}' not found, skipping upstream setup",
-                config.remote_name, args.branch_name
+                config.remote_name, branch_name
             ));
         }
     } else {
@@ -341,13 +340,13 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
         &config.remote_name,
         &source_worktree,
         &worktree_path,
-        &args.branch_name,
+        branch_name,
         false, // not a new branch
         output,
     )?;
 
     // Git-like result message
-    output.result(&format!("Prepared worktree '{}'", args.branch_name));
+    output.result(&format!("Prepared worktree '{}'", branch_name));
 
     output.cd_path(&get_current_directory()?);
     maybe_show_shell_hint(output)?;

@@ -24,8 +24,7 @@ daft uses a **single binary with multiple symlinks** (like BusyBox):
   - `git-worktree-fetch` → `daft`
   - `git-daft` → `daft`
 - Git-style shortcuts (default):
-  - `gwtclone`, `gwtinit`, `gwtco`, `gwtcb`, `gwtcbm`, `gwtprune`, `gwtcarry`,
-    `gwtfetch`
+  - `gwtclone`, `gwtinit`, `gwtco`, `gwtcb`, `gwtprune`, `gwtcarry`, `gwtfetch`
 
 ## Formula Customization
 
@@ -91,7 +90,6 @@ def install
   bin.install_symlink bin/"daft" => "gwtinit"
   bin.install_symlink bin/"daft" => "gwtco"
   bin.install_symlink bin/"daft" => "gwtcb"
-  bin.install_symlink bin/"daft" => "gwtcbm"
   bin.install_symlink bin/"daft" => "gwtprune"
   bin.install_symlink bin/"daft" => "gwtcarry"
   bin.install_symlink bin/"daft" => "gwtfetch"
@@ -176,8 +174,7 @@ class Daft < Formula
     bin.install_symlink bin/"daft" => "gwtinit"
     bin.install_symlink bin/"daft" => "gwtco"
     bin.install_symlink bin/"daft" => "gwtcb"
-    bin.install_symlink bin/"daft" => "gwtcbm"
-    bin.install_symlink bin/"daft" => "gwtprune"
+      bin.install_symlink bin/"daft" => "gwtprune"
     bin.install_symlink bin/"daft" => "gwtcarry"
     bin.install_symlink bin/"daft" => "gwtfetch"
 
@@ -201,7 +198,7 @@ class Daft < Formula
         git worktree-prune
 
       Shortcuts are also available:
-        gwtclone, gwtco, gwtcb, gwtcbm, gwtprune, gwtinit, gwtcarry, gwtfetch
+        gwtclone, gwtco, gwtcb, gwtprune, gwtinit, gwtcarry, gwtfetch
 
       Run 'git daft' for full documentation.
       Run 'daft setup shortcuts list' to see all shortcut styles.
