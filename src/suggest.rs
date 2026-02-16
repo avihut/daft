@@ -13,6 +13,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "release-notes",
     "setup",
     "shell-init",
+    "worktree-branch-delete",
     "worktree-carry",
     "worktree-checkout",
     "worktree-checkout-branch",

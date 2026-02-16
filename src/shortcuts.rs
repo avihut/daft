@@ -86,7 +86,7 @@ pub struct Shortcut {
 
 /// All available shortcuts across all styles.
 pub const SHORTCUTS: &[Shortcut] = &[
-    // Git style (8 shortcuts)
+    // Git style (9 shortcuts)
     Shortcut {
         alias: "gwtclone",
         command: "git-worktree-clone",
@@ -132,6 +132,12 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut {
         alias: "gwtfetch",
         command: "git-worktree-fetch",
+        style: ShortcutStyle::Git,
+        extra_args: &[],
+    },
+    Shortcut {
+        alias: "gwtbd",
+        command: "git-worktree-branch-delete",
         style: ShortcutStyle::Git,
         extra_args: &[],
     },
@@ -230,6 +236,7 @@ mod tests {
         assert_eq!(resolve("gwtprune"), "git-worktree-prune");
         assert_eq!(resolve("gwtcarry"), "git-worktree-carry");
         assert_eq!(resolve("gwtfetch"), "git-worktree-fetch");
+        assert_eq!(resolve("gwtbd"), "git-worktree-branch-delete");
         assert_eq!(resolve("gwtinit"), "git-worktree-init");
     }
 
@@ -276,6 +283,7 @@ mod tests {
             "git-worktree-checkout-branch",
             "git-worktree-prune",
             "git-worktree-carry",
+            "git-worktree-branch-delete",
             "git-worktree-fetch",
         ];
 
@@ -318,7 +326,7 @@ mod tests {
     #[test]
     fn test_shortcuts_for_style() {
         let git_shortcuts = shortcuts_for_style(ShortcutStyle::Git);
-        assert_eq!(git_shortcuts.len(), 8);
+        assert_eq!(git_shortcuts.len(), 9);
 
         let shell_shortcuts = shortcuts_for_style(ShortcutStyle::Shell);
         assert_eq!(shell_shortcuts.len(), 3);
