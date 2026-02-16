@@ -1095,6 +1095,19 @@ fn run_shell_command(
     ctx: &HookContext,
     timeout: Duration,
 ) -> Result<HookResult> {
+    run_shell_command_with_callback(cmd, extra_env, working_dir, ctx, timeout, None)
+}
+
+/// Run a shell command, capture its output, and optionally stream lines
+/// through the provided channel.
+fn run_shell_command_with_callback(
+    cmd: &str,
+    extra_env: &HashMap<String, String>,
+    working_dir: &Path,
+    ctx: &HookContext,
+    timeout: Duration,
+    line_sender: Option<std::sync::mpsc::Sender<String>>,
+) -> Result<HookResult> {
     let mut command = Command::new("sh");
     command.args(["-c", cmd]);
     command.current_dir(working_dir);
@@ -1119,6 +1132,9 @@ fn run_shell_command(
     let stdout_handle = child.stdout.take();
     let stderr_handle = child.stderr.take();
 
+    let tx_stdout = line_sender.clone();
+    let tx_stderr = line_sender;
+
     // Read stdout and stderr in separate threads so they don't block the
     // timeout.  Previously the reads were sequential on the main thread,
     // which meant `wait_with_timeout` was unreachable until the child
@@ -1128,6 +1144,9 @@ fn run_shell_command(
         if let Some(stdout) = stdout_handle {
             let reader = BufReader::new(stdout);
             for line in reader.lines().map_while(Result::ok) {
+                if let Some(ref tx) = tx_stdout {
+                    tx.send(line.clone()).ok();
+                }
                 content.push_str(&line);
                 content.push('\n');
             }
@@ -1140,6 +1159,9 @@ fn run_shell_command(
         if let Some(stderr) = stderr_handle {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
+                if let Some(ref tx) = tx_stderr {
+                    tx.send(line.clone()).ok();
+                }
                 content.push_str(&line);
                 content.push('\n');
             }
@@ -1870,5 +1892,28 @@ mod tests {
         assert!(!result.success);
         // B should be reported as dep-failed
         assert!(output.has_warning("dependency"));
+    }
+
+    #[test]
+    fn test_run_shell_command_streams_output() {
+        let ctx = make_ctx();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+
+        let result = run_shell_command_with_callback(
+            "echo hello && echo world",
+            &HashMap::new(),
+            Path::new("/tmp"),
+            &ctx,
+            Duration::from_secs(10),
+            Some(tx),
+        )
+        .unwrap();
+
+        assert!(result.success);
+        assert!(result.stdout.contains("hello"));
+
+        let lines: Vec<String> = rx.try_iter().collect();
+        assert!(lines.iter().any(|l| l.contains("hello")));
+        assert!(lines.iter().any(|l| l.contains("world")));
     }
 }
