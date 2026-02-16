@@ -66,7 +66,7 @@ ensure_rust_binaries() {
     fi
 
     # Create symlinks for the multicall binary (ensures tests use locally built binary)
-    local symlink_names=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-prune" "git-worktree-carry" "git-worktree-fetch" "git-worktree-flow-adopt" "git-worktree-flow-eject" "git-daft" "gwtclone" "gwtinit" "gwtco" "gwtcb" "gwtcbm" "gwtprune" "gwtcarry" "gwtfetch")
+    local symlink_names=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-branch-delete" "git-worktree-prune" "git-worktree-carry" "git-worktree-fetch" "git-worktree-flow-adopt" "git-worktree-flow-eject" "git-daft" "gwtclone" "gwtinit" "gwtco" "gwtcb" "gwtcbm" "gwtprune" "gwtcarry" "gwtfetch" "gwtbd")
     for name in "${symlink_names[@]}"; do
         if [[ ! -L "$RUST_BINARY_DIR/$name" ]]; then
             ln -sf daft "$RUST_BINARY_DIR/$name"

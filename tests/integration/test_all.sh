@@ -11,6 +11,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_checkout.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_checkout_branch.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_checkout_branch_from_default.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_prune.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/test_branch_delete.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_fetch.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_config.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_hooks.sh"
@@ -297,6 +298,7 @@ run_all_integration_tests() {
     run_checkout_branch_tests
     run_checkout_branch_from_default_tests
     run_prune_tests
+    run_branch_delete_tests
     run_fetch_tests
     run_config_tests
     run_hooks_tests

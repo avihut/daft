@@ -269,6 +269,10 @@ export default defineConfig({
                 text: "worktree-checkout-branch",
                 link: "/cli/git-worktree-checkout-branch",
               },
+              {
+                text: "worktree-branch-delete",
+                link: "/cli/git-worktree-branch-delete",
+              },
             ],
           },
           {

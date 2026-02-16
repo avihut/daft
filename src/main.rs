@@ -43,6 +43,7 @@ fn main() -> Result<()> {
         }
         "git-worktree-prune" => commands::prune::run(),
         "git-worktree-carry" => commands::carry::run(),
+        "git-worktree-branch-delete" => commands::branch_delete::run(),
         "git-worktree-fetch" => commands::fetch::run(),
         "git-worktree-flow-adopt" => commands::flow_adopt::run(),
         "git-worktree-flow-eject" => commands::flow_eject::run(),
@@ -88,6 +89,7 @@ fn main() -> Result<()> {
                     "worktree-carry" => commands::carry::run(),
                     "worktree-fetch" => commands::fetch::run(),
                     "worktree-flow-adopt" => commands::flow_adopt::run(),
+                    "worktree-branch-delete" => commands::branch_delete::run(),
                     "worktree-flow-eject" => commands::flow_eject::run(),
                     _ => daft::suggest::handle_unknown_subcommand(
                         label,

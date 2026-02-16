@@ -459,6 +459,89 @@ impl GitCommand {
             .context("Failed to parse commit count as number")
     }
 
+    /// Check if `commit` is an ancestor of `target` using merge-base.
+    pub fn merge_base_is_ancestor(&self, commit: &str, target: &str) -> Result<bool> {
+        let output = Command::new("git")
+            .args(["merge-base", "--is-ancestor", commit, target])
+            .output()
+            .context("Failed to execute git merge-base command")?;
+
+        Ok(output.status.success())
+    }
+
+    /// Run `git cherry <upstream> <branch>` and return output.
+    /// Lines prefixed with `-` indicate patches already upstream.
+    /// Lines prefixed with `+` indicate patches NOT upstream.
+    pub fn cherry(&self, upstream: &str, branch: &str) -> Result<String> {
+        let output = Command::new("git")
+            .args(["cherry", upstream, branch])
+            .output()
+            .context("Failed to execute git cherry command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git cherry failed: {}", stderr);
+        }
+
+        String::from_utf8(output.stdout).context("Failed to parse git cherry output")
+    }
+
+    /// Delete a remote branch via `git push <remote> --delete <branch>`.
+    pub fn push_delete(&self, remote: &str, branch: &str) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.args(["push", remote, "--delete", branch]);
+
+        if self.quiet {
+            cmd.arg("--quiet");
+        }
+
+        let output = cmd
+            .output()
+            .context("Failed to execute git push --delete command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git push --delete failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
+    /// Check if a specific worktree path has uncommitted or untracked changes.
+    pub fn has_uncommitted_changes_in(&self, worktree_path: &Path) -> Result<bool> {
+        let output = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to execute git status command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git status failed: {}", stderr);
+        }
+
+        let stdout =
+            String::from_utf8(output.stdout).context("Failed to parse git status output")?;
+        Ok(!stdout.trim().is_empty())
+    }
+
+    /// Resolve a ref to its SHA. Returns the full commit hash.
+    pub fn rev_parse(&self, rev: &str) -> Result<String> {
+        let output = Command::new("git")
+            .args(["rev-parse", rev])
+            .output()
+            .context("Failed to execute git rev-parse command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git rev-parse failed: {}", stderr);
+        }
+
+        let stdout =
+            String::from_utf8(output.stdout).context("Failed to parse git rev-parse output")?;
+        Ok(stdout.trim().to_string())
+    }
+
     /// Check if current directory is inside a Git work tree
     pub fn rev_parse_is_inside_work_tree(&self) -> Result<bool> {
         if self.use_gitoxide {
