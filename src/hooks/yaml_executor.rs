@@ -8,7 +8,7 @@ use super::executor::HookResult;
 use super::template;
 use super::yaml_config::{GroupDef, HookDef, JobDef};
 use super::yaml_config_loader::get_effective_jobs;
-use crate::output::hook_progress::HookProgressRenderer;
+use crate::output::hook_progress::HookRenderer;
 use crate::output::Output;
 use crate::settings::HookOutputConfig;
 use anyhow::{Context, Result};
@@ -208,7 +208,7 @@ fn execute_sequential(
 ) -> Result<HookResult> {
     let mut any_failed = false;
     let mut last_failure: Option<HookResult> = None;
-    let mut renderer = HookProgressRenderer::new(exec.output_config);
+    let mut renderer = HookRenderer::auto(exec.output_config);
 
     for job in jobs {
         let job_name = job.name.as_deref().unwrap_or("(unnamed)");
@@ -318,7 +318,7 @@ fn execute_parallel(
     type IndexedResult = (usize, String, Result<HookResult>, Duration);
     let results: Arc<Mutex<Vec<IndexedResult>>> = Arc::new(Mutex::new(Vec::new()));
 
-    let renderer = Arc::new(Mutex::new(HookProgressRenderer::new(exec.output_config)));
+    let renderer = Arc::new(Mutex::new(HookRenderer::auto(exec.output_config)));
 
     // Limit concurrency to avoid thread explosion
     let max_threads = std::thread::available_parallelism()
@@ -594,7 +594,7 @@ fn execute_dag_parallel(
     type ThreadResult = (usize, String, std::result::Result<HookResult, String>);
     let results_collector: Mutex<Vec<ThreadResult>> = Mutex::new(Vec::new());
 
-    let renderer = Mutex::new(HookProgressRenderer::new(exec.output_config));
+    let renderer = Mutex::new(HookRenderer::auto(exec.output_config));
 
     let ctx_clone = exec.hook_ctx.clone();
     let rc = exec.rc.map(|s| s.to_string());
@@ -967,7 +967,7 @@ fn execute_dag_sequential(
     let n = jobs.len();
     let (name_to_idx, dependents, mut in_degree) = build_dag(jobs);
     let mut status: Vec<JobStatus> = vec![JobStatus::Pending; n];
-    let mut renderer = HookProgressRenderer::new(exec.output_config);
+    let mut renderer = HookRenderer::auto(exec.output_config);
 
     // Kahn's algorithm with priority-based BinaryHeap
     // BinaryHeap is a max-heap; we want lowest priority first, so use Reverse

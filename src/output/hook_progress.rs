@@ -164,6 +164,111 @@ impl HookProgressRenderer {
     }
 }
 
+/// Plain text renderer for non-TTY environments (CI, pipes).
+///
+/// Prints progress messages as simple lines to stderr without spinners
+/// or ANSI escape sequences.
+#[derive(Default)]
+pub struct PlainHookRenderer {
+    output_lines: Vec<String>,
+}
+
+impl PlainHookRenderer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn start_job(&mut self, name: &str) {
+        let msg = format!("  Running {name}...");
+        eprintln!("{msg}");
+        self.output_lines.push(msg);
+    }
+
+    pub fn update_job_output(&mut self, _name: &str, line: &str) {
+        eprintln!("  │   {line}");
+        self.output_lines.push(line.to_string());
+    }
+
+    pub fn finish_job_success(&mut self, name: &str, duration: Duration) {
+        let msg = format!("  ✓ {name} ({})", format_duration(duration));
+        eprintln!("{msg}");
+        self.output_lines.push(msg);
+    }
+
+    pub fn finish_job_failure(&mut self, name: &str, duration: Duration) {
+        let msg = format!("  ✗ {name} ({})", format_duration(duration));
+        eprintln!("{msg}");
+        self.output_lines.push(msg);
+    }
+
+    pub fn println(&self, msg: &str) {
+        eprintln!("{msg}");
+    }
+}
+
+/// Unified hook renderer with TTY and non-TTY variants.
+///
+/// Use [`HookRenderer::auto`] to automatically select the appropriate
+/// renderer based on whether stderr is a terminal.
+pub enum HookRenderer {
+    /// Rich spinner-based output for interactive terminals.
+    Progress(Box<HookProgressRenderer>),
+    /// Plain text output for CI, pipes, and non-TTY environments.
+    Plain(PlainHookRenderer),
+}
+
+impl HookRenderer {
+    /// Auto-detect: use rich renderer if stderr is a TTY, plain otherwise.
+    pub fn auto(config: &HookOutputConfig) -> Self {
+        use std::io::IsTerminal;
+        if std::io::stderr().is_terminal() {
+            HookRenderer::Progress(Box::new(HookProgressRenderer::new(config)))
+        } else {
+            HookRenderer::Plain(PlainHookRenderer::new())
+        }
+    }
+
+    #[cfg(test)]
+    pub fn new_hidden(config: &HookOutputConfig) -> Self {
+        HookRenderer::Progress(Box::new(HookProgressRenderer::new_hidden(config)))
+    }
+
+    pub fn start_job(&mut self, name: &str) {
+        match self {
+            HookRenderer::Progress(r) => r.start_job(name),
+            HookRenderer::Plain(r) => r.start_job(name),
+        }
+    }
+
+    pub fn update_job_output(&mut self, name: &str, line: &str) {
+        match self {
+            HookRenderer::Progress(r) => r.update_job_output(name, line),
+            HookRenderer::Plain(r) => r.update_job_output(name, line),
+        }
+    }
+
+    pub fn finish_job_success(&mut self, name: &str, duration: Duration) {
+        match self {
+            HookRenderer::Progress(r) => r.finish_job_success(name, duration),
+            HookRenderer::Plain(r) => r.finish_job_success(name, duration),
+        }
+    }
+
+    pub fn finish_job_failure(&mut self, name: &str, duration: Duration) {
+        match self {
+            HookRenderer::Progress(r) => r.finish_job_failure(name, duration),
+            HookRenderer::Plain(r) => r.finish_job_failure(name, duration),
+        }
+    }
+
+    pub fn println(&self, msg: &str) {
+        match self {
+            HookRenderer::Progress(r) => r.println(msg),
+            HookRenderer::Plain(r) => r.println(msg),
+        }
+    }
+}
+
 fn format_duration(d: Duration) -> String {
     let secs = d.as_secs_f64();
     if secs < 60.0 {
@@ -244,5 +349,25 @@ mod tests {
             format_duration(std::time::Duration::from_secs_f64(0.5)),
             "0.5s"
         );
+    }
+
+    #[test]
+    fn test_plain_renderer_lifecycle() {
+        let mut renderer = PlainHookRenderer::new();
+        renderer.start_job("test-job");
+        renderer.update_job_output("test-job", "line 1");
+        renderer.update_job_output("test-job", "line 2");
+        renderer.finish_job_success("test-job", Duration::from_secs(2));
+        // Verify output was tracked
+        assert!(renderer.output_lines.iter().any(|l| l.contains("test-job")));
+        assert!(renderer.output_lines.iter().any(|l| l.contains("line 1")));
+    }
+
+    #[test]
+    fn test_plain_renderer_failure() {
+        let mut renderer = PlainHookRenderer::new();
+        renderer.start_job("fail-job");
+        renderer.finish_job_failure("fail-job", Duration::from_secs(3));
+        assert!(renderer.output_lines.iter().any(|l| l.contains("✗")));
     }
 }
