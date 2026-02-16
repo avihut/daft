@@ -7,6 +7,7 @@ const cargoToml = readFileSync(
   "utf-8",
 );
 const version = cargoToml.match(/^version\s*=\s*"(.+?)"/m)?.[1] ?? "unknown";
+const GITHUB_REPO = "https://github.com/avihut/daft";
 
 export default defineConfig({
   vite: {
@@ -34,8 +35,87 @@ export default defineConfig({
         return defaultRender(tokens, idx, options, env, self);
       };
 
+      // Strip the [Unreleased] section from the changelog so it never
+      // appears on the deployed docs site (it's always empty on master).
+      md.core.ruler.push("remove-unreleased", (state) => {
+        const tokens = state.tokens;
+        for (let i = 0; i < tokens.length; i++) {
+          if (tokens[i].type !== "heading_open" || tokens[i].tag !== "h2")
+            continue;
+          const inline = tokens[i + 1];
+          if (
+            !inline ||
+            inline.type !== "inline" ||
+            !/^\[Unreleased\]/i.test(inline.content)
+          )
+            continue;
+          // Find the next h2 (or end of tokens) and remove everything between
+          let end = tokens.length;
+          for (let j = i + 3; j < tokens.length; j++) {
+            if (tokens[j].type === "heading_open" && tokens[j].tag === "h2") {
+              end = j;
+              break;
+            }
+          }
+          tokens.splice(i, end - i);
+          break;
+        }
+      });
+
+      // Auto-link bare #NNN issue/PR references to GitHub.
+      // Skips references already inside a markdown link.
+      md.core.ruler.push("autolink-pr-references", (state) => {
+        for (const blockToken of state.tokens) {
+          if (blockToken.type !== "inline" || !blockToken.children) continue;
+
+          const newChildren = [];
+          let insideLink = false;
+
+          for (const token of blockToken.children) {
+            if (token.type === "link_open") insideLink = true;
+            if (token.type === "link_close") insideLink = false;
+
+            if (
+              token.type !== "text" ||
+              insideLink ||
+              !/#\d+/.test(token.content)
+            ) {
+              newChildren.push(token);
+              continue;
+            }
+
+            // Split text around #NNN patterns and wrap each in a link
+            for (const part of token.content.split(/(#\d+)/)) {
+              if (!part) continue;
+              const prMatch = part.match(/^#(\d+)$/);
+              if (prMatch) {
+                const linkOpen = new state.Token("link_open", "a", 1);
+                linkOpen.attrs = [
+                  ["href", `${GITHUB_REPO}/pull/${prMatch[1]}`],
+                ];
+                newChildren.push(linkOpen);
+
+                const text = new state.Token("text", "", 0);
+                text.content = part;
+                newChildren.push(text);
+
+                const linkClose = new state.Token("link_close", "a", -1);
+                newChildren.push(linkClose);
+              } else {
+                const text = new state.Token("text", "", 0);
+                text.content = part;
+                newChildren.push(text);
+              }
+            }
+          }
+
+          blockToken.children = newChildren;
+        }
+      });
+
       // Reformat changelog version headings:
-      //   ## [1.0.22] - 2026-02-07  →  version without brackets, date on next line muted
+      //   ## [1.0.22] - 2026-02-07            →  version + date on separate line
+      //   ## [1.0.24](compare-url) - 2026-02-15  →  same treatment (new release-plz format)
       const defaultHeadingOpen =
         md.renderer.rules.heading_open ||
         ((tokens, idx, options, _env, self) =>
@@ -49,19 +129,21 @@ export default defineConfig({
           return defaultHeadingOpen(tokens, idx, options, env, self);
         }
         const match = inline.content.match(
-          /^\[(.+?)\]\s*-\s*(\d{4}-\d{2}-\d{2})$/,
+          /^\[(.+?)\](?:\(.*?\))?\s*-\s*(\d{4}-\d{2}-\d{2})$/,
         );
         if (!match) {
           return defaultHeadingOpen(tokens, idx, options, env, self);
         }
         const [, ver, date] = match;
         inline.content = ver;
-        inline.children = inline.children || [];
-        inline.children = [{ ...inline.children[0], content: ver }];
-        // Append date as a span after the heading via raw HTML
+        // Replace children with a single text token (handles both plain text
+        // and link token sequences from the compare-URL format)
+        const textToken = new inline.children[0].constructor("text", "", 0);
+        textToken.content = ver;
+        inline.children = [textToken];
+        // Append date as a paragraph after the closing </h2>
         const closeToken = tokens[idx + 2];
         if (closeToken && closeToken.type === "heading_close") {
-          closeToken.attrSet = closeToken.attrSet || (() => {});
           const origClose =
             md.renderer.rules.heading_close ||
             ((t, i, o, _e, s) => s.renderToken(t, i, o));
