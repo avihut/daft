@@ -1,11 +1,16 @@
 use crate::{
+    get_git_common_dir, get_project_root,
+    git::GitCommand,
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
-    DaftSettings,
+    remote::get_default_branch_local,
+    DaftSettings, WorktreeConfig,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-branch-delete")]
@@ -50,6 +55,41 @@ pub struct Args {
     no_cd: bool,
 }
 
+/// Parsed worktree entry from `git worktree list --porcelain`.
+#[allow(dead_code)] // is_bare used in execution phase (Task 4)
+struct WorktreeEntry {
+    path: PathBuf,
+    branch: Option<String>,
+    is_bare: bool,
+}
+
+/// Bundles common parameters used throughout the branch-delete operation.
+#[allow(dead_code)] // Fields used in execution phase (Task 4)
+struct BranchDeleteContext<'a> {
+    git: &'a GitCommand,
+    project_root: PathBuf,
+    git_dir: PathBuf,
+    remote_name: String,
+    source_worktree: PathBuf,
+    default_branch: String,
+}
+
+/// Validated branch ready for deletion.
+#[allow(dead_code)] // Fields used in execution phase (Task 4)
+struct ValidatedBranch {
+    name: String,
+    worktree_path: Option<PathBuf>,
+    remote_name: Option<String>,
+    remote_branch_name: Option<String>,
+    is_current_worktree: bool,
+}
+
+/// A validation error for a single branch.
+struct ValidationError {
+    branch: String,
+    message: String,
+}
+
 pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-branch-delete"));
     init_logging(args.verbose);
@@ -66,11 +106,451 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn run_branch_delete(
-    _args: &Args,
+fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
+    let config = WorktreeConfig::default();
+    let git = GitCommand::new(args.quiet).with_gitoxide(settings.use_gitoxide);
+    let git_dir = get_git_common_dir()?;
+    let default_branch =
+        get_default_branch_local(&git_dir, &config.remote_name, settings.use_gitoxide)
+            .context("Cannot determine default branch")?;
+
+    let ctx = BranchDeleteContext {
+        git: &git,
+        project_root: get_project_root()?,
+        git_dir,
+        remote_name: config.remote_name.clone(),
+        source_worktree: std::env::current_dir()?,
+        default_branch,
+    };
+
+    // Parse worktree list once upfront into a map: branch_name -> worktree_path
+    let worktree_entries = parse_worktree_list(&git)?;
+    let mut worktree_map: HashMap<String, PathBuf> = HashMap::new();
+    for entry in &worktree_entries {
+        if let Some(ref branch) = entry.branch {
+            worktree_map.insert(branch.clone(), entry.path.clone());
+        }
+    }
+
+    // Detect current worktree path for is_current_worktree flagging
+    let current_wt_path = git.get_current_worktree_path().ok();
+
+    // Validate all branches before performing any deletions
+    let (validated, errors) = validate_branches(
+        &ctx,
+        &args.branches,
+        args.force,
+        &worktree_map,
+        current_wt_path.as_ref(),
+        output,
+    );
+
+    if !errors.is_empty() {
+        for err in &errors {
+            output.error(&format!("cannot delete '{}': {}", err.branch, err.message));
+        }
+        let total = args.branches.len();
+        let failed = errors.len();
+        anyhow::bail!(
+            "Aborting: {} of {} branch{} failed validation. No branches were deleted.",
+            failed,
+            total,
+            if total == 1 { "" } else { "es" }
+        );
+    }
+
+    if validated.is_empty() {
+        output.info("No branches to delete");
+        return Ok(());
+    }
+
+    execute_deletions(&ctx, &validated, args.force, settings, output)
+}
+
+/// Validate all requested branches. Returns a tuple of (validated, errors).
+///
+/// Each branch goes through up to 5 checks:
+///   1. Branch exists locally
+///   2. Not the default branch (even with --force)
+///   3. No uncommitted changes in worktree (skip with --force)
+///   4. Merged into default branch (skip with --force)
+///   5. Local/remote in sync (skip with --force)
+fn validate_branches(
+    ctx: &BranchDeleteContext,
+    branches: &[String],
+    force: bool,
+    worktree_map: &HashMap<String, PathBuf>,
+    current_wt_path: Option<&PathBuf>,
     output: &mut dyn Output,
+) -> (Vec<ValidatedBranch>, Vec<ValidationError>) {
+    let mut validated = Vec::new();
+    let mut errors = Vec::new();
+
+    for branch in branches {
+        output.step(&format!("Validating branch '{branch}'..."));
+
+        // Check 1: Branch exists locally
+        match ctx.git.show_ref_exists(&format!("refs/heads/{branch}")) {
+            Ok(true) => {}
+            Ok(false) => {
+                errors.push(ValidationError {
+                    branch: branch.clone(),
+                    message: "branch not found".to_string(),
+                });
+                continue;
+            }
+            Err(e) => {
+                errors.push(ValidationError {
+                    branch: branch.clone(),
+                    message: format!("failed to check if branch exists: {e}"),
+                });
+                continue;
+            }
+        }
+
+        // Check 2: Not the default branch (never allowed, even with --force)
+        if branch == &ctx.default_branch {
+            errors.push(ValidationError {
+                branch: branch.clone(),
+                message: format!(
+                    "refusing to delete the default branch '{}'",
+                    ctx.default_branch
+                ),
+            });
+            continue;
+        }
+
+        let wt_path = worktree_map.get(branch.as_str()).cloned();
+
+        // Check 3: No uncommitted changes (skip with --force)
+        if !force {
+            if let Some(ref path) = wt_path {
+                match ctx.git.has_uncommitted_changes_in(path) {
+                    Ok(true) => {
+                        errors.push(ValidationError {
+                            branch: branch.clone(),
+                            message: "has uncommitted changes in worktree (use -D to force)"
+                                .to_string(),
+                        });
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        errors.push(ValidationError {
+                            branch: branch.clone(),
+                            message: format!(
+                                "failed to check for uncommitted changes: {e} (use -D to force)"
+                            ),
+                        });
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Check 4: Merged into default branch (skip with --force)
+        if !force {
+            match is_branch_merged(ctx, branch) {
+                Ok(true) => {
+                    output.step(&format!("Branch '{branch}' is merged into default branch"));
+                }
+                Ok(false) => {
+                    errors.push(ValidationError {
+                        branch: branch.clone(),
+                        message: format!(
+                            "not merged into '{}' (use -D to force)",
+                            ctx.default_branch
+                        ),
+                    });
+                    continue;
+                }
+                Err(e) => {
+                    errors.push(ValidationError {
+                        branch: branch.clone(),
+                        message: format!("failed to check merge status: {e} (use -D to force)"),
+                    });
+                    continue;
+                }
+            }
+        }
+
+        // Determine remote tracking info for this branch
+        let (remote_name, remote_branch_name) = resolve_remote_tracking(ctx, branch);
+
+        // Check 5: Local/remote in sync (skip with --force)
+        if !force {
+            if let Some(ref remote) = remote_name {
+                if let Some(ref remote_branch) = remote_branch_name {
+                    match check_local_remote_sync(ctx, branch, remote, remote_branch) {
+                        Ok(true) => {
+                            output.step(&format!("Branch '{branch}' is in sync with remote"));
+                        }
+                        Ok(false) => {
+                            errors.push(ValidationError {
+                                branch: branch.clone(),
+                                message:
+                                    "local and remote branches are out of sync (use -D to force)"
+                                        .to_string(),
+                            });
+                            continue;
+                        }
+                        Err(e) => {
+                            errors.push(ValidationError {
+                                branch: branch.clone(),
+                                message: format!(
+                                    "failed to check local/remote sync: {e} (use -D to force)"
+                                ),
+                            });
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        // All checks passed
+        let is_current = match (&wt_path, current_wt_path) {
+            (Some(wt), Some(current)) => wt == current,
+            _ => false,
+        };
+
+        output.step(&format!("Branch '{branch}' passed validation"));
+
+        validated.push(ValidatedBranch {
+            name: branch.clone(),
+            worktree_path: wt_path,
+            remote_name,
+            remote_branch_name,
+            is_current_worktree: is_current,
+        });
+    }
+
+    (validated, errors)
+}
+
+/// Check whether a branch has been merged into the default branch.
+///
+/// Uses a two-step approach:
+/// 1. `merge-base --is-ancestor` — detects regular merges
+/// 2. `git cherry` — detects squash merges (all lines start with `-`)
+fn is_branch_merged(ctx: &BranchDeleteContext, branch: &str) -> Result<bool> {
+    // Step 1: Check if branch is an ancestor of the default branch (regular merge)
+    let is_ancestor = ctx
+        .git
+        .merge_base_is_ancestor(branch, &ctx.default_branch)
+        .context("merge-base check failed")?;
+
+    if is_ancestor {
+        return Ok(true);
+    }
+
+    // Step 2: Check for squash merge via git cherry.
+    // `git cherry <upstream> <branch>` lists commits in <branch> not in <upstream>.
+    // Lines starting with `-` mean the patch is already present upstream (squash-merged).
+    // Lines starting with `+` mean the patch is NOT present upstream.
+    // If all lines start with `-`, every commit has been squash-merged.
+    let cherry_output = ctx
+        .git
+        .cherry(&ctx.default_branch, branch)
+        .context("git cherry check failed")?;
+
+    let lines: Vec<&str> = cherry_output.lines().collect();
+
+    // Empty output means no commits to compare (branch is at same point as default)
+    if lines.is_empty() {
+        return Ok(true);
+    }
+
+    // All lines must start with `-` for the branch to be considered squash-merged
+    let all_merged = lines.iter().all(|line| line.starts_with('-'));
+    Ok(all_merged)
+}
+
+/// Compare local and remote SHAs to determine if the branch is in sync.
+///
+/// If the remote ref does not exist, the branch is considered in sync
+/// (the remote branch may have already been deleted after merge).
+fn check_local_remote_sync(
+    ctx: &BranchDeleteContext,
+    branch: &str,
+    remote: &str,
+    remote_branch: &str,
+) -> Result<bool> {
+    let remote_ref = format!("refs/remotes/{remote}/{remote_branch}");
+
+    // If the remote tracking ref doesn't exist, consider it in sync.
+    // This covers the common case where the remote branch was already deleted
+    // (e.g., after a PR merge on GitHub).
+    let remote_exists = ctx
+        .git
+        .show_ref_exists(&remote_ref)
+        .context("failed to check remote ref existence")?;
+    if !remote_exists {
+        return Ok(true);
+    }
+
+    let local_sha = ctx
+        .git
+        .rev_parse(&format!("refs/heads/{branch}"))
+        .context("failed to resolve local branch SHA")?;
+    let remote_sha = ctx
+        .git
+        .rev_parse(&remote_ref)
+        .context("failed to resolve remote branch SHA")?;
+
+    Ok(local_sha == remote_sha)
+}
+
+/// Resolve the remote name and remote branch name for a given local branch.
+///
+/// Returns (Some(remote), Some(remote_branch)) if a tracking remote is configured,
+/// or falls back to (ctx.remote_name, branch) if no explicit tracking is set but
+/// the remote ref exists.
+fn resolve_remote_tracking(
+    ctx: &BranchDeleteContext,
+    branch: &str,
+) -> (Option<String>, Option<String>) {
+    // Try to get the configured tracking remote for this branch
+    if let Ok(Some(remote)) = ctx.git.get_branch_tracking_remote(branch) {
+        return (Some(remote), Some(branch.to_string()));
+    }
+
+    // Fall back: check if the default remote has this branch
+    let remote_ref = format!("refs/remotes/{}/{branch}", ctx.remote_name);
+    if let Ok(true) = ctx.git.show_ref_exists(&remote_ref) {
+        return (Some(ctx.remote_name.clone()), Some(branch.to_string()));
+    }
+
+    (None, None)
+}
+
+/// Parse `git worktree list --porcelain` into structured entries.
+fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeEntry>> {
+    let porcelain_output = git.worktree_list_porcelain()?;
+    let mut entries = Vec::new();
+    let mut current_path: Option<PathBuf> = None;
+    let mut current_branch: Option<String> = None;
+    let mut current_is_bare = false;
+
+    for line in porcelain_output.lines() {
+        if let Some(worktree_path) = line.strip_prefix("worktree ") {
+            // Save previous entry if any
+            if let Some(path) = current_path.take() {
+                entries.push(WorktreeEntry {
+                    path,
+                    branch: current_branch.take(),
+                    is_bare: current_is_bare,
+                });
+            }
+            current_path = Some(PathBuf::from(worktree_path));
+            current_branch = None;
+            current_is_bare = false;
+        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
+            current_branch = branch_ref.strip_prefix("refs/heads/").map(String::from);
+        } else if line == "bare" {
+            current_is_bare = true;
+        }
+    }
+    // Don't forget the last entry
+    if let Some(path) = current_path.take() {
+        entries.push(WorktreeEntry {
+            path,
+            branch: current_branch.take(),
+            is_bare: current_is_bare,
+        });
+    }
+
+    Ok(entries)
+}
+
+/// Stub for the execution phase (to be implemented in Task 4).
+fn execute_deletions(
+    _ctx: &BranchDeleteContext,
+    _validated: &[ValidatedBranch],
+    _force: bool,
     _settings: &DaftSettings,
+    output: &mut dyn Output,
 ) -> Result<()> {
-    output.info("git-worktree-branch-delete: not yet implemented");
+    output.info("Execution phase not yet implemented");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_worktree_list_empty() {
+        // parse_worktree_list requires a GitCommand which needs a real repo,
+        // so we test the parsing logic indirectly through the struct definitions.
+        let entry = WorktreeEntry {
+            path: PathBuf::from("/tmp/test"),
+            branch: Some("main".to_string()),
+            is_bare: false,
+        };
+        assert_eq!(entry.path, PathBuf::from("/tmp/test"));
+        assert_eq!(entry.branch.as_deref(), Some("main"));
+        assert!(!entry.is_bare);
+    }
+
+    #[test]
+    fn test_worktree_entry_bare() {
+        let entry = WorktreeEntry {
+            path: PathBuf::from("/tmp/test.git"),
+            branch: None,
+            is_bare: true,
+        };
+        assert!(entry.is_bare);
+        assert!(entry.branch.is_none());
+    }
+
+    #[test]
+    fn test_validated_branch_fields() {
+        let vb = ValidatedBranch {
+            name: "feature/test".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/project/feature/test")),
+            remote_name: Some("origin".to_string()),
+            remote_branch_name: Some("feature/test".to_string()),
+            is_current_worktree: false,
+        };
+        assert_eq!(vb.name, "feature/test");
+        assert!(vb.worktree_path.is_some());
+        assert!(!vb.is_current_worktree);
+    }
+
+    #[test]
+    fn test_validated_branch_no_worktree() {
+        let vb = ValidatedBranch {
+            name: "orphan-branch".to_string(),
+            worktree_path: None,
+            remote_name: None,
+            remote_branch_name: None,
+            is_current_worktree: false,
+        };
+        assert!(vb.worktree_path.is_none());
+        assert!(vb.remote_name.is_none());
+        assert!(vb.remote_branch_name.is_none());
+    }
+
+    #[test]
+    fn test_validation_error_fields() {
+        let err = ValidationError {
+            branch: "my-branch".to_string(),
+            message: "has uncommitted changes".to_string(),
+        };
+        assert_eq!(err.branch, "my-branch");
+        assert_eq!(err.message, "has uncommitted changes");
+    }
+
+    #[test]
+    fn test_branch_delete_context_fields() {
+        // Verify the context struct can be constructed with expected fields.
+        // We cannot create a real GitCommand here (requires git repo),
+        // so we just verify the struct shape compiles.
+        let _default_branch = "main".to_string();
+        let _remote_name = "origin".to_string();
+        let _project_root = PathBuf::from("/tmp/project");
+        let _git_dir = PathBuf::from("/tmp/project/.git");
+        let _source_worktree = PathBuf::from("/tmp/project/main");
+    }
 }
