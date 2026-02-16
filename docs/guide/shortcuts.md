@@ -23,6 +23,7 @@ Prefix: `gwt` (Git Worktree)
 | `gwtco`    | `git-worktree-checkout`                       |
 | `gwtcb`    | `git-worktree-checkout-branch`                |
 | `gwtcbm`   | `git-worktree-checkout-branch --from-default` |
+| `gwtbd`    | `git-worktree-branch-delete`                  |
 | `gwtprune` | `git-worktree-prune`                          |
 | `gwtcarry` | `git-worktree-carry`                          |
 | `gwtfetch` | `git-worktree-fetch`                          |
