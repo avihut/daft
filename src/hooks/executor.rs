@@ -9,6 +9,7 @@ use super::{
     find_hooks, list_hooks, FailMode, HookConfig, HookContext, HookEnvironment, HookType,
     HooksConfig, TrustDatabase, TrustLevel, DEPRECATED_HOOK_REMOVAL_VERSION,
 };
+use crate::output::hook_progress::HookRenderer;
 use crate::output::Output;
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader};
@@ -302,21 +303,37 @@ impl HookExecutor {
             }
         }
 
-        // Execute all hooks in order
-        output.step(&format!("Running {} hook...", ctx.hook_type));
-
+        // Execute all hooks in order using the renderer for output
+        let mut renderer = HookRenderer::auto(&self.config.output);
         let env = HookEnvironment::from_context(ctx);
         let working_dir = env.working_directory(ctx);
 
         for hook_path in &discovery.hooks {
-            let result = self.execute_hook_file(hook_path, &env, working_dir, output)?;
+            let hook_name = hook_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("(unnamed)");
 
-            if !result.success {
+            renderer.start_job(hook_name);
+            let start = std::time::Instant::now();
+
+            let result = self.execute_hook_file_with_renderer(
+                hook_path,
+                &env,
+                working_dir,
+                &mut renderer,
+                hook_name,
+            )?;
+            let elapsed = start.elapsed();
+
+            if result.success {
+                renderer.finish_job_success(hook_name, elapsed);
+            } else {
+                renderer.finish_job_failure(hook_name, elapsed);
                 return self.handle_hook_failure(ctx.hook_type, hook_config, result, output);
             }
         }
 
-        output.step(&format!("{} hook completed successfully", ctx.hook_type));
         Ok(HookResult::success())
     }
 
@@ -368,16 +385,19 @@ impl HookExecutor {
         }
     }
 
-    /// Execute a single hook file.
-    fn execute_hook_file(
+    /// Execute a single hook file, feeding output lines to the renderer.
+    ///
+    /// Stdout and stderr are read in separate threads so neither blocks the
+    /// timeout.  After the process completes the captured lines are fed to
+    /// the renderer for display.
+    fn execute_hook_file_with_renderer(
         &self,
         hook_path: &Path,
         env: &HookEnvironment,
         working_dir: &Path,
-        output: &mut dyn Output,
+        renderer: &mut HookRenderer,
+        job_name: &str,
     ) -> Result<HookResult> {
-        output.debug(&format!("Executing hook: {}", hook_path.display()));
-
         let mut cmd = Command::new(hook_path);
         cmd.current_dir(working_dir);
         cmd.envs(env.vars());
@@ -388,37 +408,54 @@ impl HookExecutor {
             .spawn()
             .with_context(|| format!("Failed to spawn hook: {}", hook_path.display()))?;
 
-        // Capture output while streaming to user
         let stdout_handle = child.stdout.take();
         let stderr_handle = child.stderr.take();
 
-        let mut stdout_content = String::new();
-        let mut stderr_content = String::new();
-
-        // Read stdout
-        if let Some(stdout) = stdout_handle {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
-                output.raw(&format!("  {line}\n"));
-                stdout_content.push_str(&line);
-                stdout_content.push('\n');
+        // Read stdout and stderr in separate threads so they don't block the
+        // timeout.  Lines are collected and fed to the renderer after the
+        // process exits.
+        let stdout_thread = std::thread::spawn(move || {
+            let mut content = String::new();
+            let mut lines = Vec::new();
+            if let Some(stdout) = stdout_handle {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines().map_while(Result::ok) {
+                    lines.push(line.clone());
+                    content.push_str(&line);
+                    content.push('\n');
+                }
             }
-        }
+            (content, lines)
+        });
 
-        // Read stderr
-        if let Some(stderr) = stderr_handle {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                output.raw(&format!("  {line}\n"));
-                stderr_content.push_str(&line);
-                stderr_content.push('\n');
+        let stderr_thread = std::thread::spawn(move || {
+            let mut content = String::new();
+            let mut lines = Vec::new();
+            if let Some(stderr) = stderr_handle {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().map_while(Result::ok) {
+                    lines.push(line.clone());
+                    content.push_str(&line);
+                    content.push('\n');
+                }
             }
-        }
+            (content, lines)
+        });
 
-        // Wait for completion with timeout
         let timeout = Duration::from_secs(self.config.timeout_seconds as u64);
         let status = wait_with_timeout(&mut child, timeout)
             .with_context(|| format!("Hook execution failed: {}", hook_path.display()))?;
+
+        let (stdout_content, stdout_lines) = stdout_thread.join().unwrap_or_default();
+        let (stderr_content, stderr_lines) = stderr_thread.join().unwrap_or_default();
+
+        // Feed captured lines to the renderer
+        for line in &stdout_lines {
+            renderer.update_job_output(job_name, line);
+        }
+        for line in &stderr_lines {
+            renderer.update_job_output(job_name, line);
+        }
 
         let exit_code = status.code().unwrap_or(-1);
 
