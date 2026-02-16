@@ -7,7 +7,7 @@ use crate::{
     output::{CliOutput, Output, OutputConfig},
     remote::{get_default_branch_local, remote_branch_exists},
     settings::PruneCdTarget,
-    DaftSettings, WorktreeConfig, SHELL_WRAPPER_ENV,
+    styles, DaftSettings, WorktreeConfig, SHELL_WRAPPER_ENV,
 };
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -168,7 +168,7 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
     let current_branch = git.symbolic_ref_short_head().ok();
 
     // Print header (shown in default mode when there are branches to prune)
-    output.info(&format!("Pruning {}", ctx.remote_name));
+    output.result(&format!("Pruning {}", ctx.remote_name));
     if let Ok(url) = git.remote_get_url(&ctx.remote_name) {
         output.info(&format!("URL: {url}"));
     }
@@ -243,7 +243,8 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                         ""
                     };
                     output.info(&format!(
-                        " * [pruned] {}/{branch_name}{annotation}",
+                        " * {} {}/{branch_name}{annotation}",
+                        tag_pruned(),
                         ctx.remote_name
                     ));
                 }
@@ -275,7 +276,8 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                         ""
                     };
                     output.info(&format!(
-                        " * [pruned] {}/{branch_name}{annotation}",
+                        " * {} {}/{branch_name}{annotation}",
+                        tag_pruned(),
                         ctx.remote_name
                     ));
                 }
@@ -288,7 +290,11 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                     output.step(&format!("No associated worktree found for {branch_name}"));
                     if delete_branch(&git, branch_name, output) {
                         branches_deleted += 1;
-                        output.info(&format!(" * [pruned] {}/{branch_name}", ctx.remote_name));
+                        output.info(&format!(
+                            " * {} {}/{branch_name}",
+                            tag_pruned(),
+                            ctx.remote_name
+                        ));
                     }
                     continue;
                 }
@@ -318,7 +324,8 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                         ""
                     };
                     output.info(&format!(
-                        " * [pruned] {}/{branch_name}{annotation}",
+                        " * {} {}/{branch_name}{annotation}",
+                        tag_pruned(),
                         ctx.remote_name
                     ));
                 }
@@ -328,7 +335,11 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                 output.step(&format!("No associated worktree found for {branch_name}"));
                 if delete_branch(&git, branch_name, output) {
                     branches_deleted += 1;
-                    output.info(&format!(" * [pruned] {}/{branch_name}", ctx.remote_name));
+                    output.info(&format!(
+                        " * {} {}/{branch_name}",
+                        tag_pruned(),
+                        ctx.remote_name
+                    ));
                 }
             }
         }
@@ -379,7 +390,8 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                         ""
                     };
                     output.info(&format!(
-                        " * [pruned] {}/{branch_name}{annotation}",
+                        " * {} {}/{branch_name}{annotation}",
+                        tag_pruned(),
                         ctx.remote_name
                     ));
                 }
@@ -403,7 +415,7 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
             };
             summary.push_str(&format!(", removed {worktrees_removed} {wt_word}"));
         }
-        output.info(&summary);
+        output.success(&summary);
     }
 
     // Check if any worktrees might need manual pruning
@@ -667,5 +679,15 @@ fn cleanup_empty_parent_dirs(
             }
             Err(_) => break,
         }
+    }
+}
+
+// ── Colored status tags ─────────────────────────────────────────────────────
+
+fn tag_pruned() -> String {
+    if styles::colors_enabled() {
+        format!("{}[pruned]{}", styles::GREEN, styles::RESET)
+    } else {
+        "[pruned]".to_string()
     }
 }

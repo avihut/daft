@@ -10,6 +10,7 @@ use crate::{
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
+    styles,
     utils::*,
     WorktreeConfig,
 };
@@ -135,7 +136,7 @@ fn run_fetch(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     output.step(&format!("Pull arguments: {}", pull_args.join(" ")));
 
     // Print header
-    output.info(&format!("Fetching {}", config.remote_name));
+    output.result(&format!("Fetching {}", config.remote_name));
     if let Ok(url) = git.remote_get_url(&config.remote_name) {
         output.info(&format!("URL: {url}"));
     }
@@ -303,7 +304,7 @@ fn process_worktree(
         output.error(&format!(
             "Failed to change to directory for '{worktree_name}': {e}"
         ));
-        output.info(&format!(" * [failed] {worktree_name}"));
+        output.info(&format!(" * {} {worktree_name}", tag_failed()));
         return FetchResult {
             worktree_name: worktree_name.to_string(),
             success: false,
@@ -320,7 +321,8 @@ fn process_worktree(
                     "Skipping '{worktree_name}': has uncommitted changes (use --force to update anyway)"
                 ));
                 output.info(&format!(
-                    " * [skipped] {worktree_name} (uncommitted changes)"
+                    " * {} {worktree_name} (uncommitted changes)",
+                    tag_skipped()
                 ));
                 return FetchResult {
                     worktree_name: worktree_name.to_string(),
@@ -334,7 +336,7 @@ fn process_worktree(
             output.error(&format!(
                 "Failed to check status for '{worktree_name}': {e}"
             ));
-            output.info(&format!(" * [failed] {worktree_name}"));
+            output.info(&format!(" * {} {worktree_name}", tag_failed()));
             return FetchResult {
                 worktree_name: worktree_name.to_string(),
                 success: false,
@@ -350,7 +352,8 @@ fn process_worktree(
             "Skipping '{worktree_name}': no tracking branch configured"
         ));
         output.info(&format!(
-            " * [skipped] {worktree_name} (no tracking branch)"
+            " * {} {worktree_name} (no tracking branch)",
+            tag_skipped()
         ));
         return FetchResult {
             worktree_name: worktree_name.to_string(),
@@ -363,7 +366,8 @@ fn process_worktree(
     // Dry run mode
     if args.dry_run {
         output.info(&format!(
-            " * [dry run] {worktree_name} (would pull with: git pull {})",
+            " * {} {worktree_name} (would pull with: git pull {})",
+            tag_dry_run(),
             pull_args.join(" ")
         ));
         return FetchResult {
@@ -387,7 +391,7 @@ fn process_worktree(
 
     match pull_result {
         Ok(()) => {
-            output.info(&format!(" * [fetched] {worktree_name}"));
+            output.info(&format!(" * {} {worktree_name}", tag_fetched()));
             FetchResult {
                 worktree_name: worktree_name.to_string(),
                 success: true,
@@ -397,7 +401,7 @@ fn process_worktree(
         }
         Err(e) => {
             output.error(&format!("Failed to update '{worktree_name}': {e}"));
-            output.info(&format!(" * [failed] {worktree_name}"));
+            output.info(&format!(" * {} {worktree_name}", tag_failed()));
             FetchResult {
                 worktree_name: worktree_name.to_string(),
                 success: false,
@@ -487,7 +491,7 @@ fn print_summary(results: &[FetchResult], output: &mut dyn Output) {
         if parts.is_empty() {
             output.info("Nothing to update");
         } else {
-            output.info(&parts.join(", "));
+            output.success(&parts.join(", "));
         }
     } else {
         let mut parts: Vec<String> = Vec::new();
@@ -512,5 +516,39 @@ fn print_summary(results: &[FetchResult], output: &mut dyn Output) {
         parts.push(format!("{failed} {word} failed"));
 
         output.error(&parts.join(", "));
+    }
+}
+
+// ── Colored status tags ─────────────────────────────────────────────────────
+
+fn tag_fetched() -> String {
+    if styles::colors_enabled() {
+        format!("{}[fetched]{}", styles::GREEN, styles::RESET)
+    } else {
+        "[fetched]".to_string()
+    }
+}
+
+fn tag_skipped() -> String {
+    if styles::colors_enabled() {
+        format!("{}[skipped]{}", styles::YELLOW, styles::RESET)
+    } else {
+        "[skipped]".to_string()
+    }
+}
+
+fn tag_failed() -> String {
+    if styles::colors_enabled() {
+        format!("{}[failed]{}", styles::RED, styles::RESET)
+    } else {
+        "[failed]".to_string()
+    }
+}
+
+fn tag_dry_run() -> String {
+    if styles::colors_enabled() {
+        format!("{}[dry run]{}", styles::DIM, styles::RESET)
+    } else {
+        "[dry run]".to_string()
     }
 }
