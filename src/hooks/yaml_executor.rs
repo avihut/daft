@@ -8,7 +8,7 @@ use super::executor::HookResult;
 use super::template;
 use super::yaml_config::{GroupDef, HookDef, JobDef};
 use super::yaml_config_loader::get_effective_jobs;
-use crate::output::hook_progress::HookRenderer;
+use crate::output::hook_progress::{HookRenderer, JobResultEntry};
 use crate::output::Output;
 use crate::settings::HookOutputConfig;
 use anyhow::{Context, Result};
@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Execution mode for a set of jobs.
@@ -69,6 +70,8 @@ struct ExecContext<'a> {
     rc: Option<&'a str>,
     /// Output display configuration for progress rendering.
     output_config: &'a HookOutputConfig,
+    /// Shared collector for finished job results (used for summary).
+    job_results: Arc<Mutex<Vec<JobResultEntry>>>,
 }
 
 /// Execute a YAML-defined hook.
@@ -145,8 +148,7 @@ pub fn execute_yaml_hook_with_rc(
 
     let mode = ExecutionMode::from_hook_def(hook_def);
 
-    let mode_str = mode_label(mode);
-    output.step(&format!("Running {hook_name} hook ({mode_str})..."));
+    let job_results: Arc<Mutex<Vec<JobResultEntry>>> = Arc::new(Mutex::new(Vec::new()));
 
     let exec = ExecContext {
         hook_ctx: ctx,
@@ -155,20 +157,20 @@ pub fn execute_yaml_hook_with_rc(
         working_dir,
         rc,
         output_config,
+        job_results: Arc::clone(&job_results),
     };
+
+    // Print header and track total time
+    crate::output::hook_progress::print_hook_header(hook_name);
+    let hook_start = std::time::Instant::now();
 
     let result = execute_jobs(&jobs, mode, &exec, output)?;
 
-    Ok(result)
-}
+    // Print summary with collected job results
+    let collected = job_results.lock().unwrap();
+    crate::output::hook_progress::print_hook_summary(&collected, hook_start.elapsed());
 
-fn mode_label(mode: ExecutionMode) -> &'static str {
-    match mode {
-        ExecutionMode::Sequential => "sequential",
-        ExecutionMode::Parallel => "parallel",
-        ExecutionMode::Piped => "piped",
-        ExecutionMode::Follow => "follow",
-    }
+    Ok(result)
 }
 
 /// Execute a list of jobs in the specified mode.
@@ -245,20 +247,31 @@ fn execute_sequential(
         } else {
             renderer.finish_job_failure(job_name, elapsed);
             renderer.println(&format!(
-                "  Job '{}' failed (exit code: {})",
+                "Job '{}' failed (exit code: {})",
                 job_name,
                 result.exit_code.unwrap_or(-1)
             ));
             if let Some(ref text) = job.fail_text {
-                renderer.println(&format!("  {text}"));
+                renderer.println(text);
             }
             if stop_on_failure {
+                // Collect results before returning
+                exec.job_results
+                    .lock()
+                    .unwrap()
+                    .extend(renderer.take_finished_jobs());
                 return Ok(result);
             }
             any_failed = true;
             last_failure = Some(result);
         }
     }
+
+    // Collect finished job results for the summary
+    exec.job_results
+        .lock()
+        .unwrap()
+        .extend(renderer.take_finished_jobs());
 
     if any_failed {
         Ok(last_failure.unwrap_or_else(HookResult::success))
@@ -282,7 +295,6 @@ fn execute_parallel(
     exec: &ExecContext<'_>,
     output: &mut dyn Output,
 ) -> Result<HookResult> {
-    use std::sync::{Arc, Mutex};
     use std::thread;
 
     // For interactive jobs, run sequentially
@@ -419,7 +431,7 @@ fn execute_parallel(
         .map_err(|_| anyhow::anyhow!("Mutex poisoned"))?;
     results.sort_by_key(|(idx, _, _, _)| *idx);
 
-    let renderer = Arc::try_unwrap(renderer)
+    let mut renderer = Arc::try_unwrap(renderer)
         .map_err(|_| anyhow::anyhow!("Failed to unwrap renderer"))?
         .into_inner()
         .map_err(|_| anyhow::anyhow!("Mutex poisoned"))?;
@@ -430,21 +442,27 @@ fn execute_parallel(
         match result {
             Ok(r) if !r.success => {
                 renderer.println(&format!(
-                    "  Job '{name}' failed (exit code: {})",
+                    "Job '{name}' failed (exit code: {})",
                     r.exit_code.unwrap_or(-1)
                 ));
                 if let Some(ref text) = parallel.get(*job_idx).and_then(|j| j.fail_text.clone()) {
-                    renderer.println(&format!("  {text}"));
+                    renderer.println(text);
                 }
                 any_failed = true;
             }
             Err(e) => {
-                renderer.println(&format!("  Job '{name}' error: {e}"));
+                renderer.println(&format!("Job '{name}' error: {e}"));
                 any_failed = true;
             }
             _ => {}
         }
     }
+
+    // Collect finished job results for the summary
+    exec.job_results
+        .lock()
+        .unwrap()
+        .extend(renderer.take_finished_jobs());
 
     // Run interactive jobs sequentially
     for job in &interactive {
@@ -530,7 +548,7 @@ fn execute_dag_parallel(
     exec: &ExecContext<'_>,
     output: &mut dyn Output,
 ) -> Result<HookResult> {
-    use std::sync::{Condvar, Mutex};
+    use std::sync::Condvar;
 
     let n = jobs.len();
     let (name_to_idx, dependents, in_degree) = build_dag(jobs);
@@ -818,7 +836,7 @@ fn execute_dag_parallel(
         }
     }
 
-    let renderer = renderer.into_inner().unwrap();
+    let mut renderer = renderer.into_inner().unwrap();
 
     // Report results
     let mut collected = results_collector.into_inner().unwrap();
@@ -831,16 +849,16 @@ fn execute_dag_parallel(
         match result {
             Ok(r) if !r.success && !r.skipped => {
                 renderer.println(&format!(
-                    "  Job '{name}' failed (exit code: {})",
+                    "Job '{name}' failed (exit code: {})",
                     r.exit_code.unwrap_or(-1)
                 ));
                 if let Some(ref text) = jobs[*idx].fail_text {
-                    renderer.println(&format!("  {text}"));
+                    renderer.println(text);
                 }
                 any_failed = true;
             }
             Err(e) => {
-                renderer.println(&format!("  Job '{name}' error: {e}"));
+                renderer.println(&format!("Job '{name}' error: {e}"));
                 any_failed = true;
             }
             _ => {}
@@ -851,7 +869,6 @@ fn execute_dag_parallel(
     for (i, &status) in state.status.iter().enumerate() {
         if status == JobStatus::DepFailed {
             let name = jobs[i].name.as_deref().unwrap_or("(unnamed)");
-            // Find which dependency failed
             let failed_dep = jobs[i]
                 .needs
                 .as_ref()
@@ -868,11 +885,17 @@ fn execute_dag_parallel(
                 .map(|s| s.as_str())
                 .unwrap_or("unknown");
             renderer.println(&format!(
-                "  Job '{name}' skipped: dependency '{failed_dep}' failed"
+                "Job '{name}' skipped: dependency '{failed_dep}' failed"
             ));
             any_failed = true;
         }
     }
+
+    // Collect finished job results for the summary
+    exec.job_results
+        .lock()
+        .unwrap()
+        .extend(renderer.take_finished_jobs());
 
     if any_failed {
         Ok(HookResult::failed(1, String::new(), String::new()))
@@ -998,7 +1021,7 @@ fn execute_dag_sequential(
                 .map(|s| s.as_str())
                 .unwrap_or("unknown");
             renderer.println(&format!(
-                "  Job '{job_name}' skipped: dependency '{failed_dep}' failed"
+                "Job '{job_name}' skipped: dependency '{failed_dep}' failed"
             ));
             any_failed = true;
 
@@ -1034,15 +1057,18 @@ fn execute_dag_sequential(
 
             if !result.success && !result.skipped {
                 renderer.println(&format!(
-                    "  Job '{job_name}' failed (exit code: {})",
+                    "Job '{job_name}' failed (exit code: {})",
                     result.exit_code.unwrap_or(-1)
                 ));
                 if stop_on_failure {
+                    exec.job_results
+                        .lock()
+                        .unwrap()
+                        .extend(renderer.take_finished_jobs());
                     return Ok(result);
                 }
                 any_failed = true;
                 last_failure = Some(result);
-                // Cascade DepFailed and enqueue for reporting
                 cascade_dep_failed(&mut status, &dependents, idx);
                 enqueue_dep_failed(&status, &dependents, idx, jobs, &mut heap);
             }
@@ -1090,18 +1116,21 @@ fn execute_dag_sequential(
         } else {
             renderer.finish_job_failure(job_name, elapsed);
             renderer.println(&format!(
-                "  Job '{job_name}' failed (exit code: {})",
+                "Job '{job_name}' failed (exit code: {})",
                 result.exit_code.unwrap_or(-1)
             ));
             if let Some(ref text) = jobs[idx].fail_text {
-                renderer.println(&format!("  {text}"));
+                renderer.println(text);
             }
             if stop_on_failure {
+                exec.job_results
+                    .lock()
+                    .unwrap()
+                    .extend(renderer.take_finished_jobs());
                 return Ok(result);
             }
             any_failed = true;
             last_failure = Some(result);
-            // Cascade DepFailed and enqueue all dep-failed jobs for reporting
             cascade_dep_failed(&mut status, &dependents, idx);
             enqueue_dep_failed(&status, &dependents, idx, jobs, &mut heap);
         }
@@ -1121,6 +1150,12 @@ fn execute_dag_sequential(
             }
         }
     }
+
+    // Collect finished job results for the summary
+    exec.job_results
+        .lock()
+        .unwrap()
+        .extend(renderer.take_finished_jobs());
 
     if any_failed {
         Ok(last_failure.unwrap_or_else(|| HookResult::failed(1, String::new(), String::new())))

@@ -308,6 +308,11 @@ impl HookExecutor {
         let env = HookEnvironment::from_context(ctx);
         let working_dir = env.working_directory(ctx);
 
+        // Print header and track total time
+        let hook_type_name = ctx.hook_type.yaml_name();
+        renderer.print_header(hook_type_name);
+        let hook_start = std::time::Instant::now();
+
         for hook_path in &discovery.hooks {
             let hook_name = hook_path
                 .file_name()
@@ -330,10 +335,12 @@ impl HookExecutor {
                 renderer.finish_job_success(hook_name, elapsed);
             } else {
                 renderer.finish_job_failure(hook_name, elapsed);
+                renderer.print_summary(hook_start.elapsed());
                 return self.handle_hook_failure(ctx.hook_type, hook_config, result, output);
             }
         }
 
+        renderer.print_summary(hook_start.elapsed());
         Ok(HookResult::success())
     }
 
