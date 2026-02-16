@@ -506,6 +506,106 @@ test_fetch_from_subdirectory() {
     return 0
 }
 
+# Test fetching a clean target worktree from a dirty current worktree (issue #186)
+test_fetch_clean_target_from_dirty_worktree() {
+    local remote_repo=$(create_test_remote "test-repo-fetch-dirty-cwd" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-fetch-dirty-cwd"
+
+    # Checkout the develop worktree
+    git-worktree-checkout develop || return 1
+
+    # Simulate remote changes on develop
+    local temp_clone="$TEMP_BASE_DIR/temp_fetch_dirty_cwd_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git checkout develop >/dev/null 2>&1
+        echo "Remote develop change" >> README.md
+        git add README.md >/dev/null 2>&1
+        git commit -m "Remote develop update" >/dev/null 2>&1
+        git push origin develop >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Make the main worktree dirty (uncommitted file)
+    cd "main"
+    echo "Local uncommitted change" > dirty.txt
+
+    # Fetch the clean develop worktree from the dirty main worktree
+    local output
+    output=$(git-worktree-fetch develop 2>&1) || {
+        log_error "Fetch of clean target from dirty cwd should succeed"
+        return 1
+    }
+
+    # Should NOT contain uncommitted changes warning for develop
+    if echo "$output" | grep -q "uncommitted changes"; then
+        log_error "Should not skip clean target worktree due to dirty current worktree"
+        return 1
+    fi
+
+    # Verify the remote changes were pulled into develop
+    cd ../develop
+    if ! grep -q "Remote develop change" README.md; then
+        log_error "Fetch did not pull remote changes into develop"
+        return 1
+    fi
+
+    # Verify dirty file in main is preserved
+    cd ../main
+    assert_file_exists "dirty.txt" || return 1
+
+    return 0
+}
+
+# Test fetching a dirty target worktree from a clean current worktree (converse of issue #186)
+test_fetch_dirty_target_from_clean_worktree() {
+    local remote_repo=$(create_test_remote "test-repo-fetch-dirty-target" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-fetch-dirty-target"
+
+    # Checkout the develop worktree
+    git-worktree-checkout develop || return 1
+
+    # Simulate remote changes on develop
+    local temp_clone="$TEMP_BASE_DIR/temp_fetch_dirty_target_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git checkout develop >/dev/null 2>&1
+        echo "Remote develop change" >> README.md
+        git add README.md >/dev/null 2>&1
+        git commit -m "Remote develop update" >/dev/null 2>&1
+        git push origin develop >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Make the develop (target) worktree dirty
+    echo "Uncommitted change in develop" > develop/dirty.txt
+
+    # From the clean main worktree, fetch the dirty develop worktree
+    cd "main"
+    local output
+    output=$(git-worktree-fetch develop 2>&1)
+
+    # Should warn about uncommitted changes and skip develop
+    if ! echo "$output" | grep -q "uncommitted changes"; then
+        log_error "Should skip dirty target worktree with uncommitted changes warning"
+        return 1
+    fi
+
+    return 0
+}
+
 # Run all fetch tests
 run_fetch_tests() {
     log "Running git-worktree-fetch integration tests..."
@@ -515,6 +615,8 @@ run_fetch_tests() {
     run_test "fetch_multiple_worktrees" "test_fetch_multiple_worktrees"
     run_test "fetch_all" "test_fetch_all"
     run_test "fetch_uncommitted_changes_skip" "test_fetch_uncommitted_changes_skip"
+    run_test "fetch_clean_target_from_dirty_worktree" "test_fetch_clean_target_from_dirty_worktree"
+    run_test "fetch_dirty_target_from_clean_worktree" "test_fetch_dirty_target_from_clean_worktree"
     run_test "fetch_force" "test_fetch_force"
     run_test "fetch_dry_run" "test_fetch_dry_run"
     run_test "fetch_rebase" "test_fetch_rebase"
