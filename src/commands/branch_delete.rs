@@ -1,16 +1,18 @@
 use crate::{
     get_git_common_dir, get_project_root,
     git::GitCommand,
+    hooks::{HookContext, HookExecutor, HookType, HooksConfig, RemovalReason},
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     remote::get_default_branch_local,
-    DaftSettings, WorktreeConfig,
+    settings::PruneCdTarget,
+    DaftSettings, WorktreeConfig, SHELL_WRAPPER_ENV,
 };
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "git-worktree-branch-delete")]
@@ -56,15 +58,14 @@ pub struct Args {
 }
 
 /// Parsed worktree entry from `git worktree list --porcelain`.
-#[allow(dead_code)] // is_bare used in execution phase (Task 4)
 struct WorktreeEntry {
     path: PathBuf,
     branch: Option<String>,
+    #[allow(dead_code)] // Parsed for completeness; not needed by branch-delete logic
     is_bare: bool,
 }
 
 /// Bundles common parameters used throughout the branch-delete operation.
-#[allow(dead_code)] // Fields used in execution phase (Task 4)
 struct BranchDeleteContext<'a> {
     git: &'a GitCommand,
     project_root: PathBuf,
@@ -75,7 +76,6 @@ struct BranchDeleteContext<'a> {
 }
 
 /// Validated branch ready for deletion.
-#[allow(dead_code)] // Fields used in execution phase (Task 4)
 struct ValidatedBranch {
     name: String,
     worktree_path: Option<PathBuf>,
@@ -463,16 +463,373 @@ fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeEntry>> {
     Ok(entries)
 }
 
-/// Stub for the execution phase (to be implemented in Task 4).
+/// Result of deleting a single branch (tracks what was successfully deleted).
+struct DeletionResult {
+    branch: String,
+    remote_deleted: bool,
+    worktree_removed: bool,
+    branch_deleted: bool,
+    errors: Vec<String>,
+}
+
+impl DeletionResult {
+    fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+
+    /// Build a human-readable summary of what was deleted (e.g. "worktree, local branch, remote branch").
+    fn deleted_parts(&self) -> String {
+        let mut parts = Vec::new();
+        if self.worktree_removed {
+            parts.push("worktree");
+        }
+        if self.branch_deleted {
+            parts.push("local branch");
+        }
+        if self.remote_deleted {
+            parts.push("remote branch");
+        }
+        parts.join(", ")
+    }
+}
+
+/// Execute all validated deletions. Current-worktree branches are deferred to
+/// last so we can resolve a CD target and change directory before removing them.
 fn execute_deletions(
-    _ctx: &BranchDeleteContext,
-    _validated: &[ValidatedBranch],
-    _force: bool,
-    _settings: &DaftSettings,
+    ctx: &BranchDeleteContext,
+    validated: &[ValidatedBranch],
+    force: bool,
+    settings: &DaftSettings,
     output: &mut dyn Output,
 ) -> Result<()> {
-    output.info("Execution phase not yet implemented");
+    // Partition into regular and deferred (current worktree) branches
+    let (deferred, regular): (Vec<&ValidatedBranch>, Vec<&ValidatedBranch>) =
+        validated.iter().partition(|b| b.is_current_worktree);
+
+    let mut had_errors = false;
+
+    // Process regular branches first
+    for branch in &regular {
+        let result = delete_single_branch(ctx, branch, force, output);
+        if result.has_errors() {
+            had_errors = true;
+            for err in &result.errors {
+                output.error(err);
+            }
+        }
+        let parts = result.deleted_parts();
+        if !parts.is_empty() {
+            output.result(&format!("Deleted {} ({})", result.branch, parts));
+        }
+    }
+
+    // Process deferred branch (current worktree) last
+    let mut deferred_cd_target: Option<PathBuf> = None;
+
+    for branch in &deferred {
+        output.step(&format!(
+            "Processing deferred branch: {} (current worktree)",
+            branch.name
+        ));
+
+        if branch.worktree_path.is_some() {
+            // Resolve CD target BEFORE removing the worktree. Once the worktree
+            // is removed, the CWD is gone and subsequent git commands would fail.
+            let cd_target = resolve_prune_cd_target(
+                settings.prune_cd_target,
+                &ctx.project_root,
+                &ctx.git_dir,
+                &ctx.remote_name,
+                settings.use_gitoxide,
+                output,
+            );
+
+            if let Err(e) = std::env::set_current_dir(&cd_target) {
+                output.error(&format!(
+                    "Failed to change directory to {}: {e}. \
+                     Skipping removal of current worktree {}.",
+                    cd_target.display(),
+                    branch.name
+                ));
+                continue;
+            }
+
+            let result = delete_single_branch(ctx, branch, force, output);
+
+            if result.worktree_removed {
+                deferred_cd_target = Some(cd_target);
+            }
+
+            if result.has_errors() {
+                had_errors = true;
+                for err in &result.errors {
+                    output.error(err);
+                }
+            }
+
+            let parts = result.deleted_parts();
+            if !parts.is_empty() {
+                output.result(&format!("Deleted {} ({})", result.branch, parts));
+            }
+        } else {
+            // No worktree, just delete branch and remote
+            let result = delete_single_branch(ctx, branch, force, output);
+            if result.has_errors() {
+                had_errors = true;
+                for err in &result.errors {
+                    output.error(err);
+                }
+            }
+            let parts = result.deleted_parts();
+            if !parts.is_empty() {
+                output.result(&format!("Deleted {} ({})", result.branch, parts));
+            }
+        }
+    }
+
+    // Emit the CD marker as the very last output. The shell wrapper captures
+    // all stdout and parses for __DAFT_CD__: lines to cd the parent shell.
+    // When no shell wrapper is active, tell the user to cd manually.
+    if let Some(ref cd_target) = deferred_cd_target {
+        if std::env::var(SHELL_WRAPPER_ENV).is_ok() {
+            output.cd_path(cd_target);
+        } else {
+            output.result(&format!(
+                "Run `cd {}` (your previous working directory was removed)",
+                cd_target.display()
+            ));
+        }
+    }
+
+    if had_errors {
+        anyhow::bail!("Some branches could not be fully deleted; see errors above");
+    }
+
     Ok(())
+}
+
+/// Delete a single branch: remote, worktree, and local branch (in that order).
+///
+/// Deletion order is deliberate — remote branches are hardest to recreate, so
+/// they are deleted first. If a later step fails, the user still has local state
+/// to recover from.
+fn delete_single_branch(
+    ctx: &BranchDeleteContext,
+    branch: &ValidatedBranch,
+    force: bool,
+    output: &mut dyn Output,
+) -> DeletionResult {
+    let mut result = DeletionResult {
+        branch: branch.name.clone(),
+        remote_deleted: false,
+        worktree_removed: false,
+        branch_deleted: false,
+        errors: Vec::new(),
+    };
+
+    let has_worktree = branch.worktree_path.is_some();
+
+    // Step 1: Run pre-remove hook (only if worktree exists)
+    if let Some(ref wt_path) = branch.worktree_path {
+        if let Err(e) = run_hook(
+            HookType::PreRemove,
+            ctx,
+            &wt_path.clone(),
+            &branch.name,
+            output,
+        ) {
+            output.warning(&format!("Pre-remove hook failed for {}: {e}", branch.name));
+        }
+    }
+
+    // Step 2: Delete remote branch (hardest to recreate, do first)
+    if let (Some(ref remote), Some(ref remote_branch)) =
+        (&branch.remote_name, &branch.remote_branch_name)
+    {
+        output.step(&format!(
+            "Deleting remote branch {}/{}...",
+            remote, remote_branch
+        ));
+        match ctx.git.push_delete(remote, remote_branch) {
+            Ok(()) => {
+                result.remote_deleted = true;
+                output.step(&format!(
+                    "Remote branch {}/{} deleted",
+                    remote, remote_branch
+                ));
+            }
+            Err(e) => {
+                result.errors.push(format!(
+                    "Failed to delete remote branch {remote}/{remote_branch}: {e}"
+                ));
+            }
+        }
+    }
+
+    // Step 3: Remove worktree (if one exists)
+    if let Some(ref wt_path) = branch.worktree_path {
+        if wt_path.exists() {
+            output.step(&format!("Removing worktree at {}...", wt_path.display()));
+            match ctx.git.worktree_remove(wt_path, force) {
+                Ok(()) => {
+                    result.worktree_removed = true;
+                    output.step(&format!("Worktree at {} removed", wt_path.display()));
+                }
+                Err(e) => {
+                    result.errors.push(format!(
+                        "Failed to remove worktree {}: {e}",
+                        wt_path.display()
+                    ));
+                }
+            }
+        } else {
+            // Worktree directory is gone but git may still have a record
+            output.warning(&format!(
+                "Worktree directory {} not found. Attempting to force remove record.",
+                wt_path.display()
+            ));
+            match ctx.git.worktree_remove(wt_path, true) {
+                Ok(()) => {
+                    result.worktree_removed = true;
+                    output.step(&format!(
+                        "Worktree record for {} removed",
+                        wt_path.display()
+                    ));
+                }
+                Err(e) => {
+                    result.errors.push(format!(
+                        "Failed to remove orphaned worktree record {}: {e}",
+                        wt_path.display()
+                    ));
+                }
+            }
+        }
+
+        // Clean up empty parent directories after worktree removal
+        if result.worktree_removed {
+            cleanup_empty_parent_dirs(&ctx.project_root, wt_path, output);
+        }
+    }
+
+    // Step 4: Delete local branch
+    output.step(&format!("Deleting local branch {}...", branch.name));
+    match ctx.git.branch_delete(&branch.name, force) {
+        Ok(()) => {
+            result.branch_deleted = true;
+            output.step(&format!("Branch {} deleted", branch.name));
+        }
+        Err(e) => {
+            result.errors.push(format!(
+                "Failed to delete local branch {}: {e}",
+                branch.name
+            ));
+        }
+    }
+
+    // Step 5: Run post-remove hook (only if worktree existed)
+    if has_worktree {
+        if let Some(ref wt_path) = branch.worktree_path {
+            if let Err(e) = run_hook(
+                HookType::PostRemove,
+                ctx,
+                &wt_path.clone(),
+                &branch.name,
+                output,
+            ) {
+                output.warning(&format!("Post-remove hook failed for {}: {e}", branch.name));
+            }
+        }
+    }
+
+    result
+}
+
+/// Run a lifecycle hook (pre-remove or post-remove) for a worktree.
+fn run_hook(
+    hook_type: HookType,
+    ctx: &BranchDeleteContext,
+    worktree_path: &PathBuf,
+    branch_name: &str,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let hooks_config = HooksConfig::default();
+    let executor = HookExecutor::new(hooks_config)?;
+
+    let hook_ctx = HookContext::new(
+        hook_type,
+        "branch-delete",
+        &ctx.project_root,
+        &ctx.git_dir,
+        &ctx.remote_name,
+        &ctx.source_worktree,
+        worktree_path,
+        branch_name,
+    )
+    .with_removal_reason(RemovalReason::Manual);
+
+    executor.execute(&hook_ctx, output)?;
+
+    Ok(())
+}
+
+/// Clean up empty parent directories after removing a worktree.
+///
+/// Walks up the directory tree from the removed worktree's parent directory,
+/// removing each directory if empty, until reaching the project root.
+/// This handles branches with slashes (e.g., `feature/my-branch`) where
+/// removing the worktree leaves empty intermediate directories.
+fn cleanup_empty_parent_dirs(project_root: &Path, worktree_path: &Path, output: &mut dyn Output) {
+    let mut current = worktree_path.parent();
+    while let Some(dir) = current {
+        // Stop at or above the project root
+        if dir == project_root || !dir.starts_with(project_root) {
+            break;
+        }
+        // fs::remove_dir only succeeds on empty directories
+        match std::fs::remove_dir(dir) {
+            Ok(()) => {
+                output.step(&format!("Removed empty directory '{}'", dir.display()));
+                current = dir.parent();
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+/// Resolve where to cd after deleting the user's current worktree.
+fn resolve_prune_cd_target(
+    cd_target: PruneCdTarget,
+    project_root: &Path,
+    git_dir: &Path,
+    remote_name: &str,
+    use_gitoxide: bool,
+    output: &mut dyn Output,
+) -> PathBuf {
+    match cd_target {
+        PruneCdTarget::Root => project_root.to_path_buf(),
+        PruneCdTarget::DefaultBranch => {
+            match get_default_branch_local(git_dir, remote_name, use_gitoxide) {
+                Ok(default_branch) => {
+                    let branch_dir = project_root.join(&default_branch);
+                    if branch_dir.is_dir() {
+                        branch_dir
+                    } else {
+                        output.step(&format!(
+                            "Default branch worktree directory '{}' not found, falling back to project root",
+                            branch_dir.display()
+                        ));
+                        project_root.to_path_buf()
+                    }
+                }
+                Err(e) => {
+                    output.warning(&format!(
+                        "Cannot determine default branch for cd target: {e}. Falling back to project root."
+                    ));
+                    project_root.to_path_buf()
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -552,5 +909,73 @@ mod tests {
         let _project_root = PathBuf::from("/tmp/project");
         let _git_dir = PathBuf::from("/tmp/project/.git");
         let _source_worktree = PathBuf::from("/tmp/project/main");
+    }
+
+    #[test]
+    fn test_deletion_result_no_errors() {
+        let result = DeletionResult {
+            branch: "feature/foo".to_string(),
+            remote_deleted: true,
+            worktree_removed: true,
+            branch_deleted: true,
+            errors: Vec::new(),
+        };
+        assert!(!result.has_errors());
+        assert_eq!(
+            result.deleted_parts(),
+            "worktree, local branch, remote branch"
+        );
+    }
+
+    #[test]
+    fn test_deletion_result_with_errors() {
+        let result = DeletionResult {
+            branch: "feature/bar".to_string(),
+            remote_deleted: false,
+            worktree_removed: true,
+            branch_deleted: true,
+            errors: vec!["Failed to delete remote".to_string()],
+        };
+        assert!(result.has_errors());
+        assert_eq!(result.deleted_parts(), "worktree, local branch");
+    }
+
+    #[test]
+    fn test_deletion_result_nothing_deleted() {
+        let result = DeletionResult {
+            branch: "broken".to_string(),
+            remote_deleted: false,
+            worktree_removed: false,
+            branch_deleted: false,
+            errors: vec!["everything failed".to_string()],
+        };
+        assert!(result.has_errors());
+        assert_eq!(result.deleted_parts(), "");
+    }
+
+    #[test]
+    fn test_deletion_result_branch_only() {
+        let result = DeletionResult {
+            branch: "orphan".to_string(),
+            remote_deleted: false,
+            worktree_removed: false,
+            branch_deleted: true,
+            errors: Vec::new(),
+        };
+        assert!(!result.has_errors());
+        assert_eq!(result.deleted_parts(), "local branch");
+    }
+
+    #[test]
+    fn test_deletion_result_remote_only() {
+        let result = DeletionResult {
+            branch: "remote-only".to_string(),
+            remote_deleted: true,
+            worktree_removed: false,
+            branch_deleted: false,
+            errors: Vec::new(),
+        };
+        assert!(!result.has_errors());
+        assert_eq!(result.deleted_parts(), "remote branch");
     }
 }
