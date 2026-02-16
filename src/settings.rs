@@ -24,6 +24,9 @@
 //! | `daft.hooks.enabled` | `true` | Master switch for all hooks |
 //! | `daft.hooks.defaultTrust` | `deny` | Default trust level for unknown repos |
 //! | `daft.hooks.timeout` | `300` | Timeout for hook execution in seconds |
+//! | `daft.hooks.output.quiet` | `false` | Suppress hook stdout/stderr |
+//! | `daft.hooks.output.timerDelay` | `5` | Seconds before showing elapsed timer |
+//! | `daft.hooks.output.tailLines` | `6` | Rolling output tail lines per job (0 = none) |
 //! | `daft.hooks.<hookName>.enabled` | `true` | Enable/disable specific hook |
 //! | `daft.hooks.<hookName>.failMode` | varies | Behavior on hook failure (abort/warn) |
 //!
@@ -163,6 +166,15 @@ pub mod keys {
 
         /// Config key for hooks.timeout setting.
         pub const TIMEOUT: &str = "daft.hooks.timeout";
+
+        /// Config key for hooks.output.quiet setting.
+        pub const OUTPUT_QUIET: &str = "daft.hooks.output.quiet";
+
+        /// Config key for hooks.output.timerDelay setting.
+        pub const OUTPUT_TIMER_DELAY: &str = "daft.hooks.output.timerDelay";
+
+        /// Config key for hooks.output.tailLines setting.
+        pub const OUTPUT_TAIL_LINES: &str = "daft.hooks.output.tailLines";
 
         /// Generate a config key for a hook-specific setting.
         pub fn hook_key(hook_name: &str, setting: &str) -> String {
@@ -376,6 +388,27 @@ fn parse_bool(value: &str, default: bool) -> bool {
     }
 }
 
+/// Configuration for hook output display.
+#[derive(Debug, Clone)]
+pub struct HookOutputConfig {
+    /// Suppress hook stdout/stderr (only show spinner + result line).
+    pub quiet: bool,
+    /// Seconds before showing elapsed timer on spinners.
+    pub timer_delay_secs: u32,
+    /// Number of rolling output tail lines per job (0 = no tail).
+    pub tail_lines: u32,
+}
+
+impl Default for HookOutputConfig {
+    fn default() -> Self {
+        Self {
+            quiet: false,
+            timer_delay_secs: 5,
+            tail_lines: 6,
+        }
+    }
+}
+
 /// Load hooks configuration from git config.
 ///
 /// This loads hooks settings from the current repository's config,
@@ -414,6 +447,21 @@ pub fn load_hooks_config() -> Result<HooksConfig> {
     if let Some(value) = git.config_get(keys::hooks::TIMEOUT)? {
         if let Ok(timeout) = value.parse::<u32>() {
             config.timeout_seconds = timeout;
+        }
+    }
+
+    // Load output settings
+    if let Some(value) = git.config_get(keys::hooks::OUTPUT_QUIET)? {
+        config.output.quiet = parse_bool(&value, false);
+    }
+    if let Some(value) = git.config_get(keys::hooks::OUTPUT_TIMER_DELAY)? {
+        if let Ok(delay) = value.parse::<u32>() {
+            config.output.timer_delay_secs = delay;
+        }
+    }
+    if let Some(value) = git.config_get(keys::hooks::OUTPUT_TAIL_LINES)? {
+        if let Ok(lines) = value.parse::<u32>() {
+            config.output.tail_lines = lines;
         }
     }
 
@@ -462,6 +510,21 @@ pub fn load_hooks_config_global() -> Result<HooksConfig> {
     if let Some(value) = git.config_get_global(keys::hooks::TIMEOUT)? {
         if let Ok(timeout) = value.parse::<u32>() {
             config.timeout_seconds = timeout;
+        }
+    }
+
+    // Load output settings
+    if let Some(value) = git.config_get_global(keys::hooks::OUTPUT_QUIET)? {
+        config.output.quiet = parse_bool(&value, false);
+    }
+    if let Some(value) = git.config_get_global(keys::hooks::OUTPUT_TIMER_DELAY)? {
+        if let Ok(delay) = value.parse::<u32>() {
+            config.output.timer_delay_secs = delay;
+        }
+    }
+    if let Some(value) = git.config_get_global(keys::hooks::OUTPUT_TAIL_LINES)? {
+        if let Ok(lines) = value.parse::<u32>() {
+            config.output.tail_lines = lines;
         }
     }
 
@@ -625,5 +688,13 @@ mod tests {
         assert!(!parse_bool("", false));
         assert!(parse_bool("maybe", true));
         assert!(!parse_bool("maybe", false));
+    }
+
+    #[test]
+    fn test_hook_output_config_defaults() {
+        let config = HookOutputConfig::default();
+        assert!(!config.quiet);
+        assert_eq!(config.timer_delay_secs, 5);
+        assert_eq!(config.tail_lines, 6);
     }
 }
