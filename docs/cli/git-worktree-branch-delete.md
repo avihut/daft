@@ -49,7 +49,6 @@ git worktree-branch-delete [OPTIONS] <BRANCHES>
 | `-D, --force` | Force deletion even if not fully merged |  |
 | `-q, --quiet` | Operate quietly; suppress progress reporting |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
-| `--no-cd` | Do not change directory after deletion |  |
 
 ## Global Options
 

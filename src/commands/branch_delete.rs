@@ -52,9 +52,6 @@ pub struct Args {
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
-
-    #[arg(long, help = "Do not change directory after deletion")]
-    no_cd: bool,
 }
 
 /// Parsed worktree entry from `git worktree list --porcelain`.
@@ -99,7 +96,7 @@ pub fn run() -> Result<()> {
     }
 
     let settings = DaftSettings::load()?;
-    let config = OutputConfig::with_autocd(!args.no_cd, args.verbose, settings.autocd);
+    let config = OutputConfig::with_autocd(true, args.verbose, settings.autocd);
     let mut output = CliOutput::new(config);
 
     run_branch_delete(&args, &mut output, &settings)?;
