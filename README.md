@@ -1,6 +1,6 @@
 # daft - Git Extensions Toolkit
 
-[![Docs](https://img.shields.io/badge/docs-avihu.dev%2Fdaft-blue)](https://avihu.dev/daft)
+[![Docs](https://img.shields.io/badge/docs-daft.avihu.dev-blue)](https://daft.avihu.dev)
 [![CI](https://github.com/avihut/daft/actions/workflows/test.yml/badge.svg)](https://github.com/avihut/daft/actions/workflows/test.yml)
 [![Release](https://img.shields.io/github/v/release/avihut/daft?label=release)](https://github.com/avihut/daft/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
