@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.25](https://github.com/avihut/daft/compare/v1.0.24...v1.0.25) - 2026-02-16
+
+### Bug Fixes
+
+- *(fetch)* check target worktree for dirty state instead of current worktree ([#213](https://github.com/avihut/daft/pull/213))
+- *(docs)* align changelog rendering for new release-plz format ([#210](https://github.com/avihut/daft/pull/210))
+
+### Features
+
+- *(output)* add colored output to CliOutput and fetch/prune commands ([#215](https://github.com/avihut/daft/pull/215))
+- *(shortcuts)* make default-branch shortcuts shell-only functions ([#214](https://github.com/avihut/daft/pull/214))
+- add git-worktree-branch-delete command ([#211](https://github.com/avihut/daft/pull/211))
+
 ## [1.0.24](https://github.com/avihut/daft/compare/v1.0.23...v1.0.24) - 2026-02-15
 
 ### Bug Fixes
