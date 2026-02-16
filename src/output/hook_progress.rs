@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 const ORANGE: &str = "\x1b[38;5;208m";
 const GREY: &str = "\x1b[38;5;245m";
 const BRIGHT_WHITE: &str = "\x1b[97m";
+const DARK_GREY: &str = "\x1b[38;5;240m";
+const ITALIC: &str = "\x1b[3m";
 
 /// Check if hook visual output should be suppressed (e.g. during tests).
 ///
@@ -297,8 +299,9 @@ impl HookProgressRenderer {
             pb.finish_and_clear();
         }
 
-        // Print full output as permanent lines
-        if !state.output_buffer.is_empty() && !self.config.quiet {
+        // Print full output as permanent lines (above the spinner)
+        let has_output = !state.output_buffer.is_empty();
+        if !self.config.quiet && has_output {
             for line in &state.output_buffer {
                 self.mp.println(format!("{}  {line}", self.pipe_str)).ok();
             }
@@ -315,6 +318,25 @@ impl HookProgressRenderer {
                 .unwrap(),
         );
         state.spinner.finish_with_message(finished_name);
+
+        // Show "No output" below the finished job name using a bar so it
+        // appears after the spinner rather than above the drawing area.
+        if !self.config.quiet && !has_output {
+            let msg = if self.use_color {
+                format!(
+                    "{}  {DARK_GREY}{ITALIC}No output{}",
+                    self.pipe_str,
+                    styles::RESET
+                )
+            } else {
+                format!("{}  No output", self.pipe_str)
+            };
+            let pb = self
+                .mp
+                .insert_after(&state.spinner, ProgressBar::new_spinner());
+            pb.set_style(ProgressStyle::with_template("{msg}").unwrap());
+            pb.finish_with_message(msg);
+        }
 
         // Record for summary
         self.finished_jobs.push(JobResultEntry {
@@ -360,6 +382,7 @@ impl HookProgressRenderer {
 pub struct PlainHookRenderer {
     output_lines: Vec<String>,
     finished_jobs: Vec<JobResultEntry>,
+    jobs_with_output: std::collections::HashSet<String>,
 }
 
 impl PlainHookRenderer {
@@ -379,25 +402,29 @@ impl PlainHookRenderer {
         self.output_lines.push(msg);
     }
 
-    pub fn update_job_output(&mut self, _name: &str, line: &str) {
+    pub fn update_job_output(&mut self, name: &str, line: &str) {
+        self.jobs_with_output.insert(name.to_string());
         eprintln!("\u{2503}  {line}");
         self.output_lines.push(line.to_string());
     }
 
-    pub fn finish_job_success(&mut self, name: &str, duration: Duration) {
+    fn finish_job(&mut self, name: &str, success: bool, duration: Duration) {
+        if !self.jobs_with_output.contains(name) {
+            eprintln!("\u{2503}  No output");
+        }
         self.finished_jobs.push(JobResultEntry {
             name: name.to_string(),
-            success: true,
+            success,
             duration,
         });
     }
 
+    pub fn finish_job_success(&mut self, name: &str, duration: Duration) {
+        self.finish_job(name, true, duration);
+    }
+
     pub fn finish_job_failure(&mut self, name: &str, duration: Duration) {
-        self.finished_jobs.push(JobResultEntry {
-            name: name.to_string(),
-            success: false,
-            duration,
-        });
+        self.finish_job(name, false, duration);
     }
 
     pub fn print_summary(&self, total_duration: Duration) {
