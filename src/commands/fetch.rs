@@ -313,7 +313,7 @@ fn process_worktree(
     }
 
     // Check for uncommitted changes
-    match git.has_uncommitted_changes() {
+    match git.has_uncommitted_changes_in(target_path) {
         Ok(has_changes) => {
             if has_changes && !args.force {
                 output.warning(&format!(
