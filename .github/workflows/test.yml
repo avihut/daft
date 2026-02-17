@@ -45,6 +45,9 @@ jobs:
   # Integration tests (Linux only)
   integration-tests:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        entry: [default, gitoxide]
 
     steps:
       - uses: actions/checkout@v6
@@ -148,7 +151,7 @@ jobs:
           echo "All dependencies found"
 
       - name: Run Rust integration tests
-        run: mise run test-integration
+        run: mise run test-integration-matrix ${{ matrix.entry }}
 
       - name: Test shell completions
         run: |
@@ -176,7 +179,7 @@ jobs:
         uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: test-results
+          name: test-results-${{ matrix.entry }}
           path: |
             tests/test-results.log
           retention-days: 7
