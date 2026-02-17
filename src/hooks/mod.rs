@@ -55,6 +55,7 @@ pub use environment::{HookContext, HookEnvironment, RemovalReason};
 pub use executor::{HookExecutor, HookResult};
 pub use trust::{TrustDatabase, TrustEntry, TrustLevel};
 
+use crate::settings::HookOutputConfig;
 use std::fmt;
 use std::path::Path;
 
@@ -275,6 +276,8 @@ pub struct HooksConfig {
     pub user_directory: std::path::PathBuf,
     /// Timeout for hook execution in seconds.
     pub timeout_seconds: u32,
+    /// Output display configuration.
+    pub output: HookOutputConfig,
     /// Per-hook configurations.
     pub post_clone: HookConfig,
     pub post_init: HookConfig,
@@ -291,6 +294,7 @@ impl Default for HooksConfig {
             default_trust: TrustLevel::Deny,
             user_directory: default_user_hooks_dir(),
             timeout_seconds: 300,
+            output: HookOutputConfig::default(),
             post_clone: HookConfig::new(HookType::PostClone),
             post_init: HookConfig::new(HookType::PostInit),
             worktree_pre_create: HookConfig::new(HookType::PreCreate),

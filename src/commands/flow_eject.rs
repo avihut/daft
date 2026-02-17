@@ -372,6 +372,8 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
                     output.warning(&format!("Could not remove worktree directory: {}", e));
                 }
             }
+        } else {
+            output.result(&format!("Removed worktree '{}'", branch));
         }
 
         // Run post-remove hook

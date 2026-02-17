@@ -18,6 +18,7 @@
 //! ```
 
 mod cli;
+pub mod hook_progress;
 mod test;
 
 pub use cli::CliOutput;

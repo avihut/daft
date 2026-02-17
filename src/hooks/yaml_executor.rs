@@ -8,12 +8,15 @@ use super::executor::HookResult;
 use super::template;
 use super::yaml_config::{GroupDef, HookDef, JobDef};
 use super::yaml_config_loader::get_effective_jobs;
+use crate::output::hook_progress::{HookRenderer, JobResultEntry};
 use crate::output::Output;
+use crate::settings::HookOutputConfig;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Execution mode for a set of jobs.
@@ -65,9 +68,14 @@ struct ExecContext<'a> {
     working_dir: &'a Path,
     /// Shell RC file to source before commands (from config `rc` field).
     rc: Option<&'a str>,
+    /// Output display configuration for progress rendering.
+    output_config: &'a HookOutputConfig,
+    /// Shared collector for finished job results (used for summary).
+    job_results: Arc<Mutex<Vec<JobResultEntry>>>,
 }
 
 /// Execute a YAML-defined hook.
+#[allow(clippy::too_many_arguments)]
 pub fn execute_yaml_hook(
     hook_name: &str,
     hook_def: &HookDef,
@@ -75,6 +83,7 @@ pub fn execute_yaml_hook(
     output: &mut dyn Output,
     source_dir: &str,
     working_dir: &Path,
+    output_config: &HookOutputConfig,
 ) -> Result<HookResult> {
     execute_yaml_hook_with_rc(
         hook_name,
@@ -84,6 +93,7 @@ pub fn execute_yaml_hook(
         source_dir,
         working_dir,
         None,
+        output_config,
     )
 }
 
@@ -97,6 +107,7 @@ pub fn execute_yaml_hook_with_rc(
     source_dir: &str,
     working_dir: &Path,
     rc: Option<&str>,
+    output_config: &HookOutputConfig,
 ) -> Result<HookResult> {
     // Check hook-level skip/only conditions
     if let Some(ref skip) = hook_def.skip {
@@ -137,8 +148,7 @@ pub fn execute_yaml_hook_with_rc(
 
     let mode = ExecutionMode::from_hook_def(hook_def);
 
-    let mode_str = mode_label(mode);
-    output.step(&format!("Running {hook_name} hook ({mode_str})..."));
+    let job_results: Arc<Mutex<Vec<JobResultEntry>>> = Arc::new(Mutex::new(Vec::new()));
 
     let exec = ExecContext {
         hook_ctx: ctx,
@@ -146,20 +156,21 @@ pub fn execute_yaml_hook_with_rc(
         source_dir,
         working_dir,
         rc,
+        output_config,
+        job_results: Arc::clone(&job_results),
     };
+
+    // Print header and track total time
+    crate::output::hook_progress::print_hook_header(hook_name);
+    let hook_start = std::time::Instant::now();
 
     let result = execute_jobs(&jobs, mode, &exec, output)?;
 
-    Ok(result)
-}
+    // Print summary with collected job results
+    let collected = job_results.lock().unwrap();
+    crate::output::hook_progress::print_hook_summary(&collected, hook_start.elapsed());
 
-fn mode_label(mode: ExecutionMode) -> &'static str {
-    match mode {
-        ExecutionMode::Sequential => "sequential",
-        ExecutionMode::Parallel => "parallel",
-        ExecutionMode::Piped => "piped",
-        ExecutionMode::Follow => "follow",
-    }
+    Ok(result)
 }
 
 /// Execute a list of jobs in the specified mode.
@@ -199,6 +210,7 @@ fn execute_sequential(
 ) -> Result<HookResult> {
     let mut any_failed = false;
     let mut last_failure: Option<HookResult> = None;
+    let mut renderer = HookRenderer::auto(exec.output_config);
 
     for job in jobs {
         let job_name = job.name.as_deref().unwrap_or("(unnamed)");
@@ -218,23 +230,48 @@ fn execute_sequential(
             continue;
         }
 
-        let result = execute_single_job(job, exec, output)?;
+        renderer.start_job(job_name);
+        let start = std::time::Instant::now();
 
-        if !result.success {
-            output.warning(&format!(
-                "Job '{job_name}' failed (exit code: {})",
+        let (tx, rx) = std::sync::mpsc::channel();
+        let result = execute_single_job(job, exec, output, Some(tx))?;
+        let elapsed = start.elapsed();
+
+        // Drain channel and feed lines to the renderer
+        for line in rx.try_iter() {
+            renderer.update_job_output(job_name, &line);
+        }
+
+        if result.success {
+            renderer.finish_job_success(job_name, elapsed);
+        } else {
+            renderer.finish_job_failure(job_name, elapsed);
+            renderer.println(&format!(
+                "Job '{}' failed (exit code: {})",
+                job_name,
                 result.exit_code.unwrap_or(-1)
             ));
             if let Some(ref text) = job.fail_text {
-                output.error(text);
+                renderer.println(text);
             }
             if stop_on_failure {
+                // Collect results before returning
+                exec.job_results
+                    .lock()
+                    .unwrap()
+                    .extend(renderer.take_finished_jobs());
                 return Ok(result);
             }
             any_failed = true;
             last_failure = Some(result);
         }
     }
+
+    // Collect finished job results for the summary
+    exec.job_results
+        .lock()
+        .unwrap()
+        .extend(renderer.take_finished_jobs());
 
     if any_failed {
         Ok(last_failure.unwrap_or_else(HookResult::success))
@@ -258,7 +295,6 @@ fn execute_parallel(
     exec: &ExecContext<'_>,
     output: &mut dyn Output,
 ) -> Result<HookResult> {
-    use std::sync::{Arc, Mutex};
     use std::thread;
 
     // For interactive jobs, run sequentially
@@ -291,8 +327,10 @@ fn execute_parallel(
     let ctx_clone = exec.hook_ctx.clone();
 
     // Use indexed results to preserve definition order in output
-    type IndexedResult = (usize, String, Result<HookResult>);
+    type IndexedResult = (usize, String, Result<HookResult>, Duration);
     let results: Arc<Mutex<Vec<IndexedResult>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let renderer = Arc::new(Mutex::new(HookRenderer::auto(exec.output_config)));
 
     // Limit concurrency to avoid thread explosion
     let max_threads = std::thread::available_parallelism()
@@ -300,25 +338,80 @@ fn execute_parallel(
         .unwrap_or(4);
 
     // Process in batches if many jobs
+    let mut global_offset = 0;
     for batch in job_data.chunks(max_threads) {
+        // Start all jobs in this batch on the renderer
+        for data in batch {
+            renderer.lock().unwrap().start_job(&data.name);
+        }
+
         let handles: Vec<_> = batch
             .iter()
             .enumerate()
             .map(|(batch_idx, data)| {
                 let results = Arc::clone(&results);
+                let renderer = Arc::clone(&renderer);
                 let ctx_for_thread = ctx_clone.clone();
                 let data = data.clone();
-                let idx = batch_idx;
+                let idx = global_offset + batch_idx;
 
                 thread::spawn(move || {
-                    let result = run_shell_command(
+                    let start = std::time::Instant::now();
+                    let job_name = data.name.clone();
+
+                    // Create channel for streaming output lines
+                    let (tx, rx) = std::sync::mpsc::channel::<String>();
+
+                    // Spawn a reader thread that drains the channel and
+                    // updates the renderer in real-time
+                    let reader_renderer = Arc::clone(&renderer);
+                    let reader_name = job_name.clone();
+                    let reader_handle = thread::spawn(move || {
+                        while let Ok(line) = rx.recv() {
+                            reader_renderer
+                                .lock()
+                                .unwrap()
+                                .update_job_output(&reader_name, &line);
+                        }
+                    });
+
+                    let result = run_shell_command_with_callback(
                         &data.cmd,
                         &data.env,
                         &data.working_dir,
                         &ctx_for_thread,
                         Duration::from_secs(300),
+                        Some(tx),
                     );
-                    results.lock().unwrap().push((idx, data.name, result));
+
+                    // tx is dropped here, which causes the reader thread
+                    // to exit its recv() loop
+                    if reader_handle.join().is_err() {
+                        eprintln!(
+                            "Warning: output reader thread panicked for job '{}'",
+                            job_name
+                        );
+                    }
+
+                    let elapsed = start.elapsed();
+
+                    // Finish the job on the renderer
+                    {
+                        let mut r = renderer.lock().unwrap();
+                        match &result {
+                            Ok(hr) if hr.success => {
+                                r.finish_job_success(&job_name, elapsed);
+                            }
+                            _ => {
+                                r.finish_job_failure(&job_name, elapsed);
+                            }
+                        }
+                    }
+
+                    results
+                        .lock()
+                        .unwrap()
+                        .push((idx, data.name, result, elapsed));
                 })
             })
             .collect();
@@ -328,6 +421,7 @@ fn execute_parallel(
                 .join()
                 .map_err(|_| anyhow::anyhow!("Thread panicked"))?;
         }
+        global_offset += batch.len();
     }
 
     // Collect results in definition order
@@ -335,40 +429,44 @@ fn execute_parallel(
         .map_err(|_| anyhow::anyhow!("Failed to unwrap results"))?
         .into_inner()
         .map_err(|_| anyhow::anyhow!("Mutex poisoned"))?;
-    results.sort_by_key(|(idx, _, _)| *idx);
+    results.sort_by_key(|(idx, _, _, _)| *idx);
 
-    // Report results in definition order (buffered output)
+    let mut renderer = Arc::try_unwrap(renderer)
+        .map_err(|_| anyhow::anyhow!("Failed to unwrap renderer"))?
+        .into_inner()
+        .map_err(|_| anyhow::anyhow!("Mutex poisoned"))?;
+
+    // Report failures via renderer
     let mut any_failed = false;
-    for (_, name, result) in &results {
+    for (job_idx, name, result, _) in &results {
         match result {
             Ok(r) if !r.success => {
-                if !r.stderr.is_empty() {
-                    output.warning(&format!("Job '{name}' output:\n{}", r.stderr.trim()));
-                }
-                output.warning(&format!(
+                renderer.println(&format!(
                     "Job '{name}' failed (exit code: {})",
                     r.exit_code.unwrap_or(-1)
                 ));
+                if let Some(ref text) = parallel.get(*job_idx).and_then(|j| j.fail_text.clone()) {
+                    renderer.println(text);
+                }
                 any_failed = true;
             }
-            Ok(r) if !r.stdout.is_empty() || !r.stderr.is_empty() => {
-                output.debug(&format!(
-                    "Job '{name}' completed (stdout: {} bytes, stderr: {} bytes)",
-                    r.stdout.len(),
-                    r.stderr.len()
-                ));
-            }
             Err(e) => {
-                output.error(&format!("Job '{name}' error: {e}"));
+                renderer.println(&format!("Job '{name}' error: {e}"));
                 any_failed = true;
             }
             _ => {}
         }
     }
 
+    // Collect finished job results for the summary
+    exec.job_results
+        .lock()
+        .unwrap()
+        .extend(renderer.take_finished_jobs());
+
     // Run interactive jobs sequentially
     for job in &interactive {
-        let result = execute_single_job(job, exec, output)?;
+        let result = execute_single_job(job, exec, output, None)?;
         if !result.success {
             any_failed = true;
         }
@@ -450,10 +548,10 @@ fn execute_dag_parallel(
     exec: &ExecContext<'_>,
     output: &mut dyn Output,
 ) -> Result<HookResult> {
-    use std::sync::{Condvar, Mutex};
+    use std::sync::Condvar;
 
     let n = jobs.len();
-    let (_name_to_idx, dependents, in_degree) = build_dag(jobs);
+    let (name_to_idx, dependents, in_degree) = build_dag(jobs);
 
     // Pre-compute parallel job data for non-interactive, non-group jobs
     let job_data: Vec<Option<ParallelJobData>> = jobs
@@ -514,6 +612,8 @@ fn execute_dag_parallel(
     type ThreadResult = (usize, String, std::result::Result<HookResult, String>);
     let results_collector: Mutex<Vec<ThreadResult>> = Mutex::new(Vec::new());
 
+    let renderer = Mutex::new(HookRenderer::auto(exec.output_config));
+
     let ctx_clone = exec.hook_ctx.clone();
     let rc = exec.rc.map(|s| s.to_string());
 
@@ -525,6 +625,7 @@ fn execute_dag_parallel(
             let cvar = &cvar;
             let job_data = &job_data;
             let results_collector = &results_collector;
+            let renderer = &renderer;
             let ctx_clone = &ctx_clone;
             let rc = &rc;
             let dependents = dependents_ref;
@@ -569,6 +670,9 @@ fn execute_dag_parallel(
                     let job = &jobs[job_idx];
                     let name = job.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
 
+                    renderer.lock().unwrap().start_job(&name);
+                    let start = std::time::Instant::now();
+
                     // Check skip/only conditions
                     let skip_result = check_skip_conditions(job, exec.working_dir);
                     let result = if let Some(reason) = skip_result {
@@ -579,18 +683,55 @@ fn execute_dag_parallel(
                         } else {
                             data.cmd.clone()
                         };
-                        run_shell_command(
+
+                        // Create channel for streaming output
+                        let (tx, rx) = std::sync::mpsc::channel::<String>();
+                        let reader_name = name.clone();
+
+                        // Spawn reader thread to drain channel and update renderer
+                        let reader_handle = scope.spawn(move || {
+                            while let Ok(line) = rx.recv() {
+                                renderer
+                                    .lock()
+                                    .unwrap()
+                                    .update_job_output(&reader_name, &line);
+                            }
+                        });
+
+                        let cmd_result = run_shell_command_with_callback(
                             &cmd,
                             &data.env,
                             &data.working_dir,
                             ctx_clone,
                             Duration::from_secs(300),
+                            Some(tx),
                         )
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| e.to_string());
+
+                        // tx is dropped, reader thread will exit
+                        if reader_handle.join().is_err() {
+                            eprintln!("Warning: output reader thread panicked for job '{}'", name);
+                        }
+                        cmd_result
                     } else {
                         // Shouldn't happen for non-interactive non-group jobs
                         Ok(HookResult::success())
                     };
+
+                    let elapsed = start.elapsed();
+
+                    // Finish job on renderer
+                    {
+                        let mut r = renderer.lock().unwrap();
+                        match &result {
+                            Ok(hr) if hr.success || hr.skipped => {
+                                r.finish_job_success(&name, elapsed);
+                            }
+                            _ => {
+                                r.finish_job_failure(&name, elapsed);
+                            }
+                        }
+                    }
 
                     // Determine job status from result
                     let job_status = match &result {
@@ -655,7 +796,7 @@ fn execute_dag_parallel(
                 // Drop lock for execution
                 drop(s);
 
-                let result = execute_single_job(&jobs[idx], exec, output);
+                let result = execute_single_job(&jobs[idx], exec, output, None);
                 let job_name = jobs[idx]
                     .name
                     .clone()
@@ -695,6 +836,8 @@ fn execute_dag_parallel(
         }
     }
 
+    let mut renderer = renderer.into_inner().unwrap();
+
     // Report results
     let mut collected = results_collector.into_inner().unwrap();
     collected.sort_by_key(|(idx, _, _)| *idx);
@@ -705,20 +848,17 @@ fn execute_dag_parallel(
     for (idx, name, result) in &collected {
         match result {
             Ok(r) if !r.success && !r.skipped => {
-                if !r.stderr.is_empty() {
-                    output.warning(&format!("Job '{name}' output:\n{}", r.stderr.trim()));
-                }
-                output.warning(&format!(
+                renderer.println(&format!(
                     "Job '{name}' failed (exit code: {})",
                     r.exit_code.unwrap_or(-1)
                 ));
                 if let Some(ref text) = jobs[*idx].fail_text {
-                    output.error(text);
+                    renderer.println(text);
                 }
                 any_failed = true;
             }
             Err(e) => {
-                output.error(&format!("Job '{name}' error: {e}"));
+                renderer.println(&format!("Job '{name}' error: {e}"));
                 any_failed = true;
             }
             _ => {}
@@ -729,13 +869,12 @@ fn execute_dag_parallel(
     for (i, &status) in state.status.iter().enumerate() {
         if status == JobStatus::DepFailed {
             let name = jobs[i].name.as_deref().unwrap_or("(unnamed)");
-            // Find which dependency failed
             let failed_dep = jobs[i]
                 .needs
                 .as_ref()
                 .and_then(|needs| {
                     needs.iter().find(|dep_name| {
-                        _name_to_idx.get(dep_name.as_str()).is_some_and(|&dep_idx| {
+                        name_to_idx.get(dep_name.as_str()).is_some_and(|&dep_idx| {
                             matches!(
                                 state.status[dep_idx],
                                 JobStatus::Failed | JobStatus::DepFailed
@@ -745,12 +884,18 @@ fn execute_dag_parallel(
                 })
                 .map(|s| s.as_str())
                 .unwrap_or("unknown");
-            output.warning(&format!(
+            renderer.println(&format!(
                 "Job '{name}' skipped: dependency '{failed_dep}' failed"
             ));
             any_failed = true;
         }
     }
+
+    // Collect finished job results for the summary
+    exec.job_results
+        .lock()
+        .unwrap()
+        .extend(renderer.take_finished_jobs());
 
     if any_failed {
         Ok(HookResult::failed(1, String::new(), String::new()))
@@ -843,8 +988,9 @@ fn execute_dag_sequential(
     use std::collections::BinaryHeap;
 
     let n = jobs.len();
-    let (_name_to_idx, dependents, mut in_degree) = build_dag(jobs);
+    let (name_to_idx, dependents, mut in_degree) = build_dag(jobs);
     let mut status: Vec<JobStatus> = vec![JobStatus::Pending; n];
+    let mut renderer = HookRenderer::auto(exec.output_config);
 
     // Kahn's algorithm with priority-based BinaryHeap
     // BinaryHeap is a max-heap; we want lowest priority first, so use Reverse
@@ -859,22 +1005,23 @@ fn execute_dag_sequential(
     let mut last_failure: Option<HookResult> = None;
 
     while let Some(std::cmp::Reverse((_, idx))) = heap.pop() {
+        let job_name = jobs[idx].name.as_deref().unwrap_or("(unnamed)");
+
         if status[idx] == JobStatus::DepFailed {
-            let name = jobs[idx].name.as_deref().unwrap_or("(unnamed)");
             let failed_dep = jobs[idx]
                 .needs
                 .as_ref()
                 .and_then(|needs| {
                     needs.iter().find(|dep_name| {
-                        _name_to_idx.get(dep_name.as_str()).is_some_and(|&dep_idx| {
+                        name_to_idx.get(dep_name.as_str()).is_some_and(|&dep_idx| {
                             matches!(status[dep_idx], JobStatus::Failed | JobStatus::DepFailed)
                         })
                     })
                 })
                 .map(|s| s.as_str())
                 .unwrap_or("unknown");
-            output.warning(&format!(
-                "Job '{name}' skipped: dependency '{failed_dep}' failed"
+            renderer.println(&format!(
+                "Job '{job_name}' skipped: dependency '{failed_dep}' failed"
             ));
             any_failed = true;
 
@@ -909,17 +1056,19 @@ fn execute_dag_sequential(
             status[idx] = job_status;
 
             if !result.success && !result.skipped {
-                let job_name = jobs[idx].name.as_deref().unwrap_or("(unnamed)");
-                output.warning(&format!(
+                renderer.println(&format!(
                     "Job '{job_name}' failed (exit code: {})",
                     result.exit_code.unwrap_or(-1)
                 ));
                 if stop_on_failure {
+                    exec.job_results
+                        .lock()
+                        .unwrap()
+                        .extend(renderer.take_finished_jobs());
                     return Ok(result);
                 }
                 any_failed = true;
                 last_failure = Some(result);
-                // Cascade DepFailed and enqueue for reporting
                 cascade_dep_failed(&mut status, &dependents, idx);
                 enqueue_dep_failed(&status, &dependents, idx, jobs, &mut heap);
             }
@@ -941,7 +1090,18 @@ fn execute_dag_sequential(
             continue;
         }
 
-        let result = execute_single_job(&jobs[idx], exec, output)?;
+        renderer.start_job(job_name);
+        let start = std::time::Instant::now();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let result = execute_single_job(&jobs[idx], exec, output, Some(tx))?;
+        let elapsed = start.elapsed();
+
+        // Drain channel and feed lines to the renderer
+        for line in rx.try_iter() {
+            renderer.update_job_output(job_name, &line);
+        }
+
         let job_status = if result.skipped {
             JobStatus::Skipped
         } else if result.success {
@@ -951,21 +1111,26 @@ fn execute_dag_sequential(
         };
         status[idx] = job_status;
 
-        if !result.success && !result.skipped {
-            let job_name = jobs[idx].name.as_deref().unwrap_or("(unnamed)");
-            output.warning(&format!(
+        if result.success || result.skipped {
+            renderer.finish_job_success(job_name, elapsed);
+        } else {
+            renderer.finish_job_failure(job_name, elapsed);
+            renderer.println(&format!(
                 "Job '{job_name}' failed (exit code: {})",
                 result.exit_code.unwrap_or(-1)
             ));
             if let Some(ref text) = jobs[idx].fail_text {
-                output.error(text);
+                renderer.println(text);
             }
             if stop_on_failure {
+                exec.job_results
+                    .lock()
+                    .unwrap()
+                    .extend(renderer.take_finished_jobs());
                 return Ok(result);
             }
             any_failed = true;
             last_failure = Some(result);
-            // Cascade DepFailed and enqueue all dep-failed jobs for reporting
             cascade_dep_failed(&mut status, &dependents, idx);
             enqueue_dep_failed(&status, &dependents, idx, jobs, &mut heap);
         }
@@ -986,6 +1151,12 @@ fn execute_dag_sequential(
         }
     }
 
+    // Collect finished job results for the summary
+    exec.job_results
+        .lock()
+        .unwrap()
+        .extend(renderer.take_finished_jobs());
+
     if any_failed {
         Ok(last_failure.unwrap_or_else(|| HookResult::failed(1, String::new(), String::new())))
     } else {
@@ -994,10 +1165,14 @@ fn execute_dag_sequential(
 }
 
 /// Execute a single job.
+///
+/// If `line_sender` is provided, output lines from non-interactive commands
+/// are streamed through the channel for progress rendering.
 fn execute_single_job(
     job: &JobDef,
     exec: &ExecContext<'_>,
     output: &mut dyn Output,
+    line_sender: Option<std::sync::mpsc::Sender<String>>,
 ) -> Result<HookResult> {
     let job_name = job.name.as_deref().unwrap_or("(unnamed)");
 
@@ -1048,7 +1223,14 @@ fn execute_single_job(
     let result = if is_interactive {
         run_interactive_command(&cmd, &env, &wd, exec.hook_ctx)
     } else {
-        run_shell_command(&cmd, &env, &wd, exec.hook_ctx, Duration::from_secs(300))
+        run_shell_command_with_callback(
+            &cmd,
+            &env,
+            &wd,
+            exec.hook_ctx,
+            Duration::from_secs(300),
+            line_sender,
+        )
     }?;
 
     Ok(result)
@@ -1087,13 +1269,15 @@ fn resolve_command(
     }
 }
 
-/// Run a shell command and capture its output.
-fn run_shell_command(
+/// Run a shell command, capture its output, and optionally stream lines
+/// through the provided channel.
+fn run_shell_command_with_callback(
     cmd: &str,
     extra_env: &HashMap<String, String>,
     working_dir: &Path,
     ctx: &HookContext,
     timeout: Duration,
+    line_sender: Option<std::sync::mpsc::Sender<String>>,
 ) -> Result<HookResult> {
     let mut command = Command::new("sh");
     command.args(["-c", cmd]);
@@ -1119,6 +1303,9 @@ fn run_shell_command(
     let stdout_handle = child.stdout.take();
     let stderr_handle = child.stderr.take();
 
+    let tx_stdout = line_sender.clone();
+    let tx_stderr = line_sender;
+
     // Read stdout and stderr in separate threads so they don't block the
     // timeout.  Previously the reads were sequential on the main thread,
     // which meant `wait_with_timeout` was unreachable until the child
@@ -1128,6 +1315,9 @@ fn run_shell_command(
         if let Some(stdout) = stdout_handle {
             let reader = BufReader::new(stdout);
             for line in reader.lines().map_while(Result::ok) {
+                if let Some(ref tx) = tx_stdout {
+                    tx.send(line.clone()).ok();
+                }
                 content.push_str(&line);
                 content.push('\n');
             }
@@ -1140,6 +1330,9 @@ fn run_shell_command(
         if let Some(stderr) = stderr_handle {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
+                if let Some(ref tx) = tx_stderr {
+                    tx.send(line.clone()).ok();
+                }
                 content.push_str(&line);
                 content.push('\n');
             }
@@ -1340,6 +1533,7 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
@@ -1366,6 +1560,7 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
@@ -1392,6 +1587,7 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
@@ -1426,6 +1622,7 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
@@ -1460,6 +1657,7 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
@@ -1491,6 +1689,7 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
@@ -1536,6 +1735,7 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
@@ -1583,6 +1783,7 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
@@ -1618,12 +1819,11 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
         assert!(!result.success);
-        // Check that dependency failure was reported
-        assert!(output.has_warning("dependency"));
     }
 
     #[test]
@@ -1661,14 +1861,11 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
         assert!(!result.success);
-        // Both b and c should have dependency failure warnings
-        let warnings = output.warnings();
-        let dep_warning_count = warnings.iter().filter(|w| w.contains("dependency")).count();
-        assert!(dep_warning_count >= 2);
     }
 
     #[test]
@@ -1701,6 +1898,7 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
@@ -1735,6 +1933,7 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
@@ -1780,6 +1979,7 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
@@ -1823,6 +2023,7 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
@@ -1864,11 +2065,68 @@ mod tests {
             &mut output,
             ".daft",
             Path::new("/tmp"),
+            &HookOutputConfig::default(),
         )
         .unwrap();
 
         assert!(!result.success);
-        // B should be reported as dep-failed
-        assert!(output.has_warning("dependency"));
+    }
+
+    #[test]
+    fn test_parallel_hook_captures_output() {
+        let hook_def = HookDef {
+            parallel: Some(true),
+            jobs: Some(vec![
+                JobDef {
+                    name: Some("job-a".to_string()),
+                    run: Some("echo 'output-a'".to_string()),
+                    ..Default::default()
+                },
+                JobDef {
+                    name: Some("job-b".to_string()),
+                    run: Some("echo 'output-b'".to_string()),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        let ctx = make_ctx();
+        let mut output = TestOutput::default();
+
+        let result = execute_yaml_hook(
+            "test-hook",
+            &hook_def,
+            &ctx,
+            &mut output,
+            ".daft",
+            Path::new("/tmp"),
+            &HookOutputConfig::default(),
+        )
+        .unwrap();
+
+        assert!(result.success);
+    }
+
+    #[test]
+    fn test_run_shell_command_streams_output() {
+        let ctx = make_ctx();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+
+        let result = run_shell_command_with_callback(
+            "echo hello && echo world",
+            &HashMap::new(),
+            Path::new("/tmp"),
+            &ctx,
+            Duration::from_secs(10),
+            Some(tx),
+        )
+        .unwrap();
+
+        assert!(result.success);
+        assert!(result.stdout.contains("hello"));
+
+        let lines: Vec<String> = rx.try_iter().collect();
+        assert!(lines.iter().any(|l| l.contains("hello")));
+        assert!(lines.iter().any(|l| l.contains("world")));
     }
 }

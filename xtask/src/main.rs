@@ -526,6 +526,7 @@ fn run_test_matrix(entries: &[String], list: bool) -> Result<()> {
         let status = Command::new("bash")
             .arg(&test_script)
             .env("GIT_CONFIG_GLOBAL", &config_path)
+            .env("DAFT_TESTING", "1")
             .current_dir(&project_root)
             .status()
             .with_context(|| format!("Failed to invoke test script for entry '{}'", entry.name))?;

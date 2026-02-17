@@ -670,7 +670,7 @@ fn delete_single_branch(
             match ctx.git.worktree_remove(wt_path, force) {
                 Ok(()) => {
                     result.worktree_removed = true;
-                    output.step(&format!("Worktree at {} removed", wt_path.display()));
+                    output.result(&format!("Removed worktree '{}'", branch.name));
                 }
                 Err(e) => {
                     result.errors.push(format!(
@@ -688,10 +688,7 @@ fn delete_single_branch(
             match ctx.git.worktree_remove(wt_path, true) {
                 Ok(()) => {
                     result.worktree_removed = true;
-                    output.step(&format!(
-                        "Worktree record for {} removed",
-                        wt_path.display()
-                    ));
+                    output.result(&format!("Removed worktree '{}'", branch.name));
                 }
                 Err(e) => {
                     result.errors.push(format!(

@@ -602,10 +602,41 @@ git config --global daft.hooks.userDirectory ~/my-daft-hooks
 | `daft.hooks.timeout`             | `300`                   | Hook execution timeout in seconds     |
 | `daft.hooks.<hookName>.enabled`  | `true`                  | Enable/disable a specific hook type   |
 | `daft.hooks.<hookName>.failMode` | varies                  | `abort` or `warn` on hook failure     |
+| `daft.hooks.output.quiet`        | `false`                 | Suppress hook stdout/stderr           |
+| `daft.hooks.output.timerDelay`   | `5`                     | Seconds before showing elapsed timer  |
+| `daft.hooks.output.tailLines`    | `6`                     | Rolling output lines per job          |
 
 Hook name config keys use camelCase: `postClone`, `postInit`,
 `worktreePreCreate`, `worktreePostCreate`, `worktreePreRemove`,
 `worktreePostRemove`.
+
+### Output Display
+
+When hooks run, daft shows real-time progress with spinners and rolling output
+windows. Each job gets a spinner that animates while it runs, and the last few
+lines of output are shown beneath it.
+
+When a job takes longer than the configured timer delay (default 5 seconds), an
+elapsed timer appears next to the spinner. When a job finishes, its full output
+scrolls into the terminal history and the spinner is replaced with a check mark
+or cross.
+
+In non-interactive environments (CI, pipes), spinners are disabled and output is
+printed as plain text.
+
+```bash
+# Suppress all hook output (only show spinner and result)
+git config daft.hooks.output.quiet true
+
+# Show elapsed timer after 3 seconds instead of 5
+git config daft.hooks.output.timerDelay 3
+
+# Show 10 lines of rolling output per job instead of 6
+git config daft.hooks.output.tailLines 10
+
+# Disable rolling output window (only show spinner)
+git config daft.hooks.output.tailLines 0
+```
 
 ## Migration from Deprecated Names
 
