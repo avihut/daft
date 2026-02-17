@@ -8,7 +8,8 @@ on:
       - "docs/**"
 
 jobs:
-  # Fast feedback: formatting, linting, unit tests (debug mode only - no release build needed)
+  # Fast feedback: formatting, linting, unit tests, xtask verification
+  # All use debug profile so they share compilation artifacts
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -39,6 +40,94 @@ jobs:
 
       - name: Run Rust unit tests
         run: mise run test-unit
+
+      # xtask verification — reuses debug artifacts from clippy/tests above
+      - name: Test xtask gen-man
+        run: |
+          mkdir -p /tmp/man-test
+          cargo run --package xtask -- gen-man --output-dir=/tmp/man-test
+
+          # Verify all expected man pages were generated
+          for page in git-worktree-clone git-worktree-init git-worktree-checkout \
+                      git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
+                      git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
+                      daft-release-notes; do
+            if [ ! -f "/tmp/man-test/${page}.1" ]; then
+              echo "FAILED: Missing man page: ${page}.1"
+              exit 1
+            fi
+            # Verify it's valid groff format (has .TH header)
+            if ! head -20 "/tmp/man-test/${page}.1" | grep -q '\.TH'; then
+              echo "FAILED: Invalid man page format: ${page}.1"
+              exit 1
+            fi
+            echo "  ${page}.1 - OK"
+          done
+          echo "All man pages generated and validated!"
+
+      - name: Verify committed man pages are up-to-date
+        run: |
+          # Skip verification on release PRs - release-plz bumps version in Cargo.toml
+          # which causes man pages (that embed version) to appear outdated
+          if [[ "${{ github.head_ref }}" == release-plz-* ]]; then
+            echo "Skipping man page verification on release PR (version bump expected)"
+            exit 0
+          fi
+
+          cargo run --package xtask -- gen-man --output-dir=man
+          if ! git diff --exit-code man/; then
+            echo "FAILED: Committed man pages are out of date!"
+            echo "Run 'mise run gen-man' locally and commit the changes."
+            exit 1
+          fi
+          echo "Committed man pages are up-to-date!"
+
+      - name: Test xtask gen-cli-docs
+        run: |
+          mkdir -p /tmp/cli-docs-test
+          cargo run --package xtask -- gen-cli-docs --output-dir=/tmp/cli-docs-test
+
+          # Verify all expected CLI docs were generated
+          for page in git-worktree-clone git-worktree-init git-worktree-checkout \
+                      git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
+                      git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
+                      daft-doctor daft-release-notes; do
+            if [ ! -f "/tmp/cli-docs-test/${page}.md" ]; then
+              echo "FAILED: Missing CLI doc: ${page}.md"
+              exit 1
+            fi
+            # Verify it has valid markdown structure (frontmatter and Usage section)
+            if ! head -5 "/tmp/cli-docs-test/${page}.md" | grep -q '^---'; then
+              echo "FAILED: CLI doc missing frontmatter: ${page}.md"
+              exit 1
+            fi
+            if ! grep -q '## Usage' "/tmp/cli-docs-test/${page}.md"; then
+              echo "FAILED: CLI doc missing Usage section: ${page}.md"
+              exit 1
+            fi
+            echo "  ${page}.md - OK"
+          done
+          echo "All CLI docs generated and validated!"
+
+      - name: Verify committed CLI docs are up-to-date
+        run: |
+          # Skip verification on release PRs - release-plz bumps version in Cargo.toml
+          # which causes CLI docs (that embed version) to appear outdated
+          if [[ "${{ github.head_ref }}" == release-plz-* ]]; then
+            echo "Skipping CLI docs verification on release PR (version bump expected)"
+            exit 0
+          fi
+
+          cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
+          if ! git diff --exit-code docs/cli/; then
+            echo "FAILED: Committed CLI docs are out of date!"
+            echo "Run 'mise run gen-cli-docs' locally and commit the changes."
+            exit 1
+          fi
+          echo "Committed CLI docs are up-to-date!"
+
+      - name: Run xtask unit tests
+        run: cargo test --package xtask
 
   # Build release binary once, share across integration test matrix
   build:
@@ -288,102 +377,3 @@ jobs:
 
           echo "Git command discovery verified!"
           echo "Homebrew simulation test PASSED!"
-
-  # Test xtask man page generation
-  xtask-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Test xtask gen-man
-        run: |
-          mkdir -p /tmp/man-test
-          cargo run --package xtask -- gen-man --output-dir=/tmp/man-test
-
-          # Verify all expected man pages were generated
-          for page in git-worktree-clone git-worktree-init git-worktree-checkout \
-                      git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
-                      git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
-                      daft-release-notes; do
-            if [ ! -f "/tmp/man-test/${page}.1" ]; then
-              echo "FAILED: Missing man page: ${page}.1"
-              exit 1
-            fi
-            # Verify it's valid groff format (has .TH header)
-            if ! head -20 "/tmp/man-test/${page}.1" | grep -q '\.TH'; then
-              echo "FAILED: Invalid man page format: ${page}.1"
-              exit 1
-            fi
-            echo "  ${page}.1 - OK"
-          done
-          echo "All man pages generated and validated!"
-
-      - name: Verify committed man pages are up-to-date
-        run: |
-          # Skip verification on release PRs - release-plz bumps version in Cargo.toml
-          # which causes man pages (that embed version) to appear outdated
-          if [[ "${{ github.head_ref }}" == release-plz-* ]]; then
-            echo "Skipping man page verification on release PR (version bump expected)"
-            exit 0
-          fi
-
-          cargo run --package xtask -- gen-man --output-dir=man
-          if ! git diff --exit-code man/; then
-            echo "FAILED: Committed man pages are out of date!"
-            echo "Run 'mise run gen-man' locally and commit the changes."
-            exit 1
-          fi
-          echo "Committed man pages are up-to-date!"
-
-      - name: Test xtask gen-cli-docs
-        run: |
-          mkdir -p /tmp/cli-docs-test
-          cargo run --package xtask -- gen-cli-docs --output-dir=/tmp/cli-docs-test
-
-          # Verify all expected CLI docs were generated
-          for page in git-worktree-clone git-worktree-init git-worktree-checkout \
-                      git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
-                      git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
-                      daft-doctor daft-release-notes; do
-            if [ ! -f "/tmp/cli-docs-test/${page}.md" ]; then
-              echo "FAILED: Missing CLI doc: ${page}.md"
-              exit 1
-            fi
-            # Verify it has valid markdown structure (frontmatter and Usage section)
-            if ! head -5 "/tmp/cli-docs-test/${page}.md" | grep -q '^---'; then
-              echo "FAILED: CLI doc missing frontmatter: ${page}.md"
-              exit 1
-            fi
-            if ! grep -q '## Usage' "/tmp/cli-docs-test/${page}.md"; then
-              echo "FAILED: CLI doc missing Usage section: ${page}.md"
-              exit 1
-            fi
-            echo "  ${page}.md - OK"
-          done
-          echo "All CLI docs generated and validated!"
-
-      - name: Verify committed CLI docs are up-to-date
-        run: |
-          # Skip verification on release PRs - release-plz bumps version in Cargo.toml
-          # which causes CLI docs (that embed version) to appear outdated
-          if [[ "${{ github.head_ref }}" == release-plz-* ]]; then
-            echo "Skipping CLI docs verification on release PR (version bump expected)"
-            exit 0
-          fi
-
-          cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
-          if ! git diff --exit-code docs/cli/; then
-            echo "FAILED: Committed CLI docs are out of date!"
-            echo "Run 'mise run gen-cli-docs' locally and commit the changes."
-            exit 1
-          fi
-          echo "Committed CLI docs are up-to-date!"
-
-      - name: Run xtask unit tests
-        run: cargo test --package xtask
