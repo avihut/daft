@@ -4,7 +4,7 @@
 .SH NAME
 daft\-doctor \- Diagnose daft installation and configuration issues
 .SH SYNOPSIS
-\fBdaft\-doctor\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-fix\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBdaft\-doctor\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-fix\fR] [\fB\-\-dry\-run\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Diagnose daft installation and configuration issues.
 .PP
@@ -20,6 +20,9 @@ Show detailed output for each check
 .TP
 \fB\-\-fix\fR
 Auto\-fix issues that can be resolved automatically
+.TP
+\fB\-\-dry\-run\fR
+Preview fixes without applying them (use with \-\-fix)
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 Only show warnings and errors

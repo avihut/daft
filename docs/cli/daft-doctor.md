@@ -29,6 +29,7 @@ daft doctor [OPTIONS]
 |--------|-------------|----------|
 | `-v, --verbose` | Show detailed output for each check |  |
 | `--fix` | Auto-fix issues that can be resolved automatically |  |
+| `--dry-run` | Preview fixes without applying them (use with --fix) |  |
 | `-q, --quiet` | Only show warnings and errors |  |
 
 ## Global Options

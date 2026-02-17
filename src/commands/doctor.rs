@@ -38,6 +38,14 @@ pub struct Args {
     #[arg(long, help = "Auto-fix issues that can be resolved automatically")]
     fix: bool,
 
+    /// Preview fixes without applying them (use with --fix)
+    #[arg(
+        long,
+        requires = "fix",
+        help = "Preview fixes without applying them (use with --fix)"
+    )]
+    dry_run: bool,
+
     /// Only show warnings and errors
     #[arg(short, long, help = "Only show warnings and errors")]
     quiet: bool,
@@ -63,6 +71,10 @@ pub fn run() -> Result<()> {
 
     // Apply fixes if requested
     if args.fix {
+        if args.dry_run {
+            preview_fixes(&categories);
+            return Ok(());
+        }
         apply_fixes(&categories);
         // Re-run checks after fixes
         categories.clear();
@@ -151,6 +163,41 @@ fn run_hooks_checks(ctx: &repository::RepoContext) -> CheckCategory {
         title: "Hooks".to_string(),
         results,
     }
+}
+
+fn preview_fixes(categories: &[CheckCategory]) {
+    let fixable: Vec<_> = categories
+        .iter()
+        .flat_map(|c| &c.results)
+        .filter(|r| r.fixable() && matches!(r.status, CheckStatus::Warning | CheckStatus::Fail))
+        .collect();
+
+    if fixable.is_empty() {
+        println!("{}", dim("No fixable issues found."));
+        return;
+    }
+
+    println!(
+        "{}",
+        bold(&format!("Would fix {} issue(s):", fixable.len()))
+    );
+    println!();
+
+    for result in &fixable {
+        let symbol = status_symbol(result.status);
+        println!(
+            "  {symbol} {} {} {}",
+            result.name,
+            dim("\u{2014}"),
+            result.message
+        );
+        if let Some(ref suggestion) = result.suggestion {
+            println!("      {}", dim(&format!("Fix: {suggestion}")));
+        }
+    }
+
+    println!();
+    println!("{}", dim("Run 'daft doctor --fix' to apply these fixes."));
 }
 
 fn apply_fixes(categories: &[CheckCategory]) {
