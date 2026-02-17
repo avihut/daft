@@ -1,6 +1,7 @@
 //! Hook checks for `daft doctor`.
 //!
-//! Verifies hook configuration: executability, deprecated names, trust level.
+//! Verifies hook configuration: executability, deprecated names, trust level,
+//! and configuration sources (daft.yml and shell hooks).
 
 use crate::doctor::CheckResult;
 use crate::hooks::{HookType, TrustDatabase, TrustLevel, PROJECT_HOOKS_DIR};
@@ -38,9 +39,65 @@ fn list_hook_files(hooks_dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Check if hooks directory exists. Returns None if no hooks to check.
-pub fn has_hooks(project_root: &Path) -> bool {
+/// Check if shell hooks directory exists.
+pub fn has_shell_hooks(project_root: &Path) -> bool {
     find_hooks_dir(project_root).is_some()
+}
+
+/// Check if any hooks are configured (either via daft.yml or shell hooks directory).
+pub fn has_any_hooks(worktree_root: &Path, project_root: &Path) -> bool {
+    has_shell_hooks(project_root) || has_yaml_config(worktree_root)
+}
+
+/// Check if a daft.yml config file exists in the worktree.
+fn has_yaml_config(worktree_root: &Path) -> bool {
+    crate::hooks::yaml_config_loader::find_config_file(worktree_root).is_some()
+}
+
+/// Check hooks configuration source (daft.yml and/or shell hooks).
+pub fn check_hooks_config(worktree_root: &Path, project_root: &Path) -> CheckResult {
+    let has_yaml = has_yaml_config(worktree_root);
+    let has_shell = has_shell_hooks(project_root);
+
+    match (has_yaml, has_shell) {
+        (true, true) => {
+            // Count yaml hooks
+            let hook_count = count_yaml_hooks(worktree_root);
+            let shell_count = count_shell_hooks(project_root);
+            CheckResult::pass(
+                "Configuration",
+                &format!("daft.yml with {hook_count} hooks, {shell_count} shell hooks"),
+            )
+        }
+        (true, false) => {
+            let hook_count = count_yaml_hooks(worktree_root);
+            CheckResult::pass(
+                "Configuration",
+                &format!("daft.yml with {hook_count} hooks"),
+            )
+        }
+        (false, true) => {
+            let shell_count = count_shell_hooks(project_root);
+            CheckResult::pass("Configuration", &format!("{shell_count} shell hooks"))
+        }
+        (false, false) => CheckResult::pass("Configuration", "no hooks configured"),
+    }
+}
+
+/// Count the number of hooks defined in daft.yml.
+fn count_yaml_hooks(worktree_root: &Path) -> usize {
+    match crate::hooks::yaml_config_loader::load_merged_config(worktree_root) {
+        Ok(Some(config)) => config.hooks.len(),
+        _ => 0,
+    }
+}
+
+/// Count the number of shell hook files.
+fn count_shell_hooks(project_root: &Path) -> usize {
+    match find_hooks_dir(project_root) {
+        Some(dir) => list_hook_files(&dir).len(),
+        None => 0,
+    }
 }
 
 /// Check that all hook files are executable.
@@ -75,12 +132,13 @@ pub fn check_hooks_executable(project_root: &Path) -> CheckResult {
             .iter()
             .map(|n| format!("Not executable: {n}"))
             .collect();
+        let project_root = project_root.to_path_buf();
         CheckResult::warning(
             "Hooks executable",
             &format!("{} hook(s) not executable", non_executable.len()),
         )
         .with_suggestion("Run 'chmod +x' on the listed hooks")
-        .with_fixable(true)
+        .with_fix(Box::new(move || fix_hooks_executable(&project_root)))
         .with_details(details)
     }
 }
@@ -129,12 +187,13 @@ pub fn check_deprecated_names(project_root: &Path) -> CheckResult {
             .iter()
             .map(|(old, new)| format!("{old} -> {new}"))
             .collect();
+        let project_root = project_root.to_path_buf();
         CheckResult::warning(
             "Hook names",
             &format!("{} deprecated name(s)", deprecated.len()),
         )
         .with_suggestion("Run 'git daft hooks migrate'")
-        .with_fixable(true)
+        .with_fix(Box::new(move || fix_deprecated_names(&project_root)))
         .with_details(details)
     }
 }
@@ -227,18 +286,18 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn test_has_hooks_no_hooks_dir() {
+    fn test_has_shell_hooks_no_hooks_dir() {
         let temp = tempdir().unwrap();
-        assert!(!has_hooks(temp.path()));
+        assert!(!has_shell_hooks(temp.path()));
     }
 
     #[test]
-    fn test_has_hooks_with_hooks_dir() {
+    fn test_has_shell_hooks_with_hooks_dir() {
         let temp = tempdir().unwrap();
         let worktree = temp.path().join("main");
         let hooks_dir = worktree.join(PROJECT_HOOKS_DIR);
         std::fs::create_dir_all(&hooks_dir).unwrap();
-        assert!(has_hooks(temp.path()));
+        assert!(has_shell_hooks(temp.path()));
     }
 
     #[test]
@@ -286,7 +345,7 @@ mod tests {
 
         let result = check_hooks_executable(temp.path());
         assert_eq!(result.status, CheckStatus::Warning);
-        assert!(result.fixable);
+        assert!(result.fixable());
     }
 
     #[test]
@@ -315,6 +374,27 @@ mod tests {
 
         let result = check_deprecated_names(temp.path());
         assert_eq!(result.status, CheckStatus::Warning);
-        assert!(result.fixable);
+        assert!(result.fixable());
+    }
+
+    #[test]
+    fn test_check_hooks_config_no_hooks() {
+        let temp = tempdir().unwrap();
+        let result = check_hooks_config(temp.path(), temp.path());
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert_eq!(result.message, "no hooks configured");
+    }
+
+    #[test]
+    fn test_check_hooks_config_shell_only() {
+        let temp = tempdir().unwrap();
+        let worktree = temp.path().join("main");
+        let hooks_dir = worktree.join(PROJECT_HOOKS_DIR);
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        std::fs::write(hooks_dir.join("post-clone"), "#!/bin/bash").unwrap();
+
+        let result = check_hooks_config(temp.path(), temp.path());
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert!(result.message.contains("1 shell hooks"));
     }
 }

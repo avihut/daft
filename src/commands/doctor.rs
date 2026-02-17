@@ -52,14 +52,13 @@ pub fn run() -> Result<()> {
     // Installation checks (always run)
     categories.push(run_installation_checks());
 
-    // Repository checks (only inside a daft-managed repo)
-    if let Some(ctx) = repository::get_repo_context() {
-        categories.push(run_repository_checks(&ctx));
+    // Repository checks (only inside a git repo)
+    let repo_ctx = repository::get_repo_context();
+    if let Some(ref ctx) = repo_ctx {
+        categories.push(run_repository_checks(ctx));
 
-        // Hooks checks (only when hooks exist)
-        if hooks_checks::has_hooks(&ctx.project_root) {
-            categories.push(run_hooks_checks(&ctx));
-        }
+        // Hooks checks (always when in a repo)
+        categories.push(run_hooks_checks(ctx));
     }
 
     // Apply fixes if requested
@@ -68,11 +67,9 @@ pub fn run() -> Result<()> {
         // Re-run checks after fixes
         categories.clear();
         categories.push(run_installation_checks());
-        if let Some(ctx) = repository::get_repo_context() {
-            categories.push(run_repository_checks(&ctx));
-            if hooks_checks::has_hooks(&ctx.project_root) {
-                categories.push(run_hooks_checks(&ctx));
-            }
+        if let Some(ref ctx) = repo_ctx {
+            categories.push(run_repository_checks(ctx));
+            categories.push(run_hooks_checks(ctx));
         }
     }
 
@@ -92,15 +89,29 @@ pub fn run() -> Result<()> {
 }
 
 fn run_installation_checks() -> CheckCategory {
+    // Core checks
+    let mut results = vec![
+        installation::check_binary_in_path(),
+        installation::check_command_symlinks(),
+        installation::check_git(),
+        installation::check_man_pages(),
+        installation::check_shell_integration(),
+    ];
+
+    // Shell wrappers check (only if shell integration is configured)
+    let shell_configured = results
+        .iter()
+        .any(|r| r.name == "Shell integration" && r.status == CheckStatus::Pass);
+    if shell_configured {
+        results.push(installation::check_shell_wrappers());
+    }
+
+    // Shortcut symlink checks
+    results.extend(installation::check_shortcut_symlinks());
+
     CheckCategory {
         title: "Installation".to_string(),
-        results: vec![
-            installation::check_binary_in_path(),
-            installation::check_command_symlinks(),
-            installation::check_git(),
-            installation::check_man_pages(),
-            installation::check_shell_integration(),
-        ],
+        results,
     }
 }
 
@@ -117,13 +128,28 @@ fn run_repository_checks(ctx: &repository::RepoContext) -> CheckCategory {
 }
 
 fn run_hooks_checks(ctx: &repository::RepoContext) -> CheckCategory {
+    let mut results = Vec::new();
+
+    // Always check config source
+    results.push(hooks_checks::check_hooks_config(
+        &ctx.current_worktree,
+        &ctx.project_root,
+    ));
+
+    // Shell hook checks (only when .daft/hooks/ exists)
+    if hooks_checks::has_shell_hooks(&ctx.project_root) {
+        results.push(hooks_checks::check_hooks_executable(&ctx.project_root));
+        results.push(hooks_checks::check_deprecated_names(&ctx.project_root));
+    }
+
+    // Trust level (when any hooks are configured)
+    if hooks_checks::has_any_hooks(&ctx.current_worktree, &ctx.project_root) {
+        results.push(hooks_checks::check_trust_level(&ctx.git_common_dir));
+    }
+
     CheckCategory {
         title: "Hooks".to_string(),
-        results: vec![
-            hooks_checks::check_hooks_executable(&ctx.project_root),
-            hooks_checks::check_deprecated_names(&ctx.project_root),
-            hooks_checks::check_trust_level(&ctx.git_common_dir),
-        ],
+        results,
     }
 }
 
@@ -133,12 +159,14 @@ fn apply_fixes(categories: &[CheckCategory]) {
 
     for category in categories {
         for result in &category.results {
-            if result.fixable && matches!(result.status, CheckStatus::Warning | CheckStatus::Fail) {
+            if result.fixable() && matches!(result.status, CheckStatus::Warning | CheckStatus::Fail)
+            {
                 print!("  Fixing: {} ... ", result.name);
-                let fix_result = apply_single_fix(&result.name);
-                match fix_result {
-                    Ok(()) => println!("{}", green("done")),
-                    Err(e) => println!("{}", red(&format!("failed: {e}"))),
+                if let Some(ref fix) = result.fix {
+                    match fix() {
+                        Ok(()) => println!("{}", green("done")),
+                        Err(e) => println!("{}", red(&format!("failed: {e}"))),
+                    }
                 }
             }
         }
@@ -146,34 +174,33 @@ fn apply_fixes(categories: &[CheckCategory]) {
     println!();
 }
 
-fn apply_single_fix(check_name: &str) -> Result<(), String> {
-    match check_name {
-        "Command symlinks" => installation::fix_command_symlinks(),
-        "Worktree consistency" => repository::fix_worktree_consistency(),
-        "Fetch refspec" => repository::fix_fetch_refspec(),
-        "Remote HEAD" => repository::fix_remote_head(),
-        "Hooks executable" => {
-            if let Some(ctx) = repository::get_repo_context() {
-                hooks_checks::fix_hooks_executable(&ctx.project_root)
-            } else {
-                Err("Not in a git repository".to_string())
-            }
-        }
-        "Hook names" => {
-            if let Some(ctx) = repository::get_repo_context() {
-                hooks_checks::fix_deprecated_names(&ctx.project_root)
-            } else {
-                Err("Not in a git repository".to_string())
-            }
-        }
-        _ => Err(format!("No fix available for '{check_name}'")),
-    }
-}
-
 fn print_results(categories: &[CheckCategory], verbose: bool, quiet: bool) {
-    println!("{}", bold("Doctor summary:"));
+    // Header with verbose hint
+    if verbose {
+        println!("{}", bold("Doctor summary:"));
+    } else {
+        println!(
+            "{}",
+            bold("Doctor summary (run daft doctor -v for details):")
+        );
+    }
 
     for category in categories {
+        // Check if category has any visible results
+        let has_visible = category.results.iter().any(|r| {
+            if quiet {
+                matches!(r.status, CheckStatus::Warning | CheckStatus::Fail)
+            } else if verbose {
+                true
+            } else {
+                !matches!(r.status, CheckStatus::Skipped)
+            }
+        });
+
+        if !has_visible {
+            continue;
+        }
+
         println!();
         println!("{}", bold(&category.title));
 
@@ -183,20 +210,54 @@ fn print_results(categories: &[CheckCategory], verbose: bool, quiet: bool) {
                 continue;
             }
 
+            // Hide skipped checks unless verbose
+            if !verbose && matches!(result.status, CheckStatus::Skipped) {
+                continue;
+            }
+
             let symbol = status_symbol(result.status);
-            println!("  {symbol} {}", result.message);
+
+            // Format: pass uses parens, warning/fail uses dash
+            match result.status {
+                CheckStatus::Pass => {
+                    println!("  {symbol} {} ({})", result.name, result.message);
+                }
+                CheckStatus::Warning | CheckStatus::Fail => {
+                    println!(
+                        "  {symbol} {} {} {}",
+                        result.name,
+                        dim("\u{2014}"),
+                        result.message
+                    );
+                }
+                CheckStatus::Skipped => {
+                    println!(
+                        "  {symbol} {} {} {}",
+                        result.name,
+                        dim("\u{2014}"),
+                        dim(&result.message)
+                    );
+                }
+            }
+
+            // Show details for warnings/failures (indented)
+            if matches!(result.status, CheckStatus::Warning | CheckStatus::Fail) {
+                for detail in &result.details {
+                    println!("        {}", detail);
+                }
+            }
 
             // Show suggestion for warnings and failures
             if let Some(ref suggestion) = result.suggestion {
                 if matches!(result.status, CheckStatus::Warning | CheckStatus::Fail) {
-                    println!("      {}", dim(suggestion));
+                    println!("        {}", dim(suggestion));
                 }
             }
 
-            // Show details in verbose mode
-            if verbose && !result.details.is_empty() {
+            // Show details in verbose mode for passing checks
+            if verbose && matches!(result.status, CheckStatus::Pass) && !result.details.is_empty() {
                 for detail in &result.details {
-                    println!("      {}", dim(detail));
+                    println!("        {}", dim(detail));
                 }
             }
         }
@@ -204,21 +265,49 @@ fn print_results(categories: &[CheckCategory], verbose: bool, quiet: bool) {
 }
 
 fn print_summary(summary: &DoctorSummary) {
-    let parts: Vec<String> = [
-        (summary.passed, "passed", green as fn(&str) -> String),
-        (summary.warnings, "warnings", yellow),
-        (summary.failures, "failures", red),
-    ]
-    .iter()
-    .filter(|(count, _, _)| *count > 0)
-    .map(|(count, label, style)| style(&format!("{count} {label}")))
-    .collect();
+    if summary.warnings == 0 && summary.failures == 0 {
+        println!(
+            "{}",
+            green(&format!(
+                "No issues found! ({} checks passed)",
+                summary.passed
+            ))
+        );
+        return;
+    }
 
-    let summary_text = if parts.is_empty() {
-        dim("No checks performed")
+    let mut parts = Vec::new();
+    let mut names = Vec::new();
+
+    if summary.failures > 0 {
+        let label = if summary.failures == 1 {
+            "failure"
+        } else {
+            "failures"
+        };
+        parts.push(red(&format!("{} {label}", summary.failures)));
+        names.extend(summary.failure_names.iter().cloned());
+    }
+
+    if summary.warnings > 0 {
+        let label = if summary.warnings == 1 {
+            "warning"
+        } else {
+            "warnings"
+        };
+        parts.push(yellow(&format!("{} {label}", summary.warnings)));
+        names.extend(summary.warning_names.iter().cloned());
+    }
+
+    // Deduplicate names
+    names.sort();
+    names.dedup();
+
+    let names_str = if names.is_empty() {
+        String::new()
     } else {
-        parts.join(", ")
+        format!(" ({})", names.join(", "))
     };
 
-    println!("Summary: {summary_text}");
+    println!("{}{names_str}", parts.join(", "));
 }

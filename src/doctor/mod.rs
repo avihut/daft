@@ -16,8 +16,10 @@ pub enum CheckStatus {
     Skipped,
 }
 
+/// A closure that can fix an issue found by a check.
+type FixFn = Box<dyn Fn() -> Result<(), String>>;
+
 /// Result of a single diagnostic check.
-#[derive(Debug, Clone)]
 pub struct CheckResult {
     pub name: String,
     pub status: CheckStatus,
@@ -26,8 +28,21 @@ pub struct CheckResult {
     pub details: Vec<String>,
     /// Actionable suggestion shown on Warning/Fail.
     pub suggestion: Option<String>,
-    /// Whether this issue can be auto-fixed with --fix.
-    pub fixable: bool,
+    /// Optional fix closure. When present, --fix can auto-fix this issue.
+    pub fix: Option<FixFn>,
+}
+
+impl std::fmt::Debug for CheckResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CheckResult")
+            .field("name", &self.name)
+            .field("status", &self.status)
+            .field("message", &self.message)
+            .field("details", &self.details)
+            .field("suggestion", &self.suggestion)
+            .field("fix", &self.fix.is_some())
+            .finish()
+    }
 }
 
 impl CheckResult {
@@ -38,7 +53,7 @@ impl CheckResult {
             message: message.to_string(),
             details: Vec::new(),
             suggestion: None,
-            fixable: false,
+            fix: None,
         }
     }
 
@@ -49,7 +64,7 @@ impl CheckResult {
             message: message.to_string(),
             details: Vec::new(),
             suggestion: None,
-            fixable: false,
+            fix: None,
         }
     }
 
@@ -60,7 +75,7 @@ impl CheckResult {
             message: message.to_string(),
             details: Vec::new(),
             suggestion: None,
-            fixable: false,
+            fix: None,
         }
     }
 
@@ -71,7 +86,7 @@ impl CheckResult {
             message: message.to_string(),
             details: Vec::new(),
             suggestion: None,
-            fixable: false,
+            fix: None,
         }
     }
 
@@ -80,14 +95,19 @@ impl CheckResult {
         self
     }
 
-    pub fn with_fixable(mut self, fixable: bool) -> Self {
-        self.fixable = fixable;
+    pub fn with_fix(mut self, fix: FixFn) -> Self {
+        self.fix = Some(fix);
         self
     }
 
     pub fn with_details(mut self, details: Vec<String>) -> Self {
         self.details = details;
         self
+    }
+
+    /// Returns true if this check has an auto-fix available.
+    pub fn fixable(&self) -> bool {
+        self.fix.is_some()
     }
 }
 
@@ -103,6 +123,8 @@ pub struct DoctorSummary {
     pub warnings: usize,
     pub failures: usize,
     pub skipped: usize,
+    pub warning_names: Vec<String>,
+    pub failure_names: Vec<String>,
 }
 
 impl DoctorSummary {
@@ -111,13 +133,21 @@ impl DoctorSummary {
         let mut warnings = 0;
         let mut failures = 0;
         let mut skipped = 0;
+        let mut warning_names = Vec::new();
+        let mut failure_names = Vec::new();
 
         for category in categories {
             for result in &category.results {
                 match result.status {
                     CheckStatus::Pass => passed += 1,
-                    CheckStatus::Warning => warnings += 1,
-                    CheckStatus::Fail => failures += 1,
+                    CheckStatus::Warning => {
+                        warnings += 1;
+                        warning_names.push(result.name.clone());
+                    }
+                    CheckStatus::Fail => {
+                        failures += 1;
+                        failure_names.push(result.name.clone());
+                    }
                     CheckStatus::Skipped => skipped += 1,
                 }
             }
@@ -128,6 +158,8 @@ impl DoctorSummary {
             warnings,
             failures,
             skipped,
+            warning_names,
+            failure_names,
         }
     }
 
@@ -136,14 +168,14 @@ impl DoctorSummary {
     }
 }
 
-/// Returns the status symbol for a check result.
+/// Returns the status symbol for a check result (with brackets).
 pub fn status_symbol(status: CheckStatus) -> String {
     use crate::styles::{dim, green, red, yellow};
     match status {
-        CheckStatus::Pass => green("\u{2713}"), // ✓
-        CheckStatus::Warning => yellow("!"),    // !
-        CheckStatus::Fail => red("\u{2717}"),   // ✗
-        CheckStatus::Skipped => dim("-"),       // -
+        CheckStatus::Pass => green("[\u{2713}]"),  // [✓]
+        CheckStatus::Warning => yellow("[!]"),     // [!]
+        CheckStatus::Fail => red("[\u{2717}]"),    // [✗]
+        CheckStatus::Skipped => dim("[\u{2212}]"), // [−]
     }
 }
 
@@ -158,17 +190,17 @@ mod tests {
         assert_eq!(result.name, "test");
         assert_eq!(result.message, "everything ok");
         assert!(result.suggestion.is_none());
-        assert!(!result.fixable);
+        assert!(!result.fixable());
     }
 
     #[test]
-    fn test_check_result_warning_with_suggestion() {
+    fn test_check_result_warning_with_suggestion_and_fix() {
         let result = CheckResult::warning("test", "something off")
             .with_suggestion("fix it")
-            .with_fixable(true);
+            .with_fix(Box::new(|| Ok(())));
         assert_eq!(result.status, CheckStatus::Warning);
         assert_eq!(result.suggestion.as_deref(), Some("fix it"));
-        assert!(result.fixable);
+        assert!(result.fixable());
     }
 
     #[test]
@@ -216,6 +248,8 @@ mod tests {
         assert_eq!(summary.failures, 1);
         assert_eq!(summary.skipped, 1);
         assert!(summary.has_failures());
+        assert_eq!(summary.warning_names, vec!["c"]);
+        assert_eq!(summary.failure_names, vec!["d"]);
     }
 
     #[test]

@@ -1,9 +1,11 @@
 //! Installation checks for `daft doctor`.
 //!
 //! Verifies that daft and its dependencies are correctly installed:
-//! binary in PATH, command symlinks, git, man pages, shell integration.
+//! binary in PATH, command symlinks, git, man pages, shell integration,
+//! shortcut symlinks, and shell wrappers.
 
 use crate::doctor::CheckResult;
+use crate::shortcuts::{shortcuts_for_style, ShortcutStyle};
 use std::path::{Path, PathBuf};
 
 /// Expected command symlinks that should point to the daft binary.
@@ -15,6 +17,7 @@ const EXPECTED_SYMLINKS: &[&str] = &[
     "git-worktree-prune",
     "git-worktree-carry",
     "git-worktree-fetch",
+    "git-worktree-branch-delete",
     "git-worktree-flow-adopt",
     "git-worktree-flow-eject",
     "git-daft",
@@ -25,12 +28,9 @@ pub fn check_binary_in_path() -> CheckResult {
     match which::which("daft") {
         Ok(path) => {
             let version = crate::VERSION;
-            CheckResult::pass(
-                "daft binary in PATH",
-                &format!("{} v{version}", path.display()),
-            )
+            CheckResult::pass("daft binary", &format!("{} v{version}", path.display()))
         }
-        Err(_) => CheckResult::fail("daft binary in PATH", "daft not found in PATH")
+        Err(_) => CheckResult::fail("daft binary", "not found in PATH")
             .with_suggestion("Add the directory containing 'daft' to your PATH"),
     }
 }
@@ -42,7 +42,7 @@ pub fn check_command_symlinks() -> CheckResult {
         Err(_) => {
             return CheckResult::warning(
                 "Command symlinks",
-                "Could not detect installation directory",
+                "could not detect installation directory",
             );
         }
     };
@@ -63,15 +63,15 @@ pub fn check_command_symlinks() -> CheckResult {
     let found = present.len();
 
     if missing.is_empty() {
-        CheckResult::pass("Command symlinks", &format!("{found}/{total} present"))
+        CheckResult::pass("Command symlinks", &format!("{found}/{total} installed"))
     } else {
         let details: Vec<String> = missing.iter().map(|n| format!("Missing: {n}")).collect();
         CheckResult::warning(
             "Command symlinks",
-            &format!("{found}/{total} present, {} missing", missing.len()),
+            &format!("{found}/{total} installed, {} missing", missing.len()),
         )
         .with_suggestion("Run 'daft setup' to create missing symlinks")
-        .with_fixable(true)
+        .with_fix(Box::new(fix_command_symlinks))
         .with_details(details)
     }
 }
@@ -101,11 +101,11 @@ pub fn check_git() -> CheckResult {
                     .trim()
                     .strip_prefix("git version ")
                     .unwrap_or(version_str.trim());
-                CheckResult::pass("git", &format!("version {version}"))
+                CheckResult::pass("Git", &format!("version {version}"))
             }
-            _ => CheckResult::pass("git", "installed (could not determine version)"),
+            _ => CheckResult::pass("Git", "installed (could not determine version)"),
         },
-        Err(_) => CheckResult::fail("git", "not found in PATH").with_suggestion("Install git"),
+        Err(_) => CheckResult::fail("Git", "not found in PATH").with_suggestion("Install git"),
     }
 }
 
@@ -126,8 +126,8 @@ pub fn check_man_pages() -> CheckResult {
     }
 
     match found_in {
-        Some(dir) => CheckResult::pass("Man pages installed", &format!("{}", dir.display())),
-        None => CheckResult::warning("Man pages not installed", "man pages not found")
+        Some(dir) => CheckResult::pass("Man pages", &format!("installed in {}", dir.display())),
+        None => CheckResult::warning("Man pages", "not found")
             .with_suggestion("Run 'mise run install-man' to install man pages"),
     }
 }
@@ -178,7 +178,7 @@ pub fn check_shell_integration() -> CheckResult {
 
     match std::fs::read_to_string(&config_file) {
         Ok(content) if content.contains("daft shell-init") => {
-            CheckResult::pass("Shell integration", &format!("configured ({shell_name})"))
+            CheckResult::pass("Shell integration", &format!("{shell_name}, configured"))
         }
         Ok(_) => CheckResult::warning(
             "Shell integration",
@@ -192,8 +192,107 @@ pub fn check_shell_integration() -> CheckResult {
     }
 }
 
+/// Check that shell wrapper functions are active (auto-cd enabled).
+///
+/// This verifies that `daft shell-init` has been sourced in the current shell,
+/// meaning the `__daft_wrapper` function exists. Without this, auto-cd into
+/// new worktrees won't work.
+pub fn check_shell_wrappers() -> CheckResult {
+    let shell = match std::env::var("SHELL") {
+        Ok(s) => s,
+        Err(_) => return CheckResult::skipped("Shell wrappers", "$SHELL not set"),
+    };
+
+    // Run the user's shell in login mode to check if __daft_wrapper is defined
+    let output = std::process::Command::new(&shell)
+        .args(["-lc", "type __daft_wrapper 2>/dev/null && echo WRAPPED"])
+        .output();
+
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            if stdout.contains("WRAPPED") {
+                CheckResult::pass("Shell wrappers", "active (auto-cd enabled)")
+            } else {
+                CheckResult::warning("Shell wrappers", "not active — auto-cd will not work")
+                    .with_suggestion("Restart your shell or run: source ~/.zshrc")
+            }
+        }
+        Err(_) => CheckResult::skipped("Shell wrappers", "could not check shell functions"),
+    }
+}
+
+/// Check shortcut symlinks for each enabled style.
+///
+/// Detects which shortcut styles have any symlink installed. For each
+/// partially-installed style, reports missing shortcuts. If no styles
+/// are installed at all, suggests enabling them.
+pub fn check_shortcut_symlinks() -> Vec<CheckResult> {
+    let install_dir = match crate::commands::shortcuts::detect_install_dir() {
+        Ok(dir) => dir,
+        Err(_) => return vec![],
+    };
+
+    let mut results = Vec::new();
+    let mut any_style_installed = false;
+
+    for style in ShortcutStyle::all() {
+        let shortcuts = shortcuts_for_style(*style);
+        let mut present = Vec::new();
+        let mut missing = Vec::new();
+
+        for shortcut in &shortcuts {
+            let path = install_dir.join(shortcut.alias);
+            if is_valid_symlink(&path, &install_dir) {
+                present.push(shortcut.alias);
+            } else {
+                missing.push(shortcut.alias);
+            }
+        }
+
+        // Skip styles that are entirely not installed (intentionally disabled)
+        if present.is_empty() {
+            continue;
+        }
+
+        any_style_installed = true;
+        let total = shortcuts.len();
+        let found = present.len();
+        let name = format!("Shortcuts: {} style", style.name());
+
+        if missing.is_empty() {
+            results.push(CheckResult::pass(
+                &name,
+                &format!("{found}/{total} installed"),
+            ));
+        } else {
+            let details: Vec<String> = missing.iter().map(|n| format!("Missing: {n}")).collect();
+            let style_name = style.name().to_string();
+            results.push(
+                CheckResult::warning(
+                    &name,
+                    &format!("{found}/{total} installed, {} missing", missing.len()),
+                )
+                .with_suggestion(&format!(
+                    "Run 'daft setup shortcuts enable {style_name}' to install"
+                ))
+                .with_details(details),
+            );
+        }
+    }
+
+    if !any_style_installed {
+        results.push(
+            CheckResult::warning("Shortcuts", "no shortcut aliases configured")
+                .with_suggestion("Run 'daft setup shortcuts' to enable shortcuts"),
+        );
+    }
+
+    results
+}
+
 /// Check if a path is a symlink pointing to the daft binary.
-fn is_valid_symlink(path: &Path, install_dir: &Path) -> bool {
+pub(crate) fn is_valid_symlink(path: &Path, install_dir: &Path) -> bool {
     if path.is_symlink() {
         if let Ok(target) = std::fs::read_link(path) {
             // Check relative ("daft") or absolute path targets
@@ -285,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_expected_symlinks_count() {
-        assert_eq!(EXPECTED_SYMLINKS.len(), 10);
+        assert_eq!(EXPECTED_SYMLINKS.len(), 11);
     }
 
     #[test]
