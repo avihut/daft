@@ -9,22 +9,33 @@ use which::which;
 /// (git clone, tarball, Homebrew, etc.)
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Marker prefix for shell wrapper cd path extraction.
+/// Marker prefix for shell wrapper cd path extraction (legacy).
+/// Used as a fallback when `DAFT_CD_FILE` is not set.
 /// Shell wrappers look for this marker to determine which directory to cd into.
 pub const CD_PATH_MARKER: &str = "__DAFT_CD__:";
 
-/// Environment variable that shell wrappers set to signal they want cd path output.
+/// Environment variable that shell wrappers set to signal they want cd path output (legacy).
+/// New wrappers use `DAFT_CD_FILE` instead, which avoids blocking stdout.
 pub const SHELL_WRAPPER_ENV: &str = "DAFT_SHELL_WRAPPER";
+
+/// Environment variable containing a file path where the cd target should be written.
+/// When set, the binary writes the cd path to this file instead of stdout,
+/// allowing stdout/stderr to stream through to the terminal in real time.
+pub const CD_FILE_ENV: &str = "DAFT_CD_FILE";
 
 /// Outputs the final worktree path for shell wrappers to consume.
 ///
-/// Only outputs if DAFT_SHELL_WRAPPER env var is set. This keeps output clean
-/// for users who don't use wrappers - they won't see the marker line.
+/// Prefers `DAFT_CD_FILE` (file-based, non-blocking) over `DAFT_SHELL_WRAPPER`
+/// (stdout marker, requires output capture).
 ///
-/// Shell wrappers set DAFT_SHELL_WRAPPER=1 before calling the binary, then
-/// parse the output for lines starting with `__DAFT_CD__:` to extract the
-/// path they should cd into.
+/// - If `DAFT_CD_FILE` is set: writes the path to that file.
+/// - Else if `DAFT_SHELL_WRAPPER` is set: prints the `__DAFT_CD__:` marker to stdout (legacy).
+/// - Otherwise: no output (direct invocation without wrapper).
 pub fn output_cd_path(path: &Path) {
+    if let Ok(cd_file) = env::var(CD_FILE_ENV) {
+        let _ = fs::write(&cd_file, path.display().to_string());
+        return;
+    }
     if env::var(SHELL_WRAPPER_ENV).is_ok() {
         println!("{}{}", CD_PATH_MARKER, path.display());
     }

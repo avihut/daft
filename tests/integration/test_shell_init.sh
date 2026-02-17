@@ -426,6 +426,73 @@ test_daft_wrapper_intercepts_subcommand() {
     return 0
 }
 
+test_cd_file_writes_path() {
+    log "Testing: Commands write CD path to DAFT_CD_FILE when set"
+
+    # Create a test remote repository
+    local remote_dir
+    remote_dir=$(create_test_remote "test-repo-cd-file" "main")
+
+    # Create a temp file for the CD path
+    local cd_file
+    cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
+
+    # Clone the repository with DAFT_CD_FILE set
+    DAFT_CD_FILE="$cd_file" git-worktree-clone "$remote_dir" 2>&1 | tee /tmp/clone_cd_file_output.txt || true
+
+    # Verify the CD path was written to the file
+    if [ -s "$cd_file" ]; then
+        local cd_path
+        cd_path=$(cat "$cd_file")
+        if [ -d "$cd_path" ]; then
+            log_success "CD path written to file and directory exists: $cd_path"
+        else
+            log_error "CD path written to file but directory does not exist: $cd_path"
+            rm -f "$cd_file"
+            return 1
+        fi
+    else
+        log_error "DAFT_CD_FILE is empty after clone"
+        rm -f "$cd_file"
+        return 1
+    fi
+
+    # Verify __DAFT_CD__ marker does NOT appear in stdout (file takes priority)
+    if grep -q "^__DAFT_CD__:" /tmp/clone_cd_file_output.txt; then
+        log_error "stdout should NOT contain __DAFT_CD__ marker when DAFT_CD_FILE is set"
+        rm -f "$cd_file"
+        return 1
+    else
+        log_success "stdout correctly omits __DAFT_CD__ marker when DAFT_CD_FILE is set"
+    fi
+
+    rm -f "$cd_file"
+    return 0
+}
+
+test_cd_file_not_written_without_env() {
+    log "Testing: Commands do NOT write CD file when DAFT_CD_FILE is not set"
+
+    # Create a test remote repository
+    local remote_dir
+    remote_dir=$(create_test_remote "test-repo-no-cd-file" "main")
+
+    # Clone without DAFT_CD_FILE
+    unset DAFT_CD_FILE
+    unset DAFT_SHELL_WRAPPER
+    git-worktree-clone "$remote_dir" 2>&1 | tee /tmp/clone_no_cd_file.txt || true
+
+    # Verify no __DAFT_CD__ marker in stdout either
+    if grep -q "^__DAFT_CD__:" /tmp/clone_no_cd_file.txt; then
+        log_error "stdout should NOT contain __DAFT_CD__ marker without any env vars set"
+        return 1
+    else
+        log_success "No CD communication when neither DAFT_CD_FILE nor DAFT_SHELL_WRAPPER is set"
+    fi
+
+    return 0
+}
+
 # --- Main Test Runner ---
 
 main() {
@@ -454,6 +521,8 @@ main() {
     run_test "daft_wrapper_function_exists" test_daft_wrapper_function_exists
     run_test "daft_wrapper_passthrough" test_daft_wrapper_passthrough
     run_test "daft_wrapper_intercepts_subcommand" test_daft_wrapper_intercepts_subcommand
+    run_test "cd_file_writes_path" test_cd_file_writes_path
+    run_test "cd_file_not_written_without_env" test_cd_file_not_written_without_env
 
     print_summary
 }

@@ -96,26 +96,29 @@ __daft_find_bin() {
 
 __daft_wrapper() {
     local cmd="$1"; shift
-    local output exit_code
     local daft_bin=$(__daft_find_bin)
+    local cd_file exit_code
+    cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd.XXXXXX")
 
-    # Use exec -a to invoke daft with the command name as argv[0]
-    # This works even when symlinks aren't installed (e.g., Homebrew)
+    # Run the command with stdout/stderr passing through directly (no capture).
+    # The binary writes the cd target path to DAFT_CD_FILE instead of stdout,
+    # so output streams to the terminal in real time.
     if [ -n "$daft_bin" ]; then
-        output=$(DAFT_SHELL_WRAPPER=1 exec -a "$cmd" "$daft_bin" "$@" 2>&1)
+        (DAFT_CD_FILE="$cd_file" exec -a "$cmd" "$daft_bin" "$@")
     else
         # Fallback: try direct command (for systems with symlinks)
-        output=$(DAFT_SHELL_WRAPPER=1 command "$cmd" "$@" 2>&1)
+        DAFT_CD_FILE="$cd_file" command "$cmd" "$@"
     fi
     exit_code=$?
-    echo "$output" | grep -v '^__DAFT_CD__:'
-    if [ $exit_code -eq 0 ]; then
+
+    if [ $exit_code -eq 0 ] && [ -s "$cd_file" ]; then
         local cd_path
-        cd_path=$(echo "$output" | grep '^__DAFT_CD__:' | cut -d: -f2-)
+        cd_path=$(cat "$cd_file")
         if [ -n "$cd_path" ] && [ -d "$cd_path" ]; then
-            cd "$cd_path" || return $exit_code
+            cd "$cd_path" || exit_code=$?
         fi
     fi
+    rm -f "$cd_file"
     return $exit_code
 }
 
@@ -267,38 +270,26 @@ function __daft_wrapper
     set -l cmd $argv[1]
     set -l args $argv[2..-1]
     set -l daft_bin (__daft_find_bin)
-    set -l output
-    set -l exit_code
+    set -l cd_file (mktemp (set -q TMPDIR; and echo $TMPDIR; or echo /tmp)"/daft-cd.XXXXXX")
 
-    # Use exec to invoke daft with the command name as argv[0]
-    # Fish doesn't have exec -a, so we use a bash subshell for this
+    # Run the command with stdout/stderr passing through directly (no capture).
+    # The binary writes the cd target path to DAFT_CD_FILE instead of stdout,
+    # so output streams to the terminal in real time.
     if test -n "$daft_bin"
-        set output (env DAFT_SHELL_WRAPPER=1 bash -c 'exec -a "$0" "$1" "${@:2}"' "$cmd" "$daft_bin" $args 2>&1)
+        env DAFT_CD_FILE="$cd_file" bash -c 'exec -a "$0" "$1" "${@:2}"' "$cmd" "$daft_bin" $args
     else
         # Fallback: try direct command (for systems with symlinks)
-        set output (env DAFT_SHELL_WRAPPER=1 command $cmd $args 2>&1)
+        env DAFT_CD_FILE="$cd_file" command $cmd $args
     end
-    set exit_code $status
+    set -l exit_code $status
 
-    # Print output, filtering out the cd path marker
-    for line in $output
-        if not string match -q '__DAFT_CD__:*' $line
-            echo $line
+    if test $exit_code -eq 0; and test -s "$cd_file"
+        set -l cd_path (cat "$cd_file")
+        if test -n "$cd_path"; and test -d "$cd_path"
+            cd $cd_path
         end
     end
-
-    # If successful, cd to the target directory
-    if test $exit_code -eq 0
-        for line in $output
-            if string match -q '__DAFT_CD__:*' $line
-                set -l cd_path (string replace '__DAFT_CD__:' '' $line)
-                if test -n "$cd_path"; and test -d "$cd_path"
-                    cd $cd_path
-                end
-                break
-            end
-        end
-    end
+    rm -f "$cd_file"
 
     return $exit_code
 end

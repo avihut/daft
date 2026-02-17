@@ -5,7 +5,7 @@
 
 use super::{Output, OutputConfig};
 use crate::styles::{self, colors_enabled, colors_enabled_stderr};
-use crate::{CD_PATH_MARKER, SHELL_WRAPPER_ENV};
+use crate::{CD_FILE_ENV, CD_PATH_MARKER, SHELL_WRAPPER_ENV};
 use std::env;
 use std::path::Path;
 
@@ -157,9 +157,16 @@ impl Output for CliOutput {
     }
 
     fn cd_path(&mut self, path: &Path) {
-        // Only output if autocd is enabled and the shell wrapper environment variable is set.
-        // This keeps output clean for users who don't use wrappers.
-        if self.config.autocd && env::var(SHELL_WRAPPER_ENV).is_ok() {
+        if !self.config.autocd {
+            return;
+        }
+        // Prefer file-based CD communication (unblocks stdout for real-time streaming).
+        if let Ok(cd_file) = env::var(CD_FILE_ENV) {
+            let _ = std::fs::write(&cd_file, path.display().to_string());
+            return;
+        }
+        // Legacy fallback: stdout marker (requires shell wrapper to capture all output).
+        if env::var(SHELL_WRAPPER_ENV).is_ok() {
             println!("{CD_PATH_MARKER}{}", path.display());
         }
     }

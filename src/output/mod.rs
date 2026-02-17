@@ -156,8 +156,8 @@ pub trait Output {
     // Special Output
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Output the cd path marker for shell wrappers.
-    /// Only outputs if DAFT_SHELL_WRAPPER env var is set.
+    /// Communicate the cd target path to shell wrappers.
+    /// Prefers DAFT_CD_FILE (file-based) over DAFT_SHELL_WRAPPER (stdout marker).
     fn cd_path(&mut self, path: &Path);
 
     /// Output raw, unformatted content.
