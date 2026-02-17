@@ -10,7 +10,7 @@ on:
 jobs:
   # Fast feedback: formatting, linting, unit tests, xtask verification
   # All use debug profile so they share compilation artifacts
-  lint:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
