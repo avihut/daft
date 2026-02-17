@@ -5,7 +5,7 @@
 
 use super::{Output, OutputConfig};
 use crate::styles::{self, colors_enabled, colors_enabled_stderr};
-use crate::{CD_PATH_MARKER, SHELL_WRAPPER_ENV};
+use crate::CD_FILE_ENV;
 use std::env;
 use std::path::Path;
 
@@ -104,19 +104,8 @@ impl Output for CliOutput {
     }
 
     fn result(&mut self, msg: &str) {
-        // Result is the primary output - always shown unless quiet
         if !self.config.quiet {
-            let is_wrapper = env::var_os(SHELL_WRAPPER_ENV).is_some();
-            if is_wrapper {
-                // When run through the shell wrapper, stdout is captured by $()
-                // and only printed after the command finishes. Print to stderr
-                // so the message appears in real-time (before hook output).
-                if colors_enabled_stderr() {
-                    eprintln!("{}{msg}{}", styles::BOLD, styles::RESET);
-                } else {
-                    eprintln!("{msg}");
-                }
-            } else if colors_enabled() {
+            if colors_enabled() {
                 println!("{}{msg}{}", styles::BOLD, styles::RESET);
             } else {
                 println!("{msg}");
@@ -167,10 +156,12 @@ impl Output for CliOutput {
     }
 
     fn cd_path(&mut self, path: &Path) {
-        // Only output if autocd is enabled and the shell wrapper environment variable is set.
-        // This keeps output clean for users who don't use wrappers.
-        if self.config.autocd && env::var(SHELL_WRAPPER_ENV).is_ok() {
-            println!("{CD_PATH_MARKER}{}", path.display());
+        if self.config.autocd {
+            if let Ok(cd_file) = env::var(CD_FILE_ENV) {
+                if let Err(e) = std::fs::write(&cd_file, path.display().to_string()) {
+                    eprintln!("warning: failed to write cd path to {cd_file}: {e}");
+                }
+            }
         }
     }
 

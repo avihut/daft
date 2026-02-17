@@ -513,7 +513,7 @@ test_prune_empty_parent_dir_cleanup() {
 
 # Test prune from current worktree (Scenario A: bare-repo layout)
 # When pruning from inside a worktree that is about to be removed,
-# the command should remove it last and emit __DAFT_CD__ to redirect the shell.
+# the command should remove it last and write a CD target to redirect the shell.
 test_prune_from_current_worktree() {
     local remote_repo=$(create_test_remote "test-repo-prune-current-wt" "main")
 
@@ -545,35 +545,39 @@ test_prune_from_current_worktree() {
     # cd into the feature worktree (the one about to be pruned)
     cd "feature/test-feature"
 
-    # Run prune with DAFT_SHELL_WRAPPER=1 from inside the worktree
-    local prune_output
-    prune_output=$(DAFT_SHELL_WRAPPER=1 git-worktree-prune 2>&1) || true
+    # Run prune with DAFT_CD_FILE set from inside the worktree
+    local cd_file
+    cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
+    DAFT_CD_FILE="$cd_file" git-worktree-prune 2>&1 || true
 
     # Verify the worktree was removed
     if [[ -d "$project_root/feature/test-feature" ]]; then
         log_error "Prune should have removed feature/test-feature worktree"
+        rm -f "$cd_file"
         return 1
     fi
 
-    # Verify __DAFT_CD__ was emitted pointing to project root
-    if echo "$prune_output" | grep -q "__DAFT_CD__:"; then
-        log_success "Prune emitted __DAFT_CD__ marker for shell redirection"
+    # Verify CD path was written to temp file
+    if [ -s "$cd_file" ]; then
+        log_success "Prune wrote CD path to temp file for shell redirection"
     else
-        log_error "Prune should have emitted __DAFT_CD__ marker when pruning current worktree"
-        log_error "Output: $prune_output"
+        log_error "Prune should have written CD path to temp file when pruning current worktree"
+        rm -f "$cd_file"
         return 1
     fi
 
     # Verify the CD path points to project root (resolve symlinks for comparison)
     local cd_path
-    cd_path=$(echo "$prune_output" | grep '__DAFT_CD__:' | sed 's/__DAFT_CD__://')
+    cd_path=$(cat "$cd_file")
     if [[ "$cd_path" == "$project_root" ]]; then
         log_success "CD path points to project root"
     else
         log_error "Expected CD path '$project_root', got '$cd_path'"
+        rm -f "$cd_file"
         return 1
     fi
 
+    rm -f "$cd_file"
     return 0
 }
 
@@ -613,13 +617,14 @@ test_prune_from_current_worktree_cd_default_branch() {
     # cd into the feature worktree
     cd "feature/test-feature"
 
-    # Run prune
-    local prune_output
-    prune_output=$(DAFT_SHELL_WRAPPER=1 git-worktree-prune 2>&1) || true
+    # Run prune with DAFT_CD_FILE set
+    local cd_file
+    cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
+    DAFT_CD_FILE="$cd_file" git-worktree-prune 2>&1 || true
 
-    # Verify __DAFT_CD__ points to default branch worktree
+    # Verify CD path was written to temp file pointing to default branch worktree
     local cd_path
-    cd_path=$(echo "$prune_output" | grep '__DAFT_CD__:' | sed 's/__DAFT_CD__://')
+    cd_path=$(cat "$cd_file")
     if [[ "$cd_path" == "$main_wt_path" ]]; then
         log_success "CD path points to default branch worktree (main)"
     else
@@ -629,10 +634,12 @@ test_prune_from_current_worktree_cd_default_branch() {
             log_success "CD path fell back to project root (acceptable)"
         else
             log_error "CD path does not match expected value"
+            rm -f "$cd_file"
             return 1
         fi
     fi
 
+    rm -f "$cd_file"
     return 0
 }
 

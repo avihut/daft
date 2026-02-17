@@ -9,26 +9,9 @@ use which::which;
 /// (git clone, tarball, Homebrew, etc.)
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Marker prefix for shell wrapper cd path extraction.
-/// Shell wrappers look for this marker to determine which directory to cd into.
-pub const CD_PATH_MARKER: &str = "__DAFT_CD__:";
-
-/// Environment variable that shell wrappers set to signal they want cd path output.
-pub const SHELL_WRAPPER_ENV: &str = "DAFT_SHELL_WRAPPER";
-
-/// Outputs the final worktree path for shell wrappers to consume.
-///
-/// Only outputs if DAFT_SHELL_WRAPPER env var is set. This keeps output clean
-/// for users who don't use wrappers - they won't see the marker line.
-///
-/// Shell wrappers set DAFT_SHELL_WRAPPER=1 before calling the binary, then
-/// parse the output for lines starting with `__DAFT_CD__:` to extract the
-/// path they should cd into.
-pub fn output_cd_path(path: &Path) {
-    if env::var(SHELL_WRAPPER_ENV).is_ok() {
-        println!("{}{}", CD_PATH_MARKER, path.display());
-    }
-}
+/// Environment variable containing the path to a temp file where the shell
+/// wrapper expects the cd target to be written.
+pub const CD_FILE_ENV: &str = "DAFT_CD_FILE";
 
 /// Returns args suitable for clap parsing, handling both symlink and subcommand invocation.
 ///

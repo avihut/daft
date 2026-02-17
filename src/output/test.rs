@@ -370,7 +370,7 @@ impl Output for TestOutput {
 
     fn cd_path(&mut self, path: &Path) {
         // Always capture cd_path for test verification
-        // (In real CLI, this only outputs if DAFT_SHELL_WRAPPER is set)
+        // (In real CLI, this only writes if DAFT_CD_FILE is set)
         self.entries.push(OutputEntry::CdPath(path.to_path_buf()));
     }
 

@@ -43,15 +43,16 @@ daft shell-init fish --aliases | source
 
 ## How It Works
 
-1. The shell wrappers set `DAFT_SHELL_WRAPPER=1` before calling the underlying
-   command
-2. When this env var is set, commands output a `__DAFT_CD__:/path/to/worktree`
-   marker
-3. The wrapper parses this marker and uses the shell's builtin `cd` to change
-   directory
+1. The shell wrapper creates a temporary file and passes its path via
+   `DAFT_CD_FILE`
+2. When this env var is set, daft writes the target directory to that file
+3. After the command finishes, the wrapper reads the file and uses the shell's
+   builtin `cd` to change directory
+4. The temp file is cleaned up automatically
 
 This means the binary does the heavy lifting (cloning, branching, etc.) and the
-wrapper just handles the final `cd`.
+wrapper just handles the final `cd`. Because stdout is never captured, all
+output streams to the terminal in real-time.
 
 ## Disabling Auto-CD
 

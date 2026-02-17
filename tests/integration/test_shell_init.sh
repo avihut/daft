@@ -190,53 +190,57 @@ test_shell_init_help() {
     return 0
 }
 
-test_cd_path_marker_output() {
-    log "Testing: Commands output CD path marker when DAFT_SHELL_WRAPPER is set"
+test_cd_file_output() {
+    log "Testing: Commands write CD path to temp file when DAFT_CD_FILE is set"
 
     # Create a test remote repository
     local remote_dir
     remote_dir=$(create_test_remote "test-repo-cd-marker" "main")
 
-    # Clone the repository
-    DAFT_SHELL_WRAPPER=1 git-worktree-clone "$remote_dir" 2>&1 | tee /tmp/clone_output.txt || true
+    # Create a temp file for CD path
+    local cd_file
+    cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
 
-    # Check that the output contains the CD path marker
-    if grep -q "^__DAFT_CD__:" /tmp/clone_output.txt; then
-        log_success "Clone output contains CD path marker"
+    # Clone the repository with DAFT_CD_FILE set
+    DAFT_CD_FILE="$cd_file" git-worktree-clone "$remote_dir" 2>&1 || true
+
+    # Check that the temp file is non-empty
+    if [ -s "$cd_file" ]; then
+        log_success "Clone wrote CD path to temp file"
     else
-        log_error "Clone output missing CD path marker"
-        cat /tmp/clone_output.txt
+        log_error "Clone did not write CD path to temp file"
         return 1
     fi
 
+    rm -f "$cd_file"
     return 0
 }
 
-test_cd_path_marker_not_output_without_env() {
-    log "Testing: Commands do NOT output CD path marker when DAFT_SHELL_WRAPPER is not set"
+test_no_cd_file_without_env() {
+    log "Testing: Commands do not leak __DAFT_CD__ marker to stdout"
 
     # Create a test remote repository
     local remote_dir
     remote_dir=$(create_test_remote "test-repo-no-marker" "main")
 
-    # Clone the repository without DAFT_SHELL_WRAPPER
-    unset DAFT_SHELL_WRAPPER
+    # Clone the repository without DAFT_CD_FILE
+    unset DAFT_CD_FILE
     git-worktree-clone "$remote_dir" 2>&1 | tee /tmp/clone_output_no_env.txt || true
 
-    # Check that the output does NOT contain the CD path marker
+    # Check that the output does NOT contain the old CD path marker
     if grep -q "^__DAFT_CD__:" /tmp/clone_output_no_env.txt; then
-        log_error "Clone output incorrectly contains CD path marker when env not set"
+        log_error "Clone output incorrectly contains legacy __DAFT_CD__ marker"
         cat /tmp/clone_output_no_env.txt
         return 1
     else
-        log_success "Clone output correctly omits CD path marker when env not set"
+        log_success "Clone output correctly omits legacy __DAFT_CD__ marker"
     fi
 
     return 0
 }
 
 test_wrapper_cd_integration() {
-    log "Testing: Shell wrapper actually changes directory after checkout"
+    log "Testing: Shell wrapper writes CD path to temp file after checkout"
 
     # Create a test remote repository
     local remote_dir
@@ -254,25 +258,22 @@ test_wrapper_cd_integration() {
     # Source the shell wrappers
     eval "$(daft shell-init bash)"
 
-    # Save current directory
-    local start_dir="$PWD"
+    # Create a temp file for CD path
+    local cd_file
+    cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
 
-    # Create a new branch worktree using the wrapper function
-    # Note: We're testing that the function is callable, but the actual
-    # cd effect won't persist in the subshell - we verify the marker is present
-    local output
-    output=$(DAFT_SHELL_WRAPPER=1 command git-worktree-checkout-branch test-branch 2>&1) || true
+    # Create a new branch worktree with DAFT_CD_FILE set
+    DAFT_CD_FILE="$cd_file" command git-worktree-checkout-branch test-branch 2>&1 || true
 
-    # Verify the marker is in the output
-    if echo "$output" | grep -q "^__DAFT_CD__:"; then
-        log_success "Wrapper integration test: CD marker present in output"
+    # Verify the temp file has content
+    if [ -s "$cd_file" ]; then
+        log_success "Wrapper integration test: CD path written to temp file"
     else
-        log_error "Wrapper integration test: CD marker missing from output"
-        echo "Output was:"
-        echo "$output"
+        log_error "Wrapper integration test: CD path not written to temp file"
         return 1
     fi
 
+    rm -f "$cd_file"
     return 0
 }
 
@@ -445,8 +446,8 @@ main() {
     run_test "shell_init_bash_aliases" test_shell_init_bash_aliases
     run_test "shell_init_fish_aliases" test_shell_init_fish_aliases
     run_test "shell_init_help" test_shell_init_help
-    run_test "cd_path_marker_output" test_cd_path_marker_output
-    run_test "cd_path_marker_not_output_without_env" test_cd_path_marker_not_output_without_env
+    run_test "cd_file_output" test_cd_file_output
+    run_test "no_cd_file_without_env" test_no_cd_file_without_env
     run_test "wrapper_cd_integration" test_wrapper_cd_integration
     run_test "git_wrapper_function_exists" test_git_wrapper_function_exists
     run_test "git_wrapper_passthrough" test_git_wrapper_passthrough

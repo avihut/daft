@@ -127,8 +127,8 @@ They find the project root automatically via `git rev-parse --git-common-dir`.
 
 Shell integration is important because the daft binary creates worktrees
 internally, but the parent shell stays in the original directory. Shell wrappers
-solve this by detecting a `__DAFT_CD__:/path` marker and running `cd` in the
-parent shell.
+solve this by reading the CD target from a temp file (`DAFT_CD_FILE`) and
+running `cd` in the parent shell.
 
 ```bash
 # Bash / Zsh -- add to ~/.bashrc or ~/.zshrc

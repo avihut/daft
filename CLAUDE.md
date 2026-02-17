@@ -55,9 +55,10 @@ invoked, then dispatches to the matching module in `src/commands/`. Symlinks
 like `git-worktree-clone → daft` enable Git subcommand discovery. Shortcut
 aliases (e.g., `gwtco`) are resolved in `src/shortcuts.rs` before routing.
 
-**Shell integration**: `daft shell-init` generates shell wrappers that set
-`DAFT_SHELL_WRAPPER=1`. When set, commands output `__DAFT_CD__:/path` markers
-that wrappers parse to `cd` into new worktrees.
+**Shell integration**: `daft shell-init` generates shell wrappers that create a
+temp file and pass its path via `DAFT_CD_FILE`. When set, commands write the cd
+target to that file, and the wrapper reads it after the command finishes to `cd`
+into new worktrees. Stdout flows directly to the terminal.
 
 **Hooks system**: Lifecycle hooks in `.daft/hooks/` with trust-based security.
 Hook types: `post-clone`, `post-init`, `worktree-pre-create`,

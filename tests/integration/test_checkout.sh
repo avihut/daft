@@ -109,19 +109,21 @@ test_checkout_existing_worktree() {
         return 1
     fi
 
-    # Verify shell integration marker is present when DAFT_SHELL_WRAPPER is set
-    local output_with_wrapper
-    output_with_wrapper=$(DAFT_SHELL_WRAPPER=1 git-worktree-checkout develop 2>&1) || {
-        log_error "Second checkout with shell wrapper should succeed, but failed"
-        echo "$output_with_wrapper"
+    # Verify shell integration writes CD path to temp file when DAFT_CD_FILE is set
+    local cd_file
+    cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
+    DAFT_CD_FILE="$cd_file" git-worktree-checkout develop 2>&1 || {
+        log_error "Second checkout with DAFT_CD_FILE should succeed, but failed"
+        rm -f "$cd_file"
         return 1
     }
 
-    if ! echo "$output_with_wrapper" | grep -q "__DAFT_CD__:"; then
-        log_error "Output with DAFT_SHELL_WRAPPER=1 should contain shell integration marker __DAFT_CD__:"
-        echo "$output_with_wrapper"
+    if ! [ -s "$cd_file" ]; then
+        log_error "Checkout with DAFT_CD_FILE set should write CD path to temp file"
+        rm -f "$cd_file"
         return 1
     fi
+    rm -f "$cd_file"
 
     log_success "Checkout to existing worktree works correctly"
     return 0
