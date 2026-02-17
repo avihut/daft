@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.26](https://github.com/avihut/daft/compare/v1.0.25...v1.0.26) - 2026-02-17
+
+### Bug Fixes
+
+- use temp file for shell wrapper CD communication ([#219](https://github.com/avihut/daft/pull/219))
+
+### Features
+
+- add hook execution progress display with spinners ([#217](https://github.com/avihut/daft/pull/217))
+
 ## [1.0.25](https://github.com/avihut/daft/compare/v1.0.24...v1.0.25) - 2026-02-16
 
 ### Bug Fixes
