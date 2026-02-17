@@ -7,7 +7,7 @@ use crate::{
     output::{CliOutput, Output, OutputConfig},
     remote::{get_default_branch_local, remote_branch_exists},
     settings::PruneCdTarget,
-    styles, DaftSettings, WorktreeConfig, SHELL_WRAPPER_ENV,
+    styles, DaftSettings, WorktreeConfig, CD_FILE_ENV,
 };
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -426,11 +426,10 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
         );
     }
 
-    // Emit the CD marker as the very last output. The shell wrapper captures
-    // all stdout and parses for __DAFT_CD__: lines to cd the parent shell.
+    // Write the cd target to the temp file for the shell wrapper.
     // When no shell wrapper is active, tell the user to cd manually.
     if let Some(ref cd_target) = deferred_cd_target {
-        if std::env::var(SHELL_WRAPPER_ENV).is_ok() {
+        if std::env::var(CD_FILE_ENV).is_ok() {
             output.cd_path(cd_target);
         } else {
             output.result(&format!(

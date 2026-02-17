@@ -5,7 +5,7 @@
 //! integration.
 
 use crate::output::Output;
-use crate::SHELL_WRAPPER_ENV;
+use crate::CD_FILE_ENV;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -110,7 +110,7 @@ pub fn hints_disabled() -> bool {
 
 /// Check if the shell wrapper is active.
 pub fn shell_wrapper_active() -> bool {
-    env::var(SHELL_WRAPPER_ENV).is_ok()
+    env::var(CD_FILE_ENV).is_ok()
 }
 
 /// Show the shell integration hint if appropriate.
@@ -118,7 +118,7 @@ pub fn shell_wrapper_active() -> bool {
 /// This should be called after a successful worktree creation operation.
 /// The hint is shown only if:
 /// - Hints are not disabled via DAFT_NO_HINTS
-/// - The shell wrapper is not active (DAFT_SHELL_WRAPPER not set)
+/// - The shell wrapper is not active (DAFT_CD_FILE not set)
 /// - The hint hasn't been shown before
 /// - Quiet mode is not enabled
 ///

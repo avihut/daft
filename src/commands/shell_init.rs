@@ -16,7 +16,7 @@ Generate shell wrapper functions that enable automatic cd into new worktrees.
 
 By default, when daft commands create or switch to a worktree, the process changes
 directory but the parent shell remains in the original directory. These wrappers
-solve this by parsing the command output and using the shell's builtin cd.
+solve this by reading the CD target from a temp file and using the shell's builtin cd.
 
 Add to your shell config:
   Bash (~/.bashrc):  eval "$(daft shell-init bash)"
@@ -96,28 +96,38 @@ __daft_find_bin() {
 
 __daft_wrapper() {
     local cmd="$1"; shift
-    local output exit_code
+    local exit_code
     local daft_bin=$(__daft_find_bin)
+    local cd_file
+    cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd.XXXXXX")
 
-    # Only capture stdout (where __DAFT_CD__ markers go).
-    # Let stderr pass through to the terminal so hook progress
-    # spinners and colors render correctly.
-    # CLICOLOR_FORCE=1 tells daft to emit colors even though stdout
-    # is a pipe — the wrapper echoes the output to the real terminal.
+    if [ -z "$cd_file" ]; then
+        # mktemp failed — run without cd support
+        if [ -n "$daft_bin" ]; then
+            (exec -a "$cmd" "$daft_bin" "$@")
+        else
+            command "$cmd" "$@"
+        fi
+        return $?
+    fi
+
+    # Stdout flows directly to the terminal — no capture needed.
     if [ -n "$daft_bin" ]; then
-        output=$(CLICOLOR_FORCE=1 DAFT_SHELL_WRAPPER=1 exec -a "$cmd" "$daft_bin" "$@")
+        (DAFT_CD_FILE="$cd_file" exec -a "$cmd" "$daft_bin" "$@")
     else
-        output=$(CLICOLOR_FORCE=1 DAFT_SHELL_WRAPPER=1 command "$cmd" "$@")
+        DAFT_CD_FILE="$cd_file" command "$cmd" "$@"
     fi
     exit_code=$?
-    echo "$output" | grep -v '^__DAFT_CD__:'
-    if [ $exit_code -eq 0 ]; then
+
+    if [ $exit_code -eq 0 ] && [ -s "$cd_file" ]; then
         local cd_path
-        cd_path=$(echo "$output" | grep '^__DAFT_CD__:' | cut -d: -f2-)
+        cd_path=$(cat "$cd_file")
         if [ -n "$cd_path" ] && [ -d "$cd_path" ]; then
-            cd "$cd_path" || return $exit_code
+            cd "$cd_path" || exit_code=$?
         fi
     fi
+
+    rm -f "$cd_file"
     return $exit_code
 }
 
@@ -269,42 +279,33 @@ function __daft_wrapper
     set -l cmd $argv[1]
     set -l args $argv[2..-1]
     set -l daft_bin (__daft_find_bin)
-    set -l output
-    set -l exit_code
+    set -l cd_file (mktemp (set -q TMPDIR; and echo $TMPDIR; or echo /tmp)"/daft-cd.XXXXXX")
 
-    # Only capture stdout (where __DAFT_CD__ markers go).
-    # Let stderr pass through to the terminal so hook progress
-    # spinners and colors render correctly.
-    # CLICOLOR_FORCE=1 tells daft to emit colors even though stdout
-    # is a pipe — the wrapper echoes the output to the real terminal.
-    # Fish doesn't have exec -a, so we use a bash subshell for this.
+    if test -z "$cd_file"
+        if test -n "$daft_bin"
+            command $daft_bin $args
+        else
+            command $cmd $args
+        end
+        return $status
+    end
+
+    # Stdout flows directly to the terminal — no capture needed.
     if test -n "$daft_bin"
-        set output (env CLICOLOR_FORCE=1 DAFT_SHELL_WRAPPER=1 bash -c 'exec -a "$0" "$1" "${@:2}"' "$cmd" "$daft_bin" $args)
+        env DAFT_CD_FILE="$cd_file" bash -c 'exec -a "$0" "$1" "${@:2}"' "$cmd" "$daft_bin" $args
     else
-        set output (env CLICOLOR_FORCE=1 DAFT_SHELL_WRAPPER=1 command $cmd $args)
+        env DAFT_CD_FILE="$cd_file" command $cmd $args
     end
-    set exit_code $status
+    set -l exit_code $status
 
-    # Print output, filtering out the cd path marker
-    for line in $output
-        if not string match -q '__DAFT_CD__:*' $line
-            echo $line
+    if test $exit_code -eq 0; and test -s "$cd_file"
+        set -l cd_path (cat "$cd_file")
+        if test -n "$cd_path"; and test -d "$cd_path"
+            cd $cd_path
         end
     end
 
-    # If successful, cd to the target directory
-    if test $exit_code -eq 0
-        for line in $output
-            if string match -q '__DAFT_CD__:*' $line
-                set -l cd_path (string replace '__DAFT_CD__:' '' $line)
-                if test -n "$cd_path"; and test -d "$cd_path"
-                    cd $cd_path
-                end
-                break
-            end
-        end
-    end
-
+    rm -f "$cd_file"
     return $exit_code
 end
 
