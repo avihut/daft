@@ -217,7 +217,7 @@ test_cd_file_output() {
 }
 
 test_no_cd_file_without_env() {
-    log "Testing: Commands do NOT output __DAFT_CD__ marker when DAFT_CD_FILE is not set"
+    log "Testing: Commands do not leak __DAFT_CD__ marker to stdout"
 
     # Create a test remote repository
     local remote_dir
@@ -229,11 +229,11 @@ test_no_cd_file_without_env() {
 
     # Check that the output does NOT contain the old CD path marker
     if grep -q "^__DAFT_CD__:" /tmp/clone_output_no_env.txt; then
-        log_error "Clone output incorrectly contains __DAFT_CD__ marker when env not set"
+        log_error "Clone output incorrectly contains legacy __DAFT_CD__ marker"
         cat /tmp/clone_output_no_env.txt
         return 1
     else
-        log_success "Clone output correctly omits __DAFT_CD__ marker when env not set"
+        log_success "Clone output correctly omits legacy __DAFT_CD__ marker"
     fi
 
     return 0

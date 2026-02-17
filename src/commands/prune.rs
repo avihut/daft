@@ -347,7 +347,7 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
 
     // Process deferred branch (user's current worktree) last.
     // Track the CD target so we can emit it as the very last output line
-    // (the shell wrapper parses stdout for __DAFT_CD__).
+    // (the shell wrapper reads the cd target from the DAFT_CD_FILE temp file).
     let mut deferred_cd_target: Option<PathBuf> = None;
 
     if let Some(ref branch_name) = deferred_branch {
