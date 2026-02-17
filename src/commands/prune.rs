@@ -521,7 +521,7 @@ fn remove_worktree(
             ));
             return false;
         }
-        output.step(&format!("Worktree at {} removed", wt_path.display()));
+        output.result(&format!("Removed worktree '{branch_name}'"));
     } else {
         output.warning(&format!(
             "Worktree directory {} not found. Attempting to force remove record.",
@@ -534,10 +534,7 @@ fn remove_worktree(
             ));
             return false;
         }
-        output.step(&format!(
-            "Worktree record for {} removed",
-            wt_path.display()
-        ));
+        output.result(&format!("Removed worktree '{branch_name}'"));
     }
 
     // Run post-remove hook

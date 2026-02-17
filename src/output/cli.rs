@@ -106,7 +106,17 @@ impl Output for CliOutput {
     fn result(&mut self, msg: &str) {
         // Result is the primary output - always shown unless quiet
         if !self.config.quiet {
-            if colors_enabled() {
+            let is_wrapper = env::var_os(SHELL_WRAPPER_ENV).is_some();
+            if is_wrapper {
+                // When run through the shell wrapper, stdout is captured by $()
+                // and only printed after the command finishes. Print to stderr
+                // so the message appears in real-time (before hook output).
+                if colors_enabled_stderr() {
+                    eprintln!("{}{msg}{}", styles::BOLD, styles::RESET);
+                } else {
+                    eprintln!("{msg}");
+                }
+            } else if colors_enabled() {
                 println!("{}{msg}{}", styles::BOLD, styles::RESET);
             } else {
                 println!("{msg}");

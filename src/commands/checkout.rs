@@ -333,6 +333,9 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
         output.step("Skipping upstream setup (disabled in config)");
     }
 
+    // Git-like result message (before hooks so it appears first)
+    output.result(&format!("Prepared worktree '{}'", branch_name));
+
     // Run post-create hook
     run_post_create_hook(
         &project_root,
@@ -344,9 +347,6 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
         false, // not a new branch
         output,
     )?;
-
-    // Git-like result message
-    output.result(&format!("Prepared worktree '{}'", branch_name));
 
     output.cd_path(&get_current_directory()?);
     maybe_show_shell_hint(output)?;

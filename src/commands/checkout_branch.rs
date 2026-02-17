@@ -330,6 +330,12 @@ fn run_checkout_branch(
         output.step("Skipping push (disabled in config)");
     }
 
+    // Git-like result message (before hooks so it appears first)
+    output.result(&format!(
+        "Created worktree '{}' from '{}'",
+        args.new_branch_name, checkout_base
+    ));
+
     // Run post-create hook
     run_post_create_hook(
         &project_root,
@@ -341,12 +347,6 @@ fn run_checkout_branch(
         Some(&base_branch),
         output,
     )?;
-
-    // Git-like result message
-    output.result(&format!(
-        "Created worktree '{}' from '{}'",
-        args.new_branch_name, checkout_base
-    ));
 
     output.cd_path(&get_current_directory()?);
     maybe_show_shell_hint(output)?;
