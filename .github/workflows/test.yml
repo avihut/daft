@@ -8,9 +8,8 @@ on:
       - "docs/**"
 
 jobs:
-  # Fast feedback: formatting, linting, unit tests, xtask verification
-  # All use debug profile so they share compilation artifacts
-  check:
+  # Fast feedback: formatting, linting, unit tests (debug mode only - no release build needed)
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -41,7 +40,18 @@ jobs:
       - name: Run Rust unit tests
         run: mise run test-unit
 
-      # xtask verification — reuses debug artifacts from clippy/tests above
+  # Test xtask man page generation
+  xtask-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
       - name: Test xtask gen-man
         run: |
           mkdir -p /tmp/man-test
