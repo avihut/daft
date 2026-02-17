@@ -42,20 +42,11 @@ jobs:
       - name: Run Rust unit tests
         run: mise run test-unit
 
-  # Integration tests (Linux only)
-  integration-tests:
+  # Build release binary once, share across integration test matrix
+  build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        entry: [default, gitoxide]
-
     steps:
       - uses: actions/checkout@v6
-
-      - name: Set up Git
-        run: |
-          git config --global user.name "Test User"
-          git config --global user.email "test@example.com"
 
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
@@ -115,40 +106,55 @@ jobs:
           echo "Single binary architecture verified: daft binary exists"
           ls -lh target/release/daft
 
+      - name: Upload binary
+        uses: actions/upload-artifact@v6
+        with:
+          name: daft-binary
+          path: target/release/daft
+          retention-days: 1
+
+  # Integration tests (Linux only)
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      matrix:
+        entry: [default, gitoxide]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "Test User"
+          git config --global user.email "test@example.com"
+
+      - name: Download binary
+        uses: actions/download-artifact@v6
+        with:
+          name: daft-binary
+          path: target/release
+
+      - name: Set up binary
+        run: |
+          chmod +x target/release/daft
+
+          # Create symlinks for the multicall binary
+          cd target/release
+          for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
+                     git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
+                     git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
+            ln -sf daft "$cmd"
+          done
+          cd ../..
+
+          echo "${{ github.workspace }}/target/release" >> $GITHUB_PATH
+
       - name: Make test scripts executable
         run: chmod +x tests/integration/*.sh
 
-      - name: Create symlinks for Rust binaries
-        run: |
-          # Create symlinks for the new multicall binary
-          cd target/release
-          ln -sf daft git-worktree-clone
-          ln -sf daft git-worktree-init
-          ln -sf daft git-worktree-checkout
-          ln -sf daft git-worktree-checkout-branch
-          ln -sf daft git-worktree-prune
-          ln -sf daft git-worktree-carry
-          ln -sf daft git-worktree-fetch
-          ln -sf daft git-worktree-flow-adopt
-          ln -sf daft git-worktree-flow-eject
-          ln -sf daft git-daft
-          cd ../..
-
-      - name: Add Rust binaries to PATH
-        run: |
-          echo "${{ github.workspace }}/target/release" >> $GITHUB_PATH
-          echo "PATH=${{ github.workspace }}/target/release:$PATH" >> $GITHUB_ENV
-
       - name: Install mise
         uses: jdx/mise-action@v3
-
-      - name: Test script dependencies
-        run: |
-          echo "Testing required dependencies..."
-          which git || { echo "Git not found"; exit 1; }
-          which awk || { echo "AWK not found"; exit 1; }
-          which basename || { echo "basename not found"; exit 1; }
-          echo "All dependencies found"
 
       - name: Run Rust integration tests
         run: mise run test-integration-matrix ${{ matrix.entry }}
