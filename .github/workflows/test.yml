@@ -119,7 +119,10 @@ jobs:
     needs: build
     strategy:
       matrix:
-        entry: [default, gitoxide]
+        include:
+          - entry: default
+          - entry: gitoxide
+            git_config: daft.experimental.gitoxide=true
 
     steps:
       - uses: actions/checkout@v6
@@ -153,11 +156,15 @@ jobs:
       - name: Make test scripts executable
         run: chmod +x tests/integration/*.sh
 
-      - name: Install mise
-        uses: jdx/mise-action@v3
-
       - name: Run Rust integration tests
-        run: mise run test-integration-matrix ${{ matrix.entry }}
+        run: |
+          CONFIG_FILE=$(mktemp)
+          if [ -n "${{ matrix.git_config }}" ]; then
+            IFS='=' read -r key value <<< "${{ matrix.git_config }}"
+            git config --file "$CONFIG_FILE" "$key" "$value"
+          fi
+          GIT_CONFIG_GLOBAL="$CONFIG_FILE" DAFT_TESTING=1 bash tests/integration/test_all.sh
+          rm -f "$CONFIG_FILE"
 
       - name: Test shell completions
         run: |
