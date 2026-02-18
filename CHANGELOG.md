@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.28](https://github.com/avihut/daft/compare/v1.0.27...v1.0.28) - 2026-02-18
+
+### Bug Fixes
+
+- skip pre-push hooks for structural push operations ([#228](https://github.com/avihut/daft/pull/228))
+
+### Features
+
+- add Linux distribution pipeline with shell installer ([#229](https://github.com/avihut/daft/pull/229))
+
 ## [1.0.27](https://github.com/avihut/daft/compare/v1.0.26...v1.0.27) - 2026-02-18
 
 ### Bug Fixes
