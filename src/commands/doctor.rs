@@ -183,6 +183,8 @@ fn preview_fixes(categories: &[CheckCategory]) {
     );
     println!();
 
+    let mut any_would_fail = false;
+
     for result in &fixable {
         let symbol = status_symbol(result.status);
         println!(
@@ -191,13 +193,38 @@ fn preview_fixes(categories: &[CheckCategory]) {
             dim("\u{2014}"),
             result.message
         );
-        if let Some(ref suggestion) = result.suggestion {
-            println!("      {}", dim(&format!("Fix: {suggestion}")));
+
+        if let Some(ref dry_run) = result.dry_run_fix {
+            let actions = dry_run();
+            for action in &actions {
+                if action.would_succeed {
+                    println!("      {} {}", green("+"), action.description);
+                } else {
+                    any_would_fail = true;
+                    println!("      {} {}", red("x"), action.description);
+                    if let Some(ref reason) = action.failure_reason {
+                        println!("        {}", dim(reason));
+                    }
+                }
+            }
+        } else if let Some(ref suggestion) = result.suggestion {
+            println!("      {}", dim(&format!("Action: {suggestion}")));
         }
     }
 
     println!();
-    println!("{}", dim("Run 'daft doctor --fix' to apply these fixes."));
+    if any_would_fail {
+        println!(
+            "{}",
+            yellow("Some fixes would fail. Resolve the issues above first.")
+        );
+        println!(
+            "{}",
+            dim("Run 'daft doctor --fix' to apply fixes that can succeed.")
+        );
+    } else {
+        println!("{}", dim("Run 'daft doctor --fix' to apply these fixes."));
+    }
 }
 
 fn apply_fixes(categories: &[CheckCategory]) {

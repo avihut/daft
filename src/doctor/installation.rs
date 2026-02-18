@@ -244,7 +244,7 @@ pub fn check_shortcut_symlinks() -> Vec<CheckResult> {
 ///
 /// This is the inner implementation used by [`check_shortcut_symlinks`].
 /// It is also exposed for testing with custom directories.
-pub fn check_shortcut_symlinks_in(install_dir: &Path) -> Vec<CheckResult> {
+pub(crate) fn check_shortcut_symlinks_in(install_dir: &Path) -> Vec<CheckResult> {
     let mut results = Vec::new();
     let mut any_style_installed = false;
 
@@ -498,6 +498,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_check_shortcut_symlinks_with_partial_install_has_fix() {
         let temp = tempfile::tempdir().unwrap();
         let install_dir = temp.path();
@@ -506,7 +507,6 @@ mod tests {
         std::fs::write(install_dir.join("daft"), "fake").unwrap();
 
         // Create only one shortcut from git style to simulate partial install
-        #[cfg(unix)]
         std::os::unix::fs::symlink("daft", install_dir.join("gwtclone")).unwrap();
 
         let results = check_shortcut_symlinks_in(install_dir);
@@ -519,13 +519,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_check_shortcut_symlinks_with_partial_install_has_dry_run() {
         let temp = tempfile::tempdir().unwrap();
         let install_dir = temp.path();
 
         std::fs::write(install_dir.join("daft"), "fake").unwrap();
 
-        #[cfg(unix)]
         std::os::unix::fs::symlink("daft", install_dir.join("gwtclone")).unwrap();
 
         let results = check_shortcut_symlinks_in(install_dir);
