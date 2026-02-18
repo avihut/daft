@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Full dev test: setup + run all tests"
+#MISE depends=["dev:setup", "test"]
+set -euo pipefail
+
+echo "Development setup tested successfully!"

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Run Rust unit tests"
+set -euo pipefail
+
+echo "Running Rust unit tests..."
+cargo test --lib --tests

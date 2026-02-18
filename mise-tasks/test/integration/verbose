@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Run integration tests with verbose output"
+#MISE depends=["build"]
+#MISE env={VERBOSE = "1"}
+set -euo pipefail
+
+echo "Running integration tests with verbose output..."
+cd tests/integration && ./test_all.sh

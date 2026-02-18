@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Generate man pages to man/ directory using xtask"
+set -euo pipefail
+
+echo "Generating man pages..."
+mkdir -p man
+cargo run --package xtask -- gen-man --output-dir=man
+echo "Man pages generated in man/"

@@ -186,7 +186,7 @@ mise run test
 mise run clippy
 
 # Formatting correct
-mise run fmt-check
+mise run fmt:check
 
 # Build succeeds
 mise run build

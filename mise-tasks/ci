@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Run CI simulation"
+#MISE depends=["setup", "validate", "test"]
+set -euo pipefail
+
+echo "CI simulation completed successfully"

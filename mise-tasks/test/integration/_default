@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Run integration tests (full matrix)"
+#MISE depends=["dev:setup"]
+set -euo pipefail
+
+cargo run --package xtask -- test-matrix

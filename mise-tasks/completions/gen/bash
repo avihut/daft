@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Generate bash completions to /tmp/"
+#MISE depends=["build"]
+set -euo pipefail
+
+echo "Generating bash completions..."
+for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-prune; do
+    echo "  $cmd"
+    ./target/release/daft completions bash --command="$cmd" > /tmp/completion-$cmd.bash
+done
+echo "Bash completions generated in /tmp/"

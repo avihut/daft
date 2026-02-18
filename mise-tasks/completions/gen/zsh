@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Generate zsh completions to /tmp/"
+#MISE depends=["build"]
+set -euo pipefail
+
+echo "Generating zsh completions..."
+for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-prune; do
+    echo "  $cmd"
+    ./target/release/daft completions zsh --command="$cmd" > /tmp/completion-_$cmd.zsh
+done
+echo "Zsh completions generated in /tmp/"

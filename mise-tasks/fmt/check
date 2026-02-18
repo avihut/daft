@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Check all code formatting (Rust + docs/YAML)"
+set -euo pipefail
+
+cargo fmt -- --check
+bun run prettier --check '**/*.md' '**/*.{yml,yaml}'

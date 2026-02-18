@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Lint and format docs site config (auto-fix)"
+#MISE depends=["docs:site:setup"]
+#MISE dir="docs"
+set -euo pipefail
+
+bunx biome check --write

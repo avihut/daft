@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+#MISE description="Validate Rust code and integration tests"
+set -euo pipefail
+
+echo "Validating Rust code and integration tests..."
+cargo check
+for script in tests/integration/*.sh; do
+    if [ -f "$script" ]; then
+        echo "Validating $script"
+        bash -n "$script" || exit 1
+    fi
+done
+echo "Rust code and integration tests validated successfully"

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Build binary and create symlinks in target/release/"
+#MISE depends=["setup:rust"]
+set -euo pipefail

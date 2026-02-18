@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Install pre-generated man pages to system location"
+#MISE depends=["man:gen"]
+set -euo pipefail
+
+echo "Installing man pages..."
+mkdir -p ~/.local/share/man/man1
+cp man/*.1 ~/.local/share/man/man1/
+echo "Man pages installed to ~/.local/share/man/man1/"
+echo ""
+echo "Note: You may need to run 'mandb' or restart your shell for man to find the new pages"

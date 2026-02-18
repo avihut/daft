@@ -43,7 +43,7 @@ Thank you for your interest in contributing to daft!
    ```bash
    mise run fmt
    mise run clippy
-   mise run test-unit
+   mise run test:unit
    ```
 
 4. Submit a pull request targeting `master`.
@@ -52,10 +52,10 @@ Thank you for your interest in contributing to daft!
 
 All PRs must pass these checks (enforced in CI):
 
-- **Formatting:** `mise run fmt-check`
+- **Formatting:** `mise run fmt:check`
 - **Linting:** `mise run clippy` (zero warnings)
-- **Unit tests:** `mise run test-unit`
-- **Integration tests:** `mise run test-integration`
+- **Unit tests:** `mise run test:unit`
+- **Integration tests:** `mise run test:integration`
 
 Run the full CI simulation locally:
 
@@ -109,8 +109,8 @@ daft-15/branch-search
 
 ```bash
 mise run test              # Run all tests
-mise run test-unit         # Rust unit tests only
-mise run test-integration  # End-to-end tests
+mise run test:unit         # Rust unit tests only
+mise run test:integration  # End-to-end tests
 ```
 
 See [CLAUDE.md](https://github.com/avihut/daft/blob/master/CLAUDE.md) in the
@@ -124,7 +124,7 @@ repository for the complete testing architecture.
 3. Add routing in `src/main.rs`
 4. Add to `COMMANDS` array and `get_command_for_name()` in `xtask/src/main.rs`
 5. Add to help output in `src/commands/docs.rs` (`get_command_categories()`)
-6. Run `mise run gen-man` and `mise run gen-cli-docs` and commit the generated
+6. Run `mise run man:gen` and `mise run docs:cli:gen` and commit the generated
    files
 7. Add integration tests in `tests/integration/`
 

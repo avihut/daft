@@ -153,7 +153,7 @@ Add the binary directory to your PATH and create symlinks:
 export PATH="$PWD/target/release:$PATH"
 
 # Create symlinks (or use the mise task)
-mise run dev-setup
+mise run dev:setup
 ```
 
 ## Verify Installation

@@ -3,16 +3,16 @@ pre-commit:
   commands:
     fmt-check:
       glob: "*.rs"
-      run: mise run fmt-check
+      run: mise run fmt:check
     clippy:
       glob: "*.rs"
       run: mise run clippy
     verify-man:
       glob: "*.rs"
-      run: mise run verify-man
+      run: mise run man:verify
     verify-cli-docs:
       glob: "*.rs"
-      run: mise run verify-cli-docs
+      run: mise run docs:cli:verify
     prettier-format:
       glob: "*.{md,yml,yaml}"
       run: bun run prettier --write {staged_files}
@@ -42,4 +42,4 @@ pre-push:
   commands:
     unit-tests:
       glob: "*.rs"
-      run: mise run test-unit
+      run: mise run test:unit

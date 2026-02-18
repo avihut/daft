@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#MISE description="Install shell completions for bash/zsh/fish"
+#MISE depends=["build"]
+set -euo pipefail
+
+echo "Installing shell completions..."
+./target/release/daft completions bash --install
+./target/release/daft completions zsh --install
+./target/release/daft completions fish --install
+echo "Completions installed successfully!"
+echo ""
+echo "Restart your shell or source your shell config file to enable completions"

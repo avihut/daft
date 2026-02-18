@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Verify CLI docs are up-to-date with source"
+set -euo pipefail
+
+echo "Verifying CLI docs are up-to-date..."
+cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
+bun run prettier --write 'docs/cli/*.md'
+git diff --exit-code docs/cli/ || (echo "CLI docs out of date. Run 'mise run docs:cli:gen' and commit." && exit 1)
+echo "CLI docs are up-to-date"

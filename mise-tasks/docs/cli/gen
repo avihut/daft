@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Generate CLI reference docs to docs/cli/ directory using xtask"
+set -euo pipefail
+
+echo "Generating CLI reference docs..."
+mkdir -p docs/cli
+cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
+bun run prettier --write 'docs/cli/*.md'
+echo "CLI docs generated in docs/cli/"

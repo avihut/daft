@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Auto-format all code (Rust + docs/YAML)"
+set -euo pipefail
+
+cargo fmt
+bun run prettier --write '**/*.md' '**/*.{yml,yaml}'

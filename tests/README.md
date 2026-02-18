@@ -39,19 +39,19 @@ The integration tests validate the Rust binary implementations by:
 mise run test
 
 # Run only unit tests
-mise run test-unit
+mise run test:unit
 
 # Run only integration tests
-mise run test-integration
+mise run test:integration
 
 # Run specific test suites
-mise run test-integration-clone
-mise run test-integration-init
-mise run test-integration-checkout
+mise run test:integration:clone
+mise run test:integration:init
+mise run test:integration:checkout
 
 # Run with verbose output
-mise run test-verbose
-mise run test-integration-verbose
+mise run test:verbose
+mise run test:integration:verbose
 ```
 
 ### Direct Execution

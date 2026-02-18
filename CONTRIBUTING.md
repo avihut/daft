@@ -106,7 +106,7 @@ Before submitting, ensure:
 
 - [ ] All tests pass: `mise run test`
 - [ ] No clippy warnings: `mise run clippy`
-- [ ] Code is formatted: `mise run fmt-check`
+- [ ] Code is formatted: `mise run fmt:check`
 - [ ] Documentation is updated if needed
 
 ## Testing
@@ -118,8 +118,8 @@ The project has a two-tier testing architecture:
 mise run test
 
 # Run specific test suites
-mise run test-unit          # Rust unit tests
-mise run test-integration   # End-to-end tests
+mise run test:unit          # Rust unit tests
+mise run test:integration   # End-to-end tests
 ```
 
 ## Getting Help

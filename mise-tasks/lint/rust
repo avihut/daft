@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#MISE description="Run Rust linting (clippy + fmt + shellcheck)"
+set -euo pipefail
+
+echo "Running Rust linting..."
+cargo clippy --tests -- -D warnings
+cargo fmt --check
+if command -v shellcheck >/dev/null 2>&1; then
+    shellcheck tests/integration/*.sh
+else
+    echo "shellcheck not available, skipping integration test lint..."
+fi

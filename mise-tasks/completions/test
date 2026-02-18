@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Test shell completions"
+#MISE depends=["build"]
+set -euo pipefail
+
+echo "Testing shell completions..."
+if [ -f tests/integration/test_completions.sh ]; then
+    tests/integration/test_completions.sh
+else
+    echo "Completion tests not yet implemented"
+fi
