@@ -115,7 +115,7 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 | Command                             | Description                                                                                                                                 |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `daft hooks <subcommand>`           | Manage hooks trust and configuration (`trust`, `deny`, `prompt`, `status`, `list`, `reset-trust`, `migrate`, `install`, `validate`, `dump`) |
-| `daft doctor`                       | Diagnose installation and configuration issues                                                                                              |
+| `daft doctor`                       | Diagnose installation and configuration issues; `--fix` auto-repairs symlinks, shortcuts, refspecs, hooks; `--fix --dry-run` previews fixes |
 | `daft setup shortcuts <subcommand>` | Manage command shortcut symlinks                                                                                                            |
 | `daft shell-init <shell>`           | Generate shell integration wrappers                                                                                                         |
 | `daft completions <shell>`          | Generate shell tab completions                                                                                                              |
