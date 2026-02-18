@@ -1,0 +1,53 @@
+# Maintainer: Avihu Turzion <avihu at users dot noreply dot github dot com>
+# shellcheck disable=SC2034,SC2154
+
+pkgname=daft-bin
+pkgver={{VERSION}}
+pkgrel=1
+pkgdesc="Git extensions toolkit for powerful worktree management"
+arch=("x86_64" "aarch64")
+url="https://github.com/avihut/daft"
+license=("MIT")
+depends=("git")
+provides=("daft")
+conflicts=("daft")
+options=("!strip")
+
+source_x86_64=("${pkgname}-${pkgver}-x86_64.tar.xz::https://github.com/avihut/daft/releases/download/v${pkgver}/daft-x86_64-unknown-linux-gnu.tar.xz")
+source_aarch64=("${pkgname}-${pkgver}-aarch64.tar.xz::https://github.com/avihut/daft/releases/download/v${pkgver}/daft-aarch64-unknown-linux-gnu.tar.xz")
+sha256sums_x86_64=("{{SHA256_x86_64}}")
+sha256sums_aarch64=("{{SHA256_aarch64}}")
+
+package() {
+    # cargo-dist extracts to: daft-<triple>/
+    local _triple
+    if [ "$CARCH" = "x86_64" ]; then
+        _triple="daft-x86_64-unknown-linux-gnu"
+    else
+        _triple="daft-aarch64-unknown-linux-gnu"
+    fi
+
+    # Install main binary
+    install -Dm755 "${_triple}/daft" "${pkgdir}/usr/bin/daft"
+
+    # Create symlinks for the multicall binary
+    cd "${pkgdir}/usr/bin"
+    for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
+               git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
+               git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
+               git-daft; do
+        ln -s daft "$cmd"
+    done
+
+    # Install man pages
+    for manfile in "${srcdir}/${_triple}/man/"*.1; do
+        [ -f "$manfile" ] && install -Dm644 "$manfile" \
+            "${pkgdir}/usr/share/man/man1/$(basename "$manfile")"
+    done
+
+    # Install license
+    if [ -f "${srcdir}/${_triple}/LICENSE" ]; then
+        install -Dm644 "${srcdir}/${_triple}/LICENSE" \
+            "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+    fi
+}

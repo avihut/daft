@@ -21,6 +21,49 @@ path-guid = "0D7614BC-BA63-41C9-9CA3-F3469DC02EBB"
 license = false
 eula = false
 
+[package.metadata.deb]
+maintainer = "avihu <avihu@users.noreply.github.com>"
+copyright = "2024, avihu <avihu@users.noreply.github.com>"
+license-file = ["LICENSE", "4"]
+extended-description = """\
+daft is a Git extensions toolkit that enhances developer workflows \
+with powerful worktree management. Run `daft setup` after installing \
+to enable shell integration and shortcuts."""
+depends = "$auto, git (>= 1:2.5)"
+section = "devel"
+priority = "optional"
+assets = [
+    ["target/release/daft", "usr/bin/daft", "755"],
+    ["man/*.1", "usr/share/man/man1/", "644"],
+]
+maintainer-scripts = "packaging/deb/"
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/daft", dest = "/usr/bin/daft", mode = "755" },
+    { source = "man/*.1", dest = "/usr/share/man/man1/", mode = "644" },
+]
+auto-req = "no"
+post_install_script = """\
+for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
+           git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
+           git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
+           git-daft; do
+    ln -sf daft "/usr/bin/$cmd"
+done
+"""
+pre_uninstall_script = """\
+for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
+           git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
+           git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
+           git-daft; do
+    rm -f "/usr/bin/$cmd"
+done
+"""
+
+[package.metadata.generate-rpm.requires]
+git = ">= 2.5"
+
 [dependencies]
 clap = { version = "4.5", features = ["derive", "cargo"] }
 clap_complete = "4.5"
