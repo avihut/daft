@@ -209,9 +209,65 @@ impl HookProgressRenderer {
         spinner.set_message(display_name);
         spinner.enable_steady_tick(Duration::from_millis(80));
 
-        // Empty separator line between job header and output
-        let separator = if !self.config.quiet && self.config.tail_lines > 0 {
-            let sep = self.mp.insert_after(&spinner, ProgressBar::new_spinner());
+        // Separator and tail bars are created lazily in update_job_output as output arrives.
+        self.jobs.insert(
+            name.to_string(),
+            JobState {
+                spinner,
+                separator: None,
+                tail_lines: Vec::new(),
+                output_buffer: Vec::new(),
+                start_time: Instant::now(),
+            },
+        );
+    }
+
+    pub fn update_job_output(&mut self, name: &str, line: &str) {
+        // Phase 1: buffer line, update timer, determine growth needs.
+        // Clone ProgressBar anchors before releasing the jobs borrow so
+        // Phase 2/3 can call self.mp without a conflicting borrow.
+        // ProgressBar is Arc-based; cloning is cheap.
+        let (needs_sep, needs_tail, spinner_clone, last_anchor_clone) = {
+            let Some(state) = self.jobs.get_mut(name) else {
+                return;
+            };
+
+            state.output_buffer.push(line.to_string());
+
+            if state.start_time.elapsed()
+                >= Duration::from_secs(u64::from(self.config.timer_delay_secs))
+            {
+                state
+                    .spinner
+                    .set_style(self.spinner_style_with_timer.clone());
+            }
+
+            // Nothing to display when quiet or tail_lines == 0.
+            if self.config.quiet || self.config.tail_lines == 0 {
+                return;
+            }
+
+            let max = self.config.tail_lines as usize;
+            let needs_new_bar = state.tail_lines.len() < max;
+            let needs_sep = needs_new_bar && state.separator.is_none();
+
+            let spinner_clone = state.spinner.clone();
+            let last_anchor_clone = state
+                .tail_lines
+                .last()
+                .or(state.separator.as_ref())
+                .unwrap_or(&state.spinner)
+                .clone();
+
+            (needs_sep, needs_new_bar, spinner_clone, last_anchor_clone)
+        };
+
+        // Phase 2: lazily create the separator (inserted after the spinner).
+        // Only happens on the very first output line of a job.
+        let new_sep = if needs_sep {
+            let sep = self
+                .mp
+                .insert_after(&spinner_clone, ProgressBar::new_spinner());
             let sep_style = ProgressStyle::with_template(&self.pipe_str).unwrap();
             sep.set_style(sep_style);
             sep.set_message(String::new());
@@ -220,46 +276,28 @@ impl HookProgressRenderer {
             None
         };
 
-        let anchor = separator.as_ref().unwrap_or(&spinner);
-
-        let tail_lines = if self.config.quiet || self.config.tail_lines == 0 {
-            Vec::new()
+        // Phase 3: lazily create one new tail bar per output line until capped.
+        // Insert after the separator if it was just created, otherwise after the last anchor.
+        let new_tail = if needs_tail {
+            let anchor = new_sep.as_ref().unwrap_or(&last_anchor_clone);
+            let pb = self.mp.insert_after(anchor, ProgressBar::new_spinner());
+            pb.set_style(self.tail_style.clone());
+            pb.set_message(String::new());
+            Some(pb)
         } else {
-            (0..self.config.tail_lines)
-                .map(|_| {
-                    let pb = self.mp.insert_after(anchor, ProgressBar::new_spinner());
-                    pb.set_style(self.tail_style.clone());
-                    pb.set_message(String::new());
-                    pb
-                })
-                .collect()
+            None
         };
 
-        self.jobs.insert(
-            name.to_string(),
-            JobState {
-                spinner,
-                separator,
-                tail_lines,
-                output_buffer: Vec::new(),
-                start_time: Instant::now(),
-            },
-        );
-    }
-
-    pub fn update_job_output(&mut self, name: &str, line: &str) {
+        // Phase 4: attach new bars to state, then update the rolling display.
         let Some(state) = self.jobs.get_mut(name) else {
             return;
         };
 
-        state.output_buffer.push(line.to_string());
-
-        if state.start_time.elapsed()
-            >= Duration::from_secs(u64::from(self.config.timer_delay_secs))
-        {
-            state
-                .spinner
-                .set_style(self.spinner_style_with_timer.clone());
+        if let Some(sep) = new_sep {
+            state.separator = Some(sep);
+        }
+        if let Some(pb) = new_tail {
+            state.tail_lines.push(pb);
         }
 
         if !state.tail_lines.is_empty() {
