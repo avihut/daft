@@ -783,4 +783,75 @@ mod tests {
         assert!(lines[4].contains("job-a"));
         assert!(lines[5].contains("job-b"));
     }
+    #[test]
+    fn test_dynamic_window_starts_empty() {
+        // Before any output, no tail bars should be allocated
+        let config = HookOutputConfig {
+            tail_lines: 6,
+            ..Default::default()
+        };
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job("job");
+        // No output sent — tail line count must be 0
+        assert_eq!(renderer.get_tail_line_count("job"), 0);
+        renderer.finish_job_success("job", Duration::from_secs(1));
+    }
+
+    #[test]
+    fn test_dynamic_window_grows_with_output() {
+        // Each output line adds one tail bar until max is reached
+        let config = HookOutputConfig {
+            tail_lines: 6,
+            ..Default::default()
+        };
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job("job");
+
+        for i in 1..=6 {
+            renderer.update_job_output("job", &format!("line {i}"));
+            assert_eq!(
+                renderer.get_tail_line_count("job"),
+                i,
+                "expected {i} tail bars after {i} output lines"
+            );
+        }
+
+        renderer.finish_job_success("job", Duration::from_secs(1));
+    }
+
+    #[test]
+    fn test_dynamic_window_caps_at_max() {
+        // After max lines, no new tail bars are added — window rolls instead
+        let config = HookOutputConfig {
+            tail_lines: 3,
+            ..Default::default()
+        };
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job("job");
+
+        for i in 0..10 {
+            renderer.update_job_output("job", &format!("line {i}"));
+        }
+
+        // Tail bar count must not exceed config max
+        assert_eq!(renderer.get_tail_line_count("job"), 3);
+        // But buffer holds all lines
+        assert_eq!(renderer.get_buffered_output("job").len(), 10);
+
+        renderer.finish_job_success("job", Duration::from_secs(1));
+    }
+
+    #[test]
+    fn test_dynamic_window_zero_output_no_separator() {
+        // A job with no output should not create a separator or any tail bars
+        let config = HookOutputConfig {
+            tail_lines: 6,
+            ..Default::default()
+        };
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job("silent-job");
+        // finish without any output
+        renderer.finish_job_success("silent-job", Duration::from_secs(1));
+        assert_eq!(renderer.finished_jobs.len(), 1);
+    }
 }
