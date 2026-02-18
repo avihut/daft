@@ -50,6 +50,66 @@ echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
 
 Supported architectures: x86_64 (Intel/AMD) and aarch64 (ARM64).
 
+### apt (Debian/Ubuntu)
+
+Download and install the `.deb` package from
+[GitHub Releases](https://github.com/avihut/daft/releases/latest):
+
+```bash
+# For x86_64
+curl -fsSL https://github.com/avihut/daft/releases/latest/download/daft_amd64.deb \
+  -o /tmp/daft.deb
+sudo dpkg -i /tmp/daft.deb
+
+# For aarch64
+curl -fsSL https://github.com/avihut/daft/releases/latest/download/daft_arm64.deb \
+  -o /tmp/daft.deb
+sudo dpkg -i /tmp/daft.deb
+```
+
+This installs `daft`, all command symlinks, and man pages to `/usr/bin`.
+
+### dnf (Fedora/RHEL)
+
+Install the `.rpm` package directly from
+[GitHub Releases](https://github.com/avihut/daft/releases/latest):
+
+```bash
+# For x86_64
+sudo dnf install \
+  https://github.com/avihut/daft/releases/latest/download/daft.x86_64.rpm
+
+# For aarch64
+sudo dnf install \
+  https://github.com/avihut/daft/releases/latest/download/daft.aarch64.rpm
+```
+
+### AUR (Arch Linux)
+
+Install using your preferred AUR helper:
+
+```bash
+# Using paru
+paru -S daft-bin
+
+# Using yay
+yay -S daft-bin
+```
+
+### Nix
+
+Install from the flake:
+
+```bash
+# Add to your profile
+nix profile install github:avihut/daft
+
+# Or run without installing
+nix run github:avihut/daft -- --version
+```
+
+For NixOS, add to your `flake.nix` inputs and `environment.systemPackages`.
+
 ### Manual Installation
 
 Download the appropriate archive from
@@ -71,9 +131,8 @@ sudo mv daft /usr/local/bin/
 # Create command symlinks
 cd /usr/local/bin
 for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
-           git-worktree-checkout-branch \
-           git-worktree-prune git-worktree-carry git-worktree-fetch \
-           git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
+           git-worktree-checkout-brand git-worktree-prune git-worktree-carry \
+           git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
   sudo ln -sf daft "$cmd"
 done
 ```

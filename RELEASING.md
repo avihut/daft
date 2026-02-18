@@ -102,6 +102,9 @@ The release is triggered when you push a tag matching the pattern `v*.*.*`
 2. **build-local-artifacts**: Builds binaries for each platform in parallel
 3. **host**: Creates GitHub Release and uploads artifacts
 4. **publish-homebrew-formula**: Updates and commits Homebrew formula
+5. **build-deb**: Builds `.deb` packages for x86_64 and aarch64
+6. **build-rpm**: Builds `.rpm` packages for x86_64 and aarch64
+7. **publish-aur**: Updates the `daft-bin` AUR package
 
 ### Artifacts Generated
 
@@ -115,6 +118,10 @@ For each release, the following artifacts are created:
 - `daft-installer.ps1` - PowerShell installer (Windows)
 - `daft-installer.sh` - Shell installer (Linux/macOS)
 - `daft-installer.msi` - Windows MSI installer
+- `daft_amd64.deb` - Debian/Ubuntu package (x86_64)
+- `daft_arm64.deb` - Debian/Ubuntu package (aarch64)
+- `daft.x86_64.rpm` - Fedora/RHEL package (x86_64)
+- `daft.aarch64.rpm` - Fedora/RHEL package (aarch64)
 - `SHA256SUMS` - Checksums for all artifacts
 - `Formula/daft.rb` - Updated Homebrew formula
 
@@ -219,6 +226,46 @@ git worktree-clone --help
 ls -la ~/.cargo/bin/git-worktree-*
 ```
 
+### Linux (.deb)
+
+```bash
+# Test .deb package
+curl -fsSL https://github.com/avihut/daft/releases/latest/download/daft_amd64.deb \
+  -o /tmp/daft.deb
+sudo dpkg -i /tmp/daft.deb
+
+# Verify installation and symlinks
+daft --version
+git worktree-clone --help
+ls -la /usr/bin/git-worktree-*
+```
+
+### Linux (.rpm)
+
+```bash
+# Test .rpm package
+sudo dnf install \
+  https://github.com/avihut/daft/releases/latest/download/daft.x86_64.rpm
+
+# Verify installation and symlinks
+daft --version
+git worktree-clone --help
+```
+
+### Arch Linux (AUR)
+
+```bash
+paru -S daft-bin
+daft --version
+git worktree-clone --help
+```
+
+### Nix
+
+```bash
+nix run github:avihut/daft -- --version
+```
+
 ## Troubleshooting
 
 ### Build Fails for Specific Platform
@@ -307,6 +354,24 @@ The release workflow requires this GitHub secret:
 **Note:** This token allows the workflow to push commits to your repository.
 Keep it secure!
 
+### AUR Secrets
+
+For publishing to the Arch User Repository:
+
+| Secret                | Purpose                             |
+| --------------------- | ----------------------------------- |
+| `AUR_USERNAME`        | AUR account username (for commits)  |
+| `AUR_EMAIL`           | AUR account email                   |
+| `AUR_SSH_PRIVATE_KEY` | SSH key registered with AUR account |
+
+To set up:
+
+1. Create an [AUR account](https://aur.archlinux.org/register)
+2. Add your SSH public key to your AUR profile
+3. Create the `daft-bin` package:
+   `git clone ssh://aur@aur.archlinux.org/daft-bin.git`
+4. Add all three secrets to the repository settings
+
 ## Release Checklist
 
 Use this checklist for each release:
@@ -337,6 +402,10 @@ Use this checklist for each release:
 - [ ] Windows installation tested (PowerShell and/or MSI)
 - [ ] Linux x86_64 installation tested (shell installer)
 - [ ] Linux ARM64 installation tested (shell installer)
+- [ ] Linux .deb package tested (dpkg -i)
+- [ ] Linux .rpm package tested (dnf install)
+- [ ] AUR package updated (daft-bin)
+- [ ] Nix flake builds (`nix build github:avihut/daft`)
 - [ ] All git commands working after installation
 - [ ] Shell completions loading correctly
 - [ ] `brew upgrade daft` works (if not first release)
@@ -409,7 +478,6 @@ Planned improvements to the release process:
 
 - **Automatic CHANGELOG generation** from conventional commits
 - **crates.io publishing** for Rust library users
-- **Linux packages**: DEB/RPM (binaries and shell installer already available)
-- **AUR package** for Arch Linux
-- **Nix package** for NixOS
+- **APT/DNF repositories** for native package manager updates
+  (`apt update && apt install daft`)
 - **Homebrew-core submission** after stability proven (requires 1000+ users)

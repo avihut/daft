@@ -488,12 +488,183 @@ jobs:
           done
           git push
 
+  # WARNING: This job is manually maintained. Running `cargo dist generate` will
+  # overwrite release.yml. After regenerating, restore this job and update
+  # the announce job's needs array.
+  build-deb:
+    needs:
+      - plan
+      - host
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            deb_arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            deb_arch: arm64
+    if:
+      ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease ||
+      fromJson(needs.plan.outputs.val).publish_prereleases }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+      - name: Download Linux binary from GitHub Release
+        run: |
+          gh release download "$TAG" \
+            --pattern "daft-${{ matrix.target }}.tar.xz" \
+            --dir /tmp/daft-dist
+      - name: Extract binary and prepare target directory
+        run: |
+          cd /tmp/daft-dist
+          tar xJf "daft-${{ matrix.target }}.tar.xz"
+          mkdir -p "${{ github.workspace }}/target/release"
+          cp "daft-${{ matrix.target }}/daft" "${{ github.workspace }}/target/release/daft"
+          chmod +x "${{ github.workspace }}/target/release/daft"
+      - name: Build .deb package
+        run:
+          cargo deb --no-build --output "target/debian/daft_${{ matrix.deb_arch
+          }}.deb"
+      - name: Upload .deb to GitHub Release
+        run: |
+          gh release upload "$TAG" \
+            "target/debian/daft_${{ matrix.deb_arch }}.deb" \
+            --clobber
+
+  # WARNING: This job is manually maintained. Running `cargo dist generate` will
+  # overwrite release.yml. After regenerating, restore this job and update
+  # the announce job's needs array.
+  build-rpm:
+    needs:
+      - plan
+      - host
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            rpm_arch: x86_64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            rpm_arch: aarch64
+    if:
+      ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease ||
+      fromJson(needs.plan.outputs.val).publish_prereleases }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm --locked
+      - name: Download Linux binary from GitHub Release
+        run: |
+          gh release download "$TAG" \
+            --pattern "daft-${{ matrix.target }}.tar.xz" \
+            --dir /tmp/daft-dist
+      - name: Extract binary and prepare target directory
+        run: |
+          cd /tmp/daft-dist
+          tar xJf "daft-${{ matrix.target }}.tar.xz"
+          mkdir -p "${{ github.workspace }}/target/release"
+          cp "daft-${{ matrix.target }}/daft" "${{ github.workspace }}/target/release/daft"
+          chmod +x "${{ github.workspace }}/target/release/daft"
+      - name: Build .rpm package
+        run:
+          cargo generate-rpm --output "target/generate-rpm/daft.${{
+          matrix.rpm_arch }}.rpm"
+      - name: Upload .rpm to GitHub Release
+        run: |
+          gh release upload "$TAG" \
+            "target/generate-rpm/daft.${{ matrix.rpm_arch }}.rpm" \
+            --clobber
+
+  # WARNING: This job is manually maintained. Running `cargo dist generate` will
+  # overwrite release.yml. After regenerating, restore this job and update
+  # the announce job's needs array.
+  publish-aur:
+    needs:
+      - plan
+      - host
+    runs-on: "ubuntu-22.04"
+    if:
+      ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease ||
+      fromJson(needs.plan.outputs.val).publish_prereleases }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Compute SHA256 checksums from GitHub Release
+        id: checksums
+        run: |
+          gh release download "$TAG" \
+            --pattern "*.tar.xz.sha256" \
+            --dir /tmp/daft-checksums
+
+          SHA256_X86=$(cut -d' ' -f1 /tmp/daft-checksums/daft-x86_64-unknown-linux-gnu.tar.xz.sha256)
+          SHA256_AARCH64=$(cut -d' ' -f1 /tmp/daft-checksums/daft-aarch64-unknown-linux-gnu.tar.xz.sha256)
+
+          echo "sha256_x86_64=$SHA256_X86" >> "$GITHUB_OUTPUT"
+          echo "sha256_aarch64=$SHA256_AARCH64" >> "$GITHUB_OUTPUT"
+      - name: Substitute PKGBUILD template
+        run: |
+          sed \
+            -e "s/{{VERSION}}/${{ steps.version.outputs.version }}/g" \
+            -e "s/{{SHA256_x86_64}}/${{ steps.checksums.outputs.sha256_x86_64 }}/g" \
+            -e "s/{{SHA256_aarch64}}/${{ steps.checksums.outputs.sha256_aarch64 }}/g" \
+            packaging/aur/PKGBUILD > /tmp/PKGBUILD
+
+          echo "Generated PKGBUILD:"
+          cat /tmp/PKGBUILD
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+        with:
+          pkgname: daft-bin
+          pkgbuild: /tmp/PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ steps.version.outputs.version }}"
+          force_push: "false"
+
   announce:
     needs:
       - plan
       - host
       - publish-homebrew-formula
       - publish-homebrew-formula-legacy
+      - build-deb
+      - build-rpm
+      - publish-aur
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
@@ -502,7 +673,11 @@ jobs:
       (needs.publish-homebrew-formula.result == 'skipped' ||
       needs.publish-homebrew-formula.result == 'success') &&
       (needs.publish-homebrew-formula-legacy.result == 'skipped' ||
-      needs.publish-homebrew-formula-legacy.result == 'success') }}
+      needs.publish-homebrew-formula-legacy.result == 'success') &&
+      (needs.build-deb.result == 'skipped' || needs.build-deb.result ==
+      'success') && (needs.build-rpm.result == 'skipped' ||
+      needs.build-rpm.result == 'success') && (needs.publish-aur.result ==
+      'skipped' || needs.publish-aur.result == 'success') }}
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
