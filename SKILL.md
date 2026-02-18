@@ -160,6 +160,11 @@ Hooks automate worktree lifecycle events. The recommended approach is a
 | `worktree-pre-remove`  | Before worktree is removed    | Worktree being removed      |
 | `worktree-post-remove` | After worktree is removed     | Current worktree            |
 
+During `daft worktree-clone`, hooks fire in this order: `post-clone` first
+(one-time repo bootstrap), then `worktree-post-create` (per-worktree setup).
+This lets `post-clone` install foundational tools that `worktree-post-create`
+may depend on.
+
 ### daft.yml Format
 
 ```yaml

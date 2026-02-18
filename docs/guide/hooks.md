@@ -25,6 +25,18 @@ and more. For simple cases, you can also use **executable shell scripts** in
 | `worktree-pre-remove`  | Before worktree is removed           | Worktree being removed               |
 | `worktree-post-remove` | After worktree is removed            | Current worktree (where prune runs)  |
 
+### Execution Order During Clone
+
+When running `git worktree-clone`, hooks fire in this order:
+
+1. **`post-clone`** -- one-time repo bootstrap (install toolchains, global
+   setup)
+2. **`worktree-post-create`** -- per-worktree setup (install dependencies,
+   configure environment)
+
+This lets `post-clone` install foundational tools (pnpm, bun, uv, etc.) that
+`worktree-post-create` may depend on.
+
 ## Trust Model
 
 For security, hooks from untrusted repositories don't run automatically. Trust

@@ -355,18 +355,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         // Git-like result message
         output.result(&format!("Cloned into '{repo_name}/{target_branch}'"));
 
-        // Execute post-create hook (worktree was created)
-        run_post_create_hook(
-            args,
-            &parent_dir,
-            &git_dir,
-            &config.remote_name,
-            &current_dir,
-            &target_branch,
-            output,
-        )?;
-
-        // Execute post-clone hooks
+        // Execute post-clone hook first (one-time repo bootstrap: install toolchains, etc.)
         run_post_clone_hook(
             args,
             &parent_dir,
@@ -374,6 +363,17 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             &config.remote_name,
             &current_dir,
             &args.repository_url,
+            &target_branch,
+            output,
+        )?;
+
+        // Execute post-create hook (per-worktree setup that may depend on post-clone)
+        run_post_create_hook(
+            args,
+            &parent_dir,
+            &git_dir,
+            &config.remote_name,
+            &current_dir,
             &target_branch,
             output,
         )?;
