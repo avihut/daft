@@ -3,7 +3,7 @@
 //! Verifies hook configuration: executability, deprecated names, trust level,
 //! and configuration sources (daft.yml and shell hooks).
 
-use crate::doctor::CheckResult;
+use crate::doctor::{CheckResult, FixAction};
 use crate::hooks::{HookType, TrustDatabase, TrustLevel, PROJECT_HOOKS_DIR};
 use std::path::{Path, PathBuf};
 
@@ -132,13 +132,17 @@ pub fn check_hooks_executable(project_root: &Path) -> CheckResult {
             .iter()
             .map(|n| format!("Not executable: {n}"))
             .collect();
-        let project_root = project_root.to_path_buf();
+        let fix_project_root = project_root.to_path_buf();
+        let dry_project_root = project_root.to_path_buf();
         CheckResult::warning(
             "Hooks executable",
             &format!("{} hook(s) not executable", non_executable.len()),
         )
         .with_suggestion("Run 'chmod +x' on the listed hooks")
-        .with_fix(Box::new(move || fix_hooks_executable(&project_root)))
+        .with_fix(Box::new(move || fix_hooks_executable(&fix_project_root)))
+        .with_dry_run_fix(Box::new(move || {
+            dry_run_hooks_executable(&dry_project_root)
+        }))
         .with_details(details)
     }
 }
@@ -187,13 +191,17 @@ pub fn check_deprecated_names(project_root: &Path) -> CheckResult {
             .iter()
             .map(|(old, new)| format!("{old} -> {new}"))
             .collect();
-        let project_root = project_root.to_path_buf();
+        let fix_project_root = project_root.to_path_buf();
+        let dry_project_root = project_root.to_path_buf();
         CheckResult::warning(
             "Hook names",
             &format!("{} deprecated name(s)", deprecated.len()),
         )
         .with_suggestion("Run 'git daft hooks migrate'")
-        .with_fix(Box::new(move || fix_deprecated_names(&project_root)))
+        .with_fix(Box::new(move || fix_deprecated_names(&fix_project_root)))
+        .with_dry_run_fix(Box::new(move || {
+            dry_run_deprecated_names(&dry_project_root)
+        }))
         .with_details(details)
     }
 }
@@ -221,6 +229,64 @@ pub fn fix_deprecated_names(project_root: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Dry-run simulation for hooks executable fix.
+pub fn dry_run_hooks_executable(project_root: &Path) -> Vec<FixAction> {
+    let hooks_dir = match find_hooks_dir(project_root) {
+        Some(dir) => dir,
+        None => return vec![],
+    };
+
+    let files = list_hook_files(&hooks_dir);
+    files
+        .iter()
+        .filter(|f| !is_executable(f))
+        .map(|file| {
+            let name = file.file_name().unwrap_or_default().to_string_lossy();
+            FixAction {
+                description: format!("Set {name} as executable (chmod +x)"),
+                would_succeed: true,
+                failure_reason: None,
+            }
+        })
+        .collect()
+}
+
+/// Dry-run simulation for deprecated hook name fix.
+pub fn dry_run_deprecated_names(project_root: &Path) -> Vec<FixAction> {
+    let hooks_dir = match find_hooks_dir(project_root) {
+        Some(dir) => dir,
+        None => return vec![],
+    };
+
+    let files = list_hook_files(&hooks_dir);
+    let mut actions = Vec::new();
+
+    for file in &files {
+        if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
+            if let Some(hook_type) = HookType::from_filename(name) {
+                if let Some(old_name) = hook_type.deprecated_filename() {
+                    if name == old_name {
+                        let new_name = hook_type.filename();
+                        let new_path = hooks_dir.join(new_name);
+                        let would_succeed = !new_path.exists();
+                        actions.push(FixAction {
+                            description: format!("Rename {old_name} -> {new_name}"),
+                            would_succeed,
+                            failure_reason: if would_succeed {
+                                None
+                            } else {
+                                Some(format!("{new_name} already exists"))
+                            },
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    actions
 }
 
 /// Check the trust level for the current repository.
@@ -396,5 +462,65 @@ mod tests {
         let result = check_hooks_config(temp.path(), temp.path());
         assert_eq!(result.status, CheckStatus::Pass);
         assert!(result.message.contains("1 shell hooks"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_dry_run_hooks_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempdir().unwrap();
+        let worktree = temp.path().join("main");
+        let hooks_dir = worktree.join(PROJECT_HOOKS_DIR);
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+
+        let hook = hooks_dir.join("post-clone");
+        std::fs::write(&hook, "#!/bin/bash").unwrap();
+        let mut perms = hook.metadata().unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&hook, perms).unwrap();
+
+        let actions = dry_run_hooks_executable(temp.path());
+        assert_eq!(actions.len(), 1);
+        assert!(actions[0].description.contains("post-clone"));
+        assert!(actions[0].description.contains("executable"));
+        assert!(actions[0].would_succeed);
+    }
+
+    #[test]
+    fn test_dry_run_deprecated_names_no_conflict() {
+        let temp = tempdir().unwrap();
+        let worktree = temp.path().join("main");
+        let hooks_dir = worktree.join(PROJECT_HOOKS_DIR);
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+
+        std::fs::write(hooks_dir.join("post-create"), "#!/bin/bash").unwrap();
+
+        let actions = dry_run_deprecated_names(temp.path());
+        assert_eq!(actions.len(), 1);
+        assert!(actions[0].description.contains("post-create"));
+        assert!(actions[0].description.contains("worktree-post-create"));
+        assert!(actions[0].would_succeed);
+    }
+
+    #[test]
+    fn test_dry_run_deprecated_names_with_conflict() {
+        let temp = tempdir().unwrap();
+        let worktree = temp.path().join("main");
+        let hooks_dir = worktree.join(PROJECT_HOOKS_DIR);
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+
+        // Both old and new names exist
+        std::fs::write(hooks_dir.join("post-create"), "#!/bin/bash").unwrap();
+        std::fs::write(hooks_dir.join("worktree-post-create"), "#!/bin/bash").unwrap();
+
+        let actions = dry_run_deprecated_names(temp.path());
+        assert_eq!(actions.len(), 1);
+        assert!(!actions[0].would_succeed);
+        assert!(actions[0]
+            .failure_reason
+            .as_ref()
+            .unwrap()
+            .contains("already exists"));
     }
 }

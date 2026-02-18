@@ -19,6 +19,19 @@ pub enum CheckStatus {
 /// A closure that can fix an issue found by a check.
 type FixFn = Box<dyn Fn() -> Result<(), String>>;
 
+/// A single planned action from a dry-run simulation.
+pub struct FixAction {
+    /// What would be done, e.g. "Create symlink gwtco -> daft in /usr/local/bin"
+    pub description: String,
+    /// Whether preconditions are met for this action to succeed.
+    pub would_succeed: bool,
+    /// Why it would fail, if would_succeed is false.
+    pub failure_reason: Option<String>,
+}
+
+/// A closure that simulates a fix, checking preconditions without applying changes.
+type DryRunFn = Box<dyn Fn() -> Vec<FixAction>>;
+
 /// Result of a single diagnostic check.
 pub struct CheckResult {
     pub name: String,
@@ -30,6 +43,8 @@ pub struct CheckResult {
     pub suggestion: Option<String>,
     /// Optional fix closure. When present, --fix can auto-fix this issue.
     pub fix: Option<FixFn>,
+    /// Optional dry-run closure. Simulates the fix, returning planned actions.
+    pub dry_run_fix: Option<DryRunFn>,
 }
 
 impl std::fmt::Debug for CheckResult {
@@ -41,6 +56,7 @@ impl std::fmt::Debug for CheckResult {
             .field("details", &self.details)
             .field("suggestion", &self.suggestion)
             .field("fix", &self.fix.is_some())
+            .field("dry_run_fix", &self.dry_run_fix.is_some())
             .finish()
     }
 }
@@ -54,6 +70,7 @@ impl CheckResult {
             details: Vec::new(),
             suggestion: None,
             fix: None,
+            dry_run_fix: None,
         }
     }
 
@@ -65,6 +82,7 @@ impl CheckResult {
             details: Vec::new(),
             suggestion: None,
             fix: None,
+            dry_run_fix: None,
         }
     }
 
@@ -76,6 +94,7 @@ impl CheckResult {
             details: Vec::new(),
             suggestion: None,
             fix: None,
+            dry_run_fix: None,
         }
     }
 
@@ -87,6 +106,7 @@ impl CheckResult {
             details: Vec::new(),
             suggestion: None,
             fix: None,
+            dry_run_fix: None,
         }
     }
 
@@ -97,6 +117,11 @@ impl CheckResult {
 
     pub fn with_fix(mut self, fix: FixFn) -> Self {
         self.fix = Some(fix);
+        self
+    }
+
+    pub fn with_dry_run_fix(mut self, dry_run_fix: DryRunFn) -> Self {
+        self.dry_run_fix = Some(dry_run_fix);
         self
     }
 
@@ -250,6 +275,49 @@ mod tests {
         assert!(summary.has_failures());
         assert_eq!(summary.warning_names, vec!["c"]);
         assert_eq!(summary.failure_names, vec!["d"]);
+    }
+
+    #[test]
+    fn test_fix_action_success() {
+        let action = FixAction {
+            description: "Create symlink foo -> daft".to_string(),
+            would_succeed: true,
+            failure_reason: None,
+        };
+        assert!(action.would_succeed);
+        assert!(action.failure_reason.is_none());
+    }
+
+    #[test]
+    fn test_fix_action_failure() {
+        let action = FixAction {
+            description: "Create symlink foo -> daft".to_string(),
+            would_succeed: false,
+            failure_reason: Some("Directory not writable".to_string()),
+        };
+        assert!(!action.would_succeed);
+        assert_eq!(
+            action.failure_reason.as_deref(),
+            Some("Directory not writable")
+        );
+    }
+
+    #[test]
+    fn test_check_result_with_dry_run_fix() {
+        let result = CheckResult::warning("test", "something off")
+            .with_fix(Box::new(|| Ok(())))
+            .with_dry_run_fix(Box::new(|| {
+                vec![FixAction {
+                    description: "Would do thing".to_string(),
+                    would_succeed: true,
+                    failure_reason: None,
+                }]
+            }));
+        assert!(result.fixable());
+        assert!(result.dry_run_fix.is_some());
+        let actions = (result.dry_run_fix.unwrap())();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].description, "Would do thing");
     }
 
     #[test]

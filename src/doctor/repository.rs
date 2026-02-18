@@ -3,7 +3,7 @@
 //! Verifies that the current repository is configured correctly for daft:
 //! worktree layout, worktree consistency, fetch refspec, remote HEAD.
 
-use crate::doctor::CheckResult;
+use crate::doctor::{CheckResult, FixAction};
 use crate::git::GitCommand;
 use std::path::{Path, PathBuf};
 
@@ -175,6 +175,7 @@ pub fn check_worktree_consistency(_ctx: &RepoContext) -> CheckResult {
         )
         .with_suggestion("Run 'git worktree prune' to clean up orphaned entries")
         .with_fix(Box::new(fix_worktree_consistency))
+        .with_dry_run_fix(Box::new(dry_run_worktree_consistency))
         .with_details(details)
     }
 }
@@ -192,6 +193,20 @@ pub fn fix_worktree_consistency() -> Result<(), String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("git worktree prune failed: {stderr}"))
     }
+}
+
+/// Dry-run simulation for worktree consistency fix.
+pub fn dry_run_worktree_consistency() -> Vec<FixAction> {
+    let git_available = which::which("git").is_ok();
+    vec![FixAction {
+        description: "Run git worktree prune to clean up orphaned entries".to_string(),
+        would_succeed: git_available,
+        failure_reason: if git_available {
+            None
+        } else {
+            Some("git is not available".to_string())
+        },
+    }]
 }
 
 /// Check that the fetch refspec is configured correctly for bare repos.
@@ -213,13 +228,15 @@ pub fn check_fetch_refspec(ctx: &RepoContext) -> CheckResult {
                     "Run 'git config remote.origin.fetch \"+refs/heads/*:refs/remotes/origin/*\"'",
                 )
                 .with_fix(Box::new(fix_fetch_refspec))
+                .with_dry_run_fix(Box::new(dry_run_fetch_refspec))
         }
         Ok(None) => {
             // Check if origin remote exists
             match git.remote_exists("origin") {
                 Ok(true) => CheckResult::warning("Fetch refspec", "not configured")
                     .with_suggestion("Run 'git config remote.origin.fetch \"+refs/heads/*:refs/remotes/origin/*\"'")
-                    .with_fix(Box::new(fix_fetch_refspec)),
+                    .with_fix(Box::new(fix_fetch_refspec))
+                    .with_dry_run_fix(Box::new(dry_run_fetch_refspec)),
                 _ => CheckResult::skipped("Fetch refspec", "no origin remote"),
             }
         }
@@ -232,6 +249,16 @@ pub fn fix_fetch_refspec() -> Result<(), String> {
     let git = GitCommand::new(true);
     git.setup_fetch_refspec("origin")
         .map_err(|e| format!("Failed to set fetch refspec: {e}"))
+}
+
+/// Dry-run simulation for fetch refspec fix.
+pub fn dry_run_fetch_refspec() -> Vec<FixAction> {
+    let expected = "+refs/heads/*:refs/remotes/origin/*";
+    vec![FixAction {
+        description: format!("Set fetch refspec to {expected}"),
+        would_succeed: true,
+        failure_reason: None,
+    }]
 }
 
 /// Check that remote HEAD (refs/remotes/origin/HEAD) is set.
@@ -262,7 +289,8 @@ pub fn check_remote_head(ctx: &RepoContext) -> CheckResult {
         }
         Ok(false) => CheckResult::warning("Remote HEAD", "not set")
             .with_suggestion("Run 'git remote set-head origin --auto'")
-            .with_fix(Box::new(fix_remote_head)),
+            .with_fix(Box::new(fix_remote_head))
+            .with_dry_run_fix(Box::new(dry_run_remote_head)),
         Err(e) => CheckResult::warning("Remote HEAD", &format!("could not check: {e}")),
     }
 }
@@ -272,6 +300,15 @@ pub fn fix_remote_head() -> Result<(), String> {
     let git = GitCommand::new(true);
     git.remote_set_head_auto("origin")
         .map_err(|e| format!("Failed to set remote HEAD: {e}"))
+}
+
+/// Dry-run simulation for remote HEAD fix.
+pub fn dry_run_remote_head() -> Vec<FixAction> {
+    vec![FixAction {
+        description: "Run git remote set-head origin --auto".to_string(),
+        would_succeed: true,
+        failure_reason: None,
+    }]
 }
 
 #[cfg(test)]
@@ -342,5 +379,28 @@ branch refs/heads/main";
     fn test_is_common_dir_bare_no_config() {
         let temp = tempfile::tempdir().unwrap();
         assert!(!is_common_dir_bare(temp.path()));
+    }
+
+    #[test]
+    fn test_dry_run_worktree_consistency() {
+        let actions = dry_run_worktree_consistency();
+        assert_eq!(actions.len(), 1);
+        assert!(actions[0].description.contains("git worktree prune"));
+        // In test env, git should be available
+        assert!(actions[0].would_succeed);
+    }
+
+    #[test]
+    fn test_dry_run_fetch_refspec() {
+        let actions = dry_run_fetch_refspec();
+        assert_eq!(actions.len(), 1);
+        assert!(actions[0].description.contains("fetch refspec"));
+    }
+
+    #[test]
+    fn test_dry_run_remote_head() {
+        let actions = dry_run_remote_head();
+        assert_eq!(actions.len(), 1);
+        assert!(actions[0].description.contains("git remote set-head"));
     }
 }

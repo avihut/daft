@@ -21,6 +21,17 @@ fn long_about() -> String {
         "",
         "When run outside a git repository, only installation checks are performed.",
         "Inside a daft-managed repository, repository and hooks checks run too.",
+        "",
+        "The --fix flag auto-repairs: missing command symlinks, missing shortcut",
+        "symlinks for partially-installed styles, orphaned worktree entries,",
+        "incorrect fetch refspecs, missing remote HEAD, non-executable hooks,",
+        "and deprecated hook names. Issues requiring manual intervention (binary",
+        "not in PATH, git not installed, shell integration) show suggestions only.",
+        "",
+        "Use --fix --dry-run to preview planned actions with pre-flight validation.",
+        "Each action shows whether it would succeed or fail (e.g., directory not",
+        "writable, conflicting files). Actions marked + would succeed; actions",
+        "marked x would fail, with the reason shown below.",
     ]
     .join("\n")
 }
@@ -183,6 +194,8 @@ fn preview_fixes(categories: &[CheckCategory]) {
     );
     println!();
 
+    let mut any_would_fail = false;
+
     for result in &fixable {
         let symbol = status_symbol(result.status);
         println!(
@@ -191,13 +204,38 @@ fn preview_fixes(categories: &[CheckCategory]) {
             dim("\u{2014}"),
             result.message
         );
-        if let Some(ref suggestion) = result.suggestion {
-            println!("      {}", dim(&format!("Fix: {suggestion}")));
+
+        if let Some(ref dry_run) = result.dry_run_fix {
+            let actions = dry_run();
+            for action in &actions {
+                if action.would_succeed {
+                    println!("      {} {}", green("+"), action.description);
+                } else {
+                    any_would_fail = true;
+                    println!("      {} {}", red("x"), action.description);
+                    if let Some(ref reason) = action.failure_reason {
+                        println!("        {}", dim(reason));
+                    }
+                }
+            }
+        } else if let Some(ref suggestion) = result.suggestion {
+            println!("      {}", dim(&format!("Action: {suggestion}")));
         }
     }
 
     println!();
-    println!("{}", dim("Run 'daft doctor --fix' to apply these fixes."));
+    if any_would_fail {
+        println!(
+            "{}",
+            yellow("Some fixes would fail. Resolve the issues above first.")
+        );
+        println!(
+            "{}",
+            dim("Run 'daft doctor --fix' to apply fixes that can succeed.")
+        );
+    } else {
+        println!("{}", dim("Run 'daft doctor --fix' to apply these fixes."));
+    }
 }
 
 fn apply_fixes(categories: &[CheckCategory]) {

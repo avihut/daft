@@ -13,6 +13,17 @@ and hooks configuration. Reports issues with actionable suggestions.
 .PP
 When run outside a git repository, only installation checks are performed.
 Inside a daft\-managed repository, repository and hooks checks run too.
+.PP
+The \-\-fix flag auto\-repairs: missing command symlinks, missing shortcut
+symlinks for partially\-installed styles, orphaned worktree entries,
+incorrect fetch refspecs, missing remote HEAD, non\-executable hooks,
+and deprecated hook names. Issues requiring manual intervention (binary
+not in PATH, git not installed, shell integration) show suggestions only.
+.PP
+Use \-\-fix \-\-dry\-run to preview planned actions with pre\-flight validation.
+Each action shows whether it would succeed or fail (e.g., directory not
+writable, conflicting files). Actions marked + would succeed; actions
+marked x would fail, with the reason shown below.
 .SH OPTIONS
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR

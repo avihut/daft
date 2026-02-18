@@ -4,7 +4,7 @@
 //! binary in PATH, command symlinks, git, man pages, shell integration,
 //! shortcut symlinks, and shell wrappers.
 
-use crate::doctor::CheckResult;
+use crate::doctor::{CheckResult, FixAction};
 use crate::shortcuts::{shortcuts_for_style, ShortcutStyle};
 use std::path::{Path, PathBuf};
 
@@ -66,12 +66,17 @@ pub fn check_command_symlinks() -> CheckResult {
         CheckResult::pass("Command symlinks", &format!("{found}/{total} installed"))
     } else {
         let details: Vec<String> = missing.iter().map(|n| format!("Missing: {n}")).collect();
+        let missing_owned: Vec<String> = missing.iter().map(|s| s.to_string()).collect();
+        let dry_dir = install_dir.clone();
         CheckResult::warning(
             "Command symlinks",
             &format!("{found}/{total} installed, {} missing", missing.len()),
         )
         .with_suggestion("Run 'daft setup' to create missing symlinks")
         .with_fix(Box::new(fix_command_symlinks))
+        .with_dry_run_fix(Box::new(move || {
+            dry_run_symlink_actions(&missing_owned, &dry_dir)
+        }))
         .with_details(details)
     }
 }
@@ -232,7 +237,14 @@ pub fn check_shortcut_symlinks() -> Vec<CheckResult> {
         Ok(dir) => dir,
         Err(_) => return vec![],
     };
+    check_shortcut_symlinks_in(&install_dir)
+}
 
+/// Check shortcut symlinks in a specific directory.
+///
+/// This is the inner implementation used by [`check_shortcut_symlinks`].
+/// It is also exposed for testing with custom directories.
+pub(crate) fn check_shortcut_symlinks_in(install_dir: &Path) -> Vec<CheckResult> {
     let mut results = Vec::new();
     let mut any_style_installed = false;
 
@@ -243,7 +255,7 @@ pub fn check_shortcut_symlinks() -> Vec<CheckResult> {
 
         for shortcut in &shortcuts {
             let path = install_dir.join(shortcut.alias);
-            if is_valid_symlink(&path, &install_dir) {
+            if is_valid_symlink(&path, install_dir) {
                 present.push(shortcut.alias);
             } else {
                 missing.push(shortcut.alias);
@@ -268,6 +280,16 @@ pub fn check_shortcut_symlinks() -> Vec<CheckResult> {
         } else {
             let details: Vec<String> = missing.iter().map(|n| format!("Missing: {n}")).collect();
             let style_name = style.name().to_string();
+
+            // Capture what we need for closures
+            let install_dir_owned = install_dir.to_path_buf();
+            let missing_owned: Vec<String> = missing.iter().map(|s| s.to_string()).collect();
+
+            let fix_dir = install_dir_owned.clone();
+            let fix_missing = missing_owned.clone();
+            let dry_dir = install_dir_owned;
+            let dry_missing = missing_owned;
+
             results.push(
                 CheckResult::warning(
                     &name,
@@ -276,6 +298,18 @@ pub fn check_shortcut_symlinks() -> Vec<CheckResult> {
                 .with_suggestion(&format!(
                     "Run 'daft setup shortcuts enable {style_name}' to install"
                 ))
+                .with_fix(Box::new(move || {
+                    for alias in &fix_missing {
+                        let path = fix_dir.join(alias);
+                        if !is_valid_symlink(&path, &fix_dir) {
+                            create_symlink(alias, &fix_dir)?;
+                        }
+                    }
+                    Ok(())
+                }))
+                .with_dry_run_fix(Box::new(move || {
+                    dry_run_symlink_actions(&dry_missing, &dry_dir)
+                }))
                 .with_details(details),
             );
         }
@@ -350,6 +384,68 @@ fn create_symlink(alias: &str, install_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Simulate creating symlinks, checking preconditions without applying changes.
+///
+/// Returns a list of [`FixAction`]s describing what would be done and
+/// whether each action would succeed. Reused by both shortcut and command
+/// symlink dry-run checks.
+pub(crate) fn dry_run_symlink_actions(missing: &[String], install_dir: &Path) -> Vec<FixAction> {
+    let dir_display = install_dir.display();
+    let dir_writable = is_dir_writable(install_dir);
+
+    missing
+        .iter()
+        .map(|alias| {
+            let description = format!("Create symlink {alias} -> daft in {dir_display}");
+            let path = install_dir.join(alias);
+
+            if !dir_writable {
+                return FixAction {
+                    description,
+                    would_succeed: false,
+                    failure_reason: Some(format!("{dir_display} is not writable")),
+                };
+            }
+
+            // Check for conflicting non-daft file
+            if path.exists() && !path.is_symlink() {
+                return FixAction {
+                    description,
+                    would_succeed: false,
+                    failure_reason: Some(format!("{} exists and is not a symlink", path.display())),
+                };
+            }
+
+            if path.is_symlink() && !is_valid_symlink(&path, install_dir) {
+                return FixAction {
+                    description: format!(
+                        "Replace symlink {alias} -> daft in {dir_display} (currently points elsewhere)"
+                    ),
+                    would_succeed: true,
+                    failure_reason: None,
+                };
+            }
+
+            FixAction {
+                description,
+                would_succeed: true,
+                failure_reason: None,
+            }
+        })
+        .collect()
+}
+
+/// Check if a directory is writable by attempting a test write.
+fn is_dir_writable(dir: &Path) -> bool {
+    let test_file = dir.join(".daft-write-test");
+    if std::fs::write(&test_file, "test").is_ok() {
+        std::fs::remove_file(&test_file).ok();
+        true
+    } else {
+        false
+    }
+}
+
 /// Get standard man page search paths.
 fn get_man_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -399,5 +495,81 @@ mod tests {
     fn test_get_man_search_paths_not_empty() {
         let paths = get_man_search_paths();
         assert!(!paths.is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_check_shortcut_symlinks_with_partial_install_has_fix() {
+        let temp = tempfile::tempdir().unwrap();
+        let install_dir = temp.path();
+
+        // Create a fake "daft" binary
+        std::fs::write(install_dir.join("daft"), "fake").unwrap();
+
+        // Create only one shortcut from git style to simulate partial install
+        std::os::unix::fs::symlink("daft", install_dir.join("gwtclone")).unwrap();
+
+        let results = check_shortcut_symlinks_in(install_dir);
+        let git_result = results.iter().find(|r| r.name.contains("git")).unwrap();
+        assert_eq!(git_result.status, crate::doctor::CheckStatus::Warning);
+        assert!(
+            git_result.fixable(),
+            "Partially installed style should be fixable"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_check_shortcut_symlinks_with_partial_install_has_dry_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let install_dir = temp.path();
+
+        std::fs::write(install_dir.join("daft"), "fake").unwrap();
+
+        std::os::unix::fs::symlink("daft", install_dir.join("gwtclone")).unwrap();
+
+        let results = check_shortcut_symlinks_in(install_dir);
+        let git_result = results.iter().find(|r| r.name.contains("git")).unwrap();
+        assert!(git_result.dry_run_fix.is_some(), "Should have dry_run_fix");
+
+        let actions = (git_result.dry_run_fix.as_ref().unwrap())();
+        // Should have actions for each missing shortcut (all git shortcuts minus gwtclone)
+        assert!(!actions.is_empty());
+        assert!(actions.iter().all(|a| a.would_succeed));
+        assert!(actions
+            .iter()
+            .all(|a| a.description.contains("Create symlink")));
+    }
+
+    #[test]
+    fn test_dry_run_symlink_actions_basic() {
+        let temp = tempfile::tempdir().unwrap();
+        let install_dir = temp.path();
+        std::fs::write(install_dir.join("daft"), "fake").unwrap();
+
+        let missing = vec!["git-worktree-clone".to_string(), "git-daft".to_string()];
+        let actions = dry_run_symlink_actions(&missing, install_dir);
+        assert_eq!(actions.len(), 2);
+        assert!(actions[0].description.contains("git-worktree-clone"));
+        assert!(actions[0].would_succeed);
+    }
+
+    #[test]
+    fn test_dry_run_symlink_actions_detects_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        let install_dir = temp.path();
+        std::fs::write(install_dir.join("daft"), "fake").unwrap();
+        // Create a regular file (not a symlink) that conflicts
+        std::fs::write(install_dir.join("gwtco"), "not-daft").unwrap();
+
+        let missing = vec!["gwtco".to_string()];
+        let actions = dry_run_symlink_actions(&missing, install_dir);
+        assert_eq!(actions.len(), 1);
+        assert!(!actions[0].would_succeed);
+        assert!(actions[0]
+            .failure_reason
+            .as_ref()
+            .unwrap()
+            .contains("not a symlink"));
     }
 }
