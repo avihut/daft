@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#MISE description="Watch and run cargo check on changes"
+set -euo pipefail
+
+if command -v cargo-watch >/dev/null 2>&1; then
+    cargo watch -c -x check
+else
+    echo "cargo-watch not installed. Install with: cargo install cargo-watch"
+    exit 1
+fi

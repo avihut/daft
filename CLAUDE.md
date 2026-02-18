@@ -36,16 +36,16 @@ scratch directories:
 ```bash
 mise run dev                # Build + create symlinks (quick dev setup)
 mise run test               # Run all tests (unit + integration)
-mise run test-unit          # Rust unit tests only
-mise run test-integration   # Integration tests only
+mise run test:unit          # Rust unit tests only
+mise run test:integration   # Integration tests only
 mise run clippy             # Lint (must pass with zero warnings)
 mise run fmt                # Auto-format code
-mise run fmt-check          # Verify formatting
+mise run fmt:check          # Verify formatting
 mise run ci                 # Simulate full CI locally
 ```
 
 IMPORTANT: Before committing, always run `mise run fmt`, `mise run clippy`, and
-`mise run test-unit`. These checks are required and enforced in CI.
+`mise run test:unit`. These checks are required and enforced in CI.
 
 ## Architecture
 
@@ -93,7 +93,7 @@ produce patch bumps; edit `Cargo.toml` in the Release PR for minor/major bumps.
 3. Add routing in `src/main.rs`
 4. Add to `COMMANDS` array and `get_command_for_name()` in `xtask/src/main.rs`
 5. Add to help output in `src/commands/docs.rs` (`get_command_categories()`)
-6. Run `mise run gen-man` and commit the generated man page
+6. Run `mise run man:gen` and commit the generated man page
 7. Add integration tests in `tests/integration/` following existing patterns
 
 ## Man Pages
@@ -102,8 +102,8 @@ Pre-generated in `man/` and committed. Regenerate after changing command help
 text:
 
 ```bash
-mise run gen-man      # Generate/update man pages
-mise run verify-man   # Check if man pages are up-to-date (also runs in CI)
+mise run man:gen      # Generate/update man pages
+mise run man:verify   # Check if man pages are up-to-date (also runs in CI)
 ```
 
 ## Documentation Site
@@ -130,10 +130,10 @@ with Bun as the package manager.
 
 ```bash
 mise run docs:site          # Dev server at localhost:5173
-mise run docs:site-build    # Build the site
-mise run docs:site-preview  # Preview built site
-mise run docs:site-check    # Lint config with Biome
-mise run docs:site-format   # Auto-fix config with Biome
+mise run docs:site:build    # Build the site
+mise run docs:site:preview  # Preview built site
+mise run docs:site:check    # Lint config with Biome
+mise run docs:site:format   # Auto-fix config with Biome
 ```
 
 - **Prettier** (root): `*.{md,yml,yaml}` files everywhere

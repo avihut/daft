@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Build the docs site"
+#MISE depends=["docs:site:setup"]
+#MISE dir="docs"
+set -euo pipefail
+
+bunx vitepress build

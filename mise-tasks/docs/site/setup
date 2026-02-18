@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Install docs site dependencies"
+#MISE dir="docs"
+set -euo pipefail
+
+bun install

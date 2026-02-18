@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Verify man pages are up-to-date with source"
+set -euo pipefail
+
+echo "Verifying man pages are up-to-date..."
+cargo run --package xtask -- gen-man --output-dir=man
+git diff --exit-code man/ || (echo "Man pages out of date. Run 'mise run man:gen' and commit." && exit 1)
+echo "Man pages are up-to-date"

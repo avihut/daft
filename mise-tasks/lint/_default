@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run all linting tools"
+#MISE alias="l"
+#MISE depends=["lint:rust"]
+set -euo pipefail
+
+echo "All linting completed"

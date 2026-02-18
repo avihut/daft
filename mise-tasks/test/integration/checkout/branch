@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run integration checkout-branch tests"
+#MISE depends=["build"]
+set -euo pipefail
+
+echo "Running integration checkout-branch tests..."
+cd tests/integration && ./test_checkout_branch.sh

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Generate fish completions to /tmp/"
+#MISE depends=["build"]
+set -euo pipefail
+
+echo "Generating fish completions..."
+for cmd in git-worktree-clone git-worktree-init git-worktree-checkout git-worktree-checkout-branch git-worktree-prune; do
+    echo "  $cmd"
+    ./target/release/daft completions fish --command="$cmd" > /tmp/completion-$cmd.fish
+done
+echo "Fish completions generated in /tmp/"

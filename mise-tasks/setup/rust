@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+#MISE description="Setup Rust development environment"
+#MISE depends=["build"]
+set -euo pipefail
+
+echo "Setting up Rust development environment..."
+chmod +x tests/integration/*.sh
+echo "Creating symlinks in target/release/..."
+cd target/release
+# Core command symlinks
+ln -sf daft git-worktree-clone
+ln -sf daft git-worktree-init
+ln -sf daft git-worktree-checkout
+ln -sf daft git-worktree-checkout-branch
+ln -sf daft git-worktree-prune
+ln -sf daft git-worktree-carry
+ln -sf daft git-worktree-fetch
+ln -sf daft git-worktree-flow-adopt
+ln -sf daft git-worktree-flow-eject
+ln -sf daft git-daft
+# Git-style shortcuts (default for development)
+ln -sf daft gwtclone
+ln -sf daft gwtinit
+ln -sf daft gwtco
+ln -sf daft gwtcb
+ln -sf daft gwtprune
+ln -sf daft gwtcarry
+ln -sf daft gwtfetch
+cd ../..
+echo "Development environment ready!"
+echo ""
+# Cross-platform binary size display
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    size=$(stat -f '%z' target/release/daft 2>/dev/null || echo "0")
+else
+    size=$(stat -c '%s' target/release/daft 2>/dev/null || echo "0")
+fi
+echo "Binary size: $(awk "BEGIN {printf \"%.0f KB\", $size/1024}")"
+echo ""
+echo "Add to PATH for Git integration:"
+echo "  export PATH=\"$PWD/target/release:\$PATH\""
+echo ""
+echo "Quick test:"
+echo "  ./target/release/daft"
+echo "  ./target/release/git-worktree-clone --help"
+echo "  ./target/release/gwtco --help  # Git-style shortcut"

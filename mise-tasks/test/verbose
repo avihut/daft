@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Run tests with verbose output"
+#MISE depends=["test:integration:verbose"]
+set -euo pipefail
+
+echo "All verbose tests completed"

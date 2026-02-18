@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run integration unknown-command tests"
+#MISE depends=["build"]
+set -euo pipefail
+
+echo "Running integration unknown-command tests..."
+cd tests/integration && ./test_unknown_command.sh

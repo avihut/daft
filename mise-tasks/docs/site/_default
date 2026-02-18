@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Start docs dev server at localhost:5173"
+#MISE depends=["docs:site:setup"]
+#MISE dir="docs"
+set -euo pipefail
+
+bunx vitepress dev

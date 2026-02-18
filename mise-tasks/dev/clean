@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+#MISE description="Remove development symlinks (keeps binary)"
+set -euo pipefail
+
+echo "Cleaning development symlinks..."
+cd target/release && rm -f \
+    git-worktree-clone \
+    git-worktree-init \
+    git-worktree-checkout \
+    git-worktree-checkout-branch \
+    git-worktree-prune \
+    git-worktree-carry \
+    git-worktree-fetch \
+    git-worktree-flow-adopt \
+    git-worktree-flow-eject \
+    git-daft \
+    gwtclone gwtinit gwtco gwtcb gwtprune gwtcarry gwtfetch \
+    gwco gwcob \
+    gclone gcw gcbw gprune
+echo "Symlinks removed (binary preserved)"

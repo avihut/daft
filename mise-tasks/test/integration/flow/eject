@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run integration flow-eject tests"
+#MISE depends=["build"]
+set -euo pipefail
+
+echo "Running integration flow-eject tests..."
+cd tests/integration && ./test_flow_eject.sh

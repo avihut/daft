@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Preview the built docs site"
+#MISE depends=["docs:site:build"]
+#MISE dir="docs"
+set -euo pipefail
+
+bunx vitepress preview

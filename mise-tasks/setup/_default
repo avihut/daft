@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Setup development environment"
+#MISE depends=["setup:rust"]
+set -euo pipefail
+
+echo "Installing lefthook git hooks..."
+lefthook install
+echo "Development environment setup completed"

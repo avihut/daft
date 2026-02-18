@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Format docs and YAML files with Prettier"
+set -euo pipefail
+
+bun run prettier --write '**/*.md' '**/*.{yml,yaml}'

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Watch and run unit tests on changes (alias for watch:unit)"
+#MISE depends=["watch:unit"]
+set -euo pipefail

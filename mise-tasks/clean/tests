@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Clean up test artifacts"
+set -euo pipefail
+
+echo "Cleaning up test artifacts..."
+rm -rf /tmp/git-worktree-integration-tests
+echo "Test artifacts cleaned"

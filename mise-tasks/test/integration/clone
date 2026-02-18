@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run integration clone tests"
+#MISE depends=["build"]
+set -euo pipefail
+
+echo "Running integration clone tests..."
+cd tests/integration && ./test_clone.sh

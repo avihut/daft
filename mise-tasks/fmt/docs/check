@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Check docs and YAML formatting"
+set -euo pipefail
+
+bun run prettier --check '**/*.md' '**/*.{yml,yaml}'

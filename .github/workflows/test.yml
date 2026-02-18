@@ -38,7 +38,7 @@ jobs:
         run: mise run clippy
 
       - name: Run Rust unit tests
-        run: mise run test-unit
+        run: mise run test:unit
 
   # Test xtask man page generation
   xtask-test:
@@ -87,7 +87,7 @@ jobs:
           cargo run --package xtask -- gen-man --output-dir=man
           if ! git diff --exit-code man/; then
             echo "FAILED: Committed man pages are out of date!"
-            echo "Run 'mise run gen-man' locally and commit the changes."
+            echo "Run 'mise run man:gen' locally and commit the changes."
             exit 1
           fi
           echo "Committed man pages are up-to-date!"
@@ -131,7 +131,7 @@ jobs:
           cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
           if ! git diff --exit-code docs/cli/; then
             echo "FAILED: Committed CLI docs are out of date!"
-            echo "Run 'mise run gen-cli-docs' locally and commit the changes."
+            echo "Run 'mise run docs:cli:gen' locally and commit the changes."
             exit 1
           fi
           echo "Committed CLI docs are up-to-date!"

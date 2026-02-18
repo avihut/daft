@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Quick development cycle: setup + verify"
+#MISE depends=["dev:setup", "dev:verify"]
+set -euo pipefail
+
+echo "Development environment ready and verified!"
