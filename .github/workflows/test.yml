@@ -224,7 +224,7 @@ jobs:
           git config --global user.email "test@example.com"
 
       - name: Download binary
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: daft-binary
           path: target/release
