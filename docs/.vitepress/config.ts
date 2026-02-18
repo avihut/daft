@@ -289,11 +289,18 @@ export default defineConfig({
             items: [
               { text: "doctor", link: "/cli/daft-doctor" },
               { text: "release-notes", link: "/cli/daft-release-notes" },
+              { text: "shell-init", link: "/cli/daft-shell-init" },
+              { text: "completions", link: "/cli/daft-completions" },
+              { text: "setup", link: "/cli/daft-setup" },
             ],
           },
           {
             text: "Configuration",
-            items: [{ text: "daft-hooks", link: "/cli/git-daft-hooks" }],
+            items: [
+              { text: "daft-hooks", link: "/cli/git-daft-hooks" },
+              { text: "branch", link: "/cli/daft-branch" },
+              { text: "multi-remote", link: "/cli/daft-multi-remote" },
+            ],
           },
         ],
       },

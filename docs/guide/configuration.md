@@ -82,6 +82,14 @@ Default fail modes:
 - `worktreePreCreate`: `abort` (setup must succeed before creating worktree)
 - All others: `warn` (don't block operations)
 
+### Hook Output Settings
+
+| Key                            | Default | Description                             |
+| ------------------------------ | ------- | --------------------------------------- |
+| `daft.hooks.output.quiet`      | `false` | Suppress hook stdout/stderr             |
+| `daft.hooks.output.timerDelay` | `5`     | Seconds before showing elapsed timer    |
+| `daft.hooks.output.tailLines`  | `6`     | Rolling output lines per job (0 = none) |
+
 ### YAML Hooks Configuration
 
 Hooks can also be configured through a `daft.yml` file for richer features
@@ -115,3 +123,13 @@ git config --global daft.hooks.enabled false
 # Make post-create hooks abort on failure
 git config daft.hooks.worktreePostCreate.failMode abort
 ```
+
+## Environment Variables
+
+| Variable               | Description                                                               |
+| ---------------------- | ------------------------------------------------------------------------- |
+| `DAFT_CD_FILE`         | Temp file path for shell wrapper CD communication (set by shell wrappers) |
+| `DAFT_NO_HINTS`        | Set to suppress contextual hint messages                                  |
+| `DAFT_NO_UPDATE_CHECK` | Set to disable version update notifications                               |
+| `NO_COLOR`             | Standard variable to disable colored output                               |
+| `PAGER`                | Override the pager for `daft release-notes`                               |
