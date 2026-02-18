@@ -66,12 +66,17 @@ pub fn check_command_symlinks() -> CheckResult {
         CheckResult::pass("Command symlinks", &format!("{found}/{total} installed"))
     } else {
         let details: Vec<String> = missing.iter().map(|n| format!("Missing: {n}")).collect();
+        let missing_owned: Vec<String> = missing.iter().map(|s| s.to_string()).collect();
+        let dry_dir = install_dir.clone();
         CheckResult::warning(
             "Command symlinks",
             &format!("{found}/{total} installed, {} missing", missing.len()),
         )
         .with_suggestion("Run 'daft setup' to create missing symlinks")
         .with_fix(Box::new(fix_command_symlinks))
+        .with_dry_run_fix(Box::new(move || {
+            dry_run_symlink_actions(&missing_owned, &dry_dir)
+        }))
         .with_details(details)
     }
 }
@@ -534,5 +539,37 @@ mod tests {
         assert!(actions
             .iter()
             .all(|a| a.description.contains("Create symlink")));
+    }
+
+    #[test]
+    fn test_dry_run_symlink_actions_basic() {
+        let temp = tempfile::tempdir().unwrap();
+        let install_dir = temp.path();
+        std::fs::write(install_dir.join("daft"), "fake").unwrap();
+
+        let missing = vec!["git-worktree-clone".to_string(), "git-daft".to_string()];
+        let actions = dry_run_symlink_actions(&missing, install_dir);
+        assert_eq!(actions.len(), 2);
+        assert!(actions[0].description.contains("git-worktree-clone"));
+        assert!(actions[0].would_succeed);
+    }
+
+    #[test]
+    fn test_dry_run_symlink_actions_detects_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        let install_dir = temp.path();
+        std::fs::write(install_dir.join("daft"), "fake").unwrap();
+        // Create a regular file (not a symlink) that conflicts
+        std::fs::write(install_dir.join("gwtco"), "not-daft").unwrap();
+
+        let missing = vec!["gwtco".to_string()];
+        let actions = dry_run_symlink_actions(&missing, install_dir);
+        assert_eq!(actions.len(), 1);
+        assert!(!actions[0].would_succeed);
+        assert!(actions[0]
+            .failure_reason
+            .as_ref()
+            .unwrap()
+            .contains("not a symlink"));
     }
 }
