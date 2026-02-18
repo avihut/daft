@@ -96,7 +96,7 @@ pub fn run() -> Result<()> {
     }
 
     let settings = DaftSettings::load()?;
-    let config = OutputConfig::with_autocd(true, args.verbose, settings.autocd);
+    let config = OutputConfig::with_autocd(args.quiet, args.verbose, settings.autocd);
     let mut output = CliOutput::new(config);
 
     run_branch_delete(&args, &mut output, &settings)?;
