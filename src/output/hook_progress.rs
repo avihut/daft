@@ -369,6 +369,11 @@ impl HookProgressRenderer {
             .unwrap_or(&[])
     }
 
+    #[cfg(test)]
+    pub fn get_tail_line_count(&self, name: &str) -> usize {
+        self.jobs.get(name).map(|s| s.tail_lines.len()).unwrap_or(0)
+    }
+
     pub fn println(&self, msg: &str) {
         self.mp.println(msg).ok();
     }
