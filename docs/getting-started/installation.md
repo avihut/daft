@@ -25,12 +25,45 @@ irm https://github.com/avihut/daft/releases/latest/download/daft-installer.ps1 |
 
 ## Linux
 
-Download the latest binary from
-[GitHub Releases](https://github.com/avihut/daft/releases/latest):
+### Shell Installer (recommended)
+
+The shell installer downloads the correct binary for your architecture and
+creates all required command symlinks:
 
 ```bash
-# Download and extract
-curl -fsSL https://github.com/avihut/daft/releases/latest/download/daft-x86_64-unknown-linux-gnu.tar.gz | tar xz
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/avihut/daft/releases/latest/download/daft-installer.sh | sh
+```
+
+This installs `daft` and all command symlinks (`git-worktree-clone`,
+`git-worktree-checkout`, etc.) to `~/.cargo/bin`.
+
+If `~/.cargo/bin` is not in your PATH, add it:
+
+```bash
+# Bash
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+
+# Zsh
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
+```
+
+Supported architectures: x86_64 (Intel/AMD) and aarch64 (ARM64).
+
+### Manual Installation
+
+Download the appropriate archive from
+[GitHub Releases](https://github.com/avihut/daft/releases/latest):
+
+| Architecture | Archive                                 |
+| ------------ | --------------------------------------- |
+| x86_64       | `daft-x86_64-unknown-linux-gnu.tar.xz`  |
+| aarch64      | `daft-aarch64-unknown-linux-gnu.tar.xz` |
+
+```bash
+# Example for x86_64
+curl -fsSL https://github.com/avihut/daft/releases/latest/download/daft-x86_64-unknown-linux-gnu.tar.xz \
+  | tar xJ
 
 # Move to a directory in your PATH
 sudo mv daft /usr/local/bin/

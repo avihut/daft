@@ -64,16 +64,19 @@ The GitHub Actions workflow will automatically:
    - macOS Intel (x86_64-apple-darwin)
    - macOS Apple Silicon (aarch64-apple-darwin)
    - Windows 64-bit (x86_64-pc-windows-msvc)
+   - Linux x86_64 (x86_64-unknown-linux-gnu)
+   - Linux ARM64 (aarch64-unknown-linux-gnu)
 
 2. **Generate** installers:
 
    - PowerShell installer script (`daft-installer.ps1`)
+   - Shell installer script (`daft-installer.sh`)
    - MSI installer for Windows
    - Homebrew formula (`Formula/daft.rb`)
 
 3. **Create** GitHub Release with:
 
-   - Compiled binaries (tar.xz for macOS, zip for Windows)
+   - Compiled binaries (tar.xz for macOS/Linux, zip for Windows)
    - Installers
    - Checksums (`SHA256SUMS`)
    - Auto-generated release notes
@@ -107,7 +110,10 @@ For each release, the following artifacts are created:
 - `daft-aarch64-apple-darwin.tar.xz` - macOS Apple Silicon binary
 - `daft-x86_64-apple-darwin.tar.xz` - macOS Intel binary
 - `daft-x86_64-pc-windows-msvc.zip` - Windows binary
-- `daft-installer.ps1` - PowerShell installer
+- `daft-x86_64-unknown-linux-gnu.tar.xz` - Linux x86_64 binary
+- `daft-aarch64-unknown-linux-gnu.tar.xz` - Linux ARM64 binary
+- `daft-installer.ps1` - PowerShell installer (Windows)
+- `daft-installer.sh` - Shell installer (Linux/macOS)
 - `daft-installer.msi` - Windows MSI installer
 - `SHA256SUMS` - Checksums for all artifacts
 - `Formula/daft.rb` - Updated Homebrew formula
@@ -196,6 +202,21 @@ irm https://github.com/avihut/daft/releases/latest/download/daft-installer.ps1 |
 # Verify installation
 daft --version
 git-worktree-clone --help
+```
+
+### Linux
+
+```bash
+# Test shell installer
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/avihut/daft/releases/latest/download/daft-installer.sh | sh
+
+# Verify installation
+daft --version
+git worktree-clone --help
+
+# Verify symlinks
+ls -la ~/.cargo/bin/git-worktree-*
 ```
 
 ## Troubleshooting
@@ -314,6 +335,8 @@ Use this checklist for each release:
 - [ ] macOS Intel installation tested
 - [ ] macOS Apple Silicon installation tested
 - [ ] Windows installation tested (PowerShell and/or MSI)
+- [ ] Linux x86_64 installation tested (shell installer)
+- [ ] Linux ARM64 installation tested (shell installer)
 - [ ] All git commands working after installation
 - [ ] Shell completions loading correctly
 - [ ] `brew upgrade daft` works (if not first release)
@@ -386,7 +409,7 @@ Planned improvements to the release process:
 
 - **Automatic CHANGELOG generation** from conventional commits
 - **crates.io publishing** for Rust library users
-- **Linux packages**: DEB/RPM via cargo-dist
+- **Linux packages**: DEB/RPM (binaries and shell installer already available)
 - **AUR package** for Arch Linux
 - **Nix package** for NixOS
 - **Homebrew-core submission** after stability proven (requires 1000+ users)
