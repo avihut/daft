@@ -238,6 +238,34 @@ impl GitCommand {
         String::from_utf8(output.stdout).context("Failed to parse git worktree list output")
     }
 
+    /// Find the worktree path for a given branch name.
+    /// Returns None if no worktree is checked out on that branch.
+    pub fn find_worktree_for_branch(
+        &self,
+        branch_name: &str,
+    ) -> Result<Option<std::path::PathBuf>> {
+        let porcelain_output = self.worktree_list_porcelain()?;
+
+        let mut current_path: Option<std::path::PathBuf> = None;
+
+        for line in porcelain_output.lines() {
+            if let Some(worktree_path) = line.strip_prefix("worktree ") {
+                current_path = Some(std::path::PathBuf::from(worktree_path));
+            } else if let Some(branch_ref) = line.strip_prefix("branch ") {
+                if let Some(branch) = branch_ref.strip_prefix("refs/heads/") {
+                    if branch == branch_name {
+                        return Ok(current_path.take());
+                    }
+                }
+                current_path = None;
+            } else if line.is_empty() {
+                current_path = None;
+            }
+        }
+
+        Ok(None)
+    }
+
     pub fn fetch(&self, remote: &str, prune: bool) -> Result<()> {
         let mut cmd = Command::new("git");
         cmd.args(["fetch", remote]);

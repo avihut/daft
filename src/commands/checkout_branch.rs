@@ -218,13 +218,62 @@ fn run_checkout_branch(
         settings.checkout_branch_carry
     };
 
-    // Check for uncommitted changes and stash them if should_carry is true
-    // Skip the check if we're not inside a work tree (e.g., running from the bare repo root)
-    let in_worktree = git.rev_parse_is_inside_work_tree().unwrap_or(false);
-    let stash_created = if should_carry && in_worktree {
+    // Determine the carry source worktree:
+    // - If base_branch_name was explicitly provided, carry from that branch's worktree
+    //   (if it exists; if not, silently skip carry)
+    // - If no base branch specified, carry from the current worktree
+    let carry_source = if should_carry {
+        if args.base_branch_name.is_some() {
+            // Explicit base branch: find its worktree
+            match git.find_worktree_for_branch(&base_branch) {
+                Ok(Some(path)) => {
+                    output.step(&format!(
+                        "Found worktree for base branch '{}' at '{}'",
+                        base_branch,
+                        path.display()
+                    ));
+                    Some(path)
+                }
+                Ok(None) => {
+                    output.step(&format!(
+                        "No worktree found for base branch '{}', skipping carry",
+                        base_branch
+                    ));
+                    None
+                }
+                Err(e) => {
+                    output.warning(&format!(
+                        "Could not look up worktree for base branch '{}': {e}",
+                        base_branch
+                    ));
+                    None
+                }
+            }
+        } else {
+            // No explicit base branch: carry from current worktree
+            let in_worktree = git.rev_parse_is_inside_work_tree().unwrap_or(false);
+            if in_worktree {
+                Some(get_current_directory()?)
+            } else {
+                output.step("Skipping carry (not inside a worktree)");
+                None
+            }
+        }
+    } else {
+        output.step("Skipping carry (--no-carry flag set or carry disabled in config)");
+        None
+    };
+
+    // Check for uncommitted changes and stash them from the carry source worktree
+    let stash_created = if let Some(carry_path) = &carry_source {
+        // cd to the carry source worktree to check and stash changes
+        change_directory(carry_path)?;
         match git.has_uncommitted_changes() {
             Ok(true) => {
-                output.step("Stashing uncommitted changes...");
+                output.step(&format!(
+                    "Stashing uncommitted changes from '{}'...",
+                    carry_path.display()
+                ));
                 if let Err(e) = git.stash_push_with_untracked("daft: carry changes to new worktree")
                 {
                     anyhow::bail!("Failed to stash uncommitted changes: {e}");
@@ -240,11 +289,7 @@ fn run_checkout_branch(
                 false
             }
         }
-    } else if !should_carry {
-        output.step("Skipping carry (--no-carry flag set or carry disabled in config)");
-        false
     } else {
-        output.step("Skipping carry (not inside a worktree)");
         false
     };
 
@@ -270,8 +315,11 @@ fn run_checkout_branch(
     if let Err(e) =
         git.worktree_add_new_branch(&worktree_path, &args.new_branch_name, &checkout_base)
     {
-        // If worktree creation fails and we stashed changes, restore them
+        // If worktree creation fails and we stashed changes, restore them to the carry source
         if stash_created {
+            if let Some(carry_path) = &carry_source {
+                change_directory(carry_path).ok();
+            }
             output.step("Restoring stashed changes due to worktree creation failure...");
             if let Err(pop_err) = git.stash_pop() {
                 output.warning(&format!(
