@@ -316,16 +316,16 @@ fn run_checkout_branch(
 
         if let Err(e) = git.push_set_upstream(&config.remote_name, &args.new_branch_name) {
             output.warning(&format!(
-                "Failed to push branch '{}' to '{}' or set upstream: {}. You may need to resolve the push issue manually.",
-                args.new_branch_name, config.remote_name, e
+                "Could not push '{}' to '{}': {}. The worktree is ready locally. Push manually with: git push -u {} {}",
+                args.new_branch_name, config.remote_name, e,
+                config.remote_name, args.new_branch_name
             ));
-            return Err(e);
+        } else {
+            output.step(&format!(
+                "Push to '{}' and upstream tracking set successfully",
+                config.remote_name
+            ));
         }
-
-        output.step(&format!(
-            "Push to '{}' and upstream tracking set successfully",
-            config.remote_name
-        ));
     } else {
         output.step("Skipping push (disabled in config)");
     }
