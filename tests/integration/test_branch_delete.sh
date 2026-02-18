@@ -356,6 +356,60 @@ test_branch_delete_from_current_worktree_cd_default_branch() {
     return 0
 }
 
+# Test delete branch created from origin/main when local main is behind
+#
+# Scenario: checkout-branch creates branches from origin/main (not local main).
+# If remote main advances between clone and branch creation, the new branch
+# ends up ahead of local main. A later delete incorrectly reports "not merged"
+# because it only checks against local main, not origin/main.
+test_branch_delete_local_behind_remote() {
+    local remote_repo=$(create_test_remote "test-repo-bd-behind" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-bd-behind"
+    local project_root=$(pwd)
+
+    # Step 1: Advance remote main BEFORE creating the feature branch.
+    # This simulates someone merging to remote between clone and branch creation.
+    local temp_push_clone="$project_root/../_temp_push_clone"
+    git clone "$remote_repo" "$temp_push_clone" >/dev/null 2>&1
+    cd "$temp_push_clone"
+    git checkout main >/dev/null 2>&1
+    echo "upstream work" > upstream.txt
+    git add upstream.txt
+    git commit -m "Upstream commit" >/dev/null 2>&1
+    git push origin main >/dev/null 2>&1
+    cd "$project_root"
+    rm -rf "$temp_push_clone"
+
+    # Step 2: Create the feature branch. checkout-branch fetches and creates
+    # from origin/main, so feature/behind-test is at the NEW remote main commit,
+    # while local main is still at the OLD commit.
+    git-worktree-checkout-branch feature/behind-test || return 1
+    assert_directory_exists "feature/behind-test" || return 1
+
+    # Step 3: Delete the branch. The user made no changes on it, and it IS an
+    # ancestor of origin/main. But local main is behind, so the merge check
+    # against local main fails.
+    git-worktree-branch-delete feature/behind-test || return 1
+
+    # Verify worktree was removed
+    if [[ -d "feature/behind-test" ]]; then
+        log_error "Worktree should have been removed"
+        return 1
+    fi
+
+    # Verify local branch was deleted
+    cd "main"
+    if git branch | grep -q " feature/behind-test$"; then
+        log_error "Local branch should have been deleted"
+        return 1
+    fi
+    cd "$project_root"
+
+    return 0
+}
+
 run_branch_delete_tests() {
     log "Running git-worktree-branch-delete integration tests..."
 
@@ -369,6 +423,7 @@ run_branch_delete_tests() {
     run_test "branch_delete_nonexistent" "test_branch_delete_nonexistent"
     run_test "branch_delete_from_current_worktree_writes_cd" "test_branch_delete_from_current_worktree_writes_cd"
     run_test "branch_delete_from_current_worktree_cd_default_branch" "test_branch_delete_from_current_worktree_cd_default_branch"
+    run_test "branch_delete_local_behind_remote" "test_branch_delete_local_behind_remote"
 }
 
 # Main execution

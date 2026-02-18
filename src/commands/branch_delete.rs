@@ -340,14 +340,36 @@ fn validate_branches(
 
 /// Check whether a branch has been merged into the default branch.
 ///
-/// Uses a two-step approach:
+/// Checks against both the local default branch and its remote tracking branch.
+/// This handles the common case where the local default branch is behind the
+/// remote (e.g., after `git fetch` without `git pull`). Since `checkout-branch`
+/// creates branches from the remote tracking branch, the new branch may be
+/// ahead of the local default branch even though the user made no changes.
+///
+/// Uses a two-step approach for each target:
 /// 1. `merge-base --is-ancestor` — detects regular merges
 /// 2. `git cherry` — detects squash merges (all lines start with `-`)
 fn is_branch_merged(ctx: &BranchDeleteContext, branch: &str) -> Result<bool> {
-    // Step 1: Check if branch is an ancestor of the default branch (regular merge)
+    // Check against local default branch first
+    if is_branch_merged_into(ctx, branch, &ctx.default_branch)? {
+        return Ok(true);
+    }
+
+    // Also check against the remote tracking branch, which may be ahead of local
+    let remote_ref = format!("{}/{}", ctx.remote_name, ctx.default_branch);
+    if is_branch_merged_into(ctx, branch, &remote_ref)? {
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+/// Check whether `branch` has been merged into `target`.
+fn is_branch_merged_into(ctx: &BranchDeleteContext, branch: &str, target: &str) -> Result<bool> {
+    // Step 1: Check if branch is an ancestor of the target (regular merge)
     let is_ancestor = ctx
         .git
-        .merge_base_is_ancestor(branch, &ctx.default_branch)
+        .merge_base_is_ancestor(branch, target)
         .context("merge-base check failed")?;
 
     if is_ancestor {
@@ -361,12 +383,12 @@ fn is_branch_merged(ctx: &BranchDeleteContext, branch: &str) -> Result<bool> {
     // If all lines start with `-`, every commit has been squash-merged.
     let cherry_output = ctx
         .git
-        .cherry(&ctx.default_branch, branch)
+        .cherry(target, branch)
         .context("git cherry check failed")?;
 
     let lines: Vec<&str> = cherry_output.lines().collect();
 
-    // Empty output means no commits to compare (branch is at same point as default)
+    // Empty output means no commits to compare (branch is at same point as target)
     if lines.is_empty() {
         return Ok(true);
     }
@@ -718,8 +740,13 @@ fn delete_single_branch(
     }
 
     // Step 4: Delete local branch
+    // Always use force-delete (-D) here because our validation (which checks
+    // against both local and remote tracking default branch) has already passed.
+    // Git's built-in `branch -d` only checks the local default branch, which
+    // would fail when the branch was created from the remote tracking ref and
+    // the local default branch is behind.
     output.step(&format!("Deleting local branch {}...", branch.name));
-    match ctx.git.branch_delete(&branch.name, force) {
+    match ctx.git.branch_delete(&branch.name, true) {
         Ok(()) => {
             result.branch_deleted = true;
             output.step(&format!("Branch {} deleted", branch.name));
