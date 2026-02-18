@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0](https://github.com/avihut/daft/compare/v1.0.26...v1.1.0) - 2026-02-18
+
+### Bug Fixes
+
+- enable CD after worktree-branch-delete removes current worktree ([#224](https://github.com/avihut/daft/pull/224))
+- render hook job output after heading, not before ([#223](https://github.com/avihut/daft/pull/223))
+
+### Features
+
+- *(doctor)* improve output format, fix bugs, and add --dry-run ([#222](https://github.com/avihut/daft/pull/222))
+
 ## [1.0.26](https://github.com/avihut/daft/compare/v1.0.25...v1.0.26) - 2026-02-17
 
 ### Bug Fixes
