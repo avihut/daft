@@ -260,7 +260,7 @@ impl GitCommand {
 
     pub fn push_set_upstream(&self, remote: &str, branch: &str) -> Result<()> {
         let output = Command::new("git")
-            .args(["push", "--set-upstream", remote, branch])
+            .args(["push", "--no-verify", "--set-upstream", remote, branch])
             .output()
             .context("Failed to execute git push command")?;
 
@@ -489,7 +489,7 @@ impl GitCommand {
     /// Delete a remote branch via `git push <remote> --delete <branch>`.
     pub fn push_delete(&self, remote: &str, branch: &str) -> Result<()> {
         let mut cmd = Command::new("git");
-        cmd.args(["push", remote, "--delete", branch]);
+        cmd.args(["push", "--no-verify", remote, "--delete", branch]);
 
         if self.quiet {
             cmd.arg("--quiet");

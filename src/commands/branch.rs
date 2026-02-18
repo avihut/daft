@@ -341,7 +341,7 @@ fn delete_remote_branch(_git: &GitCommand, remote: &str, branch: &str) -> Result
     use std::process::Command;
 
     let output = Command::new("git")
-        .args(["push", remote, "--delete", branch])
+        .args(["push", "--no-verify", remote, "--delete", branch])
         .output()
         .context("Failed to execute git push --delete")?;
 

@@ -133,3 +133,29 @@ git config daft.hooks.worktreePostCreate.failMode abort
 | `DAFT_NO_UPDATE_CHECK` | Set to disable version update notifications                               |
 | `NO_COLOR`             | Standard variable to disable colored output                               |
 | `PAGER`                | Override the pager for `daft release-notes`                               |
+
+## Git Hooks
+
+daft's push operations are structural -- they manage branch topology as a
+side-effect of worktree management, not as user-initiated code pushes. Because
+of this, daft passes `--no-verify` on all `git push` calls, skipping any
+`pre-push` hooks configured in the repository.
+
+This affects three commands:
+
+- **`git worktree-checkout-branch`** -- pushes the new branch to set upstream
+  tracking
+- **`git worktree-branch-delete`** -- pushes `--delete` to remove the remote
+  branch
+- **`daft branch move --push`** -- pushes an existing branch to a new remote
+
+If a push fails (due to network issues, auth errors, or remote rejection rules),
+daft treats it as non-fatal: the local worktree and branch remain usable, and a
+warning is shown with the manual recovery command.
+
+To disable pushing entirely for new branches, set `daft.checkout.push` to
+`false`.
+
+::: tip This only applies to git's own hooks. daft's
+[lifecycle hooks](./hooks.md) (configured in `daft.yml` or `.daft/hooks/`) are
+always executed normally. :::
