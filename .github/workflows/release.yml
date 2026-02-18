@@ -615,15 +615,27 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
+      - name: Check AUR secrets are configured
+        env:
+          AUR_USERNAME: ${{ secrets.AUR_USERNAME }}
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$AUR_USERNAME" ] || [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "::warning::AUR secrets not configured — skipping AUR publish"
+            echo "SKIP_AUR=true" >> "$GITHUB_ENV"
+          fi
       - uses: actions/checkout@v6
+        if: ${{ env.SKIP_AUR != 'true' }}
         with:
           persist-credentials: false
       - name: Extract version from tag
+        if: ${{ env.SKIP_AUR != 'true' }}
         id: version
         run: |
           VERSION="${TAG#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Compute SHA256 checksums from GitHub Release
+        if: ${{ env.SKIP_AUR != 'true' }}
         id: checksums
         run: |
           gh release download "$TAG" \
@@ -636,6 +648,7 @@ jobs:
           echo "sha256_x86_64=$SHA256_X86" >> "$GITHUB_OUTPUT"
           echo "sha256_aarch64=$SHA256_AARCH64" >> "$GITHUB_OUTPUT"
       - name: Substitute PKGBUILD template
+        if: ${{ env.SKIP_AUR != 'true' }}
         run: |
           sed \
             -e "s/{{VERSION}}/${{ steps.version.outputs.version }}/g" \
@@ -646,6 +659,7 @@ jobs:
           echo "Generated PKGBUILD:"
           cat /tmp/PKGBUILD
       - name: Publish to AUR
+        if: ${{ env.SKIP_AUR != 'true' }}
         uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
         with:
           pkgname: daft-bin
