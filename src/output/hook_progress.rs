@@ -291,15 +291,34 @@ impl HookProgressRenderer {
             return;
         };
 
-        // Clear separator and tail lines
+        // Clear ALL bars from the draw area. Using finish_and_clear (not
+        // finish_with_message) avoids "zombie" bars that would flush on
+        // MultiProgress drop — potentially after the summary has already
+        // been printed to stderr.
         if let Some(ref sep) = state.separator {
             sep.finish_and_clear();
         }
         for pb in &state.tail_lines {
             pb.finish_and_clear();
         }
+        state.spinner.finish_and_clear();
 
-        // Print full output as permanent lines (above the spinner)
+        // Print heading as a permanent line. Because the spinner is already
+        // cleared, mp.println() inserts this above remaining *active*
+        // spinners only — i.e. after all previously finished jobs' output.
+        let finished_name = if self.use_color {
+            format!("{ORANGE}{name}{}", styles::RESET)
+        } else {
+            name.to_string()
+        };
+        self.mp
+            .println(format!(
+                "{}  {finished_name} {}",
+                self.pipe_str, self.arrow_str
+            ))
+            .ok();
+
+        // Print full output as permanent lines below the heading
         let has_output = !state.output_buffer.is_empty();
         if !self.config.quiet && has_output {
             for line in &state.output_buffer {
@@ -307,20 +326,6 @@ impl HookProgressRenderer {
             }
         }
 
-        // Convert spinner to static finished line
-        let finished_name = if self.use_color {
-            format!("{ORANGE}{name}{}", styles::RESET)
-        } else {
-            name.to_string()
-        };
-        state.spinner.set_style(
-            ProgressStyle::with_template(&format!("{}  {{msg}} {}", self.pipe_str, self.arrow_str))
-                .unwrap(),
-        );
-        state.spinner.finish_with_message(finished_name);
-
-        // Show "No output" below the finished job name using a bar so it
-        // appears after the spinner rather than above the drawing area.
         if !self.config.quiet && !has_output {
             let msg = if self.use_color {
                 format!(
@@ -331,12 +336,11 @@ impl HookProgressRenderer {
             } else {
                 format!("{}  No output", self.pipe_str)
             };
-            let pb = self
-                .mp
-                .insert_after(&state.spinner, ProgressBar::new_spinner());
-            pb.set_style(ProgressStyle::with_template("{msg}").unwrap());
-            pb.finish_with_message(msg);
+            self.mp.println(msg).ok();
         }
+
+        // Empty line after each job's section
+        self.mp.println(String::new()).ok();
 
         // Record for summary
         self.finished_jobs.push(JobResultEntry {
