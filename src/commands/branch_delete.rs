@@ -129,8 +129,11 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
         }
     }
 
-    // Detect current worktree path for is_current_worktree flagging
+    // Detect current worktree context for is_current_worktree flagging.
+    // Use both path and branch name: path comparison can fail when symlinks
+    // cause git rev-parse and git worktree list to report different strings.
     let current_wt_path = git.get_current_worktree_path().ok();
+    let current_branch = git.symbolic_ref_short_head().ok();
 
     // Validate all branches before performing any deletions
     let (validated, errors) = validate_branches(
@@ -139,6 +142,7 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
         args.force,
         &worktree_map,
         current_wt_path.as_ref(),
+        current_branch.as_deref(),
         output,
     );
 
@@ -178,6 +182,7 @@ fn validate_branches(
     force: bool,
     worktree_map: &HashMap<String, PathBuf>,
     current_wt_path: Option<&PathBuf>,
+    current_branch: Option<&str>,
     output: &mut dyn Output,
 ) -> (Vec<ValidatedBranch>, Vec<ValidationError>) {
     let mut validated = Vec::new();
@@ -305,11 +310,19 @@ fn validate_branches(
             }
         }
 
-        // All checks passed
+        // All checks passed — detect if this is the worktree the user is inside.
+        // Use both path comparison and branch name as fallback: path comparison
+        // can fail when symlinks cause git commands to report different strings
+        // (e.g., /tmp vs /private/tmp on macOS).
         let is_current = match (&wt_path, current_wt_path) {
-            (Some(wt), Some(current)) => wt == current,
+            (Some(wt), Some(current)) => {
+                wt == current
+                    || std::fs::canonicalize(wt).ok() == std::fs::canonicalize(current).ok()
+            }
             _ => false,
-        };
+        } || (wt_path.is_some()
+            && current_branch.is_some()
+            && current_branch == Some(branch.as_str()));
 
         output.step(&format!("Branch '{branch}' passed validation"));
 

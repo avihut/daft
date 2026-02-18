@@ -119,11 +119,15 @@ __daft_wrapper() {
     fi
     exit_code=$?
 
-    if [ $exit_code -eq 0 ] && [ -s "$cd_file" ]; then
+    # Always check cd_file regardless of exit code. If the binary wrote a
+    # cd target, the user MUST be moved there — their old CWD may have been
+    # removed (e.g., worktree-branch-delete may remove the worktree but still
+    # exit non-zero due to partial errors like remote branch deletion failure).
+    if [ -s "$cd_file" ]; then
         local cd_path
         cd_path=$(cat "$cd_file")
         if [ -n "$cd_path" ] && [ -d "$cd_path" ]; then
-            cd "$cd_path" || exit_code=$?
+            cd "$cd_path" || true
         fi
     fi
 
@@ -304,7 +308,8 @@ function __daft_wrapper
     end
     set -l exit_code $status
 
-    if test $exit_code -eq 0; and test -s "$cd_file"
+    # Always check cd_file regardless of exit code — see bash wrapper comment.
+    if test -s "$cd_file"
         set -l cd_path (cat "$cd_file")
         if test -n "$cd_path"; and test -d "$cd_path"
             cd $cd_path

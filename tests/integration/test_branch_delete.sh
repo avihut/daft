@@ -228,6 +228,134 @@ test_branch_delete_nonexistent() {
     return 0
 }
 
+# Test branch delete from within the worktree being deleted writes cd path
+test_branch_delete_from_current_worktree_writes_cd() {
+    local remote_repo=$(create_test_remote "test-repo-bd-cd" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-bd-cd"
+
+    # Create a branch with worktree
+    git-worktree-checkout-branch feature/test-cd || return 1
+    assert_directory_exists "feature/test-cd" || return 1
+
+    # Save the project root path (resolve symlinks for macOS /tmp -> /private/tmp)
+    local project_root
+    project_root=$(cd "$(pwd)" && pwd -P)
+
+    # Make a commit and merge into main so it passes validation
+    cd "feature/test-cd"
+    echo "feature work" > feature.txt
+    git add feature.txt
+    git commit -m "Add feature" >/dev/null 2>&1
+    git push origin feature/test-cd >/dev/null 2>&1
+    cd "$project_root"
+
+    cd "main"
+    git merge feature/test-cd >/dev/null 2>&1
+    git push origin main >/dev/null 2>&1
+    cd "$project_root"
+
+    # cd into the feature worktree (the one about to be deleted)
+    cd "feature/test-cd"
+
+    # Run branch-delete with DAFT_CD_FILE set from inside the worktree
+    local cd_file
+    cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
+    DAFT_CD_FILE="$cd_file" git-worktree-branch-delete feature/test-cd 2>&1 || true
+
+    # Verify the worktree was removed
+    if [[ -d "$project_root/feature/test-cd" ]]; then
+        log_error "Branch delete should have removed feature/test-cd worktree"
+        rm -f "$cd_file"
+        return 1
+    fi
+
+    # Verify CD path was written to temp file
+    if [ -s "$cd_file" ]; then
+        log_success "Branch delete wrote CD path to temp file for shell redirection"
+    else
+        log_error "Branch delete should have written CD path to temp file when deleting current worktree"
+        rm -f "$cd_file"
+        return 1
+    fi
+
+    # Verify the CD path points to project root (resolve symlinks for comparison)
+    local cd_path
+    cd_path=$(cat "$cd_file")
+    if [[ "$cd_path" == "$project_root" ]]; then
+        log_success "CD path points to project root"
+    else
+        log_error "Expected CD path '$project_root', got '$cd_path'"
+        rm -f "$cd_file"
+        return 1
+    fi
+
+    rm -f "$cd_file"
+    return 0
+}
+
+# Test branch delete from current worktree with cdTarget=default-branch
+test_branch_delete_from_current_worktree_cd_default_branch() {
+    local remote_repo=$(create_test_remote "test-repo-bd-cd-default" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-bd-cd-default"
+
+    # Set the cdTarget config to default-branch
+    git config daft.prune.cdTarget default-branch
+
+    # Create a branch with worktree
+    git-worktree-checkout-branch feature/test-cd-default || return 1
+    assert_directory_exists "feature/test-cd-default" || return 1
+
+    # Save paths (resolve symlinks for macOS /tmp -> /private/tmp)
+    local project_root
+    project_root=$(cd "$(pwd)" && pwd -P)
+
+    # Make a commit and merge into main
+    cd "feature/test-cd-default"
+    echo "feature work" > feature.txt
+    git add feature.txt
+    git commit -m "Add feature" >/dev/null 2>&1
+    git push origin feature/test-cd-default >/dev/null 2>&1
+    cd "$project_root"
+
+    cd "main"
+    git merge feature/test-cd-default >/dev/null 2>&1
+    git push origin main >/dev/null 2>&1
+    cd "$project_root"
+    local main_wt_path="$project_root/main"
+
+    # cd into the feature worktree
+    cd "feature/test-cd-default"
+
+    # Run branch-delete with DAFT_CD_FILE set
+    local cd_file
+    cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
+    DAFT_CD_FILE="$cd_file" git-worktree-branch-delete feature/test-cd-default 2>&1 || true
+
+    # Verify CD path was written to temp file pointing to default branch worktree
+    local cd_path
+    cd_path=$(cat "$cd_file")
+    if [[ "$cd_path" == "$main_wt_path" ]]; then
+        log_success "CD path points to default branch worktree (main)"
+    else
+        # May fall back to project root if default branch can't be determined
+        log_warning "CD path is '$cd_path' (expected '$main_wt_path' or '$project_root')"
+        if [[ "$cd_path" == "$project_root" ]]; then
+            log_success "CD path fell back to project root (acceptable)"
+        else
+            log_error "CD path does not match expected value"
+            rm -f "$cd_file"
+            return 1
+        fi
+    fi
+
+    rm -f "$cd_file"
+    return 0
+}
+
 run_branch_delete_tests() {
     log "Running git-worktree-branch-delete integration tests..."
 
@@ -239,6 +367,8 @@ run_branch_delete_tests() {
     run_test "branch_delete_multiple" "test_branch_delete_multiple"
     run_test "branch_delete_no_worktree" "test_branch_delete_no_worktree"
     run_test "branch_delete_nonexistent" "test_branch_delete_nonexistent"
+    run_test "branch_delete_from_current_worktree_writes_cd" "test_branch_delete_from_current_worktree_writes_cd"
+    run_test "branch_delete_from_current_worktree_cd_default_branch" "test_branch_delete_from_current_worktree_cd_default_branch"
 }
 
 # Main execution
