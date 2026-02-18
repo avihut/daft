@@ -537,6 +537,76 @@ test_checkout_branch_carry_help() {
     return 0
 }
 
+# Test checkout-branch carry from base branch worktree (not current worktree)
+test_checkout_branch_carry_from_base_branch_worktree() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-carry-from-base" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-carry-from-base"
+    repo_root=$(pwd)
+
+    # Create a develop worktree (checking out existing remote branch)
+    cd main
+    git-worktree-checkout develop || return 1
+
+    # Add uncommitted changes in the develop worktree
+    cd "$repo_root/develop"
+    echo "develop changes" > develop_file.txt
+
+    # Add uncommitted changes in main worktree too (these should NOT be carried)
+    cd "$repo_root/main"
+    echo "main changes" > main_file.txt
+
+    # From main worktree, create a new branch based on develop
+    # Changes should be carried from develop's worktree, not from main
+    git-worktree-checkout-branch feature/from-develop develop || return 1
+
+    cd "$repo_root/feature/from-develop"
+
+    # Verify develop's changes are in new worktree (carried from develop)
+    assert_file_exists "develop_file.txt" "File from develop worktree should be carried" || return 1
+    assert_file_contains "develop_file.txt" "develop changes" "Content should match develop worktree" || return 1
+
+    # Verify main's changes are NOT in new worktree (should not carry from current worktree)
+    assert_file_not_exists "main_file.txt" "File from main worktree should NOT be carried" || return 1
+
+    # Verify main's changes are still in main worktree (not stashed away)
+    assert_file_exists "$repo_root/main/main_file.txt" "Main worktree changes should remain untouched" || return 1
+
+    return 0
+}
+
+# Test checkout-branch carry silently skips when base branch has no worktree
+test_checkout_branch_carry_skip_no_worktree() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-branch-carry-skip" "main")
+    local repo_root
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-branch-carry-skip"
+    repo_root=$(pwd)
+
+    # Add uncommitted changes in main worktree
+    cd main
+    echo "main changes" > main_file.txt
+
+    # Create a new branch from develop (which has no worktree - only exists as remote branch)
+    # Should succeed without error, and carry should be silently skipped
+    git-worktree-checkout-branch feature/from-remote-only develop || return 1
+
+    cd "$repo_root/feature/from-remote-only"
+
+    # Verify main's changes are NOT in new worktree (carry was skipped)
+    assert_file_not_exists "main_file.txt" "Main worktree changes should NOT be carried when base has no worktree" || return 1
+
+    # Verify main's changes are still in main worktree
+    assert_file_exists "$repo_root/main/main_file.txt" "Main worktree changes should remain" || return 1
+
+    return 0
+}
+
 # Run all checkout-branch tests
 run_checkout_branch_tests() {
     log "Running git-worktree-checkout-branch integration tests..."
@@ -565,6 +635,8 @@ run_checkout_branch_tests() {
     run_test "checkout_branch_carry_no_changes" "test_checkout_branch_carry_no_changes"
     run_test "checkout_branch_carry_mixed" "test_checkout_branch_carry_mixed"
     run_test "checkout_branch_carry_help" "test_checkout_branch_carry_help"
+    run_test "checkout_branch_carry_from_base_branch_worktree" "test_checkout_branch_carry_from_base_branch_worktree"
+    run_test "checkout_branch_carry_skip_no_worktree" "test_checkout_branch_carry_skip_no_worktree"
 }
 
 # Main execution
