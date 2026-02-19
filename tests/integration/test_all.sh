@@ -17,6 +17,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_hooks.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_flow_adopt.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_flow_eject.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_unknown_command.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/test_exec.sh"
 
 # Test framework self-tests
 test_integration_framework_assertions() {
@@ -303,6 +304,7 @@ run_all_integration_tests() {
     run_flow_adopt_tests
     run_flow_eject_tests
     run_unknown_command_tests
+    run_exec_tests
 
     # Integration tests
     run_test "integration_full_workflow" "test_integration_full_workflow"

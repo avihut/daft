@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run integration exec tests"
+#MISE depends=["build"]
+set -euo pipefail
+
+echo "Running integration exec tests..."
+cd tests/integration && ./test_exec.sh

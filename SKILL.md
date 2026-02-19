@@ -123,6 +123,21 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 All worktree commands can be run from **any directory** within any worktree.
 They find the project root automatically via `git rev-parse --git-common-dir`.
 
+### Post-setup Command Execution (`-x`/`--exec`)
+
+The `clone`, `init`, `checkout`, and `checkout-branch` commands support
+`-x`/`--exec` to run commands in the new worktree immediately after setup:
+
+```bash
+daft worktree-clone https://github.com/org/repo -x 'mise install' -x 'npm run dev'
+daft worktree-checkout-branch my-feature -x claude
+daft worktree-init my-project -x 'echo "ready"'
+```
+
+The option is repeatable -- commands run sequentially in the worktree directory,
+after hooks complete. Execution stops on first failure. Interactive programs
+(claude, vim) work because stdio is fully inherited.
+
 ## Shell Integration
 
 Shell integration is important because the daft binary creates worktrees

@@ -92,6 +92,13 @@ pub struct Args {
 
     #[arg(long, help = "Do not change directory to the new worktree")]
     no_cd: bool,
+
+    #[arg(
+        short = 'x',
+        long = "exec",
+        help = "Run a command in the worktree after setup completes (repeatable)"
+    )]
+    exec: Vec<String>,
 }
 
 pub fn run() -> Result<()> {
@@ -378,8 +385,14 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             output,
         )?;
 
+        // Run exec commands (after hooks, before cd_path)
+        let exec_result = crate::exec::run_exec_commands(&args.exec, output);
+
         output.cd_path(&current_dir);
         maybe_show_shell_hint(output)?;
+
+        // Propagate exec error after cd_path is written
+        exec_result?;
     } else if !args.no_checkout && !branch_exists {
         // Branch was specified but doesn't exist - stay in repo root
         let current_dir = get_current_directory()?;

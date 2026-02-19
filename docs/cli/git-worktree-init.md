@@ -47,6 +47,7 @@ git worktree-init [OPTIONS] <REPOSITORY_NAME>
 | `-b, --initial-branch <INITIAL_BRANCH>` | Use <name> as the initial branch instead of the configured default |  |
 | `-r, --remote <REMOTE>` | Organize worktree under this remote folder (enables multi-remote mode) |  |
 | `--no-cd` | Do not change directory to the new worktree |  |
+| `-x, --exec <EXEC>` | Run a command in the worktree after setup completes (repeatable) |  |
 
 ## Global Options
 
