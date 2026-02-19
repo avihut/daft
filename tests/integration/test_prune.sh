@@ -212,35 +212,157 @@ test_prune_help() {
     return 0
 }
 
-# Test prune with uncommitted changes
-test_prune_with_uncommitted_changes() {
-    local remote_repo=$(create_test_remote "test-repo-prune-uncommitted" "main")
-    
+# Test prune skips worktrees with untracked files (no --force)
+test_prune_skips_untracked_files() {
+    local remote_repo=$(create_test_remote "test-repo-prune-untracked" "main")
+
     # Clone the repository
     git-worktree-clone "$remote_repo" || return 1
-    cd "test-repo-prune-uncommitted"
-    
-    # Create worktree and add uncommitted changes
+    cd "test-repo-prune-untracked"
+
+    # Create worktree and add an untracked file
     git-worktree-checkout feature/test-feature || return 1
-    echo "Uncommitted changes" > "feature/test-feature/uncommitted.txt"
-    
+    echo "Untracked content" > "feature/test-feature/untracked.txt"
+
     # Delete the feature branch from remote
-    local temp_clone="$TEMP_BASE_DIR/temp_prune_uncommitted_clone"
+    local temp_clone="$TEMP_BASE_DIR/temp_prune_untracked_clone"
     git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
-    
+
     (
         cd "$temp_clone"
         git push origin --delete feature/test-feature >/dev/null 2>&1
     ) >/dev/null 2>&1
-    
+
     rm -rf "$temp_clone"
-    
-    # Run prune (should handle uncommitted changes gracefully)
+
+    # Run prune WITHOUT --force - should skip dirty worktree
+    local prune_output
+    prune_output=$(git-worktree-prune 2>&1)
+
+    # Worktree should still exist (not deleted)
+    assert_directory_exists "feature/test-feature" || return 1
+
+    # Untracked file should still be there
+    if [[ ! -f "feature/test-feature/untracked.txt" ]]; then
+        log_error "Untracked file should have been preserved"
+        return 1
+    fi
+
+    # Output should mention skipping due to uncommitted changes
+    if ! echo "$prune_output" | grep -qi "uncommitted\|untracked\|changes\|dirty\|skip"; then
+        log_error "Expected prune output to mention skipping dirty worktree"
+        log_error "Output: $prune_output"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test prune skips worktrees with uncommitted changes in tracked files (no --force)
+test_prune_skips_uncommitted_changes() {
+    local remote_repo=$(create_test_remote "test-repo-prune-uncommitted" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-prune-uncommitted"
+
+    # Create worktree and modify a tracked file
+    git-worktree-checkout feature/test-feature || return 1
+    echo "Modified content" >> "feature/test-feature/file.txt"
+
+    # Delete the feature branch from remote
+    local temp_clone="$TEMP_BASE_DIR/temp_prune_uncommitted_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git push origin --delete feature/test-feature >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Run prune WITHOUT --force - should skip dirty worktree
+    local prune_output
+    prune_output=$(git-worktree-prune 2>&1)
+
+    # Worktree should still exist (not deleted)
+    assert_directory_exists "feature/test-feature" || return 1
+
+    # Modified file should still have our changes
+    if ! grep -q "Modified content" "feature/test-feature/file.txt"; then
+        log_error "Modified tracked file should have been preserved"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test prune --force removes worktrees even with untracked files
+test_prune_force_removes_dirty_worktree() {
+    local remote_repo=$(create_test_remote "test-repo-prune-force" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-prune-force"
+
+    # Create worktree and add an untracked file
+    git-worktree-checkout feature/test-feature || return 1
+    echo "Untracked content" > "feature/test-feature/untracked.txt"
+
+    # Delete the feature branch from remote
+    local temp_clone="$TEMP_BASE_DIR/temp_prune_force_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git push origin --delete feature/test-feature >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Run prune WITH --force - should remove dirty worktree
+    git-worktree-prune --force || return 1
+
+    # Worktree should be removed
+    if [[ -d "feature/test-feature" ]]; then
+        log_error "Prune --force should have removed feature/test-feature worktree"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test prune removes clean worktrees normally (no --force needed)
+test_prune_removes_clean_worktree() {
+    local remote_repo=$(create_test_remote "test-repo-prune-clean" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-prune-clean"
+
+    # Create worktree with NO local changes
+    git-worktree-checkout feature/test-feature || return 1
+
+    # Delete the feature branch from remote
+    local temp_clone="$TEMP_BASE_DIR/temp_prune_clean_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git push origin --delete feature/test-feature >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Run prune WITHOUT --force - should still remove clean worktree
     git-worktree-prune || return 1
-    
-    # Verify worktree was removed (or handled appropriately)
-    # The exact behavior depends on implementation - it might preserve uncommitted changes
-    
+
+    # Worktree should be removed
+    if [[ -d "feature/test-feature" ]]; then
+        log_error "Prune should have removed clean feature/test-feature worktree"
+        return 1
+    fi
+
     return 0
 }
 
@@ -270,9 +392,9 @@ test_prune_nested_directories() {
     
     rm -rf "$temp_clone"
     
-    # Run prune
-    git-worktree-prune || return 1
-    
+    # Run prune with --force (worktree has untracked files)
+    git-worktree-prune --force || return 1
+
     # Verify worktree and all nested directories were removed
     if [[ -d "feature/test-feature" ]]; then
         log_error "Prune should have removed feature/test-feature worktree and all nested directories"
@@ -829,7 +951,10 @@ run_prune_tests() {
     run_test "prune_errors" "test_prune_errors"
     run_test "prune_outside_repo" "test_prune_outside_repo"
     run_test "prune_help" "test_prune_help"
-    run_test "prune_with_uncommitted_changes" "test_prune_with_uncommitted_changes"
+    run_test "prune_skips_untracked_files" "test_prune_skips_untracked_files"
+    run_test "prune_skips_uncommitted_changes" "test_prune_skips_uncommitted_changes"
+    run_test "prune_force_removes_dirty_worktree" "test_prune_force_removes_dirty_worktree"
+    run_test "prune_removes_clean_worktree" "test_prune_removes_clean_worktree"
     run_test "prune_nested_directories" "test_prune_nested_directories"
     run_test "prune_performance" "test_prune_performance"
     run_test "prune_many_worktrees" "test_prune_many_worktrees"
