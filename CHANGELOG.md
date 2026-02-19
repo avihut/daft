@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.29](https://github.com/avihut/daft/compare/v1.0.28...v1.0.29) - 2026-02-19
+
+### Bug Fixes
+
+- prevent prune from deleting worktrees with uncommitted changes or untracked files ([#240](https://github.com/avihut/daft/pull/240))
+- grow hook output window dynamically instead of pre-allocating blank lines ([#237](https://github.com/avihut/daft/pull/237))
+- check remote tracking branch when validating merge status for deletion ([#236](https://github.com/avihut/daft/pull/236))
+- doctor --fix now creates missing shortcuts and --dry-run shows concrete actions ([#232](https://github.com/avihut/daft/pull/232))
+- cd to safe directory when branch-delete removes current worktree ([#234](https://github.com/avihut/daft/pull/234))
+- run post-clone hook before worktree-post-create during clone ([#233](https://github.com/avihut/daft/pull/233))
+- carry changes from base branch worktree instead of current worktree ([#231](https://github.com/avihut/daft/pull/231))
+
+### Features
+
+- accept worktree paths as arguments in branch-delete ([#239](https://github.com/avihut/daft/pull/239))
+- add -x/--exec option to run commands in worktree after setup ([#238](https://github.com/avihut/daft/pull/238))
+
+### Miscellaneous
+
+- removed plans
+- removed unused WARP.md
+- reorganize mise tasks into file-based structure with : hierarchy ([#235](https://github.com/avihut/daft/pull/235))
+- simplified daft hooks
+
 ## [1.0.28](https://github.com/avihut/daft/compare/v1.0.27...v1.0.28) - 2026-02-18
 
 ### Bug Fixes
