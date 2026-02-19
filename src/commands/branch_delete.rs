@@ -23,6 +23,11 @@ Deletes one or more local branches along with their associated worktrees and
 remote tracking branches in a single operation. This is the inverse of
 git-worktree-checkout-branch(1).
 
+Arguments can be branch names or worktree paths. When a path is given
+(absolute, relative, or "."), the branch checked out in that worktree is
+resolved automatically. This is convenient when you are inside a worktree
+and want to delete it without remembering the branch name.
+
 Safety checks prevent accidental data loss. The command refuses to delete a
 branch that:
 
@@ -41,7 +46,7 @@ Pre-remove and post-remove lifecycle hooks are executed for each worktree
 removal if the repository is trusted. See git-daft(1) for hook management.
 "#)]
 pub struct Args {
-    #[arg(required = true, help = "Branch names to delete")]
+    #[arg(required = true, help = "Branches to delete (names or worktree paths)")]
     branches: Vec<String>,
 
     #[arg(short = 'D', long, help = "Force deletion even if not fully merged")]
@@ -129,6 +134,11 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
         }
     }
 
+    // Resolve arguments: each arg can be a branch name or a worktree path.
+    // Paths (absolute, relative, or ".") are resolved to the branch checked out there.
+    let resolved_branches =
+        resolve_branch_args(&args.branches, &worktree_entries, &ctx.project_root, output)?;
+
     // Detect current worktree context for is_current_worktree flagging.
     // Use both path and branch name: path comparison can fail when symlinks
     // cause git rev-parse and git worktree list to report different strings.
@@ -138,7 +148,7 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
     // Validate all branches before performing any deletions
     let (validated, errors) = validate_branches(
         &ctx,
-        &args.branches,
+        &resolved_branches,
         args.force,
         &worktree_map,
         current_wt_path.as_ref(),
@@ -150,7 +160,7 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
         for err in &errors {
             output.error(&format!("cannot delete '{}': {}", err.branch, err.message));
         }
-        let total = args.branches.len();
+        let total = resolved_branches.len();
         let failed = errors.len();
         anyhow::bail!(
             "Aborting: {} of {} branch{} failed validation. No branches were deleted.",
@@ -166,6 +176,124 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
     }
 
     execute_deletions(&ctx, &validated, args.force, settings, output)
+}
+
+/// Resolve each argument to a branch name.
+///
+/// Arguments can be:
+///   - A branch name (passed through as-is if no worktree path matches)
+///   - A worktree path (absolute or relative to cwd, including ".")
+///
+/// Path resolution: canonicalize the argument and compare against known worktree
+/// paths. If a match is found, return the branch checked out in that worktree.
+/// If the worktree has a detached HEAD (no branch), return an error.
+fn resolve_branch_args(
+    args: &[String],
+    worktree_entries: &[WorktreeEntry],
+    project_root: &Path,
+    output: &mut dyn Output,
+) -> Result<Vec<String>> {
+    let mut resolved = Vec::with_capacity(args.len());
+
+    for arg in args {
+        match resolve_single_arg(arg, worktree_entries, project_root) {
+            ResolveResult::Branch(name) => {
+                output.step(&format!("Resolved path '{}' to branch '{}'", arg, name));
+                resolved.push(name);
+            }
+            ResolveResult::PassThrough => {
+                resolved.push(arg.clone());
+            }
+            ResolveResult::DetachedHead(path) => {
+                anyhow::bail!(
+                    "worktree at '{}' has a detached HEAD; specify a branch name instead",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    Ok(resolved)
+}
+
+enum ResolveResult {
+    /// Argument matched a worktree path and resolved to this branch name.
+    Branch(String),
+    /// Argument did not match any worktree path; treat as a branch name.
+    PassThrough,
+    /// Argument matched a worktree but it has no branch (detached HEAD).
+    DetachedHead(PathBuf),
+}
+
+/// Try to resolve a single argument as a worktree path.
+fn resolve_single_arg(
+    arg: &str,
+    worktree_entries: &[WorktreeEntry],
+    project_root: &Path,
+) -> ResolveResult {
+    // Build a candidate path: resolve relative paths against cwd.
+    let candidate = PathBuf::from(arg);
+    let candidate = if candidate.is_absolute() {
+        candidate
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(&candidate),
+            Err(_) => return ResolveResult::PassThrough,
+        }
+    };
+
+    // Canonicalize to resolve ".", "..", and symlinks.
+    let canonical = match std::fs::canonicalize(&candidate) {
+        Ok(p) => p,
+        Err(_) => {
+            // Path doesn't exist on disk — also try resolving as relative to project root
+            // (e.g., user passes "feature/foo" which is both a valid branch name and a
+            // relative path). In this case, fall through to branch-name treatment.
+            return try_resolve_relative_to_root(arg, project_root, worktree_entries);
+        }
+    };
+
+    // Compare against all known worktree paths.
+    for entry in worktree_entries {
+        let entry_canonical =
+            std::fs::canonicalize(&entry.path).unwrap_or_else(|_| entry.path.clone());
+
+        if canonical == entry_canonical {
+            return match &entry.branch {
+                Some(branch) => ResolveResult::Branch(branch.clone()),
+                None => ResolveResult::DetachedHead(entry.path.clone()),
+            };
+        }
+    }
+
+    // No worktree matched — also try as relative to project root before giving up.
+    try_resolve_relative_to_root(arg, project_root, worktree_entries)
+}
+
+/// Try resolving an argument as a path relative to the project root.
+fn try_resolve_relative_to_root(
+    arg: &str,
+    project_root: &Path,
+    worktree_entries: &[WorktreeEntry],
+) -> ResolveResult {
+    let potential = project_root.join(arg);
+    let potential_canonical = std::fs::canonicalize(&potential).ok();
+
+    if let Some(ref canonical) = potential_canonical {
+        for entry in worktree_entries {
+            let entry_canonical =
+                std::fs::canonicalize(&entry.path).unwrap_or_else(|_| entry.path.clone());
+
+            if canonical == &entry_canonical {
+                return match &entry.branch {
+                    Some(branch) => ResolveResult::Branch(branch.clone()),
+                    None => ResolveResult::DetachedHead(entry.path.clone()),
+                };
+            }
+        }
+    }
+
+    ResolveResult::PassThrough
 }
 
 /// Validate all requested branches. Returns a tuple of (validated, errors).

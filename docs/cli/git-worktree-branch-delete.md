@@ -13,6 +13,11 @@ Deletes one or more local branches along with their associated worktrees and
 remote tracking branches in a single operation. This is the inverse of
 git-worktree-checkout-branch(1).
 
+Arguments can be branch names or worktree paths. When a path is given
+(absolute, relative, or "."), the branch checked out in that worktree is
+resolved automatically. This is convenient when you are inside a worktree
+and want to delete it without remembering the branch name.
+
 Safety checks prevent accidental data loss. The command refuses to delete a
 branch that:
 
@@ -40,7 +45,7 @@ git worktree-branch-delete [OPTIONS] <BRANCHES>
 
 | Argument | Description | Required |
 |----------|-------------|----------|
-| `<BRANCHES>` | Branch names to delete | Yes |
+| `<BRANCHES>` | Branches to delete (names or worktree paths) | Yes |
 
 ## Options
 

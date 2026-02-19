@@ -410,6 +410,149 @@ test_branch_delete_local_behind_remote() {
     return 0
 }
 
+# Test branch delete by relative worktree path
+test_branch_delete_by_relative_path() {
+    local remote_repo=$(create_test_remote "test-repo-bd-relpath" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-bd-relpath"
+    local project_root=$(pwd)
+
+    # Create a branch with worktree
+    git-worktree-checkout-branch feature/by-path || return 1
+    assert_directory_exists "feature/by-path" || return 1
+
+    # Merge into main so it passes validation
+    cd "feature/by-path"
+    echo "work" > work.txt
+    git add work.txt
+    git commit -m "Add work" >/dev/null 2>&1
+    git push origin feature/by-path >/dev/null 2>&1
+    cd "$project_root"
+
+    cd "main"
+    git merge feature/by-path >/dev/null 2>&1
+    git push origin main >/dev/null 2>&1
+    cd "$project_root"
+
+    # Delete by relative worktree path instead of branch name
+    git-worktree-branch-delete feature/by-path || return 1
+
+    # Verify worktree was removed
+    if [[ -d "feature/by-path" ]]; then
+        log_error "Worktree should have been removed"
+        return 1
+    fi
+
+    # Verify local branch was deleted
+    cd "main"
+    if git branch | grep -q " feature/by-path$"; then
+        log_error "Local branch should have been deleted"
+        return 1
+    fi
+    cd "$project_root"
+
+    return 0
+}
+
+# Test branch delete by absolute worktree path
+test_branch_delete_by_absolute_path() {
+    local remote_repo=$(create_test_remote "test-repo-bd-abspath" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-bd-abspath"
+    local project_root=$(pwd)
+
+    # Create a branch with worktree
+    git-worktree-checkout-branch feature/abs-path || return 1
+    assert_directory_exists "feature/abs-path" || return 1
+
+    # Merge into main so it passes validation
+    cd "feature/abs-path"
+    echo "work" > work.txt
+    git add work.txt
+    git commit -m "Add work" >/dev/null 2>&1
+    git push origin feature/abs-path >/dev/null 2>&1
+    cd "$project_root"
+
+    cd "main"
+    git merge feature/abs-path >/dev/null 2>&1
+    git push origin main >/dev/null 2>&1
+    cd "$project_root"
+
+    # Delete by absolute worktree path
+    local abs_path="$project_root/feature/abs-path"
+    git-worktree-branch-delete "$abs_path" || return 1
+
+    # Verify worktree was removed
+    if [[ -d "feature/abs-path" ]]; then
+        log_error "Worktree should have been removed"
+        return 1
+    fi
+
+    # Verify local branch was deleted
+    cd "main"
+    if git branch | grep -q " feature/abs-path$"; then
+        log_error "Local branch should have been deleted"
+        return 1
+    fi
+    cd "$project_root"
+
+    return 0
+}
+
+# Test branch delete by "." (current directory)
+test_branch_delete_by_dot() {
+    local remote_repo=$(create_test_remote "test-repo-bd-dot" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-bd-dot"
+    local project_root
+    project_root=$(cd "$(pwd)" && pwd -P)
+
+    # Create a branch with worktree
+    git-worktree-checkout-branch feature/dot-test || return 1
+    assert_directory_exists "feature/dot-test" || return 1
+
+    # Merge into main so it passes validation
+    cd "feature/dot-test"
+    echo "work" > work.txt
+    git add work.txt
+    git commit -m "Add work" >/dev/null 2>&1
+    git push origin feature/dot-test >/dev/null 2>&1
+    cd "$project_root"
+
+    cd "main"
+    git merge feature/dot-test >/dev/null 2>&1
+    git push origin main >/dev/null 2>&1
+    cd "$project_root"
+
+    # cd into the feature worktree and delete with "."
+    cd "feature/dot-test"
+
+    local cd_file
+    cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
+    DAFT_CD_FILE="$cd_file" git-worktree-branch-delete . 2>&1 || true
+
+    # Verify worktree was removed
+    if [[ -d "$project_root/feature/dot-test" ]]; then
+        log_error "Worktree should have been removed"
+        rm -f "$cd_file"
+        return 1
+    fi
+
+    # Verify local branch was deleted
+    cd "$project_root/main"
+    if git branch | grep -q " feature/dot-test$"; then
+        log_error "Local branch should have been deleted"
+        rm -f "$cd_file"
+        return 1
+    fi
+
+    rm -f "$cd_file"
+    return 0
+}
+
 run_branch_delete_tests() {
     log "Running git-worktree-branch-delete integration tests..."
 
@@ -424,6 +567,9 @@ run_branch_delete_tests() {
     run_test "branch_delete_from_current_worktree_writes_cd" "test_branch_delete_from_current_worktree_writes_cd"
     run_test "branch_delete_from_current_worktree_cd_default_branch" "test_branch_delete_from_current_worktree_cd_default_branch"
     run_test "branch_delete_local_behind_remote" "test_branch_delete_local_behind_remote"
+    run_test "branch_delete_by_relative_path" "test_branch_delete_by_relative_path"
+    run_test "branch_delete_by_absolute_path" "test_branch_delete_by_absolute_path"
+    run_test "branch_delete_by_dot" "test_branch_delete_by_dot"
 }
 
 # Main execution
