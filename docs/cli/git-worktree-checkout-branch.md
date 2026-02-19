@@ -45,6 +45,7 @@ git worktree-checkout-branch [OPTIONS] <NEW_BRANCH_NAME> [BASE_BRANCH_NAME]
 | `--no-carry` | Do not carry uncommitted changes to the new worktree |  |
 | `-r, --remote <REMOTE>` | Remote for worktree organization (multi-remote mode) |  |
 | `--no-cd` | Do not change directory to the new worktree |  |
+| `-x, --exec <EXEC>` | Run a command in the worktree after setup completes (repeatable) |  |
 
 ## Global Options
 

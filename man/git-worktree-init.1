@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-init \- Initialize a new repository in the worktree\-based directory structure
 .SH SYNOPSIS
-\fBgit\-worktree\-init\fR [\fB\-\-bare\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-initial\-branch\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPOSITORY_NAME\fR> 
+\fBgit\-worktree\-init\fR [\fB\-\-bare\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-initial\-branch\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPOSITORY_NAME\fR> 
 .SH DESCRIPTION
 .PP
 Initializes a new Git repository using the same directory structure as
@@ -41,6 +41,9 @@ Organize worktree under this remote folder (enables multi\-remote mode)
 .TP
 \fB\-\-no\-cd\fR
 Do not change directory to the new worktree
+.TP
+\fB\-x\fR, \fB\-\-exec\fR \fI<EXEC>\fR
+Run a command in the worktree after setup completes (repeatable)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

@@ -64,6 +64,13 @@ pub struct Args {
 
     #[arg(long, help = "Do not change directory to the new worktree")]
     no_cd: bool,
+
+    #[arg(
+        short = 'x',
+        long = "exec",
+        help = "Run a command in the worktree after setup completes (repeatable)"
+    )]
+    exec: Vec<String>,
 }
 
 pub fn run() -> Result<()> {
@@ -396,8 +403,14 @@ fn run_checkout_branch(
         output,
     )?;
 
+    // Run exec commands (after hooks, before cd_path)
+    let exec_result = crate::exec::run_exec_commands(&args.exec, output);
+
     output.cd_path(&get_current_directory()?);
     maybe_show_shell_hint(output)?;
+
+    // Propagate exec error after cd_path is written
+    exec_result?;
 
     Ok(())
 }

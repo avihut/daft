@@ -75,6 +75,13 @@ pub struct Args {
 
     #[arg(long, help = "Do not change directory to the new worktree")]
     no_cd: bool,
+
+    #[arg(
+        short = 'x',
+        long = "exec",
+        help = "Run a command in the worktree after setup completes (repeatable)"
+    )]
+    exec: Vec<String>,
 }
 
 pub fn run() -> Result<()> {
@@ -230,8 +237,14 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
         // For newly initialized repos, trust them by default (user is creating their own repo)
         run_post_init_hook(&parent_dir, &git_dir, &current_dir, &initial_branch, output)?;
 
+        // Run exec commands (after hooks, before cd_path)
+        let exec_result = crate::exec::run_exec_commands(&args.exec, output);
+
         output.cd_path(&current_dir);
         maybe_show_shell_hint(output)?;
+
+        // Propagate exec error after cd_path is written
+        exec_result?;
     } else {
         // Git-like result message for bare mode
         output.result(&format!(
@@ -310,6 +323,7 @@ mod tests {
             initial_branch: Some("master".to_string()),
             remote: None,
             no_cd: false,
+            exec: vec![],
         }
     }
 
@@ -388,6 +402,7 @@ mod tests {
             initial_branch: Some("master".to_string()),
             remote: None,
             no_cd: false,
+            exec: vec![],
         };
         let mut output = TestOutput::new();
 
@@ -410,6 +425,7 @@ mod tests {
             initial_branch: Some("".to_string()),
             remote: None,
             no_cd: false,
+            exec: vec![],
         };
         let mut output = TestOutput::new();
 
