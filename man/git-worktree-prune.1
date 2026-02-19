@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-prune \- Remove worktrees and branches for deleted remote branches
 .SH SYNOPSIS
-\fBgit\-worktree\-prune\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBgit\-worktree\-prune\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Removes local branches whose corresponding remote tracking branches have been
@@ -29,6 +29,9 @@ removal if the repository is trusted. See git\-daft(1) for hook management.
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Be verbose; show detailed progress
+.TP
+\fB\-f\fR, \fB\-\-force\fR
+Force removal of worktrees with uncommitted changes or untracked files
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

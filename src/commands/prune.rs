@@ -41,6 +41,13 @@ removal if the repository is trusted. See git-daft(1) for hook management.
 pub struct Args {
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
+
+    #[arg(
+        short,
+        long,
+        help = "Force removal of worktrees with uncommitted changes or untracked files"
+    )]
+    force: bool,
 }
 
 /// Parsed worktree entry from `git worktree list --porcelain`.
@@ -73,11 +80,11 @@ pub fn run() -> Result<()> {
     let config = OutputConfig::with_autocd(false, args.verbose, settings.autocd);
     let mut output = CliOutput::new(config);
 
-    run_prune(&mut output, &settings)?;
+    run_prune(&mut output, &settings, args.force)?;
     Ok(())
 }
 
-fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
+fn run_prune(output: &mut dyn Output, settings: &DaftSettings, force: bool) -> Result<()> {
     let config = WorktreeConfig::default();
     let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
     let ctx = PruneContext {
@@ -227,7 +234,7 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                         "Branch {branch_name} has worktree at {} but is not checked out there; removing worktree",
                         wt_path.display()
                     ));
-                    if !remove_worktree(&ctx, wt_path, branch_name, output) {
+                    if !remove_worktree(&ctx, wt_path, branch_name, force, output) {
                         continue;
                     }
                     wt_removed = true;
@@ -264,7 +271,8 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                     continue;
                 }
 
-                let result = remove_worktree_and_delete_branch(&ctx, wt_path, branch_name, output);
+                let result =
+                    remove_worktree_and_delete_branch(&ctx, wt_path, branch_name, force, output);
                 if result.worktree_removed {
                     worktrees_removed += 1;
                 }
@@ -312,7 +320,8 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                     continue;
                 }
 
-                let result = remove_worktree_and_delete_branch(&ctx, wt_path, branch_name, output);
+                let result =
+                    remove_worktree_and_delete_branch(&ctx, wt_path, branch_name, force, output);
                 if result.worktree_removed {
                     worktrees_removed += 1;
                 }
@@ -376,7 +385,8 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
                     cd_target.display()
                 ));
             } else {
-                let result = remove_worktree_and_delete_branch(&ctx, wt_path, branch_name, output);
+                let result =
+                    remove_worktree_and_delete_branch(&ctx, wt_path, branch_name, force, output);
 
                 if result.worktree_removed {
                     worktrees_removed += 1;
@@ -498,8 +508,28 @@ fn remove_worktree(
     ctx: &PruneContext,
     wt_path: &Path,
     branch_name: &str,
+    force: bool,
     output: &mut dyn Output,
 ) -> bool {
+    // Check for uncommitted changes or untracked files before removing
+    if wt_path.exists() && !force {
+        match ctx.git.has_uncommitted_changes_in(wt_path) {
+            Ok(true) => {
+                output.warning(&format!(
+                    "Skipping {branch_name}: worktree has uncommitted changes or untracked files (use --force to override)"
+                ));
+                return false;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                output.warning(&format!(
+                    "Skipping {branch_name}: failed to check for uncommitted changes: {e} (use --force to override)"
+                ));
+                return false;
+            }
+        }
+    }
+
     // Run pre-remove hook
     if let Err(e) = run_hook(
         HookType::PreRemove,
@@ -513,7 +543,7 @@ fn remove_worktree(
 
     if wt_path.exists() {
         output.step("Removing worktree...");
-        if let Err(e) = ctx.git.worktree_remove(wt_path, true) {
+        if let Err(e) = ctx.git.worktree_remove(wt_path, force) {
             output.error(&format!(
                 "Failed to remove worktree {}: {e}. Skipping deletion of branch {branch_name}.",
                 wt_path.display()
@@ -564,6 +594,7 @@ fn remove_worktree_and_delete_branch(
     ctx: &PruneContext,
     wt_path: &Path,
     branch_name: &str,
+    force: bool,
     output: &mut dyn Output,
 ) -> PruneResult {
     output.step(&format!(
@@ -571,7 +602,7 @@ fn remove_worktree_and_delete_branch(
         wt_path.display()
     ));
 
-    if !remove_worktree(ctx, wt_path, branch_name, output) {
+    if !remove_worktree(ctx, wt_path, branch_name, force, output) {
         return PruneResult {
             worktree_removed: false,
             branch_deleted: false,

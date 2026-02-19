@@ -39,6 +39,7 @@ git worktree-prune [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|----------|
 | `-v, --verbose` | Be verbose; show detailed progress |  |
+| `-f, --force` | Force removal of worktrees with uncommitted changes or untracked files |  |
 
 ## Global Options
 
