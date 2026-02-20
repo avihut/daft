@@ -2,7 +2,6 @@ use crate::{
     check_dependencies,
     git::GitCommand,
     hints::maybe_show_shell_hint,
-    hooks::{HookContext, HookExecutor, HookType, HooksConfig, TrustLevel},
     logging::init_logging,
     multi_remote::path::calculate_worktree_path,
     output::{CliOutput, Output, OutputConfig},
@@ -233,10 +232,6 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
             args.repository_name, args.repository_name, initial_branch
         ));
 
-        // Execute post-init hooks
-        // For newly initialized repos, trust them by default (user is creating their own repo)
-        run_post_init_hook(&parent_dir, &git_dir, &current_dir, &initial_branch, output)?;
-
         // Run exec commands (after hooks, before cd_path)
         let exec_result = crate::exec::run_exec_commands(&args.exec, output);
 
@@ -252,39 +247,6 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
             args.repository_name
         ));
     }
-
-    Ok(())
-}
-
-fn run_post_init_hook(
-    project_root: &PathBuf,
-    git_dir: &PathBuf,
-    worktree_path: &PathBuf,
-    initial_branch: &str,
-    output: &mut dyn Output,
-) -> Result<()> {
-    let hooks_config = HooksConfig::default();
-    let mut executor = HookExecutor::new(hooks_config)?;
-
-    // For newly initialized repos, automatically trust them
-    // (user is creating their own repository)
-    executor.trust_repository(git_dir, TrustLevel::Allow)?;
-
-    // Build the hook context
-    let ctx = HookContext::new(
-        HookType::PostInit,
-        "init",
-        project_root,
-        git_dir,
-        "origin", // No remote exists yet, use default name
-        worktree_path,
-        worktree_path,
-        initial_branch,
-    )
-    .with_new_branch(true);
-
-    // Execute the hook (ignores if no hooks exist)
-    executor.execute(&ctx, output)?;
 
     Ok(())
 }

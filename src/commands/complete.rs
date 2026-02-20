@@ -8,6 +8,8 @@ use anyhow::Result;
 use clap::Parser;
 use std::process::Command;
 
+use crate::hooks::yaml_config_loader;
+
 #[derive(Parser)]
 #[command(name = "daft-complete")]
 #[command(about = "Internal helper for dynamic shell completions (not for direct use)")]
@@ -90,6 +92,12 @@ fn complete(command: &str, position: usize, word: &str, verbose: bool) -> Result
 
         // git-worktree-flow-eject: directory path (no dynamic completion)
         ("git-worktree-flow-eject", _) => Ok(vec![]),
+
+        // hooks run: complete configured hook types
+        ("hooks-run", 1) => complete_configured_hooks(word),
+
+        // hooks run --job: complete job names for a hook type
+        ("hooks-run-job", 1) => complete_hook_jobs(word, verbose),
 
         // Default: no completions
         _ => Ok(vec![]),
@@ -217,6 +225,85 @@ fn complete_remote_branches(prefix: &str, verbose: bool) -> Result<Vec<String>> 
         .collect();
 
     Ok(branches)
+}
+
+/// Complete configured hook types from the current worktree's daft.yml.
+fn complete_configured_hooks(prefix: &str) -> Result<Vec<String>> {
+    let worktree_root = find_worktree_root().ok();
+    let root = match worktree_root {
+        Some(ref r) => r.as_path(),
+        None => return Ok(vec![]),
+    };
+
+    let config = yaml_config_loader::load_merged_config(root).ok().flatten();
+
+    match config {
+        Some(cfg) => {
+            let mut names: Vec<String> = cfg
+                .hooks
+                .keys()
+                .filter(|name| name.starts_with(prefix))
+                .cloned()
+                .collect();
+            names.sort();
+            Ok(names)
+        }
+        None => Ok(vec![]),
+    }
+}
+
+/// Complete job names within a hook type.
+///
+/// The hook type is passed via the `DAFT_COMPLETE_HOOK` environment variable.
+fn complete_hook_jobs(prefix: &str, _verbose: bool) -> Result<Vec<String>> {
+    let hook_name = match std::env::var("DAFT_COMPLETE_HOOK") {
+        Ok(name) => name,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let worktree_root = find_worktree_root().ok();
+    let root = match worktree_root {
+        Some(ref r) => r.as_path(),
+        None => return Ok(vec![]),
+    };
+
+    let config = yaml_config_loader::load_merged_config(root).ok().flatten();
+
+    let config = match config {
+        Some(c) => c,
+        None => return Ok(vec![]),
+    };
+
+    let hook_def = match config.hooks.get(&hook_name) {
+        Some(def) => def,
+        None => return Ok(vec![]),
+    };
+
+    let jobs = yaml_config_loader::get_effective_jobs(hook_def);
+    let mut names: Vec<String> = jobs
+        .iter()
+        .filter_map(|j| j.name.as_ref())
+        .filter(|name| name.starts_with(prefix))
+        .cloned()
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+/// Find the worktree root directory (for completions).
+fn find_worktree_root() -> Result<std::path::PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()?;
+
+    if !output.status.success() {
+        anyhow::bail!("Not in a git worktree");
+    }
+
+    Ok(std::path::PathBuf::from(
+        String::from_utf8(output.stdout)?.trim(),
+    ))
 }
 
 #[cfg(test)]

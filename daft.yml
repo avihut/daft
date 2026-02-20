@@ -6,11 +6,18 @@ hooks:
 
   worktree-post-create:
     jobs:
-      - name: mise-trust
+      - name: mise trust
         run: mise trust
-      - name: mise-install
+      - name: mise install
         run: mise install
-        needs: [mise-trust]
-      - name: bun-install
+        needs: [mise trust]
+      - name: bun install
         run: bun install
-        needs: [mise-install]
+        needs: [mise install]
+      - name: direnv allow
+        run: direnv allow {worktree_path}
+
+  worktree-pre-remove:
+    jobs:
+      - name: direnv revoke
+        run: direnv revoke {worktree_path}

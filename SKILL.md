@@ -114,7 +114,7 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 
 | Command                             | Description                                                                                                                                 |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `daft hooks <subcommand>`           | Manage hooks trust and configuration (`trust`, `deny`, `prompt`, `status`, `list`, `reset-trust`, `migrate`, `install`, `validate`, `dump`) |
+| `daft hooks <subcommand>`           | Manage hooks trust and configuration (`trust`, `prompt`, `deny`, `status`, `run`, `install`, `validate`, `dump`, `migrate`)                 |
 | `daft doctor`                       | Diagnose installation and configuration issues; `--fix` auto-repairs symlinks, shortcuts, refspecs, hooks; `--fix --dry-run` previews fixes |
 | `daft setup shortcuts <subcommand>` | Manage command shortcut symlinks                                                                                                            |
 | `daft shell-init <shell>`           | Generate shell integration wrappers                                                                                                         |
@@ -169,7 +169,6 @@ Hooks automate worktree lifecycle events. The recommended approach is a
 | Hook                   | Trigger                       | Runs From                   |
 | ---------------------- | ----------------------------- | --------------------------- |
 | `post-clone`           | After `daft worktree-clone`   | New default branch worktree |
-| `post-init`            | After `daft worktree-init`    | New initial worktree        |
 | `worktree-pre-create`  | Before new worktree is added  | Source worktree             |
 | `worktree-post-create` | After new worktree is created | New worktree                |
 | `worktree-pre-remove`  | Before worktree is removed    | Worktree being removed      |
@@ -312,7 +311,22 @@ daft hooks status       # Check current trust level
 daft hooks install      # Scaffold a daft.yml with placeholders
 daft hooks validate     # Validate configuration syntax
 daft hooks dump         # Show fully merged configuration
+daft hooks run <type>   # Manually run a hook (bypasses trust)
 ```
+
+### Manual Hook Execution
+
+Run hooks on demand, bypassing trust checks (the user is explicitly invoking):
+
+```bash
+daft hooks run worktree-post-create              # Run all jobs
+daft hooks run worktree-post-create --job "mise" # Run a single job
+daft hooks run worktree-post-create --tag setup  # Run jobs tagged "setup"
+daft hooks run worktree-post-create --dry-run    # Preview without executing
+```
+
+Use cases: re-running after a failure, iterating during hook development, or
+bootstrapping existing worktrees that predate the hooks config.
 
 ### Environment Variables in Hooks
 

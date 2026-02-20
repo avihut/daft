@@ -2,21 +2,28 @@
 //!
 //! Provides `git daft hooks` subcommand with:
 //! - `trust` - Trust a repository to run hooks automatically
+//!   - `trust list` - List all repositories with trust settings
+//!   - `trust reset [path]` - Remove trust entry for a specific repository
+//!   - `trust reset all` - Clear all trust settings from the database
 //! - `prompt` - Trust a repository but prompt before each hook
 //! - `deny` - Revoke trust from a repository
 //! - `status` - Show trust status and available hooks
-//! - `list` - List all trusted repositories
 //! - `migrate` - Rename deprecated hook files to their new names
 //! - `install` - Scaffold a daft.yml with hook definitions
 //! - `validate` - Validate YAML hook configuration
 //! - `dump` - Dump merged YAML hook configuration
+//! - `run` - Manually run a hook (bypasses trust checks)
 
+use crate::hooks::yaml_executor::JobFilter;
 use crate::hooks::{
-    yaml_config, yaml_config_loader, yaml_config_validate, HookType, TrustDatabase, TrustEntry,
-    TrustLevel, DEPRECATED_HOOK_REMOVAL_VERSION, PROJECT_HOOKS_DIR,
+    yaml_config, yaml_config_loader, yaml_config_validate, HookExecutor, HookType, HooksConfig,
+    TrustDatabase, TrustEntry, TrustLevel, DEPRECATED_HOOK_REMOVAL_VERSION, PROJECT_HOOKS_DIR,
 };
 use crate::styles::{bold, cyan, def, dim, green, red, yellow};
-use crate::{get_git_common_dir, is_git_repository};
+use crate::{
+    get_current_branch, get_current_worktree_path, get_git_common_dir, get_project_root,
+    is_git_repository,
+};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::io::{self, IsTerminal, Write};
@@ -98,7 +105,8 @@ fn status_long_about() -> String {
         "",
         "Shows:",
         &def("level", "Current trust level (deny, prompt, or allow)"),
-        &def("hooks", "Available hooks in .daft/hooks/"),
+        &def("yaml", "Hooks defined in daft.yml"),
+        &def("scripts", "Executable scripts in .daft/hooks/"),
         &def("commands", "Suggested commands to change trust"),
         "",
         &format!("Use {} for a compact one-line output.", bold("-s/--short")),
@@ -126,7 +134,23 @@ fn list_long_about() -> String {
     .join("\n")
 }
 
-fn reset_trust_long_about() -> String {
+fn reset_long_about() -> String {
+    [
+        "Remove the trust entry for a repository, or clear all trust settings.",
+        "",
+        "Without a subcommand, removes the explicit trust record for the given",
+        "repository path (defaults to the current directory). This returns the",
+        "repository to the default trust level (deny).",
+        "",
+        &format!(
+            "Use '{}' to clear all trust settings from the database.",
+            bold("reset all")
+        ),
+    ]
+    .join("\n")
+}
+
+fn reset_all_long_about() -> String {
     [
         &format!("{} all trust settings from the database.", bold("Clear")),
         "",
@@ -172,10 +196,11 @@ fn install_long_about() -> String {
         "Creates a daft.yml file with placeholder jobs for the specified hooks.",
         "If no hook names are provided, all daft lifecycle hooks are scaffolded.",
         "",
-        "If daft.yml already exists, only hooks not already defined are added.",
+        "If a config file already exists, it is not modified. Instead, a YAML",
+        "snippet is printed for any missing hooks so you can add them manually.",
         "",
         "Valid hook names:",
-        "  post-clone, post-init, worktree-pre-create, worktree-post-create,",
+        "  post-clone, worktree-pre-create, worktree-post-create,",
         "  worktree-pre-remove, worktree-post-remove",
     ]
     .join("\n")
@@ -208,11 +233,41 @@ fn dump_long_about() -> String {
     .join("\n")
 }
 
+fn run_long_about() -> String {
+    [
+        "Manually run a hook by name.",
+        "",
+        "Executes the specified hook type as if it were triggered by a",
+        "worktree lifecycle event. Trust checks are bypassed since the",
+        "user is explicitly invoking the hook.",
+        "",
+        "Use cases:",
+        &def("re-run", "Re-run a hook after a previous failure"),
+        &def("develop", "Iterate on hook scripts during development"),
+        &def(
+            "bootstrap",
+            "Set up worktrees that predate the hooks config",
+        ),
+        "",
+        &format!("Use {} to preview which jobs would run.", bold("--dry-run")),
+        &format!("Use {} to run a single job by name.", bold("--job <name>")),
+        &format!(
+            "Use {} to run only jobs with a specific tag.",
+            bold("--tag <tag>")
+        ),
+    ]
+    .join("\n")
+}
+
 #[derive(Parser)]
 #[command(name = "hooks")]
 #[command(about = "Manage repository trust for hook execution")]
 #[command(long_about = hooks_long_about())]
 pub struct Args {
+    /// Path to check (defaults to current directory)
+    #[arg(default_value = ".")]
+    path: PathBuf,
+
     #[command(subcommand)]
     command: Option<HooksCommand>,
 }
@@ -221,14 +276,7 @@ pub struct Args {
 enum HooksCommand {
     /// Trust repository to run hooks automatically
     #[command(long_about = trust_long_about())]
-    Trust {
-        /// Path to repository (defaults to current directory)
-        #[arg(default_value = ".")]
-        path: std::path::PathBuf,
-
-        #[arg(short = 'f', long, help = "Do not ask for confirmation")]
-        force: bool,
-    },
+    Trust(trust_cmd::TrustArgs),
 
     /// Trust repository but prompt before each hook
     #[command(long_about = prompt_long_about())]
@@ -263,27 +311,9 @@ enum HooksCommand {
         short: bool,
     },
 
-    /// List all repositories with trust settings
-    #[command(long_about = list_long_about())]
-    List {
-        #[arg(long, help = "Include repositories with deny trust level")]
-        all: bool,
-    },
-
-    /// Clear all trust settings
-    #[command(long_about = reset_trust_long_about())]
-    ResetTrust {
-        #[arg(short = 'f', long, help = "Do not ask for confirmation")]
-        force: bool,
-    },
-
-    /// Rename deprecated hook files to their new names
-    #[command(long_about = migrate_long_about())]
-    Migrate {
-        /// Show what would be renamed without making changes
-        #[arg(long, help = "Preview renames without making changes")]
-        dry_run: bool,
-    },
+    /// Run a hook manually
+    #[command(long_about = run_long_about())]
+    Run(HooksRunArgs),
 
     /// Scaffold a daft.yml configuration with hook definitions
     #[command(long_about = install_long_about())]
@@ -301,6 +331,90 @@ enum HooksCommand {
     /// Dump the merged YAML hooks configuration
     #[command(long_about = dump_long_about())]
     Dump,
+
+    /// Rename deprecated hook files to their new names
+    #[command(long_about = migrate_long_about())]
+    Migrate {
+        /// Show what would be renamed without making changes
+        #[arg(long, help = "Preview renames without making changes")]
+        dry_run: bool,
+    },
+}
+
+#[derive(clap::Args)]
+struct HooksRunArgs {
+    /// Hook type to run (e.g., worktree-post-create).
+    /// Omit to list available hooks.
+    #[arg(help = "Hook type to run (omit to list available hooks)")]
+    hook_type: Option<String>,
+
+    /// Run only the specified named job
+    #[arg(long, help = "Run only the named job")]
+    job: Option<String>,
+
+    /// Run only jobs with this tag (repeatable, matches any)
+    #[arg(long, help = "Run only jobs with this tag (repeatable)")]
+    tag: Vec<String>,
+
+    /// Preview what would run without executing
+    #[arg(long, help = "Preview what would run without executing")]
+    dry_run: bool,
+}
+
+mod trust_cmd {
+    use super::{list_long_about, reset_all_long_about, reset_long_about};
+    use clap::{Args, Subcommand};
+    use std::path::PathBuf;
+
+    #[derive(Args)]
+    pub struct TrustArgs {
+        /// Path to repository (defaults to current directory)
+        #[arg(default_value = ".")]
+        pub path: PathBuf,
+
+        #[arg(short = 'f', long, help = "Do not ask for confirmation")]
+        pub force: bool,
+
+        #[command(subcommand)]
+        pub command: Option<TrustSubcommand>,
+    }
+
+    #[derive(Subcommand)]
+    pub enum TrustSubcommand {
+        /// List all repositories with trust settings
+        #[command(long_about = list_long_about())]
+        List {
+            #[arg(long, help = "Include repositories with deny trust level")]
+            all: bool,
+        },
+
+        /// Remove trust entry for a repository or clear all trust settings
+        #[command(long_about = reset_long_about())]
+        Reset(ResetArgs),
+    }
+
+    #[derive(Args)]
+    pub struct ResetArgs {
+        /// Path to repository (defaults to current directory)
+        #[arg(default_value = ".")]
+        pub path: PathBuf,
+
+        #[arg(short = 'f', long, help = "Do not ask for confirmation")]
+        pub force: bool,
+
+        #[command(subcommand)]
+        pub command: Option<ResetSubcommand>,
+    }
+
+    #[derive(Subcommand)]
+    pub enum ResetSubcommand {
+        /// Clear all trust settings from the database
+        #[command(long_about = reset_all_long_about())]
+        All {
+            #[arg(short = 'f', long, help = "Do not ask for confirmation")]
+            force: bool,
+        },
+    }
 }
 
 pub fn run() -> Result<()> {
@@ -308,19 +422,32 @@ pub fn run() -> Result<()> {
     let args = Args::parse_from(args);
 
     match args.command {
-        Some(HooksCommand::Trust { path, force }) => cmd_set_trust(&path, TrustLevel::Allow, force),
+        Some(HooksCommand::Trust(trust_args)) => match trust_args.command {
+            Some(trust_cmd::TrustSubcommand::List { all }) => cmd_list(all),
+            Some(trust_cmd::TrustSubcommand::Reset(reset_args)) => match reset_args.command {
+                Some(trust_cmd::ResetSubcommand::All { force }) => cmd_reset_trust(force),
+                None => cmd_reset_trust_path(&reset_args.path, reset_args.force),
+            },
+            None => cmd_set_trust(&trust_args.path, TrustLevel::Allow, trust_args.force),
+        },
         Some(HooksCommand::Prompt { path, force }) => {
             cmd_set_trust(&path, TrustLevel::Prompt, force)
         }
         Some(HooksCommand::Deny { path, force }) => cmd_deny(&path, force),
         Some(HooksCommand::Status { path, short }) => cmd_status(&path, short),
-        Some(HooksCommand::List { all }) => cmd_list(all),
-        Some(HooksCommand::ResetTrust { force }) => cmd_reset_trust(force),
         Some(HooksCommand::Migrate { dry_run }) => cmd_migrate(dry_run),
         Some(HooksCommand::Install { hooks }) => cmd_install(&hooks),
         Some(HooksCommand::Validate) => cmd_validate(),
         Some(HooksCommand::Dump) => cmd_dump(),
-        None => cmd_status(&std::path::PathBuf::from("."), false), // Default to status if no subcommand
+        Some(HooksCommand::Run(run_args)) => cmd_run(&run_args),
+        None => {
+            cmd_status(&args.path, false)?;
+            println!(
+                "{}",
+                dim("Run `git daft hooks --help` to see all available commands.")
+            );
+            Ok(())
+        }
     }
 }
 
@@ -497,22 +624,32 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
         // Determine path type and display
         let project_root = git_dir.parent().context("Invalid git directory")?;
         let is_repo_root = abs_path == project_root;
+        let worktree_root = get_current_worktree_path().ok();
         let path_type = if is_repo_root {
             "repository"
-        } else if abs_path.starts_with(project_root) {
-            let relative = abs_path.strip_prefix(project_root).unwrap_or(&abs_path);
-            let components: Vec<_> = relative.components().collect();
-            if components.len() == 1 {
-                "worktree"
-            } else {
-                "subdirectory"
-            }
+        } else if worktree_root.as_deref() == Some(&abs_path) {
+            "worktree"
+        } else if worktree_root.is_some() {
+            "subdirectory"
         } else {
             "unknown"
         };
 
-        // Find hooks
+        // Find shell script hooks
         let hooks = find_project_hooks(&git_dir)?;
+
+        // Find YAML-configured hooks
+        let yaml_cfg = find_yaml_config_for_status(&git_dir, worktree_root.as_deref())
+            .ok()
+            .flatten();
+        let yaml_hook_names: Vec<String> = yaml_cfg
+            .as_ref()
+            .map(|c| {
+                let mut names: Vec<String> = c.hooks.keys().cloned().collect();
+                names.sort();
+                names
+            })
+            .unwrap_or_default();
 
         if short {
             // Short format: PATH (type), optional repo line, then (LEVEL) hooks
@@ -520,15 +657,22 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
             if !is_repo_root {
                 println!("{} {}", project_root.display(), dim("(repository)"));
             }
-            let hook_names: Vec<_> = hooks
+            // Combine shell hook names and YAML hook names (deduped)
+            let mut all_names: Vec<String> = hooks
                 .iter()
                 .filter_map(|h| h.file_name())
                 .map(|n| n.to_string_lossy().to_string())
                 .collect();
-            let hooks_str = if hook_names.is_empty() {
+            for name in &yaml_hook_names {
+                if !all_names.contains(name) {
+                    all_names.push(name.clone());
+                }
+            }
+            all_names.sort();
+            let hooks_str = if all_names.is_empty() {
                 "none".to_string()
             } else {
-                hook_names.join(", ")
+                all_names.join(", ")
             };
             println!("{hooks_str} ({})", styled_trust_level(trust_level));
         } else {
@@ -554,14 +698,28 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
             println!("  {}", dim(trust_level_description(trust_level)));
             println!();
 
+            // YAML hooks section
+            if !yaml_hook_names.is_empty() {
+                println!("{} {}:", bold("Hooks configured in"), cyan("daft.yml"));
+                for name in &yaml_hook_names {
+                    println!("  - {}", cyan(name));
+                }
+                if !hooks.is_empty() {
+                    println!();
+                }
+            }
+
+            // Shell script hooks section
             if hooks.is_empty() {
-                println!("{} {}:", bold("No hooks found in"), cyan(PROJECT_HOOKS_DIR));
-                println!(
-                    "  {}",
-                    dim("(Create hooks by adding executable scripts to .daft/hooks/)")
-                );
+                if yaml_hook_names.is_empty() {
+                    println!("{} {}:", bold("No hooks found in"), cyan(PROJECT_HOOKS_DIR));
+                    println!(
+                        "  {}",
+                        dim("(Create scripts in .daft/hooks/ or configure daft.yml)")
+                    );
+                }
             } else {
-                println!("{} {}:", bold("Hooks found in"), cyan(PROJECT_HOOKS_DIR));
+                println!("{} {}:", bold("Shell hooks in"), cyan(PROJECT_HOOKS_DIR));
                 for hook in &hooks {
                     let name = hook.file_name().unwrap_or_default().to_string_lossy();
                     let executable = is_executable(hook);
@@ -574,7 +732,7 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
                 }
             }
 
-            // Check for deprecated hook filenames among discovered hooks
+            // Check for deprecated hook filenames among discovered shell hooks
             let deprecated_hooks: Vec<_> = hooks
                 .iter()
                 .filter_map(|hook_path| {
@@ -626,7 +784,16 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
                 }
                 TrustLevel::Prompt | TrustLevel::Allow => {
                     println!("{}", bold("To revoke trust:"));
-                    println!("  {}", cyan(&format!("git daft hooks deny {path_arg}")));
+                    println!(
+                        "  {}  {}",
+                        cyan(&format!("git daft hooks deny {path_arg}")),
+                        dim("(explicitly deny)")
+                    );
+                    println!(
+                        "  {}  {}",
+                        cyan(&format!("git daft hooks trust reset {path_arg}")),
+                        dim("(remove trust entry)")
+                    );
                 }
             }
         }
@@ -804,6 +971,67 @@ fn cmd_reset_trust(force: bool) -> Result<()> {
     Ok(())
 }
 
+/// Remove the trust entry for a specific repository path.
+fn cmd_reset_trust_path(path: &Path, force: bool) -> Result<()> {
+    let abs_path = path
+        .canonicalize()
+        .with_context(|| format!("Path does not exist: {}", path.display()))?;
+
+    let original_dir = std::env::current_dir()?;
+    std::env::set_current_dir(&abs_path)
+        .with_context(|| format!("Cannot change to directory: {}", abs_path.display()))?;
+
+    let result = (|| -> Result<()> {
+        if !is_git_repository()? {
+            anyhow::bail!("Not in a git repository: {}", abs_path.display());
+        }
+
+        let git_dir = get_git_common_dir()?;
+        let db = TrustDatabase::load().context("Failed to load trust database")?;
+        let project_root = git_dir.parent().context("Invalid git directory")?;
+
+        if !db.has_explicit_trust(&git_dir) {
+            println!("{} {}", project_root.display(), dim("(repository)"));
+            println!("{}", dim("No explicit trust entry to remove."));
+            return Ok(());
+        }
+
+        let current_level = db.get_trust_level(&git_dir);
+        println!("{}", bold("Current:"));
+        println!("{} {}", project_root.display(), dim("(repository)"));
+        println!("Trust level: {}", styled_trust_level(current_level));
+
+        if !force {
+            print!(
+                "\n{} trust entry for this repository? [y/N] ",
+                red("Remove")
+            );
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim().to_lowercase();
+
+            if input != "y" && input != "yes" {
+                println!("{}", dim("Aborted."));
+                return Ok(());
+            }
+        }
+
+        let mut db = db;
+        db.remove_trust(&git_dir);
+        db.save().context("Failed to save trust database")?;
+
+        println!("{} {}", project_root.display(), dim("(repository)"));
+        println!("{}", dim("Trust entry removed."));
+
+        Ok(())
+    })();
+
+    std::env::set_current_dir(&original_dir)?;
+    result
+}
+
 /// Migrate deprecated hook filenames to their new canonical names.
 ///
 /// Must be run from within a worktree. Only migrates hooks in the
@@ -925,6 +1153,39 @@ fn cmd_migrate(dry_run: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Find YAML-configured hooks for the status display.
+///
+/// Checks the given worktree first, then falls back to searching worktree
+/// subdirectories of the project root (for the bare-clone case where the
+/// caller is at the repo root rather than inside a worktree).
+fn find_yaml_config_for_status(
+    git_dir: &Path,
+    worktree_root: Option<&Path>,
+) -> Result<Option<yaml_config::YamlConfig>> {
+    if let Some(wt) = worktree_root {
+        if let Ok(Some(config)) = yaml_config_loader::load_merged_config(wt) {
+            return Ok(Some(config));
+        }
+    }
+
+    // Fall back: search worktree subdirectories of the project root
+    let project_root = git_dir.parent().context("Invalid git directory")?;
+    for entry in std::fs::read_dir(project_root)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let path = entry.path();
+        if path.is_dir() && path.file_name().map(|n| n != ".git").unwrap_or(false) {
+            if let Ok(Some(config)) = yaml_config_loader::load_merged_config(&path) {
+                return Ok(Some(config));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 /// Find project hooks in the current repository.
@@ -1054,66 +1315,66 @@ fn cmd_install(hooks: &[String]) -> Result<()> {
     };
 
     // Check if config already exists
-    let existing_config = yaml_config_loader::load_merged_config(&worktree_root)
-        .context("Failed to load YAML config")?;
+    let existing_config_file = yaml_config_loader::find_config_file(&worktree_root);
 
-    let config_path = worktree_root.join("daft.yml");
+    if let Some((config_path, _)) = existing_config_file {
+        // Config file exists — don't modify it. Show what's missing and provide a snippet.
+        let config = yaml_config_loader::load_merged_config(&worktree_root)
+            .context("Failed to load YAML config")?;
 
-    if let Some(ref config) = existing_config {
-        // Config exists — add only hooks not already defined
-        let mut added = Vec::new();
-        let mut skipped = Vec::new();
+        println!(
+            "Config file already exists: {}",
+            bold(&config_path.display().to_string())
+        );
 
-        for &name in &hook_names {
-            if config.hooks.contains_key(name) {
-                skipped.push(name);
-            } else {
-                added.push(name);
-            }
-        }
+        let (existing, missing): (Vec<&str>, Vec<&str>) = if let Some(ref cfg) = config {
+            hook_names
+                .iter()
+                .partition(|name| cfg.hooks.contains_key(**name))
+        } else {
+            (vec![], hook_names.clone())
+        };
 
-        if added.is_empty() {
-            for name in &skipped {
-                println!(
-                    "  {} {name} {}",
-                    yellow("skipped"),
-                    dim("(already defined)")
-                );
-            }
-            println!("\n{}", dim("No new hooks to add."));
+        if missing.is_empty() {
+            println!("\n{}", dim("All requested hooks are already defined."));
             return Ok(());
         }
 
-        // Append new hooks to the existing file
-        let mut content = std::fs::read_to_string(&config_path)
-            .with_context(|| format!("Failed to read {}", config_path.display()))?;
-
-        // Ensure trailing newline before appending
-        if !content.ends_with('\n') {
-            content.push('\n');
-        }
-
-        for name in &added {
-            content.push_str(&format!(
-                "\n  {name}:\n    jobs:\n      - name: setup\n        run: echo \"TODO: add your {name} command\"\n"
-            ));
-        }
-
-        std::fs::write(&config_path, &content)
-            .with_context(|| format!("Failed to write {}", config_path.display()))?;
-
-        for name in &added {
-            println!("  {} {name}", green("added"));
-        }
-        for name in &skipped {
+        if !existing.is_empty() {
             println!(
-                "  {} {name} {}",
-                yellow("skipped"),
-                dim("(already defined)")
+                "\nAlready defined: {}",
+                existing
+                    .iter()
+                    .map(|n| green(n))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
+        println!(
+            "Not yet defined: {}",
+            missing
+                .iter()
+                .map(|n| cyan(n))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        println!(
+            "\nAdd them to your {} under the {} key:\n",
+            bold(&config_path.file_name().unwrap().to_string_lossy()),
+            cyan("hooks")
+        );
+
+        for name in &missing {
+            println!("  {name}:");
+            println!("    jobs:");
+            println!("      - name: setup");
+            println!("        run: echo \"TODO: add your {name} command\"");
+        }
+
+        println!();
     } else {
         // No config — create new file
+        let config_path = worktree_root.join("daft.yml");
         let mut content = String::from(
             "# daft hooks configuration\n# See: https://github.com/avihut/daft\n\nhooks:\n",
         );
@@ -1198,10 +1459,408 @@ fn cmd_dump() -> Result<()> {
         }
     };
 
-    let yaml = serde_yaml::to_string(&config).context("Failed to serialize config")?;
-    print!("{yaml}");
+    let value: serde_yaml::Value =
+        serde_yaml::to_value(&config).context("Failed to convert config to YAML value")?;
+    let stripped = strip_yaml_nulls(value);
+    let yaml = serde_yaml::to_string(&stripped).context("Failed to serialize config")?;
+    print!("{}", colorize_yaml_dump(&yaml));
 
     Ok(())
+}
+
+/// Run a hook manually.
+fn cmd_run(args: &HooksRunArgs) -> Result<()> {
+    use crate::hooks::yaml_config_loader::get_effective_jobs;
+    use crate::hooks::HookContext;
+
+    // Resolve worktree context
+    let worktree_path = get_current_worktree_path()
+        .context("Not in a git worktree. Run this command from within a worktree directory.")?;
+
+    // Load YAML config (needed for both listing and execution)
+    let yaml_config = yaml_config_loader::load_merged_config(&worktree_path)
+        .context("Failed to load YAML config")?;
+    let yaml_config = match yaml_config {
+        Some(c) => c,
+        None => {
+            anyhow::bail!("No daft.yml found in this worktree");
+        }
+    };
+
+    // If no hook type specified, list available hooks
+    let hook_type_str = match args.hook_type {
+        Some(ref s) => s.clone(),
+        None => {
+            return cmd_run_list_hooks(&yaml_config);
+        }
+    };
+
+    // Parse hook type
+    let hook_type = HookType::from_yaml_name(&hook_type_str).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Unknown hook type: '{}'\nValid hook types: {}",
+            hook_type_str,
+            yaml_config::KNOWN_HOOK_NAMES.join(", ")
+        )
+    })?;
+
+    let git_dir = get_git_common_dir().context("Could not determine git directory")?;
+    let project_root = get_project_root().context("Could not determine project root")?;
+    let branch_name = get_current_branch().unwrap_or_else(|_| "HEAD".to_string());
+
+    let hook_name = hook_type.yaml_name();
+    let hook_def = yaml_config.hooks.get(hook_name).ok_or_else(|| {
+        let mut names: Vec<&str> = yaml_config.hooks.keys().map(|s| s.as_str()).collect();
+        names.sort();
+        if names.is_empty() {
+            anyhow::anyhow!("No hooks defined in daft.yml")
+        } else {
+            anyhow::anyhow!(
+                "Hook '{}' is not defined in daft.yml\nConfigured hooks: {}",
+                hook_name,
+                names.join(", ")
+            )
+        }
+    })?;
+
+    // Check trust level and show hint if not trusted
+    let trust_db = TrustDatabase::load().unwrap_or_default();
+    let trust_level = trust_db.get_trust_level(&git_dir);
+    if trust_level != TrustLevel::Allow {
+        println!(
+            "{} this repository is not in your trust list ({}).",
+            dim("Note:"),
+            styled_trust_level(trust_level)
+        );
+        println!(
+            "  {} run `{}` to allow hooks to run automatically.",
+            dim("Tip:"),
+            cyan("git daft hooks trust")
+        );
+        println!();
+    }
+
+    // Build job filter
+    let filter = JobFilter {
+        only_job_name: args.job.clone(),
+        only_tags: args.tag.clone(),
+    };
+
+    // Dry-run: preview jobs without executing
+    if args.dry_run {
+        let mut jobs = get_effective_jobs(hook_def);
+
+        // Apply exclude_tags from hook definition
+        if let Some(ref exclude_tags) = hook_def.exclude_tags {
+            jobs.retain(|job| {
+                if let Some(ref tags) = job.tags {
+                    !tags.iter().any(|t| exclude_tags.contains(t))
+                } else {
+                    true
+                }
+            });
+        }
+
+        // Apply inclusion filters
+        if let Some(ref name) = filter.only_job_name {
+            jobs.retain(|j| j.name.as_deref() == Some(name.as_str()));
+            if jobs.is_empty() {
+                anyhow::bail!("No job named '{}' found in hook '{}'", name, hook_name);
+            }
+        }
+        if !filter.only_tags.is_empty() {
+            jobs.retain(|job| {
+                job.tags
+                    .as_ref()
+                    .is_some_and(|tags| tags.iter().any(|t| filter.only_tags.contains(t)))
+            });
+            if jobs.is_empty() {
+                anyhow::bail!(
+                    "No jobs matching tags {:?} in hook '{}'",
+                    filter.only_tags,
+                    hook_name
+                );
+            }
+        }
+
+        // Sort by priority
+        jobs.sort_by_key(|j| j.priority.unwrap_or(0));
+
+        if jobs.is_empty() {
+            println!("{}", dim("No jobs to run."));
+            return Ok(());
+        }
+
+        let job_count = jobs.len();
+        let job_word = if job_count == 1 { "job" } else { "jobs" };
+        println!(
+            "{} {} ({} {})",
+            bold("Hook:"),
+            cyan(hook_name),
+            job_count,
+            job_word
+        );
+        println!();
+
+        for (i, job) in jobs.iter().enumerate() {
+            let name = job.name.as_deref().unwrap_or("(unnamed)");
+            println!("  {}. {}", i + 1, bold(name));
+
+            if let Some(ref run) = job.run {
+                println!("     {}: {}", dim("run"), run);
+            } else if let Some(ref script) = job.script {
+                let runner_str = job
+                    .runner
+                    .as_ref()
+                    .map(|r| format!("{r} "))
+                    .unwrap_or_default();
+                println!("     {}: {}{}", dim("script"), runner_str, script);
+            } else if job.group.is_some() {
+                println!("     {}", dim("(group)"));
+            }
+
+            if let Some(ref needs) = job.needs {
+                if !needs.is_empty() {
+                    println!("     {}: [{}]", dim("needs"), needs.join(", "));
+                }
+            }
+
+            if let Some(ref tags) = job.tags {
+                if !tags.is_empty() {
+                    println!("     {}: [{}]", dim("tags"), tags.join(", "));
+                }
+            }
+
+            if i + 1 < job_count {
+                println!();
+            }
+        }
+
+        return Ok(());
+    }
+
+    // Build HookContext for execution
+    let ctx = HookContext::new(
+        hook_type,
+        "hooks-run",
+        &project_root,
+        &git_dir,
+        "origin",
+        &worktree_path,
+        &worktree_path,
+        &branch_name,
+    );
+
+    let hooks_config = HooksConfig::default();
+    let executor = HookExecutor::new(hooks_config)?
+        .with_bypass_trust(true)
+        .with_job_filter(filter);
+
+    let mut output = crate::output::CliOutput::default_output();
+    let result = executor.execute(&ctx, &mut output)?;
+
+    if result.skipped {
+        if let Some(reason) = result.skip_reason {
+            println!("{}", dim(&format!("Skipped: {reason}")));
+        }
+    } else if !result.success {
+        std::process::exit(result.exit_code.unwrap_or(1));
+    }
+
+    Ok(())
+}
+
+/// List available hooks when `hooks run` is invoked with no arguments.
+fn cmd_run_list_hooks(config: &yaml_config::YamlConfig) -> Result<()> {
+    use crate::hooks::yaml_config_loader::get_effective_jobs;
+
+    if config.hooks.is_empty() {
+        println!("{}", dim("No hooks defined in daft.yml."));
+        return Ok(());
+    }
+
+    let mut names: Vec<&String> = config.hooks.keys().collect();
+    names.sort();
+
+    println!("{}", bold("Available hooks:"));
+    println!();
+
+    for name in &names {
+        let hook_def = &config.hooks[*name];
+        let jobs = get_effective_jobs(hook_def);
+        let job_count = jobs.len();
+        let job_word = if job_count == 1 { "job" } else { "jobs" };
+        println!("  {} ({} {})", cyan(name), job_count, job_word);
+    }
+
+    println!();
+    println!(
+        "Run a hook with: {}",
+        cyan("git daft hooks run <hook-type>")
+    );
+
+    Ok(())
+}
+
+/// Recursively remove null values and empty mappings/sequences from a YAML value.
+fn strip_yaml_nulls(value: serde_yaml::Value) -> serde_yaml::Value {
+    match value {
+        serde_yaml::Value::Mapping(map) => {
+            let mut out = serde_yaml::Mapping::new();
+            for (k, v) in map {
+                if v.is_null() {
+                    continue;
+                }
+                let stripped = strip_yaml_nulls(v);
+                match &stripped {
+                    serde_yaml::Value::Mapping(m) if m.is_empty() => continue,
+                    serde_yaml::Value::Sequence(s) if s.is_empty() => continue,
+                    _ => {}
+                }
+                out.insert(k, stripped);
+            }
+            serde_yaml::Value::Mapping(out)
+        }
+        serde_yaml::Value::Sequence(seq) => serde_yaml::Value::Sequence(
+            seq.into_iter()
+                .filter(|v| !v.is_null())
+                .map(strip_yaml_nulls)
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// Colorize a serialized YAML string for terminal output.
+///
+/// Skips the `---` document separator, colors top-level keys bold,
+/// hook names bold+yellow, sub-keys cyan, quoted strings green, and
+/// booleans/numbers yellow.
+fn colorize_yaml_dump(yaml: &str) -> String {
+    use crate::styles::{colors_enabled, BOLD, CYAN, DIM, RESET, YELLOW};
+
+    let use_colors = colors_enabled();
+    let mut in_hooks = false;
+    let mut result = String::new();
+
+    for line in yaml.lines() {
+        if line == "---" {
+            continue;
+        }
+
+        if line.is_empty() {
+            result.push('\n');
+            continue;
+        }
+
+        let indent_len = line.len() - line.trim_start().len();
+        let rest = &line[indent_len..];
+        let indent = &line[..indent_len];
+
+        // Track entry into the hooks: section (top-level key)
+        if indent_len == 0 {
+            in_hooks = rest == "hooks:" || rest.starts_with("hooks: ");
+        }
+
+        if !use_colors {
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+
+        let colored = if let Some(after_dash) = rest.strip_prefix("- ") {
+            format!("{DIM}-{RESET} {}", yaml_colorize_value_part(after_dash))
+        } else if rest == "-" {
+            format!("{DIM}-{RESET}")
+        } else if let Some(colon_pos) = yaml_key_colon(rest) {
+            let key = &rest[..colon_pos];
+            let after_colon = &rest[colon_pos + 1..];
+
+            let colored_key = if in_hooks && indent_len == 2 {
+                // Hook name: bold + yellow
+                format!("{BOLD}{YELLOW}{key}{RESET}")
+            } else if indent_len == 0 {
+                // Top-level config key: bold
+                format!("{BOLD}{key}{RESET}")
+            } else {
+                // Sub-key: cyan
+                format!("{CYAN}{key}{RESET}")
+            };
+
+            if after_colon.is_empty() {
+                format!("{colored_key}:")
+            } else {
+                let val = after_colon.trim_start();
+                format!("{colored_key}: {}", yaml_colorize_scalar(val))
+            }
+        } else {
+            yaml_colorize_scalar(rest)
+        };
+
+        result.push_str(indent);
+        result.push_str(&colored);
+        result.push('\n');
+    }
+
+    result
+}
+
+/// Find the byte position of the `:` separating a YAML key from its value.
+///
+/// Returns `Some(pos)` for `key: value` (pos of `:`) or for a bare
+/// mapping header `key:` (pos of trailing `:`). Returns `None` for
+/// plain strings that contain no key-value separator.
+fn yaml_key_colon(s: &str) -> Option<usize> {
+    if let Some(pos) = s.find(": ") {
+        return Some(pos);
+    }
+    if s.ends_with(':') {
+        return Some(s.len() - 1);
+    }
+    None
+}
+
+/// Colorize the content after `- ` in a YAML list item.
+///
+/// If the content is `key: value`, the key is colored cyan. Otherwise
+/// the whole string is treated as a scalar value.
+fn yaml_colorize_value_part(s: &str) -> String {
+    use crate::styles::{CYAN, RESET};
+    if let Some(pos) = yaml_key_colon(s) {
+        let key = &s[..pos];
+        let after = &s[pos + 1..];
+        let colored_key = format!("{CYAN}{key}{RESET}");
+        if after.is_empty() {
+            format!("{colored_key}:")
+        } else {
+            format!(
+                "{colored_key}: {}",
+                yaml_colorize_scalar(after.trim_start())
+            )
+        }
+    } else {
+        yaml_colorize_scalar(s)
+    }
+}
+
+/// Colorize a scalar YAML value.
+///
+/// - Booleans and null → yellow
+/// - Quoted strings → green
+/// - Numbers → yellow
+/// - Everything else → plain
+fn yaml_colorize_scalar(value: &str) -> String {
+    use crate::styles::{GREEN, RESET, YELLOW};
+    if matches!(value, "true" | "false" | "null" | "~") {
+        return format!("{YELLOW}{value}{RESET}");
+    }
+    if value.starts_with('"') || value.starts_with('\'') {
+        return format!("{GREEN}{value}{RESET}");
+    }
+    if value.parse::<i64>().is_ok() || value.parse::<f64>().is_ok() {
+        return format!("{YELLOW}{value}{RESET}");
+    }
+    value.to_string()
 }
 
 /// Find the worktree root directory.

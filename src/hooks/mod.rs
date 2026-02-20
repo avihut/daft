@@ -8,7 +8,6 @@
 //! | Hook | Trigger | Source |
 //! |------|---------|--------|
 //! | `post-clone` | After `git worktree-clone` | New default branch worktree |
-//! | `post-init` | After `git worktree-init` | New initial worktree |
 //! | `worktree-pre-create` | Before `git worktree add` | Source worktree |
 //! | `worktree-post-create` | After worktree created | New worktree |
 //! | `worktree-pre-remove` | Before `git worktree remove` | Worktree being removed |
@@ -66,10 +65,6 @@ pub enum HookType {
     /// Hook file is read from the new default branch worktree.
     PostClone,
 
-    /// Runs after `git worktree-init` completes.
-    /// Hook file is read from the new initial worktree.
-    PostInit,
-
     /// Runs before `git worktree add`.
     /// Hook file is read from the source worktree (where command runs).
     PreCreate,
@@ -92,7 +87,6 @@ impl HookType {
     pub fn filename(&self) -> &'static str {
         match self {
             HookType::PostClone => "post-clone",
-            HookType::PostInit => "post-init",
             HookType::PreCreate => "worktree-pre-create",
             HookType::PostCreate => "worktree-post-create",
             HookType::PreRemove => "worktree-pre-remove",
@@ -106,7 +100,6 @@ impl HookType {
     pub fn yaml_name(&self) -> &'static str {
         match self {
             HookType::PostClone => "post-clone",
-            HookType::PostInit => "post-init",
             HookType::PreCreate => "worktree-pre-create",
             HookType::PostCreate => "worktree-post-create",
             HookType::PreRemove => "worktree-pre-remove",
@@ -120,7 +113,6 @@ impl HookType {
     pub fn from_yaml_name(name: &str) -> Option<Self> {
         match name {
             "post-clone" => Some(HookType::PostClone),
-            "post-init" => Some(HookType::PostInit),
             "worktree-pre-create" => Some(HookType::PreCreate),
             "worktree-post-create" => Some(HookType::PostCreate),
             "worktree-pre-remove" => Some(HookType::PreRemove),
@@ -131,14 +123,14 @@ impl HookType {
 
     /// Returns the deprecated filename for this hook type, if it was renamed.
     ///
-    /// Returns `None` for hooks that were not renamed (`post-clone`, `post-init`).
+    /// Returns `None` for hooks that were not renamed (`post-clone`).
     pub fn deprecated_filename(&self) -> Option<&'static str> {
         match self {
             HookType::PreCreate => Some("pre-create"),
             HookType::PostCreate => Some("post-create"),
             HookType::PreRemove => Some("pre-remove"),
             HookType::PostRemove => Some("post-remove"),
-            HookType::PostClone | HookType::PostInit => None,
+            HookType::PostClone => None,
         }
     }
 
@@ -148,7 +140,6 @@ impl HookType {
     pub fn from_filename(name: &str) -> Option<HookType> {
         match name {
             "post-clone" => Some(HookType::PostClone),
-            "post-init" => Some(HookType::PostInit),
             "worktree-pre-create" | "pre-create" => Some(HookType::PreCreate),
             "worktree-post-create" | "post-create" => Some(HookType::PostCreate),
             "worktree-pre-remove" | "pre-remove" => Some(HookType::PreRemove),
@@ -161,7 +152,6 @@ impl HookType {
     pub fn config_key(&self) -> &'static str {
         match self {
             HookType::PostClone => "postClone",
-            HookType::PostInit => "postInit",
             HookType::PreCreate => "worktreePreCreate",
             HookType::PostCreate => "worktreePostCreate",
             HookType::PreRemove => "worktreePreRemove",
@@ -171,14 +161,14 @@ impl HookType {
 
     /// Returns the deprecated config key for this hook type, if it was renamed.
     ///
-    /// Returns `None` for hooks that were not renamed (`postClone`, `postInit`).
+    /// Returns `None` for hooks that were not renamed (`postClone`).
     pub fn deprecated_config_key(&self) -> Option<&'static str> {
         match self {
             HookType::PreCreate => Some("preCreate"),
             HookType::PostCreate => Some("postCreate"),
             HookType::PreRemove => Some("preRemove"),
             HookType::PostRemove => Some("postRemove"),
-            HookType::PostClone | HookType::PostInit => None,
+            HookType::PostClone => None,
         }
     }
 
@@ -201,7 +191,6 @@ impl HookType {
     pub fn all() -> &'static [HookType] {
         &[
             HookType::PostClone,
-            HookType::PostInit,
             HookType::PreCreate,
             HookType::PostCreate,
             HookType::PreRemove,
@@ -280,7 +269,6 @@ pub struct HooksConfig {
     pub output: HookOutputConfig,
     /// Per-hook configurations.
     pub post_clone: HookConfig,
-    pub post_init: HookConfig,
     pub worktree_pre_create: HookConfig,
     pub worktree_post_create: HookConfig,
     pub worktree_pre_remove: HookConfig,
@@ -296,7 +284,6 @@ impl Default for HooksConfig {
             timeout_seconds: 300,
             output: HookOutputConfig::default(),
             post_clone: HookConfig::new(HookType::PostClone),
-            post_init: HookConfig::new(HookType::PostInit),
             worktree_pre_create: HookConfig::new(HookType::PreCreate),
             worktree_post_create: HookConfig::new(HookType::PostCreate),
             worktree_pre_remove: HookConfig::new(HookType::PreRemove),
@@ -310,7 +297,6 @@ impl HooksConfig {
     pub fn get_hook_config(&self, hook_type: HookType) -> &HookConfig {
         match hook_type {
             HookType::PostClone => &self.post_clone,
-            HookType::PostInit => &self.post_init,
             HookType::PreCreate => &self.worktree_pre_create,
             HookType::PostCreate => &self.worktree_post_create,
             HookType::PreRemove => &self.worktree_pre_remove,
@@ -322,7 +308,6 @@ impl HooksConfig {
     pub fn get_hook_config_mut(&mut self, hook_type: HookType) -> &mut HookConfig {
         match hook_type {
             HookType::PostClone => &mut self.post_clone,
-            HookType::PostInit => &mut self.post_init,
             HookType::PreCreate => &mut self.worktree_pre_create,
             HookType::PostCreate => &mut self.worktree_post_create,
             HookType::PreRemove => &mut self.worktree_pre_remove,
@@ -516,7 +501,6 @@ mod tests {
     #[test]
     fn test_hook_type_filename() {
         assert_eq!(HookType::PostClone.filename(), "post-clone");
-        assert_eq!(HookType::PostInit.filename(), "post-init");
         assert_eq!(HookType::PreCreate.filename(), "worktree-pre-create");
         assert_eq!(HookType::PostCreate.filename(), "worktree-post-create");
         assert_eq!(HookType::PreRemove.filename(), "worktree-pre-remove");
@@ -526,7 +510,6 @@ mod tests {
     #[test]
     fn test_hook_type_deprecated_filename() {
         assert_eq!(HookType::PostClone.deprecated_filename(), None);
-        assert_eq!(HookType::PostInit.deprecated_filename(), None);
         assert_eq!(
             HookType::PreCreate.deprecated_filename(),
             Some("pre-create")
@@ -551,10 +534,6 @@ mod tests {
         assert_eq!(
             HookType::from_filename("post-clone"),
             Some(HookType::PostClone)
-        );
-        assert_eq!(
-            HookType::from_filename("post-init"),
-            Some(HookType::PostInit)
         );
         assert_eq!(
             HookType::from_filename("worktree-pre-create"),
@@ -607,7 +586,6 @@ mod tests {
     #[test]
     fn test_hook_type_deprecated_config_key() {
         assert_eq!(HookType::PostClone.deprecated_config_key(), None);
-        assert_eq!(HookType::PostInit.deprecated_config_key(), None);
         assert_eq!(
             HookType::PreCreate.deprecated_config_key(),
             Some("preCreate")
@@ -665,9 +643,8 @@ mod tests {
     #[test]
     fn test_hook_type_all() {
         let all = HookType::all();
-        assert_eq!(all.len(), 6);
+        assert_eq!(all.len(), 5);
         assert!(all.contains(&HookType::PostClone));
-        assert!(all.contains(&HookType::PostInit));
         assert!(all.contains(&HookType::PreCreate));
         assert!(all.contains(&HookType::PostCreate));
         assert!(all.contains(&HookType::PreRemove));

@@ -19,7 +19,6 @@ and more. For simple cases, you can also use **executable shell scripts** in
 | Hook                   | Trigger                              | Runs From                            |
 | ---------------------- | ------------------------------------ | ------------------------------------ |
 | `post-clone`           | After `git worktree-clone` completes | New default branch worktree          |
-| `post-init`            | After `git worktree-init` completes  | New initial worktree                 |
 | `worktree-pre-create`  | Before new worktree is added         | Source worktree (where command runs) |
 | `worktree-post-create` | After new worktree is created        | New worktree                         |
 | `worktree-pre-remove`  | Before worktree is removed           | Worktree being removed               |
@@ -59,17 +58,20 @@ git daft hooks trust
 # Prompt before running hooks
 git daft hooks prompt
 
-# Revoke trust
+# Revoke trust (sets explicit deny entry)
 git daft hooks deny
+
+# Remove trust entry (returns to default deny, no record kept)
+git daft hooks trust reset
 
 # Check current status
 git daft hooks status
 
 # List all trusted repositories
-git daft hooks list
+git daft hooks trust list
 
 # Clear all trust settings
-git daft hooks reset-trust
+git daft hooks trust reset all
 ```
 
 ## Quick Start
@@ -469,6 +471,37 @@ Use `git daft hooks dump` to inspect the fully merged configuration:
 git daft hooks dump
 ```
 
+## Manual Hook Execution
+
+Use `git daft hooks run` to manually trigger a hook outside the normal worktree
+lifecycle. Trust checks are bypassed since you are explicitly invoking the hook.
+
+```bash
+# List all configured hooks
+git daft hooks run
+
+# Run all jobs in a hook
+git daft hooks run worktree-post-create
+
+# Run a single job by name
+git daft hooks run worktree-post-create --job "mise install"
+
+# Run only jobs with a specific tag
+git daft hooks run worktree-post-create --tag setup
+
+# Preview what would run without executing
+git daft hooks run worktree-post-create --dry-run
+```
+
+This is useful for:
+
+- **Re-running** a hook after a previous failure
+- **Iterating** on hook scripts during development
+- **Bootstrapping** existing worktrees that predate the hooks config
+
+When run from an untrusted repository, a hint is shown suggesting
+`git daft hooks trust`, but hooks still execute.
+
 ## Shell Script Hooks
 
 For simple automation, you can use executable scripts in `.daft/hooks/` instead
@@ -618,9 +651,8 @@ git config --global daft.hooks.userDirectory ~/my-daft-hooks
 | `daft.hooks.output.timerDelay`   | `5`                     | Seconds before showing elapsed timer  |
 | `daft.hooks.output.tailLines`    | `6`                     | Rolling output lines per job          |
 
-Hook name config keys use camelCase: `postClone`, `postInit`,
-`worktreePreCreate`, `worktreePostCreate`, `worktreePreRemove`,
-`worktreePostRemove`.
+Hook name config keys use camelCase: `postClone`, `worktreePreCreate`,
+`worktreePostCreate`, `worktreePreRemove`, `worktreePostRemove`.
 
 ### Output Display
 

@@ -58,6 +58,17 @@ impl ExecutionMode {
     }
 }
 
+/// Filter criteria for selecting specific jobs within a hook.
+///
+/// Used by `hooks run` to restrict execution to a named job or jobs with specific tags.
+#[derive(Debug, Clone, Default)]
+pub struct JobFilter {
+    /// Run only the job with this name.
+    pub only_job_name: Option<String>,
+    /// Run only jobs that have at least one of these tags.
+    pub only_tags: Vec<String>,
+}
+
 /// Shared execution context passed through the job execution pipeline.
 ///
 /// Groups together the many parameters that would otherwise be separate function arguments.
@@ -94,6 +105,7 @@ pub fn execute_yaml_hook(
         working_dir,
         None,
         output_config,
+        &JobFilter::default(),
     )
 }
 
@@ -108,6 +120,7 @@ pub fn execute_yaml_hook_with_rc(
     working_dir: &Path,
     rc: Option<&str>,
     output_config: &HookOutputConfig,
+    filter: &JobFilter,
 ) -> Result<HookResult> {
     // Check hook-level skip/only conditions
     if let Some(ref skip) = hook_def.skip {
@@ -140,6 +153,27 @@ pub fn execute_yaml_hook_with_rc(
         });
         if jobs.is_empty() {
             return Ok(HookResult::skipped("All jobs excluded by tags"));
+        }
+    }
+
+    // Apply inclusion filters (from `hooks run --job` / `--tag`)
+    if let Some(ref name) = filter.only_job_name {
+        jobs.retain(|j| j.name.as_deref() == Some(name.as_str()));
+        if jobs.is_empty() {
+            anyhow::bail!("No job named '{name}' found in hook '{hook_name}'");
+        }
+    }
+    if !filter.only_tags.is_empty() {
+        jobs.retain(|job| {
+            job.tags
+                .as_ref()
+                .is_some_and(|tags| tags.iter().any(|t| filter.only_tags.contains(t)))
+        });
+        if jobs.is_empty() {
+            anyhow::bail!(
+                "No jobs matching tags {:?} in hook '{hook_name}'",
+                filter.only_tags
+            );
         }
     }
 
