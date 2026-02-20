@@ -11,8 +11,6 @@ on:
 jobs:
   bench:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v6
 
@@ -34,41 +32,28 @@ jobs:
       - name: Run benchmarks
         run: mise run bench
 
-      - name: Copy summary to docs
+      - name: Package results
         run: |
-          mkdir -p docs/benchmarks
-          VERSION=$(./target/release/daft --version 2>/dev/null | awk '{print $2}' || echo "unknown")
-          {
-            echo "---"
-            echo "title: Benchmarks"
-            echo "description: daft performance benchmarks vs. equivalent git scripting"
-            echo "---"
-            echo
-            cat benches/results/summary.md
-            echo
-            echo "---"
-            echo
-            echo "Version: v${VERSION}"
-          } > docs/benchmarks/index.md
-
-      - name: Save to history
-        run: |
-          VERSION=$(./target/release/daft --version 2>/dev/null | awk '{print $2}' || echo "unknown")
+          COMMIT=$(git rev-parse --short HEAD)
           DATE=$(date -u '+%Y-%m-%d')
-          mkdir -p benches/history
-          cp benches/results/summary.md "benches/history/${DATE}-v${VERSION}.md"
+          benches/package_results.sh "/tmp/bench-${DATE}-${COMMIT}.json"
 
-      - name: Commit results
+      - name: Push to daft-benchmarks
+        env:
+          BENCH_REPO_TOKEN: ${{ secrets.BENCH_REPO_TOKEN }}
         run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          DATE=$(date -u '+%Y-%m-%d')
+          FILENAME="${DATE}-${COMMIT}.json"
+
+          git clone https://x-access-token:${BENCH_REPO_TOKEN}@github.com/avihut/daft-benchmarks.git /tmp/daft-benchmarks
+          cp "/tmp/bench-${FILENAME}" "/tmp/daft-benchmarks/data/${FILENAME}"
+          cd /tmp/daft-benchmarks
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/benchmarks/index.md benches/history/
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "chore: update benchmark results [skip ci]"
-            git push
-          fi
+          git add "data/${FILENAME}"
+          git commit -m "bench: daft ${DATE} (${COMMIT})"
+          git push
 
       - name: Upload raw results
         uses: actions/upload-artifact@v6
