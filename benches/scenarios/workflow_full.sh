@@ -17,16 +17,17 @@ for size in small medium large; do
     create_bare_repo_with_hooks "$REPO" "$size"
 
     DEST="$TEMP_BASE/workflow-run-${size}"
+    DAFT_REPO="$DEST/daft/fixture-workflow-${size}"
 
     # DAFT side: sequential (as daft works — each command runs from inside a worktree)
     # Hooks fire automatically on clone and each checkout-branch.
     # Prune removes feature-a and feature-b.
-    DAFT_CMD="git-worktree-clone -q file://$REPO $DEST/daft-repo \
-&& cd $DEST/daft-repo/main \
+    DAFT_CMD="mkdir -p $DEST/daft && cd $DEST/daft && git-worktree-clone -q file://$REPO \
+&& cd $DAFT_REPO/main \
 && git-worktree-checkout-branch feature-a \
 && git-worktree-checkout-branch feature-b \
 && git-worktree-checkout-branch feature-c \
-&& rm -rf $DEST/daft-repo/feature-a $DEST/daft-repo/feature-b \
+&& rm -rf $DAFT_REPO/feature-a $DAFT_REPO/feature-b \
 && git-worktree-prune"
 
     # GIT side: clone, then parallel worktree creation, parallel hook work, parallel prune.

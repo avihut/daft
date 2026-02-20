@@ -17,19 +17,16 @@ for size in small medium large; do
     DEST="$TEMP_BASE/clone-hooks-run-${size}"
 
     # daft side: hooks run automatically
-    DAFT_CMD="git-worktree-clone -q file://$REPO $DEST/daft-repo"
+    DAFT_CMD="mkdir -p $DEST/daft && cd $DEST/daft && git-worktree-clone -q file://$REPO"
 
     # git side: clone + manually replicate hook work with parallelism
-    GIT_CMD="git clone --bare file://$REPO \$DEST/git-repo/.git 2>/dev/null \
-&& git -C \$DEST/git-repo/.git worktree add \$DEST/git-repo/main main 2>/dev/null \
-&& ( cd \$DEST/git-repo/main \
+    GIT_CMD="git clone --bare file://$REPO $DEST/git-repo/.git 2>/dev/null \
+&& git -C $DEST/git-repo/.git worktree add $DEST/git-repo/main main 2>/dev/null \
+&& ( cd $DEST/git-repo/main \
   && ( echo \"export PROJECT_ROOT=\$(pwd)\" > .envrc & touch .tool-versions & wait ) \
   && sleep 0.05 \
   && ( echo \"export WORKTREE=\$(pwd)\" > .envrc & touch .mise.local.toml & wait ) \
   && sleep 0.03 )"
-
-    # Export DEST so prepare and git commands can use it
-    export DEST
 
     bench_compare \
         "clone-hooks-${size}" \

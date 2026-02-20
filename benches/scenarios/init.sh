@@ -12,7 +12,7 @@ DEST="$TEMP_BASE/init-run"
 bench_compare \
     "init" \
     "rm -rf $DEST" \
-    "git-worktree-init -q $DEST/daft-repo" \
-    "mkdir -p $DEST/git-repo && git init --bare $DEST/git-repo/.git 2>/dev/null && git -C $DEST/git-repo/.git worktree add $DEST/git-repo/main --orphan main 2>/dev/null"
+    "mkdir -p $DEST/daft && cd $DEST/daft && git-worktree-init -q my-repo" \
+    "mkdir -p $DEST/git/my-repo && git init --bare $DEST/git/my-repo/.git 2>/dev/null && git -C $DEST/git/my-repo/.git worktree add --orphan -b main $DEST/git/my-repo/main 2>/dev/null"
 
 log_success "Init benchmark done"

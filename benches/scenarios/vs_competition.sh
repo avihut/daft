@@ -13,6 +13,7 @@ REPO="$TEMP_BASE/fixture-competition.git"
 create_bare_repo "$REPO" "medium"
 
 DEST="$TEMP_BASE/competition-run"
+DAFT_REPO="$DEST/daft/fixture-competition"
 
 # --- Shell alias pattern ---
 # This simulates what a user might put in their .bashrc:
@@ -21,8 +22,8 @@ DEST="$TEMP_BASE/competition-run"
 
 log "=== daft vs shell alias: clone + 3 branches ==="
 
-DAFT_CMD="git-worktree-clone -q file://$REPO $DEST/daft-repo \
-&& cd $DEST/daft-repo/main \
+DAFT_CMD="mkdir -p $DEST/daft && cd $DEST/daft && git-worktree-clone -q file://$REPO \
+&& cd $DAFT_REPO/main \
 && git-worktree-checkout-branch feature-a \
 && git-worktree-checkout-branch feature-b \
 && git-worktree-checkout-branch feature-c"
@@ -54,8 +55,8 @@ if command -v git-town >/dev/null 2>&1; then
     PREPARE_TOWN="rm -rf $ROOT_DAFT $ROOT_TOWN"
 
     # daft: clone + new branch
-    DAFT_TOWN_CMD="git-worktree-clone -q file://$REPO $ROOT_DAFT/repo \
-&& cd $ROOT_DAFT/repo/main \
+    DAFT_TOWN_CMD="mkdir -p $ROOT_DAFT && cd $ROOT_DAFT && git-worktree-clone -q file://$REPO \
+&& cd $ROOT_DAFT/fixture-competition/main \
 && git-worktree-checkout-branch feature-x"
 
     # git-town: clone + new branch (git-town uses regular clones)

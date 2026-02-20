@@ -23,9 +23,12 @@ for size in small medium large; do
 && git clone --bare file://$FIXTURE $ROOT/.git 2>/dev/null \
 && git -C $ROOT/.git worktree add $ROOT/main main 2>/dev/null"
 
+    # daft creates worktrees at $ROOT/feature/branch-1 (preserving branch path),
+    # git creates at $ROOT/feature-branch-1 (flat name). Clean up both.
     PREPARE_EXISTING="git -C $ROOT/.git worktree remove $ROOT/feature-branch-1 2>/dev/null; \
+git -C $ROOT/.git worktree remove $ROOT/feature/branch-1 2>/dev/null; \
 git -C $ROOT/.git worktree prune 2>/dev/null; \
-rm -rf $ROOT/feature-branch-1; true"
+rm -rf $ROOT/feature-branch-1 $ROOT/feature; true"
 
     eval "$SETUP_EXISTING"
 

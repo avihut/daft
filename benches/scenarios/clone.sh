@@ -19,7 +19,7 @@ for size in small medium large; do
     bench_compare \
         "clone-${size}" \
         "rm -rf $DEST" \
-        "git-worktree-clone -q file://$REPO $DEST/daft-repo" \
+        "mkdir -p $DEST/daft && cd $DEST/daft && git-worktree-clone -q file://$REPO" \
         "git clone --bare file://$REPO $DEST/git-repo/.git 2>/dev/null && git -C $DEST/git-repo/.git worktree add $DEST/git-repo/main main 2>/dev/null"
 
     log_success "Clone ($size) done"
