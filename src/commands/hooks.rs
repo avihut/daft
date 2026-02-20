@@ -100,7 +100,8 @@ fn status_long_about() -> String {
         "",
         "Shows:",
         &def("level", "Current trust level (deny, prompt, or allow)"),
-        &def("hooks", "Available hooks in .daft/hooks/"),
+        &def("yaml", "Hooks defined in daft.yml"),
+        &def("scripts", "Executable scripts in .daft/hooks/"),
         &def("commands", "Suggested commands to change trust"),
         "",
         &format!("Use {} for a compact one-line output.", bold("-s/--short")),
@@ -577,8 +578,21 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
             "unknown"
         };
 
-        // Find hooks
+        // Find shell script hooks
         let hooks = find_project_hooks(&git_dir)?;
+
+        // Find YAML-configured hooks
+        let yaml_cfg = find_yaml_config_for_status(&git_dir, worktree_root.as_deref())
+            .ok()
+            .flatten();
+        let yaml_hook_names: Vec<String> = yaml_cfg
+            .as_ref()
+            .map(|c| {
+                let mut names: Vec<String> = c.hooks.keys().cloned().collect();
+                names.sort();
+                names
+            })
+            .unwrap_or_default();
 
         if short {
             // Short format: PATH (type), optional repo line, then (LEVEL) hooks
@@ -586,15 +600,22 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
             if !is_repo_root {
                 println!("{} {}", project_root.display(), dim("(repository)"));
             }
-            let hook_names: Vec<_> = hooks
+            // Combine shell hook names and YAML hook names (deduped)
+            let mut all_names: Vec<String> = hooks
                 .iter()
                 .filter_map(|h| h.file_name())
                 .map(|n| n.to_string_lossy().to_string())
                 .collect();
-            let hooks_str = if hook_names.is_empty() {
+            for name in &yaml_hook_names {
+                if !all_names.contains(name) {
+                    all_names.push(name.clone());
+                }
+            }
+            all_names.sort();
+            let hooks_str = if all_names.is_empty() {
                 "none".to_string()
             } else {
-                hook_names.join(", ")
+                all_names.join(", ")
             };
             println!("{hooks_str} ({})", styled_trust_level(trust_level));
         } else {
@@ -620,14 +641,28 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
             println!("  {}", dim(trust_level_description(trust_level)));
             println!();
 
+            // YAML hooks section
+            if !yaml_hook_names.is_empty() {
+                println!("{} {}:", bold("Hooks configured in"), cyan("daft.yml"));
+                for name in &yaml_hook_names {
+                    println!("  - {}", cyan(name));
+                }
+                if !hooks.is_empty() {
+                    println!();
+                }
+            }
+
+            // Shell script hooks section
             if hooks.is_empty() {
-                println!("{} {}:", bold("No hooks found in"), cyan(PROJECT_HOOKS_DIR));
-                println!(
-                    "  {}",
-                    dim("(Create hooks by adding executable scripts to .daft/hooks/)")
-                );
+                if yaml_hook_names.is_empty() {
+                    println!("{} {}:", bold("No hooks found in"), cyan(PROJECT_HOOKS_DIR));
+                    println!(
+                        "  {}",
+                        dim("(Create scripts in .daft/hooks/ or configure daft.yml)")
+                    );
+                }
             } else {
-                println!("{} {}:", bold("Hooks found in"), cyan(PROJECT_HOOKS_DIR));
+                println!("{} {}:", bold("Shell hooks in"), cyan(PROJECT_HOOKS_DIR));
                 for hook in &hooks {
                     let name = hook.file_name().unwrap_or_default().to_string_lossy();
                     let executable = is_executable(hook);
@@ -640,7 +675,7 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
                 }
             }
 
-            // Check for deprecated hook filenames among discovered hooks
+            // Check for deprecated hook filenames among discovered shell hooks
             let deprecated_hooks: Vec<_> = hooks
                 .iter()
                 .filter_map(|hook_path| {
@@ -1061,6 +1096,39 @@ fn cmd_migrate(dry_run: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Find YAML-configured hooks for the status display.
+///
+/// Checks the given worktree first, then falls back to searching worktree
+/// subdirectories of the project root (for the bare-clone case where the
+/// caller is at the repo root rather than inside a worktree).
+fn find_yaml_config_for_status(
+    git_dir: &Path,
+    worktree_root: Option<&Path>,
+) -> Result<Option<yaml_config::YamlConfig>> {
+    if let Some(wt) = worktree_root {
+        if let Ok(Some(config)) = yaml_config_loader::load_merged_config(wt) {
+            return Ok(Some(config));
+        }
+    }
+
+    // Fall back: search worktree subdirectories of the project root
+    let project_root = git_dir.parent().context("Invalid git directory")?;
+    for entry in std::fs::read_dir(project_root)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let path = entry.path();
+        if path.is_dir() && path.file_name().map(|n| n != ".git").unwrap_or(false) {
+            if let Ok(Some(config)) = yaml_config_loader::load_merged_config(&path) {
+                return Ok(Some(config));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 /// Find project hooks in the current repository.
