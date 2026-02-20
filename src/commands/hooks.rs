@@ -2,10 +2,12 @@
 //!
 //! Provides `git daft hooks` subcommand with:
 //! - `trust` - Trust a repository to run hooks automatically
+//!   - `trust list` - List all repositories with trust settings
+//!   - `trust reset [path]` - Remove trust entry for a specific repository
+//!   - `trust reset all` - Clear all trust settings from the database
 //! - `prompt` - Trust a repository but prompt before each hook
 //! - `deny` - Revoke trust from a repository
 //! - `status` - Show trust status and available hooks
-//! - `list` - List all trusted repositories
 //! - `migrate` - Rename deprecated hook files to their new names
 //! - `install` - Scaffold a daft.yml with hook definitions
 //! - `validate` - Validate YAML hook configuration
@@ -126,7 +128,23 @@ fn list_long_about() -> String {
     .join("\n")
 }
 
-fn reset_trust_long_about() -> String {
+fn reset_long_about() -> String {
+    [
+        "Remove the trust entry for a repository, or clear all trust settings.",
+        "",
+        "Without a subcommand, removes the explicit trust record for the given",
+        "repository path (defaults to the current directory). This returns the",
+        "repository to the default trust level (deny).",
+        "",
+        &format!(
+            "Use '{}' to clear all trust settings from the database.",
+            bold("reset all")
+        ),
+    ]
+    .join("\n")
+}
+
+fn reset_all_long_about() -> String {
     [
         &format!("{} all trust settings from the database.", bold("Clear")),
         "",
@@ -225,14 +243,7 @@ pub struct Args {
 enum HooksCommand {
     /// Trust repository to run hooks automatically
     #[command(long_about = trust_long_about())]
-    Trust {
-        /// Path to repository (defaults to current directory)
-        #[arg(default_value = ".")]
-        path: std::path::PathBuf,
-
-        #[arg(short = 'f', long, help = "Do not ask for confirmation")]
-        force: bool,
-    },
+    Trust(trust_cmd::TrustArgs),
 
     /// Trust repository but prompt before each hook
     #[command(long_about = prompt_long_about())]
@@ -267,20 +278,6 @@ enum HooksCommand {
         short: bool,
     },
 
-    /// List all repositories with trust settings
-    #[command(long_about = list_long_about())]
-    List {
-        #[arg(long, help = "Include repositories with deny trust level")]
-        all: bool,
-    },
-
-    /// Clear all trust settings
-    #[command(long_about = reset_trust_long_about())]
-    ResetTrust {
-        #[arg(short = 'f', long, help = "Do not ask for confirmation")]
-        force: bool,
-    },
-
     /// Rename deprecated hook files to their new names
     #[command(long_about = migrate_long_about())]
     Migrate {
@@ -307,19 +304,80 @@ enum HooksCommand {
     Dump,
 }
 
+mod trust_cmd {
+    use super::{list_long_about, reset_all_long_about, reset_long_about};
+    use clap::{Args, Subcommand};
+    use std::path::PathBuf;
+
+    #[derive(Args)]
+    pub struct TrustArgs {
+        /// Path to repository (defaults to current directory)
+        #[arg(default_value = ".")]
+        pub path: PathBuf,
+
+        #[arg(short = 'f', long, help = "Do not ask for confirmation")]
+        pub force: bool,
+
+        #[command(subcommand)]
+        pub command: Option<TrustSubcommand>,
+    }
+
+    #[derive(Subcommand)]
+    pub enum TrustSubcommand {
+        /// List all repositories with trust settings
+        #[command(long_about = list_long_about())]
+        List {
+            #[arg(long, help = "Include repositories with deny trust level")]
+            all: bool,
+        },
+
+        /// Remove trust entry for a repository or clear all trust settings
+        #[command(long_about = reset_long_about())]
+        Reset(ResetArgs),
+    }
+
+    #[derive(Args)]
+    pub struct ResetArgs {
+        /// Path to repository (defaults to current directory)
+        #[arg(default_value = ".")]
+        pub path: PathBuf,
+
+        #[arg(short = 'f', long, help = "Do not ask for confirmation")]
+        pub force: bool,
+
+        #[command(subcommand)]
+        pub command: Option<ResetSubcommand>,
+    }
+
+    #[derive(Subcommand)]
+    pub enum ResetSubcommand {
+        /// Clear all trust settings from the database
+        #[command(long_about = reset_all_long_about())]
+        All {
+            #[arg(short = 'f', long, help = "Do not ask for confirmation")]
+            force: bool,
+        },
+    }
+}
+
 pub fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args = Args::parse_from(args);
 
     match args.command {
-        Some(HooksCommand::Trust { path, force }) => cmd_set_trust(&path, TrustLevel::Allow, force),
+        Some(HooksCommand::Trust(trust_args)) => match trust_args.command {
+            Some(trust_cmd::TrustSubcommand::List { all }) => cmd_list(all),
+            Some(trust_cmd::TrustSubcommand::Reset(reset_args)) => match reset_args.command {
+                Some(trust_cmd::ResetSubcommand::All { force }) => cmd_reset_trust(force),
+                None => cmd_reset_trust_path(&reset_args.path, reset_args.force),
+            },
+            None => cmd_set_trust(&trust_args.path, TrustLevel::Allow, trust_args.force),
+        },
         Some(HooksCommand::Prompt { path, force }) => {
             cmd_set_trust(&path, TrustLevel::Prompt, force)
         }
         Some(HooksCommand::Deny { path, force }) => cmd_deny(&path, force),
         Some(HooksCommand::Status { path, short }) => cmd_status(&path, short),
-        Some(HooksCommand::List { all }) => cmd_list(all),
-        Some(HooksCommand::ResetTrust { force }) => cmd_reset_trust(force),
         Some(HooksCommand::Migrate { dry_run }) => cmd_migrate(dry_run),
         Some(HooksCommand::Install { hooks }) => cmd_install(&hooks),
         Some(HooksCommand::Validate) => cmd_validate(),
@@ -810,6 +868,67 @@ fn cmd_reset_trust(force: bool) -> Result<()> {
     println!("{} repositories, {} patterns", green("0"), green("0"));
 
     Ok(())
+}
+
+/// Remove the trust entry for a specific repository path.
+fn cmd_reset_trust_path(path: &Path, force: bool) -> Result<()> {
+    let abs_path = path
+        .canonicalize()
+        .with_context(|| format!("Path does not exist: {}", path.display()))?;
+
+    let original_dir = std::env::current_dir()?;
+    std::env::set_current_dir(&abs_path)
+        .with_context(|| format!("Cannot change to directory: {}", abs_path.display()))?;
+
+    let result = (|| -> Result<()> {
+        if !is_git_repository()? {
+            anyhow::bail!("Not in a git repository: {}", abs_path.display());
+        }
+
+        let git_dir = get_git_common_dir()?;
+        let db = TrustDatabase::load().context("Failed to load trust database")?;
+        let project_root = git_dir.parent().context("Invalid git directory")?;
+
+        if !db.has_explicit_trust(&git_dir) {
+            println!("{} {}", project_root.display(), dim("(repository)"));
+            println!("{}", dim("No explicit trust entry to remove."));
+            return Ok(());
+        }
+
+        let current_level = db.get_trust_level(&git_dir);
+        println!("{}", bold("Current:"));
+        println!("{} {}", project_root.display(), dim("(repository)"));
+        println!("Trust level: {}", styled_trust_level(current_level));
+
+        if !force {
+            print!(
+                "\n{} trust entry for this repository? [y/N] ",
+                red("Remove")
+            );
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim().to_lowercase();
+
+            if input != "y" && input != "yes" {
+                println!("{}", dim("Aborted."));
+                return Ok(());
+            }
+        }
+
+        let mut db = db;
+        db.remove_trust(&git_dir);
+        db.save().context("Failed to save trust database")?;
+
+        println!("{} {}", project_root.display(), dim("(repository)"));
+        println!("{}", dim("Trust entry removed."));
+
+        Ok(())
+    })();
+
+    std::env::set_current_dir(&original_dir)?;
+    result
 }
 
 /// Migrate deprecated hook filenames to their new canonical names.
