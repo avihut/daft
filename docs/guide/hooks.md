@@ -59,17 +59,20 @@ git daft hooks trust
 # Prompt before running hooks
 git daft hooks prompt
 
-# Revoke trust
+# Revoke trust (sets explicit deny entry)
 git daft hooks deny
+
+# Remove trust entry (returns to default deny, no record kept)
+git daft hooks trust reset
 
 # Check current status
 git daft hooks status
 
 # List all trusted repositories
-git daft hooks list
+git daft hooks trust list
 
 # Clear all trust settings
-git daft hooks reset-trust
+git daft hooks trust reset all
 ```
 
 ## Quick Start

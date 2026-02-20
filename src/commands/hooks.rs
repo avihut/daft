@@ -692,7 +692,16 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
                 }
                 TrustLevel::Prompt | TrustLevel::Allow => {
                     println!("{}", bold("To revoke trust:"));
-                    println!("  {}", cyan(&format!("git daft hooks deny {path_arg}")));
+                    println!(
+                        "  {}  {}",
+                        cyan(&format!("git daft hooks deny {path_arg}")),
+                        dim("(explicitly deny)")
+                    );
+                    println!(
+                        "  {}  {}",
+                        cyan(&format!("git daft hooks trust reset {path_arg}")),
+                        dim("(remove trust entry)")
+                    );
                 }
             }
         }

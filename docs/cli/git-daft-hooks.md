@@ -32,12 +32,52 @@ Trust a repository to run hooks automatically.
 
 ```
 git daft hooks trust [OPTIONS] [PATH]
+git daft hooks trust list [--all]
+git daft hooks trust reset [OPTIONS] [PATH]
+git daft hooks trust reset all [OPTIONS]
 ```
 
 | Argument / Option | Description                 | Default                 |
 | ----------------- | --------------------------- | ----------------------- |
 | `[PATH]`          | Path to repository          | `.` (current directory) |
 | `-f, --force`     | Do not ask for confirmation |                         |
+
+#### trust list
+
+List all repositories with explicit trust settings.
+
+```
+git daft hooks trust list [OPTIONS]
+```
+
+| Option  | Description                                  |
+| ------- | -------------------------------------------- |
+| `--all` | Include repositories with `deny` trust level |
+
+#### trust reset
+
+Remove the trust entry for a repository, returning it to the default deny state.
+
+```
+git daft hooks trust reset [OPTIONS] [PATH]
+```
+
+| Argument / Option | Description                 | Default                 |
+| ----------------- | --------------------------- | ----------------------- |
+| `[PATH]`          | Path to repository          | `.` (current directory) |
+| `-f, --force`     | Do not ask for confirmation |                         |
+
+#### trust reset all
+
+Clear all trust settings from the database.
+
+```
+git daft hooks trust reset all [OPTIONS]
+```
+
+| Option        | Description                 |
+| ------------- | --------------------------- |
+| `-f, --force` | Do not ask for confirmation |
 
 ### prompt
 
@@ -78,31 +118,6 @@ git daft hooks status [OPTIONS] [PATH]
 | ----------------- | ----------------------------- | ----------------------- |
 | `[PATH]`          | Path to check                 | `.` (current directory) |
 | `-s, --short`     | Show compact one-line summary |                         |
-
-### list
-
-List all repositories with explicit trust settings.
-
-```
-git daft hooks list [OPTIONS]
-```
-
-| Option  | Description                                  |
-| ------- | -------------------------------------------- |
-| `--all` | Include repositories with `deny` trust level |
-
-### reset-trust
-
-Clear all trust settings from the database. Resets all repository trust entries
-and patterns to the initial empty state.
-
-```
-git daft hooks reset-trust [OPTIONS]
-```
-
-| Option        | Description                 |
-| ------------- | --------------------------- |
-| `-f, --force` | Do not ask for confirmation |
 
 ### migrate
 
@@ -186,6 +201,15 @@ git daft hooks trust -f
 
 # Check what hooks are configured
 git daft hooks status
+
+# List all trusted repositories
+git daft hooks trust list
+
+# Remove trust entry for the current repository
+git daft hooks trust reset
+
+# Clear all trust settings
+git daft hooks trust reset all
 
 # Validate before committing
 git daft hooks validate
