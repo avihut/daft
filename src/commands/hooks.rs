@@ -16,7 +16,7 @@ use crate::hooks::{
     TrustLevel, DEPRECATED_HOOK_REMOVAL_VERSION, PROJECT_HOOKS_DIR,
 };
 use crate::styles::{bold, cyan, def, dim, green, red, yellow};
-use crate::{get_git_common_dir, is_git_repository};
+use crate::{get_current_worktree_path, get_git_common_dir, is_git_repository};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::io::{self, IsTerminal, Write};
@@ -497,16 +497,13 @@ fn cmd_status(path: &Path, short: bool) -> Result<()> {
         // Determine path type and display
         let project_root = git_dir.parent().context("Invalid git directory")?;
         let is_repo_root = abs_path == project_root;
+        let worktree_root = get_current_worktree_path().ok();
         let path_type = if is_repo_root {
             "repository"
-        } else if abs_path.starts_with(project_root) {
-            let relative = abs_path.strip_prefix(project_root).unwrap_or(&abs_path);
-            let components: Vec<_> = relative.components().collect();
-            if components.len() == 1 {
-                "worktree"
-            } else {
-                "subdirectory"
-            }
+        } else if worktree_root.as_deref() == Some(&abs_path) {
+            "worktree"
+        } else if worktree_root.is_some() {
+            "subdirectory"
         } else {
             "unknown"
         };

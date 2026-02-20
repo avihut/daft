@@ -102,6 +102,11 @@ pub fn get_git_common_dir() -> Result<PathBuf> {
         .with_context(|| format!("Failed to canonicalize git directory: {}", path.display()))
 }
 
+pub fn get_current_worktree_path() -> Result<PathBuf> {
+    let git = git::GitCommand::new(false);
+    git.get_current_worktree_path()
+}
+
 pub fn get_project_root() -> Result<PathBuf> {
     let git_common_dir = get_git_common_dir()?;
     let project_root = git_common_dir

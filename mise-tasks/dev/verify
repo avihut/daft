@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 #MISE description="Verify dev setup is working"
+#MISE depends=["dev:setup"]
 set -euo pipefail
 
 echo "Verifying development setup..."
