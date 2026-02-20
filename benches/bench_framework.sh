@@ -54,8 +54,27 @@ cleanup_bench() {
 }
 
 # Run a hyperfine comparison.
-# Usage: bench_compare <name> <prepare_cmd> <daft_cmd> <git_cmd> [extra hyperfine flags...]
+#
+# Usage: bench_compare [--no-gitoxide] <name> <prepare_cmd> <daft_cmd> <git_cmd> [extra hyperfine flags...]
+#
+# By default runs a three-way comparison: daft, daft-gitoxide, and git.
+# Each command gets its own --prepare that toggles the gitoxide config key
+# in the isolated GIT_CONFIG_GLOBAL so the right variant is active.
+#
+# Pass --no-gitoxide as the first argument for a two-way comparison
+# (daft vs git only), which skips the gitoxide toggle entirely and uses
+# a single --prepare for both commands.
+#
+# WARNING: Extra flags passed via "$@" must NOT include --prepare, because
+# hyperfine pairs --prepare flags positionally with commands. Adding an
+# extra --prepare would shift the pairing and produce wrong results.
 bench_compare() {
+    local no_gitoxide=false
+    if [[ "${1:-}" == "--no-gitoxide" ]]; then
+        no_gitoxide=true
+        shift
+    fi
+
     local name="$1"
     local prepare_cmd="$2"
     local daft_cmd="$3"
@@ -67,20 +86,50 @@ bench_compare() {
 
     log "Running: $name"
 
-    local prepare_args=()
-    if [[ -n "$prepare_cmd" ]]; then
-        prepare_args=(--prepare "$prepare_cmd")
-    fi
+    if [[ "$no_gitoxide" == true ]]; then
+        # Two-way mode: daft vs git, single --prepare, no gitoxide toggle
+        hyperfine \
+            --warmup 3 \
+            --min-runs 10 \
+            "$@" \
+            --prepare "$prepare_cmd" \
+            --export-json "$json_out" \
+            --export-markdown "$md_out" \
+            --command-name "daft" "$daft_cmd" \
+            --command-name "git" "$git_cmd"
+    else
+        # Gitoxide toggle: set/unset in the isolated GIT_CONFIG_GLOBAL
+        local unset_gix="git config --file \"$GIT_CONFIG_GLOBAL\" --unset-all daft.experimental.gitoxide 2>/dev/null || [ \$? -eq 5 ]"
+        local set_gix="git config --file \"$GIT_CONFIG_GLOBAL\" daft.experimental.gitoxide true || exit 1"
 
-    hyperfine \
-        --warmup 3 \
-        --min-runs 10 \
-        "${prepare_args[@]}" \
-        --export-json "$json_out" \
-        --export-markdown "$md_out" \
-        "$@" \
-        --command-name "daft" "$daft_cmd" \
-        --command-name "git" "$git_cmd"
+        # Build per-command prepare: base cleanup + gitoxide toggle
+        local prep_daft=""
+        local prep_gix=""
+        local prep_git=""
+        if [[ -n "$prepare_cmd" ]]; then
+            prep_daft="$prepare_cmd && $unset_gix"
+            prep_gix="$prepare_cmd && $set_gix"
+            prep_git="$prepare_cmd && $unset_gix"
+        else
+            prep_daft="$unset_gix"
+            prep_gix="$set_gix"
+            prep_git="$unset_gix"
+        fi
+
+        # Three-way mode: daft, daft-gitoxide, git
+        hyperfine \
+            --warmup 3 \
+            --min-runs 10 \
+            "$@" \
+            --prepare "$prep_daft" \
+            --prepare "$prep_gix" \
+            --prepare "$prep_git" \
+            --export-json "$json_out" \
+            --export-markdown "$md_out" \
+            --command-name "daft" "$daft_cmd" \
+            --command-name "daft-gitoxide" "$daft_cmd" \
+            --command-name "git" "$git_cmd"
+    fi
 
     log_success "Saved: $json_out"
 }
