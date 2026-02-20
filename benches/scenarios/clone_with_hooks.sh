@@ -8,24 +8,6 @@ source "$SCRIPT_DIR/../fixtures/create_repo.sh"
 
 setup_bench_env
 
-# Replicate what the daft hooks do, using parallelism where possible.
-# This is the "competent manual user" baseline.
-GIT_HOOK_WORK='
-(
-    cd "$DEST/git-repo/main"
-    # post-clone hook equivalent (runs in worktree)
-    echo "export PROJECT_ROOT=$(pwd)" > .envrc &
-    touch .tool-versions &
-    wait
-    sleep 0.05
-    # worktree-post-create hook equivalent
-    echo "export WORKTREE=$(pwd)" > .envrc &
-    touch .mise.local.toml &
-    wait
-    sleep 0.03
-)
-'
-
 for size in small medium large; do
     log "=== Clone with hooks benchmark: $size ==="
 
