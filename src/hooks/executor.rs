@@ -4,7 +4,7 @@
 //! validating, and executing hooks with proper security checks.
 
 use super::yaml_config_loader;
-use super::yaml_executor;
+use super::yaml_executor::{self, JobFilter};
 use super::{
     find_hooks, list_hooks, FailMode, HookConfig, HookContext, HookEnvironment, HookType,
     HooksConfig, TrustDatabase, TrustLevel, DEPRECATED_HOOK_REMOVAL_VERSION,
@@ -80,6 +80,8 @@ pub struct HookExecutor {
     config: HooksConfig,
     trust_db: TrustDatabase,
     prompt_callback: Option<PromptCallback>,
+    bypass_trust: bool,
+    job_filter: JobFilter,
 }
 
 impl HookExecutor {
@@ -90,6 +92,8 @@ impl HookExecutor {
             config,
             trust_db,
             prompt_callback: None,
+            bypass_trust: false,
+            job_filter: JobFilter::default(),
         })
     }
 
@@ -99,12 +103,28 @@ impl HookExecutor {
             config,
             trust_db,
             prompt_callback: None,
+            bypass_trust: false,
+            job_filter: JobFilter::default(),
         }
     }
 
     /// Set a callback for prompting the user.
     pub fn with_prompt_callback(mut self, callback: PromptCallback) -> Self {
         self.prompt_callback = Some(callback);
+        self
+    }
+
+    /// Bypass trust checks during execution.
+    ///
+    /// Used by `hooks run` where the user is explicitly invoking a hook.
+    pub fn with_bypass_trust(mut self, bypass: bool) -> Self {
+        self.bypass_trust = bypass;
+        self
+    }
+
+    /// Set a job filter to restrict which jobs are executed.
+    pub fn with_job_filter(mut self, filter: JobFilter) -> Self {
+        self.job_filter = filter;
         self
     }
 
@@ -176,30 +196,32 @@ impl HookExecutor {
             }
         };
 
-        // Check trust level
-        let trust_level = self.trust_db.get_trust_level(&ctx.git_dir);
-        match trust_level {
-            TrustLevel::Deny => {
-                output.debug(&format!(
-                    "Skipping {hook_name} YAML hooks: repository not trusted"
-                ));
-                return Ok(Some(HookResult::skipped("Repository not trusted")));
-            }
-            TrustLevel::Prompt => {
-                let prompt_msg =
-                    format!("Repository has YAML hook config for '{hook_name}'. Execute?");
-                if let Some(ref callback) = self.prompt_callback {
-                    if !callback(&prompt_msg) {
-                        return Ok(Some(HookResult::skipped("User declined hook execution")));
-                    }
-                } else {
-                    output.warning(&format!(
-                        "YAML hooks exist but no permission callback configured. Skipping {hook_name}."
+        // Check trust level (unless bypassed by explicit invocation)
+        if !self.bypass_trust {
+            let trust_level = self.trust_db.get_trust_level(&ctx.git_dir);
+            match trust_level {
+                TrustLevel::Deny => {
+                    output.debug(&format!(
+                        "Skipping {hook_name} YAML hooks: repository not trusted"
                     ));
-                    return Ok(Some(HookResult::skipped("No permission callback")));
+                    return Ok(Some(HookResult::skipped("Repository not trusted")));
                 }
+                TrustLevel::Prompt => {
+                    let prompt_msg =
+                        format!("Repository has YAML hook config for '{hook_name}'. Execute?");
+                    if let Some(ref callback) = self.prompt_callback {
+                        if !callback(&prompt_msg) {
+                            return Ok(Some(HookResult::skipped("User declined hook execution")));
+                        }
+                    } else {
+                        output.warning(&format!(
+                            "YAML hooks exist but no permission callback configured. Skipping {hook_name}."
+                        ));
+                        return Ok(Some(HookResult::skipped("No permission callback")));
+                    }
+                }
+                TrustLevel::Allow => {}
             }
-            TrustLevel::Allow => {}
         }
 
         let source_dir = yaml_config.source_dir.as_deref().unwrap_or(".daft");
@@ -217,6 +239,7 @@ impl HookExecutor {
             working_dir,
             rc,
             &self.config.output,
+            &self.job_filter,
         )?;
 
         if !result.success && !result.skipped {
@@ -275,30 +298,32 @@ impl HookExecutor {
             return Ok(HookResult::skipped("No hook files found"));
         }
 
-        // Check trust level
-        let trust_level = self.trust_db.get_trust_level(&ctx.git_dir);
+        // Check trust level (unless bypassed by explicit invocation)
+        if !self.bypass_trust {
+            let trust_level = self.trust_db.get_trust_level(&ctx.git_dir);
 
-        let has_project_hooks = discovery
-            .hooks
-            .iter()
-            .any(|h| h.starts_with(hook_source_worktree));
+            let has_project_hooks = discovery
+                .hooks
+                .iter()
+                .any(|h| h.starts_with(hook_source_worktree));
 
-        if has_project_hooks {
-            match trust_level {
-                TrustLevel::Deny => {
-                    output.debug(&format!(
-                        "Skipping {} hooks: repository not trusted",
-                        ctx.hook_type
-                    ));
-                    return Ok(HookResult::skipped("Repository not trusted"));
-                }
-                TrustLevel::Prompt => {
-                    if !self.prompt_for_permission(ctx, &discovery.hooks, output) {
-                        return Ok(HookResult::skipped("User declined hook execution"));
+            if has_project_hooks {
+                match trust_level {
+                    TrustLevel::Deny => {
+                        output.debug(&format!(
+                            "Skipping {} hooks: repository not trusted",
+                            ctx.hook_type
+                        ));
+                        return Ok(HookResult::skipped("Repository not trusted"));
                     }
-                }
-                TrustLevel::Allow => {
-                    // Proceed without prompting
+                    TrustLevel::Prompt => {
+                        if !self.prompt_for_permission(ctx, &discovery.hooks, output) {
+                            return Ok(HookResult::skipped("User declined hook execution"));
+                        }
+                    }
+                    TrustLevel::Allow => {
+                        // Proceed without prompting
+                    }
                 }
             }
         }

@@ -184,6 +184,35 @@ final effective configuration as YAML.
 git daft hooks dump
 ```
 
+### run
+
+Manually run a hook by name. Executes the specified hook type as if it were
+triggered by a worktree lifecycle event. Trust checks are bypassed since the
+user is explicitly invoking the hook.
+
+```
+git daft hooks run [HOOK_TYPE] [OPTIONS]
+```
+
+| Argument / Option | Description                                     |
+| ----------------- | ----------------------------------------------- |
+| `[HOOK_TYPE]`     | Hook type to run (omit to list available hooks) |
+| `--job <NAME>`    | Run only the named job                          |
+| `--tag <TAG>`     | Run only jobs with this tag (repeatable)        |
+| `--dry-run`       | Preview what would run without executing        |
+
+When invoked without a hook type, lists all configured hooks and their job
+counts.
+
+Use cases:
+
+- **Re-run** a hook after a previous failure
+- **Iterate** on hook scripts during development
+- **Bootstrap** existing worktrees that predate the hooks config
+
+When run from an untrusted repository, a hint is shown suggesting
+`git daft hooks trust`, but hooks still execute.
+
 ## Global Options
 
 | Option            | Description               |
@@ -219,6 +248,21 @@ git daft hooks dump
 
 # Preview hook file migration
 git daft hooks migrate --dry-run
+
+# List available hooks
+git daft hooks run
+
+# Run a hook manually
+git daft hooks run worktree-post-create
+
+# Preview what a hook would do
+git daft hooks run worktree-post-create --dry-run
+
+# Run only a specific job
+git daft hooks run worktree-post-create --job "mise install"
+
+# Run only jobs with a specific tag
+git daft hooks run worktree-post-create --tag setup
 ```
 
 ## See Also
