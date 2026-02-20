@@ -241,6 +241,11 @@ pub fn generate_all_completions(shell_name: &str) -> Result<String> {
         output.push_str(&generate_completion_string_for_command(command, &target)?);
         output.push('\n');
     }
+
+    // Add completions for `daft` subcommands (hooks run, etc.)
+    output.push_str(&generate_daft_subcommand_completions(&target));
+    output.push('\n');
+
     Ok(output)
 }
 
@@ -304,6 +309,8 @@ fn generate_all_output(target: &CompletionTarget) -> Result<()> {
             for command in COMMANDS {
                 generate_completion_for_command(command, target)?;
             }
+            // Add daft subcommand completions (hooks run, etc.)
+            print!("{}", generate_daft_subcommand_completions(target));
         }
     }
     Ok(())
@@ -582,6 +589,138 @@ fn generate_fish_completion_string(command_name: &str) -> Result<String> {
     Ok(output)
 }
 
+// ── daft subcommand completions (hooks run, etc.) ─────────────────
+
+/// Generate completions for `daft` subcommands (hooks run, etc.)
+fn generate_daft_subcommand_completions(target: &CompletionTarget) -> String {
+    match target {
+        CompletionTarget::Bash => DAFT_BASH_COMPLETIONS.to_string(),
+        CompletionTarget::Zsh => DAFT_ZSH_COMPLETIONS.to_string(),
+        CompletionTarget::Fish => DAFT_FISH_COMPLETIONS.to_string(),
+        CompletionTarget::Fig => String::new(), // Handled in fig spec
+    }
+}
+
+const DAFT_BASH_COMPLETIONS: &str = r#"# daft subcommand completions
+_daft() {
+    local cur prev words cword
+    _init_completion || return
+
+    # hooks run: dynamic hook type and job name completion
+    if [[ $cword -ge 3 && "${words[1]}" == "hooks" && "${words[2]}" == "run" ]]; then
+        # --job: complete job names for the given hook type
+        if [[ "$prev" == "--job" ]]; then
+            local hook_type="" i
+            for ((i=3; i<cword; i++)); do
+                if [[ "${words[$i]}" != -* ]]; then
+                    hook_type="${words[$i]}"
+                    break
+                fi
+            done
+            if [[ -n "$hook_type" ]]; then
+                local jobs
+                jobs=$(DAFT_COMPLETE_HOOK="$hook_type" daft __complete hooks-run-job "$cur" 2>/dev/null)
+                COMPREPLY=( $(compgen -W "$jobs" -- "$cur") )
+            fi
+            return 0
+        fi
+        [[ "$prev" == "--tag" ]] && return 0
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=( $(compgen -W "--job --tag --dry-run -h --help" -- "$cur") )
+            return 0
+        fi
+        local hooks
+        hooks=$(daft __complete hooks-run "$cur" 2>/dev/null)
+        COMPREPLY=( $(compgen -W "$hooks" -- "$cur") )
+        return 0
+    fi
+
+    # hooks: complete subcommands
+    if [[ $cword -eq 2 && "${words[1]}" == "hooks" ]]; then
+        COMPREPLY=( $(compgen -W "trust prompt deny status migrate install validate dump run" -- "$cur") )
+        return 0
+    fi
+
+    # top-level: complete daft subcommands
+    if [[ $cword -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "hooks shell-init completions setup branch multi-remote release-notes doctor" -- "$cur") )
+        return 0
+    fi
+}
+complete -F _daft daft
+complete -F _daft git-daft
+if declare -f __git_complete >/dev/null 2>&1; then
+    __git_complete git-daft _daft
+fi
+"#;
+
+const DAFT_ZSH_COMPLETIONS: &str = r#"# daft subcommand completions
+_daft() {
+    local curword="${words[$CURRENT]}"
+
+    # hooks run: dynamic hook type and job name completion
+    if (( CURRENT >= 4 )) && [[ "$words[2]" == "hooks" && "$words[3]" == "run" ]]; then
+        local prev="$words[$((CURRENT-1))]"
+        if [[ "$prev" == "--job" ]]; then
+            local hook_type="" i
+            for ((i=4; i<CURRENT; i++)); do
+                if [[ "$words[$i]" != -* ]]; then
+                    hook_type="$words[$i]"
+                    break
+                fi
+            done
+            if [[ -n "$hook_type" ]]; then
+                local -a jobs
+                jobs=(${(f)"$(DAFT_COMPLETE_HOOK="$hook_type" daft __complete hooks-run-job "$curword" 2>/dev/null)"})
+                compadd -a jobs
+            fi
+            return
+        fi
+        [[ "$prev" == "--tag" ]] && return
+        if [[ "$curword" == -* ]]; then
+            compadd -- --job --tag --dry-run -h --help
+            return
+        fi
+        local -a hooks
+        hooks=(${(f)"$(daft __complete hooks-run "$curword" 2>/dev/null)"})
+        compadd -a hooks
+        return
+    fi
+
+    # hooks: complete subcommands
+    if (( CURRENT == 3 )) && [[ "$words[2]" == "hooks" ]]; then
+        compadd trust prompt deny status migrate install validate dump run
+        return
+    fi
+
+    # top-level: complete daft subcommands
+    if (( CURRENT == 2 )); then
+        compadd hooks shell-init completions setup branch multi-remote release-notes doctor
+        return
+    fi
+}
+compdef _daft daft
+compdef _daft git-daft
+"#;
+
+const DAFT_FISH_COMPLETIONS: &str = r#"# daft subcommand completions
+complete -c daft -f
+complete -c daft -n '__fish_use_subcommand' -a 'hooks' -d 'Manage lifecycle hooks'
+complete -c daft -n '__fish_use_subcommand' -a 'shell-init' -d 'Generate shell wrappers'
+complete -c daft -n '__fish_use_subcommand' -a 'completions' -d 'Generate completions'
+complete -c daft -n '__fish_use_subcommand' -a 'setup' -d 'Setup and configuration'
+complete -c daft -n '__fish_use_subcommand' -a 'branch' -d 'Branch management'
+complete -c daft -n '__fish_use_subcommand' -a 'multi-remote' -d 'Multi-remote management'
+complete -c daft -n '__fish_use_subcommand' -a 'release-notes' -d 'Generate release notes'
+complete -c daft -n '__fish_use_subcommand' -a 'doctor' -d 'Check installation'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and not __fish_seen_subcommand_from trust prompt deny status migrate install validate dump run' -f -a 'trust prompt deny status migrate install validate dump run'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -f -a "(daft __complete hooks-run '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l job -d 'Run only the named job'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l tag -d 'Run only jobs with this tag'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l dry-run -d 'Preview what would run'
+complete -c git-daft -w daft
+"#;
+
 // ── Fig/Amazon Q serialization types ──────────────────────────────
 
 #[derive(Serialize)]
@@ -642,6 +781,12 @@ struct FigSubcommand {
     description: Option<String>,
     #[serde(rename = "loadSpec", skip_serializing_if = "Option::is_none")]
     load_spec: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subcommands: Option<Vec<FigSubcommand>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    args: Option<FigArgs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<Vec<FigOption>>,
 }
 
 // ── Fig shared helpers ────────────────────────────────────────────
@@ -763,27 +908,91 @@ fn generate_fig_alias_string(alias: &str, command_name: &str) -> String {
     wrap_esm(alias, &spec).unwrap()
 }
 
+/// Create a simple FigSubcommand with just name and description
+fn fig_subcommand(name: &str, description: &str) -> FigSubcommand {
+    FigSubcommand {
+        name: name.to_string(),
+        description: Some(description.to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: None,
+        options: None,
+    }
+}
+
+/// Build the hooks subcommand with nested subcommands including `run` with a generator
+fn build_fig_hooks_subcommand() -> FigSubcommand {
+    let hooks_run = FigSubcommand {
+        name: "run".to_string(),
+        description: Some("Run a hook manually".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(FigArgs::Single(FigArg {
+            name: "hook-type".to_string(),
+            description: Some("Hook type to run".to_string()),
+            generators: Some(FigGenerator {
+                script: vec![
+                    "daft".into(),
+                    "__complete".into(),
+                    "hooks-run".into(),
+                    String::new(),
+                ],
+                split_on: "\n".to_string(),
+            }),
+        })),
+        options: Some(vec![
+            FigOption {
+                name: FigName::Single("--job".into()),
+                description: "Run only the named job".into(),
+            },
+            FigOption {
+                name: FigName::Single("--tag".into()),
+                description: "Run only jobs with this tag".into(),
+            },
+            FigOption {
+                name: FigName::Single("--dry-run".into()),
+                description: "Preview what would run".into(),
+            },
+        ]),
+    };
+
+    FigSubcommand {
+        name: "hooks".to_string(),
+        description: Some("Manage lifecycle hooks".to_string()),
+        load_spec: None,
+        subcommands: Some(vec![
+            fig_subcommand("trust", "Trust repository"),
+            fig_subcommand("prompt", "Prompt before hooks"),
+            fig_subcommand("deny", "Deny hooks"),
+            fig_subcommand("status", "Show hooks status"),
+            fig_subcommand("migrate", "Migrate hook files"),
+            fig_subcommand("install", "Scaffold hooks config"),
+            fig_subcommand("validate", "Validate hooks config"),
+            fig_subcommand("dump", "Show merged config"),
+            hooks_run,
+        ]),
+        args: None,
+        options: None,
+    }
+}
+
 /// Generate the daft.js umbrella spec with subcommands
 fn generate_fig_daft_spec() -> Result<String> {
-    // Daft's own subcommands
-    let daft_subcommands = [
+    let simple_subcommands = [
         ("shell-init", "Generate shell initialization scripts"),
         ("completions", "Generate shell completion scripts"),
-        ("hooks", "Manage lifecycle hooks"),
         ("setup", "Setup and configuration"),
         ("branch", "Branch management utilities"),
         ("multi-remote", "Multi-remote management"),
         ("release-notes", "Generate release notes"),
     ];
 
-    let mut subcommands: Vec<FigSubcommand> = daft_subcommands
-        .iter()
-        .map(|(name, desc)| FigSubcommand {
-            name: name.to_string(),
-            description: Some(desc.to_string()),
-            load_spec: None,
-        })
-        .collect();
+    let mut subcommands: Vec<FigSubcommand> = vec![build_fig_hooks_subcommand()];
+    subcommands.extend(
+        simple_subcommands
+            .iter()
+            .map(|(name, desc)| fig_subcommand(name, desc)),
+    );
 
     // Worktree commands accessible via daft worktree-*
     for command in COMMANDS {
@@ -792,6 +1001,9 @@ fn generate_fig_daft_spec() -> Result<String> {
             name: subcommand_name.to_string(),
             description: None,
             load_spec: Some(command.to_string()),
+            subcommands: None,
+            args: None,
+            options: None,
         });
     }
 
