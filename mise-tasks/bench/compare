@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+#MISE description="Compare latest results against baseline"
+set -euo pipefail
+
+BENCH_DIR="$(git rev-parse --show-toplevel)/benches"
+
+if [[ ! -f "$BENCH_DIR/results/summary.md" ]]; then
+    echo "No results found. Run: mise run bench"
+    exit 1
+fi
+
+if [[ ! -f "$BENCH_DIR/results/baseline.md" ]]; then
+    echo "No baseline found. Run: mise run bench:baseline"
+    echo
+    cat "$BENCH_DIR/results/summary.md"
+    exit 0
+fi
+
+diff --color "$BENCH_DIR/results/baseline.md" "$BENCH_DIR/results/summary.md" || true

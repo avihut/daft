@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Run checkout-with-hooks benchmark"
+#MISE depends=["build"]
+set -euo pipefail
+
+bash "$(git rev-parse --show-toplevel)/benches/scenarios/checkout_with_hooks.sh"

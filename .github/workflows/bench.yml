@@ -1,0 +1,64 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install mise
+        uses: jdx/mise-action@v3
+
+      - name: Install hyperfine
+        run: cargo install hyperfine
+
+      - name: Build daft and set up symlinks
+        run: mise run dev
+
+      - name: Run benchmarks
+        run: mise run bench
+
+      - name: Package results
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          DATE=$(date -u '+%Y-%m-%d')
+          benches/package_results.sh "/tmp/bench-${DATE}-${COMMIT}.json"
+
+      - name: Push to daft-benchmarks
+        env:
+          BENCH_REPO_TOKEN: ${{ secrets.BENCH_REPO_TOKEN }}
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          DATE=$(date -u '+%Y-%m-%d')
+          FILENAME="${DATE}-${COMMIT}.json"
+
+          git clone https://x-access-token:${BENCH_REPO_TOKEN}@github.com/avihut/daft-benchmarks.git /tmp/daft-benchmarks
+          cp "/tmp/bench-${FILENAME}" "/tmp/daft-benchmarks/data/${FILENAME}"
+          cd /tmp/daft-benchmarks
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git add "data/${FILENAME}"
+          git commit -m "bench: daft ${DATE} (${COMMIT})"
+          git push
+
+      - name: Upload raw results
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: benchmark-results
+          path: benches/results/
+          retention-days: 90

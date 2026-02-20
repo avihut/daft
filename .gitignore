@@ -38,3 +38,7 @@ docs/.vitepress/cache/
 
 # Playwright MCP artifacts
 .playwright-mcp/
+
+# Benchmark artifacts
+benches/results/
+benches/fixtures/cache/
