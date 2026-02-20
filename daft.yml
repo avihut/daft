@@ -10,10 +10,10 @@ hooks:
         run: mise trust
       - name: mise install
         run: mise install
-        needs: [mise-trust]
+        needs: [mise trust]
       - name: bun install
         run: bun install
-        needs: [mise-install]
+        needs: [mise install]
       - name: direnv allow
         run: direnv allow {worktree_path}
 
