@@ -61,9 +61,9 @@ target to that file, and the wrapper reads it after the command finishes to `cd`
 into new worktrees. Stdout flows directly to the terminal.
 
 **Hooks system**: Lifecycle hooks in `.daft/hooks/` with trust-based security.
-Hook types: `post-clone`, `post-init`, `worktree-pre-create`,
-`worktree-post-create`, `worktree-pre-remove`, `worktree-post-remove`. Old names
-without `worktree-` prefix are deprecated (removed in v2.0.0).
+Hook types: `post-clone`, `worktree-pre-create`, `worktree-post-create`,
+`worktree-pre-remove`, `worktree-post-remove`. Old names without `worktree-`
+prefix are deprecated (removed in v2.0.0).
 
 ## Branch Naming & PRs
 

@@ -19,7 +19,6 @@ and more. For simple cases, you can also use **executable shell scripts** in
 | Hook                   | Trigger                              | Runs From                            |
 | ---------------------- | ------------------------------------ | ------------------------------------ |
 | `post-clone`           | After `git worktree-clone` completes | New default branch worktree          |
-| `post-init`            | After `git worktree-init` completes  | New initial worktree                 |
 | `worktree-pre-create`  | Before new worktree is added         | Source worktree (where command runs) |
 | `worktree-post-create` | After new worktree is created        | New worktree                         |
 | `worktree-pre-remove`  | Before worktree is removed           | Worktree being removed               |
@@ -621,9 +620,8 @@ git config --global daft.hooks.userDirectory ~/my-daft-hooks
 | `daft.hooks.output.timerDelay`   | `5`                     | Seconds before showing elapsed timer  |
 | `daft.hooks.output.tailLines`    | `6`                     | Rolling output lines per job          |
 
-Hook name config keys use camelCase: `postClone`, `postInit`,
-`worktreePreCreate`, `worktreePostCreate`, `worktreePreRemove`,
-`worktreePostRemove`.
+Hook name config keys use camelCase: `postClone`, `worktreePreCreate`,
+`worktreePostCreate`, `worktreePreRemove`, `worktreePostRemove`.
 
 ### Output Display
 

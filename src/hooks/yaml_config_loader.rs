@@ -31,7 +31,6 @@ const CONFIG_CANDIDATES: &[(&str, ConfigLocation)] = &[
 /// Hook names that can have per-hook YAML files.
 const PER_HOOK_NAMES: &[&str] = &[
     "post-clone",
-    "post-init",
     "worktree-pre-create",
     "worktree-post-create",
     "worktree-pre-remove",

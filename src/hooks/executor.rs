@@ -374,10 +374,8 @@ impl HookExecutor {
         match ctx.hook_type {
             // Pre-create: target doesn't exist yet, use source
             HookType::PreCreate => ctx.source_worktree.clone(),
-            // Post-create/clone/init: target now exists, use it
-            HookType::PostCreate | HookType::PostClone | HookType::PostInit => {
-                ctx.worktree_path.clone()
-            }
+            // Post-create/clone: target now exists, use it
+            HookType::PostCreate | HookType::PostClone => ctx.worktree_path.clone(),
             // Pre-remove: target still exists, use it
             HookType::PreRemove => ctx.worktree_path.clone(),
             // Post-remove: target is gone, use source (current worktree)

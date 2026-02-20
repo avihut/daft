@@ -74,7 +74,7 @@ Each hook type can be configured individually. The hook name uses camelCase.
 | `daft.hooks.<hookName>.enabled`  | `true`  | Enable/disable a specific hook type    |
 | `daft.hooks.<hookName>.failMode` | varies  | Behavior on failure: `abort` or `warn` |
 
-Hook names: `postClone`, `postInit`, `worktreePreCreate`, `worktreePostCreate`,
+Hook names: `postClone`, `worktreePreCreate`, `worktreePostCreate`,
 `worktreePreRemove`, `worktreePostRemove`.
 
 Default fail modes:

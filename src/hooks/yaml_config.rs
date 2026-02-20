@@ -9,7 +9,6 @@ use std::collections::HashMap;
 /// Known hook names that are recognized by the system.
 pub const KNOWN_HOOK_NAMES: &[&str] = &[
     "post-clone",
-    "post-init",
     "worktree-pre-create",
     "worktree-post-create",
     "worktree-pre-remove",

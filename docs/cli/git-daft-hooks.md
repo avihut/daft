@@ -153,8 +153,8 @@ git daft hooks install [HOOKS...]
 | ------------ | ------------------------------------------- |
 | `[HOOKS...]` | Hook names to scaffold (omit for all hooks) |
 
-Valid hook names: `post-clone`, `post-init`, `worktree-pre-create`,
-`worktree-post-create`, `worktree-pre-remove`, `worktree-post-remove`.
+Valid hook names: `post-clone`, `worktree-pre-create`, `worktree-post-create`,
+`worktree-pre-remove`, `worktree-post-remove`.
 
 ### validate
 

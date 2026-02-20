@@ -169,7 +169,6 @@ Hooks automate worktree lifecycle events. The recommended approach is a
 | Hook                   | Trigger                       | Runs From                   |
 | ---------------------- | ----------------------------- | --------------------------- |
 | `post-clone`           | After `daft worktree-clone`   | New default branch worktree |
-| `post-init`            | After `daft worktree-init`    | New initial worktree        |
 | `worktree-pre-create`  | Before new worktree is added  | Source worktree             |
 | `worktree-post-create` | After new worktree is created | New worktree                |
 | `worktree-pre-remove`  | Before worktree is removed    | Worktree being removed      |

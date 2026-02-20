@@ -200,7 +200,7 @@ fn install_long_about() -> String {
         "snippet is printed for any missing hooks so you can add them manually.",
         "",
         "Valid hook names:",
-        "  post-clone, post-init, worktree-pre-create, worktree-post-create,",
+        "  post-clone, worktree-pre-create, worktree-post-create,",
         "  worktree-pre-remove, worktree-post-remove",
     ]
     .join("\n")
