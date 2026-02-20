@@ -213,6 +213,10 @@ fn dump_long_about() -> String {
 #[command(about = "Manage repository trust for hook execution")]
 #[command(long_about = hooks_long_about())]
 pub struct Args {
+    /// Path to check (defaults to current directory)
+    #[arg(default_value = ".")]
+    path: PathBuf,
+
     #[command(subcommand)]
     command: Option<HooksCommand>,
 }
@@ -320,7 +324,7 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::Install { hooks }) => cmd_install(&hooks),
         Some(HooksCommand::Validate) => cmd_validate(),
         Some(HooksCommand::Dump) => cmd_dump(),
-        None => cmd_status(&std::path::PathBuf::from("."), false), // Default to status if no subcommand
+        None => cmd_status(&args.path, false),
     }
 }
 
