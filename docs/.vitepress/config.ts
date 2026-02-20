@@ -214,6 +214,7 @@ export default defineConfig({
     nav: [
       { text: "Guide", link: "/getting-started/installation" },
       { text: "CLI Reference", link: "/cli/git-worktree-clone" },
+      { text: "Benchmarks", link: "/benchmarks/" },
       { text: `v${version}`, link: "/changelog" },
       { text: "GitHub", link: "https://github.com/avihut/daft" },
     ],
@@ -307,6 +308,7 @@ export default defineConfig({
       {
         text: "Project",
         items: [
+          { text: "Benchmarks", link: "/benchmarks/" },
           { text: "Contributing", link: "/contributing" },
           { text: "Changelog", link: "/changelog" },
         ],
