@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Run init benchmark"
+#MISE depends=["build"]
+set -euo pipefail
+
+bash "$(git rev-parse --show-toplevel)/benches/scenarios/init.sh"

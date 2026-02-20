@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+#MISE description="Pin current results as the new baseline"
+set -euo pipefail
+
+BENCH_DIR="$(git rev-parse --show-toplevel)/benches"
+
+if [[ ! -f "$BENCH_DIR/results/summary.md" ]]; then
+    echo "No results to baseline. Run: mise run bench"
+    exit 1
+fi
+
+cp "$BENCH_DIR/results/summary.md" "$BENCH_DIR/results/baseline.md"
+echo "Baseline updated from current results."

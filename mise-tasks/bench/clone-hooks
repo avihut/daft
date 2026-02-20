@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Run clone-with-hooks benchmark"
+#MISE depends=["build"]
+set -euo pipefail
+
+bash "$(git rev-parse --show-toplevel)/benches/scenarios/clone_with_hooks.sh"
