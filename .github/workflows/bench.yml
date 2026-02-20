@@ -1,0 +1,79 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install mise
+        uses: jdx/mise-action@v3
+
+      - name: Install hyperfine
+        run: cargo install hyperfine
+
+      - name: Build daft and set up symlinks
+        run: mise run dev
+
+      - name: Run benchmarks
+        run: mise run bench
+
+      - name: Copy summary to docs
+        run: |
+          mkdir -p docs/benchmarks
+          VERSION=$(./target/release/daft --version 2>/dev/null | awk '{print $2}' || echo "unknown")
+          {
+            echo "---"
+            echo "title: Benchmarks"
+            echo "description: daft performance benchmarks vs. equivalent git scripting"
+            echo "---"
+            echo
+            cat benches/results/summary.md
+            echo
+            echo "---"
+            echo
+            echo "Version: v${VERSION}"
+          } > docs/benchmarks/index.md
+
+      - name: Save to history
+        run: |
+          VERSION=$(./target/release/daft --version 2>/dev/null | awk '{print $2}' || echo "unknown")
+          DATE=$(date -u '+%Y-%m-%d')
+          mkdir -p benches/history
+          cp benches/results/summary.md "benches/history/${DATE}-v${VERSION}.md"
+
+      - name: Commit results
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/benchmarks/index.md benches/history/
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update benchmark results [skip ci]"
+            git push
+          fi
+
+      - name: Upload raw results
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: benchmark-results
+          path: benches/results/
+          retention-days: 90
