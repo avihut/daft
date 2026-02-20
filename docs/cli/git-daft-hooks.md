@@ -142,7 +142,8 @@ git daft hooks migrate [OPTIONS]
 ### install
 
 Scaffold a `daft.yml` configuration with hook definitions. If the file already
-exists, only hooks not already defined are added.
+exists, it is not modified — instead, a YAML snippet is printed for any missing
+hooks so you can add them manually.
 
 ```
 git daft hooks install [HOOKS...]

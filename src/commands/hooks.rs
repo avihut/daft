@@ -196,7 +196,8 @@ fn install_long_about() -> String {
         "Creates a daft.yml file with placeholder jobs for the specified hooks.",
         "If no hook names are provided, all daft lifecycle hooks are scaffolded.",
         "",
-        "If daft.yml already exists, only hooks not already defined are added.",
+        "If a config file already exists, it is not modified. Instead, a YAML",
+        "snippet is printed for any missing hooks so you can add them manually.",
         "",
         "Valid hook names:",
         "  post-clone, post-init, worktree-pre-create, worktree-post-create,",
@@ -1314,66 +1315,66 @@ fn cmd_install(hooks: &[String]) -> Result<()> {
     };
 
     // Check if config already exists
-    let existing_config = yaml_config_loader::load_merged_config(&worktree_root)
-        .context("Failed to load YAML config")?;
+    let existing_config_file = yaml_config_loader::find_config_file(&worktree_root);
 
-    let config_path = worktree_root.join("daft.yml");
+    if let Some((config_path, _)) = existing_config_file {
+        // Config file exists — don't modify it. Show what's missing and provide a snippet.
+        let config = yaml_config_loader::load_merged_config(&worktree_root)
+            .context("Failed to load YAML config")?;
 
-    if let Some(ref config) = existing_config {
-        // Config exists — add only hooks not already defined
-        let mut added = Vec::new();
-        let mut skipped = Vec::new();
+        println!(
+            "Config file already exists: {}",
+            bold(&config_path.display().to_string())
+        );
 
-        for &name in &hook_names {
-            if config.hooks.contains_key(name) {
-                skipped.push(name);
-            } else {
-                added.push(name);
-            }
-        }
+        let (existing, missing): (Vec<&str>, Vec<&str>) = if let Some(ref cfg) = config {
+            hook_names
+                .iter()
+                .partition(|name| cfg.hooks.contains_key(**name))
+        } else {
+            (vec![], hook_names.clone())
+        };
 
-        if added.is_empty() {
-            for name in &skipped {
-                println!(
-                    "  {} {name} {}",
-                    yellow("skipped"),
-                    dim("(already defined)")
-                );
-            }
-            println!("\n{}", dim("No new hooks to add."));
+        if missing.is_empty() {
+            println!("\n{}", dim("All requested hooks are already defined."));
             return Ok(());
         }
 
-        // Append new hooks to the existing file
-        let mut content = std::fs::read_to_string(&config_path)
-            .with_context(|| format!("Failed to read {}", config_path.display()))?;
-
-        // Ensure trailing newline before appending
-        if !content.ends_with('\n') {
-            content.push('\n');
-        }
-
-        for name in &added {
-            content.push_str(&format!(
-                "\n  {name}:\n    jobs:\n      - name: setup\n        run: echo \"TODO: add your {name} command\"\n"
-            ));
-        }
-
-        std::fs::write(&config_path, &content)
-            .with_context(|| format!("Failed to write {}", config_path.display()))?;
-
-        for name in &added {
-            println!("  {} {name}", green("added"));
-        }
-        for name in &skipped {
+        if !existing.is_empty() {
             println!(
-                "  {} {name} {}",
-                yellow("skipped"),
-                dim("(already defined)")
+                "\nAlready defined: {}",
+                existing
+                    .iter()
+                    .map(|n| green(n))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
+        println!(
+            "Not yet defined: {}",
+            missing
+                .iter()
+                .map(|n| cyan(n))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        println!(
+            "\nAdd them to your {} under the {} key:\n",
+            bold(&config_path.file_name().unwrap().to_string_lossy()),
+            cyan("hooks")
+        );
+
+        for name in &missing {
+            println!("  {name}:");
+            println!("    jobs:");
+            println!("      - name: setup");
+            println!("        run: echo \"TODO: add your {name} command\"");
+        }
+
+        println!();
     } else {
         // No config — create new file
+        let config_path = worktree_root.join("daft.yml");
         let mut content = String::from(
             "# daft hooks configuration\n# See: https://github.com/avihut/daft\n\nhooks:\n",
         );
