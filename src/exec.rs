@@ -6,7 +6,9 @@ use crate::output::Output;
 pub fn run_exec_commands(commands: &[String], output: &mut dyn Output) -> Result<()> {
     for cmd in commands {
         output.step(&format!("Executing: {cmd}"));
-        let status = Command::new("sh")
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+        let status = Command::new(&shell)
+            .arg("-i")
             .arg("-c")
             .arg(cmd)
             .stdin(std::process::Stdio::inherit())
