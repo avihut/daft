@@ -324,7 +324,14 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::Install { hooks }) => cmd_install(&hooks),
         Some(HooksCommand::Validate) => cmd_validate(),
         Some(HooksCommand::Dump) => cmd_dump(),
-        None => cmd_status(&args.path, false),
+        None => {
+            cmd_status(&args.path, false)?;
+            println!(
+                "{}",
+                dim("Run `git daft hooks --help` to see all available commands.")
+            );
+            Ok(())
+        }
     }
 }
 
