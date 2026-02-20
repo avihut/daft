@@ -471,6 +471,37 @@ Use `git daft hooks dump` to inspect the fully merged configuration:
 git daft hooks dump
 ```
 
+## Manual Hook Execution
+
+Use `git daft hooks run` to manually trigger a hook outside the normal worktree
+lifecycle. Trust checks are bypassed since you are explicitly invoking the hook.
+
+```bash
+# List all configured hooks
+git daft hooks run
+
+# Run all jobs in a hook
+git daft hooks run worktree-post-create
+
+# Run a single job by name
+git daft hooks run worktree-post-create --job "mise install"
+
+# Run only jobs with a specific tag
+git daft hooks run worktree-post-create --tag setup
+
+# Preview what would run without executing
+git daft hooks run worktree-post-create --dry-run
+```
+
+This is useful for:
+
+- **Re-running** a hook after a previous failure
+- **Iterating** on hook scripts during development
+- **Bootstrapping** existing worktrees that predate the hooks config
+
+When run from an untrusted repository, a hint is shown suggesting
+`git daft hooks trust`, but hooks still execute.
+
 ## Shell Script Hooks
 
 For simple automation, you can use executable scripts in `.daft/hooks/` instead

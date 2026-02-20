@@ -311,13 +311,9 @@ enum HooksCommand {
         short: bool,
     },
 
-    /// Rename deprecated hook files to their new names
-    #[command(long_about = migrate_long_about())]
-    Migrate {
-        /// Show what would be renamed without making changes
-        #[arg(long, help = "Preview renames without making changes")]
-        dry_run: bool,
-    },
+    /// Run a hook manually
+    #[command(long_about = run_long_about())]
+    Run(HooksRunArgs),
 
     /// Scaffold a daft.yml configuration with hook definitions
     #[command(long_about = install_long_about())]
@@ -336,9 +332,13 @@ enum HooksCommand {
     #[command(long_about = dump_long_about())]
     Dump,
 
-    /// Run a hook manually
-    #[command(long_about = run_long_about())]
-    Run(HooksRunArgs),
+    /// Rename deprecated hook files to their new names
+    #[command(long_about = migrate_long_about())]
+    Migrate {
+        /// Show what would be renamed without making changes
+        #[arg(long, help = "Preview renames without making changes")]
+        dry_run: bool,
+    },
 }
 
 #[derive(clap::Args)]

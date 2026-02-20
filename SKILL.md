@@ -112,13 +112,13 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 
 ### Management
 
-| Command                             | Description                                                                                                                                        |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `daft hooks <subcommand>`           | Manage hooks trust and configuration (`trust`, `deny`, `prompt`, `status`, `list`, `reset-trust`, `migrate`, `install`, `validate`, `dump`, `run`) |
-| `daft doctor`                       | Diagnose installation and configuration issues; `--fix` auto-repairs symlinks, shortcuts, refspecs, hooks; `--fix --dry-run` previews fixes        |
-| `daft setup shortcuts <subcommand>` | Manage command shortcut symlinks                                                                                                                   |
-| `daft shell-init <shell>`           | Generate shell integration wrappers                                                                                                                |
-| `daft completions <shell>`          | Generate shell tab completions                                                                                                                     |
+| Command                             | Description                                                                                                                                 |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `daft hooks <subcommand>`           | Manage hooks trust and configuration (`trust`, `prompt`, `deny`, `status`, `run`, `install`, `validate`, `dump`, `migrate`)                 |
+| `daft doctor`                       | Diagnose installation and configuration issues; `--fix` auto-repairs symlinks, shortcuts, refspecs, hooks; `--fix --dry-run` previews fixes |
+| `daft setup shortcuts <subcommand>` | Manage command shortcut symlinks                                                                                                            |
+| `daft shell-init <shell>`           | Generate shell integration wrappers                                                                                                         |
+| `daft completions <shell>`          | Generate shell tab completions                                                                                                              |
 
 All worktree commands can be run from **any directory** within any worktree.
 They find the project root automatically via `git rev-parse --git-common-dir`.

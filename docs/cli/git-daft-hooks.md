@@ -119,25 +119,34 @@ git daft hooks status [OPTIONS] [PATH]
 | `[PATH]`          | Path to check                 | `.` (current directory) |
 | `-s, --short`     | Show compact one-line summary |                         |
 
-### migrate
+### run
 
-Rename deprecated hook files to their new canonical names. Must be run from
-within a worktree.
-
-Renames:
-
-- `pre-create` -> `worktree-pre-create`
-- `post-create` -> `worktree-post-create`
-- `pre-remove` -> `worktree-pre-remove`
-- `post-remove` -> `worktree-post-remove`
+Manually run a hook by name. Executes the specified hook type as if it were
+triggered by a worktree lifecycle event. Trust checks are bypassed since the
+user is explicitly invoking the hook.
 
 ```
-git daft hooks migrate [OPTIONS]
+git daft hooks run [HOOK_TYPE] [OPTIONS]
 ```
 
-| Option      | Description                            |
-| ----------- | -------------------------------------- |
-| `--dry-run` | Preview renames without making changes |
+| Argument / Option | Description                                     |
+| ----------------- | ----------------------------------------------- |
+| `[HOOK_TYPE]`     | Hook type to run (omit to list available hooks) |
+| `--job <NAME>`    | Run only the named job                          |
+| `--tag <TAG>`     | Run only jobs with this tag (repeatable)        |
+| `--dry-run`       | Preview what would run without executing        |
+
+When invoked without a hook type, lists all configured hooks and their job
+counts.
+
+Use cases:
+
+- **Re-run** a hook after a previous failure
+- **Iterate** on hook scripts during development
+- **Bootstrap** existing worktrees that predate the hooks config
+
+When run from an untrusted repository, a hint is shown suggesting
+`git daft hooks trust`, but hooks still execute.
 
 ### install
 
@@ -185,34 +194,25 @@ final effective configuration as YAML.
 git daft hooks dump
 ```
 
-### run
+### migrate
 
-Manually run a hook by name. Executes the specified hook type as if it were
-triggered by a worktree lifecycle event. Trust checks are bypassed since the
-user is explicitly invoking the hook.
+Rename deprecated hook files to their new canonical names. Must be run from
+within a worktree.
+
+Renames:
+
+- `pre-create` -> `worktree-pre-create`
+- `post-create` -> `worktree-post-create`
+- `pre-remove` -> `worktree-pre-remove`
+- `post-remove` -> `worktree-post-remove`
 
 ```
-git daft hooks run [HOOK_TYPE] [OPTIONS]
+git daft hooks migrate [OPTIONS]
 ```
 
-| Argument / Option | Description                                     |
-| ----------------- | ----------------------------------------------- |
-| `[HOOK_TYPE]`     | Hook type to run (omit to list available hooks) |
-| `--job <NAME>`    | Run only the named job                          |
-| `--tag <TAG>`     | Run only jobs with this tag (repeatable)        |
-| `--dry-run`       | Preview what would run without executing        |
-
-When invoked without a hook type, lists all configured hooks and their job
-counts.
-
-Use cases:
-
-- **Re-run** a hook after a previous failure
-- **Iterate** on hook scripts during development
-- **Bootstrap** existing worktrees that predate the hooks config
-
-When run from an untrusted repository, a hint is shown suggesting
-`git daft hooks trust`, but hooks still execute.
+| Option      | Description                            |
+| ----------- | -------------------------------------- |
+| `--dry-run` | Preview renames without making changes |
 
 ## Global Options
 
