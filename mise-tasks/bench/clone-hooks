@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #MISE description="Run clone-with-hooks benchmark"
-#MISE depends=["build"]
+#MISE depends=["dev:setup"]
 set -euo pipefail
+export PATH="$(git rev-parse --show-toplevel)/target/release:$PATH"
 
 bash "$(git rev-parse --show-toplevel)/benches/scenarios/clone_with_hooks.sh"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #MISE description="Run competitor comparison benchmarks (opt-in)"
-#MISE depends=["build"]
+#MISE depends=["dev:setup"]
 set -euo pipefail
+export PATH="$(git rev-parse --show-toplevel)/target/release:$PATH"
 
 bash "$(git rev-parse --show-toplevel)/benches/scenarios/vs_competition.sh"
