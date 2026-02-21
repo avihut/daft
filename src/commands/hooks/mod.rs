@@ -24,6 +24,7 @@ mod trust;
 mod validate;
 
 use crate::hooks::{TrustLevel, PROJECT_HOOKS_DIR};
+use crate::output::{CliOutput, Output, OutputConfig};
 use crate::styles::{bold, def, dim, green, red, yellow};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -423,32 +424,41 @@ mod trust_cmd {
 pub fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args = Args::parse_from(args);
+    let mut output = CliOutput::new(OutputConfig::new(false, false));
 
     match args.command {
         Some(HooksCommand::Trust(trust_args)) => match trust_args.command {
-            Some(trust_cmd::TrustSubcommand::List { all }) => trust::cmd_list(all),
+            Some(trust_cmd::TrustSubcommand::List { all }) => trust::cmd_list(all, &mut output),
             Some(trust_cmd::TrustSubcommand::Reset(reset_args)) => match reset_args.command {
-                Some(trust_cmd::ResetSubcommand::All { force }) => trust::cmd_reset_trust(force),
-                None => trust::cmd_reset_trust_path(&reset_args.path, reset_args.force),
+                Some(trust_cmd::ResetSubcommand::All { force }) => {
+                    trust::cmd_reset_trust(force, &mut output)
+                }
+                None => {
+                    trust::cmd_reset_trust_path(&reset_args.path, reset_args.force, &mut output)
+                }
             },
-            None => trust::cmd_set_trust(&trust_args.path, TrustLevel::Allow, trust_args.force),
+            None => trust::cmd_set_trust(
+                &trust_args.path,
+                TrustLevel::Allow,
+                trust_args.force,
+                &mut output,
+            ),
         },
         Some(HooksCommand::Prompt { path, force }) => {
-            trust::cmd_set_trust(&path, TrustLevel::Prompt, force)
+            trust::cmd_set_trust(&path, TrustLevel::Prompt, force, &mut output)
         }
-        Some(HooksCommand::Deny { path, force }) => trust::cmd_deny(&path, force),
-        Some(HooksCommand::Status { path, short }) => status::cmd_status(&path, short),
-        Some(HooksCommand::Migrate { dry_run }) => migrate::cmd_migrate(dry_run),
-        Some(HooksCommand::Install { hooks }) => install::cmd_install(&hooks),
-        Some(HooksCommand::Validate) => validate::cmd_validate(),
-        Some(HooksCommand::Dump) => dump::cmd_dump(),
-        Some(HooksCommand::Run(run_args)) => run_cmd::cmd_run(&run_args),
+        Some(HooksCommand::Deny { path, force }) => trust::cmd_deny(&path, force, &mut output),
+        Some(HooksCommand::Status { path, short }) => status::cmd_status(&path, short, &mut output),
+        Some(HooksCommand::Migrate { dry_run }) => migrate::cmd_migrate(dry_run, &mut output),
+        Some(HooksCommand::Install { hooks }) => install::cmd_install(&hooks, &mut output),
+        Some(HooksCommand::Validate) => validate::cmd_validate(&mut output),
+        Some(HooksCommand::Dump) => dump::cmd_dump(&mut output),
+        Some(HooksCommand::Run(run_args)) => run_cmd::cmd_run(&run_args, &mut output),
         None => {
-            status::cmd_status(&args.path, false)?;
-            println!(
-                "{}",
-                dim("Run `git daft hooks --help` to see all available commands.")
-            );
+            status::cmd_status(&args.path, false, &mut output)?;
+            output.info(&dim(
+                "Run `git daft hooks --help` to see all available commands.",
+            ));
             Ok(())
         }
     }

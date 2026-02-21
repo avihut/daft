@@ -1,10 +1,11 @@
 use super::find_worktree_root;
 use crate::hooks::{yaml_config, yaml_config_loader};
+use crate::output::Output;
 use crate::styles::{bold, cyan, dim, green};
 use anyhow::{Context, Result};
 
 /// Scaffold a daft.yml configuration with hook definitions.
-pub(super) fn cmd_install(hooks: &[String]) -> Result<()> {
+pub(super) fn cmd_install(hooks: &[String], output: &mut dyn Output) -> Result<()> {
     let worktree_root = find_worktree_root()?;
 
     // Determine which hooks to scaffold
@@ -31,10 +32,10 @@ pub(super) fn cmd_install(hooks: &[String]) -> Result<()> {
         let config = yaml_config_loader::load_merged_config(&worktree_root)
             .context("Failed to load YAML config")?;
 
-        println!(
+        output.info(&format!(
             "Config file already exists: {}",
             bold(&config_path.display().to_string())
-        );
+        ));
 
         let (existing, missing): (Vec<&str>, Vec<&str>) = if let Some(ref cfg) = config {
             hook_names
@@ -45,42 +46,47 @@ pub(super) fn cmd_install(hooks: &[String]) -> Result<()> {
         };
 
         if missing.is_empty() {
-            println!("\n{}", dim("All requested hooks are already defined."));
+            output.info(&format!(
+                "\n{}",
+                dim("All requested hooks are already defined.")
+            ));
             return Ok(());
         }
 
         if !existing.is_empty() {
-            println!(
+            output.info(&format!(
                 "\nAlready defined: {}",
                 existing
                     .iter()
                     .map(|n| green(n))
                     .collect::<Vec<_>>()
                     .join(", ")
-            );
+            ));
         }
-        println!(
+        output.info(&format!(
             "Not yet defined: {}",
             missing
                 .iter()
                 .map(|n| cyan(n))
                 .collect::<Vec<_>>()
                 .join(", ")
-        );
-        println!(
+        ));
+        output.info(&format!(
             "\nAdd them to your {} under the {} key:\n",
             bold(&config_path.file_name().unwrap().to_string_lossy()),
             cyan("hooks")
-        );
+        ));
 
+        let mut snippet = String::new();
         for name in &missing {
-            println!("  {name}:");
-            println!("    jobs:");
-            println!("      - name: setup");
-            println!("        run: echo \"TODO: add your {name} command\"");
+            snippet.push_str(&format!("  {name}:\n"));
+            snippet.push_str("    jobs:\n");
+            snippet.push_str("      - name: setup\n");
+            snippet.push_str(&format!(
+                "        run: echo \"TODO: add your {name} command\"\n"
+            ));
         }
-
-        println!();
+        output.raw(&snippet);
     } else {
         // No config — create new file
         let config_path = worktree_root.join("daft.yml");
@@ -97,9 +103,9 @@ pub(super) fn cmd_install(hooks: &[String]) -> Result<()> {
         std::fs::write(&config_path, &content)
             .with_context(|| format!("Failed to write {}", config_path.display()))?;
 
-        println!("{} {}", green("Created"), config_path.display());
+        output.success(&format!("{} {}", green("Created"), config_path.display()));
         for name in &hook_names {
-            println!("  {} {name}", green("added"));
+            output.info(&format!("  {} {name}", green("added")));
         }
     }
 

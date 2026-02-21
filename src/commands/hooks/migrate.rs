@@ -1,4 +1,5 @@
 use crate::hooks::{HookType, PROJECT_HOOKS_DIR};
+use crate::output::Output;
 use crate::styles::{bold, dim, green, red, yellow};
 use crate::{get_git_common_dir, is_git_repository};
 use anyhow::{Context, Result};
@@ -8,7 +9,7 @@ use std::path::PathBuf;
 ///
 /// Must be run from within a worktree. Only migrates hooks in the
 /// current worktree's `.daft/hooks/` directory.
-pub(super) fn cmd_migrate(dry_run: bool) -> Result<()> {
+pub(super) fn cmd_migrate(dry_run: bool, output: &mut dyn Output) -> Result<()> {
     if !is_git_repository()? {
         anyhow::bail!("Not in a git repository");
     }
@@ -43,7 +44,7 @@ pub(super) fn cmd_migrate(dry_run: bool) -> Result<()> {
     let hooks_dir = worktree_path.join(PROJECT_HOOKS_DIR);
 
     if !hooks_dir.exists() || !hooks_dir.is_dir() {
-        println!("{}", dim("No .daft/hooks/ directory in this worktree."));
+        output.info(&dim("No .daft/hooks/ directory in this worktree."));
         return Ok(());
     }
 
@@ -58,8 +59,8 @@ pub(super) fn cmd_migrate(dry_run: bool) -> Result<()> {
     let mut conflicts = 0u32;
 
     if dry_run {
-        println!("{}", bold("Dry run - no files will be changed"));
-        println!();
+        output.info(&bold("Dry run - no files will be changed"));
+        output.info("");
     }
 
     for &(old_name, new_name) in &rename_map {
@@ -72,55 +73,64 @@ pub(super) fn cmd_migrate(dry_run: bool) -> Result<()> {
 
         if new_path.exists() {
             // Conflict: both exist
-            println!(
-                "  {} {}: both '{}' and '{}' exist",
+            output.warning(&format!(
+                "{} {}: both '{}' and '{}' exist",
                 red("conflict"),
                 bold(old_name),
                 old_name,
                 new_name,
-            );
+            ));
             conflicts += 1;
             continue;
         }
 
         if dry_run {
-            println!("  {} {} -> {}", yellow("would rename"), old_name, new_name,);
+            output.info(&format!(
+                "  {} {} -> {}",
+                yellow("would rename"),
+                old_name,
+                new_name,
+            ));
             renamed += 1;
         } else {
             match std::fs::rename(&old_path, &new_path) {
                 Ok(()) => {
-                    println!("  {} {} -> {}", green("renamed"), old_name, new_name,);
+                    output.info(&format!(
+                        "  {} {} -> {}",
+                        green("renamed"),
+                        old_name,
+                        new_name,
+                    ));
                     renamed += 1;
                 }
                 Err(e) => {
-                    println!("  {} {} -> {}: {}", red("error"), old_name, new_name, e);
+                    output.error(&format!("{} -> {}: {}", old_name, new_name, e));
                     skipped += 1;
                 }
             }
         }
     }
 
-    println!();
+    output.info("");
     if dry_run {
-        println!(
+        output.result(&format!(
             "{} would be renamed, {} conflicts",
             bold(&renamed.to_string()),
             bold(&conflicts.to_string())
-        );
+        ));
     } else if renamed == 0 && conflicts == 0 {
-        println!("{}", dim("No deprecated hook files found."));
+        output.info(&dim("No deprecated hook files found."));
     } else {
-        println!(
+        output.result(&format!(
             "{} renamed, {} skipped, {} conflicts",
             bold(&renamed.to_string()),
             bold(&skipped.to_string()),
             bold(&conflicts.to_string())
-        );
+        ));
         if renamed > 0 {
-            println!(
-                "{}",
-                dim("Remember to 'git add' the renamed files if they are tracked.")
-            );
+            output.info(&dim(
+                "Remember to 'git add' the renamed files if they are tracked.",
+            ));
         }
     }
 

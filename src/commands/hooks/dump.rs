@@ -1,11 +1,12 @@
 use super::find_worktree_root;
 use super::formatting::colorize_yaml_dump;
 use crate::hooks::yaml_config_loader;
+use crate::output::Output;
 use crate::styles::dim;
 use anyhow::{Context, Result};
 
 /// Dump the merged YAML hooks configuration.
-pub(super) fn cmd_dump() -> Result<()> {
+pub(super) fn cmd_dump(output: &mut dyn Output) -> Result<()> {
     let worktree_root = find_worktree_root()?;
 
     let config = yaml_config_loader::load_merged_config(&worktree_root)
@@ -14,7 +15,7 @@ pub(super) fn cmd_dump() -> Result<()> {
     let config = match config {
         Some(c) => c,
         None => {
-            println!("{}", dim("No daft.yml found."));
+            output.info(&dim("No daft.yml found."));
             return Ok(());
         }
     };
@@ -23,7 +24,7 @@ pub(super) fn cmd_dump() -> Result<()> {
         serde_yaml::to_value(&config).context("Failed to convert config to YAML value")?;
     let stripped = strip_yaml_nulls(value);
     let yaml = serde_yaml::to_string(&stripped).context("Failed to serialize config")?;
-    print!("{}", colorize_yaml_dump(&yaml));
+    output.raw(&colorize_yaml_dump(&yaml));
 
     Ok(())
 }
