@@ -1,17 +1,15 @@
 use crate::{
     check_dependencies,
+    core::{worktree::init, OutputSink},
     git::GitCommand,
     hints::maybe_show_shell_hint,
     logging::init_logging,
-    multi_remote::path::calculate_worktree_path,
     output::{CliOutput, Output, OutputConfig},
-    resolve_initial_branch,
     settings::DaftSettings,
     utils::*,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
-use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-init")]
@@ -86,7 +84,6 @@ pub struct Args {
 pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-init"));
 
-    // Initialize logging based on verbose flag
     init_logging(args.verbose);
 
     // Load settings from global config only (repo doesn't exist yet)
@@ -108,153 +105,65 @@ pub fn run() -> Result<()> {
 
 /// Run the init command with the given output implementation.
 ///
-/// This function contains all the business logic and uses the `Output` trait
+/// This function contains the orchestration logic and uses the `Output` trait
 /// for all output operations, making it testable and TUI-ready.
 pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
     check_dependencies()?;
 
-    validate_repo_name(&args.repository_name)?;
-
-    let initial_branch = resolve_initial_branch(&args.initial_branch);
-
-    if initial_branch.is_empty() {
-        anyhow::bail!("Initial branch name cannot be empty");
-    }
-
     // Load global settings to check for multi-remote preferences
     let settings = DaftSettings::load_global()?;
 
-    // Determine if we should use multi-remote mode
-    let use_multi_remote = args.remote.is_some() || settings.multi_remote_enabled;
-    let remote_for_path = args
-        .remote
-        .clone()
-        .unwrap_or_else(|| settings.multi_remote_default.clone());
-
-    let parent_dir = PathBuf::from(&args.repository_name);
-    let worktree_dir = calculate_worktree_path(
-        &parent_dir,
-        &initial_branch,
-        &remote_for_path,
-        use_multi_remote,
-    );
-
-    output.step(&format!(
-        "Target repository directory: './{}'",
-        parent_dir.display()
-    ));
-
-    if !args.bare {
-        output.step(&format!(
-            "Initial worktree will be in: './{}'",
-            worktree_dir.display()
-        ));
-    } else {
-        output.step("Bare mode: Only bare repository will be created");
-    }
-
-    if path_exists(&parent_dir) {
-        anyhow::bail!("Target path './{} already exists.", parent_dir.display());
-    }
-
-    output.step("Creating repository directory...");
-    create_directory(&parent_dir)?;
-
-    let git_dir = parent_dir.join(".git");
     let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
 
-    output.step(&format!(
-        "Initializing bare repository in './{}'...",
-        git_dir.display()
-    ));
+    let params = init::InitParams {
+        repository_name: args.repository_name.clone(),
+        bare: args.bare,
+        initial_branch: args.initial_branch.clone(),
+        remote: args.remote.clone(),
+        multi_remote_enabled: settings.multi_remote_enabled,
+        multi_remote_default: settings.multi_remote_default.clone(),
+    };
 
-    if let Err(e) = git.init_bare(&git_dir, &initial_branch) {
-        remove_directory(&parent_dir).ok();
-        return Err(e.context("Git init failed"));
-    }
+    let mut sink = OutputSink(output);
+    let result = init::execute(&params, &git, &mut sink)?;
 
-    if !args.bare {
-        output.step(&format!(
-            "Changing directory to './{}'",
-            parent_dir.display()
-        ));
-        change_directory(&parent_dir)?;
+    render_init_result(&result, output);
 
-        // Set multi-remote config if --remote was provided
-        if args.remote.is_some() {
-            output.step("Enabling multi-remote mode for this repository...");
-            crate::multi_remote::config::set_multi_remote_enabled(&git, true)?;
-            crate::multi_remote::config::set_multi_remote_default(&git, &remote_for_path)?;
-        }
-
-        // Calculate the relative worktree path from parent_dir
-        let relative_worktree_path = if use_multi_remote {
-            PathBuf::from(&remote_for_path).join(&initial_branch)
-        } else {
-            PathBuf::from(&initial_branch)
-        };
-
-        output.step(&format!(
-            "Creating initial worktree for branch '{}' at '{}'...",
-            initial_branch,
-            relative_worktree_path.display()
-        ));
-
-        // Ensure parent directory exists (for multi-remote mode)
-        if let Some(parent) = relative_worktree_path.parent() {
-            if !parent.as_os_str().is_empty() && !parent.exists() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
-            }
-        }
-
-        if let Err(e) = git.worktree_add_orphan(&relative_worktree_path, &initial_branch) {
-            change_directory(parent_dir.parent().unwrap_or(&PathBuf::from("."))).ok();
-            remove_directory(&parent_dir).ok();
-            return Err(e.context("Failed to create initial worktree"));
-        }
-
-        output.step(&format!(
-            "Changing directory to worktree: './{}'",
-            relative_worktree_path.display()
-        ));
-
-        if let Err(e) = change_directory(&relative_worktree_path) {
-            change_directory(parent_dir.parent().unwrap_or(&PathBuf::from("."))).ok();
-            return Err(e);
-        }
-
-        let current_dir = get_current_directory()?;
-
-        // Git-like result message
-        output.result(&format!(
-            "Initialized repository '{}' in '{}/{}'",
-            args.repository_name, args.repository_name, initial_branch
-        ));
-
+    if !result.bare_mode {
         // Run exec commands (after hooks, before cd_path)
         let exec_result = crate::exec::run_exec_commands(&args.exec, output);
 
-        output.cd_path(&current_dir);
+        if let Some(ref cd_target) = result.cd_target {
+            output.cd_path(cd_target);
+        }
         maybe_show_shell_hint(output)?;
 
         // Propagate exec error after cd_path is written
         exec_result?;
-    } else {
-        // Git-like result message for bare mode
-        output.result(&format!(
-            "Initialized empty repository '{}' (bare)",
-            args.repository_name
-        ));
     }
 
     Ok(())
+}
+
+fn render_init_result(result: &init::InitResult, output: &mut dyn Output) {
+    if result.bare_mode {
+        output.result(&format!(
+            "Initialized empty repository '{}' (bare)",
+            result.repository_name
+        ));
+    } else {
+        output.result(&format!(
+            "Initialized repository '{}' in '{}/{}'",
+            result.repository_name, result.repository_name, result.initial_branch
+        ));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::output::TestOutput;
+    use crate::resolve_initial_branch;
     use serial_test::serial;
     use std::env;
     use tempfile::tempdir;

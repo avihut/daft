@@ -1,0 +1,110 @@
+use super::{get_command_for_name, get_flag_descriptions};
+use anyhow::{Context, Result};
+
+/// Generate fish completion string
+pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<String> {
+    let mut output = String::new();
+    let has_branches = matches!(
+        command_name,
+        "git-worktree-checkout"
+            | "git-worktree-checkout-branch"
+            | "git-worktree-carry"
+            | "git-worktree-fetch"
+    );
+
+    // Extract git subcommand name for dual registration
+    let git_subcommand = command_name.trim_start_matches("git-");
+
+    // Branch completions for both direct and git subcommand invocation
+    if has_branches {
+        output.push_str("# Dynamic branch name completion\n");
+        // Direct invocation (git-worktree-checkout)
+        output.push_str(&format!(
+            "complete -c {} -f -a \"(daft __complete {} '')\"\n",
+            command_name, command_name
+        ));
+        // Git subcommand invocation (git worktree-checkout)
+        output.push_str(&format!(
+            "complete -c git -n '__fish_seen_subcommand_from {}' -f -a \"(daft __complete {} '')\"\n",
+            git_subcommand, command_name
+        ));
+        output.push('\n');
+    }
+
+    output.push_str("# Static flag completions (extracted from clap)\n");
+
+    // Use clap introspection to get flags with descriptions
+    let cmd =
+        get_command_for_name(command_name).context(format!("Unknown command: {}", command_name))?;
+    let flag_descriptions = get_flag_descriptions(&cmd);
+
+    for (short, long, desc) in flag_descriptions {
+        // Fish expects separate entries for short and long forms
+        let description = desc.unwrap_or_else(|| "".to_string());
+
+        if !short.is_empty() && !long.is_empty() {
+            // Both short and long form exist
+            let short_char = short.trim_start_matches('-');
+            let long_name = long.trim_start_matches("--");
+            // Direct invocation
+            output.push_str(&format!(
+                "complete -c {command_name} -s {short_char} -l {long_name} -d '{description}'\n"
+            ));
+            // Git subcommand invocation
+            output.push_str(&format!(
+                "complete -c git -n '__fish_seen_subcommand_from {}' -s {short_char} -l {long_name} -d '{description}'\n",
+                git_subcommand
+            ));
+        } else if !long.is_empty() {
+            // Long form only
+            let long_name = long.trim_start_matches("--");
+            output.push_str(&format!(
+                "complete -c {command_name} -l {long_name} -d '{description}'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c git -n '__fish_seen_subcommand_from {}' -l {long_name} -d '{description}'\n",
+                git_subcommand
+            ));
+        } else if !short.is_empty() {
+            // Short form only (rare)
+            let short_char = short.trim_start_matches('-');
+            output.push_str(&format!(
+                "complete -c {command_name} -s {short_char} -d '{description}'\n"
+            ));
+            output.push_str(&format!(
+                "complete -c git -n '__fish_seen_subcommand_from {}' -s {short_char} -d '{description}'\n",
+                git_subcommand
+            ));
+        }
+    }
+
+    // Register completions for shortcut aliases (wraps the full command)
+    for shortcut in crate::shortcuts::SHORTCUTS {
+        if shortcut.command == command_name {
+            output.push_str(&format!(
+                "complete -c {} -w {}\n",
+                shortcut.alias, command_name
+            ));
+        }
+    }
+
+    Ok(output)
+}
+
+pub(super) const DAFT_FISH_COMPLETIONS: &str = r#"# daft subcommand completions
+complete -c daft -f
+complete -c daft -n '__fish_use_subcommand' -a 'hooks' -d 'Manage lifecycle hooks'
+complete -c daft -n '__fish_use_subcommand' -a 'shell-init' -d 'Generate shell wrappers'
+complete -c daft -n '__fish_use_subcommand' -a 'completions' -d 'Generate completions'
+complete -c daft -n '__fish_use_subcommand' -a 'setup' -d 'Setup and configuration'
+complete -c daft -n '__fish_use_subcommand' -a 'branch' -d 'Branch management'
+complete -c daft -n '__fish_use_subcommand' -a 'multi-remote' -d 'Multi-remote management'
+complete -c daft -n '__fish_use_subcommand' -a 'release-notes' -d 'Generate release notes'
+complete -c daft -n '__fish_use_subcommand' -a 'doctor' -d 'Check installation'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and not __fish_seen_subcommand_from trust prompt deny status migrate install validate dump run' -f -a 'trust prompt deny status migrate install validate dump run'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -f -a "(daft __complete hooks-run '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l job -d 'Run only the named job' -r -f -a "(set -l hook (commandline -opc | string match -rv '^-' | tail -n1); DAFT_COMPLETE_HOOK=\$hook daft __complete hooks-run-job '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l tag -d 'Run only jobs with this tag'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l dry-run -d 'Preview what would run'
+complete -c git-daft -w daft
+"#;

@@ -3,6 +3,7 @@
 //! Provides `git daft multi-remote` subcommand for managing multi-remote mode.
 
 use crate::{
+    core::OutputSink,
     get_project_root,
     git::GitCommand,
     is_git_repository,
@@ -175,7 +176,7 @@ fn cmd_enable(default_remote: Option<String>, dry_run: bool, skip_confirm: bool)
     if plan.is_empty() {
         output.step("No migration needed");
     } else {
-        plan.preview(&mut output);
+        plan.preview(&mut OutputSink(&mut output));
     }
 
     if dry_run {
@@ -200,7 +201,7 @@ fn cmd_enable(default_remote: Option<String>, dry_run: bool, skip_confirm: bool)
     // Execute migration
     if !plan.is_empty() {
         output.step("Executing migration...");
-        plan.execute(&git, &mut output)?;
+        plan.execute(&git, &mut OutputSink(&mut output))?;
     }
 
     // Update config
@@ -260,7 +261,7 @@ fn cmd_disable(dry_run: bool, skip_confirm: bool) -> Result<()> {
     if plan.is_empty() {
         output.step("No migration needed");
     } else {
-        plan.preview(&mut output);
+        plan.preview(&mut OutputSink(&mut output));
     }
 
     if dry_run {
@@ -285,7 +286,7 @@ fn cmd_disable(dry_run: bool, skip_confirm: bool) -> Result<()> {
     // Execute migration
     if !plan.is_empty() {
         output.step("Executing migration...");
-        plan.execute(&git, &mut output)?;
+        plan.execute(&git, &mut OutputSink(&mut output))?;
     }
 
     // Update config
@@ -305,9 +306,10 @@ fn cmd_status() -> Result<()> {
     let settings = DaftSettings::load()?;
     let project_root = get_project_root()?;
     let git = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
+    let mut output = CliOutput::new(OutputConfig::new(false, false));
 
-    println!("Repository: {}", project_root.display());
-    println!();
+    output.detail("Repository", &project_root.display().to_string());
+    output.info("");
 
     // Multi-remote status
     let status = if settings.multi_remote_enabled {
@@ -315,15 +317,15 @@ fn cmd_status() -> Result<()> {
     } else {
         "disabled"
     };
-    println!("Multi-remote mode: {status}");
-    println!("Default remote: {}", settings.multi_remote_default);
-    println!();
+    output.detail("Multi-remote mode", status);
+    output.detail("Default remote", &settings.multi_remote_default);
+    output.info("");
 
     // List remotes
     let remotes = git.remote_list()?;
-    println!("Configured remotes:");
+    output.info("Configured remotes:");
     if remotes.is_empty() {
-        println!("  (none)");
+        output.info("  (none)");
     } else {
         for remote in &remotes {
             let marker = if remote == &settings.multi_remote_default {
@@ -331,10 +333,10 @@ fn cmd_status() -> Result<()> {
             } else {
                 ""
             };
-            println!("  - {remote}{marker}");
+            output.list_item(&format!("{remote}{marker}"));
         }
     }
-    println!();
+    output.info("");
 
     // List worktrees
     let worktrees = list_worktrees(&git, &project_root)?;
@@ -343,9 +345,9 @@ fn cmd_status() -> Result<()> {
         .filter(|w| !w.path.ends_with(".git"))
         .collect();
 
-    println!("Worktrees:");
+    output.info("Worktrees:");
     if regular_worktrees.is_empty() {
-        println!("  (none)");
+        output.info("  (none)");
     } else {
         for wt in &regular_worktrees {
             let relative = wt
@@ -366,18 +368,18 @@ fn cmd_status() -> Result<()> {
                 .map(|r| format!(" ({})", r))
                 .unwrap_or_default();
 
-            println!("  {relative}{branch_info}{remote_info}");
+            output.info(&format!("  {relative}{branch_info}{remote_info}"));
         }
     }
-    println!();
+    output.info("");
 
     // Commands
     if settings.multi_remote_enabled {
-        println!("To disable multi-remote mode:");
-        println!("  git daft multi-remote disable");
+        output.info("To disable multi-remote mode:");
+        output.info("  git daft multi-remote disable");
     } else {
-        println!("To enable multi-remote mode:");
-        println!("  git daft multi-remote enable");
+        output.info("To enable multi-remote mode:");
+        output.info("  git daft multi-remote enable");
     }
 
     Ok(())
@@ -391,6 +393,7 @@ fn cmd_set_default(remote: &str) -> Result<()> {
 
     let settings = DaftSettings::load()?;
     let git = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
+    let mut output = CliOutput::new(OutputConfig::new(false, false));
 
     // Verify remote exists
     let remotes = git.remote_list()?;
@@ -403,7 +406,7 @@ fn cmd_set_default(remote: &str) -> Result<()> {
     }
 
     set_multi_remote_default(&git, remote)?;
-    println!("Default remote set to: {remote}");
+    output.result(&format!("Default remote set to: {remote}"));
 
     Ok(())
 }
