@@ -14,3 +14,19 @@ pub mod flow_adopt;
 pub mod flow_eject;
 pub mod init;
 pub mod prune;
+
+/// Configuration for worktree operations.
+#[derive(Debug, Clone)]
+pub struct WorktreeConfig {
+    pub remote_name: String,
+    pub quiet: bool,
+}
+
+impl Default for WorktreeConfig {
+    fn default() -> Self {
+        Self {
+            remote_name: "origin".to_string(),
+            quiet: false,
+        }
+    }
+}

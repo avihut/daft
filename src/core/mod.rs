@@ -8,6 +8,7 @@ pub mod config;
 pub mod multi_remote;
 mod progress;
 pub mod remote;
+pub mod repo;
 pub mod settings;
 pub mod worktree;
 
