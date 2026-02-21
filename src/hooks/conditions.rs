@@ -10,16 +10,31 @@ use super::yaml_config::{
 };
 use std::path::Path;
 
+/// Information about why a job was skipped.
+#[derive(Debug, Clone)]
+pub struct SkipInfo {
+    /// Human-readable reason for the skip.
+    pub reason: String,
+    /// Whether the skip evaluation involved running a command check.
+    pub ran_command: bool,
+}
+
 /// Check whether a hook/job should be skipped based on `skip` condition.
 ///
-/// Returns `Some(reason)` if it should be skipped, `None` if it should run.
-pub fn should_skip(condition: &SkipCondition, worktree: &Path) -> Option<String> {
+/// Returns `Some(SkipInfo)` if it should be skipped, `None` if it should run.
+pub fn should_skip(condition: &SkipCondition, worktree: &Path) -> Option<SkipInfo> {
     match condition {
-        SkipCondition::Bool(true) => Some("skip: true".to_string()),
+        SkipCondition::Bool(true) => Some(SkipInfo {
+            reason: "skip: true".to_string(),
+            ran_command: false,
+        }),
         SkipCondition::Bool(false) => None,
         SkipCondition::EnvVar(var) => {
             if is_env_truthy(var) {
-                Some(format!("skip: env ${var} is set"))
+                Some(SkipInfo {
+                    reason: format!("skip: env ${var} is set"),
+                    ran_command: false,
+                })
             } else {
                 None
             }
@@ -27,8 +42,8 @@ pub fn should_skip(condition: &SkipCondition, worktree: &Path) -> Option<String>
         SkipCondition::Rules(rules) => {
             // Any rule match → skip
             for rule in rules {
-                if let Some(reason) = eval_skip_rule(rule, worktree) {
-                    return Some(reason);
+                if let Some(info) = eval_skip_rule(rule, worktree) {
+                    return Some(info);
                 }
             }
             None
@@ -38,23 +53,29 @@ pub fn should_skip(condition: &SkipCondition, worktree: &Path) -> Option<String>
 
 /// Check whether a hook/job should run based on `only` condition.
 ///
-/// Returns `Some(reason)` if it should be skipped (condition NOT met), `None` if it should run.
-pub fn should_only_skip(condition: &OnlyCondition, worktree: &Path) -> Option<String> {
+/// Returns `Some(SkipInfo)` if it should be skipped (condition NOT met), `None` if it should run.
+pub fn should_only_skip(condition: &OnlyCondition, worktree: &Path) -> Option<SkipInfo> {
     match condition {
         OnlyCondition::Bool(true) => None,
-        OnlyCondition::Bool(false) => Some("only: false".to_string()),
+        OnlyCondition::Bool(false) => Some(SkipInfo {
+            reason: "only: false".to_string(),
+            ran_command: false,
+        }),
         OnlyCondition::EnvVar(var) => {
             if is_env_truthy(var) {
                 None
             } else {
-                Some(format!("only: env ${var} is not set"))
+                Some(SkipInfo {
+                    reason: format!("only: env ${var} is not set"),
+                    ran_command: false,
+                })
             }
         }
         OnlyCondition::Rules(rules) => {
             // All rules must match for the job to run; if any fails → skip
             for rule in rules {
-                if let Some(reason) = eval_only_rule(rule, worktree) {
-                    return Some(reason);
+                if let Some(info) = eval_only_rule(rule, worktree) {
+                    return Some(info);
                 }
             }
             None
@@ -63,17 +84,20 @@ pub fn should_only_skip(condition: &OnlyCondition, worktree: &Path) -> Option<St
 }
 
 /// Evaluate a single skip rule.
-fn eval_skip_rule(rule: &SkipRule, worktree: &Path) -> Option<String> {
+fn eval_skip_rule(rule: &SkipRule, worktree: &Path) -> Option<SkipInfo> {
     match rule {
-        SkipRule::Named(name) => eval_named_condition(name, worktree),
+        SkipRule::Named(name) => eval_named_condition(name, worktree).map(|reason| SkipInfo {
+            reason,
+            ran_command: false,
+        }),
         SkipRule::Structured(s) => eval_structured_skip(s, worktree),
     }
 }
 
 /// Evaluate a single only rule.
 ///
-/// Returns `Some(reason)` if the condition is NOT met (i.e., should skip).
-fn eval_only_rule(rule: &OnlyRule, worktree: &Path) -> Option<String> {
+/// Returns `Some(SkipInfo)` if the condition is NOT met (i.e., should skip).
+fn eval_only_rule(rule: &OnlyRule, worktree: &Path) -> Option<SkipInfo> {
     match rule {
         OnlyRule::Named(name) => {
             // For "only", the condition must be met. If it is NOT met → skip.
@@ -82,7 +106,10 @@ fn eval_only_rule(rule: &OnlyRule, worktree: &Path) -> Option<String> {
                 None
             } else {
                 // Named condition NOT triggered → condition NOT met → skip
-                Some(format!("only: not in {name} state"))
+                Some(SkipInfo {
+                    reason: format!("only: not in {name} state"),
+                    ran_command: false,
+                })
             }
         }
         OnlyRule::Structured(s) => eval_structured_only(s, worktree),
@@ -111,36 +138,42 @@ fn eval_named_condition(name: &str, worktree: &Path) -> Option<String> {
 }
 
 /// Evaluate structured skip rule (ref, env, run).
-fn eval_structured_skip(rule: &SkipRuleStructured, worktree: &Path) -> Option<String> {
+fn eval_structured_skip(rule: &SkipRuleStructured, worktree: &Path) -> Option<SkipInfo> {
     if let Some(ref pattern) = rule.ref_pattern {
         if let Some(branch) = current_ref(worktree) {
             if branch_matches_pattern(&branch, pattern) {
-                return Some(
-                    rule.desc
+                return Some(SkipInfo {
+                    reason: rule
+                        .desc
                         .clone()
                         .unwrap_or_else(|| format!("skip: ref matches '{pattern}'")),
-                );
+                    ran_command: false,
+                });
             }
         }
     }
 
     if let Some(ref var) = rule.env {
         if is_env_truthy(var) {
-            return Some(
-                rule.desc
+            return Some(SkipInfo {
+                reason: rule
+                    .desc
                     .clone()
                     .unwrap_or_else(|| format!("skip: env ${var} is set")),
-            );
+                ran_command: false,
+            });
         }
     }
 
     if let Some(ref cmd) = rule.run {
         if run_check_command(cmd, worktree) {
-            return Some(
-                rule.desc
+            return Some(SkipInfo {
+                reason: rule
+                    .desc
                     .clone()
                     .unwrap_or_else(|| format!("skip: command succeeded: {cmd}")),
-            );
+                ran_command: true,
+            });
         }
     }
 
@@ -149,36 +182,42 @@ fn eval_structured_skip(rule: &SkipRuleStructured, worktree: &Path) -> Option<St
 
 /// Evaluate structured only rule.
 ///
-/// Returns `Some(reason)` if any sub-condition is NOT met.
-fn eval_structured_only(rule: &OnlyRuleStructured, worktree: &Path) -> Option<String> {
+/// Returns `Some(SkipInfo)` if any sub-condition is NOT met.
+fn eval_structured_only(rule: &OnlyRuleStructured, worktree: &Path) -> Option<SkipInfo> {
     if let Some(ref pattern) = rule.ref_pattern {
         let branch = current_ref(worktree).unwrap_or_default();
         if !branch_matches_pattern(&branch, pattern) {
-            return Some(
-                rule.desc
+            return Some(SkipInfo {
+                reason: rule
+                    .desc
                     .clone()
                     .unwrap_or_else(|| format!("only: ref does not match '{pattern}'")),
-            );
+                ran_command: false,
+            });
         }
     }
 
     if let Some(ref var) = rule.env {
         if !is_env_truthy(var) {
-            return Some(
-                rule.desc
+            return Some(SkipInfo {
+                reason: rule
+                    .desc
                     .clone()
                     .unwrap_or_else(|| format!("only: env ${var} is not set")),
-            );
+                ran_command: false,
+            });
         }
     }
 
     if let Some(ref cmd) = rule.run {
         if !run_check_command(cmd, worktree) {
-            return Some(
-                rule.desc
+            return Some(SkipInfo {
+                reason: rule
+                    .desc
                     .clone()
                     .unwrap_or_else(|| format!("only: command failed: {cmd}")),
-            );
+                ran_command: true,
+            });
         }
     }
 
@@ -416,8 +455,9 @@ mod tests {
             run: Some("true".to_string()),
             desc: Some("Brew is already installed".to_string()),
         })]);
-        let reason = should_skip(&cond, Path::new(".")).unwrap();
-        assert_eq!(reason, "Brew is already installed");
+        let info = should_skip(&cond, Path::new(".")).unwrap();
+        assert_eq!(info.reason, "Brew is already installed");
+        assert!(info.ran_command);
     }
 
     #[test]
@@ -428,8 +468,9 @@ mod tests {
             run: Some("true".to_string()),
             desc: None,
         })]);
-        let reason = should_skip(&cond, Path::new(".")).unwrap();
-        assert!(reason.starts_with("skip: command succeeded:"));
+        let info = should_skip(&cond, Path::new(".")).unwrap();
+        assert!(info.reason.starts_with("skip: command succeeded:"));
+        assert!(info.ran_command);
     }
 
     #[test]
@@ -440,8 +481,9 @@ mod tests {
             run: Some("false".to_string()),
             desc: Some("Only when package.json exists".to_string()),
         })]);
-        let reason = should_only_skip(&cond, Path::new(".")).unwrap();
-        assert_eq!(reason, "Only when package.json exists");
+        let info = should_only_skip(&cond, Path::new(".")).unwrap();
+        assert_eq!(info.reason, "Only when package.json exists");
+        assert!(info.ran_command);
     }
 
     #[test]
