@@ -124,15 +124,23 @@ pub fn execute_yaml_hook_with_rc(
 ) -> Result<HookResult> {
     // Check hook-level skip/only conditions
     if let Some(ref skip) = hook_def.skip {
-        if let Some(reason) = super::conditions::should_skip(skip, working_dir) {
-            output.debug(&format!("Skipping {hook_name}: {reason}"));
-            return Ok(HookResult::skipped(reason));
+        if let Some(info) = super::conditions::should_skip(skip, working_dir) {
+            output.debug(&format!("Skipping {hook_name}: {}", info.reason));
+            return Ok(if info.ran_command {
+                HookResult::skipped_after_command(info.reason)
+            } else {
+                HookResult::skipped(info.reason)
+            });
         }
     }
     if let Some(ref only) = hook_def.only {
-        if let Some(reason) = super::conditions::should_only_skip(only, working_dir) {
-            output.debug(&format!("Skipping {hook_name}: {reason}"));
-            return Ok(HookResult::skipped(reason));
+        if let Some(info) = super::conditions::should_only_skip(only, working_dir) {
+            output.debug(&format!("Skipping {hook_name}: {}", info.reason));
+            return Ok(if info.ran_command {
+                HookResult::skipped_after_command(info.reason)
+            } else {
+                HookResult::skipped(info.reason)
+            });
         }
     }
 
@@ -264,7 +272,7 @@ fn execute_sequential(
             continue;
         }
 
-        renderer.start_job(job_name);
+        renderer.start_job_with_description(job_name, job.description.as_deref());
         let start = std::time::Instant::now();
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -274,6 +282,12 @@ fn execute_sequential(
         // Drain channel and feed lines to the renderer
         for line in rx.try_iter() {
             renderer.update_job_output(job_name, &line);
+        }
+
+        if result.skipped {
+            let reason = result.skip_reason.as_deref().unwrap_or("skipped");
+            renderer.finish_job_skipped(job_name, reason, elapsed, result.skip_ran_command);
+            continue;
         }
 
         if result.success {
@@ -375,8 +389,13 @@ fn execute_parallel(
     let mut global_offset = 0;
     for batch in job_data.chunks(max_threads) {
         // Start all jobs in this batch on the renderer
-        for data in batch {
-            renderer.lock().unwrap().start_job(&data.name);
+        for (batch_idx, data) in batch.iter().enumerate() {
+            let job_idx = global_offset + batch_idx;
+            let desc = parallel.get(job_idx).and_then(|j| j.description.as_deref());
+            renderer
+                .lock()
+                .unwrap()
+                .start_job_with_description(&data.name, desc);
         }
 
         let handles: Vec<_> = batch
@@ -704,13 +723,20 @@ fn execute_dag_parallel(
                     let job = &jobs[job_idx];
                     let name = job.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
 
-                    renderer.lock().unwrap().start_job(&name);
+                    renderer
+                        .lock()
+                        .unwrap()
+                        .start_job_with_description(&name, job.description.as_deref());
                     let start = std::time::Instant::now();
 
                     // Check skip/only conditions
                     let skip_result = check_skip_conditions(job, exec.working_dir);
-                    let result = if let Some(reason) = skip_result {
-                        Ok(HookResult::skipped(reason))
+                    let result = if let Some(skip_info) = skip_result {
+                        Ok(if skip_info.ran_command {
+                            HookResult::skipped_after_command(skip_info.reason)
+                        } else {
+                            HookResult::skipped(skip_info.reason)
+                        })
                     } else if let Some(ref data) = job_data[job_idx] {
                         let cmd = if let Some(ref rc) = rc {
                             format!("source {rc} && {}", data.cmd)
@@ -758,7 +784,11 @@ fn execute_dag_parallel(
                     {
                         let mut r = renderer.lock().unwrap();
                         match &result {
-                            Ok(hr) if hr.success || hr.skipped => {
+                            Ok(hr) if hr.skipped => {
+                                let reason = hr.skip_reason.as_deref().unwrap_or("skipped");
+                                r.finish_job_skipped(&name, reason, elapsed, hr.skip_ran_command);
+                            }
+                            Ok(hr) if hr.success => {
                                 r.finish_job_success(&name, elapsed);
                             }
                             _ => {
@@ -996,15 +1026,21 @@ fn enqueue_dep_failed(
 }
 
 /// Check skip/only conditions for a job without executing it.
-fn check_skip_conditions(job: &JobDef, working_dir: &Path) -> Option<String> {
+fn check_skip_conditions(job: &JobDef, working_dir: &Path) -> Option<super::conditions::SkipInfo> {
+    if let Some(reason) = super::conditions::check_platform_constraints(job) {
+        return Some(super::conditions::SkipInfo {
+            reason,
+            ran_command: false,
+        });
+    }
     if let Some(ref skip) = job.skip {
-        if let Some(reason) = super::conditions::should_skip(skip, working_dir) {
-            return Some(reason);
+        if let Some(info) = super::conditions::should_skip(skip, working_dir) {
+            return Some(info);
         }
     }
     if let Some(ref only) = job.only {
-        if let Some(reason) = super::conditions::should_only_skip(only, working_dir) {
-            return Some(reason);
+        if let Some(info) = super::conditions::should_only_skip(only, working_dir) {
+            return Some(info);
         }
     }
     None
@@ -1124,7 +1160,7 @@ fn execute_dag_sequential(
             continue;
         }
 
-        renderer.start_job(job_name);
+        renderer.start_job_with_description(job_name, jobs[idx].description.as_deref());
         let start = std::time::Instant::now();
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1145,7 +1181,10 @@ fn execute_dag_sequential(
         };
         status[idx] = job_status;
 
-        if result.success || result.skipped {
+        if result.skipped {
+            let reason = result.skip_reason.as_deref().unwrap_or("skipped");
+            renderer.finish_job_skipped(job_name, reason, elapsed, result.skip_ran_command);
+        } else if result.success {
             renderer.finish_job_success(job_name, elapsed);
         } else {
             renderer.finish_job_failure(job_name, elapsed);
@@ -1210,17 +1249,31 @@ fn execute_single_job(
 ) -> Result<HookResult> {
     let job_name = job.name.as_deref().unwrap_or("(unnamed)");
 
+    // Platform constraints (os/arch)
+    if let Some(reason) = super::conditions::check_platform_constraints(job) {
+        output.debug(&format!("Skipping job '{job_name}': {reason}"));
+        return Ok(HookResult::skipped(reason));
+    }
+
     // Job-level skip/only conditions
     if let Some(ref skip) = job.skip {
-        if let Some(reason) = super::conditions::should_skip(skip, exec.working_dir) {
-            output.debug(&format!("Skipping job '{job_name}': {reason}"));
-            return Ok(HookResult::skipped(reason));
+        if let Some(info) = super::conditions::should_skip(skip, exec.working_dir) {
+            output.debug(&format!("Skipping job '{job_name}': {}", info.reason));
+            return Ok(if info.ran_command {
+                HookResult::skipped_after_command(info.reason)
+            } else {
+                HookResult::skipped(info.reason)
+            });
         }
     }
     if let Some(ref only) = job.only {
-        if let Some(reason) = super::conditions::should_only_skip(only, exec.working_dir) {
-            output.debug(&format!("Skipping job '{job_name}': {reason}"));
-            return Ok(HookResult::skipped(reason));
+        if let Some(info) = super::conditions::should_only_skip(only, exec.working_dir) {
+            output.debug(&format!("Skipping job '{job_name}': {}", info.reason));
+            return Ok(if info.ran_command {
+                HookResult::skipped_after_command(info.reason)
+            } else {
+                HookResult::skipped(info.reason)
+            });
         }
     }
 
@@ -1392,6 +1445,7 @@ fn run_shell_command_with_callback(
             stderr: stderr_content,
             skipped: false,
             skip_reason: None,
+            skip_ran_command: false,
         })
     } else {
         Ok(HookResult::failed(
@@ -1460,6 +1514,7 @@ fn run_interactive_command(
             stderr: String::new(),
             skipped: false,
             skip_reason: None,
+            skip_ran_command: false,
         })
     } else {
         Ok(HookResult::failed(exit_code, String::new(), String::new()))

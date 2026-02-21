@@ -359,6 +359,10 @@ struct HooksRunArgs {
     /// Preview what would run without executing
     #[arg(long, help = "Preview what would run without executing")]
     dry_run: bool,
+
+    /// Show verbose output including skipped jobs
+    #[arg(short, long, help = "Show verbose output including skipped jobs")]
+    verbose: bool,
 }
 
 mod trust_cmd {
@@ -1606,6 +1610,20 @@ fn cmd_run(args: &HooksRunArgs) -> Result<()> {
             let name = job.name.as_deref().unwrap_or("(unnamed)");
             println!("  {}. {}", i + 1, bold(name));
 
+            if let Some(ref desc) = job.description {
+                println!("     {}", dim(desc));
+            }
+
+            if let Some(ref os) = job.os {
+                let os_list: Vec<&str> = os.as_slice().iter().map(|o| o.as_str()).collect();
+                println!("     {}: {}", dim("os"), os_list.join(", "));
+            }
+
+            if let Some(ref arch) = job.arch {
+                let arch_list: Vec<&str> = arch.as_slice().iter().map(|a| a.as_str()).collect();
+                println!("     {}: {}", dim("arch"), arch_list.join(", "));
+            }
+
             if let Some(ref run) = job.run {
                 println!("     {}: {}", dim("run"), run);
             } else if let Some(ref script) = job.script {
@@ -1651,7 +1669,10 @@ fn cmd_run(args: &HooksRunArgs) -> Result<()> {
         &branch_name,
     );
 
-    let hooks_config = HooksConfig::default();
+    let mut hooks_config = HooksConfig::default();
+    if args.verbose {
+        hooks_config.output.verbose = true;
+    }
     let executor = HookExecutor::new(hooks_config)?
         .with_bypass_trust(true)
         .with_job_filter(filter);

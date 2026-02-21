@@ -32,6 +32,8 @@ pub struct HookResult {
     pub skipped: bool,
     /// Reason for skipping, if applicable.
     pub skip_reason: Option<String>,
+    /// Whether the skip evaluation involved running a command check.
+    pub skip_ran_command: bool,
 }
 
 impl HookResult {
@@ -44,6 +46,7 @@ impl HookResult {
             stderr: String::new(),
             skipped: false,
             skip_reason: None,
+            skip_ran_command: false,
         }
     }
 
@@ -56,6 +59,20 @@ impl HookResult {
             stderr: String::new(),
             skipped: true,
             skip_reason: Some(reason.into()),
+            skip_ran_command: false,
+        }
+    }
+
+    /// Create a skipped result where the skip check ran a command.
+    pub fn skipped_after_command(reason: impl Into<String>) -> Self {
+        Self {
+            success: true,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            skipped: true,
+            skip_reason: Some(reason.into()),
+            skip_ran_command: true,
         }
     }
 
@@ -68,6 +85,7 @@ impl HookResult {
             stderr,
             skipped: false,
             skip_reason: None,
+            skip_ran_command: false,
         }
     }
 }
@@ -497,6 +515,7 @@ impl HookExecutor {
                 stderr: stderr_content,
                 skipped: false,
                 skip_reason: None,
+                skip_ran_command: false,
             })
         } else {
             Ok(HookResult::failed(

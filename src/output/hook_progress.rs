@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 // ANSI color codes for hook output (256-color palette)
 const ORANGE: &str = "\x1b[38;5;208m";
+const YELLOW: &str = "\x1b[38;5;220m";
 const GREY: &str = "\x1b[38;5;245m";
 const BRIGHT_WHITE: &str = "\x1b[97m";
 const DARK_GREY: &str = "\x1b[38;5;240m";
@@ -22,11 +23,19 @@ fn output_suppressed() -> bool {
     cfg!(test) || std::env::var("DAFT_TESTING").is_ok()
 }
 
+/// Outcome of a completed job.
+#[derive(Debug, Clone)]
+pub enum JobOutcome {
+    Success,
+    Failed,
+    Skipped { reason: String, show_duration: bool },
+}
+
 /// Entry recording a completed job for the summary.
 #[derive(Debug, Clone)]
 pub struct JobResultEntry {
     pub name: String,
-    pub success: bool,
+    pub outcome: JobOutcome,
     pub duration: Duration,
 }
 
@@ -78,26 +87,64 @@ fn format_summary_lines(
             styles::RESET
         ));
         for job in jobs {
-            let (marker, color) = if job.success {
-                ("\u{2714}", styles::GREEN)
-            } else {
-                ("\u{2718}", styles::RED)
-            };
-            let dur = format_duration(job.duration);
-            lines.push(format!(
-                "{color}  {marker} {}{} {GREY}({dur}){}",
-                job.name,
-                styles::RESET,
-                styles::RESET
-            ));
+            match &job.outcome {
+                JobOutcome::Success => {
+                    let dur = format_duration(job.duration);
+                    lines.push(format!(
+                        "{}  \u{2714} {}{} {GREY}({dur}){}",
+                        styles::GREEN,
+                        job.name,
+                        styles::RESET,
+                        styles::RESET
+                    ));
+                }
+                JobOutcome::Failed => {
+                    let dur = format_duration(job.duration);
+                    lines.push(format!(
+                        "{}  \u{2718} {}{} {GREY}({dur}){}",
+                        styles::RED,
+                        job.name,
+                        styles::RESET,
+                        styles::RESET
+                    ));
+                }
+                JobOutcome::Skipped { show_duration, .. } => {
+                    if *show_duration {
+                        let dur = format_duration(job.duration);
+                        lines.push(format!(
+                            "{YELLOW}  \u{2298} {}{} {GREY}({dur}){}",
+                            job.name,
+                            styles::RESET,
+                            styles::RESET
+                        ));
+                    } else {
+                        lines.push(format!("{YELLOW}  \u{2298} {}{}", job.name, styles::RESET));
+                    }
+                }
+            }
         }
     } else {
         lines.push("\u{2500}".repeat(40));
         lines.push(format!("summary: (done in {total_str})"));
         for job in jobs {
-            let marker = if job.success { "\u{2714}" } else { "\u{2718}" };
-            let dur = format_duration(job.duration);
-            lines.push(format!("  {marker} {} ({dur})", job.name));
+            match &job.outcome {
+                JobOutcome::Success => {
+                    let dur = format_duration(job.duration);
+                    lines.push(format!("  \u{2714} {} ({dur})", job.name));
+                }
+                JobOutcome::Failed => {
+                    let dur = format_duration(job.duration);
+                    lines.push(format!("  \u{2718} {} ({dur})", job.name));
+                }
+                JobOutcome::Skipped { show_duration, .. } => {
+                    if *show_duration {
+                        let dur = format_duration(job.duration);
+                        lines.push(format!("  \u{2298} {} ({dur})", job.name));
+                    } else {
+                        lines.push(format!("  \u{2298} {}", job.name));
+                    }
+                }
+            }
         }
     }
 
@@ -198,6 +245,10 @@ impl HookProgressRenderer {
     }
 
     pub fn start_job(&mut self, name: &str) {
+        self.start_job_with_description(name, None);
+    }
+
+    pub fn start_job_with_description(&mut self, name: &str, description: Option<&str>) {
         let spinner = self.mp.add(ProgressBar::new_spinner());
         spinner.set_style(self.spinner_style.clone());
 
@@ -208,6 +259,20 @@ impl HookProgressRenderer {
         };
         spinner.set_message(display_name);
         spinner.enable_steady_tick(Duration::from_millis(80));
+
+        // Show description below the spinner if provided
+        if let Some(desc) = description {
+            let desc_bar = self.mp.insert_after(&spinner, ProgressBar::new_spinner());
+            let desc_style =
+                ProgressStyle::with_template(&format!("{}  {{msg}}", self.pipe_str)).unwrap();
+            desc_bar.set_style(desc_style);
+            let desc_msg = if self.use_color {
+                format!("{DARK_GREY}{desc}{}", styles::RESET)
+            } else {
+                desc.to_string()
+            };
+            desc_bar.set_message(desc_msg);
+        }
 
         // Separator and tail bars are created lazily in update_job_output as output arrives.
         self.jobs.insert(
@@ -324,6 +389,49 @@ impl HookProgressRenderer {
         self.finish_job(name, false, duration);
     }
 
+    pub fn finish_job_skipped(
+        &mut self,
+        name: &str,
+        reason: &str,
+        duration: Duration,
+        show_duration: bool,
+    ) {
+        // Remove job state and clear its bars
+        if let Some(state) = self.jobs.remove(name) {
+            if let Some(ref sep) = state.separator {
+                sep.finish_and_clear();
+            }
+            for pb in &state.tail_lines {
+                pb.finish_and_clear();
+            }
+            state.spinner.finish_and_clear();
+        }
+
+        // Always print skip info as a single inline line (no blank line after)
+        let msg = if self.use_color {
+            format!(
+                "{}  {ORANGE}{name}{} {DARK_GREY}(skip){} {YELLOW}{reason}{}",
+                self.pipe_str,
+                styles::RESET,
+                styles::RESET,
+                styles::RESET
+            )
+        } else {
+            format!("{}  {name} (skip) {reason}", self.pipe_str)
+        };
+        self.mp.println(msg).ok();
+
+        // Skipped jobs are added to finished_jobs for the summary
+        self.finished_jobs.push(JobResultEntry {
+            name: name.to_string(),
+            outcome: JobOutcome::Skipped {
+                reason: reason.to_string(),
+                show_duration,
+            },
+            duration,
+        });
+    }
+
     fn finish_job(&mut self, name: &str, success: bool, duration: Duration) {
         let Some(state) = self.jobs.remove(name) else {
             return;
@@ -383,7 +491,11 @@ impl HookProgressRenderer {
         // Record for summary
         self.finished_jobs.push(JobResultEntry {
             name: name.to_string(),
-            success,
+            outcome: if success {
+                JobOutcome::Success
+            } else {
+                JobOutcome::Failed
+            },
             duration,
         });
     }
@@ -444,9 +556,18 @@ impl PlainHookRenderer {
     }
 
     pub fn start_job(&mut self, name: &str) {
+        self.start_job_with_description(name, None);
+    }
+
+    pub fn start_job_with_description(&mut self, name: &str, description: Option<&str>) {
         let msg = format!("\u{2503}  {name} \u{276f}");
         eprintln!("{msg}");
         self.output_lines.push(msg);
+        if let Some(desc) = description {
+            let desc_msg = format!("\u{2503}    {desc}");
+            eprintln!("{desc_msg}");
+            self.output_lines.push(desc_msg);
+        }
     }
 
     pub fn update_job_output(&mut self, name: &str, line: &str) {
@@ -461,7 +582,11 @@ impl PlainHookRenderer {
         }
         self.finished_jobs.push(JobResultEntry {
             name: name.to_string(),
-            success,
+            outcome: if success {
+                JobOutcome::Success
+            } else {
+                JobOutcome::Failed
+            },
             duration,
         });
     }
@@ -472,6 +597,24 @@ impl PlainHookRenderer {
 
     pub fn finish_job_failure(&mut self, name: &str, duration: Duration) {
         self.finish_job(name, false, duration);
+    }
+
+    pub fn finish_job_skipped(
+        &mut self,
+        name: &str,
+        reason: &str,
+        duration: Duration,
+        show_duration: bool,
+    ) {
+        eprintln!("\u{2503}  {name} (skip) {reason}");
+        self.finished_jobs.push(JobResultEntry {
+            name: name.to_string(),
+            outcome: JobOutcome::Skipped {
+                reason: reason.to_string(),
+                show_duration,
+            },
+            duration,
+        });
     }
 
     pub fn print_summary(&self, total_duration: Duration) {
@@ -538,6 +681,13 @@ impl HookRenderer {
         }
     }
 
+    pub fn start_job_with_description(&mut self, name: &str, description: Option<&str>) {
+        match self {
+            HookRenderer::Progress(r) => r.start_job_with_description(name, description),
+            HookRenderer::Plain(r) => r.start_job_with_description(name, description),
+        }
+    }
+
     pub fn update_job_output(&mut self, name: &str, line: &str) {
         match self {
             HookRenderer::Progress(r) => r.update_job_output(name, line),
@@ -556,6 +706,21 @@ impl HookRenderer {
         match self {
             HookRenderer::Progress(r) => r.finish_job_failure(name, duration),
             HookRenderer::Plain(r) => r.finish_job_failure(name, duration),
+        }
+    }
+
+    pub fn finish_job_skipped(
+        &mut self,
+        name: &str,
+        reason: &str,
+        duration: Duration,
+        show_duration: bool,
+    ) {
+        match self {
+            HookRenderer::Progress(r) => {
+                r.finish_job_skipped(name, reason, duration, show_duration);
+            }
+            HookRenderer::Plain(r) => r.finish_job_skipped(name, reason, duration, show_duration),
         }
     }
 
@@ -651,7 +816,10 @@ mod tests {
         renderer.start_job("test-job");
         renderer.finish_job_success("test-job", Duration::from_secs(2));
         assert_eq!(renderer.finished_jobs.len(), 1);
-        assert!(renderer.finished_jobs[0].success);
+        assert!(matches!(
+            renderer.finished_jobs[0].outcome,
+            JobOutcome::Success
+        ));
     }
 
     #[test]
@@ -693,7 +861,10 @@ mod tests {
         renderer.update_job_output("failing-job", "error output");
         renderer.finish_job_failure("failing-job", Duration::from_secs(3));
         assert_eq!(renderer.finished_jobs.len(), 1);
-        assert!(!renderer.finished_jobs[0].success);
+        assert!(matches!(
+            renderer.finished_jobs[0].outcome,
+            JobOutcome::Failed
+        ));
     }
 
     #[test]
@@ -735,7 +906,10 @@ mod tests {
         renderer.start_job("fail-job");
         renderer.finish_job_failure("fail-job", Duration::from_secs(3));
         assert_eq!(renderer.finished_jobs.len(), 1);
-        assert!(!renderer.finished_jobs[0].success);
+        assert!(matches!(
+            renderer.finished_jobs[0].outcome,
+            JobOutcome::Failed
+        ));
     }
 
     #[test]
@@ -749,9 +923,15 @@ mod tests {
 
         assert_eq!(renderer.finished_jobs.len(), 2);
         assert_eq!(renderer.finished_jobs[0].name, "job-a");
-        assert!(renderer.finished_jobs[0].success);
+        assert!(matches!(
+            renderer.finished_jobs[0].outcome,
+            JobOutcome::Success
+        ));
         assert_eq!(renderer.finished_jobs[1].name, "job-b");
-        assert!(!renderer.finished_jobs[1].success);
+        assert!(matches!(
+            renderer.finished_jobs[1].outcome,
+            JobOutcome::Failed
+        ));
     }
 
     #[test]
@@ -805,12 +985,12 @@ mod tests {
         let jobs = vec![
             JobResultEntry {
                 name: "job-a".to_string(),
-                success: true,
+                outcome: JobOutcome::Success,
                 duration: Duration::from_millis(150),
             },
             JobResultEntry {
                 name: "job-b".to_string(),
-                success: false,
+                outcome: JobOutcome::Failed,
                 duration: Duration::from_secs(2),
             },
         ];
