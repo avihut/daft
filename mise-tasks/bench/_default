@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 #MISE description="Run all benchmark scenarios"
-#MISE depends=["build"]
+#MISE depends=["dev:setup"]
 set -euo pipefail
 
-bash "$(git rev-parse --show-toplevel)/benches/run_all.sh"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+export PATH="$REPO_ROOT/target/release:$PATH"
+
+bash "$REPO_ROOT/benches/run_all.sh"
