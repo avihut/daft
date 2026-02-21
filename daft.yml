@@ -36,10 +36,6 @@ hooks:
       - name: bun install
         run: bun install
         needs: [mise install]
-      - name: direnv allow
-        run: direnv allow {worktree_path}
 
   worktree-pre-remove:
-    jobs:
-      - name: direnv revoke
-        run: direnv revoke {worktree_path}
+    jobs: []
