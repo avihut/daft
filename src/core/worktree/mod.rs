@@ -6,5 +6,6 @@
 
 pub mod carry;
 pub mod checkout;
+pub mod checkout_branch;
 pub mod fetch;
 pub mod init;
