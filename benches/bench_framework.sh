@@ -86,11 +86,18 @@ bench_compare() {
 
     log "Running: $name"
 
+    # Show command output on failure (CI debugging) but not in normal runs
+    local show_output=()
+    if [[ "${CI:-}" == "true" ]]; then
+        show_output=(--show-output)
+    fi
+
     if [[ "$no_gitoxide" == true ]]; then
         # Two-way mode: daft vs git, single --prepare, no gitoxide toggle
         hyperfine \
             --warmup 3 \
             --min-runs 10 \
+            "${show_output[@]}" \
             "$@" \
             --prepare "$prepare_cmd" \
             --export-json "$json_out" \
@@ -120,6 +127,7 @@ bench_compare() {
         hyperfine \
             --warmup 3 \
             --min-runs 10 \
+            "${show_output[@]}" \
             "$@" \
             --prepare "$prep_daft" \
             --prepare "$prep_gix" \

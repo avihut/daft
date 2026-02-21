@@ -25,10 +25,11 @@ for size in small medium large; do
 
     # daft creates worktrees at $ROOT/feature/branch-1 (preserving branch path),
     # git creates at $ROOT/feature-branch-1 (flat name). Clean up both.
-    PREPARE_EXISTING="git -C $ROOT/.git worktree remove $ROOT/feature-branch-1 2>/dev/null; \
-git -C $ROOT/.git worktree remove $ROOT/feature/branch-1 2>/dev/null; \
-git -C $ROOT/.git worktree prune 2>/dev/null; \
-rm -rf $ROOT/feature-branch-1 $ROOT/feature; true"
+    # Use --force to remove even if dirty, then prune and delete directories.
+    PREPARE_EXISTING="git -C $ROOT/.git worktree remove --force $ROOT/feature-branch-1 2>/dev/null; \
+git -C $ROOT/.git worktree remove --force $ROOT/feature/branch-1 2>/dev/null; \
+rm -rf $ROOT/feature-branch-1 $ROOT/feature; \
+git -C $ROOT/.git worktree prune 2>/dev/null; true"
 
     eval "$SETUP_EXISTING"
 
