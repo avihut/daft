@@ -3,13 +3,14 @@ use crate::hooks::{
     yaml_config, yaml_config_loader, HookType, TrustDatabase, TrustLevel,
     DEPRECATED_HOOK_REMOVAL_VERSION, PROJECT_HOOKS_DIR,
 };
+use crate::output::Output;
 use crate::styles::{bold, cyan, dim, green, red, yellow};
 use crate::{get_current_worktree_path, get_git_common_dir, is_git_repository};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Show trust status and available hooks.
-pub(super) fn cmd_status(path: &Path, short: bool) -> Result<()> {
+pub(super) fn cmd_status(path: &Path, short: bool, output: &mut dyn Output) -> Result<()> {
     // Resolve the path to absolute
     let abs_path = path
         .canonicalize()
@@ -63,9 +64,17 @@ pub(super) fn cmd_status(path: &Path, short: bool) -> Result<()> {
 
         if short {
             // Short format: PATH (type), optional repo line, then (LEVEL) hooks
-            println!("{} {}", abs_path.display(), dim(&format!("({path_type})")));
+            output.info(&format!(
+                "{} {}",
+                abs_path.display(),
+                dim(&format!("({path_type})"))
+            ));
             if !is_repo_root {
-                println!("{} {}", project_root.display(), dim("(repository)"));
+                output.info(&format!(
+                    "{} {}",
+                    project_root.display(),
+                    dim("(repository)")
+                ));
             }
             // Combine shell hook names and YAML hook names (deduped)
             let mut all_names: Vec<String> = hooks
@@ -84,14 +93,25 @@ pub(super) fn cmd_status(path: &Path, short: bool) -> Result<()> {
             } else {
                 all_names.join(", ")
             };
-            println!("{hooks_str} ({})", styled_trust_level(trust_level));
+            output.info(&format!(
+                "{hooks_str} ({})",
+                styled_trust_level(trust_level)
+            ));
         } else {
             // Full format
-            println!("{} {}", abs_path.display(), dim(&format!("({path_type})")));
+            output.info(&format!(
+                "{} {}",
+                abs_path.display(),
+                dim(&format!("({path_type})"))
+            ));
             if !is_repo_root {
-                println!("{} {}", project_root.display(), dim("(repository)"));
+                output.info(&format!(
+                    "{} {}",
+                    project_root.display(),
+                    dim("(repository)")
+                ));
             }
-            println!();
+            output.info("");
 
             // Trust status
             let trust_source = if is_explicit {
@@ -99,37 +119,49 @@ pub(super) fn cmd_status(path: &Path, short: bool) -> Result<()> {
             } else {
                 format!(" {}", dim("(default)"))
             };
-            println!(
+            output.info(&format!(
                 "{} {}{}",
                 bold("Trust level:"),
                 styled_trust_level(trust_level),
                 trust_source
-            );
-            println!("  {}", dim(trust_level_description(trust_level)));
-            println!();
+            ));
+            output.info(&format!("  {}", dim(trust_level_description(trust_level))));
+            output.info("");
 
             // YAML hooks section
             if !yaml_hook_names.is_empty() {
-                println!("{} {}:", bold("Hooks configured in"), cyan("daft.yml"));
+                output.info(&format!(
+                    "{} {}:",
+                    bold("Hooks configured in"),
+                    cyan("daft.yml")
+                ));
                 for name in &yaml_hook_names {
-                    println!("  - {}", cyan(name));
+                    output.list_item(&cyan(name));
                 }
                 if !hooks.is_empty() {
-                    println!();
+                    output.info("");
                 }
             }
 
             // Shell script hooks section
             if hooks.is_empty() {
                 if yaml_hook_names.is_empty() {
-                    println!("{} {}:", bold("No hooks found in"), cyan(PROJECT_HOOKS_DIR));
-                    println!(
+                    output.info(&format!(
+                        "{} {}:",
+                        bold("No hooks found in"),
+                        cyan(PROJECT_HOOKS_DIR)
+                    ));
+                    output.info(&format!(
                         "  {}",
                         dim("(Create scripts in .daft/hooks/ or configure daft.yml)")
-                    );
+                    ));
                 }
             } else {
-                println!("{} {}:", bold("Shell hooks in"), cyan(PROJECT_HOOKS_DIR));
+                output.info(&format!(
+                    "{} {}:",
+                    bold("Shell hooks in"),
+                    cyan(PROJECT_HOOKS_DIR)
+                ));
                 for hook in &hooks {
                     let name = hook.file_name().unwrap_or_default().to_string_lossy();
                     let executable = is_executable(hook);
@@ -138,7 +170,7 @@ pub(super) fn cmd_status(path: &Path, short: bool) -> Result<()> {
                     } else {
                         format!(" {}", red("(not executable)"))
                     };
-                    println!("  - {}{status}", cyan(&name));
+                    output.list_item(&format!("{}{status}", cyan(&name)));
                 }
             }
 
@@ -158,22 +190,25 @@ pub(super) fn cmd_status(path: &Path, short: bool) -> Result<()> {
                 .collect();
 
             if !deprecated_hooks.is_empty() {
-                println!();
-                println!("{}", yellow("Deprecated hook names detected:"));
+                output.info("");
+                output.warning(&yellow("Deprecated hook names detected:"));
                 for (old_name, new_name) in &deprecated_hooks {
-                    println!("  {} -> {}", red(old_name), green(new_name));
+                    output.info(&format!("  {} -> {}", red(old_name), green(new_name)));
                 }
-                println!("  Run '{}' to rename them.", cyan("git daft hooks migrate"));
-                println!(
+                output.info(&format!(
+                    "  Run '{}' to rename them.",
+                    cyan("git daft hooks migrate")
+                ));
+                output.info(&format!(
                     "  {}",
                     dim(&format!(
                         "Deprecated names will stop working in daft v{}.",
                         DEPRECATED_HOOK_REMOVAL_VERSION
                     ))
-                );
+                ));
             }
 
-            println!();
+            output.info("");
 
             // Show commands with relative path
             // If we're inside the repo, "." works since trust resolves the git common dir
@@ -188,22 +223,28 @@ pub(super) fn cmd_status(path: &Path, short: bool) -> Result<()> {
 
             match trust_level {
                 TrustLevel::Deny => {
-                    println!("{}", bold("To enable hooks:"));
-                    println!("  {}", cyan(&format!("git daft hooks trust {path_arg}")));
-                    println!("  {}", cyan(&format!("git daft hooks prompt {path_arg}")));
+                    output.info(&bold("To enable hooks:"));
+                    output.info(&format!(
+                        "  {}",
+                        cyan(&format!("git daft hooks trust {path_arg}"))
+                    ));
+                    output.info(&format!(
+                        "  {}",
+                        cyan(&format!("git daft hooks prompt {path_arg}"))
+                    ));
                 }
                 TrustLevel::Prompt | TrustLevel::Allow => {
-                    println!("{}", bold("To revoke trust:"));
-                    println!(
+                    output.info(&bold("To revoke trust:"));
+                    output.info(&format!(
                         "  {}  {}",
                         cyan(&format!("git daft hooks deny {path_arg}")),
                         dim("(explicitly deny)")
-                    );
-                    println!(
+                    ));
+                    output.info(&format!(
                         "  {}  {}",
                         cyan(&format!("git daft hooks trust reset {path_arg}")),
                         dim("(remove trust entry)")
-                    );
+                    ));
                 }
             }
         }

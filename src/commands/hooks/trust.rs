@@ -1,5 +1,6 @@
 use super::{find_project_hooks, styled_trust_level};
 use crate::hooks::{TrustDatabase, TrustLevel};
+use crate::output::Output;
 use crate::styles::{bold, cyan, dim, green, red, yellow};
 use crate::{get_git_common_dir, is_git_repository};
 use anyhow::{Context, Result};
@@ -8,7 +9,12 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 /// Set trust level for the repository at the given path.
-pub(super) fn cmd_set_trust(path: &Path, new_level: TrustLevel, force: bool) -> Result<()> {
+pub(super) fn cmd_set_trust(
+    path: &Path,
+    new_level: TrustLevel,
+    force: bool,
+    output: &mut dyn Output,
+) -> Result<()> {
     let abs_path = path
         .canonicalize()
         .with_context(|| format!("Path does not exist: {}", path.display()))?;
@@ -42,9 +48,16 @@ pub(super) fn cmd_set_trust(path: &Path, new_level: TrustLevel, force: bool) -> 
         };
 
         // Show current status
-        println!("{}", bold("Current:"));
-        println!("{} {}", project_root.display(), dim("(repository)"));
-        println!("{hooks_str} ({})", styled_trust_level(current_level));
+        output.info(&bold("Current:"));
+        output.info(&format!(
+            "{} {}",
+            project_root.display(),
+            dim("(repository)")
+        ));
+        output.info(&format!(
+            "{hooks_str} ({})",
+            styled_trust_level(current_level)
+        ));
 
         if !force {
             print!(
@@ -58,7 +71,7 @@ pub(super) fn cmd_set_trust(path: &Path, new_level: TrustLevel, force: bool) -> 
             let input = input.trim().to_lowercase();
 
             if input != "y" && input != "yes" {
-                println!("{}", dim("Aborted."));
+                output.info(&dim("Aborted."));
                 return Ok(());
             }
         }
@@ -69,8 +82,12 @@ pub(super) fn cmd_set_trust(path: &Path, new_level: TrustLevel, force: bool) -> 
         db.save().context("Failed to save trust database")?;
 
         // Show new status
-        println!("{} {}", project_root.display(), dim("(repository)"));
-        println!("{hooks_str} ({})", styled_trust_level(new_level));
+        output.info(&format!(
+            "{} {}",
+            project_root.display(),
+            dim("(repository)")
+        ));
+        output.info(&format!("{hooks_str} ({})", styled_trust_level(new_level)));
 
         Ok(())
     })();
@@ -80,7 +97,7 @@ pub(super) fn cmd_set_trust(path: &Path, new_level: TrustLevel, force: bool) -> 
 }
 
 /// Revoke trust for the repository at the given path.
-pub(super) fn cmd_deny(path: &Path, force: bool) -> Result<()> {
+pub(super) fn cmd_deny(path: &Path, force: bool, output: &mut dyn Output) -> Result<()> {
     let abs_path = path
         .canonicalize()
         .with_context(|| format!("Path does not exist: {}", path.display()))?;
@@ -100,8 +117,12 @@ pub(super) fn cmd_deny(path: &Path, force: bool) -> Result<()> {
         let project_root = git_dir.parent().context("Invalid git directory")?;
 
         if !db.has_explicit_trust(&git_dir) {
-            println!("{} {}", project_root.display(), dim("(repository)"));
-            println!("{}", dim("Not explicitly trusted"));
+            output.info(&format!(
+                "{} {}",
+                project_root.display(),
+                dim("(repository)")
+            ));
+            output.info(&dim("Not explicitly trusted"));
             return Ok(());
         }
 
@@ -118,9 +139,16 @@ pub(super) fn cmd_deny(path: &Path, force: bool) -> Result<()> {
         };
 
         // Show current status
-        println!("{}", bold("Current:"));
-        println!("{} {}", project_root.display(), dim("(repository)"));
-        println!("{hooks_str} ({})", styled_trust_level(current_level));
+        output.info(&bold("Current:"));
+        output.info(&format!(
+            "{} {}",
+            project_root.display(),
+            dim("(repository)")
+        ));
+        output.info(&format!(
+            "{hooks_str} ({})",
+            styled_trust_level(current_level)
+        ));
 
         if !force {
             print!(
@@ -134,7 +162,7 @@ pub(super) fn cmd_deny(path: &Path, force: bool) -> Result<()> {
             let input = input.trim().to_lowercase();
 
             if input != "y" && input != "yes" {
-                println!("{}", dim("Aborted."));
+                output.info(&dim("Aborted."));
                 return Ok(());
             }
         }
@@ -144,8 +172,15 @@ pub(super) fn cmd_deny(path: &Path, force: bool) -> Result<()> {
         db.save().context("Failed to save trust database")?;
 
         // Show new status
-        println!("{} {}", project_root.display(), dim("(repository)"));
-        println!("{hooks_str} ({})", styled_trust_level(TrustLevel::Deny));
+        output.info(&format!(
+            "{} {}",
+            project_root.display(),
+            dim("(repository)")
+        ));
+        output.info(&format!(
+            "{hooks_str} ({})",
+            styled_trust_level(TrustLevel::Deny)
+        ));
 
         Ok(())
     })();
@@ -155,7 +190,7 @@ pub(super) fn cmd_deny(path: &Path, force: bool) -> Result<()> {
 }
 
 /// List all trusted repositories.
-pub(super) fn cmd_list(show_all: bool) -> Result<()> {
+pub(super) fn cmd_list(show_all: bool, output: &mut dyn Output) -> Result<()> {
     let db = TrustDatabase::load().context("Failed to load trust database")?;
 
     let repos: Vec<(&str, &crate::hooks::TrustEntry)> = if show_all {
@@ -169,26 +204,26 @@ pub(super) fn cmd_list(show_all: bool) -> Result<()> {
 
     if repos.is_empty() {
         if show_all {
-            println!("{}", dim("No repositories in trust database."));
+            output.info(&dim("No repositories in trust database."));
         } else {
-            println!("{}", dim("No trusted repositories."));
-            println!();
-            println!("{}", bold("To trust a repository, cd into it and run:"));
-            println!("  {}", cyan("git daft hooks trust"));
+            output.info(&dim("No trusted repositories."));
+            output.info("");
+            output.info(&bold("To trust a repository, cd into it and run:"));
+            output.info(&format!("  {}", cyan("git daft hooks trust")));
         }
         return Ok(());
     }
 
-    // Build output
-    let mut output = String::new();
+    // Build output text
+    let mut text = String::new();
 
     let title = if show_all {
         bold("All repositories in trust database:")
     } else {
         bold("Trusted repositories:")
     };
-    output.push_str(&title);
-    output.push_str("\n\n");
+    text.push_str(&title);
+    text.push_str("\n\n");
 
     for (path, entry) in &repos {
         // Strip .git suffix if present to show repo path
@@ -200,8 +235,8 @@ pub(super) fn cmd_list(show_all: bool) -> Result<()> {
             repo_path.to_string()
         };
         let display_time = entry.formatted_time();
-        output.push_str(&format!("  {display_path}\n"));
-        output.push_str(&format!(
+        text.push_str(&format!("  {display_path}\n"));
+        text.push_str(&format!(
             "    Level: {}  {}\n",
             styled_trust_level(entry.level),
             dim(&format!("(trusted: {display_time})"))
@@ -210,14 +245,14 @@ pub(super) fn cmd_list(show_all: bool) -> Result<()> {
 
     // Show patterns if any
     if !db.patterns.is_empty() {
-        output.push_str(&format!("\n{}:\n", bold("Trust patterns")));
+        text.push_str(&format!("\n{}:\n", bold("Trust patterns")));
         for pattern in &db.patterns {
             let comment = pattern
                 .comment
                 .as_ref()
                 .map(|c| format!(" {}", dim(&format!("# {c}"))))
                 .unwrap_or_default();
-            output.push_str(&format!(
+            text.push_str(&format!(
                 "  {} -> {}{comment}\n",
                 cyan(&pattern.pattern),
                 styled_trust_level(pattern.level)
@@ -226,11 +261,11 @@ pub(super) fn cmd_list(show_all: bool) -> Result<()> {
     }
 
     // Use pager if output is long and we're in a terminal
-    let line_count = output.lines().count();
+    let line_count = text.lines().count();
     if line_count > 20 && std::io::stdout().is_terminal() {
-        output_with_pager(&output);
+        output_with_pager(&text);
     } else {
-        print!("{output}");
+        output.raw(&text);
     }
 
     Ok(())
@@ -258,24 +293,24 @@ fn output_with_pager(text: &str) {
 }
 
 /// Clear all trust settings.
-pub(super) fn cmd_reset_trust(force: bool) -> Result<()> {
+pub(super) fn cmd_reset_trust(force: bool, output: &mut dyn Output) -> Result<()> {
     let db = TrustDatabase::load().context("Failed to load trust database")?;
 
     let repo_count = db.repositories.len();
     let pattern_count = db.patterns.len();
 
     if repo_count == 0 && pattern_count == 0 {
-        println!("{}", dim("Trust database is already empty."));
+        output.info(&dim("Trust database is already empty."));
         return Ok(());
     }
 
     // Show current status
-    println!("{}", bold("Current:"));
-    println!(
+    output.info(&bold("Current:"));
+    output.info(&format!(
         "{} repositories, {} patterns",
         yellow(&repo_count.to_string()),
         yellow(&pattern_count.to_string())
-    );
+    ));
 
     if !force {
         print!("\n{} all trust settings? [y/N] ", red("Clear"));
@@ -286,7 +321,7 @@ pub(super) fn cmd_reset_trust(force: bool) -> Result<()> {
         let input = input.trim().to_lowercase();
 
         if input != "y" && input != "yes" {
-            println!("{}", dim("Aborted."));
+            output.info(&dim("Aborted."));
             return Ok(());
         }
     }
@@ -295,13 +330,21 @@ pub(super) fn cmd_reset_trust(force: bool) -> Result<()> {
     db.clear();
     db.save().context("Failed to save trust database")?;
 
-    println!("{} repositories, {} patterns", green("0"), green("0"));
+    output.result(&format!(
+        "{} repositories, {} patterns",
+        green("0"),
+        green("0")
+    ));
 
     Ok(())
 }
 
 /// Remove the trust entry for a specific repository path.
-pub(super) fn cmd_reset_trust_path(path: &Path, force: bool) -> Result<()> {
+pub(super) fn cmd_reset_trust_path(
+    path: &Path,
+    force: bool,
+    output: &mut dyn Output,
+) -> Result<()> {
     let abs_path = path
         .canonicalize()
         .with_context(|| format!("Path does not exist: {}", path.display()))?;
@@ -320,15 +363,26 @@ pub(super) fn cmd_reset_trust_path(path: &Path, force: bool) -> Result<()> {
         let project_root = git_dir.parent().context("Invalid git directory")?;
 
         if !db.has_explicit_trust(&git_dir) {
-            println!("{} {}", project_root.display(), dim("(repository)"));
-            println!("{}", dim("No explicit trust entry to remove."));
+            output.info(&format!(
+                "{} {}",
+                project_root.display(),
+                dim("(repository)")
+            ));
+            output.info(&dim("No explicit trust entry to remove."));
             return Ok(());
         }
 
         let current_level = db.get_trust_level(&git_dir);
-        println!("{}", bold("Current:"));
-        println!("{} {}", project_root.display(), dim("(repository)"));
-        println!("Trust level: {}", styled_trust_level(current_level));
+        output.info(&bold("Current:"));
+        output.info(&format!(
+            "{} {}",
+            project_root.display(),
+            dim("(repository)")
+        ));
+        output.info(&format!(
+            "Trust level: {}",
+            styled_trust_level(current_level)
+        ));
 
         if !force {
             print!(
@@ -342,7 +396,7 @@ pub(super) fn cmd_reset_trust_path(path: &Path, force: bool) -> Result<()> {
             let input = input.trim().to_lowercase();
 
             if input != "y" && input != "yes" {
-                println!("{}", dim("Aborted."));
+                output.info(&dim("Aborted."));
                 return Ok(());
             }
         }
@@ -351,8 +405,12 @@ pub(super) fn cmd_reset_trust_path(path: &Path, force: bool) -> Result<()> {
         db.remove_trust(&git_dir);
         db.save().context("Failed to save trust database")?;
 
-        println!("{} {}", project_root.display(), dim("(repository)"));
-        println!("{}", dim("Trust entry removed."));
+        output.info(&format!(
+            "{} {}",
+            project_root.display(),
+            dim("(repository)")
+        ));
+        output.result(&dim("Trust entry removed."));
 
         Ok(())
     })();

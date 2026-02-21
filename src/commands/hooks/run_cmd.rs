@@ -3,12 +3,13 @@ use crate::hooks::yaml_executor::JobFilter;
 use crate::hooks::{
     yaml_config, yaml_config_loader, HookExecutor, HookType, HooksConfig, TrustDatabase, TrustLevel,
 };
+use crate::output::Output;
 use crate::styles::{bold, cyan, dim};
 use crate::{get_current_branch, get_current_worktree_path, get_git_common_dir, get_project_root};
 use anyhow::{Context, Result};
 
 /// Run a hook manually.
-pub(super) fn cmd_run(args: &HooksRunArgs) -> Result<()> {
+pub(super) fn cmd_run(args: &HooksRunArgs, output: &mut dyn Output) -> Result<()> {
     use crate::hooks::yaml_config_loader::get_effective_jobs;
     use crate::hooks::HookContext;
 
@@ -30,7 +31,7 @@ pub(super) fn cmd_run(args: &HooksRunArgs) -> Result<()> {
     let hook_type_str = match args.hook_type {
         Some(ref s) => s.clone(),
         None => {
-            return cmd_run_list_hooks(&yaml_config);
+            return cmd_run_list_hooks(&yaml_config, output);
         }
     };
 
@@ -66,17 +67,17 @@ pub(super) fn cmd_run(args: &HooksRunArgs) -> Result<()> {
     let trust_db = TrustDatabase::load().unwrap_or_default();
     let trust_level = trust_db.get_trust_level(&git_dir);
     if trust_level != TrustLevel::Allow {
-        println!(
+        output.info(&format!(
             "{} this repository is not in your trust list ({}).",
             dim("Note:"),
             styled_trust_level(trust_level)
-        );
-        println!(
+        ));
+        output.info(&format!(
             "  {} run `{}` to allow hooks to run automatically.",
             dim("Tip:"),
             cyan("git daft hooks trust")
-        );
-        println!();
+        ));
+        output.info("");
     }
 
     // Build job filter
@@ -126,66 +127,66 @@ pub(super) fn cmd_run(args: &HooksRunArgs) -> Result<()> {
         jobs.sort_by_key(|j| j.priority.unwrap_or(0));
 
         if jobs.is_empty() {
-            println!("{}", dim("No jobs to run."));
+            output.info(&dim("No jobs to run."));
             return Ok(());
         }
 
         let job_count = jobs.len();
         let job_word = if job_count == 1 { "job" } else { "jobs" };
-        println!(
+        output.info(&format!(
             "{} {} ({} {})",
             bold("Hook:"),
             cyan(hook_name),
             job_count,
             job_word
-        );
-        println!();
+        ));
+        output.info("");
 
         for (i, job) in jobs.iter().enumerate() {
             let name = job.name.as_deref().unwrap_or("(unnamed)");
-            println!("  {}. {}", i + 1, bold(name));
+            output.info(&format!("  {}. {}", i + 1, bold(name)));
 
             if let Some(ref desc) = job.description {
-                println!("     {}", dim(desc));
+                output.info(&format!("     {}", dim(desc)));
             }
 
             if let Some(ref os) = job.os {
                 let os_list: Vec<&str> = os.as_slice().iter().map(|o| o.as_str()).collect();
-                println!("     {}: {}", dim("os"), os_list.join(", "));
+                output.info(&format!("     {}: {}", dim("os"), os_list.join(", ")));
             }
 
             if let Some(ref arch) = job.arch {
                 let arch_list: Vec<&str> = arch.as_slice().iter().map(|a| a.as_str()).collect();
-                println!("     {}: {}", dim("arch"), arch_list.join(", "));
+                output.info(&format!("     {}: {}", dim("arch"), arch_list.join(", ")));
             }
 
             if let Some(ref run) = job.run {
-                println!("     {}: {}", dim("run"), run);
+                output.info(&format!("     {}: {}", dim("run"), run));
             } else if let Some(ref script) = job.script {
                 let runner_str = job
                     .runner
                     .as_ref()
                     .map(|r| format!("{r} "))
                     .unwrap_or_default();
-                println!("     {}: {}{}", dim("script"), runner_str, script);
+                output.info(&format!("     {}: {}{}", dim("script"), runner_str, script));
             } else if job.group.is_some() {
-                println!("     {}", dim("(group)"));
+                output.info(&format!("     {}", dim("(group)")));
             }
 
             if let Some(ref needs) = job.needs {
                 if !needs.is_empty() {
-                    println!("     {}: [{}]", dim("needs"), needs.join(", "));
+                    output.info(&format!("     {}: [{}]", dim("needs"), needs.join(", ")));
                 }
             }
 
             if let Some(ref tags) = job.tags {
                 if !tags.is_empty() {
-                    println!("     {}: [{}]", dim("tags"), tags.join(", "));
+                    output.info(&format!("     {}: [{}]", dim("tags"), tags.join(", ")));
                 }
             }
 
             if i + 1 < job_count {
-                println!();
+                output.info("");
             }
         }
 
@@ -212,12 +213,11 @@ pub(super) fn cmd_run(args: &HooksRunArgs) -> Result<()> {
         .with_bypass_trust(true)
         .with_job_filter(filter);
 
-    let mut output = crate::output::CliOutput::default_output();
-    let result = executor.execute(&ctx, &mut output)?;
+    let result = executor.execute(&ctx, output)?;
 
     if result.skipped {
         if let Some(reason) = result.skip_reason {
-            println!("{}", dim(&format!("Skipped: {reason}")));
+            output.info(&dim(&format!("Skipped: {reason}")));
         }
     } else if !result.success {
         std::process::exit(result.exit_code.unwrap_or(1));
@@ -227,33 +227,33 @@ pub(super) fn cmd_run(args: &HooksRunArgs) -> Result<()> {
 }
 
 /// List available hooks when `hooks run` is invoked with no arguments.
-fn cmd_run_list_hooks(config: &yaml_config::YamlConfig) -> Result<()> {
+fn cmd_run_list_hooks(config: &yaml_config::YamlConfig, output: &mut dyn Output) -> Result<()> {
     use crate::hooks::yaml_config_loader::get_effective_jobs;
 
     if config.hooks.is_empty() {
-        println!("{}", dim("No hooks defined in daft.yml."));
+        output.info(&dim("No hooks defined in daft.yml."));
         return Ok(());
     }
 
     let mut names: Vec<&String> = config.hooks.keys().collect();
     names.sort();
 
-    println!("{}", bold("Available hooks:"));
-    println!();
+    output.info(&bold("Available hooks:"));
+    output.info("");
 
     for name in &names {
         let hook_def = &config.hooks[*name];
         let jobs = get_effective_jobs(hook_def);
         let job_count = jobs.len();
         let job_word = if job_count == 1 { "job" } else { "jobs" };
-        println!("  {} ({} {})", cyan(name), job_count, job_word);
+        output.info(&format!("  {} ({} {})", cyan(name), job_count, job_word));
     }
 
-    println!();
-    println!(
+    output.info("");
+    output.info(&format!(
         "Run a hook with: {}",
         cyan("git daft hooks run <hook-type>")
-    );
+    ));
 
     Ok(())
 }
