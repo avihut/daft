@@ -10,6 +10,7 @@ use crate::doctor::{
     hooks_checks, installation, repository, status_symbol, CheckCategory, CheckStatus,
     DoctorSummary,
 };
+use crate::output::{CliOutput, Output, OutputConfig};
 use crate::styles::{bold, dim, green, red, yellow};
 
 fn long_about() -> String {
@@ -65,6 +66,8 @@ pub struct Args {
 pub fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args = Args::parse_from(args);
+    // Doctor manages its own quiet/verbose filtering; Output is just the print sink.
+    let mut output = CliOutput::new(OutputConfig::new(false, false));
 
     let mut categories = Vec::new();
 
@@ -83,10 +86,10 @@ pub fn run() -> Result<()> {
     // Apply fixes if requested
     if args.fix {
         if args.dry_run {
-            preview_fixes(&categories);
+            preview_fixes(&categories, &mut output);
             return Ok(());
         }
-        apply_fixes(&categories);
+        apply_fixes(&categories, &mut output);
         // Re-run checks after fixes
         categories.clear();
         categories.push(run_installation_checks());
@@ -97,12 +100,12 @@ pub fn run() -> Result<()> {
     }
 
     // Display results
-    print_results(&categories, args.verbose, args.quiet);
+    print_results(&categories, args.verbose, args.quiet, &mut output);
 
     // Print summary
     let summary = DoctorSummary::from_categories(&categories);
-    println!();
-    print_summary(&summary);
+    output.info("");
+    print_summary(&summary, &mut output);
 
     if summary.has_failures() {
         std::process::exit(1);
@@ -176,7 +179,7 @@ fn run_hooks_checks(ctx: &repository::RepoContext) -> CheckCategory {
     }
 }
 
-fn preview_fixes(categories: &[CheckCategory]) {
+fn preview_fixes(categories: &[CheckCategory], output: &mut dyn Output) {
     let fixable: Vec<_> = categories
         .iter()
         .flat_map(|c| &c.results)
@@ -184,90 +187,87 @@ fn preview_fixes(categories: &[CheckCategory]) {
         .collect();
 
     if fixable.is_empty() {
-        println!("{}", dim("No fixable issues found."));
+        output.info(&dim("No fixable issues found."));
         return;
     }
 
-    println!(
-        "{}",
-        bold(&format!("Would fix {} issue(s):", fixable.len()))
-    );
-    println!();
+    output.info(&bold(&format!("Would fix {} issue(s):", fixable.len())));
+    output.info("");
 
     let mut any_would_fail = false;
 
     for result in &fixable {
         let symbol = status_symbol(result.status);
-        println!(
+        output.info(&format!(
             "  {symbol} {} {} {}",
             result.name,
             dim("\u{2014}"),
             result.message
-        );
+        ));
 
         if let Some(ref dry_run) = result.dry_run_fix {
             let actions = dry_run();
             for action in &actions {
                 if action.would_succeed {
-                    println!("      {} {}", green("+"), action.description);
+                    output.info(&format!("      {} {}", green("+"), action.description));
                 } else {
                     any_would_fail = true;
-                    println!("      {} {}", red("x"), action.description);
+                    output.info(&format!("      {} {}", red("x"), action.description));
                     if let Some(ref reason) = action.failure_reason {
-                        println!("        {}", dim(reason));
+                        output.info(&format!("        {}", dim(reason)));
                     }
                 }
             }
         } else if let Some(ref suggestion) = result.suggestion {
-            println!("      {}", dim(&format!("Action: {suggestion}")));
+            output.info(&format!("      {}", dim(&format!("Action: {suggestion}"))));
         }
     }
 
-    println!();
+    output.info("");
     if any_would_fail {
-        println!(
-            "{}",
-            yellow("Some fixes would fail. Resolve the issues above first.")
-        );
-        println!(
-            "{}",
-            dim("Run 'daft doctor --fix' to apply fixes that can succeed.")
-        );
+        output.warning(&yellow(
+            "Some fixes would fail. Resolve the issues above first.",
+        ));
+        output.info(&dim(
+            "Run 'daft doctor --fix' to apply fixes that can succeed.",
+        ));
     } else {
-        println!("{}", dim("Run 'daft doctor --fix' to apply these fixes."));
+        output.info(&dim("Run 'daft doctor --fix' to apply these fixes."));
     }
 }
 
-fn apply_fixes(categories: &[CheckCategory]) {
-    println!("{}", bold("Applying fixes..."));
-    println!();
+fn apply_fixes(categories: &[CheckCategory], output: &mut dyn Output) {
+    output.info(&bold("Applying fixes..."));
+    output.info("");
 
     for category in categories {
         for result in &category.results {
             if result.fixable() && matches!(result.status, CheckStatus::Warning | CheckStatus::Fail)
             {
-                print!("  Fixing: {} ... ", result.name);
+                output.info(&format!("  Fixing: {} ... ", result.name));
                 if let Some(ref fix) = result.fix {
                     match fix() {
-                        Ok(()) => println!("{}", green("done")),
-                        Err(e) => println!("{}", red(&format!("failed: {e}"))),
+                        Ok(()) => output.info(&green("done")),
+                        Err(e) => output.info(&red(&format!("failed: {e}"))),
                     }
                 }
             }
         }
     }
-    println!();
+    output.info("");
 }
 
-fn print_results(categories: &[CheckCategory], verbose: bool, quiet: bool) {
+fn print_results(
+    categories: &[CheckCategory],
+    verbose: bool,
+    quiet: bool,
+    output: &mut dyn Output,
+) {
     // Header with verbose hint
     if verbose {
-        println!("{}", bold("Doctor summary:"));
+        output.info(&bold("Doctor summary:"));
     } else {
-        println!(
-            "{}",
-            bold("Doctor summary (run daft doctor -v for details):")
-        );
+        output.info(&bold("Doctor summary (run daft doctor -v for details):"));
     }
 
     for category in categories {
@@ -286,8 +286,8 @@ fn print_results(categories: &[CheckCategory], verbose: bool, quiet: bool) {
             continue;
         }
 
-        println!();
-        println!("{}", bold(&category.title));
+        output.info("");
+        output.info(&bold(&category.title));
 
         for result in &category.results {
             // In quiet mode, skip passing and skipped checks
@@ -305,59 +305,56 @@ fn print_results(categories: &[CheckCategory], verbose: bool, quiet: bool) {
             // Format: pass uses parens, warning/fail uses dash
             match result.status {
                 CheckStatus::Pass => {
-                    println!("  {symbol} {} ({})", result.name, result.message);
+                    output.info(&format!("  {symbol} {} ({})", result.name, result.message));
                 }
                 CheckStatus::Warning | CheckStatus::Fail => {
-                    println!(
+                    output.info(&format!(
                         "  {symbol} {} {} {}",
                         result.name,
                         dim("\u{2014}"),
                         result.message
-                    );
+                    ));
                 }
                 CheckStatus::Skipped => {
-                    println!(
+                    output.info(&format!(
                         "  {symbol} {} {} {}",
                         result.name,
                         dim("\u{2014}"),
                         dim(&result.message)
-                    );
+                    ));
                 }
             }
 
             // Show details for warnings/failures (indented)
             if matches!(result.status, CheckStatus::Warning | CheckStatus::Fail) {
                 for detail in &result.details {
-                    println!("        {}", detail);
+                    output.info(&format!("        {}", detail));
                 }
             }
 
             // Show suggestion for warnings and failures
             if let Some(ref suggestion) = result.suggestion {
                 if matches!(result.status, CheckStatus::Warning | CheckStatus::Fail) {
-                    println!("        {}", dim(suggestion));
+                    output.info(&format!("        {}", dim(suggestion)));
                 }
             }
 
             // Show details in verbose mode for passing checks
             if verbose && matches!(result.status, CheckStatus::Pass) && !result.details.is_empty() {
                 for detail in &result.details {
-                    println!("        {}", dim(detail));
+                    output.info(&format!("        {}", dim(detail)));
                 }
             }
         }
     }
 }
 
-fn print_summary(summary: &DoctorSummary) {
+fn print_summary(summary: &DoctorSummary, output: &mut dyn Output) {
     if summary.warnings == 0 && summary.failures == 0 {
-        println!(
-            "{}",
-            green(&format!(
-                "No issues found! ({} checks passed)",
-                summary.passed
-            ))
-        );
+        output.info(&green(&format!(
+            "No issues found! ({} checks passed)",
+            summary.passed
+        )));
         return;
     }
 
@@ -394,5 +391,5 @@ fn print_summary(summary: &DoctorSummary) {
         format!(" ({})", names.join(", "))
     };
 
-    println!("{}{names_str}", parts.join(", "));
+    output.info(&format!("{}{names_str}", parts.join(", ")));
 }
