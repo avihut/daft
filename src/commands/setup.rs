@@ -6,6 +6,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use crate::commands::shortcuts::{detect_install_dir, enable_style};
+use crate::output::{CliOutput, Output, OutputConfig};
 use crate::shortcuts::ShortcutStyle;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,6 +94,7 @@ pub struct Args {
 pub fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args = Args::parse_from(args);
+    let mut output = CliOutput::new(OutputConfig::new(false, false));
 
     // Detect shell
     let shell = Shell::from_env()
@@ -101,9 +103,9 @@ pub fn run() -> Result<()> {
     let config_file = shell.config_file();
     let init_line = shell.init_line();
 
-    println!("Detected shell: {}", shell.name());
-    println!("Config file: {}", config_file.display());
-    println!();
+    output.info(&format!("Detected shell: {}", shell.name()));
+    output.info(&format!("Config file: {}", config_file.display()));
+    output.info("");
 
     // Check if config file exists
     let config_exists = config_file.exists();
@@ -117,28 +119,28 @@ pub fn run() -> Result<()> {
     // Check if already configured
     let already_configured = current_content.contains("daft shell-init");
     if already_configured && !args.force {
-        println!(
+        output.info(&format!(
             "daft shell integration is already configured in {}.",
             config_file.display()
-        );
-        println!();
-        println!("If commands aren't working, activate it by either:");
-        println!("  1. Restarting your terminal, or");
-        println!("  2. Running: source {}", config_file.display());
-        println!();
-        println!("Use --force to add it again anyway.");
+        ));
+        output.info("");
+        output.info("If commands aren't working, activate it by either:");
+        output.info("  1. Restarting your terminal, or");
+        output.info(&format!("  2. Running: source {}", config_file.display()));
+        output.info("");
+        output.info("Use --force to add it again anyway.");
         return Ok(());
     }
 
     // Show what will be added
-    println!("Will append to {}:", config_file.display());
-    println!();
-    println!("  # daft shell integration - enables cd into new worktrees");
-    println!("  {init_line}");
-    println!();
+    output.info(&format!("Will append to {}:", config_file.display()));
+    output.info("");
+    output.info("  # daft shell integration - enables cd into new worktrees");
+    output.info(&format!("  {init_line}"));
+    output.info("");
 
     if args.dry_run {
-        println!("[dry-run] No changes made.");
+        output.info("[dry-run] No changes made.");
         return Ok(());
     }
 
@@ -152,7 +154,7 @@ pub fn run() -> Result<()> {
         let input = input.trim().to_lowercase();
 
         if input != "y" && input != "yes" {
-            println!("Aborted.");
+            output.info("Aborted.");
             return Ok(());
         }
     }
@@ -162,7 +164,7 @@ pub fn run() -> Result<()> {
         let backup_path = config_file.with_extension("bak");
         fs::copy(&config_file, &backup_path)
             .with_context(|| format!("Failed to create backup at {}", backup_path.display()))?;
-        println!("Created backup: {}", backup_path.display());
+        output.info(&format!("Created backup: {}", backup_path.display()));
     }
 
     // Ensure parent directory exists (for fish)
@@ -193,27 +195,31 @@ pub fn run() -> Result<()> {
     )?;
     writeln!(file, "{init_line}")?;
 
-    // Install git-style shortcuts
+    // Install git-style shortcuts silently
     let shortcuts_installed = if let Ok(install_dir) = detect_install_dir() {
-        enable_style(ShortcutStyle::Git, &install_dir, false, false).is_ok()
+        let mut quiet_output = CliOutput::new(OutputConfig::new(true, false));
+        enable_style(ShortcutStyle::Git, &install_dir, false, &mut quiet_output).is_ok()
     } else {
         false
     };
 
-    println!();
-    println!("Done! Shell integration added to {}", config_file.display());
+    output.info("");
+    output.result(&format!(
+        "Done! Shell integration added to {}",
+        config_file.display()
+    ));
     if shortcuts_installed {
-        println!("      Git-style shortcuts installed (gwtco, gwtcb, etc.)");
+        output.info("      Git-style shortcuts installed (gwtco, gwtcb, etc.)");
     }
-    println!();
-    println!("To activate, either:");
-    println!("  1. Restart your terminal, or");
-    println!("  2. Run: source {}", config_file.display());
+    output.info("");
+    output.info("To activate, either:");
+    output.info("  1. Restart your terminal, or");
+    output.info(&format!("  2. Run: source {}", config_file.display()));
     if shortcuts_installed {
-        println!();
-        println!("To use different shortcut styles:");
-        println!("  daft setup shortcuts only shell   # gwco, gwcob, gwcobd");
-        println!("  daft setup shortcuts only legacy  # gclone, gcw, gcbw, ...");
+        output.info("");
+        output.info("To use different shortcut styles:");
+        output.info("  daft setup shortcuts only shell   # gwco, gwcob, gwcobd");
+        output.info("  daft setup shortcuts only legacy  # gclone, gcw, gcbw, ...");
     }
 
     Ok(())
