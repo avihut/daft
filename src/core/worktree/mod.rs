@@ -5,3 +5,4 @@
 //! params, a `GitCommand`, and a `ProgressSink`, and return structured results.
 
 pub mod carry;
+pub mod init;
