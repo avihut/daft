@@ -4,6 +4,7 @@
 //! from argument parsing and output rendering. Functions accept structured
 //! params, a `GitCommand`, and a `ProgressSink`, and return structured results.
 
+pub mod branch_delete;
 pub mod carry;
 pub mod checkout;
 pub mod checkout_branch;
