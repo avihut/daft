@@ -50,7 +50,6 @@ pub mod config;
 pub mod doctor;
 pub mod exec;
 pub mod git;
-pub mod git_oxide;
 pub mod hints;
 pub mod hooks;
 pub mod logging;
