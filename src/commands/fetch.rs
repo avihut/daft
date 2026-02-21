@@ -4,19 +4,20 @@
 //! to each target worktree and running `git pull` with configurable options.
 
 use crate::{
+    core::{
+        worktree::fetch::{self, WorktreeFetchResult},
+        OutputSink,
+    },
     get_project_root,
     git::GitCommand,
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
-    styles,
-    utils::*,
-    WorktreeConfig,
+    styles, WorktreeConfig,
 };
 use anyhow::Result;
 use clap::Parser;
-use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "git-worktree-fetch")]
@@ -84,15 +85,6 @@ pub struct Args {
     pull_args: Vec<String>,
 }
 
-/// Result of a fetch operation for a single worktree
-#[derive(Debug)]
-struct FetchResult {
-    worktree_name: String,
-    success: bool,
-    message: String,
-    skipped: bool,
-}
-
 pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-fetch"));
 
@@ -102,342 +94,107 @@ pub fn run() -> Result<()> {
         anyhow::bail!("Not inside a Git repository");
     }
 
-    // Load settings from git config
     let settings = DaftSettings::load()?;
-
     let config = OutputConfig::new(args.quiet, args.verbose);
     let mut output = CliOutput::new(config);
 
-    run_fetch(&args, &settings, &mut output)
-}
-
-fn run_fetch(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
-    let config = WorktreeConfig {
+    let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: args.quiet,
     };
-    let git = GitCommand::new(config.quiet).with_gitoxide(settings.use_gitoxide);
-
-    // Save original directory to return to
-    let original_dir = get_current_directory()?;
+    let git = GitCommand::new(wt_config.quiet).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
 
-    // Determine targets
-    let targets = determine_targets(args, &git, &project_root, output)?;
+    // Merge CLI flags with config-based args
+    let config_args: Vec<&str> = settings.fetch_args.split_whitespace().collect();
+    let config_has_rebase = config_args.contains(&"--rebase");
+    let config_has_autostash = config_args.contains(&"--autostash");
 
-    if targets.is_empty() {
-        output.info("No worktrees to update.");
-        return Ok(());
+    let params = fetch::FetchParams {
+        targets: args.targets.clone(),
+        all: args.all,
+        force: args.force,
+        dry_run: args.dry_run,
+        rebase: args.rebase || (config_has_rebase && !args.ff_only),
+        autostash: args.autostash || config_has_autostash,
+        ff_only: args.ff_only,
+        no_ff_only: args.no_ff_only,
+        pull_args: args.pull_args.clone(),
+        quiet: args.quiet,
+    };
+
+    let mut sink = OutputSink(&mut output);
+    let result = fetch::execute(
+        &params,
+        &git,
+        &project_root,
+        &wt_config.remote_name,
+        &mut sink,
+    )?;
+
+    render_fetch_result(&result, &mut output);
+
+    if result.failed_count() > 0 {
+        anyhow::bail!("{} worktree(s) failed to update", result.failed_count());
     }
 
-    // Build pull arguments from config and CLI flags
-    let pull_args = build_pull_args(args, settings);
+    Ok(())
+}
 
-    output.step(&format!("Pull arguments: {}", pull_args.join(" ")));
+fn render_fetch_result(result: &fetch::FetchResult, output: &mut dyn Output) {
+    if result.results.is_empty() {
+        output.info("No worktrees to update.");
+        return;
+    }
 
-    // Print header
-    output.result(&format!("Fetching {}", config.remote_name));
-    if let Ok(url) = git.remote_get_url(&config.remote_name) {
+    // Header
+    output.result(&format!("Fetching {}", result.remote_name));
+    if let Some(ref url) = result.remote_url {
         output.info(&format!("URL: {url}"));
     }
 
-    // Process each target
-    let mut results: Vec<FetchResult> = Vec::new();
-
-    for target_path in &targets {
-        let worktree_name = target_path
-            .strip_prefix(&project_root)
-            .ok()
-            .and_then(|p| p.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-
-        let result = process_worktree(&git, target_path, &worktree_name, &pull_args, args, output);
-
-        results.push(result);
+    // Per-worktree status
+    for r in &result.results {
+        render_worktree_status(r, output);
     }
 
-    // Return to original directory
-    change_directory(&original_dir)?;
-
-    // Print summary
-    print_summary(&results, output);
-
-    // Check if any failures occurred
-    let failures = results.iter().filter(|r| !r.success && !r.skipped).count();
-    if failures > 0 {
-        anyhow::bail!("{} worktree(s) failed to update", failures);
-    }
-
-    Ok(())
+    // Summary
+    print_summary(result, output);
 }
 
-/// Determine which worktrees to update based on arguments
-fn determine_targets(
-    args: &Args,
-    git: &GitCommand,
-    project_root: &Path,
-    output: &mut dyn Output,
-) -> Result<Vec<PathBuf>> {
-    if args.all {
-        // Get all worktrees
-        get_all_worktrees(git)
-    } else if args.targets.is_empty() {
-        // Current worktree
-        let current = git.get_current_worktree_path()?;
-        Ok(vec![current])
-    } else {
-        // Resolve specified targets
-        let mut resolved: Vec<PathBuf> = Vec::new();
-        let mut errors: Vec<String> = Vec::new();
-
-        for target in &args.targets {
-            match git.resolve_worktree_path(target, project_root) {
-                Ok(path) => resolved.push(path),
-                Err(e) => errors.push(format!("'{}': {}", target, e)),
-            }
-        }
-
-        if !errors.is_empty() {
-            for error in &errors {
-                output.error(&format!("Failed to resolve target {error}"));
-            }
-            anyhow::bail!("Failed to resolve {} target(s)", errors.len());
-        }
-
-        Ok(resolved)
-    }
-}
-
-/// Get all worktrees from git worktree list
-fn get_all_worktrees(git: &GitCommand) -> Result<Vec<PathBuf>> {
-    let porcelain_output = git.worktree_list_porcelain()?;
-    let mut worktrees: Vec<PathBuf> = Vec::new();
-    let mut current_worktree: Option<PathBuf> = None;
-    let mut is_bare = false;
-
-    for line in porcelain_output.lines() {
-        if let Some(worktree_path) = line.strip_prefix("worktree ") {
-            // Save previous worktree if it wasn't bare
-            if let Some(path) = current_worktree.take() {
-                if !is_bare {
-                    worktrees.push(path);
-                }
-            }
-            // Start tracking new worktree
-            current_worktree = Some(PathBuf::from(worktree_path));
-            is_bare = false;
-        } else if line == "bare" {
-            // Mark current worktree as bare (will be skipped)
-            is_bare = true;
-        }
-    }
-
-    // Don't forget the last worktree
-    if let Some(path) = current_worktree {
-        if !is_bare {
-            worktrees.push(path);
-        }
-    }
-
-    Ok(worktrees)
-}
-
-/// Build pull arguments from config and CLI flags
-fn build_pull_args(args: &Args, settings: &DaftSettings) -> Vec<String> {
-    let mut pull_args: Vec<String> = Vec::new();
-
-    // Parse config args into a set for easy checking
-    let config_args: Vec<&str> = settings.fetch_args.split_whitespace().collect();
-    let config_has_rebase = config_args.contains(&"--rebase");
-    let config_has_ff_only = config_args.contains(&"--ff-only");
-    let config_has_autostash = config_args.contains(&"--autostash");
-
-    // Determine rebase behavior
-    // CLI --rebase always adds --rebase
-    // CLI --no-ff-only without --rebase keeps config rebase setting
-    if args.rebase {
-        pull_args.push("--rebase".to_string());
-    } else if config_has_rebase && !args.ff_only {
-        // Config has rebase and user didn't explicitly request --ff-only
-        pull_args.push("--rebase".to_string());
-    }
-
-    // Determine ff-only behavior
-    // --no-ff-only disables ff-only
-    // --ff-only or config ff-only enables it (unless rebase is used)
-    if !args.no_ff_only && !args.rebase && !config_has_rebase {
-        if args.ff_only || config_has_ff_only {
-            pull_args.push("--ff-only".to_string());
+fn render_worktree_status(r: &WorktreeFetchResult, output: &mut dyn Output) {
+    if r.skipped {
+        if r.message.contains("Dry run") {
+            output.info(&format!(" * {} {}", tag_dry_run(), r.worktree_name));
         } else {
-            // Default to ff-only if no other merge strategy specified
-            pull_args.push("--ff-only".to_string());
+            output.info(&format!(" * {} {}", tag_skipped(), r.worktree_name));
         }
-    }
-
-    // Autostash
-    if args.autostash || config_has_autostash {
-        pull_args.push("--autostash".to_string());
-    }
-
-    // Add pass-through arguments
-    for arg in &args.pull_args {
-        pull_args.push(arg.clone());
-    }
-
-    pull_args
-}
-
-/// Process a single worktree
-fn process_worktree(
-    git: &GitCommand,
-    target_path: &Path,
-    worktree_name: &str,
-    pull_args: &[String],
-    args: &Args,
-    output: &mut dyn Output,
-) -> FetchResult {
-    output.step(&format!("Processing '{worktree_name}'..."));
-
-    // Change to worktree directory
-    if let Err(e) = change_directory(target_path) {
-        output.error(&format!(
-            "Failed to change to directory for '{worktree_name}': {e}"
-        ));
-        output.info(&format!(" * {} {worktree_name}", tag_failed()));
-        return FetchResult {
-            worktree_name: worktree_name.to_string(),
-            success: false,
-            message: format!("Failed to change to directory: {e}"),
-            skipped: false,
-        };
-    }
-
-    // Check for uncommitted changes
-    match git.has_uncommitted_changes_in(target_path) {
-        Ok(has_changes) => {
-            if has_changes && !args.force {
-                output.warning(&format!(
-                    "Skipping '{worktree_name}': has uncommitted changes (use --force to update anyway)"
-                ));
-                output.info(&format!(
-                    " * {} {worktree_name} (uncommitted changes)",
-                    tag_skipped()
-                ));
-                return FetchResult {
-                    worktree_name: worktree_name.to_string(),
-                    success: true,
-                    message: "Skipped: uncommitted changes".to_string(),
-                    skipped: true,
-                };
-            }
-        }
-        Err(e) => {
-            output.error(&format!(
-                "Failed to check status for '{worktree_name}': {e}"
-            ));
-            output.info(&format!(" * {} {worktree_name}", tag_failed()));
-            return FetchResult {
-                worktree_name: worktree_name.to_string(),
-                success: false,
-                message: format!("Failed to check status: {e}"),
-                skipped: false,
-            };
-        }
-    }
-
-    // Check if branch has an upstream
-    if check_has_upstream(git).is_err() {
-        output.warning(&format!(
-            "Skipping '{worktree_name}': no tracking branch configured"
-        ));
-        output.info(&format!(
-            " * {} {worktree_name} (no tracking branch)",
-            tag_skipped()
-        ));
-        return FetchResult {
-            worktree_name: worktree_name.to_string(),
-            success: true,
-            message: "Skipped: no tracking branch".to_string(),
-            skipped: true,
-        };
-    }
-
-    // Dry run mode
-    if args.dry_run {
-        output.info(&format!(
-            " * {} {worktree_name} (would pull with: git pull {})",
-            tag_dry_run(),
-            pull_args.join(" ")
-        ));
-        return FetchResult {
-            worktree_name: worktree_name.to_string(),
-            success: true,
-            message: "Dry run: would update".to_string(),
-            skipped: true,
-        };
-    }
-
-    // Run git pull
-    let pull_args_refs: Vec<&str> = pull_args.iter().map(|s| s.as_str()).collect();
-
-    let pull_result = if output.is_quiet() {
-        // In quiet mode, capture output (suppress git's progress)
-        git.pull(&pull_args_refs).map(|_| ())
+    } else if r.success {
+        output.info(&format!(" * {} {}", tag_fetched(), r.worktree_name));
     } else {
-        // In normal/verbose mode, let git's output flow to the terminal
-        git.pull_passthrough(&pull_args_refs)
-    };
-
-    match pull_result {
-        Ok(()) => {
-            output.info(&format!(" * {} {worktree_name}", tag_fetched()));
-            FetchResult {
-                worktree_name: worktree_name.to_string(),
-                success: true,
-                message: "Updated successfully".to_string(),
-                skipped: false,
-            }
-        }
-        Err(e) => {
-            output.error(&format!("Failed to update '{worktree_name}': {e}"));
-            output.info(&format!(" * {} {worktree_name}", tag_failed()));
-            FetchResult {
-                worktree_name: worktree_name.to_string(),
-                success: false,
-                message: format!("Failed: {e}"),
-                skipped: false,
-            }
-        }
+        output.error(&format!(
+            "Failed to update '{}': {}",
+            r.worktree_name, r.message
+        ));
+        output.info(&format!(" * {} {}", tag_failed(), r.worktree_name));
     }
 }
 
-/// Check if the current branch has an upstream tracking branch
-fn check_has_upstream(git: &GitCommand) -> Result<()> {
-    // Get current branch
-    let branch = git.symbolic_ref_short_head()?;
-
-    // Check if upstream is configured by looking for the tracking info
-    // We use git config to check branch.<name>.remote
-    let remote_key = format!("branch.{}.remote", branch);
-    if git.config_get(&remote_key)?.is_none() {
-        anyhow::bail!("No upstream configured for branch '{}'", branch);
-    }
-
-    Ok(())
-}
-
-/// Print summary of fetch operations
-fn print_summary(results: &[FetchResult], output: &mut dyn Output) {
-    let updated = results.iter().filter(|r| r.success && !r.skipped).count();
-    let skipped = results.iter().filter(|r| r.skipped).count();
-    let failed = results.iter().filter(|r| !r.success && !r.skipped).count();
+fn print_summary(result: &fetch::FetchResult, output: &mut dyn Output) {
+    let updated = result.updated_count();
+    let skipped = result.skipped_count();
+    let failed = result.failed_count();
 
     // Verbose details
     if output.is_verbose() {
-        let updated_list: Vec<_> = results.iter().filter(|r| r.success && !r.skipped).collect();
-        let skipped_list: Vec<_> = results.iter().filter(|r| r.skipped).collect();
-        let failed_list: Vec<_> = results
+        let updated_list: Vec<_> = result
+            .results
+            .iter()
+            .filter(|r| r.success && !r.skipped)
+            .collect();
+        let skipped_list: Vec<_> = result.results.iter().filter(|r| r.skipped).collect();
+        let failed_list: Vec<_> = result
+            .results
             .iter()
             .filter(|r| !r.success && !r.skipped)
             .collect();
@@ -465,7 +222,6 @@ fn print_summary(results: &[FetchResult], output: &mut dyn Output) {
     // Pluralized summary line
     if failed == 0 {
         let mut parts: Vec<String> = Vec::new();
-
         if updated > 0 {
             let word = if updated == 1 {
                 "worktree"
@@ -474,7 +230,6 @@ fn print_summary(results: &[FetchResult], output: &mut dyn Output) {
             };
             parts.push(format!("Fetched {updated} {word}"));
         }
-
         if skipped > 0 {
             let word = if skipped == 1 {
                 "worktree"
@@ -487,7 +242,6 @@ fn print_summary(results: &[FetchResult], output: &mut dyn Output) {
                 parts.push(format!("skipped {skipped} {word}"));
             }
         }
-
         if parts.is_empty() {
             output.info("Nothing to update");
         } else {
@@ -495,7 +249,6 @@ fn print_summary(results: &[FetchResult], output: &mut dyn Output) {
         }
     } else {
         let mut parts: Vec<String> = Vec::new();
-
         if updated > 0 {
             let word = if updated == 1 {
                 "worktree"
@@ -514,7 +267,6 @@ fn print_summary(results: &[FetchResult], output: &mut dyn Output) {
         }
         let word = if failed == 1 { "worktree" } else { "worktrees" };
         parts.push(format!("{failed} {word} failed"));
-
         output.error(&parts.join(", "));
     }
 }
