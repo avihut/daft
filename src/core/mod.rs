@@ -5,6 +5,7 @@
 //! implementations (CLI, TUI, tests, etc.).
 
 mod progress;
+pub mod worktree;
 
 pub use progress::OutputSink;
 

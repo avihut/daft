@@ -1,0 +1,7 @@
+//! Core worktree operations.
+//!
+//! Each submodule contains the business logic for a daft command, separated
+//! from argument parsing and output rendering. Functions accept structured
+//! params, a `GitCommand`, and a `ProgressSink`, and return structured results.
+
+pub mod carry;
