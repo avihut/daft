@@ -4,7 +4,11 @@
 //! report progress and trigger hooks without depending on specific UI
 //! implementations (CLI, TUI, tests, etc.).
 
+pub mod config;
+pub mod multi_remote;
 mod progress;
+pub mod remote;
+pub mod settings;
 pub mod worktree;
 
 pub use progress::{CommandBridge, OutputSink};

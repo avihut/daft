@@ -46,7 +46,6 @@ pub fn get_clap_args(expected_cmd: &str) -> Vec<String> {
 }
 
 pub mod commands;
-pub mod config;
 pub mod core;
 pub mod doctor;
 pub mod exec;
@@ -54,17 +53,19 @@ pub mod git;
 pub mod hints;
 pub mod hooks;
 pub mod logging;
-pub mod multi_remote;
 pub mod output;
-pub mod remote;
-pub mod settings;
 pub mod shortcuts;
 pub mod styles;
 pub mod suggest;
 pub mod update_check;
 pub mod utils;
 
-pub use settings::{DaftSettings, PruneCdTarget};
+// Re-exported from core
+pub use self::core::config;
+pub use self::core::multi_remote;
+pub use self::core::remote;
+pub use self::core::settings;
+pub use self::core::settings::{DaftSettings, PruneCdTarget};
 
 #[derive(Debug, Clone)]
 pub struct WorktreeConfig {

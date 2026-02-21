@@ -3,6 +3,7 @@
 //! Provides `git daft multi-remote` subcommand for managing multi-remote mode.
 
 use crate::{
+    core::OutputSink,
     get_project_root,
     git::GitCommand,
     is_git_repository,
@@ -175,7 +176,7 @@ fn cmd_enable(default_remote: Option<String>, dry_run: bool, skip_confirm: bool)
     if plan.is_empty() {
         output.step("No migration needed");
     } else {
-        plan.preview(&mut output);
+        plan.preview(&mut OutputSink(&mut output));
     }
 
     if dry_run {
@@ -200,7 +201,7 @@ fn cmd_enable(default_remote: Option<String>, dry_run: bool, skip_confirm: bool)
     // Execute migration
     if !plan.is_empty() {
         output.step("Executing migration...");
-        plan.execute(&git, &mut output)?;
+        plan.execute(&git, &mut OutputSink(&mut output))?;
     }
 
     // Update config
@@ -260,7 +261,7 @@ fn cmd_disable(dry_run: bool, skip_confirm: bool) -> Result<()> {
     if plan.is_empty() {
         output.step("No migration needed");
     } else {
-        plan.preview(&mut output);
+        plan.preview(&mut OutputSink(&mut output));
     }
 
     if dry_run {
@@ -285,7 +286,7 @@ fn cmd_disable(dry_run: bool, skip_confirm: bool) -> Result<()> {
     // Execute migration
     if !plan.is_empty() {
         output.step("Executing migration...");
-        plan.execute(&git, &mut output)?;
+        plan.execute(&git, &mut OutputSink(&mut output))?;
     }
 
     // Update config

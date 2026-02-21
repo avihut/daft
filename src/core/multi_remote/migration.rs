@@ -2,8 +2,8 @@
 //!
 //! Handles moving worktrees between flat and nested directory structures.
 
+use crate::core::ProgressSink;
 use crate::git::GitCommand;
-use crate::output::Output;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::fs;
@@ -148,22 +148,22 @@ impl MigrationPlan {
     }
 
     /// Preview the migration plan without executing.
-    pub fn preview(&self, output: &mut dyn Output) {
+    pub fn preview(&self, sink: &mut dyn ProgressSink) {
         if self.operations.is_empty() {
-            output.step("No migration needed");
+            sink.on_step("No migration needed");
             return;
         }
 
-        output.step("Migration plan:");
+        sink.on_step("Migration plan:");
         for op in &self.operations {
-            output.step(&format!("  {}", op.description()));
+            sink.on_step(&format!("  {}", op.description()));
         }
     }
 
     /// Execute the migration plan.
-    pub fn execute(&self, git: &GitCommand, output: &mut dyn Output) -> Result<()> {
+    pub fn execute(&self, git: &GitCommand, sink: &mut dyn ProgressSink) -> Result<()> {
         for op in &self.operations {
-            output.step(&op.description());
+            sink.on_step(&op.description());
 
             match op {
                 MigrationOp::CreateDir(path) => {
