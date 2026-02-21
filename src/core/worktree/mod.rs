@@ -9,4 +9,5 @@ pub mod checkout;
 pub mod checkout_branch;
 pub mod clone;
 pub mod fetch;
+pub mod flow_adopt;
 pub mod init;
