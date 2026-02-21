@@ -74,7 +74,11 @@ jobs:
       - name: Update man pages in release PR
         if: steps.release-plz.outputs.prs_created == 'true'
         env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          # GH_TOKEN (app token) for gh CLI to find the release PR
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Default GITHUB_TOKEN for git push — does NOT trigger workflow runs,
+          # unlike the app token which was causing the test workflow to run twice
+          DEFAULT_GITHUB_TOKEN: ${{ github.token }}
         run: |
           # Wait briefly for GitHub to propagate the PR and labels
           sleep 5
@@ -117,5 +121,10 @@ jobs:
           # Commit and push the updated files
           git add man/ docs/cli/
           git commit -m "chore: regenerate man pages and CLI docs for new version"
+
+          # Switch remote URL to use default GITHUB_TOKEN for push.
+          # Pushes via the default token do not trigger workflow runs,
+          # avoiding a duplicate test workflow on the release PR.
+          git remote set-url origin "https://x-access-token:${DEFAULT_GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin "$PR_BRANCH"
           echo "Man pages and CLI docs updated in release PR"
