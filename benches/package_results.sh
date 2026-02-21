@@ -17,12 +17,15 @@ COMMIT_URL="https://github.com/avihut/daft/commit/${COMMIT_FULL}"
 DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 RUNNER_OS="${RUNNER_OS:-$(uname -s)}"
 
-# Build the envelope using jq
-BENCHMARKS="{}"
+# Build the benchmarks object by merging each result file via jq file reads.
+# Avoids shell variable size limits (ARG_MAX) by writing intermediate results to a temp file.
+BENCH_TMP="$(mktemp)"
+echo '{}' > "$BENCH_TMP"
 for json_file in "$RESULTS_DIR"/*.json; do
     [[ -f "$json_file" ]] || continue
     name="$(basename "$json_file" .json)"
-    BENCHMARKS=$(echo "$BENCHMARKS" | jq --arg name "$name" --slurpfile data "$json_file" '. + {($name): $data[0]}')
+    jq --arg name "$name" --slurpfile data "$json_file" '. + {($name): $data[0]}' "$BENCH_TMP" > "${BENCH_TMP}.new"
+    mv "${BENCH_TMP}.new" "$BENCH_TMP"
 done
 
 jq -n \
@@ -32,7 +35,7 @@ jq -n \
     --arg commit_url "$COMMIT_URL" \
     --arg date "$DATE" \
     --arg runner_os "$RUNNER_OS" \
-    --argjson benchmarks "$BENCHMARKS" \
+    --slurpfile benchmarks "$BENCH_TMP" \
     '{
         version: $version,
         commit: $commit,
@@ -40,7 +43,9 @@ jq -n \
         commit_url: $commit_url,
         date: $date,
         runner_os: $runner_os,
-        benchmarks: $benchmarks
+        benchmarks: $benchmarks[0]
     }' > "$OUTPUT"
+
+rm -f "$BENCH_TMP"
 
 echo "Packaged results to $OUTPUT"

@@ -14,6 +14,7 @@ ln -sf daft git-worktree-checkout
 ln -sf daft git-worktree-checkout-branch
 ln -sf daft git-worktree-prune
 ln -sf daft git-worktree-carry
+ln -sf daft git-worktree-branch-delete
 ln -sf daft git-worktree-fetch
 ln -sf daft git-worktree-flow-adopt
 ln -sf daft git-worktree-flow-eject
@@ -25,6 +26,7 @@ ln -sf daft gwtco
 ln -sf daft gwtcb
 ln -sf daft gwtprune
 ln -sf daft gwtcarry
+ln -sf daft gwtbd
 ln -sf daft gwtfetch
 cd ../..
 echo "Development environment ready!"
