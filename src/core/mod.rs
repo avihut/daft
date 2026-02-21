@@ -7,7 +7,7 @@
 mod progress;
 pub mod worktree;
 
-pub use progress::OutputSink;
+pub use progress::{CommandBridge, OutputSink};
 
 use crate::hooks::HookContext;
 use anyhow::Result;
