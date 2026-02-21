@@ -619,7 +619,7 @@ _daft() {
             done
             if [[ -n "$hook_type" ]]; then
                 local jobs
-                jobs=$(DAFT_COMPLETE_HOOK="$hook_type" daft __complete hooks-run-job "$cur" 2>/dev/null)
+                jobs=$(DAFT_COMPLETE_HOOK="$hook_type" daft __complete hooks-run-job "$cur" 2>/dev/null | cut -f1)
                 COMPREPLY=( $(compgen -W "$jobs" -- "$cur") )
             fi
             return 0
@@ -670,9 +670,18 @@ _daft() {
                 fi
             done
             if [[ -n "$hook_type" ]]; then
-                local -a jobs
-                jobs=(${(f)"$(DAFT_COMPLETE_HOOK="$hook_type" daft __complete hooks-run-job "$curword" 2>/dev/null)"})
-                compadd -a jobs
+                local -a job_specs
+                local line
+                while IFS= read -r line; do
+                    if [[ "$line" == *$'\t'* ]]; then
+                        local jname="${line%%	*}"
+                        local jdesc="${line#*	}"
+                        job_specs+=("${jname}:${jdesc}")
+                    else
+                        job_specs+=("${line}")
+                    fi
+                done < <(DAFT_COMPLETE_HOOK="$hook_type" daft __complete hooks-run-job "$curword" 2>/dev/null)
+                _describe 'job' job_specs
             fi
             return
         fi
@@ -715,7 +724,7 @@ complete -c daft -n '__fish_use_subcommand' -a 'release-notes' -d 'Generate rele
 complete -c daft -n '__fish_use_subcommand' -a 'doctor' -d 'Check installation'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and not __fish_seen_subcommand_from trust prompt deny status migrate install validate dump run' -f -a 'trust prompt deny status migrate install validate dump run'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -f -a "(daft __complete hooks-run '' 2>/dev/null)"
-complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l job -d 'Run only the named job'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l job -d 'Run only the named job' -r -f -a "(set -l hook (commandline -opc | string match -rv '^-' | tail -n1); DAFT_COMPLETE_HOOK=\$hook daft __complete hooks-run-job '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l tag -d 'Run only jobs with this tag'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l dry-run -d 'Preview what would run'
 complete -c git-daft -w daft

@@ -1,8 +1,30 @@
 hooks:
   post-clone:
     jobs:
+      - name: install-brew
+        description: Install Homebrew package manager
+        os: macos
+        run:
+          /bin/bash -c "$(curl -fsSL
+          https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        skip:
+          - run: "command -v brew"
+            desc: Brew is already installed
+      - name: install-lefthook
+        description: Install lefthook git hooks manager via Homebrew
+        os: macos
+        run: brew install lefthook
+        needs: [install-brew]
+        skip:
+          - run: "command -v lefthook"
+            desc: Lefthook is already installed
       - name: lefthook-install
+        description: Set up lefthook git hooks in the repository
         run: lefthook install
+        needs: [install-lefthook]
+        skip:
+          - run: "lefthook check-install"
+            desc: Lefthook hooks are already installed
 
   worktree-post-create:
     jobs:

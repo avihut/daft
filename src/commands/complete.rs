@@ -280,15 +280,23 @@ fn complete_hook_jobs(prefix: &str, _verbose: bool) -> Result<Vec<String>> {
     };
 
     let jobs = yaml_config_loader::get_effective_jobs(hook_def);
-    let mut names: Vec<String> = jobs
+    let mut entries: Vec<String> = jobs
         .iter()
-        .filter_map(|j| j.name.as_ref())
-        .filter(|name| name.starts_with(prefix))
-        .cloned()
+        .filter_map(|j| {
+            let name = j.name.as_ref()?;
+            if !name.starts_with(prefix) {
+                return None;
+            }
+            Some(if let Some(ref desc) = j.description {
+                format!("{name}\t{desc}")
+            } else {
+                name.clone()
+            })
+        })
         .collect();
-    names.sort();
-    names.dedup();
-    Ok(names)
+    entries.sort();
+    entries.dedup();
+    Ok(entries)
 }
 
 /// Find the worktree root directory (for completions).

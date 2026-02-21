@@ -182,6 +182,7 @@ Each job in the `jobs` list supports:
 | Field         | Type                 | Description                                                     |
 | ------------- | -------------------- | --------------------------------------------------------------- |
 | `name`        | string               | Job name (used for display, merging, and dependency references) |
+| `description` | string               | Human-readable description (shown in dry-run and completions)   |
 | `run`         | string               | Inline shell command to execute                                 |
 | `script`      | string               | Script file to run (relative to `source_dir`)                   |
 | `runner`      | string               | Interpreter for script files (e.g., `"bash"`, `"python"`)       |
@@ -190,6 +191,8 @@ Each job in the `jobs` list supports:
 | `tags`        | list                 | Tags for filtering with `exclude_tags`                          |
 | `skip`        | bool / string / list | Skip condition                                                  |
 | `only`        | bool / string / list | Only condition                                                  |
+| `os`          | string / list        | Target OS (`macos`, `linux`, `windows`); skips if no match      |
+| `arch`        | string / list        | Target architecture (`x86_64`, `aarch64`); skips if no match    |
 | `env`         | map                  | Extra environment variables                                     |
 | `fail_text`   | string               | Custom failure message                                          |
 | `interactive` | bool                 | Job needs TTY/stdin (forces sequential execution)               |
@@ -198,6 +201,20 @@ Each job in the `jobs` list supports:
 | `group`       | object               | Nested group of jobs (see [Groups](#groups))                    |
 
 A job must have exactly one of `run`, `script`, or `group`.
+
+#### Example: Job with description and platform constraint
+
+```yaml
+- name: install-brew
+  description: Install Homebrew package manager
+  os: macos
+  run:
+    /bin/bash -c "$(curl -fsSL
+    https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  skip:
+    - run: "command -v brew"
+      desc: Brew is already installed
+```
 
 #### Example: Inline command
 
@@ -365,11 +382,12 @@ skip:
 
 ### Structured condition fields
 
-| Field | Description                                          |
-| ----- | ---------------------------------------------------- |
-| `ref` | Glob pattern matched against the current branch name |
-| `env` | Environment variable name; truthy = condition met    |
-| `run` | Shell command; exit code 0 = condition met           |
+| Field  | Description                                                    |
+| ------ | -------------------------------------------------------------- |
+| `ref`  | Glob pattern matched against the current branch name           |
+| `env`  | Environment variable name; truthy = condition met              |
+| `run`  | Shell command; exit code 0 = condition met                     |
+| `desc` | Human-readable reason shown when the condition triggers a skip |
 
 ### Hook-level vs job-level
 
@@ -491,6 +509,9 @@ git daft hooks run worktree-post-create --tag setup
 
 # Preview what would run without executing
 git daft hooks run worktree-post-create --dry-run
+
+# Show verbose output including skipped jobs
+git daft hooks run worktree-post-create --verbose
 ```
 
 This is useful for:
@@ -648,6 +669,7 @@ git config --global daft.hooks.userDirectory ~/my-daft-hooks
 | `daft.hooks.<hookName>.enabled`  | `true`                  | Enable/disable a specific hook type   |
 | `daft.hooks.<hookName>.failMode` | varies                  | `abort` or `warn` on hook failure     |
 | `daft.hooks.output.quiet`        | `false`                 | Suppress hook stdout/stderr           |
+| `daft.hooks.output.verbose`      | `false`                 | Show skipped jobs with reasons        |
 | `daft.hooks.output.timerDelay`   | `5`                     | Seconds before showing elapsed timer  |
 | `daft.hooks.output.tailLines`    | `6`                     | Rolling output lines per job          |
 

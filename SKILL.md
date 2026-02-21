@@ -215,6 +215,7 @@ Set one per hook (default is `parallel`):
 
 ```yaml
 - name: job-name # Display name and dependency reference
+  description: "Install npm dependencies" # Human-readable description
   run: "npm install" # Inline command (or use script: "setup.sh")
   runner: "bash" # Interpreter for script files
   root: "frontend" # Working directory relative to worktree
@@ -223,6 +224,8 @@ Set one per hook (default is `parallel`):
   tags: ["build"] # Tags for filtering
   skip: CI # Skip when $CI is set
   only: DEPLOY_ENABLED # Only run when $DEPLOY_ENABLED is set
+  os: linux # Target OS: macos, linux, windows (or list)
+  arch: x86_64 # Target arch: x86_64, aarch64 (or list)
   needs: [install-npm] # Wait for these jobs to complete first
   interactive: true # Needs TTY (forces sequential)
   priority: 1 # Lower runs first
@@ -293,6 +296,7 @@ skip:
   - ref: "release/*"             # Skip if branch matches glob
   - env: SKIP_HOOKS              # Skip if env var is truthy
   - run: "test -f .skip-hooks"   # Skip if command exits 0
+    desc: "Skip file exists"     # Human-readable reason for the skip
 
 only:
   - env: DEPLOY_ENABLED          # Only run when env var is set
@@ -323,6 +327,7 @@ daft hooks run worktree-post-create              # Run all jobs
 daft hooks run worktree-post-create --job "mise" # Run a single job
 daft hooks run worktree-post-create --tag setup  # Run jobs tagged "setup"
 daft hooks run worktree-post-create --dry-run    # Preview without executing
+daft hooks run worktree-post-create --verbose    # Show skipped jobs with reasons
 ```
 
 Use cases: re-running after a failure, iterating during hook development, or

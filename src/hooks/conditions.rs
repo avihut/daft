@@ -5,7 +5,8 @@
 //! - `only`: If any rule does NOT match, the hook/job is skipped.
 
 use super::yaml_config::{
-    OnlyCondition, OnlyRule, OnlyRuleStructured, SkipCondition, SkipRule, SkipRuleStructured,
+    JobDef, OnlyCondition, OnlyRule, OnlyRuleStructured, SkipCondition, SkipRule,
+    SkipRuleStructured,
 };
 use std::path::Path;
 
@@ -114,20 +115,32 @@ fn eval_structured_skip(rule: &SkipRuleStructured, worktree: &Path) -> Option<St
     if let Some(ref pattern) = rule.ref_pattern {
         if let Some(branch) = current_ref(worktree) {
             if branch_matches_pattern(&branch, pattern) {
-                return Some(format!("skip: ref matches '{pattern}'"));
+                return Some(
+                    rule.desc
+                        .clone()
+                        .unwrap_or_else(|| format!("skip: ref matches '{pattern}'")),
+                );
             }
         }
     }
 
     if let Some(ref var) = rule.env {
         if is_env_truthy(var) {
-            return Some(format!("skip: env ${var} is set"));
+            return Some(
+                rule.desc
+                    .clone()
+                    .unwrap_or_else(|| format!("skip: env ${var} is set")),
+            );
         }
     }
 
     if let Some(ref cmd) = rule.run {
         if run_check_command(cmd, worktree) {
-            return Some(format!("skip: command succeeded: {cmd}"));
+            return Some(
+                rule.desc
+                    .clone()
+                    .unwrap_or_else(|| format!("skip: command succeeded: {cmd}")),
+            );
         }
     }
 
@@ -141,19 +154,31 @@ fn eval_structured_only(rule: &OnlyRuleStructured, worktree: &Path) -> Option<St
     if let Some(ref pattern) = rule.ref_pattern {
         let branch = current_ref(worktree).unwrap_or_default();
         if !branch_matches_pattern(&branch, pattern) {
-            return Some(format!("only: ref does not match '{pattern}'"));
+            return Some(
+                rule.desc
+                    .clone()
+                    .unwrap_or_else(|| format!("only: ref does not match '{pattern}'")),
+            );
         }
     }
 
     if let Some(ref var) = rule.env {
         if !is_env_truthy(var) {
-            return Some(format!("only: env ${var} is not set"));
+            return Some(
+                rule.desc
+                    .clone()
+                    .unwrap_or_else(|| format!("only: env ${var} is not set")),
+            );
         }
     }
 
     if let Some(ref cmd) = rule.run {
         if !run_check_command(cmd, worktree) {
-            return Some(format!("only: command failed: {cmd}"));
+            return Some(
+                rule.desc
+                    .clone()
+                    .unwrap_or_else(|| format!("only: command failed: {cmd}")),
+            );
         }
     }
 
@@ -230,6 +255,51 @@ fn branch_matches_pattern(branch: &str, pattern: &str) -> bool {
     }
 }
 
+/// Check platform constraints (os/arch) for a job.
+///
+/// Returns `Some(reason)` if the current platform does not match the job's constraints.
+pub fn check_platform_constraints(job: &JobDef) -> Option<String> {
+    if let Some(ref os_constraint) = job.os {
+        let current_os = std::env::consts::OS;
+        let matches = os_constraint
+            .as_slice()
+            .iter()
+            .any(|target| target.as_str() == current_os);
+        if !matches {
+            let allowed: Vec<&str> = os_constraint
+                .as_slice()
+                .iter()
+                .map(|t| t.as_str())
+                .collect();
+            return Some(format!(
+                "not on {} (current: {current_os})",
+                allowed.join("/")
+            ));
+        }
+    }
+
+    if let Some(ref arch_constraint) = job.arch {
+        let current_arch = std::env::consts::ARCH;
+        let matches = arch_constraint
+            .as_slice()
+            .iter()
+            .any(|target| target.as_str() == current_arch);
+        if !matches {
+            let allowed: Vec<&str> = arch_constraint
+                .as_slice()
+                .iter()
+                .map(|t| t.as_str())
+                .collect();
+            return Some(format!(
+                "not on {} (current: {current_arch})",
+                allowed.join("/")
+            ));
+        }
+    }
+
+    None
+}
+
 /// Run a check command and return whether it exited 0.
 fn run_check_command(cmd: &str, worktree: &Path) -> bool {
     std::process::Command::new("sh")
@@ -291,6 +361,7 @@ mod tests {
             ref_pattern: None,
             env: None,
             run: Some("true".to_string()),
+            desc: None,
         })]);
         assert!(should_skip(&cond, Path::new(".")).is_some());
     }
@@ -301,6 +372,7 @@ mod tests {
             ref_pattern: None,
             env: None,
             run: Some("false".to_string()),
+            desc: None,
         })]);
         assert!(should_skip(&cond, Path::new(".")).is_none());
     }
@@ -334,5 +406,99 @@ mod tests {
 
         std::env::remove_var("DAFT_TRUTHY_TEST");
         assert!(!is_env_truthy("DAFT_TRUTHY_TEST"));
+    }
+
+    #[test]
+    fn test_skip_rule_desc_override() {
+        let cond = SkipCondition::Rules(vec![SkipRule::Structured(SkipRuleStructured {
+            ref_pattern: None,
+            env: None,
+            run: Some("true".to_string()),
+            desc: Some("Brew is already installed".to_string()),
+        })]);
+        let reason = should_skip(&cond, Path::new(".")).unwrap();
+        assert_eq!(reason, "Brew is already installed");
+    }
+
+    #[test]
+    fn test_skip_rule_no_desc_uses_default() {
+        let cond = SkipCondition::Rules(vec![SkipRule::Structured(SkipRuleStructured {
+            ref_pattern: None,
+            env: None,
+            run: Some("true".to_string()),
+            desc: None,
+        })]);
+        let reason = should_skip(&cond, Path::new(".")).unwrap();
+        assert!(reason.starts_with("skip: command succeeded:"));
+    }
+
+    #[test]
+    fn test_only_rule_desc_override() {
+        let cond = OnlyCondition::Rules(vec![OnlyRule::Structured(OnlyRuleStructured {
+            ref_pattern: None,
+            env: None,
+            run: Some("false".to_string()),
+            desc: Some("Only when package.json exists".to_string()),
+        })]);
+        let reason = should_only_skip(&cond, Path::new(".")).unwrap();
+        assert_eq!(reason, "Only when package.json exists");
+    }
+
+    #[test]
+    fn test_check_platform_constraints_matching_os() {
+        use super::super::yaml_config::{PlatformConstraint, TargetOs};
+        let current_os = std::env::consts::OS;
+        let target_os = match current_os {
+            "macos" => TargetOs::Macos,
+            "linux" => TargetOs::Linux,
+            "windows" => TargetOs::Windows,
+            _ => return, // Skip test on unknown OS
+        };
+        let job = JobDef {
+            os: Some(PlatformConstraint::Single(target_os)),
+            ..Default::default()
+        };
+        assert!(check_platform_constraints(&job).is_none());
+    }
+
+    #[test]
+    fn test_check_platform_constraints_non_matching_os() {
+        use super::super::yaml_config::{PlatformConstraint, TargetOs};
+        let non_matching_os = if std::env::consts::OS == "macos" {
+            TargetOs::Linux
+        } else {
+            TargetOs::Macos
+        };
+        let job = JobDef {
+            os: Some(PlatformConstraint::Single(non_matching_os)),
+            ..Default::default()
+        };
+        let reason = check_platform_constraints(&job).unwrap();
+        assert!(reason.starts_with("not on "));
+    }
+
+    #[test]
+    fn test_check_platform_constraints_os_list() {
+        use super::super::yaml_config::{PlatformConstraint, TargetOs};
+        let job = JobDef {
+            os: Some(PlatformConstraint::List(vec![
+                TargetOs::Macos,
+                TargetOs::Linux,
+            ])),
+            ..Default::default()
+        };
+        // On macOS or Linux this should pass; on Windows it should fail
+        let result = check_platform_constraints(&job);
+        if std::env::consts::OS == "macos" || std::env::consts::OS == "linux" {
+            assert!(result.is_none());
+        } else {
+            assert!(result.is_some());
+        }
+    }
+
+    #[test]
+    fn test_check_platform_constraints_no_constraints() {
+        let job = JobDef::default();
+        assert!(check_platform_constraints(&job).is_none());
     }
 }

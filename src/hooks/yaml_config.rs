@@ -93,12 +93,71 @@ pub struct HookDef {
     pub commands: Option<HashMap<String, CommandDef>>,
 }
 
+/// Target operating system for platform constraints.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TargetOs {
+    Macos,
+    Linux,
+    Windows,
+}
+
+impl TargetOs {
+    /// Return the OS string as used by `std::env::consts::OS`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TargetOs::Macos => "macos",
+            TargetOs::Linux => "linux",
+            TargetOs::Windows => "windows",
+        }
+    }
+}
+
+/// Target CPU architecture for platform constraints.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TargetArch {
+    X86_64,
+    Aarch64,
+}
+
+impl TargetArch {
+    /// Return the arch string as used by `std::env::consts::ARCH`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TargetArch::X86_64 => "x86_64",
+            TargetArch::Aarch64 => "aarch64",
+        }
+    }
+}
+
+/// A platform constraint that can be a single value or a list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PlatformConstraint<T> {
+    Single(T),
+    List(Vec<T>),
+}
+
+impl<T> PlatformConstraint<T> {
+    /// Return the values as a slice.
+    pub fn as_slice(&self) -> &[T] {
+        match self {
+            PlatformConstraint::Single(v) => std::slice::from_ref(v),
+            PlatformConstraint::List(v) => v,
+        }
+    }
+}
+
 /// A single job definition within a hook.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct JobDef {
     /// Optional name for the job (used for merging and display).
     pub name: Option<String>,
+
+    /// Human-readable description of what this job does.
+    pub description: Option<String>,
 
     /// Shell command to run.
     pub run: Option<String>,
@@ -123,6 +182,12 @@ pub struct JobDef {
 
     /// Only condition.
     pub only: Option<OnlyCondition>,
+
+    /// Restrict job to specific operating systems.
+    pub os: Option<PlatformConstraint<TargetOs>>,
+
+    /// Restrict job to specific CPU architectures.
+    pub arch: Option<PlatformConstraint<TargetArch>>,
 
     /// Extra environment variables.
     pub env: Option<HashMap<String, String>>,
@@ -203,6 +268,8 @@ pub struct SkipRuleStructured {
     pub env: Option<String>,
     /// Skip if this command exits 0.
     pub run: Option<String>,
+    /// Human-readable description of why this skip rule exists.
+    pub desc: Option<String>,
 }
 
 /// Only condition: mirrors SkipCondition but with inverse semantics.
@@ -237,6 +304,8 @@ pub struct OnlyRuleStructured {
     pub env: Option<String>,
     /// Only run if this command exits 0.
     pub run: Option<String>,
+    /// Human-readable description of why this only rule exists.
+    pub desc: Option<String>,
 }
 
 /// A group of jobs that runs as a unit.
@@ -536,5 +605,171 @@ hooks:
         let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
         let job = &config.hooks["worktree-post-create"].jobs.as_ref().unwrap()[0];
         assert!(job.needs.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_job_description() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - name: install-brew
+        description: Install Homebrew package manager
+        run: echo "install brew"
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
+        assert_eq!(
+            job.description.as_deref(),
+            Some("Install Homebrew package manager")
+        );
+    }
+
+    #[test]
+    fn test_skip_rule_desc() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - name: install-brew
+        run: echo "install"
+        skip:
+          - run: "command -v brew"
+            desc: Brew is already installed
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
+        match &job.skip {
+            Some(SkipCondition::Rules(rules)) => match &rules[0] {
+                SkipRule::Structured(s) => {
+                    assert_eq!(s.desc.as_deref(), Some("Brew is already installed"));
+                    assert_eq!(s.run.as_deref(), Some("command -v brew"));
+                }
+                other => panic!("Expected Structured, got {other:?}"),
+            },
+            other => panic!("Expected Rules, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_only_rule_desc() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - name: install-deps
+        run: npm install
+        only:
+          - run: "test -f package.json"
+            desc: Only when package.json exists
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
+        match &job.only {
+            Some(OnlyCondition::Rules(rules)) => match &rules[0] {
+                OnlyRule::Structured(s) => {
+                    assert_eq!(s.desc.as_deref(), Some("Only when package.json exists"));
+                }
+                other => panic!("Expected Structured, got {other:?}"),
+            },
+            other => panic!("Expected Rules, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_os_single() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - name: install-brew
+        os: macos
+        run: echo "brew"
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
+        match &job.os {
+            Some(PlatformConstraint::Single(os)) => assert_eq!(*os, TargetOs::Macos),
+            other => panic!("Expected Single(Macos), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_os_list() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - name: unix-setup
+        os: [macos, linux]
+        run: echo "unix"
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
+        match &job.os {
+            Some(PlatformConstraint::List(os_list)) => {
+                assert_eq!(os_list.len(), 2);
+                assert_eq!(os_list[0], TargetOs::Macos);
+                assert_eq!(os_list[1], TargetOs::Linux);
+            }
+            other => panic!("Expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_arch_single() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - name: arm-setup
+        arch: aarch64
+        run: echo "arm"
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
+        match &job.arch {
+            Some(PlatformConstraint::Single(arch)) => assert_eq!(*arch, TargetArch::Aarch64),
+            other => panic!("Expected Single(Aarch64), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_arch_list() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - name: multi-arch
+        arch: [x86_64, aarch64]
+        run: echo "multi"
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
+        match &job.arch {
+            Some(PlatformConstraint::List(arch_list)) => {
+                assert_eq!(arch_list.len(), 2);
+                assert_eq!(arch_list[0], TargetArch::X86_64);
+                assert_eq!(arch_list[1], TargetArch::Aarch64);
+            }
+            other => panic!("Expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_os_and_arch_combined() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - name: mac-arm
+        os: macos
+        arch: aarch64
+        run: echo "mac arm"
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
+        assert!(job.os.is_some());
+        assert!(job.arch.is_some());
     }
 }

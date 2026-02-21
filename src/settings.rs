@@ -27,6 +27,7 @@
 //! | `daft.hooks.output.quiet` | `false` | Suppress hook stdout/stderr |
 //! | `daft.hooks.output.timerDelay` | `5` | Seconds before showing elapsed timer |
 //! | `daft.hooks.output.tailLines` | `6` | Rolling output tail lines per job (0 = none) |
+//! | `daft.hooks.output.verbose` | `false` | Show skipped jobs and their reasons |
 //! | `daft.hooks.<hookName>.enabled` | `true` | Enable/disable specific hook |
 //! | `daft.hooks.<hookName>.failMode` | varies | Behavior on hook failure (abort/warn) |
 //!
@@ -175,6 +176,9 @@ pub mod keys {
 
         /// Config key for hooks.output.tailLines setting.
         pub const OUTPUT_TAIL_LINES: &str = "daft.hooks.output.tailLines";
+
+        /// Config key for hooks.output.verbose setting.
+        pub const OUTPUT_VERBOSE: &str = "daft.hooks.output.verbose";
 
         /// Generate a config key for a hook-specific setting.
         pub fn hook_key(hook_name: &str, setting: &str) -> String {
@@ -397,6 +401,8 @@ pub struct HookOutputConfig {
     pub timer_delay_secs: u32,
     /// Number of rolling output tail lines per job (0 = no tail).
     pub tail_lines: u32,
+    /// Show verbose output including skipped jobs and their reasons.
+    pub verbose: bool,
 }
 
 impl Default for HookOutputConfig {
@@ -405,6 +411,7 @@ impl Default for HookOutputConfig {
             quiet: false,
             timer_delay_secs: 5,
             tail_lines: 6,
+            verbose: false,
         }
     }
 }
@@ -463,6 +470,9 @@ pub fn load_hooks_config() -> Result<HooksConfig> {
         if let Ok(lines) = value.parse::<u32>() {
             config.output.tail_lines = lines;
         }
+    }
+    if let Some(value) = git.config_get(keys::hooks::OUTPUT_VERBOSE)? {
+        config.output.verbose = parse_bool(&value, false);
     }
 
     // Load per-hook settings
@@ -526,6 +536,9 @@ pub fn load_hooks_config_global() -> Result<HooksConfig> {
         if let Ok(lines) = value.parse::<u32>() {
             config.output.tail_lines = lines;
         }
+    }
+    if let Some(value) = git.config_get_global(keys::hooks::OUTPUT_VERBOSE)? {
+        config.output.verbose = parse_bool(&value, false);
     }
 
     // Load per-hook settings from global config

@@ -264,7 +264,7 @@ fn execute_sequential(
             continue;
         }
 
-        renderer.start_job(job_name);
+        renderer.start_job_with_description(job_name, job.description.as_deref());
         let start = std::time::Instant::now();
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -274,6 +274,12 @@ fn execute_sequential(
         // Drain channel and feed lines to the renderer
         for line in rx.try_iter() {
             renderer.update_job_output(job_name, &line);
+        }
+
+        if result.skipped {
+            let reason = result.skip_reason.as_deref().unwrap_or("skipped");
+            renderer.finish_job_skipped(job_name, reason, exec.output_config.verbose);
+            continue;
         }
 
         if result.success {
@@ -375,8 +381,13 @@ fn execute_parallel(
     let mut global_offset = 0;
     for batch in job_data.chunks(max_threads) {
         // Start all jobs in this batch on the renderer
-        for data in batch {
-            renderer.lock().unwrap().start_job(&data.name);
+        for (batch_idx, data) in batch.iter().enumerate() {
+            let job_idx = global_offset + batch_idx;
+            let desc = parallel.get(job_idx).and_then(|j| j.description.as_deref());
+            renderer
+                .lock()
+                .unwrap()
+                .start_job_with_description(&data.name, desc);
         }
 
         let handles: Vec<_> = batch
@@ -704,7 +715,10 @@ fn execute_dag_parallel(
                     let job = &jobs[job_idx];
                     let name = job.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
 
-                    renderer.lock().unwrap().start_job(&name);
+                    renderer
+                        .lock()
+                        .unwrap()
+                        .start_job_with_description(&name, job.description.as_deref());
                     let start = std::time::Instant::now();
 
                     // Check skip/only conditions
@@ -997,6 +1011,9 @@ fn enqueue_dep_failed(
 
 /// Check skip/only conditions for a job without executing it.
 fn check_skip_conditions(job: &JobDef, working_dir: &Path) -> Option<String> {
+    if let Some(reason) = super::conditions::check_platform_constraints(job) {
+        return Some(reason);
+    }
     if let Some(ref skip) = job.skip {
         if let Some(reason) = super::conditions::should_skip(skip, working_dir) {
             return Some(reason);
@@ -1124,7 +1141,7 @@ fn execute_dag_sequential(
             continue;
         }
 
-        renderer.start_job(job_name);
+        renderer.start_job_with_description(job_name, jobs[idx].description.as_deref());
         let start = std::time::Instant::now();
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1145,7 +1162,10 @@ fn execute_dag_sequential(
         };
         status[idx] = job_status;
 
-        if result.success || result.skipped {
+        if result.skipped {
+            let reason = result.skip_reason.as_deref().unwrap_or("skipped");
+            renderer.finish_job_skipped(job_name, reason, exec.output_config.verbose);
+        } else if result.success {
             renderer.finish_job_success(job_name, elapsed);
         } else {
             renderer.finish_job_failure(job_name, elapsed);
@@ -1209,6 +1229,12 @@ fn execute_single_job(
     line_sender: Option<std::sync::mpsc::Sender<String>>,
 ) -> Result<HookResult> {
     let job_name = job.name.as_deref().unwrap_or("(unnamed)");
+
+    // Platform constraints (os/arch)
+    if let Some(reason) = super::conditions::check_platform_constraints(job) {
+        output.debug(&format!("Skipping job '{job_name}': {reason}"));
+        return Ok(HookResult::skipped(reason));
+    }
 
     // Job-level skip/only conditions
     if let Some(ref skip) = job.skip {

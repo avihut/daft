@@ -198,6 +198,10 @@ impl HookProgressRenderer {
     }
 
     pub fn start_job(&mut self, name: &str) {
+        self.start_job_with_description(name, None);
+    }
+
+    pub fn start_job_with_description(&mut self, name: &str, description: Option<&str>) {
         let spinner = self.mp.add(ProgressBar::new_spinner());
         spinner.set_style(self.spinner_style.clone());
 
@@ -208,6 +212,20 @@ impl HookProgressRenderer {
         };
         spinner.set_message(display_name);
         spinner.enable_steady_tick(Duration::from_millis(80));
+
+        // Show description below the spinner if provided
+        if let Some(desc) = description {
+            let desc_bar = self.mp.insert_after(&spinner, ProgressBar::new_spinner());
+            let desc_style =
+                ProgressStyle::with_template(&format!("{}  {{msg}}", self.pipe_str)).unwrap();
+            desc_bar.set_style(desc_style);
+            let desc_msg = if self.use_color {
+                format!("{DARK_GREY}{desc}{}", styles::RESET)
+            } else {
+                desc.to_string()
+            };
+            desc_bar.set_message(desc_msg);
+        }
 
         // Separator and tail bars are created lazily in update_job_output as output arrives.
         self.jobs.insert(
@@ -322,6 +340,34 @@ impl HookProgressRenderer {
 
     pub fn finish_job_failure(&mut self, name: &str, duration: Duration) {
         self.finish_job(name, false, duration);
+    }
+
+    pub fn finish_job_skipped(&mut self, name: &str, reason: &str, verbose: bool) {
+        // Remove job state and clear its bars
+        if let Some(state) = self.jobs.remove(name) {
+            if let Some(ref sep) = state.separator {
+                sep.finish_and_clear();
+            }
+            for pb in &state.tail_lines {
+                pb.finish_and_clear();
+            }
+            state.spinner.finish_and_clear();
+        }
+
+        // Only print skip info when verbose
+        if verbose {
+            let msg = if self.use_color {
+                format!(
+                    "{}  {DARK_GREY}{name} {ITALIC}skipped: {reason}{}",
+                    self.pipe_str,
+                    styles::RESET
+                )
+            } else {
+                format!("{}  {name} skipped: {reason}", self.pipe_str)
+            };
+            self.mp.println(msg).ok();
+        }
+        // Skipped jobs are NOT added to finished_jobs (don't appear in summary)
     }
 
     fn finish_job(&mut self, name: &str, success: bool, duration: Duration) {
@@ -444,9 +490,18 @@ impl PlainHookRenderer {
     }
 
     pub fn start_job(&mut self, name: &str) {
+        self.start_job_with_description(name, None);
+    }
+
+    pub fn start_job_with_description(&mut self, name: &str, description: Option<&str>) {
         let msg = format!("\u{2503}  {name} \u{276f}");
         eprintln!("{msg}");
         self.output_lines.push(msg);
+        if let Some(desc) = description {
+            let desc_msg = format!("\u{2503}    {desc}");
+            eprintln!("{desc_msg}");
+            self.output_lines.push(desc_msg);
+        }
     }
 
     pub fn update_job_output(&mut self, name: &str, line: &str) {
@@ -472,6 +527,12 @@ impl PlainHookRenderer {
 
     pub fn finish_job_failure(&mut self, name: &str, duration: Duration) {
         self.finish_job(name, false, duration);
+    }
+
+    pub fn finish_job_skipped(&mut self, name: &str, reason: &str, verbose: bool) {
+        if verbose {
+            eprintln!("\u{2503}  {name} \u{276f} skipped: {reason}");
+        }
     }
 
     pub fn print_summary(&self, total_duration: Duration) {
@@ -538,6 +599,13 @@ impl HookRenderer {
         }
     }
 
+    pub fn start_job_with_description(&mut self, name: &str, description: Option<&str>) {
+        match self {
+            HookRenderer::Progress(r) => r.start_job_with_description(name, description),
+            HookRenderer::Plain(r) => r.start_job_with_description(name, description),
+        }
+    }
+
     pub fn update_job_output(&mut self, name: &str, line: &str) {
         match self {
             HookRenderer::Progress(r) => r.update_job_output(name, line),
@@ -556,6 +624,13 @@ impl HookRenderer {
         match self {
             HookRenderer::Progress(r) => r.finish_job_failure(name, duration),
             HookRenderer::Plain(r) => r.finish_job_failure(name, duration),
+        }
+    }
+
+    pub fn finish_job_skipped(&mut self, name: &str, reason: &str, verbose: bool) {
+        match self {
+            HookRenderer::Progress(r) => r.finish_job_skipped(name, reason, verbose),
+            HookRenderer::Plain(r) => r.finish_job_skipped(name, reason, verbose),
         }
     }
 
