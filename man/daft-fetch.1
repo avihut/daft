@@ -1,0 +1,65 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH daft-fetch 1  "daft-fetch 1.0.30" 
+.SH NAME
+daft\-fetch \- Update worktree branches from their remote tracking branches
+.SH SYNOPSIS
+\fBdaft\-fetch\fR [\fB\-\-all\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-dry\-run\fR] [\fB\-\-rebase\fR] [\fB\-\-autostash\fR] [\fB\-\-ff\-only\fR] [\fB\-\-no\-ff\-only\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fITARGETS\fR] [\fIPULL_ARGS\fR] 
+.SH DESCRIPTION
+.PP
+Updates worktree branches by pulling from their remote tracking branches.
+.PP
+For each target worktree, the command navigates to that directory and runs
+`git pull` with the configured options. By default, only fast\-forward updates
+are allowed (\-\-ff\-only).
+.PP
+Targets can be specified by worktree directory name or branch name. If no
+targets are specified and \-\-all is not used, the current worktree is updated.
+.PP
+Worktrees with uncommitted changes are skipped unless \-\-force is specified.
+Use \-\-dry\-run to preview what would be done without making changes.
+.PP
+Arguments after \-\- are passed directly to git pull, allowing full control
+over the pull behavior.
+.SH OPTIONS
+.TP
+\fB\-\-all\fR
+Update all worktrees
+.TP
+\fB\-f\fR, \fB\-\-force\fR
+Update even with uncommitted changes
+.TP
+\fB\-\-dry\-run\fR
+Show what would be done
+.TP
+\fB\-\-rebase\fR
+Use git pull \-\-rebase
+.TP
+\fB\-\-autostash\fR
+Use git pull \-\-autostash
+.TP
+\fB\-\-ff\-only\fR
+Only fast\-forward (default)
+.TP
+\fB\-\-no\-ff\-only\fR
+Allow merge commits
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Be verbose; show detailed progress
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress non\-error output
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+[\fITARGETS\fR]
+Target worktree(s) by directory name or branch name
+.TP
+[\fIPULL_ARGS\fR]
+Additional arguments to pass to git pull
+.SH VERSION
+v1.0.30

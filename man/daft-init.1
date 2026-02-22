@@ -1,0 +1,57 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH daft-init 1  "daft-init 1.0.30" 
+.SH NAME
+daft\-init \- Initialize a new repository in the worktree\-based directory structure
+.SH SYNOPSIS
+\fBdaft\-init\fR [\fB\-\-bare\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-initial\-branch\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPOSITORY_NAME\fR> 
+.SH DESCRIPTION
+.PP
+Initializes a new Git repository using the same directory structure as
+git\-worktree\-clone(1). The resulting layout is:
+.PP
+    <name>/.git      (bare repository metadata)
+    <name>/<branch>  (worktree for the initial branch)
+.PP
+This structure is optimized for worktree\-based development, allowing multiple
+branches to be checked out simultaneously as sibling directories.
+.PP
+The initial branch name is determined by, in order of precedence: the \-b
+option, the init.defaultBranch configuration value, or "master" as a fallback.
+.PP
+If the repository contains a .daft/hooks/ directory (created manually after
+init) and is trusted, lifecycle hooks are executed. See git\-daft(1) for hook
+management.
+.SH OPTIONS
+.TP
+\fB\-\-bare\fR
+Create only the bare repository; do not create an initial worktree
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Operate quietly; suppress progress reporting
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Be verbose; show detailed progress
+.TP
+\fB\-b\fR, \fB\-\-initial\-branch\fR \fI<INITIAL_BRANCH>\fR
+Use <name> as the initial branch instead of the configured default
+.TP
+\fB\-r\fR, \fB\-\-remote\fR \fI<REMOTE>\fR
+Organize worktree under this remote folder (enables multi\-remote mode)
+.TP
+\fB\-\-no\-cd\fR
+Do not change directory to the new worktree
+.TP
+\fB\-x\fR, \fB\-\-exec\fR \fI<EXEC>\fR
+Run a command in the worktree after setup completes (repeatable)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+<\fIREPOSITORY_NAME\fR>
+Name for the new repository directory
+.SH VERSION
+v1.0.30

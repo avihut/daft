@@ -26,6 +26,70 @@ const COMMANDS: &[&str] = &[
     "daft-release-notes",
 ];
 
+/// A daft verb command that maps to an existing git-worktree-* command for man page generation
+struct DaftVerbEntry {
+    /// The daft verb man page name, e.g., "daft-clone"
+    daft_name: &'static str,
+    /// The source git-worktree-* command name to derive the Command from
+    source_command: &'static str,
+    /// Optional override for the `about` text (None = use source command's about)
+    about_override: Option<&'static str>,
+}
+
+/// Daft verb commands that need man pages derived from their git-worktree-* equivalents
+const DAFT_VERBS: &[DaftVerbEntry] = &[
+    DaftVerbEntry {
+        daft_name: "daft-clone",
+        source_command: "git-worktree-clone",
+        about_override: None,
+    },
+    DaftVerbEntry {
+        daft_name: "daft-init",
+        source_command: "git-worktree-init",
+        about_override: None,
+    },
+    DaftVerbEntry {
+        daft_name: "daft-go",
+        source_command: "git-worktree-checkout",
+        about_override: Some("Open an existing branch in a worktree"),
+    },
+    DaftVerbEntry {
+        daft_name: "daft-start",
+        source_command: "git-worktree-checkout",
+        about_override: Some("Create a new branch and worktree"),
+    },
+    DaftVerbEntry {
+        daft_name: "daft-carry",
+        source_command: "git-worktree-carry",
+        about_override: None,
+    },
+    DaftVerbEntry {
+        daft_name: "daft-fetch",
+        source_command: "git-worktree-fetch",
+        about_override: None,
+    },
+    DaftVerbEntry {
+        daft_name: "daft-prune",
+        source_command: "git-worktree-prune",
+        about_override: None,
+    },
+    DaftVerbEntry {
+        daft_name: "daft-remove",
+        source_command: "git-worktree-branch-delete",
+        about_override: None,
+    },
+    DaftVerbEntry {
+        daft_name: "daft-adopt",
+        source_command: "git-worktree-flow-adopt",
+        about_override: None,
+    },
+    DaftVerbEntry {
+        daft_name: "daft-eject",
+        source_command: "git-worktree-flow-eject",
+        about_override: None,
+    },
+];
+
 /// A matrix entry defines a configuration variant for integration tests
 struct MatrixEntry {
     name: &'static str,
@@ -214,7 +278,7 @@ fn generate_man_pages(output_dir: &PathBuf, command: Option<&str>) -> Result<()>
         COMMANDS.to_vec()
     };
 
-    for command_name in commands_to_generate {
+    for command_name in &commands_to_generate {
         let cmd = get_command_for_name(command_name)
             .with_context(|| format!("Unknown command: {command_name}"))?;
 
@@ -223,6 +287,35 @@ fn generate_man_pages(output_dir: &PathBuf, command: Option<&str>) -> Result<()>
         man.render(&mut buffer)?;
 
         let filename = format!("{command_name}.1");
+        let file_path = output_dir.join(&filename);
+
+        fs::write(&file_path, &buffer)
+            .with_context(|| format!("Failed to write man page: {}", file_path.display()))?;
+
+        eprintln!("Generated: {}", file_path.display());
+    }
+
+    // Generate man pages for daft verb commands
+    let daft_verbs_to_generate: Vec<&DaftVerbEntry> = if let Some(cmd) = command {
+        DAFT_VERBS.iter().filter(|v| v.daft_name == cmd).collect()
+    } else {
+        DAFT_VERBS.iter().collect()
+    };
+
+    for verb in &daft_verbs_to_generate {
+        let mut cmd = get_command_for_name(verb.source_command)
+            .with_context(|| format!("Unknown source command: {}", verb.source_command))?;
+
+        cmd = cmd.name(verb.daft_name);
+        if let Some(about) = verb.about_override {
+            cmd = cmd.about(about);
+        }
+
+        let man = Man::new(cmd);
+        let mut buffer = Vec::new();
+        man.render(&mut buffer)?;
+
+        let filename = format!("{}.1", verb.daft_name);
         let file_path = output_dir.join(&filename);
 
         fs::write(&file_path, &buffer)
@@ -660,6 +753,23 @@ mod tests {
                 content.contains(".TH"),
                 "Man page for '{}' missing .TH header",
                 command_name
+            );
+        }
+
+        // Verify all daft verb man pages exist
+        for verb in DAFT_VERBS {
+            let man_file = temp_dir.join(format!("{}.1", verb.daft_name));
+            assert!(
+                man_file.exists(),
+                "Man page for daft verb '{}' was not generated",
+                verb.daft_name
+            );
+
+            let content = fs::read_to_string(&man_file).unwrap();
+            assert!(
+                content.contains(".TH"),
+                "Man page for daft verb '{}' missing .TH header",
+                verb.daft_name
             );
         }
 

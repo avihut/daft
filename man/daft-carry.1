@@ -1,0 +1,41 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH daft-carry 1  "daft-carry 1.0.30" 
+.SH NAME
+daft\-carry \- Transfer uncommitted changes to other worktrees
+.SH SYNOPSIS
+\fBdaft\-carry\fR [\fB\-c\fR|\fB\-\-copy\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fITARGETS\fR> 
+.SH DESCRIPTION
+.PP
+Transfers uncommitted changes (staged, unstaged, and untracked files) from
+the current worktree to one or more target worktrees.
+.PP
+When a single target is specified without \-\-copy, changes are moved: they
+are applied to the target worktree and removed from the source. When \-\-copy
+is specified or multiple targets are given, changes are copied: they are
+applied to all targets while remaining in the source worktree.
+.PP
+Targets may be specified by worktree directory name or by branch name. If
+both a worktree and a branch have the same name, the worktree takes
+precedence.
+.PP
+After transferring changes, the working directory is changed to the last
+target worktree (or the only target, if just one was specified).
+.SH OPTIONS
+.TP
+\fB\-c\fR, \fB\-\-copy\fR
+Copy changes instead of moving; changes remain in the source worktree
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Be verbose; show detailed progress
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+<\fITARGETS\fR>
+Target worktree(s) by directory name or branch name
+.SH VERSION
+v1.0.30
