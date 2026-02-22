@@ -11,7 +11,7 @@ use anyhow::Result;
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "git-worktree-branch-delete")]
+#[command(name = "git-worktree-branch")]
 #[command(version = crate::VERSION)]
 #[command(about = "Delete branches and their worktrees")]
 #[command(long_about = r#"
@@ -19,34 +19,45 @@ Deletes one or more local branches along with their associated worktrees and
 remote tracking branches in a single operation. This is the inverse of
 git-worktree-checkout(1) -b.
 
+Use -d for a safe delete that checks whether each branch has been merged.
+Use -D to force-delete branches regardless of merge status. One of -d or -D
+is required.
+
 Arguments can be branch names or worktree paths. When a path is given
 (absolute, relative, or "."), the branch checked out in that worktree is
 resolved automatically. This is convenient when you are inside a worktree
 and want to delete it without remembering the branch name.
 
-Safety checks prevent accidental data loss. The command refuses to delete a
-branch that:
+Safety checks (with -d) prevent accidental data loss. The command refuses to
+delete a branch that:
 
   - has uncommitted changes in its worktree
   - has not been merged (or squash-merged) into the default branch
   - is out of sync with its remote tracking branch
 
-Use -D (--force) to override these safety checks. The command always refuses
-to delete the repository's default branch (e.g. main), even with --force.
+Use -D to override these safety checks. The command always refuses to delete
+the repository's default branch (e.g. main), even with -D.
 
 All targeted branches are validated before any deletions begin. If any branch
-fails validation without --force, the entire command aborts and no branches
-are deleted.
+fails validation without -D, the entire command aborts and no branches are
+deleted.
 
 Pre-remove and post-remove lifecycle hooks are executed for each worktree
 removal if the repository is trusted. See git-daft(1) for hook management.
 "#)]
 pub struct Args {
-    #[arg(required = true, help = "Branches to delete (names or worktree paths)")]
+    #[arg(help = "Branches to delete (names or worktree paths)")]
     branches: Vec<String>,
 
-    #[arg(short = 'D', long, help = "Force deletion even if not fully merged")]
-    force: bool,
+    #[arg(short = 'd', long = "delete", help = "Delete branches (safe mode)")]
+    delete: bool,
+
+    #[arg(
+        short = 'D',
+        long = "force",
+        help = "Force deletion even if not fully merged"
+    )]
+    force_delete: bool,
 
     #[arg(short, long, help = "Operate quietly; suppress progress reporting")]
     quiet: bool,
@@ -55,10 +66,39 @@ pub struct Args {
     verbose: bool,
 }
 
+/// Entry point for `git-worktree-branch`.
 pub fn run() -> Result<()> {
-    eprintln!("warning: 'git worktree-branch-delete' is deprecated, use 'git worktree-branch -d/-D' instead.");
-    let args = Args::parse_from(crate::get_clap_args("git-worktree-branch-delete"));
+    let args = Args::parse_from(crate::get_clap_args("git-worktree-branch"));
+    run_with_args(args)
+}
+
+/// Entry point for `daft remove` — injects `-d` before clap parsing.
+pub fn run_remove() -> Result<()> {
+    let mut raw = crate::get_clap_args("git-worktree-branch");
+    // Insert `-d` right after the command name so clap sees it
+    raw.insert(1, "-d".to_string());
+    let args = Args::parse_from(raw);
+    run_with_args(args)
+}
+
+fn run_with_args(args: Args) -> Result<()> {
     init_logging(args.verbose);
+
+    if !args.delete && !args.force_delete {
+        anyhow::bail!(
+            "either -d (--delete) or -D (--force) is required.\n\n\
+             Usage: git worktree-branch -d <branches...>\n\
+             Usage: git worktree-branch -D <branches...>"
+        );
+    }
+
+    if args.branches.is_empty() {
+        anyhow::bail!(
+            "at least one branch name is required.\n\n\
+             Usage: git worktree-branch -d <branches...>\n\
+             Usage: git worktree-branch -D <branches...>"
+        );
+    }
 
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
@@ -75,7 +115,7 @@ pub fn run() -> Result<()> {
 fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
     let params = branch_delete::BranchDeleteParams {
         branches: args.branches.clone(),
-        force: args.force,
+        force: args.force_delete,
         use_gitoxide: settings.use_gitoxide,
         is_quiet: args.quiet,
         remote_name: settings.remote.clone(),

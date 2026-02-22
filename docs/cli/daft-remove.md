@@ -13,8 +13,8 @@ Delete branches and their worktrees
 daft remove [OPTIONS] <BRANCHES>
 ```
 
-This is equivalent to `git worktree-branch-delete`. All options and arguments
-are the same.
+This is equivalent to `git worktree-branch -d`. All options and arguments
+are the same (safe delete mode).
 
 ## Description
 
@@ -26,4 +26,4 @@ Safety checks prevent accidental data loss. Use -D (--force) to override.
 
 ## See Also
 
-- [git worktree-branch-delete](./git-worktree-branch-delete.md) for full options reference
+- [git worktree-branch](./git-worktree-branch.md) for full options reference

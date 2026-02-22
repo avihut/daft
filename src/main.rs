@@ -41,6 +41,7 @@ fn main() -> Result<()> {
 
         "git-worktree-prune" => commands::prune::run(),
         "git-worktree-carry" => commands::carry::run(),
+        "git-worktree-branch" => commands::worktree_branch::run(),
         "git-worktree-branch-delete" => commands::branch_delete::run(),
         "git-worktree-fetch" => commands::fetch::run(),
         "git-worktree-flow-adopt" => commands::flow_adopt::run(),
@@ -86,7 +87,7 @@ fn main() -> Result<()> {
                     "carry" => commands::carry::run(),
                     "fetch" => commands::fetch::run(),
                     "prune" => commands::prune::run(),
-                    "remove" => commands::branch_delete::run(),
+                    "remove" => commands::worktree_branch::run_remove(),
                     "adopt" => commands::flow_adopt::run(),
                     "eject" => commands::flow_eject::run(),
                     // Worktree commands accessible via `daft worktree-<command>`
@@ -98,6 +99,7 @@ fn main() -> Result<()> {
                     "worktree-carry" => commands::carry::run(),
                     "worktree-fetch" => commands::fetch::run(),
                     "worktree-flow-adopt" => commands::flow_adopt::run(),
+                    "worktree-branch" => commands::worktree_branch::run(),
                     "worktree-branch-delete" => commands::branch_delete::run(),
                     "worktree-flow-eject" => commands::flow_eject::run(),
                     _ => daft::suggest::handle_unknown_subcommand(

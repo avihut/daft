@@ -126,7 +126,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         alias: "gwtbd",
-        command: "git-worktree-branch-delete",
+        command: "git-worktree-branch",
         style: ShortcutStyle::Git,
     },
     // Shell style (2 shortcuts)
@@ -193,7 +193,7 @@ mod tests {
         assert_eq!(resolve("gwtprune"), "git-worktree-prune");
         assert_eq!(resolve("gwtcarry"), "git-worktree-carry");
         assert_eq!(resolve("gwtfetch"), "git-worktree-fetch");
-        assert_eq!(resolve("gwtbd"), "git-worktree-branch-delete");
+        assert_eq!(resolve("gwtbd"), "git-worktree-branch");
         assert_eq!(resolve("gwtinit"), "git-worktree-init");
     }
 
@@ -237,6 +237,7 @@ mod tests {
             "git-worktree-checkout",
             "git-worktree-prune",
             "git-worktree-carry",
+            "git-worktree-branch",
             "git-worktree-branch-delete",
             "git-worktree-fetch",
         ];

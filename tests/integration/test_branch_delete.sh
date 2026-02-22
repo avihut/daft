@@ -553,6 +553,115 @@ test_branch_delete_by_dot() {
     return 0
 }
 
+# --- Tests for new git-worktree-branch -d/-D command ---
+
+# Test basic branch delete with -d flag
+test_worktree_branch_d_basic() {
+    local remote_repo=$(create_test_remote "test-repo-wb-d-basic" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-wb-d-basic"
+    local project_root=$(pwd)
+
+    git-worktree-checkout -b feature/wb-test || return 1
+    assert_directory_exists "feature/wb-test" || return 1
+
+    cd "feature/wb-test"
+    echo "feature work" > feature.txt
+    git add feature.txt
+    git commit -m "Add feature" >/dev/null 2>&1
+    git push origin feature/wb-test >/dev/null 2>&1
+    cd "$project_root"
+
+    cd "main"
+    git merge feature/wb-test >/dev/null 2>&1
+    git push origin main >/dev/null 2>&1
+    cd "$project_root"
+
+    # Delete using new syntax: git worktree-branch -d
+    git-worktree-branch -d feature/wb-test || return 1
+
+    if [[ -d "feature/wb-test" ]]; then
+        log_error "Worktree should have been removed"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test force delete with -D flag
+test_worktree_branch_D_force() {
+    local remote_repo=$(create_test_remote "test-repo-wb-D-force" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-wb-D-force"
+    local project_root=$(pwd)
+
+    git-worktree-checkout -b feature/wb-force || return 1
+
+    cd "feature/wb-force"
+    echo "unmerged work" > work.txt
+    git add work.txt
+    git commit -m "Some work" >/dev/null 2>&1
+    git push origin feature/wb-force >/dev/null 2>&1
+    cd "$project_root"
+
+    # Should succeed with -D
+    git-worktree-branch -D feature/wb-force || return 1
+
+    if [[ -d "feature/wb-force" ]]; then
+        log_error "Worktree should have been removed with -D"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test that git worktree-branch without -d/-D fails
+test_worktree_branch_no_flag_fails() {
+    local remote_repo=$(create_test_remote "test-repo-wb-noflag" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-wb-noflag"
+
+    git-worktree-checkout -b feature/wb-noflag || return 1
+
+    # Should fail without -d or -D
+    if git-worktree-branch feature/wb-noflag 2>/dev/null; then
+        log_error "Should have failed without -d or -D"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test deprecated command shows warning
+test_branch_delete_deprecated_warning() {
+    local remote_repo=$(create_test_remote "test-repo-bd-deprec" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-bd-deprec"
+    local project_root=$(pwd)
+
+    git-worktree-checkout -b feature/deprec-test || return 1
+
+    cd "main"
+    git merge feature/deprec-test >/dev/null 2>&1
+    git push origin main >/dev/null 2>&1
+    cd "$project_root"
+
+    # Run deprecated command and capture stderr
+    local output
+    output=$(git-worktree-branch-delete feature/deprec-test 2>&1) || true
+
+    if ! echo "$output" | grep -q "deprecated"; then
+        log_error "Deprecated command should show deprecation warning"
+        return 1
+    fi
+
+    return 0
+}
+
 run_branch_delete_tests() {
     log "Running git-worktree-branch-delete integration tests..."
 
@@ -570,6 +679,13 @@ run_branch_delete_tests() {
     run_test "branch_delete_by_relative_path" "test_branch_delete_by_relative_path"
     run_test "branch_delete_by_absolute_path" "test_branch_delete_by_absolute_path"
     run_test "branch_delete_by_dot" "test_branch_delete_by_dot"
+
+    log "Running git-worktree-branch -d/-D integration tests..."
+
+    run_test "worktree_branch_d_basic" "test_worktree_branch_d_basic"
+    run_test "worktree_branch_D_force" "test_worktree_branch_D_force"
+    run_test "worktree_branch_no_flag_fails" "test_worktree_branch_no_flag_fails"
+    run_test "branch_delete_deprecated_warning" "test_branch_delete_deprecated_warning"
 }
 
 # Main execution

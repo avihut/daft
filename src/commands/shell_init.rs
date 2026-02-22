@@ -141,6 +141,7 @@ git-worktree-init() { __daft_wrapper git-worktree-init "$@"; }
 git-worktree-checkout() { __daft_wrapper git-worktree-checkout "$@"; }
 git-worktree-carry() { __daft_wrapper git-worktree-carry "$@"; }
 git-worktree-prune() { __daft_wrapper git-worktree-prune "$@"; }
+git-worktree-branch() { __daft_wrapper git-worktree-branch "$@"; }
 git-worktree-branch-delete() { __daft_wrapper git-worktree-branch-delete "$@"; }
 git-worktree-flow-adopt() { __daft_wrapper git-worktree-flow-adopt "$@"; }
 git-worktree-flow-eject() { __daft_wrapper git-worktree-flow-eject "$@"; }
@@ -158,6 +159,8 @@ git() {
             shift; __daft_wrapper git-worktree-carry "$@" ;;
         worktree-prune)
             shift; __daft_wrapper git-worktree-prune "$@" ;;
+        worktree-branch)
+            shift; __daft_wrapper git-worktree-branch "$@" ;;
         worktree-branch-delete)
             shift; __daft_wrapper git-worktree-branch-delete "$@" ;;
         worktree-flow-adopt)
@@ -184,7 +187,11 @@ daft() {
             shift; __daft_wrapper git-worktree-carry "$@" ;;
         worktree-prune|prune)
             shift; __daft_wrapper git-worktree-prune "$@" ;;
-        worktree-branch-delete|remove)
+        worktree-branch)
+            shift; __daft_wrapper git-worktree-branch "$@" ;;
+        remove)
+            shift; __daft_wrapper git-worktree-branch -d "$@" ;;
+        worktree-branch-delete)
             shift; __daft_wrapper git-worktree-branch-delete "$@" ;;
         worktree-fetch|fetch)
             shift; __daft_wrapper git-worktree-fetch "$@" ;;
@@ -204,7 +211,7 @@ gwtinit() { __daft_wrapper git-worktree-init "$@"; }
 gwtco() { __daft_wrapper git-worktree-checkout "$@"; }
 gwtcb() { __daft_wrapper git-worktree-checkout -b "$@"; }
 gwtprune() { __daft_wrapper git-worktree-prune "$@"; }
-gwtbd() { __daft_wrapper git-worktree-branch-delete "$@"; }
+gwtbd() { __daft_wrapper git-worktree-branch -d "$@"; }
 gwtcarry() { __daft_wrapper git-worktree-carry "$@"; }
 gwtfetch() { __daft_wrapper git-worktree-fetch "$@"; }
 
@@ -337,6 +344,10 @@ function git-worktree-prune
     __daft_wrapper git-worktree-prune $argv
 end
 
+function git-worktree-branch
+    __daft_wrapper git-worktree-branch $argv
+end
+
 function git-worktree-branch-delete
     __daft_wrapper git-worktree-branch-delete $argv
 end
@@ -362,6 +373,8 @@ function git --wraps git
             __daft_wrapper git-worktree-carry $argv[2..-1]
         case worktree-prune
             __daft_wrapper git-worktree-prune $argv[2..-1]
+        case worktree-branch
+            __daft_wrapper git-worktree-branch $argv[2..-1]
         case worktree-branch-delete
             __daft_wrapper git-worktree-branch-delete $argv[2..-1]
         case worktree-flow-adopt
@@ -388,7 +401,11 @@ function daft --wraps daft
             __daft_wrapper git-worktree-carry $argv[2..-1]
         case worktree-prune prune
             __daft_wrapper git-worktree-prune $argv[2..-1]
-        case worktree-branch-delete remove
+        case worktree-branch
+            __daft_wrapper git-worktree-branch $argv[2..-1]
+        case remove
+            __daft_wrapper git-worktree-branch -d $argv[2..-1]
+        case worktree-branch-delete
             __daft_wrapper git-worktree-branch-delete $argv[2..-1]
         case worktree-fetch fetch
             __daft_wrapper git-worktree-fetch $argv[2..-1]
@@ -424,7 +441,7 @@ function gwtprune
 end
 
 function gwtbd
-    __daft_wrapper git-worktree-branch-delete $argv
+    __daft_wrapper git-worktree-branch -d $argv
 end
 
 function gwtcarry
