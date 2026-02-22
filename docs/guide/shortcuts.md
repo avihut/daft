@@ -17,16 +17,16 @@ Three styles are available. Enable the one that fits your preference.
 
 Prefix: `gwt` (Git Worktree)
 
-| Shortcut   | Full Command                 |
-| ---------- | ---------------------------- |
-| `gwtclone` | `git-worktree-clone`         |
-| `gwtinit`  | `git-worktree-init`          |
-| `gwtco`    | `git-worktree-checkout`      |
-| `gwtcb`    | `git-worktree-checkout -b`   |
-| `gwtbd`    | `git-worktree-branch-delete` |
-| `gwtprune` | `git-worktree-prune`         |
-| `gwtcarry` | `git-worktree-carry`         |
-| `gwtfetch` | `git-worktree-fetch`         |
+| Shortcut   | Full Command               |
+| ---------- | -------------------------- |
+| `gwtclone` | `git-worktree-clone`       |
+| `gwtinit`  | `git-worktree-init`        |
+| `gwtco`    | `git-worktree-checkout`    |
+| `gwtcb`    | `git-worktree-checkout -b` |
+| `gwtbd`    | `git-worktree-branch -d`   |
+| `gwtprune` | `git-worktree-prune`       |
+| `gwtcarry` | `git-worktree-carry`       |
+| `gwtfetch` | `git-worktree-fetch`       |
 
 ### Shell Style
 

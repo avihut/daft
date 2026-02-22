@@ -71,5 +71,5 @@ git worktree-checkout [OPTIONS] <BRANCH_NAME> [BASE_BRANCH_NAME]
 ## See Also
 
 - [git-worktree-carry](./git-worktree-carry.md)
-- [git-worktree-branch-delete](./git-worktree-branch-delete.md)
+- [git-worktree-branch](./git-worktree-branch.md)
 

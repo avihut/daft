@@ -23,6 +23,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "setup",
     "shell-init",
     "start",
+    "worktree-branch",
     "worktree-branch-delete",
     "worktree-carry",
     "worktree-checkout",

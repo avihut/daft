@@ -77,18 +77,18 @@ via `daft setup shortcuts`.
 
 daft provides short verb aliases for common commands:
 
-| Verb Alias    | Equivalent Command            |
-| ------------- | ----------------------------- |
-| `daft go`     | `daft worktree-checkout`      |
-| `daft start`  | `daft worktree-checkout -b`   |
-| `daft clone`  | `daft worktree-clone`         |
-| `daft init`   | `daft worktree-init`          |
-| `daft carry`  | `daft worktree-carry`         |
-| `daft fetch`  | `daft worktree-fetch`         |
-| `daft prune`  | `daft worktree-prune`         |
-| `daft remove` | `daft worktree-branch-delete` |
-| `daft adopt`  | `daft worktree-flow-adopt`    |
-| `daft eject`  | `daft worktree-flow-eject`    |
+| Verb Alias    | Equivalent Command          |
+| ------------- | --------------------------- |
+| `daft go`     | `daft worktree-checkout`    |
+| `daft start`  | `daft worktree-checkout -b` |
+| `daft clone`  | `daft worktree-clone`       |
+| `daft init`   | `daft worktree-init`        |
+| `daft carry`  | `daft worktree-carry`       |
+| `daft fetch`  | `daft worktree-fetch`       |
+| `daft prune`  | `daft worktree-prune`       |
+| `daft remove` | `daft worktree-branch -d`   |
+| `daft adopt`  | `daft worktree-flow-adopt`  |
+| `daft eject`  | `daft worktree-flow-eject`  |
 
 **Agent execution rule**: When running daft commands, always use the direct
 binary form (`daft <subcommand>`) or verb aliases. The git subcommand form
@@ -115,8 +115,8 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 | `daft worktree-init <name>`                     | Initialize a new local repository in worktree layout                             |
 | `daft worktree-checkout <branch>`               | Create a worktree for an existing local or remote branch                         |
 | `daft worktree-checkout -b <new-branch> [base]` | Create a new branch and worktree from current or specified base                  |
-| `daft worktree-branch-delete <branch>`          | Fully delete a branch: its worktree, local branch, and remote tracking branch    |
-| `daft worktree-branch-delete -D <branch>`       | Force-delete a branch bypassing safety checks (except default branch protection) |
+| `daft worktree-branch -d <branch>`              | Safely delete a branch: its worktree, local branch, and remote tracking branch   |
+| `daft worktree-branch -D <branch>`              | Force-delete a branch bypassing safety checks (except default branch protection) |
 | `daft worktree-prune`                           | Remove worktrees whose remote branches have been deleted                         |
 | `daft worktree-carry <targets>`                 | Transfer uncommitted changes to one or more other worktrees                      |
 | `daft worktree-fetch [targets]`                 | Pull remote updates into worktree branches                                       |
@@ -527,17 +527,17 @@ When suggesting `daft.yml`, also remind the user to trust the repo:
 
 When working in a daft-managed repository, apply these translations:
 
-| User intent           | Correct daft approach                                                                                |
-| --------------------- | ---------------------------------------------------------------------------------------------------- |
-| "Create a branch"     | `daft worktree-checkout -b <name>` -- creates branch + worktree + pushes                             |
-| "Branch from main"    | `daft worktree-checkout -b <name> main` -- branches from the specified base                          |
-| "Switch to branch X"  | Navigate to the worktree directory: `cd ../X/`                                                       |
-| "Check out a PR"      | `daft worktree-checkout <branch>` -- creates worktree for existing branch                            |
-| "Delete a branch"     | `daft worktree-branch-delete <branch>` -- removes worktree, local branch, and remote tracking branch |
-| "Clean up branches"   | `daft worktree-prune` -- removes worktrees for deleted remote branches                               |
-| "Wrong branch"        | `daft worktree-carry <correct-branch>` -- moves uncommitted changes                                  |
-| "Update from remote"  | `daft worktree-fetch` -- pulls updates into current or specified worktrees                           |
-| "Adopt existing repo" | `daft worktree-flow-adopt` -- converts traditional repo to daft layout                               |
+| User intent           | Correct daft approach                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------ |
+| "Create a branch"     | `daft worktree-checkout -b <name>` -- creates branch + worktree + pushes                         |
+| "Branch from main"    | `daft worktree-checkout -b <name> main` -- branches from the specified base                      |
+| "Switch to branch X"  | Navigate to the worktree directory: `cd ../X/`                                                   |
+| "Check out a PR"      | `daft worktree-checkout <branch>` -- creates worktree for existing branch                        |
+| "Delete a branch"     | `daft worktree-branch -d <branch>` -- removes worktree, local branch, and remote tracking branch |
+| "Clean up branches"   | `daft worktree-prune` -- removes worktrees for deleted remote branches                           |
+| "Wrong branch"        | `daft worktree-carry <correct-branch>` -- moves uncommitted changes                              |
+| "Update from remote"  | `daft worktree-fetch` -- pulls updates into current or specified worktrees                       |
+| "Adopt existing repo" | `daft worktree-flow-adopt` -- converts traditional repo to daft layout                           |
 
 ### Per-worktree Isolation
 

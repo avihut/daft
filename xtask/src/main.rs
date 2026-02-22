@@ -16,6 +16,7 @@ const COMMANDS: &[&str] = &[
     "git-worktree-clone",
     "git-worktree-init",
     "git-worktree-checkout",
+    "git-worktree-branch",
     "git-worktree-branch-delete",
     "git-worktree-prune",
     "git-worktree-carry",
@@ -75,7 +76,7 @@ const DAFT_VERBS: &[DaftVerbEntry] = &[
     },
     DaftVerbEntry {
         daft_name: "daft-remove",
-        source_command: "git-worktree-branch-delete",
+        source_command: "git-worktree-branch",
         about_override: None,
     },
     DaftVerbEntry {
@@ -115,6 +116,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-worktree-clone" => Some(daft::commands::clone::Args::command()),
         "git-worktree-init" => Some(daft::commands::init::Args::command()),
         "git-worktree-checkout" => Some(daft::commands::checkout::Args::command()),
+        "git-worktree-branch" => Some(daft::commands::worktree_branch::Args::command()),
         "git-worktree-branch-delete" => Some(daft::commands::branch_delete::Args::command()),
         "git-worktree-prune" => Some(daft::commands::prune::Args::command()),
         "git-worktree-carry" => Some(daft::commands::carry::Args::command()),
@@ -148,8 +150,11 @@ fn daft_verb_tip(command_name: &str) -> Option<&'static str> {
         "git-worktree-prune" => Some(
             "::: tip\nThis command is also available as `daft prune`. See [daft prune](./daft-prune.md).\n:::\n",
         ),
+        "git-worktree-branch" => Some(
+            "::: tip\nThis command is also available as `daft remove` (safe delete with `-d`).\nSee [daft remove](./daft-remove.md).\n:::\n",
+        ),
         "git-worktree-branch-delete" => Some(
-            "::: tip\nThis command is also available as `daft remove`. See [daft remove](./daft-remove.md).\n:::\n",
+            "::: warning\nThis command is deprecated. Use `git worktree-branch -d/-D` instead.\nSee [git worktree-branch](./git-worktree-branch.md).\n:::\n",
         ),
         "git-worktree-flow-adopt" => Some(
             "::: tip\nThis command is also available as `daft adopt`. See [daft adopt](./daft-adopt.md).\n:::\n",
@@ -181,13 +186,18 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
             "git-worktree-flow-eject",
         ],
         // Branching cluster
-        "git-worktree-checkout" => vec!["git-worktree-carry", "git-worktree-branch-delete"],
+        "git-worktree-checkout" => vec!["git-worktree-carry", "git-worktree-branch"],
         // Maintenance cluster
-        "git-worktree-branch-delete" => vec!["git-worktree-prune", "git-worktree-checkout"],
+        "git-worktree-branch" => vec!["git-worktree-prune", "git-worktree-checkout"],
+        "git-worktree-branch-delete" => vec![
+            "git-worktree-branch",
+            "git-worktree-prune",
+            "git-worktree-checkout",
+        ],
         "git-worktree-prune" => vec![
             "git-worktree-fetch",
             "git-worktree-flow-eject",
-            "git-worktree-branch-delete",
+            "git-worktree-branch",
         ],
         "git-worktree-fetch" => vec!["git-worktree-prune", "git-worktree-carry"],
         "git-worktree-carry" => vec!["git-worktree-checkout", "git-worktree-fetch"],

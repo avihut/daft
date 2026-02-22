@@ -76,6 +76,9 @@ fn complete(command: &str, position: usize, word: &str, verbose: bool) -> Result
         // git-worktree-fetch: complete existing branch/worktree names
         ("git-worktree-fetch", _) => complete_existing_branches(word, verbose),
 
+        // git-worktree-branch: complete existing branch names for deletion
+        ("git-worktree-branch", _) => complete_existing_branches(word, verbose),
+
         // git-worktree-prune: no arguments
         ("git-worktree-prune", _) => Ok(vec![]),
 

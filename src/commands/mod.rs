@@ -22,3 +22,4 @@ pub mod release_notes;
 pub mod setup;
 pub mod shell_init;
 pub mod shortcuts;
+pub mod worktree_branch;

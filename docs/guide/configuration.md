@@ -145,8 +145,8 @@ This affects three commands:
 
 - **`daft start` / `git worktree-checkout -b`** -- pushes the new branch to set
   upstream tracking
-- **`daft remove` / `git worktree-branch-delete`** -- pushes `--delete` to
-  remove the remote branch
+- **`daft remove` / `git worktree-branch -d`** -- pushes `--delete` to remove
+  the remote branch
 - **`daft branch move --push`** -- pushes an existing branch to a new remote
 
 If a push fails (due to network issues, auth errors, or remote rejection rules),
