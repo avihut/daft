@@ -63,6 +63,40 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
     }
 }
 
+/// Map git-worktree-* commands to their daft verb equivalents for tip boxes in CLI docs
+fn daft_verb_tip(command_name: &str) -> Option<&'static str> {
+    match command_name {
+        "git-worktree-clone" => Some(
+            "::: tip\nThis command is also available as `daft clone`. See [daft clone](./daft-clone.md).\n:::\n",
+        ),
+        "git-worktree-init" => Some(
+            "::: tip\nThis command is also available as `daft init`. See [daft init](./daft-init.md).\n:::\n",
+        ),
+        "git-worktree-checkout" => Some(
+            "::: tip\nThis command is also available as `daft go` (existing branch) or `daft start`\n(new branch with `-b`). See [daft go](./daft-go.md) and\n[daft start](./daft-start.md).\n:::\n",
+        ),
+        "git-worktree-carry" => Some(
+            "::: tip\nThis command is also available as `daft carry`. See [daft carry](./daft-carry.md).\n:::\n",
+        ),
+        "git-worktree-fetch" => Some(
+            "::: tip\nThis command is also available as `daft fetch`. See [daft fetch](./daft-fetch.md).\n:::\n",
+        ),
+        "git-worktree-prune" => Some(
+            "::: tip\nThis command is also available as `daft prune`. See [daft prune](./daft-prune.md).\n:::\n",
+        ),
+        "git-worktree-branch-delete" => Some(
+            "::: tip\nThis command is also available as `daft remove`. See [daft remove](./daft-remove.md).\n:::\n",
+        ),
+        "git-worktree-flow-adopt" => Some(
+            "::: tip\nThis command is also available as `daft adopt`. See [daft adopt](./daft-adopt.md).\n:::\n",
+        ),
+        "git-worktree-flow-eject" => Some(
+            "::: tip\nThis command is also available as `daft eject`. See [daft eject](./daft-eject.md).\n:::\n",
+        ),
+        _ => None,
+    }
+}
+
 /// Command clusters for "See Also" links in CLI docs
 fn related_commands(command_name: &str) -> Vec<&'static str> {
     match command_name {
@@ -265,6 +299,12 @@ fn render_command_markdown(command_name: &str, cmd: &clap::Command) -> String {
     // Title
     md.push_str(&format!("# {display_name}\n\n"));
     md.push_str(&format!("{about}\n\n"));
+
+    // Daft verb tip box (for git-worktree-* commands)
+    if let Some(tip) = daft_verb_tip(command_name) {
+        md.push_str(tip);
+        md.push('\n');
+    }
 
     // Description
     let description = long_about.trim();
