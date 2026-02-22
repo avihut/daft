@@ -50,6 +50,10 @@ pub(super) fn execute_sequential(
         }
 
         if result.skipped {
+            if result.platform_skip {
+                // Platform skip — completely silent, no output
+                continue;
+            }
             let reason = result.skip_reason.as_deref().unwrap_or("skipped");
             renderer.finish_job_skipped(job_name, reason, elapsed, result.skip_ran_command);
             continue;

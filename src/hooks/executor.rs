@@ -34,6 +34,9 @@ pub struct HookResult {
     pub skip_reason: Option<String>,
     /// Whether the skip evaluation involved running a command check.
     pub skip_ran_command: bool,
+    /// Whether the skip was due to a platform mismatch (OS-keyed run with no matching variant).
+    /// Platform skips are completely silent — no output, not even a skip message.
+    pub platform_skip: bool,
 }
 
 impl HookResult {
@@ -47,6 +50,7 @@ impl HookResult {
             skipped: false,
             skip_reason: None,
             skip_ran_command: false,
+            platform_skip: false,
         }
     }
 
@@ -60,6 +64,7 @@ impl HookResult {
             skipped: true,
             skip_reason: Some(reason.into()),
             skip_ran_command: false,
+            platform_skip: false,
         }
     }
 
@@ -73,6 +78,24 @@ impl HookResult {
             skipped: true,
             skip_reason: Some(reason.into()),
             skip_ran_command: true,
+            platform_skip: false,
+        }
+    }
+
+    /// Create a result for a platform skip (OS-keyed run with no matching variant).
+    ///
+    /// Platform skips are completely silent — no output, not even a skip message.
+    /// They still count as "satisfied" for dependency purposes.
+    pub fn platform_skipped() -> Self {
+        Self {
+            success: true,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            skipped: true,
+            skip_reason: Some("platform skip".to_string()),
+            skip_ran_command: false,
+            platform_skip: true,
         }
     }
 
@@ -86,6 +109,7 @@ impl HookResult {
             skipped: false,
             skip_reason: None,
             skip_ran_command: false,
+            platform_skip: false,
         }
     }
 }
@@ -516,6 +540,7 @@ impl HookExecutor {
                 skipped: false,
                 skip_reason: None,
                 skip_ran_command: false,
+                platform_skip: false,
             })
         } else {
             Ok(HookResult::failed(

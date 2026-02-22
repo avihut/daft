@@ -97,6 +97,7 @@ pub(crate) fn run_shell_command_with_callback(
             skipped: false,
             skip_reason: None,
             skip_ran_command: false,
+            platform_skip: false,
         })
     } else {
         Ok(HookResult::failed(
@@ -166,6 +167,7 @@ pub(crate) fn run_interactive_command(
             skipped: false,
             skip_reason: None,
             skip_ran_command: false,
+            platform_skip: false,
         })
     } else {
         Ok(HookResult::failed(exit_code, String::new(), String::new()))

@@ -1,5 +1,5 @@
 use super::command::run_shell_command_with_callback;
-use super::{execute_single_job, resolve_command, ExecContext, ParallelJobData};
+use super::{execute_single_job, is_platform_skip, resolve_command, ExecContext, ParallelJobData};
 use crate::hooks::executor::HookResult;
 use crate::hooks::yaml_config::JobDef;
 use crate::output::hook_progress::HookRenderer;
@@ -23,6 +23,10 @@ pub(super) fn execute_parallel(
     // Collect job data for threads
     let mut job_data: Vec<ParallelJobData> = Vec::new();
     for job in &parallel {
+        // Platform skip — silently exclude jobs with no OS variant
+        if is_platform_skip(job) {
+            continue;
+        }
         let name = job.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
 
         let cmd = resolve_command(job, exec.hook_ctx, Some(&name), exec.source_dir);

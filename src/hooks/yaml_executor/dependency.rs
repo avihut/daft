@@ -1,7 +1,7 @@
 use super::command::run_shell_command_with_callback;
 use super::{
-    check_skip_conditions, execute_jobs, execute_single_job, resolve_command, ExecContext,
-    ExecutionMode, ParallelJobData,
+    check_skip_conditions, execute_jobs, execute_single_job, is_platform_skip, resolve_command,
+    ExecContext, ExecutionMode, ParallelJobData,
 };
 use crate::hooks::executor::HookResult;
 use crate::hooks::yaml_config::JobDef;
@@ -198,6 +198,37 @@ fn execute_dag_parallel(
                     // Execute the job outside the lock
                     let job = &jobs[job_idx];
                     let name = job.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
+
+                    // Platform skip — completely silent, no renderer interaction
+                    if is_platform_skip(job) {
+                        let result: std::result::Result<HookResult, String> =
+                            Ok(HookResult::platform_skipped());
+                        results_collector
+                            .lock()
+                            .unwrap()
+                            .push((job_idx, name, result));
+
+                        // Update DAG state: mark as skipped, unlock dependents
+                        {
+                            let mut s = state.lock().unwrap();
+                            s.status[job_idx] = JobStatus::Skipped;
+                            s.active -= 1;
+                            s.done += 1;
+                            for &dep_idx in &dependents[job_idx] {
+                                if s.status[dep_idx] == JobStatus::Pending {
+                                    s.in_degree[dep_idx] -= 1;
+                                    if s.in_degree[dep_idx] == 0 {
+                                        s.ready.push(dep_idx);
+                                        s.ready.sort_by_key(|&i| {
+                                            std::cmp::Reverse(jobs[i].priority.unwrap_or(0))
+                                        });
+                                    }
+                                }
+                            }
+                            cvar.notify_all();
+                        }
+                        continue;
+                    }
 
                     renderer
                         .lock()
@@ -531,6 +562,23 @@ fn execute_dag_sequential(
 
     while let Some(std::cmp::Reverse((_, idx))) = heap.pop() {
         let job_name = jobs[idx].name.as_deref().unwrap_or("(unnamed)");
+
+        // Platform skip — completely silent, unlock dependents
+        if is_platform_skip(&jobs[idx]) {
+            status[idx] = JobStatus::Skipped;
+            for &dep_idx in &dependents[idx] {
+                if status[dep_idx] == JobStatus::Pending {
+                    in_degree[dep_idx] -= 1;
+                    if in_degree[dep_idx] == 0 {
+                        heap.push(std::cmp::Reverse((
+                            jobs[dep_idx].priority.unwrap_or(0),
+                            dep_idx,
+                        )));
+                    }
+                }
+            }
+            continue;
+        }
 
         if status[idx] == JobStatus::DepFailed {
             let failed_dep = jobs[idx]
