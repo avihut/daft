@@ -287,7 +287,7 @@ impl CommandDef {
     }
 }
 
-/// Skip condition: bool, string, or list of skip rules.
+/// Skip condition: bool, string, platform map, or list of skip rules.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SkipCondition {
@@ -295,6 +295,8 @@ pub enum SkipCondition {
     Bool(bool),
     /// Skip if this env var is set and truthy.
     EnvVar(String),
+    /// OS-keyed map of skip rules.
+    Platform(HashMap<TargetOs, Vec<SkipRule>>),
     /// List of skip rules (any match → skip).
     Rules(Vec<SkipRule>),
 }
@@ -331,6 +333,8 @@ pub enum OnlyCondition {
     Bool(bool),
     /// Only run if this env var is set and truthy.
     EnvVar(String),
+    /// OS-keyed map of only rules.
+    Platform(HashMap<TargetOs, Vec<OnlyRule>>),
     /// List of only rules (all must match → run).
     Rules(Vec<OnlyRule>),
 }
@@ -829,6 +833,62 @@ hooks:
         let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
         match &job.run {
             Some(RunCommand::Platform(map)) => {
+                assert_eq!(map.len(), 1);
+                assert!(map.contains_key(&TargetOs::Macos));
+            }
+            other => panic!("Expected Platform, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_skip_platform_map() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - name: install-mise
+        run:
+          macos: brew install mise
+          linux: curl https://mise.run | sh
+        skip:
+          macos:
+            - run: "brew list mise"
+              desc: mise is already installed via brew
+          linux:
+            - run: "command -v mise"
+              desc: mise is already installed
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
+        match &job.skip {
+            Some(SkipCondition::Platform(map)) => {
+                assert_eq!(map.len(), 2);
+                assert!(map.contains_key(&TargetOs::Macos));
+                assert!(map.contains_key(&TargetOs::Linux));
+            }
+            other => panic!("Expected Platform, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_only_platform_map() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - name: setup
+        run:
+          macos: echo mac
+          linux: echo linux
+        only:
+          macos:
+            - run: "test -f Brewfile"
+              desc: Only when Brewfile exists
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
+        match &job.only {
+            Some(OnlyCondition::Platform(map)) => {
                 assert_eq!(map.len(), 1);
                 assert!(map.contains_key(&TargetOs::Macos));
             }
