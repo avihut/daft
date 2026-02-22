@@ -59,6 +59,7 @@ jobs:
 
           # Verify all expected man pages were generated
           for page in git-worktree-clone git-worktree-init git-worktree-checkout \
+                      git-worktree-branch git-worktree-branch-delete \
                       git-worktree-prune git-worktree-carry \
                       git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
                       daft-release-notes; do
@@ -99,6 +100,7 @@ jobs:
 
           # Verify all expected CLI docs were generated
           for page in git-worktree-clone git-worktree-init git-worktree-checkout \
+                      git-worktree-branch git-worktree-branch-delete \
                       git-worktree-prune git-worktree-carry \
                       git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
                       daft-doctor daft-release-notes; do
@@ -236,6 +238,7 @@ jobs:
           # Create symlinks for the multicall binary
           cd target/release
           for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
+                     git-worktree-branch git-worktree-branch-delete \
                      git-worktree-prune git-worktree-carry \
                      git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
             ln -sf daft "$cmd"
@@ -314,7 +317,8 @@ jobs:
 
           # Create symlinks for all commands (matching Homebrew formula)
           for cmd in git-worktree-clone git-worktree-checkout \
-                     git-worktree-init git-worktree-prune git-worktree-carry git-worktree-fetch \
+                     git-worktree-init git-worktree-branch git-worktree-branch-delete \
+                     git-worktree-prune git-worktree-carry git-worktree-fetch \
                      git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
             ln -sf daft "$PREFIX/bin/$cmd"
           done
@@ -336,7 +340,8 @@ jobs:
 
           echo "Verifying all symlinked commands..."
           for cmd in git-worktree-clone git-worktree-checkout \
-                     git-worktree-init git-worktree-prune git-worktree-carry git-worktree-fetch \
+                     git-worktree-init git-worktree-branch git-worktree-branch-delete \
+                     git-worktree-prune git-worktree-carry git-worktree-fetch \
                      git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
             echo "  Testing $cmd..."
             "$PREFIX/bin/$cmd" --help > /dev/null || { echo "FAILED: $cmd --help"; exit 1; }
@@ -351,7 +356,8 @@ jobs:
           echo "Verifying man pages exist and are valid..."
           # Only git-worktree-* commands have man pages (not daft or git-daft)
           for page in git-worktree-clone git-worktree-checkout \
-                      git-worktree-init git-worktree-prune git-worktree-carry git-worktree-fetch \
+                      git-worktree-init git-worktree-branch git-worktree-branch-delete \
+                      git-worktree-prune git-worktree-carry git-worktree-fetch \
                       git-worktree-flow-adopt git-worktree-flow-eject; do
             MANFILE="$PREFIX/share/man/man1/${page}.1"
             if [ ! -f "$MANFILE" ]; then
