@@ -7,6 +7,10 @@ description: Initialize a new repository in the worktree-based directory structu
 
 Initialize a new repository in the worktree-based directory structure
 
+::: tip
+This command is also available as `daft init`. See [daft init](./daft-init.md).
+:::
+
 ## Description
 
 Initializes a new Git repository using the same directory structure as

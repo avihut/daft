@@ -97,20 +97,20 @@ npm run lint
 
 ```bash
 # Creates branch + worktree, pushes to remote, sets upstream
-git worktree-checkout -b feature/user-auth
-
-# Or using the daft verb alias
 daft start feature/user-auth
+
+# Or using the git-native command
+git worktree-checkout -b feature/user-auth
 ```
 
 ### Checking Out a PR for Review
 
 ```bash
 # Creates worktree for existing remote branch
-git worktree-checkout feature/teammate-work
-
-# Or using the daft verb alias
 daft go feature/teammate-work
+
+# Or using the git-native command
+git worktree-checkout feature/teammate-work
 ```
 
 ### Branching from Default
@@ -118,11 +118,11 @@ daft go feature/teammate-work
 When your current branch has diverged and you need a fresh start:
 
 ```bash
-# With shell integration (daft shell-init) - resolves default branch automatically
-gwtcbm hotfix/critical-fix
+# Specify the base branch explicitly
+daft start hotfix/critical-fix main
 
-# Or specify the base branch explicitly
-git worktree-checkout -b hotfix/critical-fix main
+# Or with the gwtcbm shortcut (from shell integration)
+gwtcbm hotfix/critical-fix
 ```
 
 ### Moving Uncommitted Work
@@ -130,7 +130,7 @@ git worktree-checkout -b hotfix/critical-fix main
 Started work in the wrong branch? Move it:
 
 ```bash
-git worktree-carry feature/correct-branch
+daft carry feature/correct-branch
 ```
 
 ### Cleaning Up
@@ -138,7 +138,7 @@ git worktree-carry feature/correct-branch
 After branches are merged and deleted on the remote:
 
 ```bash
-git worktree-prune
+daft prune
 ```
 
 ## How Commands Find the Project Root

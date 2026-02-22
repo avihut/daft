@@ -7,6 +7,10 @@ description: Convert a worktree-based repository back to traditional layout
 
 Convert a worktree-based repository back to traditional layout
 
+::: tip
+This command is also available as `daft eject`. See [daft eject](./daft-eject.md).
+:::
+
 ## Description
 
 WHAT THIS COMMAND DOES

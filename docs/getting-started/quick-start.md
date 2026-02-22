@@ -11,7 +11,7 @@ branches, and cleaning up.
 ## 1. Clone a Repository
 
 ```bash
-git worktree-clone git@github.com:user/my-project.git
+daft clone git@github.com:user/my-project.git
 ```
 
 This creates a structured layout:
@@ -30,7 +30,7 @@ You're automatically placed in `my-project/main/`.
 From anywhere inside the repository:
 
 ```bash
-git worktree-checkout -b feature/auth
+daft start feature/auth
 ```
 
 This creates a new branch and worktree in one step:
@@ -63,7 +63,7 @@ npm test
 To check out an existing branch:
 
 ```bash
-git worktree-checkout bugfix/login-issue
+daft go bugfix/login-issue
 ```
 
 ## 4. Branch From Default
@@ -72,11 +72,10 @@ When you need a fresh branch from `main` (regardless of where you are), use the
 `gwtcbm` shortcut from shell integration:
 
 ```bash
-# With shell integration (daft shell-init)
-gwtcbm hotfix/critical-fix
+daft start hotfix/critical-fix main
 
-# Or specify the base branch explicitly
-git worktree-checkout -b hotfix/critical-fix main
+# Or with the gwtcbm shortcut (from shell integration)
+gwtcbm hotfix/critical-fix
 ```
 
 Your directory structure becomes:
@@ -96,10 +95,10 @@ Move uncommitted work to another worktree:
 
 ```bash
 # Move changes from current worktree to feature/auth
-git worktree-carry feature/auth
+daft carry feature/auth
 
 # Or copy changes (keep them in both places)
-git worktree-carry --copy feature/auth main
+daft carry --copy feature/auth main
 ```
 
 ## 6. Clean Up Merged Branches
@@ -107,7 +106,7 @@ git worktree-carry --copy feature/auth main
 After branches are merged and deleted on the remote:
 
 ```bash
-git worktree-prune
+daft prune
 ```
 
 This automatically:
@@ -123,11 +122,15 @@ Already have a traditional repository? Convert it:
 
 ```bash
 cd my-existing-project
-git worktree-flow-adopt
+daft adopt
 ```
 
 This restructures your repo into the worktree layout. Uncommitted changes are
 preserved.
+
+::: tip Git-native commands Every daft command has a git-native equivalent
+(e.g., `daft clone` = `git worktree-clone`). See the
+[CLI Reference](/cli/git-worktree-clone) for the full list. :::
 
 ## What's Next
 

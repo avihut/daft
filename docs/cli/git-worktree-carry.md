@@ -7,6 +7,10 @@ description: Transfer uncommitted changes to other worktrees
 
 Transfer uncommitted changes to other worktrees
 
+::: tip
+This command is also available as `daft carry`. See [daft carry](./daft-carry.md).
+:::
+
 ## Description
 
 Transfers uncommitted changes (staged, unstaged, and untracked files) from

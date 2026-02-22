@@ -69,7 +69,7 @@ git config daft.autocd false
 You can also use the `--no-cd` flag on individual commands:
 
 ```bash
-git worktree-checkout -b feature/auth --no-cd
+daft start feature/auth --no-cd
 ```
 
 ## Shell Completions

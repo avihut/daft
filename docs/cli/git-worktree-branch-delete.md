@@ -7,6 +7,10 @@ description: Delete branches and their worktrees
 
 Delete branches and their worktrees
 
+::: tip
+This command is also available as `daft remove`. See [daft remove](./daft-remove.md).
+:::
+
 ## Description
 
 Deletes one or more local branches along with their associated worktrees and

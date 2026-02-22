@@ -5,8 +5,9 @@ description: Short command aliases for frequently used daft commands
 
 # Shortcuts
 
-daft supports short aliases for frequently used commands. Instead of typing
-`git worktree-checkout`, you can type `gwtco`.
+For the git-native commands (e.g., `git worktree-checkout`), daft provides short
+symlink aliases. Note that the [daft verb commands](/cli/daft-go) (`daft go`,
+`daft start`, etc.) are already concise and don't need shortcuts.
 
 ## Shortcut Styles
 

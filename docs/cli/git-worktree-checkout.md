@@ -7,6 +7,12 @@ description: Create a worktree for an existing branch, or a new branch with -b
 
 Create a worktree for an existing branch, or a new branch with -b
 
+::: tip
+This command is also available as `daft go` (existing branch) or `daft start`
+(new branch with `-b`). See [daft go](./daft-go.md) and
+[daft start](./daft-start.md).
+:::
+
 ## Description
 
 Creates a new worktree for an existing local or remote branch. The worktree

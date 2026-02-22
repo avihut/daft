@@ -10,7 +10,7 @@ Thank you for your interest in contributing to daft!
 1. **Clone the repository** using daft's worktree layout:
 
    ```bash
-   git worktree-clone git@github.com:avihut/daft.git
+   daft clone git@github.com:avihut/daft.git
    ```
 
 2. **Build and set up the development environment:**
@@ -33,7 +33,7 @@ Thank you for your interest in contributing to daft!
 1. Create a feature branch:
 
    ```bash
-   git worktree-checkout -b daft-XX/feature-name
+   daft start daft-XX/feature-name
    ```
 
 2. Make changes following the conventions below.

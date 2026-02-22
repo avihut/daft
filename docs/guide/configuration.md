@@ -143,10 +143,10 @@ of this, daft passes `--no-verify` on all `git push` calls, skipping any
 
 This affects three commands:
 
-- **`git worktree-checkout -b`** -- pushes the new branch to set upstream
-  tracking
-- **`git worktree-branch-delete`** -- pushes `--delete` to remove the remote
-  branch
+- **`daft start` / `git worktree-checkout -b`** -- pushes the new branch to set
+  upstream tracking
+- **`daft remove` / `git worktree-branch-delete`** -- pushes `--delete` to
+  remove the remote branch
 - **`daft branch move --push`** -- pushes an existing branch to a new remote
 
 If a push fails (due to network issues, auth errors, or remote rejection rules),

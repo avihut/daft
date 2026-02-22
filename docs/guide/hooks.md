@@ -16,17 +16,17 @@ and more. For simple cases, you can also use **executable shell scripts** in
 
 ## Hook Types
 
-| Hook                   | Trigger                              | Runs From                            |
-| ---------------------- | ------------------------------------ | ------------------------------------ |
-| `post-clone`           | After `git worktree-clone` completes | New default branch worktree          |
-| `worktree-pre-create`  | Before new worktree is added         | Source worktree (where command runs) |
-| `worktree-post-create` | After new worktree is created        | New worktree                         |
-| `worktree-pre-remove`  | Before worktree is removed           | Worktree being removed               |
-| `worktree-post-remove` | After worktree is removed            | Current worktree (where prune runs)  |
+| Hook                   | Trigger                       | Runs From                            |
+| ---------------------- | ----------------------------- | ------------------------------------ |
+| `post-clone`           | After `daft clone` completes  | New default branch worktree          |
+| `worktree-pre-create`  | Before new worktree is added  | Source worktree (where command runs) |
+| `worktree-post-create` | After new worktree is created | New worktree                         |
+| `worktree-pre-remove`  | Before worktree is removed    | Worktree being removed               |
+| `worktree-post-remove` | After worktree is removed     | Current worktree (where prune runs)  |
 
 ### Execution Order During Clone
 
-When running `git worktree-clone`, hooks fire in this order:
+When running `daft clone`, hooks fire in this order:
 
 1. **`post-clone`** -- one-time repo bootstrap (install toolchains, global
    setup)
