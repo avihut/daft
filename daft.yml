@@ -3,32 +3,26 @@ hooks:
     jobs:
       - name: install-brew
         description: Install Homebrew package manager
-        os: macos
         run:
-          /bin/bash -c "$(curl -fsSL
-          https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          macos:
+            /bin/bash -c "$(curl -fsSL
+            https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
         skip:
           - run: "command -v brew"
             desc: Brew is already installed
-      - name: install-mise-macos
-        description: Install mise via Homebrew
-        os: macos
-        run: brew install mise
+      - name: install-mise
+        description: Install mise
+        run:
+          macos: brew install mise
+          linux: curl https://mise.run | sh
         needs: [install-brew]
-        skip:
-          - run: "command -v mise"
-            desc: mise is already installed
-      - name: install-mise-linux
-        description: Install mise via install script
-        os: linux
-        run: curl https://mise.run | sh
         skip:
           - run: "command -v mise"
             desc: mise is already installed
       - name: mise-install
         description: Install tools from mise.toml (Rust, lefthook, bun, etc.)
         run: mise install
-        needs: [install-mise-macos, install-mise-linux]
+        needs: [install-mise]
       - name: install-lefthook-in-repo
         description: Set up lefthook git hooks in the repository
         run: lefthook install

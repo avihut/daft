@@ -94,7 +94,7 @@ pub struct HookDef {
 }
 
 /// Target operating system for platform constraints.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum TargetOs {
     Macos,
@@ -149,6 +149,60 @@ impl<T> PlatformConstraint<T> {
     }
 }
 
+/// A run command that can be a simple string or OS-keyed map.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RunCommand {
+    /// Simple string command (runs on all platforms).
+    Simple(String),
+    /// OS-keyed map of commands.
+    Platform(HashMap<TargetOs, PlatformRunCommand>),
+}
+
+/// A platform-specific run command (string or list).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PlatformRunCommand {
+    /// Single command string.
+    Simple(String),
+    /// List of commands joined with " && ".
+    List(Vec<String>),
+}
+
+impl RunCommand {
+    pub fn resolve_for_current_os(&self) -> Option<String> {
+        match self {
+            RunCommand::Simple(s) => Some(s.clone()),
+            RunCommand::Platform(map) => {
+                let current_os = Self::current_target_os()?;
+                map.get(&current_os).map(|cmd| cmd.to_command_string())
+            }
+        }
+    }
+
+    pub fn is_platform(&self) -> bool {
+        matches!(self, RunCommand::Platform(_))
+    }
+
+    pub fn current_target_os() -> Option<TargetOs> {
+        match std::env::consts::OS {
+            "macos" => Some(TargetOs::Macos),
+            "linux" => Some(TargetOs::Linux),
+            "windows" => Some(TargetOs::Windows),
+            _ => None,
+        }
+    }
+}
+
+impl PlatformRunCommand {
+    pub fn to_command_string(&self) -> String {
+        match self {
+            PlatformRunCommand::Simple(s) => s.clone(),
+            PlatformRunCommand::List(cmds) => cmds.join(" && "),
+        }
+    }
+}
+
 /// A single job definition within a hook.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -159,8 +213,8 @@ pub struct JobDef {
     /// Human-readable description of what this job does.
     pub description: Option<String>,
 
-    /// Shell command to run.
-    pub run: Option<String>,
+    /// Shell command to run (simple string or OS-keyed map).
+    pub run: Option<RunCommand>,
 
     /// Script file to run (relative to source_dir).
     pub script: Option<String>,
@@ -182,9 +236,6 @@ pub struct JobDef {
 
     /// Only condition.
     pub only: Option<OnlyCondition>,
-
-    /// Restrict job to specific operating systems.
-    pub os: Option<PlatformConstraint<TargetOs>>,
 
     /// Restrict job to specific CPU architectures.
     pub arch: Option<PlatformConstraint<TargetArch>>,
@@ -225,7 +276,7 @@ impl CommandDef {
     pub fn to_job_def(&self, name: &str) -> JobDef {
         JobDef {
             name: Some(name.to_string()),
-            run: self.run.clone(),
+            run: self.run.as_ref().map(|r| RunCommand::Simple(r.clone())),
             script: self.script.clone(),
             runner: self.runner.clone(),
             tags: self.tags.clone(),
@@ -236,7 +287,7 @@ impl CommandDef {
     }
 }
 
-/// Skip condition: bool, string, or list of skip rules.
+/// Skip condition: bool, string, platform map, or list of skip rules.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SkipCondition {
@@ -244,6 +295,8 @@ pub enum SkipCondition {
     Bool(bool),
     /// Skip if this env var is set and truthy.
     EnvVar(String),
+    /// OS-keyed map of skip rules.
+    Platform(HashMap<TargetOs, Vec<SkipRule>>),
     /// List of skip rules (any match → skip).
     Rules(Vec<SkipRule>),
 }
@@ -280,6 +333,8 @@ pub enum OnlyCondition {
     Bool(bool),
     /// Only run if this env var is set and truthy.
     EnvVar(String),
+    /// OS-keyed map of only rules.
+    Platform(HashMap<TargetOs, Vec<OnlyRule>>),
     /// List of only rules (all must match → run).
     Rules(Vec<OnlyRule>),
 }
@@ -339,7 +394,10 @@ hooks:
         let jobs = hook.jobs.as_ref().unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].name.as_deref(), Some("setup"));
-        assert_eq!(jobs[0].run.as_deref(), Some("echo \"hello\""));
+        match &jobs[0].run {
+            Some(RunCommand::Simple(s)) => assert_eq!(s, "echo \"hello\""),
+            other => panic!("Expected Simple, got {other:?}"),
+        }
     }
 
     #[test]
@@ -553,7 +611,10 @@ hooks:
         };
         let job = cmd.to_job_def("my-test");
         assert_eq!(job.name.as_deref(), Some("my-test"));
-        assert_eq!(job.run.as_deref(), Some("cargo test"));
+        match &job.run {
+            Some(RunCommand::Simple(s)) => assert_eq!(s, "cargo test"),
+            other => panic!("Expected Simple, got {other:?}"),
+        }
         assert!(job.needs.is_none());
     }
 
@@ -677,46 +738,6 @@ hooks:
     }
 
     #[test]
-    fn test_os_single() {
-        let yaml = r#"
-hooks:
-  post-clone:
-    jobs:
-      - name: install-brew
-        os: macos
-        run: echo "brew"
-"#;
-        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
-        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
-        match &job.os {
-            Some(PlatformConstraint::Single(os)) => assert_eq!(*os, TargetOs::Macos),
-            other => panic!("Expected Single(Macos), got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_os_list() {
-        let yaml = r#"
-hooks:
-  post-clone:
-    jobs:
-      - name: unix-setup
-        os: [macos, linux]
-        run: echo "unix"
-"#;
-        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
-        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
-        match &job.os {
-            Some(PlatformConstraint::List(os_list)) => {
-                assert_eq!(os_list.len(), 2);
-                assert_eq!(os_list[0], TargetOs::Macos);
-                assert_eq!(os_list[1], TargetOs::Linux);
-            }
-            other => panic!("Expected List, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn test_arch_single() {
         let yaml = r#"
 hooks:
@@ -757,19 +778,121 @@ hooks:
     }
 
     #[test]
-    fn test_os_and_arch_combined() {
+    fn test_run_simple_string() {
         let yaml = r#"
 hooks:
   post-clone:
     jobs:
-      - name: mac-arm
-        os: macos
-        arch: aarch64
-        run: echo "mac arm"
+      - name: test
+        run: echo hello
 "#;
         let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
         let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
-        assert!(job.os.is_some());
-        assert!(job.arch.is_some());
+        match &job.run {
+            Some(RunCommand::Simple(s)) => assert_eq!(s, "echo hello"),
+            other => panic!("Expected Simple, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_run_os_map() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - name: install-mise
+        run:
+          macos: brew install mise
+          linux: curl https://mise.run | sh
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
+        match &job.run {
+            Some(RunCommand::Platform(map)) => {
+                assert_eq!(map.len(), 2);
+                match &map[&TargetOs::Macos] {
+                    PlatformRunCommand::Simple(s) => assert_eq!(s, "brew install mise"),
+                    other => panic!("Expected Simple, got {other:?}"),
+                }
+            }
+            other => panic!("Expected Platform, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_run_os_map_single_os() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - name: install-brew
+        run:
+          macos: /bin/bash -c "$(curl -fsSL https://example.com)"
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
+        match &job.run {
+            Some(RunCommand::Platform(map)) => {
+                assert_eq!(map.len(), 1);
+                assert!(map.contains_key(&TargetOs::Macos));
+            }
+            other => panic!("Expected Platform, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_skip_platform_map() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - name: install-mise
+        run:
+          macos: brew install mise
+          linux: curl https://mise.run | sh
+        skip:
+          macos:
+            - run: "brew list mise"
+              desc: mise is already installed via brew
+          linux:
+            - run: "command -v mise"
+              desc: mise is already installed
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
+        match &job.skip {
+            Some(SkipCondition::Platform(map)) => {
+                assert_eq!(map.len(), 2);
+                assert!(map.contains_key(&TargetOs::Macos));
+                assert!(map.contains_key(&TargetOs::Linux));
+            }
+            other => panic!("Expected Platform, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_only_platform_map() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - name: setup
+        run:
+          macos: echo mac
+          linux: echo linux
+        only:
+          macos:
+            - run: "test -f Brewfile"
+              desc: Only when Brewfile exists
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let job = &config.hooks["post-clone"].jobs.as_ref().unwrap()[0];
+        match &job.only {
+            Some(OnlyCondition::Platform(map)) => {
+                assert_eq!(map.len(), 1);
+                assert!(map.contains_key(&TargetOs::Macos));
+            }
+            other => panic!("Expected Platform, got {other:?}"),
+        }
     }
 }

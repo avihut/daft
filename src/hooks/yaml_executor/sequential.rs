@@ -37,6 +37,11 @@ pub(super) fn execute_sequential(
             continue;
         }
 
+        // Platform skip — completely silent, no output
+        if super::is_platform_skip(job) {
+            continue;
+        }
+
         renderer.start_job_with_description(job_name, job.description.as_deref());
         let start = std::time::Instant::now();
 

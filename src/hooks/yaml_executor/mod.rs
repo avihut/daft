@@ -251,6 +251,21 @@ pub(crate) fn execute_jobs(
     }
 }
 
+/// Check if a job should be silently skipped due to platform mismatch.
+///
+/// Returns `true` when the job uses an OS-keyed `run` map and the current OS
+/// has no entry in that map. These jobs are completely invisible in output.
+pub(crate) fn is_platform_skip(job: &JobDef) -> bool {
+    match &job.run {
+        Some(super::yaml_config::RunCommand::Platform(map)) => {
+            super::yaml_config::RunCommand::current_target_os()
+                .map(|os| !map.contains_key(&os))
+                .unwrap_or(true)
+        }
+        _ => false,
+    }
+}
+
 /// Resolve the shell command for a job, handling both `run` and `script`.
 pub(crate) fn resolve_command(
     job: &JobDef,
@@ -259,7 +274,10 @@ pub(crate) fn resolve_command(
     source_dir: &str,
 ) -> String {
     if let Some(ref run) = job.run {
-        template::substitute(run, ctx, job_name)
+        match run.resolve_for_current_os() {
+            Some(cmd) => template::substitute(&cmd, ctx, job_name),
+            None => String::new(),
+        }
     } else if let Some(ref script) = job.script {
         let script_path = format!("{source_dir}/{script}");
         if let Some(ref runner) = job.runner {
@@ -289,7 +307,7 @@ pub(crate) fn check_skip_conditions(
     job: &JobDef,
     working_dir: &Path,
 ) -> Option<super::conditions::SkipInfo> {
-    if let Some(reason) = super::conditions::check_platform_constraints(job) {
+    if let Some(reason) = super::conditions::check_arch_constraint(job) {
         return Some(super::conditions::SkipInfo {
             reason,
             ran_command: false,
@@ -320,8 +338,16 @@ pub(crate) fn execute_single_job(
 ) -> Result<HookResult> {
     let job_name = job.name.as_deref().unwrap_or("(unnamed)");
 
-    // Platform constraints (os/arch)
-    if let Some(reason) = super::conditions::check_platform_constraints(job) {
+    // Platform skip (OS-keyed run with no matching variant) — silent, invisible
+    if is_platform_skip(job) {
+        output.debug(&format!(
+            "Platform skip job '{job_name}': no variant for current OS"
+        ));
+        return Ok(HookResult::platform_skipped());
+    }
+
+    // Arch constraint
+    if let Some(reason) = super::conditions::check_arch_constraint(job) {
         output.debug(&format!("Skipping job '{job_name}': {reason}"));
         return Ok(HookResult::skipped(reason));
     }
@@ -397,6 +423,7 @@ pub(crate) fn execute_single_job(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hooks::yaml_config::RunCommand;
     use crate::hooks::HookType;
     use crate::output::TestOutput;
 
@@ -449,7 +476,7 @@ mod tests {
     #[test]
     fn test_resolve_command_run() {
         let job = JobDef {
-            run: Some("echo {branch}".to_string()),
+            run: Some(RunCommand::Simple("echo {branch}".to_string())),
             ..Default::default()
         };
         let ctx = make_ctx();
@@ -507,7 +534,7 @@ mod tests {
         let hook_def = HookDef {
             jobs: Some(vec![JobDef {
                 name: Some("test".to_string()),
-                run: Some("true".to_string()),
+                run: Some(RunCommand::Simple("true".to_string())),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -534,7 +561,7 @@ mod tests {
         let hook_def = HookDef {
             jobs: Some(vec![JobDef {
                 name: Some("fail".to_string()),
-                run: Some("false".to_string()),
+                run: Some(RunCommand::Simple("false".to_string())),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -563,12 +590,12 @@ mod tests {
             jobs: Some(vec![
                 JobDef {
                     name: Some("fail".to_string()),
-                    run: Some("false".to_string()),
+                    run: Some(RunCommand::Simple("false".to_string())),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("should-not-run".to_string()),
-                    run: Some("echo should-not-run".to_string()),
+                    run: Some(RunCommand::Simple("echo should-not-run".to_string())),
                     ..Default::default()
                 },
             ]),
@@ -598,12 +625,12 @@ mod tests {
             jobs: Some(vec![
                 JobDef {
                     name: Some("fail".to_string()),
-                    run: Some("false".to_string()),
+                    run: Some(RunCommand::Simple("false".to_string())),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("still-runs".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     ..Default::default()
                 },
             ]),
@@ -631,7 +658,7 @@ mod tests {
         let hook_def = HookDef {
             jobs: Some(vec![JobDef {
                 name: Some("env-test".to_string()),
-                run: Some("test \"$MY_VAR\" = hello".to_string()),
+                run: Some(RunCommand::Simple("test \"$MY_VAR\" = hello".to_string())),
                 env: Some({
                     let mut m = HashMap::new();
                     m.insert("MY_VAR".to_string(), "hello".to_string());
@@ -668,18 +695,18 @@ mod tests {
             jobs: Some(vec![
                 JobDef {
                     name: Some("a".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("b".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     needs: Some(vec!["a".to_string()]),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("c".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     needs: Some(vec!["b".to_string()]),
                     ..Default::default()
                 },
@@ -709,24 +736,24 @@ mod tests {
             jobs: Some(vec![
                 JobDef {
                     name: Some("a".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("b".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     needs: Some(vec!["a".to_string()]),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("c".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     needs: Some(vec!["a".to_string()]),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("d".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     needs: Some(vec!["b".to_string(), "c".to_string()]),
                     ..Default::default()
                 },
@@ -756,12 +783,12 @@ mod tests {
             jobs: Some(vec![
                 JobDef {
                     name: Some("a".to_string()),
-                    run: Some("false".to_string()),
+                    run: Some(RunCommand::Simple("false".to_string())),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("b".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     needs: Some(vec!["a".to_string()]),
                     ..Default::default()
                 },
@@ -791,18 +818,18 @@ mod tests {
             jobs: Some(vec![
                 JobDef {
                     name: Some("a".to_string()),
-                    run: Some("false".to_string()),
+                    run: Some(RunCommand::Simple("false".to_string())),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("b".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     needs: Some(vec!["a".to_string()]),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("c".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     needs: Some(vec!["b".to_string()]),
                     ..Default::default()
                 },
@@ -832,13 +859,13 @@ mod tests {
             jobs: Some(vec![
                 JobDef {
                     name: Some("a".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     skip: Some(crate::hooks::yaml_config::SkipCondition::Bool(true)),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("b".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     needs: Some(vec!["a".to_string()]),
                     ..Default::default()
                 },
@@ -868,12 +895,12 @@ mod tests {
             jobs: Some(vec![
                 JobDef {
                     name: Some("a".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("b".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     ..Default::default()
                 },
             ]),
@@ -903,21 +930,21 @@ mod tests {
             jobs: Some(vec![
                 JobDef {
                     name: Some("low-prio".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     priority: Some(10),
                     needs: Some(vec!["root".to_string()]),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("high-prio".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     priority: Some(1),
                     needs: Some(vec!["root".to_string()]),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("root".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     ..Default::default()
                 },
             ]),
@@ -947,18 +974,18 @@ mod tests {
             jobs: Some(vec![
                 JobDef {
                     name: Some("c".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     needs: Some(vec!["b".to_string()]),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("a".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("b".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     needs: Some(vec!["a".to_string()]),
                     ..Default::default()
                 },
@@ -989,18 +1016,18 @@ mod tests {
             jobs: Some(vec![
                 JobDef {
                     name: Some("a".to_string()),
-                    run: Some("false".to_string()),
+                    run: Some(RunCommand::Simple("false".to_string())),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("b".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     needs: Some(vec!["a".to_string()]),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("c".to_string()),
-                    run: Some("true".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
                     ..Default::default()
                 },
             ]),
@@ -1030,12 +1057,12 @@ mod tests {
             jobs: Some(vec![
                 JobDef {
                     name: Some("job-a".to_string()),
-                    run: Some("echo 'output-a'".to_string()),
+                    run: Some(RunCommand::Simple("echo 'output-a'".to_string())),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("job-b".to_string()),
-                    run: Some("echo 'output-b'".to_string()),
+                    run: Some(RunCommand::Simple("echo 'output-b'".to_string())),
                     ..Default::default()
                 },
             ]),

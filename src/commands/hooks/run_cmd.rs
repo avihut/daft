@@ -150,18 +150,25 @@ pub(super) fn cmd_run(args: &HooksRunArgs, output: &mut dyn Output) -> Result<()
                 output.info(&format!("     {}", dim(desc)));
             }
 
-            if let Some(ref os) = job.os {
-                let os_list: Vec<&str> = os.as_slice().iter().map(|o| o.as_str()).collect();
-                output.info(&format!("     {}: {}", dim("os"), os_list.join(", ")));
-            }
-
             if let Some(ref arch) = job.arch {
                 let arch_list: Vec<&str> = arch.as_slice().iter().map(|a| a.as_str()).collect();
                 output.info(&format!("     {}: {}", dim("arch"), arch_list.join(", ")));
             }
 
             if let Some(ref run) = job.run {
-                output.info(&format!("     {}: {}", dim("run"), run));
+                let run_display = match run {
+                    crate::hooks::yaml_config::RunCommand::Simple(s) => s.clone(),
+                    crate::hooks::yaml_config::RunCommand::Platform(map) => {
+                        let entries: Vec<String> = map
+                            .iter()
+                            .map(|(os, cmd)| {
+                                format!("{}: {}", os.as_str(), cmd.to_command_string())
+                            })
+                            .collect();
+                        format!("{{{}}}", entries.join(", "))
+                    }
+                };
+                output.info(&format!("     {}: {}", dim("run"), run_display));
             } else if let Some(ref script) = job.script {
                 let runner_str = job
                     .runner

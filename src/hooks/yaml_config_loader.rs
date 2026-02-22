@@ -304,7 +304,7 @@ pub fn get_effective_jobs(hook_def: &HookDef) -> Vec<JobDef> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::yaml_config::CommandDef;
+    use crate::hooks::yaml_config::{CommandDef, RunCommand};
     use std::fs;
     use tempfile::tempdir;
 
@@ -446,12 +446,12 @@ mod tests {
             jobs: Some(vec![
                 JobDef {
                     name: Some("lint".to_string()),
-                    run: Some("eslint .".to_string()),
+                    run: Some(RunCommand::Simple("eslint .".to_string())),
                     ..Default::default()
                 },
                 JobDef {
                     name: Some("format".to_string()),
-                    run: Some("prettier --check .".to_string()),
+                    run: Some(RunCommand::Simple("prettier --check .".to_string())),
                     ..Default::default()
                 },
             ]),
@@ -460,7 +460,7 @@ mod tests {
         let overlay = HookDef {
             jobs: Some(vec![JobDef {
                 name: Some("lint".to_string()),
-                run: Some("cargo clippy".to_string()),
+                run: Some(RunCommand::Simple("cargo clippy".to_string())),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -469,23 +469,35 @@ mod tests {
         let jobs = merged.jobs.unwrap();
         assert_eq!(jobs.len(), 2);
         // lint should be overridden
-        assert_eq!(jobs[0].run.as_deref(), Some("cargo clippy"));
+        assert_eq!(
+            jobs[0]
+                .run
+                .as_ref()
+                .and_then(|r| r.resolve_for_current_os()),
+            Some("cargo clippy".to_string())
+        );
         // format should be preserved
-        assert_eq!(jobs[1].run.as_deref(), Some("prettier --check ."));
+        assert_eq!(
+            jobs[1]
+                .run
+                .as_ref()
+                .and_then(|r| r.resolve_for_current_os()),
+            Some("prettier --check .".to_string())
+        );
     }
 
     #[test]
     fn test_merge_hook_defs_unnamed_appended() {
         let base = HookDef {
             jobs: Some(vec![JobDef {
-                run: Some("echo base".to_string()),
+                run: Some(RunCommand::Simple("echo base".to_string())),
                 ..Default::default()
             }]),
             ..Default::default()
         };
         let overlay = HookDef {
             jobs: Some(vec![JobDef {
-                run: Some("echo overlay".to_string()),
+                run: Some(RunCommand::Simple("echo overlay".to_string())),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -544,7 +556,13 @@ hooks:
 
         let config = load_merged_config(dir.path()).unwrap().unwrap();
         let jobs = config.hooks["worktree-post-create"].jobs.as_ref().unwrap();
-        assert_eq!(jobs[0].run.as_deref(), Some("echo \"local override\""));
+        assert_eq!(
+            jobs[0]
+                .run
+                .as_ref()
+                .and_then(|r| r.resolve_for_current_os()),
+            Some("echo \"local override\"".to_string())
+        );
     }
 
     #[test]
@@ -564,7 +582,13 @@ jobs:
         let config = load_merged_config(dir.path()).unwrap().unwrap();
         assert!(config.hooks.contains_key("post-clone"));
         let jobs = config.hooks["post-clone"].jobs.as_ref().unwrap();
-        assert_eq!(jobs[0].run.as_deref(), Some("npm install"));
+        assert_eq!(
+            jobs[0]
+                .run
+                .as_ref()
+                .and_then(|r| r.resolve_for_current_os()),
+            Some("npm install".to_string())
+        );
     }
 
     #[test]
@@ -640,7 +664,7 @@ hooks:
         let hook = HookDef {
             jobs: Some(vec![JobDef {
                 name: Some("job1".to_string()),
-                run: Some("echo 1".to_string()),
+                run: Some(RunCommand::Simple("echo 1".to_string())),
                 ..Default::default()
             }]),
             commands: Some({

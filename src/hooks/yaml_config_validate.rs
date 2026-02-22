@@ -336,7 +336,7 @@ fn version_satisfies(current: &str, required: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::yaml_config::GroupDef;
+    use crate::hooks::yaml_config::{GroupDef, RunCommand};
 
     #[test]
     fn test_validate_empty_config() {
@@ -357,7 +357,7 @@ mod tests {
                         parallel: Some(true),
                         jobs: Some(vec![JobDef {
                             name: Some("lint".to_string()),
-                            run: Some("cargo clippy".to_string()),
+                            run: Some(RunCommand::Simple("cargo clippy".to_string())),
                             ..Default::default()
                         }]),
                         ..Default::default()
@@ -383,7 +383,7 @@ mod tests {
                         piped: Some(true),
                         jobs: Some(vec![JobDef {
                             name: Some("lint".to_string()),
-                            run: Some("echo test".to_string()),
+                            run: Some(RunCommand::Simple("echo test".to_string())),
                             ..Default::default()
                         }]),
                         ..Default::default()
@@ -408,7 +408,7 @@ mod tests {
                     HookDef {
                         jobs: Some(vec![JobDef {
                             name: Some("bad".to_string()),
-                            run: Some("echo test".to_string()),
+                            run: Some(RunCommand::Simple("echo test".to_string())),
                             script: Some("my-script".to_string()),
                             ..Default::default()
                         }]),
@@ -463,12 +463,14 @@ mod tests {
                                 jobs: Some(vec![
                                     JobDef {
                                         name: Some("lint".to_string()),
-                                        run: Some("cargo clippy".to_string()),
+                                        run: Some(RunCommand::Simple("cargo clippy".to_string())),
                                         ..Default::default()
                                     },
                                     JobDef {
                                         name: Some("fmt".to_string()),
-                                        run: Some("cargo fmt --check".to_string()),
+                                        run: Some(RunCommand::Simple(
+                                            "cargo fmt --check".to_string(),
+                                        )),
                                         ..Default::default()
                                     },
                                 ]),
@@ -497,7 +499,7 @@ mod tests {
                     HookDef {
                         jobs: Some(vec![JobDef {
                             name: Some("bad".to_string()),
-                            run: Some("echo test".to_string()),
+                            run: Some(RunCommand::Simple("echo test".to_string())),
                             group: Some(GroupDef {
                                 jobs: Some(vec![]),
                                 ..Default::default()
@@ -535,12 +537,12 @@ mod tests {
                         jobs: Some(vec![
                             JobDef {
                                 name: Some("lint".to_string()),
-                                run: Some("echo 1".to_string()),
+                                run: Some(RunCommand::Simple("echo 1".to_string())),
                                 ..Default::default()
                             },
                             JobDef {
                                 name: Some("lint".to_string()),
-                                run: Some("echo 2".to_string()),
+                                run: Some(RunCommand::Simple("echo 2".to_string())),
                                 ..Default::default()
                             },
                         ]),
@@ -568,12 +570,12 @@ mod tests {
                         jobs: Some(vec![
                             JobDef {
                                 name: Some("a".to_string()),
-                                run: Some("echo a".to_string()),
+                                run: Some(RunCommand::Simple("echo a".to_string())),
                                 ..Default::default()
                             },
                             JobDef {
                                 name: Some("b".to_string()),
-                                run: Some("echo b".to_string()),
+                                run: Some(RunCommand::Simple("echo b".to_string())),
                                 needs: Some(vec!["nonexistent".to_string()]),
                                 ..Default::default()
                             },
@@ -602,13 +604,13 @@ mod tests {
                         jobs: Some(vec![
                             JobDef {
                                 name: Some("a".to_string()),
-                                run: Some("echo a".to_string()),
+                                run: Some(RunCommand::Simple("echo a".to_string())),
                                 needs: Some(vec!["b".to_string()]),
                                 ..Default::default()
                             },
                             JobDef {
                                 name: Some("b".to_string()),
-                                run: Some("echo b".to_string()),
+                                run: Some(RunCommand::Simple("echo b".to_string())),
                                 needs: Some(vec!["a".to_string()]),
                                 ..Default::default()
                             },
@@ -635,7 +637,7 @@ mod tests {
                     HookDef {
                         jobs: Some(vec![JobDef {
                             name: Some("a".to_string()),
-                            run: Some("echo a".to_string()),
+                            run: Some(RunCommand::Simple("echo a".to_string())),
                             needs: Some(vec!["a".to_string()]),
                             ..Default::default()
                         }]),
@@ -662,11 +664,11 @@ mod tests {
                         jobs: Some(vec![
                             JobDef {
                                 name: Some("a".to_string()),
-                                run: Some("echo a".to_string()),
+                                run: Some(RunCommand::Simple("echo a".to_string())),
                                 ..Default::default()
                             },
                             JobDef {
-                                run: Some("echo b".to_string()),
+                                run: Some(RunCommand::Simple("echo b".to_string())),
                                 needs: Some(vec!["a".to_string()]),
                                 ..Default::default()
                             },
@@ -694,23 +696,23 @@ mod tests {
                         jobs: Some(vec![
                             JobDef {
                                 name: Some("install-npm".to_string()),
-                                run: Some("npm install".to_string()),
+                                run: Some(RunCommand::Simple("npm install".to_string())),
                                 ..Default::default()
                             },
                             JobDef {
                                 name: Some("install-uv".to_string()),
-                                run: Some("pip install uv".to_string()),
+                                run: Some(RunCommand::Simple("pip install uv".to_string())),
                                 ..Default::default()
                             },
                             JobDef {
                                 name: Some("npm-build".to_string()),
-                                run: Some("npm run build".to_string()),
+                                run: Some(RunCommand::Simple("npm run build".to_string())),
                                 needs: Some(vec!["install-npm".to_string()]),
                                 ..Default::default()
                             },
                             JobDef {
                                 name: Some("uv-sync".to_string()),
-                                run: Some("uv sync".to_string()),
+                                run: Some(RunCommand::Simple("uv sync".to_string())),
                                 needs: Some(vec!["install-uv".to_string()]),
                                 ..Default::default()
                             },
