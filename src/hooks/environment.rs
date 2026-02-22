@@ -16,7 +16,7 @@ pub struct HookContext {
     /// The type of hook being executed.
     pub hook_type: HookType,
 
-    /// The command that triggered this hook (e.g., "clone", "checkout-branch").
+    /// The command that triggered this hook (e.g., "clone", "checkout").
     pub command: String,
 
     /// Repository root (parent of .git directory).
@@ -40,7 +40,7 @@ pub struct HookContext {
     /// Whether the branch is newly created.
     pub is_new_branch: bool,
 
-    /// Base branch (for checkout-branch commands).
+    /// Base branch (for checkout -b commands).
     pub base_branch: Option<String>,
 
     /// Repository URL (for clone operations).
@@ -233,7 +233,7 @@ mod tests {
     fn make_test_context() -> HookContext {
         HookContext::new(
             HookType::PostCreate,
-            "checkout-branch",
+            "checkout",
             "/project",
             "/project/.git",
             "origin",
@@ -249,7 +249,7 @@ mod tests {
         let env = HookEnvironment::from_context(&ctx);
 
         assert_eq!(env.get("DAFT_HOOK"), Some("worktree-post-create"));
-        assert_eq!(env.get("DAFT_COMMAND"), Some("checkout-branch"));
+        assert_eq!(env.get("DAFT_COMMAND"), Some("checkout"));
         assert_eq!(env.get("DAFT_PROJECT_ROOT"), Some("/project"));
         assert_eq!(env.get("DAFT_GIT_DIR"), Some("/project/.git"));
         assert_eq!(env.get("DAFT_REMOTE"), Some("origin"));
@@ -329,7 +329,7 @@ mod tests {
     fn test_working_directory_pre_create() {
         let ctx = HookContext::new(
             HookType::PreCreate,
-            "checkout-branch",
+            "checkout",
             "/project",
             "/project/.git",
             "origin",

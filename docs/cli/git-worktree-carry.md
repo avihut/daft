@@ -53,6 +53,5 @@ git worktree-carry [OPTIONS] <TARGETS>
 ## See Also
 
 - [git-worktree-checkout](./git-worktree-checkout.md)
-- [git-worktree-checkout-branch](./git-worktree-checkout-branch.md)
 - [git-worktree-fetch](./git-worktree-fetch.md)
 

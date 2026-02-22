@@ -6,10 +6,7 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
     let mut output = String::new();
     let has_branches = matches!(
         command_name,
-        "git-worktree-checkout"
-            | "git-worktree-checkout-branch"
-            | "git-worktree-carry"
-            | "git-worktree-fetch"
+        "git-worktree-checkout" | "git-worktree-carry" | "git-worktree-fetch"
     );
 
     // Extract git subcommand name for dual registration
@@ -101,6 +98,17 @@ complete -c daft -n '__fish_use_subcommand' -a 'branch' -d 'Branch management'
 complete -c daft -n '__fish_use_subcommand' -a 'multi-remote' -d 'Multi-remote management'
 complete -c daft -n '__fish_use_subcommand' -a 'release-notes' -d 'Generate release notes'
 complete -c daft -n '__fish_use_subcommand' -a 'doctor' -d 'Check installation'
+complete -c daft -n '__fish_use_subcommand' -a 'clone' -d 'Clone repo into worktree layout'
+complete -c daft -n '__fish_use_subcommand' -a 'init' -d 'Init new repo in worktree layout'
+complete -c daft -n '__fish_use_subcommand' -a 'go' -d 'Open existing branch worktree'
+complete -c daft -n '__fish_use_subcommand' -a 'start' -d 'Create new branch worktree'
+complete -c daft -n '__fish_use_subcommand' -a 'carry' -d 'Transfer uncommitted changes'
+complete -c daft -n '__fish_use_subcommand' -a 'fetch' -d 'Pull updates into worktrees'
+complete -c daft -n '__fish_use_subcommand' -a 'prune' -d 'Remove stale worktrees'
+complete -c daft -n '__fish_use_subcommand' -a 'remove' -d 'Delete branch and worktree'
+complete -c daft -n '__fish_use_subcommand' -a 'adopt' -d 'Convert repo to worktree layout'
+complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to traditional layout'
+complete -c daft -n '__fish_seen_subcommand_from go start carry fetch remove' -f -a "(daft __complete git-worktree-checkout '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and not __fish_seen_subcommand_from trust prompt deny status migrate install validate dump run' -f -a 'trust prompt deny status migrate install validate dump run'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -f -a "(daft __complete hooks-run '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l job -d 'Run only the named job' -r -f -a "(set -l hook (commandline -opc | string match -rv '^-' | tail -n1); DAFT_COMPLETE_HOOK=\$hook daft __complete hooks-run-job '' 2>/dev/null)"

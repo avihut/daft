@@ -13,7 +13,7 @@ test_branch_delete_basic() {
     local project_root=$(pwd)
 
     # Create a branch with worktree
-    git-worktree-checkout-branch feature/test || return 1
+    git-worktree-checkout -b feature/test || return 1
     assert_directory_exists "feature/test" || return 1
 
     # Make a commit on the feature branch
@@ -58,7 +58,7 @@ test_branch_delete_refuses_unmerged() {
     cd "test-repo-bd-unmerged"
     local project_root=$(pwd)
 
-    git-worktree-checkout-branch feature/unmerged || return 1
+    git-worktree-checkout -b feature/unmerged || return 1
     assert_directory_exists "feature/unmerged" || return 1
 
     cd "feature/unmerged"
@@ -88,7 +88,7 @@ test_branch_delete_force_unmerged() {
     cd "test-repo-bd-force"
     local project_root=$(pwd)
 
-    git-worktree-checkout-branch feature/force-me || return 1
+    git-worktree-checkout -b feature/force-me || return 1
 
     cd "feature/force-me"
     echo "unmerged work" > work.txt
@@ -133,7 +133,7 @@ test_branch_delete_refuses_dirty() {
     cd "test-repo-bd-dirty"
     local project_root=$(pwd)
 
-    git-worktree-checkout-branch feature/dirty || return 1
+    git-worktree-checkout -b feature/dirty || return 1
 
     # Make uncommitted changes
     echo "dirty" > "feature/dirty/dirty.txt"
@@ -156,8 +156,8 @@ test_branch_delete_multiple() {
     local project_root=$(pwd)
 
     # Create two branches
-    git-worktree-checkout-branch feature/one || return 1
-    git-worktree-checkout-branch feature/two || return 1
+    git-worktree-checkout -b feature/one || return 1
+    git-worktree-checkout -b feature/two || return 1
 
     # Merge both into main
     cd "main"
@@ -236,7 +236,7 @@ test_branch_delete_from_current_worktree_writes_cd() {
     cd "test-repo-bd-cd"
 
     # Create a branch with worktree
-    git-worktree-checkout-branch feature/test-cd || return 1
+    git-worktree-checkout -b feature/test-cd || return 1
     assert_directory_exists "feature/test-cd" || return 1
 
     # Save the project root path (resolve symlinks for macOS /tmp -> /private/tmp)
@@ -306,7 +306,7 @@ test_branch_delete_from_current_worktree_cd_default_branch() {
     git config daft.prune.cdTarget default-branch
 
     # Create a branch with worktree
-    git-worktree-checkout-branch feature/test-cd-default || return 1
+    git-worktree-checkout -b feature/test-cd-default || return 1
     assert_directory_exists "feature/test-cd-default" || return 1
 
     # Save paths (resolve symlinks for macOS /tmp -> /private/tmp)
@@ -385,7 +385,7 @@ test_branch_delete_local_behind_remote() {
     # Step 2: Create the feature branch. checkout-branch fetches and creates
     # from origin/main, so feature/behind-test is at the NEW remote main commit,
     # while local main is still at the OLD commit.
-    git-worktree-checkout-branch feature/behind-test || return 1
+    git-worktree-checkout -b feature/behind-test || return 1
     assert_directory_exists "feature/behind-test" || return 1
 
     # Step 3: Delete the branch. The user made no changes on it, and it IS an
@@ -419,7 +419,7 @@ test_branch_delete_by_relative_path() {
     local project_root=$(pwd)
 
     # Create a branch with worktree
-    git-worktree-checkout-branch feature/by-path || return 1
+    git-worktree-checkout -b feature/by-path || return 1
     assert_directory_exists "feature/by-path" || return 1
 
     # Merge into main so it passes validation
@@ -464,7 +464,7 @@ test_branch_delete_by_absolute_path() {
     local project_root=$(pwd)
 
     # Create a branch with worktree
-    git-worktree-checkout-branch feature/abs-path || return 1
+    git-worktree-checkout -b feature/abs-path || return 1
     assert_directory_exists "feature/abs-path" || return 1
 
     # Merge into main so it passes validation
@@ -511,7 +511,7 @@ test_branch_delete_by_dot() {
     project_root=$(cd "$(pwd)" && pwd -P)
 
     # Create a branch with worktree
-    git-worktree-checkout-branch feature/dot-test || return 1
+    git-worktree-checkout -b feature/dot-test || return 1
     assert_directory_exists "feature/dot-test" || return 1
 
     # Merge into main so it passes validation

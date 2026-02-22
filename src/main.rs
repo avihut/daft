@@ -38,7 +38,7 @@ fn main() -> Result<()> {
         "git-worktree-clone" => commands::clone::run(),
         "git-worktree-init" => commands::init::run(),
         "git-worktree-checkout" => commands::checkout::run(),
-        "git-worktree-checkout-branch" => commands::checkout_branch::run(),
+
         "git-worktree-prune" => commands::prune::run(),
         "git-worktree-carry" => commands::carry::run(),
         "git-worktree-branch-delete" => commands::branch_delete::run(),
@@ -78,11 +78,22 @@ fn main() -> Result<()> {
                         }
                     }
                     "shell-init" => commands::shell_init::run(),
+                    // Daft verb aliases (short names)
+                    "clone" => commands::clone::run(),
+                    "init" => commands::init::run(),
+                    "go" => commands::checkout::run(),
+                    "start" => commands::checkout::run_create(),
+                    "carry" => commands::carry::run(),
+                    "fetch" => commands::fetch::run(),
+                    "prune" => commands::prune::run(),
+                    "remove" => commands::branch_delete::run(),
+                    "adopt" => commands::flow_adopt::run(),
+                    "eject" => commands::flow_eject::run(),
                     // Worktree commands accessible via `daft worktree-<command>`
                     "worktree-clone" => commands::clone::run(),
                     "worktree-init" => commands::init::run(),
                     "worktree-checkout" => commands::checkout::run(),
-                    "worktree-checkout-branch" => commands::checkout_branch::run(),
+
                     "worktree-prune" => commands::prune::run(),
                     "worktree-carry" => commands::carry::run(),
                     "worktree-fetch" => commands::fetch::run(),

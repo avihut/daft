@@ -7,8 +7,8 @@ use clap::{Command, CommandFactory};
 use std::path::Path;
 
 use crate::commands::{
-    branch, branch_delete, carry, checkout, checkout_branch, clone, completions, doctor, fetch,
-    flow_adopt, flow_eject, hooks, init, multi_remote, prune, release_notes, shell_init, shortcuts,
+    branch, branch_delete, carry, checkout, clone, completions, doctor, fetch, flow_adopt,
+    flow_eject, hooks, init, multi_remote, prune, release_notes, shell_init, shortcuts,
 };
 
 /// A category of commands with a title and list of commands.
@@ -45,16 +45,10 @@ fn get_command_categories() -> Vec<CommandCategory> {
         },
         CommandCategory {
             title: "work on branches (each branch gets its own directory)",
-            commands: vec![
-                CommandEntry {
-                    display_name: "worktree-checkout",
-                    command: checkout::Args::command(),
-                },
-                CommandEntry {
-                    display_name: "worktree-checkout-branch",
-                    command: checkout_branch::Args::command(),
-                },
-            ],
+            commands: vec![CommandEntry {
+                display_name: "worktree-checkout",
+                command: checkout::Args::command(),
+            }],
         },
         CommandCategory {
             title: "share changes across worktrees",
@@ -158,7 +152,8 @@ pub fn run() -> Result<()> {
         ("daft", "git")
     };
 
-    println!("usage: {primary} worktree-<command> [<args>]");
+    println!("usage: daft <command> [<args>]");
+    println!("   or: {primary} worktree-<command> [<args>]");
     println!("   or: {secondary} worktree-<command> [<args>]");
 
     println!();
@@ -182,6 +177,12 @@ pub fn run() -> Result<()> {
             );
         }
     }
+
+    println!();
+    println!("short aliases (daft <verb>)");
+    println!("   go <branch>          Check out an existing branch worktree");
+    println!("   start <branch>       Create a new branch worktree (-b)");
+    println!("   clone, init, carry, fetch, prune, remove, adopt, eject");
 
     println!();
     println!("'{primary} worktree-<command> --help' to read about a specific command.");

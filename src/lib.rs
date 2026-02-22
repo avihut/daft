@@ -10,18 +10,23 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// wrapper expects the cd target to be written.
 pub const CD_FILE_ENV: &str = "DAFT_CD_FILE";
 
-/// Returns args suitable for clap parsing, handling both symlink and subcommand invocation.
+/// Daft verb aliases that route through to worktree commands.
+const DAFT_VERBS: &[&str] = &[
+    "adopt", "carry", "clone", "eject", "fetch", "go", "init", "prune", "remove", "start",
+];
+
+/// Returns args suitable for clap parsing, handling symlink, subcommand, and verb invocations.
 ///
 /// When invoked via symlink (e.g., `git-worktree-clone <url>`), returns args as-is.
-/// When invoked via `daft worktree-<cmd> <args>`, returns `["git-worktree-<cmd>", <args>...]`
-/// so clap sees the expected command name.
+/// When invoked via `daft worktree-<cmd> <args>` or `daft <verb> <args>`, returns
+/// `["git-worktree-<cmd>", <args>...]` so clap sees the expected command name.
 ///
 /// # Arguments
 /// * `expected_cmd` - The expected command name (e.g., "git-worktree-clone")
 pub fn get_clap_args(expected_cmd: &str) -> Vec<String> {
     let args: Vec<String> = env::args().collect();
 
-    // Check if invoked as `daft worktree-*`
+    // Check if invoked as `daft worktree-*` or `daft <verb>`
     if args.len() >= 2 {
         let program_name = Path::new(&args[0])
             .file_name()
@@ -29,7 +34,7 @@ pub fn get_clap_args(expected_cmd: &str) -> Vec<String> {
             .unwrap_or("");
 
         if (program_name == "daft" || program_name == "git-daft")
-            && args[1].starts_with("worktree-")
+            && (args[1].starts_with("worktree-") || DAFT_VERBS.contains(&args[1].as_str()))
         {
             // Reconstruct args with the expected command name
             let mut new_args = vec![expected_cmd.to_string()];

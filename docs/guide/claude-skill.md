@@ -26,8 +26,8 @@ knowledge about:
 - Correct worktree-aware translations for common Git operations
 
 When loaded, the agent understands that "create a branch" means
-`git worktree-checkout-branch`, that each worktree needs its own dependency
-install, and that `daft.yml` hooks can automate the setup process.
+`git worktree-checkout -b`, that each worktree needs its own dependency install,
+and that `daft.yml` hooks can automate the setup process.
 
 ## Installation
 
@@ -90,8 +90,8 @@ directory at the project root with branch worktrees as sibling directories.
 ### Command Translation
 
 Instead of suggesting `git checkout -b`, the agent suggests
-`git worktree-checkout-branch`. Instead of `git switch`, it suggests navigating
-to the worktree directory. The skill maps common Git intents to their daft
+`git worktree-checkout -b`. Instead of `git switch`, it suggests navigating to
+the worktree directory. The skill maps common Git intents to their daft
 equivalents.
 
 ### Hooks Automation

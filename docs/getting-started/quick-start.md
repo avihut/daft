@@ -30,7 +30,7 @@ You're automatically placed in `my-project/main/`.
 From anywhere inside the repository:
 
 ```bash
-git worktree-checkout-branch feature/auth
+git worktree-checkout -b feature/auth
 ```
 
 This creates a new branch and worktree in one step:
@@ -76,7 +76,7 @@ When you need a fresh branch from `main` (regardless of where you are), use the
 gwtcbm hotfix/critical-fix
 
 # Or specify the base branch explicitly
-git worktree-checkout-branch hotfix/critical-fix main
+git worktree-checkout -b hotfix/critical-fix main
 ```
 
 Your directory structure becomes:

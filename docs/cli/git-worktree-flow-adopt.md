@@ -48,10 +48,10 @@ After adopting, use these commands:
   git worktree-checkout <branch>
       Check out an existing branch into a new worktree
 
-  git worktree-checkout-branch <new-branch>
+  git worktree-checkout -b <new-branch>
       Create a new branch and worktree from current branch
 
-  git worktree-checkout-branch <new-branch> main
+  git worktree-checkout -b <new-branch> main
       Create a new branch from a specific base branch
 
   git worktree-prune

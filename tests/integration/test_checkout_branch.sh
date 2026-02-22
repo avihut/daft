@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Integration tests for git-worktree-checkout-branch Rust binary
+# Integration tests for git-worktree-checkout -b (create branch mode)
 
 source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 
@@ -13,7 +13,7 @@ test_checkout_branch_basic() {
     cd "test-repo-checkout-branch"
     
     # Test checkout-branch from main
-    git-worktree-checkout-branch feature/new-feature || return 1
+    git-worktree-checkout -b feature/new-feature || return 1
     
     # Verify structure
     assert_directory_exists "feature/new-feature" || return 1
@@ -34,7 +34,7 @@ test_checkout_branch_with_base() {
     git-worktree-checkout develop || return 1
     
     # Test checkout-branch with base branch
-    git-worktree-checkout-branch feature/from-develop develop || return 1
+    git-worktree-checkout -b feature/from-develop develop || return 1
     
     # Verify structure
     assert_directory_exists "feature/from-develop" || return 1
@@ -56,7 +56,7 @@ test_checkout_branch_from_subdirectory() {
     cd "main/subdir"
     
     # Test checkout-branch from subdirectory
-    git-worktree-checkout-branch feature/from-subdir || return 1
+    git-worktree-checkout -b feature/from-subdir || return 1
     
     # Verify structure (should be created at repository root)
     assert_directory_exists "../../feature/from-subdir" || return 1
@@ -73,18 +73,18 @@ test_checkout_branch_errors() {
     git-worktree-clone "$remote_repo" || return 1
     cd "test-repo-checkout-branch-errors"
     
-    # Test checkout-branch with no branch name
-    assert_command_failure "git-worktree-checkout-branch" "Should fail without branch name"
-    
-    # Test checkout-branch with invalid branch name
-    assert_command_failure "git-worktree-checkout-branch 'invalid branch name'" "Should fail with invalid branch name"
+    # Test checkout -b with no branch name
+    assert_command_failure "git-worktree-checkout -b" "Should fail without branch name"
+
+    # Test checkout -b with invalid branch name
+    assert_command_failure "git-worktree-checkout -b 'invalid branch name'" "Should fail with invalid branch name"
     
     # Test checkout-branch with existing branch
-    git-worktree-checkout-branch feature/test || return 1
-    assert_command_failure "git-worktree-checkout-branch feature/test" "Should fail with existing branch"
+    git-worktree-checkout -b feature/test || return 1
+    assert_command_failure "git-worktree-checkout -b feature/test" "Should fail with existing branch"
     
     # Test checkout-branch with nonexistent base branch
-    assert_command_failure "git-worktree-checkout-branch feature/test2 nonexistent-base" "Should fail with nonexistent base branch"
+    assert_command_failure "git-worktree-checkout -b feature/test2 nonexistent-base" "Should fail with nonexistent base branch"
     
     return 0
 }
@@ -101,7 +101,7 @@ test_checkout_branch_naming() {
     local branch_names=("feature/user-auth" "bugfix-123" "hotfix_urgent" "release-v1.0.0" "chore/update-deps")
     
     for branch in "${branch_names[@]}"; do
-        git-worktree-checkout-branch "$branch" || return 1
+        git-worktree-checkout -b "$branch" || return 1
         assert_directory_exists "$branch" || return 1
         assert_git_worktree "$branch" "$branch" || return 1
     done
@@ -118,7 +118,7 @@ test_checkout_branch_direnv() {
     cd "test-repo-checkout-branch-direnv"
     
     # Create a branch with .envrc
-    git-worktree-checkout-branch feature/with-envrc || return 1
+    git-worktree-checkout -b feature/with-envrc || return 1
     
     # Add .envrc file
     echo "export TEST_VAR=feature_value" > "feature/with-envrc/.envrc"
@@ -133,7 +133,7 @@ test_checkout_branch_direnv() {
 # Test checkout-branch outside git repository
 test_checkout_branch_outside_repo() {
     # Test checkout-branch command outside git repository
-    assert_command_failure "git-worktree-checkout-branch some-branch" "Should fail outside git repository"
+    assert_command_failure "git-worktree-checkout -b some-branch-outside" "Should fail outside git repository"
     
     return 0
 }
@@ -141,9 +141,9 @@ test_checkout_branch_outside_repo() {
 # Test checkout-branch help functionality
 test_checkout_branch_help() {
     # Test help commands
-    assert_command_help "git-worktree-checkout-branch" || return 1
-    assert_command_version "git-worktree-checkout-branch" || return 1
-    
+    assert_command_help "git-worktree-checkout" || return 1
+    assert_command_version "git-worktree-checkout" || return 1
+
     return 0
 }
 
@@ -158,7 +158,7 @@ test_checkout_branch_workflow() {
     local repo_root=$(pwd)
     
     # Create first branch and add content to it
-    git-worktree-checkout-branch feature/base-feature || return 1
+    git-worktree-checkout -b feature/base-feature || return 1
     
     # The Rust binary changes its own directory but not our shell's directory
     # We need to explicitly cd into the worktree
@@ -170,7 +170,7 @@ test_checkout_branch_workflow() {
     
     # Create second branch from the first one (go back to repo root first)
     cd "$repo_root"
-    git-worktree-checkout-branch feature/extended-feature feature/base-feature || return 1
+    git-worktree-checkout -b feature/extended-feature feature/base-feature || return 1
     
     # Go back to repo root for assertions
     cd "$repo_root"
@@ -195,7 +195,7 @@ test_checkout_branch_performance() {
     
     # Test checkout-branch performance
     local start_time=$(date +%s)
-    git-worktree-checkout-branch feature/performance-test || return 1
+    git-worktree-checkout -b feature/performance-test || return 1
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
     
@@ -238,7 +238,7 @@ test_checkout_branch_large_repo() {
     cd "test-repo-checkout-branch-large"
     
     # Test checkout-branch with large repository
-    git-worktree-checkout-branch feature/large-test || return 1
+    git-worktree-checkout -b feature/large-test || return 1
     
     # Verify structure and some files
     assert_directory_exists "feature/large-test" || return 1
@@ -260,7 +260,7 @@ test_checkout_branch_with_uncommitted() {
     echo "Uncommitted changes" > "main/uncommitted.txt"
     
     # Test checkout-branch should still work (creates new worktree)
-    git-worktree-checkout-branch feature/new-branch || return 1
+    git-worktree-checkout -b feature/new-branch || return 1
     
     # Verify both worktrees exist
     assert_directory_exists "feature/new-branch" || return 1
@@ -279,8 +279,8 @@ test_checkout_branch_security() {
     cd "test-repo-checkout-branch-security"
     
     # Test that path traversal attempts are handled safely
-    assert_command_failure "git-worktree-checkout-branch ../../../etc/passwd" "Should fail with path traversal attempt"
-    assert_command_failure "git-worktree-checkout-branch ..\\..\\..\\windows\\system32" "Should fail with Windows path traversal"
+    assert_command_failure "git-worktree-checkout -b ../../../etc/passwd" "Should fail with path traversal attempt"
+    assert_command_failure "git-worktree-checkout -b ..\\..\\..\\windows\\system32" "Should fail with Windows path traversal"
     
     # Verify no directories were created outside the repository
     if [[ -d "../../../etc" ]] || [[ -d "..\\..\\..\\windows" ]]; then
@@ -311,7 +311,7 @@ test_checkout_branch_carry_staged() {
     git add staged_file.txt
 
     # Create new branch (default should carry changes)
-    git-worktree-checkout-branch feature/carry-staged || return 1
+    git-worktree-checkout -b feature/carry-staged || return 1
 
     cd "$repo_root/feature/carry-staged"
 
@@ -340,7 +340,7 @@ test_checkout_branch_carry_unstaged() {
     echo "modified content" >> README.md
 
     # Create new branch (default should carry changes)
-    git-worktree-checkout-branch feature/carry-unstaged || return 1
+    git-worktree-checkout -b feature/carry-unstaged || return 1
 
     cd "$repo_root/feature/carry-unstaged"
 
@@ -365,7 +365,7 @@ test_checkout_branch_carry_untracked() {
     echo "untracked content" > untracked_file.txt
 
     # Create new branch (default should carry changes including untracked)
-    git-worktree-checkout-branch feature/carry-untracked || return 1
+    git-worktree-checkout -b feature/carry-untracked || return 1
 
     cd "$repo_root/feature/carry-untracked"
 
@@ -391,7 +391,7 @@ test_checkout_branch_carry_explicit() {
     echo "explicit carry content" > explicit_file.txt
 
     # Create new branch with explicit --carry flag
-    git-worktree-checkout-branch --carry feature/explicit-carry || return 1
+    git-worktree-checkout -b --carry feature/explicit-carry || return 1
 
     cd "$repo_root/feature/explicit-carry"
 
@@ -416,7 +416,7 @@ test_checkout_branch_carry_shorthand() {
     echo "shorthand carry content" > shorthand_file.txt
 
     # Create new branch with -c shorthand
-    git-worktree-checkout-branch -c feature/shorthand-carry || return 1
+    git-worktree-checkout -b -c feature/shorthand-carry || return 1
 
     cd "$repo_root/feature/shorthand-carry"
 
@@ -441,7 +441,7 @@ test_checkout_branch_no_carry() {
     echo "no carry content" > no_carry_file.txt
 
     # Create new branch with --no-carry flag
-    git-worktree-checkout-branch --no-carry feature/no-carry || return 1
+    git-worktree-checkout -b --no-carry feature/no-carry || return 1
 
     cd "$repo_root"
 
@@ -466,7 +466,7 @@ test_checkout_branch_carry_no_changes() {
 
     # No changes - just create new branch
     cd main
-    git-worktree-checkout-branch feature/clean-create || return 1
+    git-worktree-checkout -b feature/clean-create || return 1
 
     cd "$repo_root"
 
@@ -495,7 +495,7 @@ test_checkout_branch_carry_mixed() {
     echo "untracked" > untracked.txt
 
     # Create new branch (default carries all)
-    git-worktree-checkout-branch feature/mixed-carry || return 1
+    git-worktree-checkout -b feature/mixed-carry || return 1
 
     cd "$repo_root/feature/mixed-carry"
 
@@ -511,7 +511,7 @@ test_checkout_branch_carry_mixed() {
 test_checkout_branch_carry_help() {
     # Verify --carry and --no-carry appear in help
     local help_output
-    help_output=$(git-worktree-checkout-branch --help 2>&1)
+    help_output=$(git-worktree-checkout --help 2>&1)
 
     if echo "$help_output" | grep -q "\-\-carry"; then
         log_success "--carry flag appears in help"
@@ -561,7 +561,7 @@ test_checkout_branch_carry_from_base_branch_worktree() {
 
     # From main worktree, create a new branch based on develop
     # Changes should be carried from develop's worktree, not from main
-    git-worktree-checkout-branch feature/from-develop develop || return 1
+    git-worktree-checkout -b feature/from-develop develop || return 1
 
     cd "$repo_root/feature/from-develop"
 
@@ -594,7 +594,7 @@ test_checkout_branch_carry_skip_no_worktree() {
 
     # Create a new branch from develop (which has no worktree - only exists as remote branch)
     # Should succeed without error, and carry should be silently skipped
-    git-worktree-checkout-branch feature/from-remote-only develop || return 1
+    git-worktree-checkout -b feature/from-remote-only develop || return 1
 
     cd "$repo_root/feature/from-remote-only"
 
@@ -609,7 +609,7 @@ test_checkout_branch_carry_skip_no_worktree() {
 
 # Run all checkout-branch tests
 run_checkout_branch_tests() {
-    log "Running git-worktree-checkout-branch integration tests..."
+    log "Running git-worktree-checkout -b (create branch) integration tests..."
 
     run_test "checkout_branch_basic" "test_checkout_branch_basic"
     run_test "checkout_branch_with_base" "test_checkout_branch_with_base"

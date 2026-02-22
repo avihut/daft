@@ -64,7 +64,7 @@ under:
 
 ```bash
 # Create worktree under origin/
-git worktree-checkout-branch feature/auth --remote origin
+git worktree-checkout -b feature/auth --remote origin
 
 # Create worktree under upstream/
 git worktree-checkout upstream-branch --remote upstream

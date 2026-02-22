@@ -11,7 +11,7 @@ Delete branches and their worktrees
 
 Deletes one or more local branches along with their associated worktrees and
 remote tracking branches in a single operation. This is the inverse of
-git-worktree-checkout-branch(1).
+git-worktree-checkout(1) -b.
 
 Arguments can be branch names or worktree paths. When a path is given
 (absolute, relative, or "."), the branch checked out in that worktree is
@@ -65,5 +65,5 @@ git worktree-branch-delete [OPTIONS] <BRANCHES>
 ## See Also
 
 - [git-worktree-prune](./git-worktree-prune.md)
-- [git-worktree-checkout-branch](./git-worktree-checkout-branch.md)
+- [git-worktree-checkout](./git-worktree-checkout.md)
 

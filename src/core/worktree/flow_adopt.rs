@@ -55,7 +55,7 @@ pub fn execute(params: &AdoptParams, progress: &mut dyn ProgressSink) -> Result<
     if is_worktree_layout(&git)? {
         anyhow::bail!(
             "Repository is already in worktree layout.\n\
-             Use git-worktree-checkout or git-worktree-checkout-branch to create new worktrees."
+             Use git-worktree-checkout or git-worktree-checkout -b to create new worktrees."
         );
     }
 

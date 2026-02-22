@@ -403,7 +403,7 @@ mod tests {
     fn make_ctx() -> HookContext {
         HookContext::new(
             HookType::PostCreate,
-            "checkout-branch",
+            "checkout",
             "/project",
             "/project/.git",
             "origin",

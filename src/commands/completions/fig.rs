@@ -134,10 +134,7 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
 
     let has_branches = matches!(
         command_name,
-        "git-worktree-checkout"
-            | "git-worktree-checkout-branch"
-            | "git-worktree-carry"
-            | "git-worktree-fetch"
+        "git-worktree-checkout" | "git-worktree-carry" | "git-worktree-fetch"
     );
 
     let about = cmd.get_about().map(|a| a.to_string());
@@ -486,15 +483,6 @@ mod tests {
         assert!(
             !spec.contains("generators"),
             "prune spec should not have generators"
-        );
-    }
-
-    #[test]
-    fn fig_checkout_branch_spec_has_position() {
-        let spec = generate_fig_completion_string("git-worktree-checkout-branch").unwrap();
-        assert!(
-            spec.contains("--position"),
-            "checkout-branch spec should have --position for second arg"
         );
     }
 

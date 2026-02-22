@@ -44,7 +44,7 @@ test_unknown_command_daft_suggestion() {
         return 1
     fi
 
-    if [[ "$output" != *"The most similar command is"* ]]; then
+    if [[ "$output" != *"The most similar command"* ]]; then
         log_error "Expected suggestion header, got: $output"
         return 1
     fi

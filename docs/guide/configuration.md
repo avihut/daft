@@ -143,7 +143,7 @@ of this, daft passes `--no-verify` on all `git push` calls, skipping any
 
 This affects three commands:
 
-- **`git worktree-checkout-branch`** -- pushes the new branch to set upstream
+- **`git worktree-checkout -b`** -- pushes the new branch to set upstream
   tracking
 - **`git worktree-branch-delete`** -- pushes `--delete` to remove the remote
   branch

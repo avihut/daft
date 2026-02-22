@@ -62,7 +62,7 @@ brew install avihut/tap/daft
 git worktree-clone git@github.com:user/my-project.git
 
 # Start a feature branch
-git worktree-checkout-branch feature/auth
+git worktree-checkout -b feature/auth
 ```
 
 Each directory is a full working copy. Run different branches in different

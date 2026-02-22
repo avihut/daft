@@ -66,18 +66,36 @@ daft commands can be invoked in three ways:
 | -------------- | ------------------------------------- | --------------------------------------- |
 | Git subcommand | `git worktree-checkout feature/auth`  | `git-worktree-checkout` symlink on PATH |
 | Direct binary  | `daft worktree-checkout feature/auth` | Only the `daft` binary                  |
+| Verb alias     | `daft go feature/auth`                | Only the `daft` binary                  |
 | Shortcut alias | `gwtco feature/auth`                  | Shortcut symlink on PATH                |
 
 The git subcommand form (`git worktree-*`) is what users type in their terminals
 and what documentation references. Shortcuts are optional short aliases managed
 via `daft setup shortcuts`.
 
+### Verb Aliases
+
+daft provides short verb aliases for common commands:
+
+| Verb Alias    | Equivalent Command            |
+| ------------- | ----------------------------- |
+| `daft go`     | `daft worktree-checkout`      |
+| `daft start`  | `daft worktree-checkout -b`   |
+| `daft clone`  | `daft worktree-clone`         |
+| `daft init`   | `daft worktree-init`          |
+| `daft carry`  | `daft worktree-carry`         |
+| `daft fetch`  | `daft worktree-fetch`         |
+| `daft prune`  | `daft worktree-prune`         |
+| `daft remove` | `daft worktree-branch-delete` |
+| `daft adopt`  | `daft worktree-flow-adopt`    |
+| `daft eject`  | `daft worktree-flow-eject`    |
+
 **Agent execution rule**: When running daft commands, always use the direct
-binary form (`daft <subcommand>`). The git subcommand form requires symlinks and
-shell wrappers that are not available in most agent shell sandboxes. When
-explaining daft usage to users, reference the git subcommand form
-(`git worktree-*`) or shortcuts, as these are what users interact with in their
-configured terminals.
+binary form (`daft <subcommand>`) or verb aliases. The git subcommand form
+requires symlinks and shell wrappers that are not available in most agent shell
+sandboxes. When explaining daft usage to users, reference the git subcommand
+form (`git worktree-*`), verb aliases, or shortcuts, as these are what users
+interact with in their configured terminals.
 
 After creating a worktree with `daft`, the shell does not automatically `cd`
 into it (that requires shell wrappers). Navigate to the new worktree using the
@@ -91,17 +109,17 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 
 ### Worktree Lifecycle
 
-| Command                                             | Description                                                                      |
-| --------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `daft worktree-clone <url>`                         | Clone a remote repository into daft's worktree layout                            |
-| `daft worktree-init <name>`                         | Initialize a new local repository in worktree layout                             |
-| `daft worktree-checkout <branch>`                   | Create a worktree for an existing local or remote branch                         |
-| `daft worktree-checkout-branch <new-branch> [base]` | Create a new branch and worktree from current or specified base                  |
-| `daft worktree-branch-delete <branch>`              | Fully delete a branch: its worktree, local branch, and remote tracking branch    |
-| `daft worktree-branch-delete -D <branch>`           | Force-delete a branch bypassing safety checks (except default branch protection) |
-| `daft worktree-prune`                               | Remove worktrees whose remote branches have been deleted                         |
-| `daft worktree-carry <targets>`                     | Transfer uncommitted changes to one or more other worktrees                      |
-| `daft worktree-fetch [targets]`                     | Pull remote updates into worktree branches                                       |
+| Command                                         | Description                                                                      |
+| ----------------------------------------------- | -------------------------------------------------------------------------------- |
+| `daft worktree-clone <url>`                     | Clone a remote repository into daft's worktree layout                            |
+| `daft worktree-init <name>`                     | Initialize a new local repository in worktree layout                             |
+| `daft worktree-checkout <branch>`               | Create a worktree for an existing local or remote branch                         |
+| `daft worktree-checkout -b <new-branch> [base]` | Create a new branch and worktree from current or specified base                  |
+| `daft worktree-branch-delete <branch>`          | Fully delete a branch: its worktree, local branch, and remote tracking branch    |
+| `daft worktree-branch-delete -D <branch>`       | Force-delete a branch bypassing safety checks (except default branch protection) |
+| `daft worktree-prune`                           | Remove worktrees whose remote branches have been deleted                         |
+| `daft worktree-carry <targets>`                 | Transfer uncommitted changes to one or more other worktrees                      |
+| `daft worktree-fetch [targets]`                 | Pull remote updates into worktree branches                                       |
 
 ### Adoption and Ejection
 
@@ -125,12 +143,12 @@ They find the project root automatically via `git rev-parse --git-common-dir`.
 
 ### Post-setup Command Execution (`-x`/`--exec`)
 
-The `clone`, `init`, `checkout`, and `checkout-branch` commands support
-`-x`/`--exec` to run commands in the new worktree immediately after setup:
+The `clone`, `init`, and `checkout` commands support `-x`/`--exec` to run
+commands in the new worktree immediately after setup:
 
 ```bash
 daft worktree-clone https://github.com/org/repo -x 'mise install' -x 'npm run dev'
-daft worktree-checkout-branch my-feature -x claude
+daft worktree-checkout -b my-feature -x claude
 daft worktree-init my-project -x 'echo "ready"'
 ```
 
@@ -152,7 +170,7 @@ eval "$(daft shell-init bash)"
 # Fish -- add to ~/.config/fish/config.fish
 daft shell-init fish | source
 
-# With short aliases (gwco, gwcob, gwcobd)
+# With short aliases (gwco, gwcob, gwcobd) -- gwcob maps to checkout -b
 eval "$(daft shell-init bash --aliases)"
 ```
 
@@ -272,18 +290,18 @@ A job can contain a nested group with its own execution mode:
 
 Available in `run` commands:
 
-| Variable            | Description                                |
-| ------------------- | ------------------------------------------ |
-| `{branch}`          | Target branch name                         |
-| `{worktree_path}`   | Path to the target worktree                |
-| `{worktree_root}`   | Project root directory                     |
-| `{source_worktree}` | Path to the source worktree                |
-| `{git_dir}`         | Path to the `.git` directory               |
-| `{remote}`          | Remote name (usually `origin`)             |
-| `{job_name}`        | Name of the current job                    |
-| `{base_branch}`     | Base branch (for checkout-branch commands) |
-| `{repository_url}`  | Repository URL (for post-clone)            |
-| `{default_branch}`  | Default branch name (for post-clone)       |
+| Variable            | Description                            |
+| ------------------- | -------------------------------------- |
+| `{branch}`          | Target branch name                     |
+| `{worktree_path}`   | Path to the target worktree            |
+| `{worktree_root}`   | Project root directory                 |
+| `{source_worktree}` | Path to the source worktree            |
+| `{git_dir}`         | Path to the `.git` directory           |
+| `{remote}`          | Remote name (usually `origin`)         |
+| `{job_name}`        | Name of the current job                |
+| `{base_branch}`     | Base branch (for checkout -b commands) |
+| `{repository_url}`  | Repository URL (for post-clone)        |
+| `{default_branch}`  | Default branch name (for post-clone)   |
 
 ### Skip and Only Conditions
 
@@ -511,8 +529,8 @@ When working in a daft-managed repository, apply these translations:
 
 | User intent           | Correct daft approach                                                                                |
 | --------------------- | ---------------------------------------------------------------------------------------------------- |
-| "Create a branch"     | `daft worktree-checkout-branch <name>` -- creates branch + worktree + pushes                         |
-| "Branch from main"    | `daft worktree-checkout-branch <name> main` -- branches from the specified base                      |
+| "Create a branch"     | `daft worktree-checkout -b <name>` -- creates branch + worktree + pushes                             |
+| "Branch from main"    | `daft worktree-checkout -b <name> main` -- branches from the specified base                          |
 | "Switch to branch X"  | Navigate to the worktree directory: `cd ../X/`                                                       |
 | "Check out a PR"      | `daft worktree-checkout <branch>` -- creates worktree for existing branch                            |
 | "Delete a branch"     | `daft worktree-branch-delete <branch>` -- removes worktree, local branch, and remote tracking branch |
@@ -551,9 +569,12 @@ daft supports three shortcut styles as symlink aliases for faster terminal use:
 | Shell         | `gwco`, `gwcob`                                                                      | `gwco feature/auth`  |
 | Legacy        | `gclone`, `gcw`, `gcbw`, `gprune`                                                    | `gcw feature/auth`   |
 
+The `gwtcb`, `gwcob`, and `gcbw` shortcuts map to `git-worktree-checkout -b`
+(branch creation mode).
+
 Default-branch shortcuts (`gwtcm`, `gwtcbm`, `gwcobd`, `gcbdw`) are available
 via shell integration only (`daft shell-init`). They resolve the remote's
-default branch dynamically.
+default branch dynamically and use `git-worktree-checkout -b`.
 
 Manage with `daft setup shortcuts list`, `enable <style>`, `disable <style>`,
 `only <style>`.

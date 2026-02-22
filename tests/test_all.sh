@@ -63,13 +63,13 @@ test_full_workflow() {
     git commit -m "Initial commit" >/dev/null 2>&1
     cd ..
     
-    # Step 3: Create new branches with checkout-branch (suppress push errors)
-    git worktree-checkout-branch feature/test-feature >/dev/null 2>&1 || true
+    # Step 3: Create new branches with checkout -b (suppress push errors)
+    git worktree-checkout -b feature/test-feature >/dev/null 2>&1 || true
     assert_directory_exists "feature/test-feature" || return 1
     assert_git_worktree "feature/test-feature" "feature/test-feature" || return 1
     
     # Step 4: Create branch from current branch (since we don't have a remote)
-    git worktree-checkout-branch bugfix/test-bug >/dev/null 2>&1 || true
+    git worktree-checkout -b bugfix/test-bug >/dev/null 2>&1 || true
     assert_directory_exists "bugfix/test-bug" || return 1
     assert_git_worktree "bugfix/test-bug" "bugfix/test-bug" || return 1
     
@@ -106,7 +106,7 @@ test_performance_basic() {
     # Test checkout operations are still fast
     local start_time=$(date +%s)
     # Suppress push errors since there's no remote
-    git worktree-checkout-branch performance-branch >/dev/null 2>&1 || true
+    git worktree-checkout -b performance-branch >/dev/null 2>&1 || true
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
     
@@ -163,7 +163,7 @@ test_cross_platform() {
     
     for branch in "${branch_names[@]}"; do
         # Suppress push errors since there's no remote
-        git worktree-checkout-branch "$branch" >/dev/null 2>&1 || true
+        git worktree-checkout -b "$branch" >/dev/null 2>&1 || true
         assert_directory_exists "$branch" || return 1
         assert_git_worktree "$branch" "$branch" || return 1
     done
@@ -180,8 +180,8 @@ test_security_path_traversal() {
     cd "security-test"
     
     # Test with path traversal attempts (should fail or be sanitized)
-    assert_command_failure "git worktree-checkout-branch ../../../etc/passwd" "Should fail with path traversal attempt"
-    assert_command_failure "git worktree-checkout-branch ..\\..\\..\\windows\\system32" "Should fail with Windows path traversal"
+    assert_command_failure "git worktree-checkout -b ../../../etc/passwd" "Should fail with path traversal attempt"
+    assert_command_failure "git worktree-checkout -b ..\\..\\..\\windows\\system32" "Should fail with Windows path traversal"
     
     # Verify no directories were created outside the repository
     if [[ -d "../../../etc" ]] || [[ -d "..\\..\\..\\windows" ]]; then

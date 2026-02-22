@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Tests for git-worktree-checkout-branch command
+# Tests for git-worktree-checkout -b (checkout with new branch creation)
 
 source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 
@@ -27,7 +27,7 @@ test_checkout_branch_basic() {
     
     # Test checkout-branch from current branch (main)
     cd "main"
-    git worktree-checkout-branch feature/new-feature || return 1
+    git worktree-checkout -b feature/new-feature || return 1
     
     # Verify structure
     assert_directory_exists "$repo_dir/feature/new-feature" || return 1
@@ -55,7 +55,7 @@ test_checkout_branch_explicit_base() {
     
     # Test checkout-branch with explicit base branch
     cd "main"
-    git worktree-checkout-branch feature/from-develop develop || return 1
+    git worktree-checkout -b feature/from-develop develop || return 1
     
     # Verify structure
     assert_directory_exists "$repo_dir/feature/from-develop" || return 1
@@ -86,7 +86,7 @@ test_checkout_branch_from_different_worktree() {
     
     # From develop worktree, create new branch
     cd "develop"
-    git worktree-checkout-branch feature/from-develop-worktree || return 1
+    git worktree-checkout -b feature/from-develop-worktree || return 1
     
     # Verify structure
     assert_directory_exists "$repo_dir/feature/from-develop-worktree" || return 1
@@ -116,7 +116,7 @@ test_checkout_branch_detached_head() {
     git checkout HEAD~0 >/dev/null 2>&1  # Creates detached HEAD
     
     # Test checkout-branch from detached HEAD should fail
-    assert_command_failure "git worktree-checkout-branch feature/from-detached" "Should fail from detached HEAD"
+    assert_command_failure "git worktree-checkout -b feature/from-detached" "Should fail from detached HEAD"
     
     return 0
 }
@@ -127,7 +127,7 @@ test_checkout_branch_nested_directories() {
     
     # Test with deeply nested branch name
     cd "main"
-    git worktree-checkout-branch feature/ui/components/button || return 1
+    git worktree-checkout -b feature/ui/components/button || return 1
     
     # Verify structure
     assert_directory_exists "$repo_dir/feature/ui/components/button" || return 1
@@ -142,7 +142,7 @@ test_checkout_branch_remote_tracking() {
     
     # Mock remote repository (we'll simulate push failure later)
     cd "main"
-    git worktree-checkout-branch feature/remote-test || return 1
+    git worktree-checkout -b feature/remote-test || return 1
     
     # Verify remote tracking was set up
     cd "$repo_dir/feature/remote-test"
@@ -162,7 +162,7 @@ test_checkout_branch_no_name() {
     
     # Test without branch name should fail
     cd "main"
-    assert_command_failure "git worktree-checkout-branch" "Should fail with no branch name"
+    assert_command_failure "git worktree-checkout -b" "Should fail with no branch name"
     
     return 0
 }
@@ -173,10 +173,10 @@ test_checkout_branch_existing_name() {
     
     # Create branch first
     cd "main"
-    git worktree-checkout-branch feature/existing || return 1
+    git worktree-checkout -b feature/existing || return 1
     
     # Try to create same branch again should fail
-    assert_command_failure "git worktree-checkout-branch feature/existing" "Should fail with existing branch name"
+    assert_command_failure "git worktree-checkout -b feature/existing" "Should fail with existing branch name"
     
     return 0
 }
@@ -187,7 +187,7 @@ test_checkout_branch_nonexistent_base() {
     
     # Test with non-existent base branch should fail
     cd "main"
-    assert_command_failure "git worktree-checkout-branch feature/test nonexistent-base" "Should fail with non-existent base branch"
+    assert_command_failure "git worktree-checkout -b feature/test nonexistent-base" "Should fail with non-existent base branch"
     
     return 0
 }
@@ -201,7 +201,7 @@ test_checkout_branch_from_subdirectory() {
     cd "main/deep/nested/dir"
     
     # Test checkout-branch from deep subdirectory
-    git worktree-checkout-branch feature/from-subdir || return 1
+    git worktree-checkout -b feature/from-subdir || return 1
     
     # Verify structure (should create at repo root, not in subdirectory)
     assert_directory_exists "$repo_dir/feature/from-subdir" || return 1
@@ -216,7 +216,7 @@ test_checkout_branch_outside_repo() {
     cd "$WORK_DIR"
     
     # Test should fail
-    assert_command_failure "git worktree-checkout-branch feature/test" "Should fail outside git repository"
+    assert_command_failure "git worktree-checkout -b feature/test" "Should fail outside git repository"
     
     return 0
 }
@@ -227,7 +227,7 @@ test_checkout_branch_special_characters() {
     
     # Test with branch names containing special characters
     cd "main"
-    git worktree-checkout-branch "feature/test-123_v2.0" || return 1
+    git worktree-checkout -b "feature/test-123_v2.0" || return 1
     
     # Verify structure
     assert_directory_exists "$repo_dir/feature/test-123_v2.0" || return 1
@@ -244,7 +244,7 @@ test_checkout_branch_different_remote() {
     cd "main"
     
     # Test checkout-branch still works (should use default 'origin' remote)
-    git worktree-checkout-branch feature/test-remote || return 1
+    git worktree-checkout -b feature/test-remote || return 1
     
     # Verify structure
     assert_directory_exists "$repo_dir/feature/test-remote" || return 1
@@ -264,7 +264,7 @@ test_checkout_branch_direnv() {
     git commit -m "Add .envrc" >/dev/null 2>&1
     
     # Test checkout-branch (should handle .envrc gracefully)
-    git worktree-checkout-branch feature/with-envrc || return 1
+    git worktree-checkout -b feature/with-envrc || return 1
     
     # Verify structure and .envrc file was copied
     assert_directory_exists "$repo_dir/feature/with-envrc" || return 1
@@ -282,7 +282,7 @@ test_checkout_branch_error_cleanup() {
     
     # The command should still create worktree even if push fails
     # (We can't easily simulate push failure, so we'll test directory creation)
-    git worktree-checkout-branch feature/cleanup-test || return 1
+    git worktree-checkout -b feature/cleanup-test || return 1
     
     # Verify structure was created
     assert_directory_exists "$repo_dir/feature/cleanup-test" || return 1
@@ -293,7 +293,7 @@ test_checkout_branch_error_cleanup() {
 
 # Run all checkout-branch tests
 run_checkout_branch_tests() {
-    log "Running git-worktree-checkout-branch tests..."
+    log "Running git-worktree-checkout -b tests..."
     
     run_test "checkout_branch_basic" "test_checkout_branch_basic"
     run_test "checkout_branch_explicit_base" "test_checkout_branch_explicit_base"

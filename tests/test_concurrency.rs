@@ -115,7 +115,7 @@ fn test_concurrent_git_operations() -> Result<()> {
 /// Test concurrent branch checking operations specifically
 ///
 /// This targets the specific race condition concern about the complex branch
-/// checking logic in checkout-branch operations.
+/// checking logic in checkout -b operations.
 #[test]
 fn test_concurrent_branch_checking() -> Result<()> {
     let temp_dir = TempDir::new()?;

@@ -30,7 +30,7 @@ EOF
     cd ..
 
     # Create a new worktree - hooks should NOT be executed (untrusted)
-    git-worktree-checkout-branch feature/test-hooks >/dev/null 2>&1 || true
+    git-worktree-checkout -b feature/test-hooks >/dev/null 2>&1 || true
 
     # Verify the marker file was NOT created (hook not executed)
     if ls /tmp/daft-hook-executed-untrusted-* 2>/dev/null | head -1; then
@@ -226,7 +226,7 @@ EOF
     git-daft hooks trust --level=allow >/dev/null 2>&1 || true
 
     # Create a new worktree
-    git-worktree-checkout-branch feature/hook-test >/dev/null 2>&1 || true
+    git-worktree-checkout -b feature/hook-test >/dev/null 2>&1 || true
 
     # Check if hook was executed (look for the env file)
     if [[ -f "feature/hook-test/.hook-env" ]]; then
@@ -274,7 +274,7 @@ EOF
     git-daft hooks trust --level=allow >/dev/null 2>&1 || true
 
     # Try to create a new worktree (should fail if pre-create fails)
-    if git-worktree-checkout-branch feature/should-fail >/dev/null 2>&1; then
+    if git-worktree-checkout -b feature/should-fail >/dev/null 2>&1; then
         # Check if the worktree was actually created
         if [[ -d "feature/should-fail" ]]; then
             log_warning "Worktree created despite failing pre-create hook (hooks may not be trusted)"
@@ -359,7 +359,7 @@ EOF
     git-daft hooks trust --level=allow >/dev/null 2>&1 || true
 
     # Create a new worktree - should emit deprecation warning
-    local output=$(git-worktree-checkout-branch feature/deprecated-test 2>&1)
+    local output=$(git-worktree-checkout -b feature/deprecated-test 2>&1)
 
     # Check for deprecation warning in output
     if echo "$output" | grep -qi "deprecated"; then

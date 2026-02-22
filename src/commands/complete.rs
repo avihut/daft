@@ -64,14 +64,6 @@ fn complete(command: &str, position: usize, word: &str, verbose: bool) -> Result
         // git-worktree-checkout: complete existing branch names
         ("git-worktree-checkout", 1) => complete_existing_branches(word, verbose),
 
-        // git-worktree-checkout-branch: position 1 = new branch name (no completion),
-        // position 2 = base branch name (existing branches)
-        ("git-worktree-checkout-branch", 1) => {
-            // New branch name - suggest based on common patterns
-            Ok(suggest_new_branch_names(word))
-        }
-        ("git-worktree-checkout-branch", 2) => complete_existing_branches(word, verbose),
-
         // git-worktree-clone: repository URL (no dynamic completion for now)
         ("git-worktree-clone", 1) => Ok(vec![]),
 
@@ -154,6 +146,7 @@ fn complete_existing_branches(prefix: &str, verbose: bool) -> Result<Vec<String>
 }
 
 /// Suggest common branch name patterns for new branches
+#[allow(dead_code)]
 fn suggest_new_branch_names(prefix: &str) -> Vec<String> {
     let patterns = [
         "feature/",

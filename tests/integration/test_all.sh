@@ -73,13 +73,13 @@ test_integration_full_workflow() {
     git commit -m "Initial commit" >/dev/null 2>&1
     cd ..
     
-    # Step 3: Create new branches with checkout-branch
-    git-worktree-checkout-branch feature/integration-test >/dev/null 2>&1 || true
+    # Step 3: Create new branches with checkout -b
+    git-worktree-checkout -b feature/integration-test >/dev/null 2>&1 || true
     assert_directory_exists "feature/integration-test" || return 1
     assert_git_worktree "feature/integration-test" "feature/integration-test" || return 1
     
     # Step 4: Create branch from master (since this is a local repo with no remote)
-    git-worktree-checkout-branch hotfix/integration-fix master >/dev/null 2>&1 || true
+    git-worktree-checkout -b hotfix/integration-fix master >/dev/null 2>&1 || true
     assert_directory_exists "hotfix/integration-fix" || return 1
     assert_git_worktree "hotfix/integration-fix" "hotfix/integration-fix" || return 1
     
@@ -115,7 +115,7 @@ test_integration_performance_basic() {
     
     # Test checkout operations are still fast
     local start_time=$(date +%s)
-    git-worktree-checkout-branch performance-branch >/dev/null 2>&1 || true
+    git-worktree-checkout -b performance-branch >/dev/null 2>&1 || true
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
     
@@ -171,7 +171,7 @@ test_integration_cross_platform() {
     local branch_names=("feature/test" "bugfix-123" "hotfix_urgent" "release-v1.0.0")
     
     for branch in "${branch_names[@]}"; do
-        git-worktree-checkout-branch "$branch" >/dev/null 2>&1 || true
+        git-worktree-checkout -b "$branch" >/dev/null 2>&1 || true
         assert_directory_exists "$branch" || return 1
         assert_git_worktree "$branch" "$branch" || return 1
     done
@@ -188,8 +188,8 @@ test_integration_security_path_traversal() {
     cd "security-test"
     
     # Test with path traversal attempts (should fail or be sanitized)
-    assert_command_failure "git-worktree-checkout-branch ../../../etc/passwd" "Should fail with path traversal attempt"
-    assert_command_failure "git-worktree-checkout-branch ..\\..\\..\\windows\\system32" "Should fail with Windows path traversal"
+    assert_command_failure "git-worktree-checkout -b ../../../etc/passwd" "Should fail with path traversal attempt"
+    assert_command_failure "git-worktree-checkout -b ..\\..\\..\\windows\\system32" "Should fail with Windows path traversal"
     
     # Verify no directories were created outside the repository
     if [[ -d "../../../etc" ]] || [[ -d "..\\..\\..\\windows" ]]; then
@@ -204,7 +204,7 @@ test_integration_security_path_traversal() {
 # Test binary availability and help functionality
 test_integration_binaries_availability() {
     # Test that all Rust binaries are available and working
-    local binaries=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-prune")
+    local binaries=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-prune")
     
     for binary in "${binaries[@]}"; do
         assert_command_success "command -v $binary" "Binary $binary should be available" || return 1
@@ -235,8 +235,8 @@ test_integration_rust_vs_shell_compatibility() {
     git commit -m "Initial commit" >/dev/null 2>&1
     cd ..
     
-    # Test checkout-branch
-    git-worktree-checkout-branch feature/rust-test >/dev/null 2>&1 || true
+    # Test checkout -b
+    git-worktree-checkout -b feature/rust-test >/dev/null 2>&1 || true
     assert_directory_exists "feature/rust-test" || return 1
     assert_git_worktree "feature/rust-test" "feature/rust-test" || return 1
     
@@ -255,7 +255,7 @@ test_integration_real_world_scenarios() {
     cd "real-world-test"
     
     # Feature development workflow
-    git-worktree-checkout-branch feature/user-authentication || return 1
+    git-worktree-checkout -b feature/user-authentication || return 1
     
     # Add some work
     cd "feature/user-authentication"
@@ -265,7 +265,7 @@ test_integration_real_world_scenarios() {
     cd ..
     
     # Hotfix workflow (branch from main)
-    git-worktree-checkout-branch hotfix/security-fix main || return 1
+    git-worktree-checkout -b hotfix/security-fix main || return 1
     
     # Add hotfix
     cd "hotfix/security-fix"

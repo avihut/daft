@@ -97,7 +97,10 @@ npm run lint
 
 ```bash
 # Creates branch + worktree, pushes to remote, sets upstream
-git worktree-checkout-branch feature/user-auth
+git worktree-checkout -b feature/user-auth
+
+# Or using the daft verb alias
+daft start feature/user-auth
 ```
 
 ### Checking Out a PR for Review
@@ -105,6 +108,9 @@ git worktree-checkout-branch feature/user-auth
 ```bash
 # Creates worktree for existing remote branch
 git worktree-checkout feature/teammate-work
+
+# Or using the daft verb alias
+daft go feature/teammate-work
 ```
 
 ### Branching from Default
@@ -116,7 +122,7 @@ When your current branch has diverged and you need a fresh start:
 gwtcbm hotfix/critical-fix
 
 # Or specify the base branch explicitly
-git worktree-checkout-branch hotfix/critical-fix main
+git worktree-checkout -b hotfix/critical-fix main
 ```
 
 ### Moving Uncommitted Work

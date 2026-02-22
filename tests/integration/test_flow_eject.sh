@@ -63,7 +63,7 @@ test_flow_eject_with_branch() {
     cd "eject-branch"
 
     # Create an additional branch/worktree
-    git-worktree-checkout-branch feature/test >/dev/null 2>&1 || true
+    git-worktree-checkout -b feature/test >/dev/null 2>&1 || true
     # Handle case where checkout-branch might fail (no remote)
     if [[ ! -d "feature/test" ]]; then
         # Manually create worktree

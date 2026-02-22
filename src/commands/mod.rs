@@ -6,7 +6,6 @@ pub mod branch;
 pub mod branch_delete;
 pub mod carry;
 pub mod checkout;
-pub mod checkout_branch;
 pub mod clone;
 pub mod complete;
 pub mod completions;

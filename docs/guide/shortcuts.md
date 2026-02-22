@@ -16,48 +16,48 @@ Three styles are available. Enable the one that fits your preference.
 
 Prefix: `gwt` (Git Worktree)
 
-| Shortcut   | Full Command                   |
-| ---------- | ------------------------------ |
-| `gwtclone` | `git-worktree-clone`           |
-| `gwtinit`  | `git-worktree-init`            |
-| `gwtco`    | `git-worktree-checkout`        |
-| `gwtcb`    | `git-worktree-checkout-branch` |
-| `gwtbd`    | `git-worktree-branch-delete`   |
-| `gwtprune` | `git-worktree-prune`           |
-| `gwtcarry` | `git-worktree-carry`           |
-| `gwtfetch` | `git-worktree-fetch`           |
+| Shortcut   | Full Command                 |
+| ---------- | ---------------------------- |
+| `gwtclone` | `git-worktree-clone`         |
+| `gwtinit`  | `git-worktree-init`          |
+| `gwtco`    | `git-worktree-checkout`      |
+| `gwtcb`    | `git-worktree-checkout -b`   |
+| `gwtbd`    | `git-worktree-branch-delete` |
+| `gwtprune` | `git-worktree-prune`         |
+| `gwtcarry` | `git-worktree-carry`         |
+| `gwtfetch` | `git-worktree-fetch`         |
 
 ### Shell Style
 
 Prefix: `gw` (shorter, shell-friendly)
 
-| Shortcut | Full Command                   |
-| -------- | ------------------------------ |
-| `gwco`   | `git-worktree-checkout`        |
-| `gwcob`  | `git-worktree-checkout-branch` |
+| Shortcut | Full Command               |
+| -------- | -------------------------- |
+| `gwco`   | `git-worktree-checkout`    |
+| `gwcob`  | `git-worktree-checkout -b` |
 
 ### Legacy Style
 
 From earlier versions of daft:
 
-| Shortcut | Full Command                   |
-| -------- | ------------------------------ |
-| `gclone` | `git-worktree-clone`           |
-| `gcw`    | `git-worktree-checkout`        |
-| `gcbw`   | `git-worktree-checkout-branch` |
-| `gprune` | `git-worktree-prune`           |
+| Shortcut | Full Command               |
+| -------- | -------------------------- |
+| `gclone` | `git-worktree-clone`       |
+| `gcw`    | `git-worktree-checkout`    |
+| `gcbw`   | `git-worktree-checkout -b` |
+| `gprune` | `git-worktree-prune`       |
 
 ### Default-Branch Shortcuts (shell-init only)
 
 These shortcuts resolve the remote's default branch dynamically. They require
 shell integration (`daft shell-init`) and are not available as symlinks.
 
-| Shortcut | Style  | Description                       |
-| -------- | ------ | --------------------------------- |
-| `gwtcm`  | Git    | Check out the default branch      |
-| `gwtcbm` | Git    | Create branch from default branch |
-| `gwcobd` | Shell  | Create branch from default branch |
-| `gcbdw`  | Legacy | Create branch from default branch |
+| Shortcut | Style  | Description                                                    |
+| -------- | ------ | -------------------------------------------------------------- |
+| `gwtcm`  | Git    | Check out the default branch                                   |
+| `gwtcbm` | Git    | Create branch from default branch (`git-worktree-checkout -b`) |
+| `gwcobd` | Shell  | Create branch from default branch (`git-worktree-checkout -b`) |
+| `gcbdw`  | Legacy | Create branch from default branch (`git-worktree-checkout -b`) |
 
 ## Managing Shortcuts
 
@@ -101,6 +101,7 @@ eval "$(daft shell-init bash --aliases)"
 ```
 
 This creates shell functions (not symlinks) for the shell-style shortcuts
-(`gwco`, `gwcob`) with proper cd behavior built in. Default-branch shortcuts
-(`gwtcm`, `gwtcbm`, `gwcobd`, `gcbdw`) are always included in `daft shell-init`
-output regardless of the `--aliases` flag.
+(`gwco`, `gwcob`) with proper cd behavior built in. The `gwcob` alias maps to
+`git-worktree-checkout -b`. Default-branch shortcuts (`gwtcm`, `gwtcbm`,
+`gwcobd`, `gcbdw`) are always included in `daft shell-init` output regardless of
+the `--aliases` flag.

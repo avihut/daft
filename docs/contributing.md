@@ -33,7 +33,7 @@ Thank you for your interest in contributing to daft!
 1. Create a feature branch:
 
    ```bash
-   git worktree-checkout-branch daft-XX/feature-name
+   git worktree-checkout -b daft-XX/feature-name
    ```
 
 2. Make changes following the conventions below.

@@ -26,7 +26,7 @@ test_shell_init_bash_output() {
     fi
 
     # Check that it contains wrapper functions for each command
-    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-carry")
+    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-carry")
     for cmd in "${commands[@]}"; do
         if echo "$output" | grep -q "^${cmd}()"; then
             log_success "Output contains ${cmd} function"
@@ -92,7 +92,7 @@ test_shell_init_fish_output() {
     fi
 
     # Check that it contains wrapper functions for each command
-    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-carry")
+    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-carry")
     for cmd in "${commands[@]}"; do
         if echo "$output" | grep -q "function ${cmd}"; then
             log_success "Output contains ${cmd} function"
@@ -263,7 +263,7 @@ test_wrapper_cd_integration() {
     cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
 
     # Create a new branch worktree with DAFT_CD_FILE set
-    DAFT_CD_FILE="$cd_file" command git-worktree-checkout-branch test-branch 2>&1 || true
+    DAFT_CD_FILE="$cd_file" command git-worktree-checkout -b test-branch 2>&1 || true
 
     # Verify the temp file has content
     if [ -s "$cd_file" ]; then

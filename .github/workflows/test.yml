@@ -59,7 +59,7 @@ jobs:
 
           # Verify all expected man pages were generated
           for page in git-worktree-clone git-worktree-init git-worktree-checkout \
-                      git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
+                      git-worktree-prune git-worktree-carry \
                       git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
                       daft-release-notes; do
             if [ ! -f "/tmp/man-test/${page}.1" ]; then
@@ -99,7 +99,7 @@ jobs:
 
           # Verify all expected CLI docs were generated
           for page in git-worktree-clone git-worktree-init git-worktree-checkout \
-                      git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
+                      git-worktree-prune git-worktree-carry \
                       git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
                       daft-doctor daft-release-notes; do
             if [ ! -f "/tmp/cli-docs-test/${page}.md" ]; then
@@ -236,7 +236,7 @@ jobs:
           # Create symlinks for the multicall binary
           cd target/release
           for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
-                     git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
+                     git-worktree-prune git-worktree-carry \
                      git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
             ln -sf daft "$cmd"
           done
@@ -266,7 +266,6 @@ jobs:
           # Test Rust binary help (via symlinks)
           ./target/release/git-worktree-clone --help
           ./target/release/git-worktree-checkout --help
-          ./target/release/git-worktree-checkout-branch --help
           ./target/release/git-worktree-init --help
           ./target/release/git-worktree-prune --help
           ./target/release/git-worktree-carry --help
@@ -314,7 +313,7 @@ jobs:
           chmod +x "$PREFIX/bin/daft"
 
           # Create symlinks for all commands (matching Homebrew formula)
-          for cmd in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
+          for cmd in git-worktree-clone git-worktree-checkout \
                      git-worktree-init git-worktree-prune git-worktree-carry git-worktree-fetch \
                      git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
             ln -sf daft "$PREFIX/bin/$cmd"
@@ -336,7 +335,7 @@ jobs:
           daft --version
 
           echo "Verifying all symlinked commands..."
-          for cmd in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
+          for cmd in git-worktree-clone git-worktree-checkout \
                      git-worktree-init git-worktree-prune git-worktree-carry git-worktree-fetch \
                      git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
             echo "  Testing $cmd..."
@@ -351,7 +350,7 @@ jobs:
 
           echo "Verifying man pages exist and are valid..."
           # Only git-worktree-* commands have man pages (not daft or git-daft)
-          for page in git-worktree-clone git-worktree-checkout git-worktree-checkout-branch \
+          for page in git-worktree-clone git-worktree-checkout \
                       git-worktree-init git-worktree-prune git-worktree-carry git-worktree-fetch \
                       git-worktree-flow-adopt git-worktree-flow-eject; do
             MANFILE="$PREFIX/share/man/man1/${page}.1"

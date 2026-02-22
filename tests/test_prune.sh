@@ -18,8 +18,8 @@ setup_test_repo_with_branches() {
     # Create several worktrees
     git worktree-checkout develop >/dev/null 2>&1
     git worktree-checkout feature/test-feature >/dev/null 2>&1
-    git worktree-checkout-branch feature/local-branch >/dev/null 2>&1
-    git worktree-checkout-branch bugfix/local-bugfix >/dev/null 2>&1
+    git worktree-checkout -b feature/local-branch >/dev/null 2>&1
+    git worktree-checkout -b bugfix/local-bugfix >/dev/null 2>&1
     
     echo "$(pwd)"
 }
@@ -194,7 +194,7 @@ test_prune_worktree_no_remote() {
     local repo_dir=$(setup_test_repo_with_branches "prune-no-remote-test")
     
     # Create a local branch that was never pushed
-    git -C "$repo_dir" worktree-checkout-branch feature/never-pushed >/dev/null 2>&1
+    git -C "$repo_dir" worktree-checkout -b feature/never-pushed >/dev/null 2>&1
     
     # Delete the branch from remote side (simulate it was never there)
     # This branch should be detected as needing pruning
@@ -213,7 +213,7 @@ test_prune_nested_worktrees() {
     local repo_dir=$(setup_test_repo_with_branches "prune-nested-test")
     
     # Create branch with nested directory structure
-    git -C "$repo_dir" worktree-checkout-branch feature/ui/component >/dev/null 2>&1
+    git -C "$repo_dir" worktree-checkout -b feature/ui/component >/dev/null 2>&1
     
     # Verify nested structure exists
     assert_directory_exists "$repo_dir/feature/ui/component" || return 1

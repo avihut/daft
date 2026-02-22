@@ -87,7 +87,7 @@ pub fn execute(
     // Run pre-create hook
     let hook_ctx = HookContext::new(
         HookType::PreCreate,
-        "checkout-branch",
+        "checkout",
         project_root,
         &git_dir,
         &params.remote_name,
@@ -139,7 +139,7 @@ pub fn execute(
     // Run post-create hook
     let post_hook_ctx = HookContext::new(
         HookType::PostCreate,
-        "checkout-branch",
+        "checkout",
         project_root,
         &git_dir,
         &params.remote_name,
