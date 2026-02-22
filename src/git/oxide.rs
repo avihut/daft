@@ -151,7 +151,7 @@ pub fn branch_list_verbose(repo: &Repository) -> Result<String> {
         };
         let short_oid = if oid.len() > 7 { &oid[..7] } else { &oid };
 
-        // Try to get tracking info
+        // Try to get tracking info and detect gone upstreams
         let remote_key = format!("branch.{branch_name}.remote");
         let tracking = repo
             .config_snapshot()
@@ -169,7 +169,25 @@ pub fn branch_list_verbose(repo: &Repository) -> Result<String> {
                             .to_string()
                     })
                     .unwrap_or_default();
-                format!("[{remote}/{merge}]")
+
+                // Check if the remote-tracking ref still exists.
+                // If the upstream was deleted (e.g. after `git fetch --prune`),
+                // mark it as "gone" to match `git branch -vv` output.
+                if !merge.is_empty() {
+                    let remote_tracking_ref = format!("refs/remotes/{remote}/{merge}");
+                    let ref_exists = repo
+                        .try_find_reference(&*remote_tracking_ref)
+                        .ok()
+                        .flatten()
+                        .is_some();
+                    if ref_exists {
+                        format!("[{remote}/{merge}]")
+                    } else {
+                        format!("[{remote}/{merge}: gone]")
+                    }
+                } else {
+                    format!("[{remote}]")
+                }
             })
             .unwrap_or_default();
 
@@ -957,5 +975,122 @@ mod tests {
         // feature has 0 commits ahead of main
         let count = rev_list_count(&repo, "main..feature").unwrap();
         assert_eq!(count, 0, "feature should be 0 commits ahead of main");
+    }
+
+    #[test]
+    #[serial]
+    fn test_branch_list_verbose_gone_upstream() {
+        // Simulate a branch whose upstream tracking ref has been pruned:
+        // branch.feature.remote = origin and branch.feature.merge = refs/heads/feature
+        // but refs/remotes/origin/feature does NOT exist.
+        let (dir, _repo) = create_test_repo();
+        let path = dir.path().canonicalize().unwrap();
+
+        // Create a feature branch
+        git_cmd()
+            .args(["branch", "feature"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Add a remote and create a remote-tracking ref
+        git_cmd()
+            .args(["remote", "add", "origin", "https://example.com/repo.git"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Set up tracking config for the feature branch
+        git_cmd()
+            .args(["config", "branch.feature.remote", "origin"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["config", "branch.feature.merge", "refs/heads/feature"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Create a remote-tracking ref, then delete it to simulate fetch --prune
+        git_cmd()
+            .args([
+                "update-ref",
+                "refs/remotes/origin/feature",
+                "refs/heads/feature",
+            ])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Re-open repo and verify tracking shows normally (not gone)
+        let saved_cwd = std::env::current_dir().ok();
+        std::env::set_current_dir(&path).unwrap();
+        let repo = gix::open(&path).unwrap();
+        if let Some(cwd) = saved_cwd.clone() {
+            let _ = std::env::set_current_dir(cwd);
+        }
+
+        let output = branch_list_verbose(&repo).unwrap();
+        assert!(
+            output.contains("[origin/feature]"),
+            "Should show tracking info without gone when ref exists. Got: {output}"
+        );
+        assert!(
+            !output.contains(": gone]"),
+            "Should NOT show gone when remote-tracking ref exists. Got: {output}"
+        );
+
+        // Now delete the remote-tracking ref to simulate `git fetch --prune`
+        git_cmd()
+            .args(["update-ref", "-d", "refs/remotes/origin/feature"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Re-open repo to pick up ref changes
+        std::env::set_current_dir(&path).unwrap();
+        let repo = gix::open(&path).unwrap();
+        if let Some(cwd) = saved_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
+
+        let output = branch_list_verbose(&repo).unwrap();
+        assert!(
+            output.contains("[origin/feature: gone]"),
+            "Should show ': gone]' when remote-tracking ref is deleted. Got: {output}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_branch_list_verbose_no_tracking() {
+        // A branch without any tracking config should not show tracking info
+        let (dir, _repo) = create_test_repo();
+        let path = dir.path().canonicalize().unwrap();
+
+        git_cmd()
+            .args(["branch", "local-only"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        let saved_cwd = std::env::current_dir().ok();
+        std::env::set_current_dir(&path).unwrap();
+        let repo = gix::open(&path).unwrap();
+        if let Some(cwd) = saved_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
+
+        let output = branch_list_verbose(&repo).unwrap();
+        // Find the local-only line
+        let local_line = output
+            .lines()
+            .find(|l| l.contains("local-only"))
+            .expect("Should have a line for local-only branch");
+        assert!(
+            !local_line.contains('['),
+            "Branch without tracking should not have tracking info. Got: {local_line}"
+        );
     }
 }
