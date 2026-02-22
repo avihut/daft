@@ -80,7 +80,7 @@ test_simple_checkout_branch() {
     
     # Test checkout-branch (this will fail to push but should create the worktree)
     # We expect this to create the worktree but fail on the push since there's no remote
-    git worktree-checkout-branch feature/simple-feature >/dev/null 2>&1
+    git worktree-checkout -b feature/simple-feature >/dev/null 2>&1
     
     # Verify structure (worktree should be created even if push fails)
     assert_directory_exists "feature/simple-feature" || return 1

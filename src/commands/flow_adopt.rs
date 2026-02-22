@@ -50,16 +50,16 @@ HOW TO WORK WITH IT
 
 After adopting, use these commands:
 
-  git worktree-checkout <branch>
+  daft go <branch>
       Check out an existing branch into a new worktree
 
-  git worktree-checkout-branch <new-branch>
+  daft start <new-branch>
       Create a new branch and worktree from current branch
 
-  git worktree-checkout-branch <new-branch> main
+  daft start <new-branch> main
       Create a new branch from a specific base branch
 
-  git worktree-prune
+  daft prune
       Clean up worktrees for merged/deleted branches
 
 Your directory structure grows as you work:

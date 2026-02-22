@@ -16,7 +16,6 @@ const COMMANDS: &[&str] = &[
     "git-worktree-clone",
     "git-worktree-init",
     "git-worktree-checkout",
-    "git-worktree-checkout-branch",
     "git-worktree-branch-delete",
     "git-worktree-prune",
     "git-worktree-carry",
@@ -25,6 +24,70 @@ const COMMANDS: &[&str] = &[
     "git-worktree-flow-eject",
     "daft-doctor",
     "daft-release-notes",
+];
+
+/// A daft verb command that maps to an existing git-worktree-* command for man page generation
+struct DaftVerbEntry {
+    /// The daft verb man page name, e.g., "daft-clone"
+    daft_name: &'static str,
+    /// The source git-worktree-* command name to derive the Command from
+    source_command: &'static str,
+    /// Optional override for the `about` text (None = use source command's about)
+    about_override: Option<&'static str>,
+}
+
+/// Daft verb commands that need man pages derived from their git-worktree-* equivalents
+const DAFT_VERBS: &[DaftVerbEntry] = &[
+    DaftVerbEntry {
+        daft_name: "daft-clone",
+        source_command: "git-worktree-clone",
+        about_override: None,
+    },
+    DaftVerbEntry {
+        daft_name: "daft-init",
+        source_command: "git-worktree-init",
+        about_override: None,
+    },
+    DaftVerbEntry {
+        daft_name: "daft-go",
+        source_command: "git-worktree-checkout",
+        about_override: Some("Open an existing branch in a worktree"),
+    },
+    DaftVerbEntry {
+        daft_name: "daft-start",
+        source_command: "git-worktree-checkout",
+        about_override: Some("Create a new branch and worktree"),
+    },
+    DaftVerbEntry {
+        daft_name: "daft-carry",
+        source_command: "git-worktree-carry",
+        about_override: None,
+    },
+    DaftVerbEntry {
+        daft_name: "daft-fetch",
+        source_command: "git-worktree-fetch",
+        about_override: None,
+    },
+    DaftVerbEntry {
+        daft_name: "daft-prune",
+        source_command: "git-worktree-prune",
+        about_override: None,
+    },
+    DaftVerbEntry {
+        daft_name: "daft-remove",
+        source_command: "git-worktree-branch-delete",
+        about_override: None,
+    },
+    DaftVerbEntry {
+        daft_name: "daft-adopt",
+        source_command: "git-worktree-flow-adopt",
+        about_override: None,
+    },
+    DaftVerbEntry {
+        daft_name: "daft-eject",
+        source_command: "git-worktree-flow-eject",
+        about_override: None,
+    },
 ];
 
 /// A matrix entry defines a configuration variant for integration tests
@@ -52,7 +115,6 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-worktree-clone" => Some(daft::commands::clone::Args::command()),
         "git-worktree-init" => Some(daft::commands::init::Args::command()),
         "git-worktree-checkout" => Some(daft::commands::checkout::Args::command()),
-        "git-worktree-checkout-branch" => Some(daft::commands::checkout_branch::Args::command()),
         "git-worktree-branch-delete" => Some(daft::commands::branch_delete::Args::command()),
         "git-worktree-prune" => Some(daft::commands::prune::Args::command()),
         "git-worktree-carry" => Some(daft::commands::carry::Args::command()),
@@ -61,6 +123,40 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-worktree-flow-eject" => Some(daft::commands::flow_eject::Args::command()),
         "daft-doctor" => Some(daft::commands::doctor::Args::command()),
         "daft-release-notes" => Some(daft::commands::release_notes::Args::command()),
+        _ => None,
+    }
+}
+
+/// Map git-worktree-* commands to their daft verb equivalents for tip boxes in CLI docs
+fn daft_verb_tip(command_name: &str) -> Option<&'static str> {
+    match command_name {
+        "git-worktree-clone" => Some(
+            "::: tip\nThis command is also available as `daft clone`. See [daft clone](./daft-clone.md).\n:::\n",
+        ),
+        "git-worktree-init" => Some(
+            "::: tip\nThis command is also available as `daft init`. See [daft init](./daft-init.md).\n:::\n",
+        ),
+        "git-worktree-checkout" => Some(
+            "::: tip\nThis command is also available as `daft go` (existing branch) or `daft start`\n(new branch with `-b`). See [daft go](./daft-go.md) and\n[daft start](./daft-start.md).\n:::\n",
+        ),
+        "git-worktree-carry" => Some(
+            "::: tip\nThis command is also available as `daft carry`. See [daft carry](./daft-carry.md).\n:::\n",
+        ),
+        "git-worktree-fetch" => Some(
+            "::: tip\nThis command is also available as `daft fetch`. See [daft fetch](./daft-fetch.md).\n:::\n",
+        ),
+        "git-worktree-prune" => Some(
+            "::: tip\nThis command is also available as `daft prune`. See [daft prune](./daft-prune.md).\n:::\n",
+        ),
+        "git-worktree-branch-delete" => Some(
+            "::: tip\nThis command is also available as `daft remove`. See [daft remove](./daft-remove.md).\n:::\n",
+        ),
+        "git-worktree-flow-adopt" => Some(
+            "::: tip\nThis command is also available as `daft adopt`. See [daft adopt](./daft-adopt.md).\n:::\n",
+        ),
+        "git-worktree-flow-eject" => Some(
+            "::: tip\nThis command is also available as `daft eject`. See [daft eject](./daft-eject.md).\n:::\n",
+        ),
         _ => None,
     }
 }
@@ -76,7 +172,7 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
         ],
         "git-worktree-init" => vec![
             "git-worktree-clone",
-            "git-worktree-checkout-branch",
+            "git-worktree-checkout",
             "git-worktree-flow-adopt",
         ],
         "git-worktree-flow-adopt" => vec![
@@ -85,25 +181,16 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
             "git-worktree-flow-eject",
         ],
         // Branching cluster
-        "git-worktree-checkout" => vec!["git-worktree-checkout-branch", "git-worktree-carry"],
-        "git-worktree-checkout-branch" => vec![
-            "git-worktree-checkout",
-            "git-worktree-carry",
-            "git-worktree-branch-delete",
-        ],
+        "git-worktree-checkout" => vec!["git-worktree-carry", "git-worktree-branch-delete"],
         // Maintenance cluster
-        "git-worktree-branch-delete" => vec!["git-worktree-prune", "git-worktree-checkout-branch"],
+        "git-worktree-branch-delete" => vec!["git-worktree-prune", "git-worktree-checkout"],
         "git-worktree-prune" => vec![
             "git-worktree-fetch",
             "git-worktree-flow-eject",
             "git-worktree-branch-delete",
         ],
         "git-worktree-fetch" => vec!["git-worktree-prune", "git-worktree-carry"],
-        "git-worktree-carry" => vec![
-            "git-worktree-checkout",
-            "git-worktree-checkout-branch",
-            "git-worktree-fetch",
-        ],
+        "git-worktree-carry" => vec!["git-worktree-checkout", "git-worktree-fetch"],
         "git-worktree-flow-eject" => vec![
             "git-worktree-flow-adopt",
             "git-worktree-prune",
@@ -191,7 +278,7 @@ fn generate_man_pages(output_dir: &PathBuf, command: Option<&str>) -> Result<()>
         COMMANDS.to_vec()
     };
 
-    for command_name in commands_to_generate {
+    for command_name in &commands_to_generate {
         let cmd = get_command_for_name(command_name)
             .with_context(|| format!("Unknown command: {command_name}"))?;
 
@@ -200,6 +287,35 @@ fn generate_man_pages(output_dir: &PathBuf, command: Option<&str>) -> Result<()>
         man.render(&mut buffer)?;
 
         let filename = format!("{command_name}.1");
+        let file_path = output_dir.join(&filename);
+
+        fs::write(&file_path, &buffer)
+            .with_context(|| format!("Failed to write man page: {}", file_path.display()))?;
+
+        eprintln!("Generated: {}", file_path.display());
+    }
+
+    // Generate man pages for daft verb commands
+    let daft_verbs_to_generate: Vec<&DaftVerbEntry> = if let Some(cmd) = command {
+        DAFT_VERBS.iter().filter(|v| v.daft_name == cmd).collect()
+    } else {
+        DAFT_VERBS.iter().collect()
+    };
+
+    for verb in &daft_verbs_to_generate {
+        let mut cmd = get_command_for_name(verb.source_command)
+            .with_context(|| format!("Unknown source command: {}", verb.source_command))?;
+
+        cmd = cmd.name(verb.daft_name);
+        if let Some(about) = verb.about_override {
+            cmd = cmd.about(about);
+        }
+
+        let man = Man::new(cmd);
+        let mut buffer = Vec::new();
+        man.render(&mut buffer)?;
+
+        let filename = format!("{}.1", verb.daft_name);
         let file_path = output_dir.join(&filename);
 
         fs::write(&file_path, &buffer)
@@ -276,6 +392,12 @@ fn render_command_markdown(command_name: &str, cmd: &clap::Command) -> String {
     // Title
     md.push_str(&format!("# {display_name}\n\n"));
     md.push_str(&format!("{about}\n\n"));
+
+    // Daft verb tip box (for git-worktree-* commands)
+    if let Some(tip) = daft_verb_tip(command_name) {
+        md.push_str(tip);
+        md.push('\n');
+    }
 
     // Description
     let description = long_about.trim();
@@ -631,6 +753,23 @@ mod tests {
                 content.contains(".TH"),
                 "Man page for '{}' missing .TH header",
                 command_name
+            );
+        }
+
+        // Verify all daft verb man pages exist
+        for verb in DAFT_VERBS {
+            let man_file = temp_dir.join(format!("{}.1", verb.daft_name));
+            assert!(
+                man_file.exists(),
+                "Man page for daft verb '{}' was not generated",
+                verb.daft_name
+            );
+
+            let content = fs::read_to_string(&man_file).unwrap();
+            assert!(
+                content.contains(".TH"),
+                "Man page for daft verb '{}' missing .TH header",
+                verb.daft_name
             );
         }
 

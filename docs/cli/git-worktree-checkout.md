@@ -1,11 +1,17 @@
 ---
 title: git-worktree-checkout
-description: Create a worktree for an existing branch
+description: Create a worktree for an existing branch, or a new branch with -b
 ---
 
 # git worktree-checkout
 
-Create a worktree for an existing branch
+Create a worktree for an existing branch, or a new branch with -b
+
+::: tip
+This command is also available as `daft go` (existing branch) or `daft start`
+(new branch with `-b`). See [daft go](./daft-go.md) and
+[daft start](./daft-start.md).
+:::
 
 ## Description
 
@@ -17,6 +23,11 @@ If the branch exists only on the remote, a local tracking branch is created
 automatically. If the branch exists both locally and on the remote, the local
 branch is checked out and upstream tracking is configured.
 
+With -b, creates a new branch and a corresponding worktree in a single
+operation. The new branch is based on the current branch, or on <base-branch>
+if specified. After creating the branch locally, it is pushed to the remote
+and upstream tracking is configured.
+
 This command can be run from anywhere within the repository. If a worktree
 for the specified branch already exists, no new worktree is created; the
 working directory is changed to the existing worktree instead.
@@ -27,22 +38,25 @@ See git-daft(1) for hook management.
 ## Usage
 
 ```
-git worktree-checkout [OPTIONS] <BRANCH_NAME>
+git worktree-checkout [OPTIONS] <BRANCH_NAME> [BASE_BRANCH_NAME]
 ```
 
 ## Arguments
 
 | Argument | Description | Required |
 |----------|-------------|----------|
-| `<BRANCH_NAME>` | Name of the branch to check out | Yes |
+| `<BRANCH_NAME>` | Name of the branch to check out (or create with -b) | Yes |
+| `<BASE_BRANCH_NAME>` | Branch to use as the base for the new branch (only with -b); defaults to the current branch | No |
 
 ## Options
 
 | Option | Description | Default |
 |--------|-------------|----------|
+| `-b, --create-branch` | Create a new branch instead of checking out an existing one |  |
+| `-q, --quiet` | Operate quietly; suppress progress reporting |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
 | `-c, --carry` | Apply uncommitted changes from the current worktree to the new one |  |
-| `--no-carry` | Do not carry uncommitted changes (this is the default) |  |
+| `--no-carry` | Do not carry uncommitted changes |  |
 | `-r, --remote <REMOTE>` | Remote for worktree organization (multi-remote mode) |  |
 | `--no-cd` | Do not change directory to the new worktree |  |
 | `-x, --exec <EXEC>` | Run a command in the worktree after setup completes (repeatable) |  |
@@ -56,6 +70,6 @@ git worktree-checkout [OPTIONS] <BRANCH_NAME>
 
 ## See Also
 
-- [git-worktree-checkout-branch](./git-worktree-checkout-branch.md)
 - [git-worktree-carry](./git-worktree-carry.md)
+- [git-worktree-branch-delete](./git-worktree-branch-delete.md)
 

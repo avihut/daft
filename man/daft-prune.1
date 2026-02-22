@@ -1,0 +1,42 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH daft-prune 1  "daft-prune 1.0.30" 
+.SH NAME
+daft\-prune \- Remove worktrees and branches for deleted remote branches
+.SH SYNOPSIS
+\fBdaft\-prune\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+.SH DESCRIPTION
+.PP
+Removes local branches whose corresponding remote tracking branches have been
+deleted, along with any associated worktrees. This is useful for cleaning up
+after branches have been merged and deleted on the remote.
+.PP
+The command first fetches from the remote with pruning enabled to update the
+list of remote tracking branches. It then identifies local branches that were
+tracking now\-deleted remote branches, removes their worktrees (if any exist),
+and finally deletes the local branches.
+.PP
+If you are currently inside a worktree that is about to be pruned, the command
+handles this gracefully. In a bare\-repo worktree layout (created by daft), the
+current worktree is removed last and the shell is redirected to a safe location
+(project root by default, or the default branch worktree if configured via
+daft.prune.cdTarget). In a regular repository where the current branch is being
+pruned, the command checks out the default branch before deleting the old branch.
+.PP
+Pre\-remove and post\-remove lifecycle hooks are executed for each worktree
+removal if the repository is trusted. See git\-daft(1) for hook management.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Be verbose; show detailed progress
+.TP
+\fB\-f\fR, \fB\-\-force\fR
+Force removal of worktrees with uncommitted changes or untracked files
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH VERSION
+v1.0.30

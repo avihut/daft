@@ -16,17 +16,17 @@ and more. For simple cases, you can also use **executable shell scripts** in
 
 ## Hook Types
 
-| Hook                   | Trigger                              | Runs From                            |
-| ---------------------- | ------------------------------------ | ------------------------------------ |
-| `post-clone`           | After `git worktree-clone` completes | New default branch worktree          |
-| `worktree-pre-create`  | Before new worktree is added         | Source worktree (where command runs) |
-| `worktree-post-create` | After new worktree is created        | New worktree                         |
-| `worktree-pre-remove`  | Before worktree is removed           | Worktree being removed               |
-| `worktree-post-remove` | After worktree is removed            | Current worktree (where prune runs)  |
+| Hook                   | Trigger                       | Runs From                            |
+| ---------------------- | ----------------------------- | ------------------------------------ |
+| `post-clone`           | After `daft clone` completes  | New default branch worktree          |
+| `worktree-pre-create`  | Before new worktree is added  | Source worktree (where command runs) |
+| `worktree-post-create` | After new worktree is created | New worktree                         |
+| `worktree-pre-remove`  | Before worktree is removed    | Worktree being removed               |
+| `worktree-post-remove` | After worktree is removed     | Current worktree (where prune runs)  |
 
 ### Execution Order During Clone
 
-When running `git worktree-clone`, hooks fire in this order:
+When running `daft clone`, hooks fire in this order:
 
 1. **`post-clone`** -- one-time repo bootstrap (install toolchains, global
    setup)
@@ -451,7 +451,7 @@ the execution context:
 | `{git_dir}`         | Path to the `.git` directory                            |
 | `{remote}`          | Remote name (usually `"origin"`)                        |
 | `{job_name}`        | Name of the current job                                 |
-| `{base_branch}`     | Base branch name (for `checkout-branch` commands)       |
+| `{base_branch}`     | Base branch name (for `checkout -b` commands)           |
 | `{repository_url}`  | Repository URL (for `post-clone`)                       |
 | `{default_branch}`  | Default branch name (for `post-clone`)                  |
 
@@ -591,14 +591,14 @@ YAML jobs and shell script hooks.
 
 ### Universal (all hooks)
 
-| Variable               | Description                                               |
-| ---------------------- | --------------------------------------------------------- |
-| `DAFT_HOOK`            | Hook type (e.g., `worktree-post-create`)                  |
-| `DAFT_COMMAND`         | Command that triggered the hook (e.g., `checkout-branch`) |
-| `DAFT_PROJECT_ROOT`    | Repository root (parent of `.git` directory)              |
-| `DAFT_GIT_DIR`         | Path to the `.git` directory                              |
-| `DAFT_REMOTE`          | Remote name (usually `origin`)                            |
-| `DAFT_SOURCE_WORKTREE` | Worktree where the command was invoked                    |
+| Variable               | Description                                                                                                            |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `DAFT_HOOK`            | Hook type (e.g., `worktree-post-create`)                                                                               |
+| `DAFT_COMMAND`         | Command that triggered the hook (e.g., `checkout`). Note: `checkout` is used for both checkout and checkout `-b` modes |
+| `DAFT_PROJECT_ROOT`    | Repository root (parent of `.git` directory)                                                                           |
+| `DAFT_GIT_DIR`         | Path to the `.git` directory                                                                                           |
+| `DAFT_REMOTE`          | Remote name (usually `origin`)                                                                                         |
+| `DAFT_SOURCE_WORKTREE` | Worktree where the command was invoked                                                                                 |
 
 ### Worktree (creation and removal hooks)
 
@@ -612,7 +612,7 @@ YAML jobs and shell script hooks.
 | Variable             | Description                                               |
 | -------------------- | --------------------------------------------------------- |
 | `DAFT_IS_NEW_BRANCH` | `true` if the branch was newly created, `false` otherwise |
-| `DAFT_BASE_BRANCH`   | Base branch (for `checkout-branch` commands)              |
+| `DAFT_BASE_BRANCH`   | Base branch (for `checkout -b` commands)                  |
 
 ### Clone (post-clone only)
 

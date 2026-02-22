@@ -112,7 +112,7 @@ test_exec_checkout_single() {
     return 0
 }
 
-# Test -x with checkout-branch
+# Test -x with checkout -b
 test_exec_checkout_branch_single() {
     local remote_repo
     remote_repo=$(create_test_remote "test-repo-exec-cb" "main")
@@ -121,8 +121,8 @@ test_exec_checkout_branch_single() {
     git-worktree-clone "$remote_repo" || return 1
     cd test-repo-exec-cb/main || return 1
 
-    # Checkout-branch with exec
-    git-worktree-checkout-branch my-new-branch -x 'pwd > exec_output.txt' || return 1
+    # Checkout -b with exec
+    git-worktree-checkout -b my-new-branch -x 'pwd > exec_output.txt' || return 1
 
     cd ../my-new-branch || return 1
     assert_file_exists "exec_output.txt" "exec command should have created output file in new branch worktree" || return 1
@@ -133,7 +133,7 @@ test_exec_checkout_branch_single() {
         log_error "exec command ran in wrong directory: $exec_pwd"
         return 1
     fi
-    log_success "Single -x command ran in checkout-branch worktree directory"
+    log_success "Single -x command ran in checkout -b worktree directory"
 
     return 0
 }

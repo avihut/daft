@@ -505,7 +505,7 @@ test_prune_plus_marker_branch() {
 
     # Create a worktree with a new branch - this branch will show with '+' prefix
     # in git branch -vv because it is checked out in a linked worktree
-    git-worktree-checkout-branch feature/plus-test || return 1
+    git-worktree-checkout -b feature/plus-test || return 1
 
     # Verify the branch shows with '+' marker in git branch -vv
     local branch_vv

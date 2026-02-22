@@ -7,6 +7,10 @@ description: Update worktree branches from their remote tracking branches
 
 Update worktree branches from their remote tracking branches
 
+::: tip
+This command is also available as `daft fetch`. See [daft fetch](./daft-fetch.md).
+:::
+
 ## Description
 
 Updates worktree branches by pulling from their remote tracking branches.

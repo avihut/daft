@@ -106,7 +106,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         alias: "gwtcb",
-        command: "git-worktree-checkout-branch",
+        command: "git-worktree-checkout",
         style: ShortcutStyle::Git,
     },
     Shortcut {
@@ -137,7 +137,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         alias: "gwcob",
-        command: "git-worktree-checkout-branch",
+        command: "git-worktree-checkout",
         style: ShortcutStyle::Shell,
     },
     // Legacy style (4 shortcuts)
@@ -153,7 +153,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         alias: "gcbw",
-        command: "git-worktree-checkout-branch",
+        command: "git-worktree-checkout",
         style: ShortcutStyle::Legacy,
     },
     Shortcut {
@@ -189,7 +189,7 @@ mod tests {
     fn test_resolve_git_style() {
         assert_eq!(resolve("gwtclone"), "git-worktree-clone");
         assert_eq!(resolve("gwtco"), "git-worktree-checkout");
-        assert_eq!(resolve("gwtcb"), "git-worktree-checkout-branch");
+        assert_eq!(resolve("gwtcb"), "git-worktree-checkout");
         assert_eq!(resolve("gwtprune"), "git-worktree-prune");
         assert_eq!(resolve("gwtcarry"), "git-worktree-carry");
         assert_eq!(resolve("gwtfetch"), "git-worktree-fetch");
@@ -200,14 +200,14 @@ mod tests {
     #[test]
     fn test_resolve_shell_style() {
         assert_eq!(resolve("gwco"), "git-worktree-checkout");
-        assert_eq!(resolve("gwcob"), "git-worktree-checkout-branch");
+        assert_eq!(resolve("gwcob"), "git-worktree-checkout");
     }
 
     #[test]
     fn test_resolve_legacy_style() {
         assert_eq!(resolve("gclone"), "git-worktree-clone");
         assert_eq!(resolve("gcw"), "git-worktree-checkout");
-        assert_eq!(resolve("gcbw"), "git-worktree-checkout-branch");
+        assert_eq!(resolve("gcbw"), "git-worktree-checkout");
         assert_eq!(resolve("gprune"), "git-worktree-prune");
     }
 
@@ -235,7 +235,6 @@ mod tests {
             "git-worktree-clone",
             "git-worktree-init",
             "git-worktree-checkout",
-            "git-worktree-checkout-branch",
             "git-worktree-prune",
             "git-worktree-carry",
             "git-worktree-branch-delete",

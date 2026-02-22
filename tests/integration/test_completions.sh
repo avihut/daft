@@ -113,20 +113,6 @@ test_dynamic_branch_completion() {
     fi
 }
 
-# Test: New branch pattern suggestions
-test_branch_pattern_suggestions() {
-    run_test "New branch pattern suggestions"
-
-    local output
-    output=$("$DAFT_BIN" __complete git-worktree-checkout-branch "fea" 2>&1)
-
-    if [[ "$output" == *"feature/"* ]] && [[ "$output" == *"feat/"* ]]; then
-        pass_test
-    else
-        fail_test "Pattern suggestions didn't return expected patterns"
-    fi
-}
-
 # Test: Bash completion includes dynamic branch wiring
 test_bash_dynamic_wiring() {
     run_test "Bash completion includes dynamic branch logic"
@@ -203,7 +189,7 @@ test_position_aware_completion() {
 
     # First argument should suggest patterns AND existing branches
     local output
-    output=$("$DAFT_BIN" __complete git-worktree-checkout-branch "fea" 2>&1)
+    output=$("$DAFT_BIN" __complete git-worktree-checkout "fea" 2>&1)
 
     # Clean up
     cd /
@@ -324,7 +310,7 @@ test_zsh_git_subcommand_registration() {
 test_all_commands_generate() {
     run_test "All commands generate completions for all shells"
 
-    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-prune" "git-worktree-carry" "git-worktree-fetch" "git-worktree-flow-adopt" "git-worktree-flow-eject")
+    local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-prune" "git-worktree-carry" "git-worktree-fetch" "git-worktree-flow-adopt" "git-worktree-flow-eject")
     local shells=("bash" "zsh" "fish" "fig")
     local success=true
 
@@ -577,7 +563,7 @@ main() {
     test_zsh_completion_generation
     test_fish_completion_generation
     test_dynamic_branch_completion
-    test_branch_pattern_suggestions
+
 
     # Test dynamic completion wiring
     test_bash_dynamic_wiring

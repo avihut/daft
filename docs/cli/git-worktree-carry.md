@@ -7,6 +7,10 @@ description: Transfer uncommitted changes to other worktrees
 
 Transfer uncommitted changes to other worktrees
 
+::: tip
+This command is also available as `daft carry`. See [daft carry](./daft-carry.md).
+:::
+
 ## Description
 
 Transfers uncommitted changes (staged, unstaged, and untracked files) from
@@ -53,6 +57,5 @@ git worktree-carry [OPTIONS] <TARGETS>
 ## See Also
 
 - [git-worktree-checkout](./git-worktree-checkout.md)
-- [git-worktree-checkout-branch](./git-worktree-checkout-branch.md)
 - [git-worktree-fetch](./git-worktree-fetch.md)
 

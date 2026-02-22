@@ -1,0 +1,70 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH daft-eject 1  "daft-eject 1.0.30" 
+.SH NAME
+daft\-eject \- Convert a worktree\-based repository back to traditional layout
+.SH SYNOPSIS
+\fBdaft\-eject\fR [\fB\-b\fR|\fB\-\-branch\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIREPOSITORY_PATH\fR] 
+.SH DESCRIPTION
+.PP
+WHAT THIS COMMAND DOES
+.PP
+Converts your worktree\-based repository back to a traditional Git layout.
+This removes all worktrees except one, and moves that worktree\*(Aqs files
+back to the repository root.
+.PP
+  Before:                    After:
+  my\-project/                my\-project/
+  ├── .git/                  ├── .git/
+  ├── main/                  ├── src/
+  │   ├── src/               └── README.md
+  │   └── README.md
+  └── feature/auth/
+      └── ...
+.PP
+By default, the remote\*(Aqs default branch (main, master, etc.) is kept.
+Use \-\-branch to specify a different branch.
+.PP
+HANDLING UNCOMMITTED CHANGES
+.PP
+\- Changes in the target branch\*(Aqs worktree are preserved
+\- Other worktrees with uncommitted changes cause the command to fail
+\- Use \-\-force to delete dirty worktrees (changes will be lost!)
+.PP
+EXAMPLES
+.PP
+  git worktree\-flow\-eject
+      Eject to the default branch
+.PP
+  git worktree\-flow\-eject \-b feature/auth
+      Eject, keeping the feature/auth branch
+.PP
+  git worktree\-flow\-eject \-\-force
+      Eject even if other worktrees have uncommitted changes
+.SH OPTIONS
+.TP
+\fB\-b\fR, \fB\-\-branch\fR \fI<BRANCH>\fR
+Branch to keep (defaults to remote\*(Aqs default branch)
+.TP
+\fB\-f\fR, \fB\-\-force\fR
+Delete worktrees with uncommitted changes (changes will be lost!)
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Operate quietly; suppress progress reporting
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Be verbose; show detailed progress
+.TP
+\fB\-\-dry\-run\fR
+Show what would be done without making any changes
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+[\fIREPOSITORY_PATH\fR]
+Path to the repository to convert (defaults to current directory)
+.SH VERSION
+v1.0.30

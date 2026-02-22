@@ -64,16 +64,16 @@ under:
 
 ```bash
 # Create worktree under origin/
-git worktree-checkout-branch feature/auth --remote origin
+daft start feature/auth --remote origin
 
 # Create worktree under upstream/
-git worktree-checkout upstream-branch --remote upstream
+daft go upstream-branch --remote upstream
 ```
 
 You can also enable multi-remote mode during clone:
 
 ```bash
-git worktree-clone git@github.com:user/project.git --remote origin
+daft clone git@github.com:user/project.git --remote origin
 ```
 
 ## Configuration

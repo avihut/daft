@@ -7,6 +7,10 @@ description: Remove worktrees and branches for deleted remote branches
 
 Remove worktrees and branches for deleted remote branches
 
+::: tip
+This command is also available as `daft prune`. See [daft prune](./daft-prune.md).
+:::
+
 ## Description
 
 Removes local branches whose corresponding remote tracking branches have been

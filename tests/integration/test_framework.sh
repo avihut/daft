@@ -66,7 +66,7 @@ ensure_rust_binaries() {
     fi
 
     # Create symlinks for the multicall binary (ensures tests use locally built binary)
-    local symlink_names=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-branch-delete" "git-worktree-prune" "git-worktree-carry" "git-worktree-fetch" "git-worktree-flow-adopt" "git-worktree-flow-eject" "git-daft" "gwtclone" "gwtinit" "gwtco" "gwtcb" "gwtprune" "gwtcarry" "gwtfetch" "gwtbd")
+    local symlink_names=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-branch-delete" "git-worktree-prune" "git-worktree-carry" "git-worktree-fetch" "git-worktree-flow-adopt" "git-worktree-flow-eject" "git-daft" "gwtclone" "gwtinit" "gwtco" "gwtcb" "gwtprune" "gwtcarry" "gwtfetch" "gwtbd")
     for name in "${symlink_names[@]}"; do
         if [[ ! -L "$RUST_BINARY_DIR/$name" ]]; then
             ln -sf daft "$RUST_BINARY_DIR/$name"
@@ -115,7 +115,7 @@ setup() {
     fi
 
     # Verify all binaries are available
-    local binary_names=("git-worktree-clone" "git-worktree-checkout" "git-worktree-checkout-branch" "git-worktree-init" "git-worktree-prune")
+    local binary_names=("git-worktree-clone" "git-worktree-checkout" "git-worktree-init" "git-worktree-prune")
     for binary in "${binary_names[@]}"; do
         if ! command -v "$binary" >/dev/null 2>&1; then
             log_error "Binary $binary not found in PATH"

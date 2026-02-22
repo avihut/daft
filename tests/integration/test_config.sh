@@ -17,7 +17,7 @@ test_config_defaults() {
     cd "test-repo-config-defaults"
 
     # Verify default behavior works (remote=origin, push enabled, etc.)
-    git-worktree-checkout-branch feature/test-defaults || return 1
+    git-worktree-checkout -b feature/test-defaults || return 1
 
     # Verify the worktree was created
     assert_directory_exists "feature/test-defaults" || return 1
@@ -47,7 +47,7 @@ test_config_checkout_push_false() {
     git config daft.checkout.push false
 
     # Create a new branch
-    git-worktree-checkout-branch feature/no-push || return 1
+    git-worktree-checkout -b feature/no-push || return 1
 
     # Verify the worktree was created
     assert_directory_exists "feature/no-push" || return 1
@@ -81,7 +81,7 @@ test_config_remote_custom() {
 
     # Create a new branch (should push to upstream, not origin)
     cd main
-    git-worktree-checkout-branch feature/custom-remote || return 1
+    git-worktree-checkout -b feature/custom-remote || return 1
 
     # Verify the worktree was created
     cd ..
@@ -118,7 +118,7 @@ test_config_checkout_branch_carry_false() {
     echo "uncommitted content" > uncommitted.txt
 
     # Create a new branch (should NOT carry changes due to config)
-    git-worktree-checkout-branch feature/no-carry-config || return 1
+    git-worktree-checkout -b feature/no-carry-config || return 1
 
     cd "$repo_root"
 
@@ -196,7 +196,7 @@ test_config_flag_overrides_carry_false() {
     echo "override content" > override.txt
 
     # Create a new branch with explicit --carry flag (should override config)
-    git-worktree-checkout-branch --carry feature/override-carry || return 1
+    git-worktree-checkout -b --carry feature/override-carry || return 1
 
     cd "$repo_root"
 
@@ -224,7 +224,7 @@ test_config_flag_overrides_carry_true() {
     echo "no-carry content" > no_carry.txt
 
     # Create a new branch with explicit --no-carry flag (should override config)
-    git-worktree-checkout-branch --no-carry feature/no-carry-override || return 1
+    git-worktree-checkout -b --no-carry feature/no-carry-override || return 1
 
     cd "$repo_root"
 
@@ -279,7 +279,7 @@ test_config_bool_variants() {
     # Test "no"
     git config daft.checkout.push no
     cd main
-    git-worktree-checkout-branch feature/test-no || return 1
+    git-worktree-checkout -b feature/test-no || return 1
     cd ..
     local branch_no=$(git ls-remote --heads origin feature/test-no 2>/dev/null)
     if [[ -n "$branch_no" ]]; then
@@ -291,7 +291,7 @@ test_config_bool_variants() {
     # Test "off"
     git config daft.checkout.push off
     cd "feature/test-no"
-    git-worktree-checkout-branch feature/test-off || return 1
+    git-worktree-checkout -b feature/test-off || return 1
     cd ..
     local branch_off=$(git ls-remote --heads origin feature/test-off 2>/dev/null)
     if [[ -n "$branch_off" ]]; then
@@ -303,7 +303,7 @@ test_config_bool_variants() {
     # Test "0"
     git config daft.checkout.push 0
     cd "feature/test-off"
-    git-worktree-checkout-branch feature/test-zero || return 1
+    git-worktree-checkout -b feature/test-zero || return 1
     cd ..
     local branch_zero=$(git ls-remote --heads origin feature/test-zero 2>/dev/null)
     if [[ -n "$branch_zero" ]]; then
@@ -315,7 +315,7 @@ test_config_bool_variants() {
     # Test "yes" to re-enable
     git config daft.checkout.push yes
     cd "feature/test-zero"
-    git-worktree-checkout-branch feature/test-yes || return 1
+    git-worktree-checkout -b feature/test-yes || return 1
     cd ..
     local branch_yes=$(git ls-remote --heads origin feature/test-yes 2>/dev/null)
     if [[ -z "$branch_yes" ]]; then

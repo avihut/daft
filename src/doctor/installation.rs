@@ -13,7 +13,6 @@ const EXPECTED_SYMLINKS: &[&str] = &[
     "git-worktree-clone",
     "git-worktree-init",
     "git-worktree-checkout",
-    "git-worktree-checkout-branch",
     "git-worktree-prune",
     "git-worktree-carry",
     "git-worktree-fetch",
@@ -480,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_expected_symlinks_count() {
-        assert_eq!(EXPECTED_SYMLINKS.len(), 11);
+        assert_eq!(EXPECTED_SYMLINKS.len(), 10);
     }
 
     #[test]

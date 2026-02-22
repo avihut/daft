@@ -23,14 +23,14 @@ Add to your shell config:
   Zsh  (~/.zshrc):   eval "$(daft shell-init zsh)"
   Fish (~/.config/fish/config.fish): daft shell-init fish | source
 
-With short aliases (gwco, gwcob, etc.):
+With short aliases (gwco, etc.):
   eval "$(daft shell-init bash --aliases)"
 "#)]
 pub struct Args {
     #[arg(value_enum, help = "Target shell (bash, zsh, or fish)")]
     shell: Shell,
 
-    #[arg(long, help = "Include short aliases (gwco, gwcob, etc.)")]
+    #[arg(long, help = "Include short aliases (gwco, etc.)")]
     aliases: bool,
 }
 
@@ -139,7 +139,6 @@ __daft_wrapper() {
 git-worktree-clone() { __daft_wrapper git-worktree-clone "$@"; }
 git-worktree-init() { __daft_wrapper git-worktree-init "$@"; }
 git-worktree-checkout() { __daft_wrapper git-worktree-checkout "$@"; }
-git-worktree-checkout-branch() { __daft_wrapper git-worktree-checkout-branch "$@"; }
 git-worktree-carry() { __daft_wrapper git-worktree-carry "$@"; }
 git-worktree-prune() { __daft_wrapper git-worktree-prune "$@"; }
 git-worktree-branch-delete() { __daft_wrapper git-worktree-branch-delete "$@"; }
@@ -155,8 +154,6 @@ git() {
             shift; __daft_wrapper git-worktree-init "$@" ;;
         worktree-checkout)
             shift; __daft_wrapper git-worktree-checkout "$@" ;;
-        worktree-checkout-branch)
-            shift; __daft_wrapper git-worktree-checkout-branch "$@" ;;
         worktree-carry)
             shift; __daft_wrapper git-worktree-carry "$@" ;;
         worktree-prune)
@@ -172,28 +169,28 @@ git() {
     esac
 }
 
-# daft wrapper to intercept "daft worktree-*" subcommands
+# daft wrapper to intercept "daft worktree-*" and "daft <verb>" subcommands
 daft() {
     case "$1" in
-        worktree-clone)
+        worktree-clone|clone)
             shift; __daft_wrapper git-worktree-clone "$@" ;;
-        worktree-init)
+        worktree-init|init)
             shift; __daft_wrapper git-worktree-init "$@" ;;
-        worktree-checkout)
+        worktree-checkout|go)
             shift; __daft_wrapper git-worktree-checkout "$@" ;;
-        worktree-checkout-branch)
-            shift; __daft_wrapper git-worktree-checkout-branch "$@" ;;
-        worktree-carry)
+        start)
+            shift; __daft_wrapper git-worktree-checkout -b "$@" ;;
+        worktree-carry|carry)
             shift; __daft_wrapper git-worktree-carry "$@" ;;
-        worktree-prune)
+        worktree-prune|prune)
             shift; __daft_wrapper git-worktree-prune "$@" ;;
-        worktree-branch-delete)
+        worktree-branch-delete|remove)
             shift; __daft_wrapper git-worktree-branch-delete "$@" ;;
-        worktree-fetch)
+        worktree-fetch|fetch)
             shift; __daft_wrapper git-worktree-fetch "$@" ;;
-        worktree-flow-adopt)
+        worktree-flow-adopt|adopt)
             shift; __daft_wrapper git-worktree-flow-adopt "$@" ;;
-        worktree-flow-eject)
+        worktree-flow-eject|eject)
             shift; __daft_wrapper git-worktree-flow-eject "$@" ;;
         *)
             command daft "$@" ;;
@@ -205,7 +202,7 @@ daft() {
 gwtclone() { __daft_wrapper git-worktree-clone "$@"; }
 gwtinit() { __daft_wrapper git-worktree-init "$@"; }
 gwtco() { __daft_wrapper git-worktree-checkout "$@"; }
-gwtcb() { __daft_wrapper git-worktree-checkout-branch "$@"; }
+gwtcb() { __daft_wrapper git-worktree-checkout -b "$@"; }
 gwtprune() { __daft_wrapper git-worktree-prune "$@"; }
 gwtbd() { __daft_wrapper git-worktree-branch-delete "$@"; }
 gwtcarry() { __daft_wrapper git-worktree-carry "$@"; }
@@ -213,12 +210,12 @@ gwtfetch() { __daft_wrapper git-worktree-fetch "$@"; }
 
 # Shell-style shortcuts
 gwco() { __daft_wrapper git-worktree-checkout "$@"; }
-gwcob() { __daft_wrapper git-worktree-checkout-branch "$@"; }
+gwcob() { __daft_wrapper git-worktree-checkout -b "$@"; }
 
 # Legacy-style shortcuts
 gclone() { __daft_wrapper git-worktree-clone "$@"; }
 gcw() { __daft_wrapper git-worktree-checkout "$@"; }
-gcbw() { __daft_wrapper git-worktree-checkout-branch "$@"; }
+gcbw() { __daft_wrapper git-worktree-checkout -b "$@"; }
 gprune() { __daft_wrapper git-worktree-prune "$@"; }
 
 # Default branch helper (shared by default-branch shortcuts)
@@ -244,7 +241,7 @@ gwtcbm() {
   if [ -z "$branch" ]; then
     echo "error: could not determine default branch" >&2; return 1
   fi
-  __daft_wrapper git-worktree-checkout-branch "$@" "$branch"
+  __daft_wrapper git-worktree-checkout -b "$@" "$branch"
 }
 
 gwcobd() {
@@ -253,7 +250,7 @@ gwcobd() {
   if [ -z "$branch" ]; then
     echo "error: could not determine default branch" >&2; return 1
   fi
-  __daft_wrapper git-worktree-checkout-branch "$@" "$branch"
+  __daft_wrapper git-worktree-checkout -b "$@" "$branch"
 }
 
 gcbdw() {
@@ -262,7 +259,7 @@ gcbdw() {
   if [ -z "$branch" ]; then
     echo "error: could not determine default branch" >&2; return 1
   fi
-  __daft_wrapper git-worktree-checkout-branch "$@" "$branch"
+  __daft_wrapper git-worktree-checkout -b "$@" "$branch"
 }
 "#;
 
@@ -271,7 +268,6 @@ const BASH_ZSH_ALIASES: &str = r#"
 alias gwclone='git-worktree-clone'
 alias gwinit='git-worktree-init'
 alias gwco='git-worktree-checkout'
-alias gwcob='git-worktree-checkout-branch'
 alias gwcarry='git-worktree-carry'
 alias gwprune='git-worktree-prune'
 "#;
@@ -333,10 +329,6 @@ function git-worktree-checkout
     __daft_wrapper git-worktree-checkout $argv
 end
 
-function git-worktree-checkout-branch
-    __daft_wrapper git-worktree-checkout-branch $argv
-end
-
 function git-worktree-carry
     __daft_wrapper git-worktree-carry $argv
 end
@@ -366,8 +358,6 @@ function git --wraps git
             __daft_wrapper git-worktree-init $argv[2..-1]
         case worktree-checkout
             __daft_wrapper git-worktree-checkout $argv[2..-1]
-        case worktree-checkout-branch
-            __daft_wrapper git-worktree-checkout-branch $argv[2..-1]
         case worktree-carry
             __daft_wrapper git-worktree-carry $argv[2..-1]
         case worktree-prune
@@ -383,28 +373,28 @@ function git --wraps git
     end
 end
 
-# daft wrapper to intercept "daft worktree-*" subcommands
+# daft wrapper to intercept "daft worktree-*" and "daft <verb>" subcommands
 function daft --wraps daft
     switch $argv[1]
-        case worktree-clone
+        case worktree-clone clone
             __daft_wrapper git-worktree-clone $argv[2..-1]
-        case worktree-init
+        case worktree-init init
             __daft_wrapper git-worktree-init $argv[2..-1]
-        case worktree-checkout
+        case worktree-checkout go
             __daft_wrapper git-worktree-checkout $argv[2..-1]
-        case worktree-checkout-branch
-            __daft_wrapper git-worktree-checkout-branch $argv[2..-1]
-        case worktree-carry
+        case start
+            __daft_wrapper git-worktree-checkout -b $argv[2..-1]
+        case worktree-carry carry
             __daft_wrapper git-worktree-carry $argv[2..-1]
-        case worktree-prune
+        case worktree-prune prune
             __daft_wrapper git-worktree-prune $argv[2..-1]
-        case worktree-branch-delete
+        case worktree-branch-delete remove
             __daft_wrapper git-worktree-branch-delete $argv[2..-1]
-        case worktree-fetch
+        case worktree-fetch fetch
             __daft_wrapper git-worktree-fetch $argv[2..-1]
-        case worktree-flow-adopt
+        case worktree-flow-adopt adopt
             __daft_wrapper git-worktree-flow-adopt $argv[2..-1]
-        case worktree-flow-eject
+        case worktree-flow-eject eject
             __daft_wrapper git-worktree-flow-eject $argv[2..-1]
         case '*'
             command daft $argv
@@ -426,7 +416,7 @@ function gwtco
 end
 
 function gwtcb
-    __daft_wrapper git-worktree-checkout-branch $argv
+    __daft_wrapper git-worktree-checkout -b $argv
 end
 
 function gwtprune
@@ -451,7 +441,7 @@ function gwco
 end
 
 function gwcob
-    __daft_wrapper git-worktree-checkout-branch $argv
+    __daft_wrapper git-worktree-checkout -b $argv
 end
 
 # Legacy-style shortcuts
@@ -464,7 +454,7 @@ function gcw
 end
 
 function gcbw
-    __daft_wrapper git-worktree-checkout-branch $argv
+    __daft_wrapper git-worktree-checkout -b $argv
 end
 
 function gprune
@@ -491,7 +481,7 @@ function gwtcbm
     if test -z "$branch"
         echo "error: could not determine default branch" >&2; return 1
     end
-    __daft_wrapper git-worktree-checkout-branch $argv "$branch"
+    __daft_wrapper git-worktree-checkout -b $argv "$branch"
 end
 
 function gwcobd
@@ -499,7 +489,7 @@ function gwcobd
     if test -z "$branch"
         echo "error: could not determine default branch" >&2; return 1
     end
-    __daft_wrapper git-worktree-checkout-branch $argv "$branch"
+    __daft_wrapper git-worktree-checkout -b $argv "$branch"
 end
 
 function gcbdw
@@ -507,7 +497,7 @@ function gcbdw
     if test -z "$branch"
         echo "error: could not determine default branch" >&2; return 1
     end
-    __daft_wrapper git-worktree-checkout-branch $argv "$branch"
+    __daft_wrapper git-worktree-checkout -b $argv "$branch"
 end
 "#;
 
@@ -516,7 +506,6 @@ const FISH_ALIASES: &str = r#"
 alias gwclone='git-worktree-clone'
 alias gwinit='git-worktree-init'
 alias gwco='git-worktree-checkout'
-alias gwcob='git-worktree-checkout-branch'
 alias gwcarry='git-worktree-carry'
 alias gwprune='git-worktree-prune'
 "#;

@@ -7,6 +7,10 @@ description: Clone a repository into a worktree-based directory structure
 
 Clone a repository into a worktree-based directory structure
 
+::: tip
+This command is also available as `daft clone`. See [daft clone](./daft-clone.md).
+:::
+
 ## Description
 
 Clones a repository into a directory structure optimized for worktree-based

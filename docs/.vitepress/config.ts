@@ -213,7 +213,7 @@ export default defineConfig({
     },
     nav: [
       { text: "Guide", link: "/getting-started/installation" },
-      { text: "CLI Reference", link: "/cli/git-worktree-clone" },
+      { text: "CLI Reference", link: "/cli/daft-clone" },
       { text: `v${version}`, link: "/changelog" },
       { text: "GitHub", link: "https://github.com/avihut/daft" },
     ],
@@ -250,38 +250,32 @@ export default defineConfig({
         ],
       },
       {
-        text: "CLI Reference",
+        text: "daft Commands",
         collapsed: false,
         items: [
           {
             text: "Setup",
             items: [
-              { text: "worktree-clone", link: "/cli/git-worktree-clone" },
-              { text: "worktree-init", link: "/cli/git-worktree-init" },
-              { text: "flow-adopt", link: "/cli/git-worktree-flow-adopt" },
+              { text: "clone", link: "/cli/daft-clone" },
+              { text: "init", link: "/cli/daft-init" },
+              { text: "adopt", link: "/cli/daft-adopt" },
             ],
           },
           {
             text: "Branching",
             items: [
-              { text: "worktree-checkout", link: "/cli/git-worktree-checkout" },
-              {
-                text: "worktree-checkout-branch",
-                link: "/cli/git-worktree-checkout-branch",
-              },
-              {
-                text: "worktree-branch-delete",
-                link: "/cli/git-worktree-branch-delete",
-              },
+              { text: "go", link: "/cli/daft-go" },
+              { text: "start", link: "/cli/daft-start" },
+              { text: "remove", link: "/cli/daft-remove" },
             ],
           },
           {
             text: "Maintenance",
             items: [
-              { text: "worktree-prune", link: "/cli/git-worktree-prune" },
-              { text: "worktree-fetch", link: "/cli/git-worktree-fetch" },
-              { text: "worktree-carry", link: "/cli/git-worktree-carry" },
-              { text: "flow-eject", link: "/cli/git-worktree-flow-eject" },
+              { text: "prune", link: "/cli/daft-prune" },
+              { text: "fetch", link: "/cli/daft-fetch" },
+              { text: "carry", link: "/cli/daft-carry" },
+              { text: "eject", link: "/cli/daft-eject" },
             ],
           },
           {
@@ -297,9 +291,42 @@ export default defineConfig({
           {
             text: "Configuration",
             items: [
-              { text: "daft-hooks", link: "/cli/git-daft-hooks" },
+              { text: "hooks", link: "/cli/git-daft-hooks" },
               { text: "branch", link: "/cli/daft-branch" },
               { text: "multi-remote", link: "/cli/daft-multi-remote" },
+            ],
+          },
+        ],
+      },
+      {
+        text: "Git Commands",
+        collapsed: true,
+        items: [
+          {
+            text: "Setup",
+            items: [
+              { text: "worktree-clone", link: "/cli/git-worktree-clone" },
+              { text: "worktree-init", link: "/cli/git-worktree-init" },
+              { text: "flow-adopt", link: "/cli/git-worktree-flow-adopt" },
+            ],
+          },
+          {
+            text: "Branching",
+            items: [
+              { text: "worktree-checkout", link: "/cli/git-worktree-checkout" },
+              {
+                text: "worktree-branch-delete",
+                link: "/cli/git-worktree-branch-delete",
+              },
+            ],
+          },
+          {
+            text: "Maintenance",
+            items: [
+              { text: "worktree-prune", link: "/cli/git-worktree-prune" },
+              { text: "worktree-fetch", link: "/cli/git-worktree-fetch" },
+              { text: "worktree-carry", link: "/cli/git-worktree-carry" },
+              { text: "flow-eject", link: "/cli/git-worktree-flow-eject" },
             ],
           },
         ],
