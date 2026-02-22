@@ -6,7 +6,7 @@
 
 use super::yaml_config::{
     JobDef, OnlyCondition, OnlyRule, OnlyRuleStructured, SkipCondition, SkipRule,
-    SkipRuleStructured,
+    SkipRuleStructured, TargetOs,
 };
 use std::path::Path;
 
@@ -17,6 +17,16 @@ pub struct SkipInfo {
     pub reason: String,
     /// Whether the skip evaluation involved running a command check.
     pub ran_command: bool,
+}
+
+/// Resolve the current OS to a `TargetOs` variant.
+fn resolve_current_target_os() -> Option<TargetOs> {
+    match std::env::consts::OS {
+        "macos" => Some(TargetOs::Macos),
+        "linux" => Some(TargetOs::Linux),
+        "windows" => Some(TargetOs::Windows),
+        _ => None,
+    }
 }
 
 /// Check whether a hook/job should be skipped based on `skip` condition.
@@ -38,6 +48,19 @@ pub fn should_skip(condition: &SkipCondition, worktree: &Path) -> Option<SkipInf
             } else {
                 None
             }
+        }
+        SkipCondition::Platform(map) => {
+            let current_os = resolve_current_target_os();
+            if let Some(os) = current_os {
+                if let Some(rules) = map.get(&os) {
+                    for rule in rules {
+                        if let Some(info) = eval_skip_rule(rule, worktree) {
+                            return Some(info);
+                        }
+                    }
+                }
+            }
+            None
         }
         SkipCondition::Rules(rules) => {
             // Any rule match → skip
@@ -70,6 +93,19 @@ pub fn should_only_skip(condition: &OnlyCondition, worktree: &Path) -> Option<Sk
                     ran_command: false,
                 })
             }
+        }
+        OnlyCondition::Platform(map) => {
+            let current_os = resolve_current_target_os();
+            if let Some(os) = current_os {
+                if let Some(rules) = map.get(&os) {
+                    for rule in rules {
+                        if let Some(info) = eval_only_rule(rule, worktree) {
+                            return Some(info);
+                        }
+                    }
+                }
+            }
+            None
         }
         OnlyCondition::Rules(rules) => {
             // All rules must match for the job to run; if any fails → skip
@@ -294,29 +330,8 @@ fn branch_matches_pattern(branch: &str, pattern: &str) -> bool {
     }
 }
 
-/// Check platform constraints (os/arch) for a job.
-///
-/// Returns `Some(reason)` if the current platform does not match the job's constraints.
-pub fn check_platform_constraints(job: &JobDef) -> Option<String> {
-    if let Some(ref os_constraint) = job.os {
-        let current_os = std::env::consts::OS;
-        let matches = os_constraint
-            .as_slice()
-            .iter()
-            .any(|target| target.as_str() == current_os);
-        if !matches {
-            let allowed: Vec<&str> = os_constraint
-                .as_slice()
-                .iter()
-                .map(|t| t.as_str())
-                .collect();
-            return Some(format!(
-                "not on {} (current: {current_os})",
-                allowed.join("/")
-            ));
-        }
-    }
-
+/// Check arch constraint for a job.
+pub fn check_arch_constraint(job: &JobDef) -> Option<String> {
     if let Some(ref arch_constraint) = job.arch {
         let current_arch = std::env::consts::ARCH;
         let matches = arch_constraint
@@ -335,7 +350,6 @@ pub fn check_platform_constraints(job: &JobDef) -> Option<String> {
             ));
         }
     }
-
     None
 }
 
@@ -487,60 +501,47 @@ mod tests {
     }
 
     #[test]
-    fn test_check_platform_constraints_matching_os() {
-        use super::super::yaml_config::{PlatformConstraint, TargetOs};
-        let current_os = std::env::consts::OS;
-        let target_os = match current_os {
+    fn test_should_skip_platform_matching_os() {
+        use super::super::yaml_config::TargetOs;
+        let current_os = match std::env::consts::OS {
             "macos" => TargetOs::Macos,
             "linux" => TargetOs::Linux,
-            "windows" => TargetOs::Windows,
-            _ => return, // Skip test on unknown OS
+            _ => return,
         };
-        let job = JobDef {
-            os: Some(PlatformConstraint::Single(target_os)),
-            ..Default::default()
-        };
-        assert!(check_platform_constraints(&job).is_none());
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            current_os,
+            vec![SkipRule::Structured(SkipRuleStructured {
+                ref_pattern: None,
+                env: None,
+                run: Some("true".to_string()),
+                desc: Some("already installed".to_string()),
+            })],
+        );
+        let cond = SkipCondition::Platform(map);
+        let info = should_skip(&cond, Path::new(".")).unwrap();
+        assert_eq!(info.reason, "already installed");
     }
 
     #[test]
-    fn test_check_platform_constraints_non_matching_os() {
-        use super::super::yaml_config::{PlatformConstraint, TargetOs};
-        let non_matching_os = if std::env::consts::OS == "macos" {
+    fn test_should_skip_platform_non_matching_os() {
+        use super::super::yaml_config::TargetOs;
+        let other_os = if std::env::consts::OS == "macos" {
             TargetOs::Linux
         } else {
             TargetOs::Macos
         };
-        let job = JobDef {
-            os: Some(PlatformConstraint::Single(non_matching_os)),
-            ..Default::default()
-        };
-        let reason = check_platform_constraints(&job).unwrap();
-        assert!(reason.starts_with("not on "));
-    }
-
-    #[test]
-    fn test_check_platform_constraints_os_list() {
-        use super::super::yaml_config::{PlatformConstraint, TargetOs};
-        let job = JobDef {
-            os: Some(PlatformConstraint::List(vec![
-                TargetOs::Macos,
-                TargetOs::Linux,
-            ])),
-            ..Default::default()
-        };
-        // On macOS or Linux this should pass; on Windows it should fail
-        let result = check_platform_constraints(&job);
-        if std::env::consts::OS == "macos" || std::env::consts::OS == "linux" {
-            assert!(result.is_none());
-        } else {
-            assert!(result.is_some());
-        }
-    }
-
-    #[test]
-    fn test_check_platform_constraints_no_constraints() {
-        let job = JobDef::default();
-        assert!(check_platform_constraints(&job).is_none());
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            other_os,
+            vec![SkipRule::Structured(SkipRuleStructured {
+                ref_pattern: None,
+                env: None,
+                run: Some("true".to_string()),
+                desc: Some("already installed".to_string()),
+            })],
+        );
+        let cond = SkipCondition::Platform(map);
+        assert!(should_skip(&cond, Path::new(".")).is_none());
     }
 }
