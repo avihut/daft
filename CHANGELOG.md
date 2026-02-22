@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.30](https://github.com/avihut/daft/compare/v1.0.29...v1.0.30) - 2026-02-21
+
+### Bug Fixes
+
+- *(ci)* prevent test workflow from running twice on release PRs
+- *(bench)* missing symlink, jq overflow, and worktree cleanup ([#247](https://github.com/avihut/daft/pull/247))
+- *(bench)* add target/release to PATH so benchmarks find daft ([#246](https://github.com/avihut/daft/pull/246))
+- use \$SHELL -i for exec commands to support aliases and shell functions ([#242](https://github.com/avihut/daft/pull/242))
+
+### Features
+
+- *(hooks)* add job descriptions, skip descriptions, and OS/arch conditions ([#248](https://github.com/avihut/daft/pull/248))
+- *(hooks)* add manual hook execution with `hooks run` command ([#245](https://github.com/avihut/daft/pull/245))
+
+### Miscellaneous
+
+- add benchmark suite with dashboard ([#244](https://github.com/avihut/daft/pull/244))
+
+### Refactoring
+
+- separate core logic from UI layer ([#249](https://github.com/avihut/daft/pull/249))
+
 ## [1.0.29](https://github.com/avihut/daft/compare/v1.0.28...v1.0.29) - 2026-02-19
 
 ### Bug Fixes
