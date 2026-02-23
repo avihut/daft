@@ -79,7 +79,7 @@ serde_yaml = "0.9"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 termimad = "0.34"
 version-migrate = "0.18"
-gix = { version = "0.79", default-features = false, features = [
+gix = { version = "0.80", default-features = false, features = [
     "blocking-network-client",
     "blocking-http-transport-reqwest-rust-tls",
     "status",
