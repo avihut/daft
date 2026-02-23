@@ -324,14 +324,8 @@ jobs:
           for cmd in git-worktree-clone git-worktree-checkout \
                      git-worktree-init git-worktree-branch git-worktree-branch-delete \
                      git-worktree-prune git-worktree-carry git-worktree-fetch \
-<<<<<<< HEAD
-                     git-worktree-flow-adopt git-worktree-flow-eject git-daft \
+                     git-worktree-flow-adopt git-worktree-flow-eject git-sync git-daft \
                      daft-remove daft-rename; do
-||||||| parent of 421af19 (feat(sync): add daft sync / git sync command)
-                     git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
-=======
-                     git-worktree-flow-adopt git-worktree-flow-eject git-sync git-daft; do
->>>>>>> 421af19 (feat(sync): add daft sync / git sync command)
             ln -sf daft "$PREFIX/bin/$cmd"
           done
 
@@ -354,14 +348,8 @@ jobs:
           for cmd in git-worktree-clone git-worktree-checkout \
                      git-worktree-init git-worktree-branch git-worktree-branch-delete \
                      git-worktree-prune git-worktree-carry git-worktree-fetch \
-<<<<<<< HEAD
-                     git-worktree-flow-adopt git-worktree-flow-eject git-daft \
+                     git-worktree-flow-adopt git-worktree-flow-eject git-sync git-daft \
                      daft-remove daft-rename; do
-||||||| parent of 421af19 (feat(sync): add daft sync / git sync command)
-                     git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
-=======
-                     git-worktree-flow-adopt git-worktree-flow-eject git-sync git-daft; do
->>>>>>> 421af19 (feat(sync): add daft sync / git sync command)
             echo "  Testing $cmd..."
             "$PREFIX/bin/$cmd" --help > /dev/null || { echo "FAILED: $cmd --help"; exit 1; }
           done
