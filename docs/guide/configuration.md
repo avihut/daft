@@ -27,6 +27,7 @@ git config --global daft.autocd false
 | `daft.remote`                | `"origin"` | Default remote name for all operations                  |
 | `daft.updateCheck`           | `true`     | Show notifications when a new daft version is available |
 | `daft.experimental.gitoxide` | `false`    | Use gitoxide for supported Git operations               |
+| `daft.go.autoStart`          | `false`    | Auto-create worktree when branch not found in `daft go` |
 
 ## Checkout Settings
 
@@ -113,6 +114,9 @@ git config --global daft.autocd false
 
 # After pruning, cd to default branch worktree instead of root
 git config daft.prune.cdTarget default-branch
+
+# Auto-create worktree when branch not found in daft go
+git config daft.go.autoStart true
 
 # Use rebase-style fetch by default
 git config daft.fetch.args "--rebase"

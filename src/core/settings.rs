@@ -14,6 +14,7 @@
 //! | `daft.remote` | `"origin"` | Default remote name |
 //! | `daft.checkoutBranch.carry` | `true` | Default carry for checkout-branch |
 //! | `daft.checkout.carry` | `false` | Default carry for checkout |
+//! | `daft.go.autoStart` | `false` | Auto-create worktree when branch not found in go |
 //! | `daft.prune.cdTarget` | `root` | Where to cd after pruning current worktree (`root` or `default-branch`) |
 //! | `daft.updateCheck` | `true` | Enable/disable new version notifications |
 //!
@@ -108,6 +109,9 @@ pub mod defaults {
 
     /// Default value for experimental.gitoxide setting.
     pub const USE_GITOXIDE: bool = false;
+
+    /// Default value for go.autoStart setting.
+    pub const GO_AUTO_START: bool = false;
 }
 
 /// Git config keys for daft settings.
@@ -147,6 +151,9 @@ pub mod keys {
 
     /// Config key for updateCheck setting.
     pub const UPDATE_CHECK: &str = "daft.updateCheck";
+
+    /// Config key for go.autoStart setting.
+    pub const GO_AUTO_START: &str = "daft.go.autoStart";
 
     /// Experimental config keys.
     pub mod experimental {
@@ -227,6 +234,9 @@ pub struct DaftSettings {
 
     /// Use gitoxide for supported git operations.
     pub use_gitoxide: bool,
+
+    /// Automatically create worktree when branch not found in go command.
+    pub go_auto_start: bool,
 }
 
 impl Default for DaftSettings {
@@ -243,6 +253,7 @@ impl Default for DaftSettings {
             multi_remote_enabled: defaults::MULTI_REMOTE_ENABLED,
             multi_remote_default: defaults::MULTI_REMOTE_DEFAULT_REMOTE.to_string(),
             use_gitoxide: defaults::USE_GITOXIDE,
+            go_auto_start: defaults::GO_AUTO_START,
         }
     }
 }
@@ -310,6 +321,10 @@ impl DaftSettings {
             settings.use_gitoxide = parse_bool(&value, defaults::USE_GITOXIDE);
         }
 
+        if let Some(value) = git.config_get(keys::GO_AUTO_START)? {
+            settings.go_auto_start = parse_bool(&value, defaults::GO_AUTO_START);
+        }
+
         Ok(settings)
     }
 
@@ -371,6 +386,10 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get_global(keys::experimental::GITOXIDE)? {
             settings.use_gitoxide = parse_bool(&value, defaults::USE_GITOXIDE);
+        }
+
+        if let Some(value) = git.config_get_global(keys::GO_AUTO_START)? {
+            settings.go_auto_start = parse_bool(&value, defaults::GO_AUTO_START);
         }
 
         Ok(settings)
@@ -646,6 +665,7 @@ mod tests {
         assert!(!settings.multi_remote_enabled);
         assert_eq!(settings.multi_remote_default, "origin");
         assert!(!settings.use_gitoxide);
+        assert!(!settings.go_auto_start);
     }
 
     #[test]

@@ -116,13 +116,33 @@ _daft() {
         return 0
     fi
 
-    # verb aliases: branch completion for argument position
-    if [[ $cword -eq 2 ]]; then
+    # verb aliases: delegate to underlying command completions
+    if [[ $cword -ge 2 ]]; then
         case "${words[1]}" in
-            go|start|carry|fetch|remove)
-                local branches
-                branches=$(daft __complete git-worktree-checkout "$cur" 2>/dev/null)
-                COMPREPLY=( $(compgen -W "$branches" -- "$cur") )
+            go|start)
+                COMP_WORDS=("git-worktree-checkout" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _git_worktree_checkout
+                return 0
+                ;;
+            carry)
+                COMP_WORDS=("git-worktree-carry" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _git_worktree_carry
+                return 0
+                ;;
+            fetch)
+                COMP_WORDS=("git-worktree-fetch" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _git_worktree_fetch
+                return 0
+                ;;
+            remove)
+                if [[ "$cur" != -* ]]; then
+                    local branches
+                    branches=$(daft __complete git-worktree-checkout "$cur" 2>/dev/null)
+                    COMPREPLY=( $(compgen -W "$branches" -- "$cur") )
+                fi
                 return 0
                 ;;
         esac

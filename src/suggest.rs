@@ -67,27 +67,40 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
 ///
 /// Returns at most 5 suggestions. Only includes commands whose edit distance
 /// is within a reasonable threshold.
-pub fn find_similar_commands<'a>(input: &str, known: &[&'a str]) -> Vec<&'a str> {
-    let mut candidates: Vec<(&str, usize)> = known
+pub fn find_similar_commands<'a>(input: &str, known: &'a [&'a str]) -> Vec<&'a str> {
+    find_similar(input, known, 5)
+}
+
+/// Find strings similar to `input` from a list, sorted by edit distance.
+///
+/// Returns at most `max` suggestions. Only includes items whose edit distance
+/// is within a reasonable threshold.
+pub fn find_similar<'a, S: AsRef<str> + 'a>(
+    input: &str,
+    candidates: &'a [S],
+    max: usize,
+) -> Vec<&'a str> {
+    let mut scored: Vec<(&str, usize)> = candidates
         .iter()
-        .filter_map(|&cmd| {
-            let dist = levenshtein_distance(input, cmd);
+        .filter_map(|candidate| {
+            let s = candidate.as_ref();
+            let dist = levenshtein_distance(input, s);
             if dist == 0 {
-                return None; // exact match already routed
+                return None;
             }
-            let max_len = input.len().max(cmd.len());
+            let max_len = input.len().max(s.len());
             let threshold = 3.max(max_len / 3);
             if dist <= threshold {
-                Some((cmd, dist))
+                Some((s, dist))
             } else {
                 None
             }
         })
         .collect();
 
-    candidates.sort_by_key(|&(_, dist)| dist);
-    candidates.truncate(5);
-    candidates.into_iter().map(|(cmd, _)| cmd).collect()
+    scored.sort_by_key(|&(_, dist)| dist);
+    scored.truncate(max);
+    scored.into_iter().map(|(s, _)| s).collect()
 }
 
 /// Print an error message for an unknown subcommand and exit with code 1.
@@ -223,5 +236,27 @@ mod tests {
         for cmd in DAFT_SUBCOMMANDS {
             assert!(seen.insert(cmd), "Duplicate subcommand: {cmd}");
         }
+    }
+
+    // --- find_similar (generic) tests ---
+
+    #[test]
+    fn test_find_similar_with_branches() {
+        let branches = vec![
+            "feature/auth".to_string(),
+            "feature/auth-fix".to_string(),
+            "develop".to_string(),
+            "main".to_string(),
+        ];
+        let suggestions = find_similar("feature/auht", &branches, 5);
+        assert!(!suggestions.is_empty());
+        assert_eq!(suggestions[0], "feature/auth");
+    }
+
+    #[test]
+    fn test_find_similar_generic_no_match() {
+        let branches = vec!["main".to_string(), "develop".to_string()];
+        let suggestions = find_similar("completely-unrelated-xyzzy", &branches, 5);
+        assert!(suggestions.is_empty());
     }
 }

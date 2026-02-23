@@ -28,6 +28,11 @@ operation. The new branch is based on the current branch, or on <base-branch>
 if specified. After creating the branch locally, it is pushed to the remote
 and upstream tracking is configured.
 
+With --start (or -s), if the specified branch does not exist locally or on the
+remote, a new branch and worktree are created automatically, as if 'daft start'
+had been called. This can also be enabled permanently with the daft.go.autoStart
+git config option.
+
 This command can be run from anywhere within the repository. If a worktree
 for the specified branch already exists, no new worktree is created; the
 working directory is changed to the existing worktree instead.
@@ -60,6 +65,7 @@ git worktree-checkout [OPTIONS] <BRANCH_NAME> [BASE_BRANCH_NAME]
 | `-r, --remote <REMOTE>` | Remote for worktree organization (multi-remote mode) |  |
 | `--no-cd` | Do not change directory to the new worktree |  |
 | `-x, --exec <EXEC>` | Run a command in the worktree after setup completes (repeatable) |  |
+| `-s, --start` | Create a new worktree if the branch does not exist |  |
 
 ## Global Options
 

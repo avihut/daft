@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-checkout \- Create a worktree for an existing branch, or a new branch with \-b
 .SH SYNOPSIS
-\fBgit\-worktree\-checkout\fR [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
+\fBgit\-worktree\-checkout\fR [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
 .SH DESCRIPTION
 .PP
 Creates a new worktree for an existing local or remote branch. The worktree
@@ -19,6 +19,11 @@ With \-b, creates a new branch and a corresponding worktree in a single
 operation. The new branch is based on the current branch, or on <base\-branch>
 if specified. After creating the branch locally, it is pushed to the remote
 and upstream tracking is configured.
+.PP
+With \-\-start (or \-s), if the specified branch does not exist locally or on the
+remote, a new branch and worktree are created automatically, as if \*(Aqdaft start\*(Aq
+had been called. This can also be enabled permanently with the daft.go.autoStart
+git config option.
 .PP
 This command can be run from anywhere within the repository. If a worktree
 for the specified branch already exists, no new worktree is created; the
@@ -51,6 +56,9 @@ Do not change directory to the new worktree
 .TP
 \fB\-x\fR, \fB\-\-exec\fR \fI<EXEC>\fR
 Run a command in the worktree after setup completes (repeatable)
+.TP
+\fB\-s\fR, \fB\-\-start\fR
+Create a new worktree if the branch does not exist
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

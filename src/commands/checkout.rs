@@ -35,6 +35,11 @@ operation. The new branch is based on the current branch, or on <base-branch>
 if specified. After creating the branch locally, it is pushed to the remote
 and upstream tracking is configured.
 
+With --start (or -s), if the specified branch does not exist locally or on the
+remote, a new branch and worktree are created automatically, as if 'daft start'
+had been called. This can also be enabled permanently with the daft.go.autoStart
+git config option.
+
 This command can be run from anywhere within the repository. If a worktree
 for the specified branch already exists, no new worktree is created; the
 working directory is changed to the existing worktree instead.
@@ -90,6 +95,13 @@ pub struct Args {
         help = "Run a command in the worktree after setup completes (repeatable)"
     )]
     exec: Vec<String>,
+
+    #[arg(
+        short = 's',
+        long = "start",
+        help = "Create a new worktree if the branch does not exist"
+    )]
+    start: bool,
 }
 
 /// Entry point for `git-worktree-checkout` / `daft go`.
@@ -130,7 +142,31 @@ fn run_with_args(args: Args) -> Result<()> {
     let result = if args.create_branch {
         run_create_branch(&args, &settings, &mut output)
     } else {
-        run_checkout(&args, &settings, &mut output)
+        match run_checkout(&args, &settings, &mut output) {
+            Ok(()) => Ok(()),
+            Err(checkout::CheckoutError::BranchNotFound {
+                ref branch,
+                ref remote,
+                fetch_failed,
+            }) => {
+                let auto_start = args.start || settings.go_auto_start;
+                if auto_start {
+                    change_directory(&original_dir).ok();
+                    output.result(&format!(
+                        "Branch '{branch}' not found, creating new worktree..."
+                    ));
+                    run_create_branch(&args, &settings, &mut output)
+                } else {
+                    change_directory(&original_dir).ok();
+                    render_branch_not_found_error(branch, remote, fetch_failed, &settings);
+                    // Exit directly: the error is already rendered to stderr with
+                    // custom formatting. Returning an anyhow error here would cause
+                    // main() to print a redundant "Error:" line.
+                    std::process::exit(1);
+                }
+            }
+            Err(checkout::CheckoutError::Other(e)) => Err(e),
+        }
     };
 
     if let Err(e) = result {
@@ -141,7 +177,11 @@ fn run_with_args(args: Args) -> Result<()> {
     Ok(())
 }
 
-fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
+fn run_checkout(
+    args: &Args,
+    settings: &DaftSettings,
+    output: &mut dyn Output,
+) -> Result<(), checkout::CheckoutError> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
@@ -244,6 +284,46 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
     exec_result?;
 
     Ok(())
+}
+
+fn render_branch_not_found_error(
+    branch: &str,
+    remote: &str,
+    fetch_failed: bool,
+    settings: &DaftSettings,
+) {
+    // Section 1: Diagnosis
+    if fetch_failed {
+        eprintln!(
+            "error: Branch '{branch}' not found -- could not reach remote '{remote}' to check"
+        );
+    } else {
+        eprintln!(
+            "error: Branch '{branch}' not found -- it does not exist locally or on remote '{remote}'"
+        );
+    }
+
+    // Section 2: Start suggestion (skip if fetch failed since start would also likely fail)
+    if !fetch_failed {
+        eprintln!();
+        eprintln!("  tip: Use `daft go --start {branch}` or `daft start {branch}` to create it");
+    }
+
+    // Section 3: Fuzzy matches
+    let git = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
+    let all_branches = checkout::collect_branch_names(&git, remote);
+    let suggestions = crate::suggest::find_similar(branch, &all_branches, 5);
+    if !suggestions.is_empty() {
+        eprintln!();
+        if suggestions.len() == 1 {
+            eprintln!("  Did you mean this?");
+        } else {
+            eprintln!("  Did you mean one of these?");
+        }
+        for s in &suggestions {
+            eprintln!("    {s}");
+        }
+    }
 }
 
 fn render_checkout_result(result: &checkout::CheckoutResult, output: &mut dyn Output) {

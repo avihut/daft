@@ -8,7 +8,43 @@ use crate::hooks::{HookContext, HookType};
 use crate::multi_remote::path::{calculate_worktree_path, resolve_remote_for_branch};
 use crate::utils::*;
 use anyhow::Result;
+use std::fmt;
 use std::path::{Path, PathBuf};
+
+/// Errors specific to the checkout operation.
+#[derive(Debug)]
+pub enum CheckoutError {
+    /// The requested branch was not found locally or on the remote.
+    BranchNotFound {
+        branch: String,
+        remote: String,
+        fetch_failed: bool,
+    },
+    /// Any other error during checkout.
+    Other(anyhow::Error),
+}
+
+impl fmt::Display for CheckoutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BranchNotFound { branch, remote, .. } => {
+                write!(
+                    f,
+                    "Branch '{branch}' does not exist locally or on remote '{remote}'"
+                )
+            }
+            Self::Other(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for CheckoutError {}
+
+impl From<anyhow::Error> for CheckoutError {
+    fn from(err: anyhow::Error) -> Self {
+        Self::Other(err)
+    }
+}
 
 /// Input parameters for the checkout operation.
 pub struct CheckoutParams {
@@ -54,7 +90,7 @@ pub fn execute(
     git: &GitCommand,
     project_root: &Path,
     sink: &mut (impl ProgressSink + HookRunner),
-) -> Result<CheckoutResult> {
+) -> Result<CheckoutResult, CheckoutError> {
     validate_branch_name(&params.branch_name)?;
 
     let git_dir = crate::core::repo::get_git_common_dir()?;
@@ -110,18 +146,18 @@ pub fn execute(
     }
 
     // Fetch latest changes from remote
-    fetch_branch(git, &params.remote_name, &params.branch_name, sink);
+    let fetch_failed = !fetch_branch(git, &params.remote_name, &params.branch_name, sink);
 
     // Check if local and/or remote branch exists
     let (local_exists, remote_exists) =
         check_branch_existence(git, &params.branch_name, &params.remote_name)?;
 
     if !local_exists && !remote_exists {
-        anyhow::bail!(
-            "Branch '{}' does not exist locally or on remote '{}'",
-            params.branch_name,
-            params.remote_name
-        );
+        return Err(CheckoutError::BranchNotFound {
+            branch: params.branch_name.clone(),
+            remote: params.remote_name.clone(),
+            fetch_failed,
+        });
     }
 
     let use_local_branch = if local_exists {
@@ -156,7 +192,7 @@ pub fn execute(
 
     let hook_outcome = sink.run_hook(&hook_ctx)?;
     if !hook_outcome.success && !hook_outcome.skipped {
-        anyhow::bail!("Pre-create hook failed");
+        return Err(anyhow::anyhow!("Pre-create hook failed").into());
     }
 
     // Create worktree
@@ -169,14 +205,15 @@ pub fn execute(
 
     if let Err(e) = worktree_result {
         restore_stash_on_failure(stash_created, git, sink);
-        anyhow::bail!("Failed to create git worktree: {}", e);
+        return Err(anyhow::anyhow!("Failed to create git worktree: {}", e).into());
     }
 
     if !worktree_path.exists() {
-        anyhow::bail!(
+        return Err(anyhow::anyhow!(
             "Worktree directory was not created at '{}'",
             worktree_path.display()
-        );
+        )
+        .into());
     }
 
     sink.on_step(&format!(
@@ -255,25 +292,39 @@ fn find_existing_worktree_for_branch(
 }
 
 /// Fetch latest changes for a branch from the remote.
+///
+/// Returns `true` if at least the general fetch succeeded, `false` if both
+/// fetches failed.
 fn fetch_branch(
     git: &GitCommand,
     remote_name: &str,
     branch_name: &str,
     sink: &mut impl ProgressSink,
-) {
+) -> bool {
     sink.on_step(&format!(
         "Fetching latest changes from remote '{remote_name}'..."
     ));
-    if let Err(e) = git.fetch(remote_name, false) {
-        sink.on_warning(&format!("Failed to fetch from remote '{remote_name}': {e}"));
-    }
+    let general_ok = match git.fetch(remote_name, false) {
+        Ok(()) => true,
+        Err(e) => {
+            sink.on_warning(&format!("Failed to fetch from remote '{remote_name}': {e}"));
+            false
+        }
+    };
 
     sink.on_step(&format!(
         "Fetching specific branch '{branch_name}' from remote '{remote_name}'..."
     ));
-    if let Err(e) = git.fetch_refspec(remote_name, &format!("{branch_name}:{branch_name}")) {
-        sink.on_warning(&format!("Failed to fetch specific branch: {e}"));
-    }
+    let specific_ok = match git.fetch_refspec(remote_name, &format!("{branch_name}:{branch_name}"))
+    {
+        Ok(()) => true,
+        Err(e) => {
+            sink.on_warning(&format!("Failed to fetch specific branch: {e}"));
+            false
+        }
+    };
+
+    general_ok || specific_ok
 }
 
 /// Check whether local and remote branch refs exist.
@@ -405,4 +456,39 @@ fn set_upstream_if_enabled(
         ));
         Ok((true, false))
     }
+}
+
+/// Collect all local and remote branch names for suggestion purposes.
+pub fn collect_branch_names(git: &GitCommand, remote_name: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut names = Vec::new();
+
+    // Local branches
+    if let Ok(output) = git.for_each_ref("%(refname:short)", "refs/heads/") {
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
+                names.push(trimmed.to_string());
+            }
+        }
+    }
+
+    // Remote branches (strip remote prefix)
+    let remote_refs = format!("refs/remotes/{remote_name}/");
+    if let Ok(output) = git.for_each_ref("%(refname:short)", &remote_refs) {
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.ends_with("/HEAD") {
+                continue;
+            }
+            // Strip the remote prefix to get just the branch name
+            if let Some(branch) = trimmed.strip_prefix(&format!("{remote_name}/")) {
+                if seen.insert(branch.to_string()) {
+                    names.push(branch.to_string());
+                }
+            }
+        }
+    }
+
+    names
 }

@@ -26,6 +26,10 @@ If the branch exists only on the remote, a local tracking branch is created
 automatically. If a worktree for the branch already exists, the working
 directory is changed to it.
 
+With `--start` (or `-s`), if the branch does not exist locally or on the
+remote, a new branch and worktree are created automatically. This can also be
+enabled permanently with `git config daft.go.autoStart true`.
+
 ## See Also
 
 - [daft start](./daft-start.md) to create a new branch

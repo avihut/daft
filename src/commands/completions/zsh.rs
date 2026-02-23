@@ -129,14 +129,34 @@ _daft() {
         return
     fi
 
-    # verb aliases: branch completion for argument position
-    if (( CURRENT == 3 )); then
+    # verb aliases: delegate to underlying command completions
+    if (( CURRENT >= 3 )); then
         case "$words[2]" in
-            go|start|carry|fetch|remove)
-                local -a branches
-                branches=($(daft __complete git-worktree-checkout "$curword" 2>/dev/null))
-                if [[ ${#branches[@]} -gt 0 ]]; then
-                    compadd -a branches
+            go|start)
+                words=("git-worktree-checkout" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __git_worktree_checkout_impl
+                return
+                ;;
+            carry)
+                words=("git-worktree-carry" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __git_worktree_carry_impl
+                return
+                ;;
+            fetch)
+                words=("git-worktree-fetch" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __git_worktree_fetch_impl
+                return
+                ;;
+            remove)
+                if [[ "$curword" != -* ]]; then
+                    local -a branches
+                    branches=($(daft __complete git-worktree-checkout "$curword" 2>/dev/null))
+                    if [[ ${#branches[@]} -gt 0 ]]; then
+                        compadd -a branches
+                    fi
                 fi
                 return
                 ;;

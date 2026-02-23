@@ -564,6 +564,169 @@ test_checkout_carry_help() {
     return 0
 }
 
+# =============================================================================
+# Go Auto-Start Feature Tests
+# =============================================================================
+
+# Test improved error message for nonexistent branch
+test_checkout_error_message() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-error-msg" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-error-msg"
+
+    # Try to checkout a nonexistent branch and capture stderr
+    local output
+    output=$(git-worktree-checkout nonexistent-branch 2>&1) && {
+        log_error "Checkout of nonexistent branch should fail"
+        return 1
+    }
+
+    # Verify Section 1: Diagnosis — error message mentions "not found"
+    if ! echo "$output" | grep -q "not found"; then
+        log_error "Error output should contain 'not found'"
+        echo "$output"
+        return 1
+    fi
+    log_success "Error output contains 'not found' diagnosis"
+
+    # Verify Section 2: Start suggestion
+    if ! echo "$output" | grep -q "daft go --start"; then
+        log_error "Error output should contain 'daft go --start' suggestion"
+        echo "$output"
+        return 1
+    fi
+    log_success "Error output contains 'daft go --start' suggestion"
+
+    return 0
+}
+
+# Test --start flag creates worktree for nonexistent branch
+test_checkout_start_flag() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-start-flag" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-start-flag"
+
+    # Use --start to create a worktree for a branch that does not exist
+    git-worktree-checkout --start new-feature-branch || {
+        log_error "--start should create a new worktree for nonexistent branch"
+        return 1
+    }
+
+    # Verify worktree was created
+    assert_directory_exists "new-feature-branch" || return 1
+    assert_git_worktree "new-feature-branch" "new-feature-branch" || return 1
+
+    log_success "--start flag creates worktree for nonexistent branch"
+    return 0
+}
+
+# Test -s shorthand works the same as --start
+test_checkout_start_shorthand() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-start-short" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-start-short"
+
+    # Use -s shorthand to create a worktree for a branch that does not exist
+    git-worktree-checkout -s another-new-branch || {
+        log_error "-s shorthand should create a new worktree for nonexistent branch"
+        return 1
+    }
+
+    # Verify worktree was created
+    assert_directory_exists "another-new-branch" || return 1
+    assert_git_worktree "another-new-branch" "another-new-branch" || return 1
+
+    log_success "-s shorthand works the same as --start"
+    return 0
+}
+
+# Test --start with existing remote branch just checks it out normally
+test_checkout_start_existing_branch() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-start-existing" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-start-existing"
+
+    # Use --start with a branch that already exists on the remote (develop)
+    git-worktree-checkout --start develop || {
+        log_error "--start should work normally when branch already exists"
+        return 1
+    }
+
+    # Verify worktree was created for the existing branch
+    assert_directory_exists "develop" || return 1
+    assert_git_worktree "develop" "develop" || return 1
+
+    log_success "--start with existing branch checks it out normally"
+    return 0
+}
+
+# Test daft.go.autoStart config auto-creates worktrees
+test_checkout_auto_start_config() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-autostart" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-autostart"
+
+    # Set the auto-start config in the local git config
+    git config daft.go.autoStart true
+
+    # Try to checkout a nonexistent branch — should auto-create
+    git-worktree-checkout auto-created-branch || {
+        log_error "With daft.go.autoStart=true, checkout should auto-create worktree"
+        return 1
+    }
+
+    # Verify worktree was created
+    assert_directory_exists "auto-created-branch" || return 1
+    assert_git_worktree "auto-created-branch" "auto-created-branch" || return 1
+
+    log_success "daft.go.autoStart config auto-creates worktrees"
+    return 0
+}
+
+# Test fuzzy suggestions in error message
+test_checkout_fuzzy_suggestions() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-fuzzy" "main")
+
+    # Clone the repository — the remote already has "develop" branch
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-fuzzy"
+
+    # Try a typo of "develop" and capture stderr
+    local output
+    output=$(git-worktree-checkout "develp" 2>&1) && {
+        log_error "Checkout of mistyped branch should fail"
+        return 1
+    }
+
+    # Verify the error contains fuzzy suggestions
+    if ! echo "$output" | grep -q "Did you mean"; then
+        log_error "Error output should contain 'Did you mean' fuzzy suggestion"
+        echo "$output"
+        return 1
+    fi
+    log_success "Error output contains 'Did you mean' fuzzy suggestion"
+
+    # Verify the suggestion includes "develop"
+    if ! echo "$output" | grep -q "develop"; then
+        log_error "Fuzzy suggestion should include 'develop'"
+        echo "$output"
+        return 1
+    fi
+    log_success "Fuzzy suggestion includes 'develop'"
+
+    return 0
+}
+
 # Run all checkout tests
 run_checkout_tests() {
     log "Running git-worktree-checkout integration tests..."
@@ -591,6 +754,14 @@ run_checkout_tests() {
     run_test "checkout_carry_mixed" "test_checkout_carry_mixed"
     run_test "checkout_carry_no_changes" "test_checkout_carry_no_changes"
     run_test "checkout_carry_help" "test_checkout_carry_help"
+
+    # Go auto-start feature tests
+    run_test "checkout_error_message" "test_checkout_error_message"
+    run_test "checkout_start_flag" "test_checkout_start_flag"
+    run_test "checkout_start_shorthand" "test_checkout_start_shorthand"
+    run_test "checkout_start_existing_branch" "test_checkout_start_existing_branch"
+    run_test "checkout_auto_start_config" "test_checkout_auto_start_config"
+    run_test "checkout_fuzzy_suggestions" "test_checkout_fuzzy_suggestions"
 }
 
 # Main execution
