@@ -7,8 +7,8 @@ use clap::{Command, CommandFactory};
 use std::path::Path;
 
 use crate::commands::{
-    branch, carry, checkout, clone, completions, doctor, fetch, flow_adopt, flow_eject, hooks,
-    init, multi_remote, prune, release_notes, shell_init, shortcuts, worktree_branch,
+    carry, checkout, clone, completions, doctor, fetch, flow_adopt, flow_eject, hooks, init,
+    multi_remote, prune, release_notes, shell_init, shortcuts, worktree_branch,
 };
 
 /// A category of commands with a title and list of commands.
@@ -84,10 +84,6 @@ fn get_command_categories() -> Vec<CommandCategory> {
                 CommandEntry {
                     display_name: "daft hooks",
                     command: hooks::Args::command(),
-                },
-                CommandEntry {
-                    display_name: "daft branch",
-                    command: branch::Args::command(),
                 },
                 CommandEntry {
                     display_name: "daft multi-remote",

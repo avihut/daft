@@ -116,6 +116,12 @@ _daft() {
         return 0
     fi
 
+    # multi-remote: complete subcommands
+    if [[ $cword -eq 2 && "${words[1]}" == "multi-remote" ]]; then
+        COMPREPLY=( $(compgen -W "enable disable status set-default move" -- "$cur") )
+        return 0
+    fi
+
     # verb aliases: delegate to underlying command completions
     if [[ $cword -ge 2 ]]; then
         case "${words[1]}" in
@@ -150,7 +156,7 @@ _daft() {
 
     # top-level: complete daft subcommands
     if [[ $cword -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "hooks shell-init completions setup branch multi-remote release-notes doctor clone init go start carry update prune remove adopt eject" -- "$cur") )
+        COMPREPLY=( $(compgen -W "hooks shell-init completions setup multi-remote release-notes doctor clone init go start carry update prune remove adopt eject" -- "$cur") )
         return 0
     fi
 }

@@ -129,6 +129,12 @@ _daft() {
         return
     fi
 
+    # multi-remote: complete subcommands
+    if (( CURRENT == 3 )) && [[ "$words[2]" == "multi-remote" ]]; then
+        compadd enable disable status set-default move
+        return
+    fi
+
     # verb aliases: delegate to underlying command completions
     if (( CURRENT >= 3 )); then
         case "$words[2]" in
@@ -165,7 +171,7 @@ _daft() {
 
     # top-level: complete daft subcommands
     if (( CURRENT == 2 )); then
-        compadd hooks shell-init completions setup branch multi-remote release-notes doctor \
+        compadd hooks shell-init completions setup multi-remote release-notes doctor \
                 clone init go start carry update prune remove adopt eject
         return
     fi

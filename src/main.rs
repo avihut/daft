@@ -59,7 +59,6 @@ fn main() -> Result<()> {
             if args.len() > 1 {
                 match args[1].as_str() {
                     "--help" | "-h" => commands::docs::run(),
-                    "branch" => commands::branch::run(),
                     "completions" => commands::completions::run(),
                     "doctor" => commands::doctor::run(),
                     "__complete" => commands::complete::run(),

@@ -6,7 +6,6 @@
 /// All subcommands available via `daft <subcmd>`.
 pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "adopt",
-    "branch",
     "carry",
     "clone",
     "completions",

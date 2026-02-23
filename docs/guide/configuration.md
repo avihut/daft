@@ -151,7 +151,8 @@ This affects three commands:
   upstream tracking
 - **`daft remove` / `git worktree-branch -d`** -- pushes `--delete` to remove
   the remote branch
-- **`daft branch move --push`** -- pushes an existing branch to a new remote
+- **`daft multi-remote move --push`** -- pushes an existing branch to a new
+  remote
 
 If a push fails (due to network issues, auth errors, or remote rejection rules),
 daft treats it as non-fatal: the local worktree and branch remain usable, and a
