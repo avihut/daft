@@ -193,7 +193,7 @@ daft() {
             shift; __daft_wrapper git-worktree-branch -d "$@" ;;
         worktree-branch-delete)
             shift; __daft_wrapper git-worktree-branch-delete "$@" ;;
-        worktree-fetch|fetch)
+        worktree-fetch|update)
             shift; __daft_wrapper git-worktree-fetch "$@" ;;
         worktree-flow-adopt|adopt)
             shift; __daft_wrapper git-worktree-flow-adopt "$@" ;;
@@ -407,7 +407,7 @@ function daft --wraps daft
             __daft_wrapper git-worktree-branch -d $argv[2..-1]
         case worktree-branch-delete
             __daft_wrapper git-worktree-branch-delete $argv[2..-1]
-        case worktree-fetch fetch
+        case worktree-fetch update
             __daft_wrapper git-worktree-fetch $argv[2..-1]
         case worktree-flow-adopt adopt
             __daft_wrapper git-worktree-flow-adopt $argv[2..-1]

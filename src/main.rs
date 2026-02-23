@@ -85,7 +85,7 @@ fn main() -> Result<()> {
                     "go" => commands::checkout::run(),
                     "start" => commands::checkout::run_create(),
                     "carry" => commands::carry::run(),
-                    "fetch" => commands::fetch::run(),
+                    "update" => commands::fetch::run(),
                     "prune" => commands::prune::run(),
                     "remove" => commands::worktree_branch::run_remove(),
                     "adopt" => commands::flow_adopt::run(),

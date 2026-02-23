@@ -95,8 +95,8 @@ pub mod defaults {
     /// Default value for checkout.carry setting.
     pub const CHECKOUT_CARRY: bool = false;
 
-    /// Default value for fetch.args setting.
-    pub const FETCH_ARGS: &str = "--ff-only";
+    /// Default value for update.args setting.
+    pub const UPDATE_ARGS: &str = "--ff-only";
 
     /// Default value for multiRemote.enabled setting.
     pub const MULTI_REMOTE_ENABLED: bool = false;
@@ -134,8 +134,11 @@ pub mod keys {
     /// Config key for checkout.carry setting.
     pub const CHECKOUT_CARRY: &str = "daft.checkout.carry";
 
-    /// Config key for fetch.args setting.
-    pub const FETCH_ARGS: &str = "daft.fetch.args";
+    /// Config key for update.args setting.
+    pub const UPDATE_ARGS: &str = "daft.update.args";
+
+    /// Deprecated config key for update.args (migration fallback).
+    pub const FETCH_ARGS_DEPRECATED: &str = "daft.fetch.args";
 
     /// Multi-remote config keys.
     pub mod multi_remote {
@@ -223,8 +226,8 @@ pub struct DaftSettings {
     /// Where to cd after pruning the user's current worktree.
     pub prune_cd_target: PruneCdTarget,
 
-    /// Default arguments for git pull in fetch command.
-    pub fetch_args: String,
+    /// Default arguments for git pull in update command (same-branch mode).
+    pub update_args: String,
 
     /// Whether multi-remote mode is enabled.
     pub multi_remote_enabled: bool,
@@ -249,7 +252,7 @@ impl Default for DaftSettings {
             checkout_branch_carry: defaults::CHECKOUT_BRANCH_CARRY,
             checkout_carry: defaults::CHECKOUT_CARRY,
             prune_cd_target: defaults::PRUNE_CD_TARGET,
-            fetch_args: defaults::FETCH_ARGS.to_string(),
+            update_args: defaults::UPDATE_ARGS.to_string(),
             multi_remote_enabled: defaults::MULTI_REMOTE_ENABLED,
             multi_remote_default: defaults::MULTI_REMOTE_DEFAULT_REMOTE.to_string(),
             use_gitoxide: defaults::USE_GITOXIDE,
@@ -301,9 +304,12 @@ impl DaftSettings {
             }
         }
 
-        if let Some(value) = git.config_get(keys::FETCH_ARGS)? {
+        // Try new key first, fall back to deprecated key for migration
+        let update_args_value = git.config_get(keys::UPDATE_ARGS)?;
+        let update_args_value = update_args_value.or(git.config_get(keys::FETCH_ARGS_DEPRECATED)?);
+        if let Some(value) = update_args_value {
             if !value.is_empty() {
-                settings.fetch_args = value;
+                settings.update_args = value;
             }
         }
 
@@ -368,9 +374,13 @@ impl DaftSettings {
             }
         }
 
-        if let Some(value) = git.config_get_global(keys::FETCH_ARGS)? {
+        // Try new key first, fall back to deprecated key for migration
+        let update_args_value = git.config_get_global(keys::UPDATE_ARGS)?;
+        let update_args_value =
+            update_args_value.or(git.config_get_global(keys::FETCH_ARGS_DEPRECATED)?);
+        if let Some(value) = update_args_value {
             if !value.is_empty() {
-                settings.fetch_args = value;
+                settings.update_args = value;
             }
         }
 
@@ -661,7 +671,7 @@ mod tests {
         assert!(settings.checkout_branch_carry);
         assert!(!settings.checkout_carry);
         assert_eq!(settings.prune_cd_target, PruneCdTarget::Root);
-        assert_eq!(settings.fetch_args, "--ff-only");
+        assert_eq!(settings.update_args, "--ff-only");
         assert!(!settings.multi_remote_enabled);
         assert_eq!(settings.multi_remote_default, "origin");
         assert!(!settings.use_gitoxide);

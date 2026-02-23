@@ -27,7 +27,7 @@ pub(super) enum CompletionTarget {
 pub(super) const VERB_ALIAS_GROUPS: &[(&[&str], &str)] = &[
     (&["go", "start"], "git-worktree-checkout"),
     (&["carry"], "git-worktree-carry"),
-    (&["fetch"], "git-worktree-fetch"),
+    (&["update"], "git-worktree-fetch"),
 ];
 
 /// Available daft commands that need completion scripts

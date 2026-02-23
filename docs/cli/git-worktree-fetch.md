@@ -8,25 +8,27 @@ description: Update worktree branches from their remote tracking branches
 Update worktree branches from their remote tracking branches
 
 ::: tip
-This command is also available as `daft fetch`. See [daft fetch](./daft-fetch.md).
+This command is also available as `daft update`. See [daft update](./daft-update.md).
 :::
 
 ## Description
 
-Updates worktree branches by pulling from their remote tracking branches.
+Updates worktree branches from their remote tracking branches.
 
-For each target worktree, the command navigates to that directory and runs
-`git pull` with the configured options. By default, only fast-forward updates
-are allowed (--ff-only).
+Targets can use refspec syntax (source:destination) to update a worktree
+from a different remote branch:
 
-Targets can be specified by worktree directory name or branch name. If no
-targets are specified and --all is not used, the current worktree is updated.
+  Same-branch:   daft update master        (pulls master via git pull --ff-only)
+  Cross-branch:  daft update master:test   (fetches origin/master, resets test to it)
+  Current:       daft update               (pulls current worktree's tracking branch)
+  All:           daft update --all         (pulls all worktrees)
+
+Same-branch mode uses `git pull` with configurable options (--rebase,
+--ff-only, --autostash, -- PULL_ARGS). Cross-branch mode uses `git fetch`
++ `git reset --hard` and ignores pull flags.
 
 Worktrees with uncommitted changes are skipped unless --force is specified.
 Use --dry-run to preview what would be done without making changes.
-
-Arguments after -- are passed directly to git pull, allowing full control
-over the pull behavior.
 
 ## Usage
 
@@ -38,7 +40,7 @@ git worktree-fetch [OPTIONS] [TARGETS] [PULL_ARGS]
 
 | Argument | Description | Required |
 |----------|-------------|----------|
-| `<TARGETS>` | Target worktree(s) by directory name or branch name | No |
+| `<TARGETS>` | Target worktree(s) by name or refspec (source:destination) | No |
 | `<PULL_ARGS>` | Additional arguments to pass to git pull | No |
 
 ## Options

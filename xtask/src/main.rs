@@ -65,7 +65,7 @@ const DAFT_VERBS: &[DaftVerbEntry] = &[
         about_override: None,
     },
     DaftVerbEntry {
-        daft_name: "daft-fetch",
+        daft_name: "daft-update",
         source_command: "git-worktree-fetch",
         about_override: None,
     },
@@ -145,7 +145,7 @@ fn daft_verb_tip(command_name: &str) -> Option<&'static str> {
             "::: tip\nThis command is also available as `daft carry`. See [daft carry](./daft-carry.md).\n:::\n",
         ),
         "git-worktree-fetch" => Some(
-            "::: tip\nThis command is also available as `daft fetch`. See [daft fetch](./daft-fetch.md).\n:::\n",
+            "::: tip\nThis command is also available as `daft update`. See [daft update](./daft-update.md).\n:::\n",
         ),
         "git-worktree-prune" => Some(
             "::: tip\nThis command is also available as `daft prune`. See [daft prune](./daft-prune.md).\n:::\n",
