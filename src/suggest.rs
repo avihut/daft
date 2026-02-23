@@ -90,6 +90,33 @@ pub fn find_similar_commands<'a>(input: &str, known: &[&'a str]) -> Vec<&'a str>
     candidates.into_iter().map(|(cmd, _)| cmd).collect()
 }
 
+/// Find strings similar to `input` from a list, sorted by edit distance.
+///
+/// Returns at most `max` suggestions. Only includes items whose edit distance
+/// is within a reasonable threshold.
+pub fn find_similar<'a>(input: &str, candidates: &'a [String], max: usize) -> Vec<&'a str> {
+    let mut scored: Vec<(&str, usize)> = candidates
+        .iter()
+        .filter_map(|candidate| {
+            let dist = levenshtein_distance(input, candidate);
+            if dist == 0 {
+                return None;
+            }
+            let max_len = input.len().max(candidate.len());
+            let threshold = 3.max(max_len / 3);
+            if dist <= threshold {
+                Some((candidate.as_str(), dist))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    scored.sort_by_key(|&(_, dist)| dist);
+    scored.truncate(max);
+    scored.into_iter().map(|(s, _)| s).collect()
+}
+
 /// Print an error message for an unknown subcommand and exit with code 1.
 ///
 /// Mirrors git's error format:
@@ -223,5 +250,27 @@ mod tests {
         for cmd in DAFT_SUBCOMMANDS {
             assert!(seen.insert(cmd), "Duplicate subcommand: {cmd}");
         }
+    }
+
+    // --- find_similar (generic) tests ---
+
+    #[test]
+    fn test_find_similar_with_branches() {
+        let branches = vec![
+            "feature/auth".to_string(),
+            "feature/auth-fix".to_string(),
+            "develop".to_string(),
+            "main".to_string(),
+        ];
+        let suggestions = find_similar("feature/auht", &branches, 5);
+        assert!(!suggestions.is_empty());
+        assert_eq!(suggestions[0], "feature/auth");
+    }
+
+    #[test]
+    fn test_find_similar_generic_no_match() {
+        let branches = vec!["main".to_string(), "develop".to_string()];
+        let suggestions = find_similar("completely-unrelated-xyzzy", &branches, 5);
+        assert!(suggestions.is_empty());
     }
 }

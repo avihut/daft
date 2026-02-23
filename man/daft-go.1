@@ -4,7 +4,7 @@
 .SH NAME
 daft\-go \- Open an existing branch in a worktree
 .SH SYNOPSIS
-\fBdaft\-go\fR [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
+\fBdaft\-go\fR [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
 .SH DESCRIPTION
 .PP
 Creates a new worktree for an existing local or remote branch. The worktree
@@ -51,6 +51,9 @@ Do not change directory to the new worktree
 .TP
 \fB\-x\fR, \fB\-\-exec\fR \fI<EXEC>\fR
 Run a command in the worktree after setup completes (repeatable)
+.TP
+\fB\-s\fR, \fB\-\-start\fR
+Create a new worktree if the branch does not exist
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

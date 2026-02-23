@@ -60,6 +60,7 @@ git worktree-checkout [OPTIONS] <BRANCH_NAME> [BASE_BRANCH_NAME]
 | `-r, --remote <REMOTE>` | Remote for worktree organization (multi-remote mode) |  |
 | `--no-cd` | Do not change directory to the new worktree |  |
 | `-x, --exec <EXEC>` | Run a command in the worktree after setup completes (repeatable) |  |
+| `-s, --start` | Create a new worktree if the branch does not exist |  |
 
 ## Global Options
 

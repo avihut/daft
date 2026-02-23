@@ -90,6 +90,13 @@ pub struct Args {
         help = "Run a command in the worktree after setup completes (repeatable)"
     )]
     exec: Vec<String>,
+
+    #[arg(
+        short = 's',
+        long = "start",
+        help = "Create a new worktree if the branch does not exist"
+    )]
+    start: bool,
 }
 
 /// Entry point for `git-worktree-checkout` / `daft go`.
