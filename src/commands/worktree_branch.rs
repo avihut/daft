@@ -173,17 +173,24 @@ pub struct RemoveArgs {
 pub fn run_remove() -> Result<()> {
     let raw = crate::get_clap_args("daft-remove");
     let remove_args = RemoveArgs::parse_from(raw);
-    let args = Args {
-        branches: remove_args.branches,
-        delete: !remove_args.force,
-        force_delete: remove_args.force,
-        rename: false,
-        no_remote: false,
-        dry_run: false,
-        quiet: remove_args.quiet,
-        verbose: remove_args.verbose,
-    };
-    run_with_args(args)
+
+    init_logging(remove_args.verbose);
+
+    if !is_git_repository()? {
+        anyhow::bail!("Not inside a Git repository");
+    }
+
+    let settings = DaftSettings::load()?;
+    let config = OutputConfig::with_autocd(remove_args.quiet, remove_args.verbose, settings.autocd);
+    let mut output = CliOutput::new(config);
+
+    run_branch_delete(
+        &remove_args.branches,
+        remove_args.force,
+        remove_args.quiet,
+        &mut output,
+        &settings,
+    )
 }
 
 /// Daft-style args for `daft rename`. Separate from `Args` so that `-h`/`--help`
@@ -230,17 +237,25 @@ pub struct RenameArgs {
 pub fn run_rename() -> Result<()> {
     let raw = crate::get_clap_args("daft-rename");
     let rename_args = RenameArgs::parse_from(raw);
-    let args = Args {
-        branches: vec![rename_args.source, rename_args.new_branch],
-        delete: false,
-        force_delete: false,
-        rename: true,
-        no_remote: rename_args.no_remote,
-        dry_run: rename_args.dry_run,
-        quiet: rename_args.quiet,
-        verbose: rename_args.verbose,
-    };
-    run_with_args(args)
+
+    init_logging(rename_args.verbose);
+
+    if !is_git_repository()? {
+        anyhow::bail!("Not inside a Git repository");
+    }
+
+    let settings = DaftSettings::load()?;
+    let config = OutputConfig::with_autocd(rename_args.quiet, rename_args.verbose, settings.autocd);
+    let mut output = CliOutput::new(config);
+
+    run_rename_inner(
+        &rename_args.source,
+        &rename_args.new_branch,
+        rename_args.no_remote,
+        rename_args.dry_run,
+        &mut output,
+        &settings,
+    )
 }
 
 fn run_with_args(args: Args) -> Result<()> {
@@ -270,7 +285,20 @@ fn run_with_args(args: Args) -> Result<()> {
     let mut output = CliOutput::new(config);
 
     if args.rename {
-        run_rename_inner(&args, &mut output, &settings)?;
+        if args.branches.len() != 2 {
+            anyhow::bail!(
+                "rename mode requires exactly 2 arguments: <source> <new-branch>.\n\n\
+                 Usage: git worktree-branch -m <source> <new-branch>"
+            );
+        }
+        run_rename_inner(
+            &args.branches[0],
+            &args.branches[1],
+            args.no_remote,
+            args.dry_run,
+            &mut output,
+            &settings,
+        )?;
     } else {
         if args.branches.is_empty() {
             anyhow::bail!(
@@ -279,17 +307,29 @@ fn run_with_args(args: Args) -> Result<()> {
                  Usage: git worktree-branch -D <branches...>"
             );
         }
-        run_branch_delete(&args, &mut output, &settings)?;
+        run_branch_delete(
+            &args.branches,
+            args.force_delete,
+            args.quiet,
+            &mut output,
+            &settings,
+        )?;
     }
     Ok(())
 }
 
-fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
+fn run_branch_delete(
+    branches: &[String],
+    force: bool,
+    quiet: bool,
+    output: &mut dyn Output,
+    settings: &DaftSettings,
+) -> Result<()> {
     let params = branch_delete::BranchDeleteParams {
-        branches: args.branches.clone(),
-        force: args.force_delete,
+        branches: branches.to_vec(),
+        force,
         use_gitoxide: settings.use_gitoxide,
-        is_quiet: args.quiet,
+        is_quiet: quiet,
         remote_name: settings.remote.clone(),
         prune_cd_target: settings.prune_cd_target,
     };
@@ -356,19 +396,19 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
     Ok(())
 }
 
-fn run_rename_inner(args: &Args, output: &mut dyn Output, settings: &DaftSettings) -> Result<()> {
-    if args.branches.len() != 2 {
-        anyhow::bail!(
-            "rename mode requires exactly 2 arguments: <source> <new-branch>.\n\n\
-             Usage: git worktree-branch -m <source> <new-branch>"
-        );
-    }
-
+fn run_rename_inner(
+    source: &str,
+    new_branch: &str,
+    no_remote: bool,
+    dry_run: bool,
+    output: &mut dyn Output,
+    settings: &DaftSettings,
+) -> Result<()> {
     let params = rename::RenameParams {
-        source: args.branches[0].clone(),
-        new_branch: args.branches[1].clone(),
-        no_remote: args.no_remote,
-        dry_run: args.dry_run,
+        source: source.to_string(),
+        new_branch: new_branch.to_string(),
+        no_remote,
+        dry_run,
         use_gitoxide: settings.use_gitoxide,
         is_quiet: output.is_quiet(),
         remote_name: settings.remote.clone(),
