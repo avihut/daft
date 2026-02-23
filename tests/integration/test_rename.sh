@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Integration tests for git-worktree-rename
+# Integration tests for git-worktree-branch -m
 
 source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 
@@ -24,7 +24,7 @@ test_rename_basic() {
     cd "$project_root"
 
     # Rename the branch
-    git-worktree-rename feature/old-name feature/new-name || return 1
+    git-worktree-branch -m feature/old-name feature/new-name || return 1
 
     # Verify old worktree is gone
     if [[ -d "feature/old-name" ]]; then
@@ -72,7 +72,7 @@ test_rename_from_inside_worktree() {
     # Run rename with DAFT_CD_FILE set
     local cd_file
     cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
-    DAFT_CD_FILE="$cd_file" git-worktree-rename feature/inside-test feature/renamed 2>&1 || {
+    DAFT_CD_FILE="$cd_file" git-worktree-branch -m feature/inside-test feature/renamed 2>&1 || {
         log_error "Rename failed"
         rm -f "$cd_file"
         return 1
@@ -118,7 +118,7 @@ test_rename_no_remote() {
     cd "$project_root"
 
     # Rename with --no-remote
-    git-worktree-rename --no-remote feature/no-remote feature/no-remote-renamed || return 1
+    git-worktree-branch -m --no-remote feature/no-remote feature/no-remote-renamed || return 1
 
     # Verify local rename happened
     assert_directory_exists "feature/no-remote-renamed" || return 1
@@ -150,7 +150,7 @@ test_rename_dry_run() {
     assert_directory_exists "feature/dry-run-test" || return 1
 
     # Dry run rename
-    git-worktree-rename --dry-run feature/dry-run-test feature/dry-run-renamed || return 1
+    git-worktree-branch -m --dry-run feature/dry-run-test feature/dry-run-renamed || return 1
 
     # Verify nothing actually changed
     assert_directory_exists "feature/dry-run-test" || return 1
@@ -182,7 +182,7 @@ test_rename_source_not_found() {
     cd "test-repo-rn-nosource"
 
     # Try to rename nonexistent branch
-    if git-worktree-rename nonexistent-branch new-name 2>/dev/null; then
+    if git-worktree-branch -m nonexistent-branch new-name 2>/dev/null; then
         log_error "Should have failed for nonexistent branch"
         return 1
     fi
@@ -203,7 +203,7 @@ test_rename_dest_branch_exists() {
     git-worktree-checkout -b feature/dest || return 1
 
     # Try to rename source to dest (should fail because dest branch exists)
-    if git-worktree-rename feature/source feature/dest 2>/dev/null; then
+    if git-worktree-branch -m feature/source feature/dest 2>/dev/null; then
         log_error "Should have failed when destination branch already exists"
         return 1
     fi
@@ -229,7 +229,7 @@ test_rename_dest_path_exists() {
     mkdir -p "feature/path-blocker"
 
     # Try to rename (should fail because path exists on disk)
-    if git-worktree-rename feature/path-test feature/path-blocker 2>/dev/null; then
+    if git-worktree-branch -m feature/path-test feature/path-blocker 2>/dev/null; then
         log_error "Should have failed when destination path exists on disk"
         return 1
     fi
@@ -256,7 +256,7 @@ test_rename_cleanup_empty_parent() {
     assert_directory_exists "feature/deep/nested" || return 1
 
     # Rename to a different top-level path
-    git-worktree-rename feature/deep/nested bugfix/moved || return 1
+    git-worktree-branch -m feature/deep/nested bugfix/moved || return 1
 
     # Verify the new path exists
     assert_directory_exists "bugfix/moved" || return 1
@@ -295,7 +295,7 @@ test_rename_with_remote() {
     cd "$project_root"
 
     # Rename (should also rename remote branch)
-    git-worktree-rename feature/remote-test feature/remote-renamed || return 1
+    git-worktree-branch -m feature/remote-test feature/remote-renamed || return 1
 
     # Verify local rename
     assert_directory_exists "feature/remote-renamed" || return 1
@@ -332,7 +332,7 @@ test_rename_by_relative_path() {
     assert_directory_exists "feature/by-path" || return 1
 
     # Rename using relative path as source
-    git-worktree-rename feature/by-path feature/path-renamed || return 1
+    git-worktree-branch -m feature/by-path feature/path-renamed || return 1
 
     # Verify rename worked
     assert_directory_exists "feature/path-renamed" || return 1
@@ -357,7 +357,7 @@ test_rename_by_absolute_path() {
 
     # Rename using absolute path as source
     local abs_path="$project_root/feature/abs-path"
-    git-worktree-rename "$abs_path" feature/abs-renamed || return 1
+    git-worktree-branch -m "$abs_path" feature/abs-renamed || return 1
 
     # Verify rename worked
     assert_directory_exists "feature/abs-renamed" || return 1
@@ -381,7 +381,7 @@ test_rename_simple_branch() {
     assert_directory_exists "mybranch" || return 1
 
     # Rename to another simple name
-    git-worktree-rename mybranch renamed-branch || return 1
+    git-worktree-branch -m mybranch renamed-branch || return 1
 
     # Verify rename
     assert_directory_exists "renamed-branch" || return 1
@@ -394,7 +394,7 @@ test_rename_simple_branch() {
 }
 
 run_rename_tests() {
-    log "Running git-worktree-rename integration tests..."
+    log "Running git-worktree-branch -m integration tests..."
 
     run_test "rename_basic" "test_rename_basic"
     run_test "rename_from_inside_worktree" "test_rename_from_inside_worktree"

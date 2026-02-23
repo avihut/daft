@@ -18,7 +18,6 @@ pub mod init;
 pub mod multi_remote;
 pub mod prune;
 pub mod release_notes;
-pub mod rename;
 pub mod setup;
 pub mod shell_init;
 pub mod shortcuts;

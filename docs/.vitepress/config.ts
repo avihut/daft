@@ -314,7 +314,6 @@ export default defineConfig({
             text: "Branching",
             items: [
               { text: "worktree-checkout", link: "/cli/git-worktree-checkout" },
-              { text: "worktree-rename", link: "/cli/git-worktree-rename" },
               { text: "worktree-branch", link: "/cli/git-worktree-branch" },
               {
                 text: "worktree-branch-delete (deprecated)",

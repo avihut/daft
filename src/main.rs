@@ -44,7 +44,6 @@ fn main() -> Result<()> {
         "git-worktree-branch" => commands::worktree_branch::run(),
         "git-worktree-branch-delete" => commands::branch_delete::run(),
         "git-worktree-fetch" => commands::fetch::run(),
-        "git-worktree-rename" => commands::rename::run(),
         "git-worktree-flow-adopt" => commands::flow_adopt::run(),
         "git-worktree-flow-eject" => commands::flow_eject::run(),
 
@@ -87,7 +86,7 @@ fn main() -> Result<()> {
                     "carry" => commands::carry::run(),
                     "update" => commands::fetch::run(),
                     "prune" => commands::prune::run(),
-                    "rename" => commands::rename::run(),
+                    "rename" => commands::worktree_branch::run_rename(),
                     "remove" => commands::worktree_branch::run_remove(),
                     "adopt" => commands::flow_adopt::run(),
                     "eject" => commands::flow_eject::run(),
@@ -97,7 +96,6 @@ fn main() -> Result<()> {
                     "worktree-checkout" => commands::checkout::run(),
 
                     "worktree-prune" => commands::prune::run(),
-                    "worktree-rename" => commands::rename::run(),
                     "worktree-carry" => commands::carry::run(),
                     "worktree-fetch" => commands::fetch::run(),
                     "worktree-flow-adopt" => commands::flow_adopt::run(),

@@ -2,18 +2,22 @@
 .el .ds Aq '
 .TH daft-remove 1  "daft-remove 1.0.31" 
 .SH NAME
-daft\-remove \- Delete branches and their worktrees
+daft\-remove \- Delete or rename branches and their worktrees
 .SH SYNOPSIS
-\fBdaft\-remove\fR [\fB\-d\fR|\fB\-\-delete\fR] [\fB\-D\fR|\fB\-\-force\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCHES\fR] 
+\fBdaft\-remove\fR [\fB\-d\fR|\fB\-\-delete\fR] [\fB\-D\fR|\fB\-\-force\fR] [\fB\-m\fR|\fB\-\-move\fR] [\fB\-\-no\-remote\fR] [\fB\-\-dry\-run\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCHES\fR] 
 .SH DESCRIPTION
+.PP
+Manage branches and their associated worktrees. Supports deletion (\-d/\-D)
+and renaming (\-m).
+.PP
+DELETE MODE (\-d / \-D)
 .PP
 Deletes one or more local branches along with their associated worktrees and
 remote tracking branches in a single operation. This is the inverse of
 git\-worktree\-checkout(1) \-b.
 .PP
 Use \-d for a safe delete that checks whether each branch has been merged.
-Use \-D to force\-delete branches regardless of merge status. One of \-d or \-D
-is required.
+Use \-D to force\-delete branches regardless of merge status.
 .PP
 Arguments can be branch names or worktree paths. When a path is given
 (absolute, relative, or "."), the branch checked out in that worktree is
@@ -36,6 +40,21 @@ deleted.
 .PP
 Pre\-remove and post\-remove lifecycle hooks are executed for each worktree
 removal if the repository is trusted. See git\-daft(1) for hook management.
+.PP
+RENAME MODE (\-m)
+.PP
+Renames a local branch and moves its associated worktree directory to match
+the new branch name. If the branch has a remote tracking branch, the remote
+branch is also renamed (push new name, delete old name) unless \-\-no\-remote
+is specified.
+.PP
+The source can be specified as a branch name or a path to an existing
+worktree (absolute or relative).
+.PP
+If you are currently inside the worktree being renamed, the shell is
+redirected to the new worktree location after the rename completes.
+.PP
+Empty parent directories left behind by the move are automatically cleaned up.
 .SH OPTIONS
 .TP
 \fB\-d\fR, \fB\-\-delete\fR
@@ -43,6 +62,15 @@ Delete branches (safe mode)
 .TP
 \fB\-D\fR, \fB\-\-force\fR
 Force deletion even if not fully merged
+.TP
+\fB\-m\fR, \fB\-\-move\fR
+Rename a branch and move its worktree
+.TP
+\fB\-\-no\-remote\fR
+Skip remote branch rename (only with \-m)
+.TP
+\fB\-\-dry\-run\fR
+Preview changes without executing (only with \-m)
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 Operate quietly; suppress progress reporting
@@ -57,6 +85,6 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 Print version
 .TP
 [\fIBRANCHES\fR]
-Branches to delete (names or worktree paths)
+Branches (delete mode) or source + new\-name (rename mode)
 .SH VERSION
 v1.0.31

@@ -6,10 +6,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     let mut output = String::new();
     let has_branches = matches!(
         command_name,
-        "git-worktree-checkout"
-            | "git-worktree-carry"
-            | "git-worktree-fetch"
-            | "git-worktree-rename"
+        "git-worktree-checkout" | "git-worktree-carry" | "git-worktree-fetch"
     );
 
     let func_name = command_name.replace('-', "_");

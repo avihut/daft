@@ -33,7 +33,6 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "worktree-flow-eject",
     "worktree-init",
     "worktree-prune",
-    "worktree-rename",
 ];
 
 /// Compute Levenshtein edit distance between two strings.

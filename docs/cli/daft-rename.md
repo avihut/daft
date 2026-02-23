@@ -13,7 +13,7 @@ Rename a branch and move its worktree
 daft rename [OPTIONS] <SOURCE> <NEW_BRANCH>
 ```
 
-This is equivalent to `git worktree-rename`. All options and arguments
+This is equivalent to `git worktree-branch -m`. All options and arguments
 are the same.
 
 ## Description
@@ -27,4 +27,4 @@ worktree being renamed, the shell wrapper will cd to the new location.
 
 ## See Also
 
-- [git worktree-rename](./git-worktree-rename.md) for full options reference
+- [git worktree-branch](./git-worktree-branch.md) for full options reference
