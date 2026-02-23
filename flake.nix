@@ -69,7 +69,9 @@
                   git-worktree-fetch \
                   git-worktree-flow-adopt \
                   git-worktree-flow-eject \
-                  git-daft; do
+                  git-daft \
+                  daft-remove \
+                  daft-rename; do
                   ln -s daft "$cmd"
                 done
 

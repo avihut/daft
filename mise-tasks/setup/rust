@@ -20,6 +20,8 @@ ln -sf daft git-worktree-fetch
 ln -sf daft git-worktree-flow-adopt
 ln -sf daft git-worktree-flow-eject
 ln -sf daft git-daft
+ln -sf daft daft-remove
+ln -sf daft daft-rename
 # Git-style shortcuts (default for development)
 ln -sf daft gwtclone
 ln -sf daft gwtinit

@@ -12,7 +12,8 @@ pub const CD_FILE_ENV: &str = "DAFT_CD_FILE";
 
 /// Daft verb aliases that route through to worktree commands.
 const DAFT_VERBS: &[&str] = &[
-    "adopt", "carry", "clone", "eject", "go", "init", "prune", "remove", "start", "update",
+    "adopt", "carry", "clone", "eject", "go", "init", "prune", "remove", "rename", "start",
+    "update",
 ];
 
 /// Returns args suitable for clap parsing, handling symlink, subcommand, and verb invocations.

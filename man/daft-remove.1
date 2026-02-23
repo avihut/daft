@@ -1,47 +1,43 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH daft-remove 1  "daft-remove 1.0.31" 
+.TH "daft remove" 1  "daft remove 1.0.31" 
 .SH NAME
-daft\-remove \- Delete branches and their worktrees
+daft remove \- Delete branches and their worktrees
 .SH SYNOPSIS
-\fBdaft\-remove\fR [\fB\-d\fR|\fB\-\-delete\fR] [\fB\-D\fR|\fB\-\-force\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCHES\fR] 
+\fBdaft remove\fR [\fB\-f\fR|\fB\-\-force\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCHES\fR> 
 .SH DESCRIPTION
 .PP
 Deletes one or more local branches along with their associated worktrees and
 remote tracking branches in a single operation. This is the inverse of
-git\-worktree\-checkout(1) \-b.
+`daft start` / `daft go`.
 .PP
-Use \-d for a safe delete that checks whether each branch has been merged.
-Use \-D to force\-delete branches regardless of merge status. One of \-d or \-D
-is required.
+By default, performs a safe delete that checks whether each branch has been
+merged. Use \-f (\-\-force) to force\-delete branches regardless of merge status.
 .PP
 Arguments can be branch names or worktree paths. When a path is given
 (absolute, relative, or "."), the branch checked out in that worktree is
 resolved automatically. This is convenient when you are inside a worktree
 and want to delete it without remembering the branch name.
 .PP
-Safety checks (with \-d) prevent accidental data loss. The command refuses to
-delete a branch that:
+Safety checks prevent accidental data loss. The command refuses to delete a
+branch that:
 .PP
   \- has uncommitted changes in its worktree
   \- has not been merged (or squash\-merged) into the default branch
   \- is out of sync with its remote tracking branch
 .PP
-Use \-D to override these safety checks. The command always refuses to delete
-the repository\*(Aqs default branch (e.g. main), even with \-D.
+Use \-f to override these safety checks. The command always refuses to delete
+the repository\*(Aqs default branch (e.g. main), even with \-f.
 .PP
 All targeted branches are validated before any deletions begin. If any branch
-fails validation without \-D, the entire command aborts and no branches are
+fails validation without \-f, the entire command aborts and no branches are
 deleted.
 .PP
 Pre\-remove and post\-remove lifecycle hooks are executed for each worktree
-removal if the repository is trusted. See git\-daft(1) for hook management.
+removal if the repository is trusted. See daft\-hooks(1) for hook management.
 .SH OPTIONS
 .TP
-\fB\-d\fR, \fB\-\-delete\fR
-Delete branches (safe mode)
-.TP
-\fB\-D\fR, \fB\-\-force\fR
+\fB\-f\fR, \fB\-\-force\fR
 Force deletion even if not fully merged
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
@@ -56,7 +52,7 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 \fB\-V\fR, \fB\-\-version\fR
 Print version
 .TP
-[\fIBRANCHES\fR]
-Branches to delete (names or worktree paths)
+<\fIBRANCHES\fR>
+Branches or worktree paths to delete
 .SH VERSION
 v1.0.31

@@ -47,6 +47,10 @@ fn main() -> Result<()> {
         "git-worktree-flow-adopt" => commands::flow_adopt::run(),
         "git-worktree-flow-eject" => commands::flow_eject::run(),
 
+        // Daft-style commands (via symlinks)
+        "daft-remove" => commands::worktree_branch::run_remove(),
+        "daft-rename" => commands::worktree_branch::run_rename(),
+
         // Main daft / git-daft command - check for subcommands
         "git-daft" | "daft" => {
             let label = if resolved == "git-daft" {
@@ -59,7 +63,6 @@ fn main() -> Result<()> {
             if args.len() > 1 {
                 match args[1].as_str() {
                     "--help" | "-h" => commands::docs::run(),
-                    "branch" => commands::branch::run(),
                     "completions" => commands::completions::run(),
                     "doctor" => commands::doctor::run(),
                     "__complete" => commands::complete::run(),
@@ -87,6 +90,7 @@ fn main() -> Result<()> {
                     "carry" => commands::carry::run(),
                     "update" => commands::fetch::run(),
                     "prune" => commands::prune::run(),
+                    "rename" => commands::worktree_branch::run_rename(),
                     "remove" => commands::worktree_branch::run_remove(),
                     "adopt" => commands::flow_adopt::run(),
                     "eject" => commands::flow_eject::run(),

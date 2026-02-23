@@ -266,6 +266,7 @@ export default defineConfig({
             items: [
               { text: "go", link: "/cli/daft-go" },
               { text: "start", link: "/cli/daft-start" },
+              { text: "rename", link: "/cli/daft-rename" },
               { text: "remove", link: "/cli/daft-remove" },
             ],
           },
@@ -292,7 +293,6 @@ export default defineConfig({
             text: "Configuration",
             items: [
               { text: "hooks", link: "/cli/git-daft-hooks" },
-              { text: "branch", link: "/cli/daft-branch" },
               { text: "multi-remote", link: "/cli/daft-multi-remote" },
             ],
           },

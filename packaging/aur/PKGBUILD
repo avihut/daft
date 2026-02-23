@@ -35,7 +35,7 @@ package() {
     for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
                git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
                git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
-               git-daft; do
+               git-daft daft-remove daft-rename; do
         ln -s daft "$cmd"
     done
 

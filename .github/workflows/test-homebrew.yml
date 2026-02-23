@@ -58,7 +58,8 @@ jobs:
           for cmd in daft git-worktree-clone git-worktree-checkout git-worktree-init \
                      git-worktree-branch git-worktree-branch-delete \
                      git-worktree-prune git-worktree-carry git-worktree-fetch \
-                     git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
+                     git-worktree-flow-adopt git-worktree-flow-eject git-daft \
+                     daft-remove daft-rename; do
             echo "  $cmd: $(which $cmd)"
           done
 
@@ -68,7 +69,8 @@ jobs:
           for cmd in daft git-worktree-clone git-worktree-checkout git-worktree-init \
                      git-worktree-branch git-worktree-branch-delete \
                      git-worktree-prune git-worktree-carry git-worktree-fetch \
-                     git-worktree-flow-adopt git-worktree-flow-eject git-daft; do
+                     git-worktree-flow-adopt git-worktree-flow-eject git-daft \
+                     daft-remove daft-rename; do
             echo "  $cmd --help..."
             $cmd --help > /dev/null || { echo "FAILED: $cmd --help"; exit 1; }
           done

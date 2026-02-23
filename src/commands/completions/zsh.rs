@@ -6,7 +6,11 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     let mut output = String::new();
     let has_branches = matches!(
         command_name,
-        "git-worktree-checkout" | "git-worktree-carry" | "git-worktree-fetch"
+        "git-worktree-checkout"
+            | "git-worktree-carry"
+            | "git-worktree-fetch"
+            | "daft-remove"
+            | "daft-rename"
     );
 
     let func_name = command_name.replace('-', "_");
@@ -62,11 +66,14 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
 
     // Wrapper for git subcommand invocation (git worktree-checkout)
     // Git's completion system expects _git-<subcommand>
-    let git_func_name = format!("_git-{}", command_name.trim_start_matches("git-"));
-    output.push_str(&format!("{git_func_name}() {{\n"));
-    output.push_str(&format!("    __{func_name}_impl\n"));
-    output.push_str("}\n");
-    output.push('\n');
+    // Skip for daft-* commands — they don't need git subcommand style completion
+    if command_name.starts_with("git-") {
+        let git_func_name = format!("_git-{}", command_name.trim_start_matches("git-"));
+        output.push_str(&format!("{git_func_name}() {{\n"));
+        output.push_str(&format!("    __{func_name}_impl\n"));
+        output.push_str("}\n");
+        output.push('\n');
+    }
 
     // Register both
     output.push_str(&format!("compdef _{func_name} {command_name}\n"));
@@ -129,6 +136,12 @@ _daft() {
         return
     fi
 
+    # multi-remote: complete subcommands
+    if (( CURRENT == 3 )) && [[ "$words[2]" == "multi-remote" ]]; then
+        compadd enable disable status set-default move
+        return
+    fi
+
     # verb aliases: delegate to underlying command completions
     if (( CURRENT >= 3 )); then
         case "$words[2]" in
@@ -150,14 +163,16 @@ _daft() {
                 __git_worktree_fetch_impl
                 return
                 ;;
+            rename)
+                words=("daft-rename" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __daft_rename_impl
+                return
+                ;;
             remove)
-                if [[ "$curword" != -* ]]; then
-                    local -a branches
-                    branches=($(daft __complete git-worktree-checkout "$curword" 2>/dev/null))
-                    if [[ ${#branches[@]} -gt 0 ]]; then
-                        compadd -a branches
-                    fi
-                fi
+                words=("daft-remove" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __daft_remove_impl
                 return
                 ;;
         esac
@@ -165,8 +180,8 @@ _daft() {
 
     # top-level: complete daft subcommands
     if (( CURRENT == 2 )); then
-        compadd hooks shell-init completions setup branch multi-remote release-notes doctor \
-                clone init go start carry update prune remove adopt eject
+        compadd hooks shell-init completions setup multi-remote release-notes doctor \
+                clone init go start carry update prune rename remove adopt eject
         return
     fi
 }

@@ -282,18 +282,37 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
     }
 }
 
+/// Build the multi-remote subcommand with nested subcommands
+fn build_fig_multi_remote_subcommand() -> FigSubcommand {
+    FigSubcommand {
+        name: "multi-remote".to_string(),
+        description: Some("Multi-remote management".to_string()),
+        load_spec: None,
+        subcommands: Some(vec![
+            fig_subcommand("enable", "Enable multi-remote mode"),
+            fig_subcommand("disable", "Disable multi-remote mode"),
+            fig_subcommand("status", "Show multi-remote status"),
+            fig_subcommand("set-default", "Change default remote"),
+            fig_subcommand("move", "Move worktree to different remote folder"),
+        ]),
+        args: None,
+        options: None,
+    }
+}
+
 /// Generate the daft.js umbrella spec with subcommands
 pub(super) fn generate_fig_daft_spec() -> Result<String> {
     let simple_subcommands = [
         ("shell-init", "Generate shell initialization scripts"),
         ("completions", "Generate shell completion scripts"),
         ("setup", "Setup and configuration"),
-        ("branch", "Branch management utilities"),
-        ("multi-remote", "Multi-remote management"),
         ("release-notes", "Generate release notes"),
     ];
 
-    let mut subcommands: Vec<FigSubcommand> = vec![build_fig_hooks_subcommand()];
+    let mut subcommands: Vec<FigSubcommand> = vec![
+        build_fig_hooks_subcommand(),
+        build_fig_multi_remote_subcommand(),
+    ];
     subcommands.extend(
         simple_subcommands
             .iter()

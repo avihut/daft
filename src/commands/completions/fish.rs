@@ -6,25 +6,32 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
     let mut output = String::new();
     let has_branches = matches!(
         command_name,
-        "git-worktree-checkout" | "git-worktree-carry" | "git-worktree-fetch"
+        "git-worktree-checkout"
+            | "git-worktree-carry"
+            | "git-worktree-fetch"
+            | "daft-remove"
+            | "daft-rename"
     );
 
-    // Extract git subcommand name for dual registration
+    // Extract git subcommand name for dual registration (git-* commands only)
     let git_subcommand = command_name.trim_start_matches("git-");
+    let is_git_command = command_name.starts_with("git-");
 
     // Branch completions for both direct and git subcommand invocation
     if has_branches {
         output.push_str("# Dynamic branch name completion\n");
-        // Direct invocation (git-worktree-checkout)
+        // Direct invocation (git-worktree-checkout or daft-remove)
         output.push_str(&format!(
             "complete -c {} -f -a \"(daft __complete {} '')\"\n",
             command_name, command_name
         ));
-        // Git subcommand invocation (git worktree-checkout)
-        output.push_str(&format!(
-            "complete -c git -n '__fish_seen_subcommand_from {}' -f -a \"(daft __complete {} '')\"\n",
-            git_subcommand, command_name
-        ));
+        // Git subcommand invocation (git worktree-checkout) — only for git-* commands
+        if is_git_command {
+            output.push_str(&format!(
+                "complete -c git -n '__fish_seen_subcommand_from {}' -f -a \"(daft __complete {} '')\"\n",
+                git_subcommand, command_name
+            ));
+        }
         output.push('\n');
     }
 
@@ -47,31 +54,37 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
             output.push_str(&format!(
                 "complete -c {command_name} -s {short_char} -l {long_name} -d '{description}'\n"
             ));
-            // Git subcommand invocation
-            output.push_str(&format!(
-                "complete -c git -n '__fish_seen_subcommand_from {}' -s {short_char} -l {long_name} -d '{description}'\n",
-                git_subcommand
-            ));
+            // Git subcommand invocation (git-* commands only)
+            if is_git_command {
+                output.push_str(&format!(
+                    "complete -c git -n '__fish_seen_subcommand_from {}' -s {short_char} -l {long_name} -d '{description}'\n",
+                    git_subcommand
+                ));
+            }
         } else if !long.is_empty() {
             // Long form only
             let long_name = long.trim_start_matches("--");
             output.push_str(&format!(
                 "complete -c {command_name} -l {long_name} -d '{description}'\n"
             ));
-            output.push_str(&format!(
-                "complete -c git -n '__fish_seen_subcommand_from {}' -l {long_name} -d '{description}'\n",
-                git_subcommand
-            ));
+            if is_git_command {
+                output.push_str(&format!(
+                    "complete -c git -n '__fish_seen_subcommand_from {}' -l {long_name} -d '{description}'\n",
+                    git_subcommand
+                ));
+            }
         } else if !short.is_empty() {
             // Short form only (rare)
             let short_char = short.trim_start_matches('-');
             output.push_str(&format!(
                 "complete -c {command_name} -s {short_char} -d '{description}'\n"
             ));
-            output.push_str(&format!(
-                "complete -c git -n '__fish_seen_subcommand_from {}' -s {short_char} -d '{description}'\n",
-                git_subcommand
-            ));
+            if is_git_command {
+                output.push_str(&format!(
+                    "complete -c git -n '__fish_seen_subcommand_from {}' -s {short_char} -d '{description}'\n",
+                    git_subcommand
+                ));
+            }
         }
     }
 
@@ -142,7 +155,6 @@ complete -c daft -n '__fish_use_subcommand' -a 'hooks' -d 'Manage lifecycle hook
 complete -c daft -n '__fish_use_subcommand' -a 'shell-init' -d 'Generate shell wrappers'
 complete -c daft -n '__fish_use_subcommand' -a 'completions' -d 'Generate completions'
 complete -c daft -n '__fish_use_subcommand' -a 'setup' -d 'Setup and configuration'
-complete -c daft -n '__fish_use_subcommand' -a 'branch' -d 'Branch management'
 complete -c daft -n '__fish_use_subcommand' -a 'multi-remote' -d 'Multi-remote management'
 complete -c daft -n '__fish_use_subcommand' -a 'release-notes' -d 'Generate release notes'
 complete -c daft -n '__fish_use_subcommand' -a 'doctor' -d 'Check installation'
@@ -153,10 +165,14 @@ complete -c daft -n '__fish_use_subcommand' -a 'start' -d 'Create new branch wor
 complete -c daft -n '__fish_use_subcommand' -a 'carry' -d 'Transfer uncommitted changes'
 complete -c daft -n '__fish_use_subcommand' -a 'update' -d 'Update worktree branches'
 complete -c daft -n '__fish_use_subcommand' -a 'prune' -d 'Remove stale worktrees'
+complete -c daft -n '__fish_use_subcommand' -a 'rename' -d 'Rename branch and move worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'remove' -d 'Delete branch and worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'adopt' -d 'Convert repo to worktree layout'
 complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to traditional layout'
-complete -c daft -n '__fish_seen_subcommand_from go start carry update remove' -f -a "(daft __complete git-worktree-checkout '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from go start carry update' -f -a "(daft __complete git-worktree-checkout '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from rename' -f -a "(daft __complete daft-rename '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from multi-remote; and not __fish_seen_subcommand_from enable disable status set-default move' -f -a 'enable disable status set-default move'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and not __fish_seen_subcommand_from trust prompt deny status migrate install validate dump run' -f -a 'trust prompt deny status migrate install validate dump run'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -f -a "(daft __complete hooks-run '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l job -d 'Run only the named job' -r -f -a "(set -l hook (commandline -opc | string match -rv '^-' | tail -n1); DAFT_COMPLETE_HOOK=\$hook daft __complete hooks-run-job '' 2>/dev/null)"

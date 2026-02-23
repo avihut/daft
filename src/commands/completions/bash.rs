@@ -6,7 +6,11 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
     let mut output = String::new();
     let has_branches = matches!(
         command_name,
-        "git-worktree-checkout" | "git-worktree-carry" | "git-worktree-fetch"
+        "git-worktree-checkout"
+            | "git-worktree-carry"
+            | "git-worktree-fetch"
+            | "daft-remove"
+            | "daft-rename"
     );
 
     let func_name = command_name.replace('-', "_");
@@ -54,17 +58,20 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
 
     // Register completion for git subcommand invocation (git worktree-checkout)
     // Git's bash completion system uses __git_complete for subcommands
-    let git_subcommand = command_name.trim_start_matches("git-");
-    output.push_str(&format!(
-        "# Also register for 'git {}' invocation\n",
-        git_subcommand
-    ));
-    output.push_str("if declare -f __git_complete >/dev/null 2>&1; then\n");
-    output.push_str(&format!(
-        "    __git_complete git-{} _{}\n",
-        git_subcommand, func_name
-    ));
-    output.push_str("fi\n");
+    // Skip for daft-* commands — they don't need git subcommand style completion
+    if command_name.starts_with("git-") {
+        let git_subcommand = command_name.trim_start_matches("git-");
+        output.push_str(&format!(
+            "# Also register for 'git {}' invocation\n",
+            git_subcommand
+        ));
+        output.push_str("if declare -f __git_complete >/dev/null 2>&1; then\n");
+        output.push_str(&format!(
+            "    __git_complete git-{} _{}\n",
+            git_subcommand, func_name
+        ));
+        output.push_str("fi\n");
+    }
 
     // Register completions for shortcut aliases
     for shortcut in crate::shortcuts::SHORTCUTS {
@@ -116,6 +123,12 @@ _daft() {
         return 0
     fi
 
+    # multi-remote: complete subcommands
+    if [[ $cword -eq 2 && "${words[1]}" == "multi-remote" ]]; then
+        COMPREPLY=( $(compgen -W "enable disable status set-default move" -- "$cur") )
+        return 0
+    fi
+
     # verb aliases: delegate to underlying command completions
     if [[ $cword -ge 2 ]]; then
         case "${words[1]}" in
@@ -137,12 +150,16 @@ _daft() {
                 _git_worktree_fetch
                 return 0
                 ;;
+            rename)
+                COMP_WORDS=("daft-rename" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _daft_rename
+                return 0
+                ;;
             remove)
-                if [[ "$cur" != -* ]]; then
-                    local branches
-                    branches=$(daft __complete git-worktree-checkout "$cur" 2>/dev/null)
-                    COMPREPLY=( $(compgen -W "$branches" -- "$cur") )
-                fi
+                COMP_WORDS=("daft-remove" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _daft_remove
                 return 0
                 ;;
         esac
@@ -150,7 +167,7 @@ _daft() {
 
     # top-level: complete daft subcommands
     if [[ $cword -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "hooks shell-init completions setup branch multi-remote release-notes doctor clone init go start carry update prune remove adopt eject" -- "$cur") )
+        COMPREPLY=( $(compgen -W "hooks shell-init completions setup multi-remote release-notes doctor clone init go start carry update prune rename remove adopt eject" -- "$cur") )
         return 0
     fi
 }

@@ -40,6 +40,8 @@ daft = [
     "git-worktree-flow-adopt",
     "git-worktree-flow-eject",
     "git-daft",
+    "daft-remove",
+    "daft-rename",
 ]
 
 # Use newer macOS runners (macos-13 is retired)
