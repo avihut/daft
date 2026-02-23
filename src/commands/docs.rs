@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::commands::{
     carry, checkout, clone, completions, doctor, fetch, flow_adopt, flow_eject, hooks, init,
-    multi_remote, prune, release_notes, shell_init, shortcuts, worktree_branch,
+    multi_remote, prune, release_notes, shell_init, shortcuts, sync, worktree_branch,
 };
 
 /// A category of commands with a title and list of commands.
@@ -71,6 +71,10 @@ fn get_command_categories() -> Vec<CommandCategory> {
                 CommandEntry {
                     display_name: "worktree-fetch",
                     command: fetch::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "sync",
+                    command: sync::Args::command(),
                 },
                 CommandEntry {
                     display_name: "worktree-flow-eject",
@@ -178,7 +182,7 @@ pub fn run() -> Result<()> {
     println!("short aliases (daft <verb>)");
     println!("   go <branch>          Check out an existing branch worktree");
     println!("   start <branch>       Create a new branch worktree (-b)");
-    println!("   clone, init, carry, update, prune, rename, remove, adopt, eject");
+    println!("   clone, init, carry, update, prune, rename, sync, remove, adopt, eject");
 
     println!();
     println!("'{primary} worktree-<command> --help' to read about a specific command.");

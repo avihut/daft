@@ -1,0 +1,38 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-sync 1  "git-sync 1.0.31" 
+.SH NAME
+git\-sync \- Synchronize worktrees with remote (prune + update all)
+.SH SYNOPSIS
+\fBgit\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+.SH DESCRIPTION
+.PP
+Synchronizes all worktrees with the remote in a single command.
+.PP
+This is equivalent to running `daft prune` followed by `daft update \-\-all`:
+.PP
+  1. Prune: fetches with \-\-prune, removes worktrees and branches for deleted
+     remote branches, executes lifecycle hooks for each removal.
+  2. Update: pulls all remaining worktrees from their remote tracking branches.
+.PP
+If you are currently inside a worktree that gets pruned, the shell is redirected
+to a safe location (project root by default, or as configured via
+daft.prune.cdTarget).
+.PP
+For fine\-grained control over either phase, use `daft prune` and `daft update`
+separately.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Be verbose; show detailed progress
+.TP
+\fB\-f\fR, \fB\-\-force\fR
+Force removal of worktrees with uncommitted changes
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH VERSION
+v1.0.31

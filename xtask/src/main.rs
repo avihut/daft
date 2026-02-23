@@ -23,6 +23,7 @@ const COMMANDS: &[&str] = &[
     "git-worktree-fetch",
     "git-worktree-flow-adopt",
     "git-worktree-flow-eject",
+    "git-sync",
     "daft-doctor",
     "daft-release-notes",
 ];
@@ -80,6 +81,11 @@ const DAFT_VERBS: &[DaftVerbEntry] = &[
         about_override: Some("Rename a branch and move its worktree"),
     },
     DaftVerbEntry {
+        daft_name: "daft-sync",
+        source_command: "git-sync",
+        about_override: None,
+    },
+    DaftVerbEntry {
         daft_name: "daft-remove",
         source_command: "git-worktree-branch",
         about_override: None,
@@ -128,6 +134,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-worktree-fetch" => Some(daft::commands::fetch::Args::command()),
         "git-worktree-flow-adopt" => Some(daft::commands::flow_adopt::Args::command()),
         "git-worktree-flow-eject" => Some(daft::commands::flow_eject::Args::command()),
+        "git-sync" => Some(daft::commands::sync::Args::command()),
         "daft-doctor" => Some(daft::commands::doctor::Args::command()),
         "daft-release-notes" => Some(daft::commands::release_notes::Args::command()),
         "daft-remove" => Some(daft::commands::worktree_branch::RemoveArgs::command()),
@@ -162,6 +169,9 @@ fn daft_verb_tip(command_name: &str) -> Option<&'static str> {
         ),
         "git-worktree-branch-delete" => Some(
             "::: warning\nThis command is deprecated. Use `git worktree-branch -d/-D` instead.\nSee [git worktree-branch](./git-worktree-branch.md).\n:::\n",
+        ),
+        "git-sync" => Some(
+            "::: tip\nThis command is also available as `daft sync`. See [daft sync](./daft-sync.md).\n:::\n",
         ),
         "git-worktree-flow-adopt" => Some(
             "::: tip\nThis command is also available as `daft adopt`. See [daft adopt](./daft-adopt.md).\n:::\n",
@@ -203,10 +213,12 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
         ],
         "git-worktree-prune" => vec![
             "git-worktree-fetch",
+            "git-sync",
             "git-worktree-flow-eject",
             "git-worktree-branch",
         ],
-        "git-worktree-fetch" => vec!["git-worktree-prune", "git-worktree-carry"],
+        "git-worktree-fetch" => vec!["git-worktree-prune", "git-sync", "git-worktree-carry"],
+        "git-sync" => vec!["git-worktree-prune", "git-worktree-fetch"],
         "git-worktree-carry" => vec!["git-worktree-checkout", "git-worktree-fetch"],
         "git-worktree-flow-eject" => vec![
             "git-worktree-flow-adopt",

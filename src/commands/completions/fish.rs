@@ -168,6 +168,7 @@ complete -c daft -n '__fish_use_subcommand' -a 'prune' -d 'Remove stale worktree
 complete -c daft -n '__fish_use_subcommand' -a 'rename' -d 'Rename branch and move worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'remove' -d 'Delete branch and worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'adopt' -d 'Convert repo to worktree layout'
+complete -c daft -n '__fish_use_subcommand' -a 'sync' -d 'Synchronize worktrees with remote'
 complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to traditional layout'
 complete -c daft -n '__fish_seen_subcommand_from go start carry update' -f -a "(daft __complete git-worktree-checkout '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove '' 2>/dev/null)"
