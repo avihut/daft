@@ -118,7 +118,7 @@ pub fn run() -> Result<()> {
 /// Daft-style args for `daft remove`. Separate from `Args` so that `-h`/`--help`
 /// shows only the flags relevant to removal, with `-f` instead of git-style `-D`.
 #[derive(Parser)]
-#[command(name = "daft-remove")]
+#[command(name = "daft remove")]
 #[command(version = crate::VERSION)]
 #[command(about = "Delete branches and their worktrees")]
 #[command(long_about = r#"
@@ -171,7 +171,8 @@ pub struct RemoveArgs {
 
 /// Entry point for `daft remove`.
 pub fn run_remove() -> Result<()> {
-    let raw = crate::get_clap_args("daft-remove");
+    let mut raw = crate::get_clap_args("daft-remove");
+    raw[0] = "daft remove".to_string();
     let remove_args = RemoveArgs::parse_from(raw);
 
     init_logging(remove_args.verbose);
@@ -196,7 +197,7 @@ pub fn run_remove() -> Result<()> {
 /// Daft-style args for `daft rename`. Separate from `Args` so that `-h`/`--help`
 /// shows only the flags relevant to renaming, without `-d`/`-D`.
 #[derive(Parser)]
-#[command(name = "daft-rename")]
+#[command(name = "daft rename")]
 #[command(version = crate::VERSION)]
 #[command(about = "Rename a branch and move its worktree")]
 #[command(long_about = r#"
@@ -235,7 +236,8 @@ pub struct RenameArgs {
 
 /// Entry point for `daft rename`.
 pub fn run_rename() -> Result<()> {
-    let raw = crate::get_clap_args("daft-rename");
+    let mut raw = crate::get_clap_args("daft-rename");
+    raw[0] = "daft rename".to_string();
     let rename_args = RenameArgs::parse_from(raw);
 
     init_logging(rename_args.verbose);
