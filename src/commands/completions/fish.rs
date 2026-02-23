@@ -96,7 +96,7 @@ pub(super) fn generate_daft_fish_completions() -> String {
     output
 }
 
-/// Generate fish flag completions for verb aliases (go, start, carry, fetch)
+/// Generate fish flag completions for verb aliases (go, start, carry, update)
 /// by introspecting the underlying command's clap definition.
 fn generate_verb_alias_flag_completions() -> String {
     let mut output = String::new();
@@ -151,12 +151,12 @@ complete -c daft -n '__fish_use_subcommand' -a 'init' -d 'Init new repo in workt
 complete -c daft -n '__fish_use_subcommand' -a 'go' -d 'Open existing branch worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'start' -d 'Create new branch worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'carry' -d 'Transfer uncommitted changes'
-complete -c daft -n '__fish_use_subcommand' -a 'fetch' -d 'Pull updates into worktrees'
+complete -c daft -n '__fish_use_subcommand' -a 'update' -d 'Update worktree branches'
 complete -c daft -n '__fish_use_subcommand' -a 'prune' -d 'Remove stale worktrees'
 complete -c daft -n '__fish_use_subcommand' -a 'remove' -d 'Delete branch and worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'adopt' -d 'Convert repo to worktree layout'
 complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to traditional layout'
-complete -c daft -n '__fish_seen_subcommand_from go start carry fetch remove' -f -a "(daft __complete git-worktree-checkout '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from go start carry update remove' -f -a "(daft __complete git-worktree-checkout '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and not __fish_seen_subcommand_from trust prompt deny status migrate install validate dump run' -f -a 'trust prompt deny status migrate install validate dump run'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -f -a "(daft __complete hooks-run '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l job -d 'Run only the named job' -r -f -a "(set -l hook (commandline -opc | string match -rv '^-' | tail -n1); DAFT_COMPLETE_HOOK=\$hook daft __complete hooks-run-job '' 2>/dev/null)"

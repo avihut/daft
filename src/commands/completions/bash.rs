@@ -131,7 +131,7 @@ _daft() {
                 _git_worktree_carry
                 return 0
                 ;;
-            fetch)
+            update)
                 COMP_WORDS=("git-worktree-fetch" "${COMP_WORDS[@]:2}")
                 COMP_CWORD=$((COMP_CWORD - 1))
                 _git_worktree_fetch
@@ -150,7 +150,7 @@ _daft() {
 
     # top-level: complete daft subcommands
     if [[ $cword -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "hooks shell-init completions setup branch multi-remote release-notes doctor clone init go start carry fetch prune remove adopt eject" -- "$cur") )
+        COMPREPLY=( $(compgen -W "hooks shell-init completions setup branch multi-remote release-notes doctor clone init go start carry update prune remove adopt eject" -- "$cur") )
         return 0
     fi
 }
