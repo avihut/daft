@@ -38,11 +38,11 @@ git config --global daft.autocd false
 | `daft.checkout.carry`       | `false` | Carry uncommitted changes when checking out existing branches |
 | `daft.checkoutBranch.carry` | `true`  | Carry uncommitted changes when creating new branches          |
 
-## Fetch Settings
+## Update Settings
 
-| Key               | Default       | Description                                                |
-| ----------------- | ------------- | ---------------------------------------------------------- |
-| `daft.fetch.args` | `"--ff-only"` | Default arguments passed to `git pull` in fetch operations |
+| Key                | Default       | Description                                                                    |
+| ------------------ | ------------- | ------------------------------------------------------------------------------ |
+| `daft.update.args` | `"--ff-only"` | Default arguments passed to `git pull` in update operations (same-branch mode) |
 
 ## Prune Settings
 
@@ -118,8 +118,8 @@ git config daft.prune.cdTarget default-branch
 # Auto-create worktree when branch not found in daft go
 git config daft.go.autoStart true
 
-# Use rebase-style fetch by default
-git config daft.fetch.args "--rebase"
+# Use rebase-style update by default
+git config daft.update.args "--rebase"
 
 # Disable hooks globally
 git config --global daft.hooks.enabled false

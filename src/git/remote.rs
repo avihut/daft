@@ -144,6 +144,29 @@ impl GitCommand {
         Ok(())
     }
 
+    /// Reset the current branch to a given target (e.g., `origin/master`).
+    ///
+    /// Runs `git reset --hard <target>`.
+    pub fn reset_hard(&self, target: &str) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.args(["reset", "--hard", target]);
+
+        if self.quiet {
+            cmd.arg("--quiet");
+        }
+
+        let output = cmd
+            .output()
+            .context("Failed to execute git reset --hard command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git reset --hard failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
     pub fn ls_remote_heads(&self, remote: &str, branch: Option<&str>) -> Result<String> {
         if self.use_gitoxide {
             if let Ok(repo) = self.gix_repo() {

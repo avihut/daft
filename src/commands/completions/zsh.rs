@@ -144,7 +144,7 @@ _daft() {
                 __git_worktree_carry_impl
                 return
                 ;;
-            fetch)
+            update)
                 words=("git-worktree-fetch" "${(@)words[3,-1]}")
                 CURRENT=$((CURRENT - 1))
                 __git_worktree_fetch_impl
@@ -166,7 +166,7 @@ _daft() {
     # top-level: complete daft subcommands
     if (( CURRENT == 2 )); then
         compadd hooks shell-init completions setup branch multi-remote release-notes doctor \
-                clone init go start carry fetch prune remove adopt eject
+                clone init go start carry update prune remove adopt eject
         return
     fi
 }

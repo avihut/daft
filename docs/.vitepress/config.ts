@@ -273,7 +273,7 @@ export default defineConfig({
             text: "Maintenance",
             items: [
               { text: "prune", link: "/cli/daft-prune" },
-              { text: "fetch", link: "/cli/daft-fetch" },
+              { text: "update", link: "/cli/daft-update" },
               { text: "carry", link: "/cli/daft-carry" },
               { text: "eject", link: "/cli/daft-eject" },
             ],

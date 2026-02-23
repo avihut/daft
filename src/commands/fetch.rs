@@ -24,23 +24,25 @@ use clap::Parser;
 #[command(version = crate::VERSION)]
 #[command(about = "Update worktree branches from their remote tracking branches")]
 #[command(long_about = r#"
-Updates worktree branches by pulling from their remote tracking branches.
+Updates worktree branches from their remote tracking branches.
 
-For each target worktree, the command navigates to that directory and runs
-`git pull` with the configured options. By default, only fast-forward updates
-are allowed (--ff-only).
+Targets can use refspec syntax (source:destination) to update a worktree
+from a different remote branch:
 
-Targets can be specified by worktree directory name or branch name. If no
-targets are specified and --all is not used, the current worktree is updated.
+  Same-branch:   daft update master        (pulls master via git pull --ff-only)
+  Cross-branch:  daft update master:test   (fetches origin/master, resets test to it)
+  Current:       daft update               (pulls current worktree's tracking branch)
+  All:           daft update --all         (pulls all worktrees)
+
+Same-branch mode uses `git pull` with configurable options (--rebase,
+--ff-only, --autostash, -- PULL_ARGS). Cross-branch mode uses `git fetch`
++ `git reset --hard` and ignores pull flags.
 
 Worktrees with uncommitted changes are skipped unless --force is specified.
 Use --dry-run to preview what would be done without making changes.
-
-Arguments after -- are passed directly to git pull, allowing full control
-over the pull behavior.
 "#)]
 pub struct Args {
-    /// Target worktree(s) by directory name or branch name
+    /// Target worktree(s) by name or refspec (source:destination)
     #[arg(value_name = "TARGETS")]
     targets: Vec<String>,
 
@@ -106,7 +108,7 @@ pub fn run() -> Result<()> {
     let project_root = get_project_root()?;
 
     // Merge CLI flags with config-based args
-    let config_args: Vec<&str> = settings.fetch_args.split_whitespace().collect();
+    let config_args: Vec<&str> = settings.update_args.split_whitespace().collect();
     let config_has_rebase = config_args.contains(&"--rebase");
     let config_has_autostash = config_args.contains(&"--autostash");
 
@@ -121,16 +123,11 @@ pub fn run() -> Result<()> {
         no_ff_only: args.no_ff_only,
         pull_args: args.pull_args.clone(),
         quiet: args.quiet,
+        remote_name: wt_config.remote_name.clone(),
     };
 
     let mut sink = OutputSink(&mut output);
-    let result = fetch::execute(
-        &params,
-        &git,
-        &project_root,
-        &wt_config.remote_name,
-        &mut sink,
-    )?;
+    let result = fetch::execute(&params, &git, &project_root, &mut sink)?;
 
     render_fetch_result(&result, &mut output);
 
@@ -148,7 +145,7 @@ fn render_fetch_result(result: &fetch::FetchResult, output: &mut dyn Output) {
     }
 
     // Header
-    output.result(&format!("Fetching {}", result.remote_name));
+    output.result(&format!("Updating from {}", result.remote_name));
     if let Some(ref url) = result.remote_url {
         output.info(&format!("URL: {url}"));
     }
@@ -170,7 +167,7 @@ fn render_worktree_status(r: &WorktreeFetchResult, output: &mut dyn Output) {
             output.info(&format!(" * {} {}", tag_skipped(), r.worktree_name));
         }
     } else if r.success {
-        output.info(&format!(" * {} {}", tag_fetched(), r.worktree_name));
+        output.info(&format!(" * {} {}", tag_updated(), r.worktree_name));
     } else {
         output.error(&format!(
             "Failed to update '{}': {}",
@@ -228,7 +225,7 @@ fn print_summary(result: &fetch::FetchResult, output: &mut dyn Output) {
             } else {
                 "worktrees"
             };
-            parts.push(format!("Fetched {updated} {word}"));
+            parts.push(format!("Updated {updated} {word}"));
         }
         if skipped > 0 {
             let word = if skipped == 1 {
@@ -255,7 +252,7 @@ fn print_summary(result: &fetch::FetchResult, output: &mut dyn Output) {
             } else {
                 "worktrees"
             };
-            parts.push(format!("{updated} {word} fetched"));
+            parts.push(format!("{updated} {word} updated"));
         }
         if skipped > 0 {
             let word = if skipped == 1 {
@@ -273,11 +270,11 @@ fn print_summary(result: &fetch::FetchResult, output: &mut dyn Output) {
 
 // ── Colored status tags ─────────────────────────────────────────────────────
 
-fn tag_fetched() -> String {
+fn tag_updated() -> String {
     if styles::colors_enabled() {
-        format!("{}[fetched]{}", styles::GREEN, styles::RESET)
+        format!("{}[updated]{}", styles::GREEN, styles::RESET)
     } else {
-        "[fetched]".to_string()
+        "[updated]".to_string()
     }
 }
 

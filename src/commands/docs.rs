@@ -182,7 +182,7 @@ pub fn run() -> Result<()> {
     println!("short aliases (daft <verb>)");
     println!("   go <branch>          Check out an existing branch worktree");
     println!("   start <branch>       Create a new branch worktree (-b)");
-    println!("   clone, init, carry, fetch, prune, remove, adopt, eject");
+    println!("   clone, init, carry, update, prune, remove, adopt, eject");
 
     println!();
     println!("'{primary} worktree-<command> --help' to read about a specific command.");

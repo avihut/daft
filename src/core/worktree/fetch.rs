@@ -1,6 +1,7 @@
-//! Core logic for the `git-worktree-fetch` command.
+//! Core logic for the `git-worktree-fetch` / `daft update` command.
 //!
-//! Updates worktree branches by pulling from their remote tracking branches.
+//! Updates worktree branches by pulling from their remote tracking branches,
+//! or syncs a worktree to a different remote branch via refspec syntax.
 
 use crate::core::ProgressSink;
 use crate::git::GitCommand;
@@ -8,9 +9,43 @@ use crate::utils::*;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-/// Input parameters for the fetch operation.
+/// A parsed refspec describing which remote branch to pull into which worktree.
+#[derive(Debug, Clone)]
+pub struct UpdateRefSpec {
+    /// Remote branch to fetch from.
+    pub source: String,
+    /// Local worktree/branch to update.
+    pub destination: String,
+}
+
+impl UpdateRefSpec {
+    /// Returns true if source and destination are the same branch (same-branch mode).
+    pub fn is_same_branch(&self) -> bool {
+        self.source == self.destination
+    }
+}
+
+/// Parse a target string as a refspec.
+///
+/// - `"master"` → `UpdateRefSpec { source: "master", destination: "master" }`
+/// - `"master:test"` → `UpdateRefSpec { source: "master", destination: "test" }`
+pub fn parse_refspec(target: &str) -> UpdateRefSpec {
+    if let Some((source, destination)) = target.split_once(':') {
+        UpdateRefSpec {
+            source: source.to_string(),
+            destination: destination.to_string(),
+        }
+    } else {
+        UpdateRefSpec {
+            source: target.to_string(),
+            destination: target.to_string(),
+        }
+    }
+}
+
+/// Input parameters for the update operation.
 pub struct FetchParams {
-    /// Target worktrees by directory name or branch name.
+    /// Target worktrees by directory name, branch name, or refspec (source:destination).
     pub targets: Vec<String>,
     /// Update all worktrees.
     pub all: bool,
@@ -18,18 +53,20 @@ pub struct FetchParams {
     pub force: bool,
     /// Show what would be done without making changes.
     pub dry_run: bool,
-    /// Use git pull --rebase.
+    /// Use git pull --rebase (same-branch mode only).
     pub rebase: bool,
-    /// Use git pull --autostash.
+    /// Use git pull --autostash (same-branch mode only).
     pub autostash: bool,
-    /// Only fast-forward (default behavior).
+    /// Only fast-forward (default behavior, same-branch mode only).
     pub ff_only: bool,
-    /// Allow merge commits (disables --ff-only).
+    /// Allow merge commits (disables --ff-only, same-branch mode only).
     pub no_ff_only: bool,
-    /// Additional arguments to pass to git pull.
+    /// Additional arguments to pass to git pull (same-branch mode only).
     pub pull_args: Vec<String>,
     /// Whether to run in quiet mode (suppresses git pull output).
     pub quiet: bool,
+    /// Remote name to use for fetch/pull operations.
+    pub remote_name: String,
 }
 
 /// Result of a fetch operation for a single worktree.
@@ -49,7 +86,7 @@ pub struct FetchResult {
     pub remote_name: String,
     /// The remote URL (if available).
     pub remote_url: Option<String>,
-    /// The pull arguments used.
+    /// The pull arguments used (for same-branch mode).
     pub pull_args: Vec<String>,
 }
 
@@ -73,20 +110,20 @@ impl FetchResult {
     }
 }
 
-/// Execute the fetch operation.
+/// Execute the update operation.
 pub fn execute(
     params: &FetchParams,
     git: &GitCommand,
     project_root: &Path,
-    remote_name: &str,
     progress: &mut dyn ProgressSink,
 ) -> Result<FetchResult> {
+    let remote_name = &params.remote_name;
     let original_dir = get_current_directory()?;
 
-    // Determine targets
-    let targets = determine_targets(params, git, project_root, progress)?;
+    // Determine refspecs and their resolved worktree paths
+    let refspecs = determine_refspecs(params, git, project_root, progress)?;
 
-    if targets.is_empty() {
+    if refspecs.is_empty() {
         return Ok(FetchResult {
             results: Vec::new(),
             remote_name: remote_name.to_string(),
@@ -95,7 +132,7 @@ pub fn execute(
         });
     }
 
-    // Build pull arguments
+    // Build pull arguments (used for same-branch mode)
     let pull_args = build_pull_args(params);
 
     progress.on_step(&format!("Pull arguments: {}", pull_args.join(" ")));
@@ -103,7 +140,7 @@ pub fn execute(
     // Process each target
     let mut results: Vec<WorktreeFetchResult> = Vec::new();
 
-    for target_path in &targets {
+    for (refspec, target_path) in &refspecs {
         let worktree_name = target_path
             .strip_prefix(project_root)
             .ok()
@@ -117,6 +154,7 @@ pub fn execute(
             &worktree_name,
             &pull_args,
             params,
+            refspec,
             progress,
         );
         results.push(result);
@@ -133,26 +171,46 @@ pub fn execute(
     })
 }
 
-/// Determine which worktrees to update based on arguments.
-fn determine_targets(
+/// Determine which worktrees to update based on arguments, returning refspecs with resolved paths.
+fn determine_refspecs(
     params: &FetchParams,
     git: &GitCommand,
     project_root: &Path,
     progress: &mut dyn ProgressSink,
-) -> Result<Vec<PathBuf>> {
+) -> Result<Vec<(UpdateRefSpec, PathBuf)>> {
     if params.all {
-        get_all_worktrees(git)
+        // --all: self-referencing refspec for every worktree
+        let worktrees = get_all_worktrees_with_branches(git)?;
+        Ok(worktrees
+            .into_iter()
+            .map(|(path, branch)| {
+                let refspec = UpdateRefSpec {
+                    source: branch.clone(),
+                    destination: branch,
+                };
+                (refspec, path)
+            })
+            .collect())
     } else if params.targets.is_empty() {
+        // No args: self-referencing refspec for current worktree
         let current = git.get_current_worktree_path()?;
-        Ok(vec![current])
+        let branch = git.symbolic_ref_short_head()?;
+        let refspec = UpdateRefSpec {
+            source: branch.clone(),
+            destination: branch,
+        };
+        Ok(vec![(refspec, current)])
     } else {
-        let mut resolved: Vec<PathBuf> = Vec::new();
+        // Explicit targets: parse each as a refspec
+        let mut resolved: Vec<(UpdateRefSpec, PathBuf)> = Vec::new();
         let mut errors: Vec<String> = Vec::new();
 
         for target in &params.targets {
-            match git.resolve_worktree_path(target, project_root) {
-                Ok(path) => resolved.push(path),
-                Err(e) => errors.push(format!("'{}': {}", target, e)),
+            let refspec = parse_refspec(target);
+            // Resolve the destination branch to a worktree path
+            match git.resolve_worktree_path(&refspec.destination, project_root) {
+                Ok(path) => resolved.push((refspec, path)),
+                Err(e) => errors.push(format!("'{}': {}", refspec.destination, e)),
             }
         }
 
@@ -167,22 +225,34 @@ fn determine_targets(
     }
 }
 
-/// Get all non-bare worktrees from git worktree list.
-fn get_all_worktrees(git: &GitCommand) -> Result<Vec<PathBuf>> {
+/// Get all non-bare worktrees with their branch names from git worktree list.
+fn get_all_worktrees_with_branches(git: &GitCommand) -> Result<Vec<(PathBuf, String)>> {
     let porcelain_output = git.worktree_list_porcelain()?;
-    let mut worktrees: Vec<PathBuf> = Vec::new();
+    let mut worktrees: Vec<(PathBuf, String)> = Vec::new();
     let mut current_worktree: Option<PathBuf> = None;
+    let mut current_branch: Option<String> = None;
     let mut is_bare = false;
 
     for line in porcelain_output.lines() {
         if let Some(worktree_path) = line.strip_prefix("worktree ") {
             if let Some(path) = current_worktree.take() {
                 if !is_bare {
-                    worktrees.push(path);
+                    if let Some(branch) = current_branch.take() {
+                        worktrees.push((path, branch));
+                    }
                 }
             }
             current_worktree = Some(PathBuf::from(worktree_path));
+            current_branch = None;
             is_bare = false;
+        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
+            // branch refs/heads/main -> main
+            current_branch = Some(
+                branch_ref
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(branch_ref)
+                    .to_string(),
+            );
         } else if line == "bare" {
             is_bare = true;
         }
@@ -190,14 +260,16 @@ fn get_all_worktrees(git: &GitCommand) -> Result<Vec<PathBuf>> {
 
     if let Some(path) = current_worktree {
         if !is_bare {
-            worktrees.push(path);
+            if let Some(branch) = current_branch {
+                worktrees.push((path, branch));
+            }
         }
     }
 
     Ok(worktrees)
 }
 
-/// Build pull arguments from params and settings.
+/// Build pull arguments from params and settings (used for same-branch mode).
 fn build_pull_args(params: &FetchParams) -> Vec<String> {
     let mut pull_args: Vec<String> = Vec::new();
 
@@ -220,13 +292,14 @@ fn build_pull_args(params: &FetchParams) -> Vec<String> {
     pull_args
 }
 
-/// Process a single worktree.
+/// Process a single worktree, choosing between same-branch and cross-branch mode.
 fn process_worktree(
     git: &GitCommand,
     target_path: &Path,
     worktree_name: &str,
     pull_args: &[String],
     params: &FetchParams,
+    refspec: &UpdateRefSpec,
     progress: &mut dyn ProgressSink,
 ) -> WorktreeFetchResult {
     progress.on_step(&format!("Processing '{worktree_name}'..."));
@@ -241,7 +314,7 @@ fn process_worktree(
         };
     }
 
-    // Check for uncommitted changes
+    // Check for uncommitted changes (both modes)
     match git.has_uncommitted_changes_in(target_path) {
         Ok(has_changes) => {
             if has_changes && !params.force {
@@ -266,6 +339,28 @@ fn process_worktree(
         }
     }
 
+    if refspec.is_same_branch() {
+        process_same_branch(git, worktree_name, pull_args, params, progress)
+    } else {
+        process_cross_branch(
+            git,
+            worktree_name,
+            refspec,
+            &params.remote_name,
+            params,
+            progress,
+        )
+    }
+}
+
+/// Same-branch mode: uses `git pull` with configured arguments.
+fn process_same_branch(
+    git: &GitCommand,
+    worktree_name: &str,
+    pull_args: &[String],
+    params: &FetchParams,
+    progress: &mut dyn ProgressSink,
+) -> WorktreeFetchResult {
     // Check if branch has an upstream
     if check_has_upstream(git).is_err() {
         progress.on_warning(&format!(
@@ -314,6 +409,63 @@ fn process_worktree(
     }
 }
 
+/// Cross-branch mode: uses `git fetch` + `git reset --hard` for deterministic sync.
+fn process_cross_branch(
+    git: &GitCommand,
+    worktree_name: &str,
+    refspec: &UpdateRefSpec,
+    remote_name: &str,
+    params: &FetchParams,
+    progress: &mut dyn ProgressSink,
+) -> WorktreeFetchResult {
+    let remote_ref = format!("{}/{}", remote_name, refspec.source);
+
+    // Dry run mode
+    if params.dry_run {
+        return WorktreeFetchResult {
+            worktree_name: worktree_name.to_string(),
+            success: true,
+            message: format!(
+                "Dry run: would fetch {}/{} and reset --hard to {}",
+                remote_name, refspec.source, remote_ref
+            ),
+            skipped: true,
+        };
+    }
+
+    progress.on_step(&format!(
+        "Cross-branch update: {} -> {} (via {})",
+        refspec.source, refspec.destination, remote_ref
+    ));
+
+    // git fetch <remote> <source_branch>
+    if let Err(e) = git.fetch_refspec(remote_name, &refspec.source) {
+        return WorktreeFetchResult {
+            worktree_name: worktree_name.to_string(),
+            success: false,
+            message: format!("Failed to fetch {}/{}: {e}", remote_name, refspec.source),
+            skipped: false,
+        };
+    }
+
+    // git reset --hard <remote>/<source_branch>
+    if let Err(e) = git.reset_hard(&remote_ref) {
+        return WorktreeFetchResult {
+            worktree_name: worktree_name.to_string(),
+            success: false,
+            message: format!("Failed to reset to {remote_ref}: {e}"),
+            skipped: false,
+        };
+    }
+
+    WorktreeFetchResult {
+        worktree_name: worktree_name.to_string(),
+        success: true,
+        message: format!("Updated to {remote_ref}"),
+        skipped: false,
+    }
+}
+
 /// Check if the current branch has an upstream tracking branch.
 fn check_has_upstream(git: &GitCommand) -> Result<()> {
     let branch = git.symbolic_ref_short_head()?;
@@ -322,4 +474,41 @@ fn check_has_upstream(git: &GitCommand) -> Result<()> {
         anyhow::bail!("No upstream configured for branch '{}'", branch);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_refspec_same_branch() {
+        let refspec = parse_refspec("master");
+        assert_eq!(refspec.source, "master");
+        assert_eq!(refspec.destination, "master");
+        assert!(refspec.is_same_branch());
+    }
+
+    #[test]
+    fn test_parse_refspec_cross_branch() {
+        let refspec = parse_refspec("master:test");
+        assert_eq!(refspec.source, "master");
+        assert_eq!(refspec.destination, "test");
+        assert!(!refspec.is_same_branch());
+    }
+
+    #[test]
+    fn test_parse_refspec_with_slashes() {
+        let refspec = parse_refspec("feature/auth:develop");
+        assert_eq!(refspec.source, "feature/auth");
+        assert_eq!(refspec.destination, "develop");
+        assert!(!refspec.is_same_branch());
+    }
+
+    #[test]
+    fn test_parse_refspec_self_referencing_with_slash() {
+        let refspec = parse_refspec("feature/auth");
+        assert_eq!(refspec.source, "feature/auth");
+        assert_eq!(refspec.destination, "feature/auth");
+        assert!(refspec.is_same_branch());
+    }
 }

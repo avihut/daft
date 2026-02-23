@@ -333,7 +333,7 @@ test_fetch_config() {
     # Set config for fetch args
     cd ".git"
     cd ..
-    git config daft.fetch.args "--rebase --autostash"
+    git config daft.update.args "--rebase --autostash"
 
     # Simulate remote changes
     local temp_clone="$TEMP_BASE_DIR/temp_fetch_config_clone"
@@ -606,6 +606,232 @@ test_fetch_dirty_target_from_clean_worktree() {
     return 0
 }
 
+# Test cross-branch refspec: fetch origin/main into feature worktree
+test_fetch_cross_branch_refspec() {
+    local remote_repo=$(create_test_remote "test-repo-fetch-crossbranch" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-fetch-crossbranch"
+
+    # Create a feature worktree
+    git-worktree-checkout -b feature/test-cross || return 1
+
+    # Simulate remote changes on main
+    local temp_clone="$TEMP_BASE_DIR/temp_fetch_crossbranch_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        echo "Cross-branch update from main" >> README.md
+        git add README.md >/dev/null 2>&1
+        git commit -m "Main branch update for cross-branch test" >/dev/null 2>&1
+        git push origin main >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Use cross-branch refspec: update feature/test-cross from main
+    cd "main"
+    git-worktree-fetch "main:feature/test-cross" || return 1
+
+    # Verify the feature worktree now has the main branch content
+    if ! grep -q "Cross-branch update from main" "../feature/test-cross/README.md"; then
+        log_error "Cross-branch refspec did not sync main into feature worktree"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test cross-branch refspec fails on dirty worktree without --force
+test_fetch_cross_branch_dirty_fails() {
+    local remote_repo=$(create_test_remote "test-repo-fetch-crossdirty" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-fetch-crossdirty"
+
+    # Create a feature worktree
+    git-worktree-checkout -b feature/test-dirty || return 1
+
+    # Make the feature worktree dirty
+    echo "Uncommitted change" > "feature/test-dirty/dirty.txt"
+
+    # Cross-branch refspec should skip dirty worktree
+    cd "main"
+    local output
+    output=$(git-worktree-fetch "main:feature/test-dirty" 2>&1)
+
+    if ! echo "$output" | grep -q "uncommitted changes"; then
+        log_error "Cross-branch should skip dirty worktree"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test cross-branch refspec with --force on dirty worktree
+test_fetch_cross_branch_force() {
+    local remote_repo=$(create_test_remote "test-repo-fetch-crossforce" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-fetch-crossforce"
+
+    # Create a feature worktree
+    git-worktree-checkout -b feature/test-force || return 1
+
+    # Simulate remote changes on main
+    local temp_clone="$TEMP_BASE_DIR/temp_fetch_crossforce_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        echo "Force cross-branch update" >> README.md
+        git add README.md >/dev/null 2>&1
+        git commit -m "Force cross-branch test" >/dev/null 2>&1
+        git push origin main >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Make the feature worktree dirty (untracked file)
+    echo "Uncommitted" > "feature/test-force/dirty.txt"
+
+    # Cross-branch refspec with --force should proceed
+    cd "main"
+    git-worktree-fetch --force "main:feature/test-force" || return 1
+
+    # Verify the feature worktree was updated
+    if ! grep -q "Force cross-branch update" "../feature/test-force/README.md"; then
+        log_error "Cross-branch --force did not update worktree"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test cross-branch refspec with --dry-run
+test_fetch_cross_branch_dry_run() {
+    local remote_repo=$(create_test_remote "test-repo-fetch-crossdry" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-fetch-crossdry"
+
+    # Create a feature worktree
+    git-worktree-checkout -b feature/test-dryrun || return 1
+
+    # Get initial hash
+    cd "feature/test-dryrun"
+    local before_hash=$(git rev-parse HEAD)
+    cd ..
+
+    # Simulate remote changes on main
+    local temp_clone="$TEMP_BASE_DIR/temp_fetch_crossdry_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        echo "Dry run cross-branch" >> README.md
+        git add README.md >/dev/null 2>&1
+        git commit -m "Dry run cross-branch test" >/dev/null 2>&1
+        git push origin main >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Cross-branch with --dry-run should not change anything
+    cd "main"
+    git-worktree-fetch --dry-run "main:feature/test-dryrun" || return 1
+
+    # Verify the feature worktree was not changed
+    cd "../feature/test-dryrun"
+    local after_hash=$(git rev-parse HEAD)
+    if [[ "$before_hash" != "$after_hash" ]]; then
+        log_error "Cross-branch dry run actually modified the worktree"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test self-referencing refspec (explicit same-branch)
+test_fetch_self_referencing_refspec() {
+    local remote_repo=$(create_test_remote "test-repo-fetch-selfref" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-fetch-selfref"
+
+    # Simulate remote changes
+    local temp_clone="$TEMP_BASE_DIR/temp_fetch_selfref_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        echo "Self-ref update" >> README.md
+        git add README.md >/dev/null 2>&1
+        git commit -m "Self-ref test update" >/dev/null 2>&1
+        git push origin main >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Use explicit self-referencing refspec
+    cd "main"
+    git-worktree-fetch main || return 1
+
+    # Verify changes were pulled
+    if ! grep -q "Self-ref update" README.md; then
+        log_error "Self-referencing refspec did not pull changes"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test config fallback from deprecated daft.fetch.args to daft.update.args
+test_fetch_config_fallback() {
+    local remote_repo=$(create_test_remote "test-repo-fetch-configfb" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-fetch-configfb"
+
+    # Set the deprecated config key (should still work as fallback)
+    cd ".git"
+    cd ..
+    git config daft.fetch.args "--rebase --autostash"
+
+    # Simulate remote changes
+    local temp_clone="$TEMP_BASE_DIR/temp_fetch_configfb_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        echo "Config fallback change" >> README.md
+        git add README.md >/dev/null 2>&1
+        git commit -m "Config fallback update" >/dev/null 2>&1
+        git push origin main >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Fetch should use deprecated config settings as fallback
+    cd "main"
+    git-worktree-fetch || return 1
+
+    # Verify changes were pulled
+    if ! grep -q "Config fallback change" README.md; then
+        log_error "Config fallback did not work"
+        return 1
+    fi
+
+    return 0
+}
+
 # Run all fetch tests
 run_fetch_tests() {
     log "Running git-worktree-fetch integration tests..."
@@ -627,6 +853,12 @@ run_fetch_tests() {
     run_test "fetch_no_tracking" "test_fetch_no_tracking"
     run_test "fetch_performance" "test_fetch_performance"
     run_test "fetch_from_subdirectory" "test_fetch_from_subdirectory"
+    run_test "fetch_self_referencing_refspec" "test_fetch_self_referencing_refspec"
+    run_test "fetch_cross_branch_refspec" "test_fetch_cross_branch_refspec"
+    run_test "fetch_cross_branch_dirty_fails" "test_fetch_cross_branch_dirty_fails"
+    run_test "fetch_cross_branch_force" "test_fetch_cross_branch_force"
+    run_test "fetch_cross_branch_dry_run" "test_fetch_cross_branch_dry_run"
+    run_test "fetch_config_fallback" "test_fetch_config_fallback"
 }
 
 # Main execution
