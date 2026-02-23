@@ -21,6 +21,8 @@ const EXPECTED_SYMLINKS: &[&str] = &[
     "git-worktree-flow-adopt",
     "git-worktree-flow-eject",
     "git-daft",
+    "daft-remove",
+    "daft-rename",
 ];
 
 /// Check that the daft binary is in PATH.
@@ -480,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_expected_symlinks_count() {
-        assert_eq!(EXPECTED_SYMLINKS.len(), 11);
+        assert_eq!(EXPECTED_SYMLINKS.len(), 13);
     }
 
     #[test]

@@ -188,11 +188,11 @@ daft() {
         worktree-branch)
             shift; __daft_wrapper git-worktree-branch "$@" ;;
         remove)
-            shift; __daft_wrapper daft remove "$@" ;;
+            shift; __daft_wrapper daft-remove "$@" ;;
         worktree-branch-delete)
             shift; __daft_wrapper git-worktree-branch-delete "$@" ;;
         rename)
-            shift; __daft_wrapper daft rename "$@" ;;
+            shift; __daft_wrapper daft-rename "$@" ;;
         worktree-fetch|update)
             shift; __daft_wrapper git-worktree-fetch "$@" ;;
         worktree-flow-adopt|adopt)
@@ -211,10 +211,10 @@ gwtinit() { __daft_wrapper git-worktree-init "$@"; }
 gwtco() { __daft_wrapper git-worktree-checkout "$@"; }
 gwtcb() { __daft_wrapper git-worktree-checkout -b "$@"; }
 gwtprune() { __daft_wrapper git-worktree-prune "$@"; }
-gwtbd() { __daft_wrapper daft remove "$@"; }
+gwtbd() { __daft_wrapper daft-remove "$@"; }
 gwtcarry() { __daft_wrapper git-worktree-carry "$@"; }
 gwtfetch() { __daft_wrapper git-worktree-fetch "$@"; }
-gwtrn() { __daft_wrapper daft rename "$@"; }
+gwtrn() { __daft_wrapper daft-rename "$@"; }
 
 # Shell-style shortcuts
 gwco() { __daft_wrapper git-worktree-checkout "$@"; }
@@ -405,11 +405,11 @@ function daft --wraps daft
         case worktree-branch
             __daft_wrapper git-worktree-branch $argv[2..-1]
         case remove
-            __daft_wrapper daft remove $argv[2..-1]
+            __daft_wrapper daft-remove $argv[2..-1]
         case worktree-branch-delete
             __daft_wrapper git-worktree-branch-delete $argv[2..-1]
         case rename
-            __daft_wrapper daft rename $argv[2..-1]
+            __daft_wrapper daft-rename $argv[2..-1]
         case worktree-fetch update
             __daft_wrapper git-worktree-fetch $argv[2..-1]
         case worktree-flow-adopt adopt
@@ -444,7 +444,7 @@ function gwtprune
 end
 
 function gwtbd
-    __daft_wrapper daft remove $argv
+    __daft_wrapper daft-remove $argv
 end
 
 function gwtcarry
@@ -456,7 +456,7 @@ function gwtfetch
 end
 
 function gwtrn
-    __daft_wrapper daft rename $argv
+    __daft_wrapper daft-rename $argv
 end
 
 # Shell-style shortcuts

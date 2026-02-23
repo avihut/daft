@@ -47,6 +47,10 @@ fn main() -> Result<()> {
         "git-worktree-flow-adopt" => commands::flow_adopt::run(),
         "git-worktree-flow-eject" => commands::flow_eject::run(),
 
+        // Daft-style commands (via symlinks)
+        "daft-remove" => commands::worktree_branch::run_remove(),
+        "daft-rename" => commands::worktree_branch::run_rename(),
+
         // Main daft / git-daft command - check for subcommands
         "git-daft" | "daft" => {
             let label = if resolved == "git-daft" {

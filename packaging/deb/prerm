@@ -6,7 +6,7 @@ case "$1" in
         for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
                    git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
                    git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
-                   git-daft; do
+                   git-daft daft-remove daft-rename; do
             rm -f "/usr/bin/$cmd"
         done
         ;;
