@@ -96,6 +96,24 @@ produce patch bumps; edit `Cargo.toml` in the Release PR for minor/major bumps.
 6. Run `mise run man:gen` and commit the generated man page
 7. Add integration tests in `tests/integration/` following existing patterns
 
+## Shell Completions
+
+Shell completions live in `src/commands/completions/`. When adding, removing, or
+renaming commands, verbs, or arguments, update **all** of these:
+
+- `mod.rs` — `COMMANDS`, `VERB_ALIAS_GROUPS`, `get_command_for_name()`
+- `bash.rs` — `DAFT_BASH_COMPLETIONS` (verb alias cases, top-level subcommand
+  list)
+- `zsh.rs` — `DAFT_ZSH_COMPLETIONS` (verb alias cases, top-level subcommand
+  list)
+- `fish.rs` — `DAFT_FISH_COMPLETIONS` (subcommand registrations, branch
+  completion triggers), verb alias flag comment
+- `fig.rs` — Fig/Amazon Q spec generation
+
+Flag completions for `git-worktree-*` commands are auto-generated from clap
+`Args` structs, but the **hardcoded string constants** in bash/zsh/fish contain
+verb names and subcommand lists that must be updated manually.
+
 ## Man Pages
 
 Pre-generated in `man/` and committed. Regenerate after changing command help
