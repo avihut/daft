@@ -1,5 +1,6 @@
 use super::oxide;
 use super::GitCommand;
+use crate::styles;
 use anyhow::{Context, Result};
 use std::process::{Command, Stdio};
 
@@ -119,6 +120,11 @@ impl GitCommand {
     pub fn pull(&self, args: &[&str]) -> Result<String> {
         let mut cmd = Command::new("git");
         cmd.arg("pull");
+
+        // Preserve colors in captured output so diff stats render correctly
+        if styles::colors_enabled() {
+            cmd.arg("--color=always");
+        }
 
         for arg in args {
             cmd.arg(arg);
