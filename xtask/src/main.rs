@@ -131,6 +131,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "daft-doctor" => Some(daft::commands::doctor::Args::command()),
         "daft-release-notes" => Some(daft::commands::release_notes::Args::command()),
         "daft-remove" => Some(daft::commands::worktree_branch::RemoveArgs::command()),
+        "daft-rename" => Some(daft::commands::worktree_branch::RenameArgs::command()),
         _ => None,
     }
 }

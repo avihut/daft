@@ -186,12 +186,60 @@ pub fn run_remove() -> Result<()> {
     run_with_args(args)
 }
 
-/// Entry point for `daft rename` — injects `-m` before clap parsing.
+/// Daft-style args for `daft rename`. Separate from `Args` so that `-h`/`--help`
+/// shows only the flags relevant to renaming, without `-d`/`-D`.
+#[derive(Parser)]
+#[command(name = "daft-rename")]
+#[command(version = crate::VERSION)]
+#[command(about = "Rename a branch and move its worktree")]
+#[command(long_about = r#"
+Renames a local branch and moves its associated worktree directory to match
+the new branch name. If the branch has a remote tracking branch, the remote
+branch is also renamed (push new name, delete old name) unless --no-remote
+is specified.
+
+The source can be specified as a branch name or a path to an existing
+worktree (absolute or relative).
+
+If you are currently inside the worktree being renamed, the shell is
+redirected to the new worktree location after the rename completes.
+
+Empty parent directories left behind by the move are automatically cleaned up.
+"#)]
+pub struct RenameArgs {
+    #[arg(required = true, help = "Source branch or worktree path")]
+    source: String,
+
+    #[arg(required = true, help = "New branch name")]
+    new_branch: String,
+
+    #[arg(long, help = "Skip remote branch rename")]
+    no_remote: bool,
+
+    #[arg(long, help = "Preview changes without executing")]
+    dry_run: bool,
+
+    #[arg(short, long, help = "Operate quietly; suppress progress reporting")]
+    quiet: bool,
+
+    #[arg(short, long, help = "Be verbose; show detailed progress")]
+    verbose: bool,
+}
+
+/// Entry point for `daft rename`.
 pub fn run_rename() -> Result<()> {
-    let mut raw = crate::get_clap_args("git-worktree-branch");
-    // Insert `-m` right after the command name so clap sees it
-    raw.insert(1, "-m".to_string());
-    let args = Args::parse_from(raw);
+    let raw = crate::get_clap_args("daft-rename");
+    let rename_args = RenameArgs::parse_from(raw);
+    let args = Args {
+        branches: vec![rename_args.source, rename_args.new_branch],
+        delete: false,
+        force_delete: false,
+        rename: true,
+        no_remote: rename_args.no_remote,
+        dry_run: rename_args.dry_run,
+        quiet: rename_args.quiet,
+        verbose: rename_args.verbose,
+    };
     run_with_args(args)
 }
 
