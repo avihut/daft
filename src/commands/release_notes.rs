@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 #[cfg(unix)]
 use pager::Pager;
+use regex::Regex;
 use serde::Serialize;
 use std::io::{self, IsTerminal, Write};
 use termimad::crossterm::style::Color;
@@ -154,6 +155,9 @@ fn parse_changelog(content: &str) -> Result<Vec<Release>> {
         });
     }
 
+    // Filter out empty sections (e.g., "Unreleased" with no content)
+    releases.retain(|r| !r.content.is_empty());
+
     Ok(releases)
 }
 
@@ -261,8 +265,22 @@ fn output_full(releases: &[Release], no_pager: bool) -> Result<()> {
 
 /// Render markdown to terminal-formatted text with colors
 fn render_markdown(markdown: &str) -> String {
+    let processed = markdown_links_to_osc8(markdown);
     let skin = create_daft_skin();
-    skin.term_text(markdown).to_string()
+    skin.term_text(&processed).to_string()
+}
+
+/// Convert markdown links `[text](url)` to OSC 8 terminal hyperlinks.
+///
+/// OSC 8 is an escape sequence supported by modern terminals (iTerm2, Kitty,
+/// GNOME Terminal, Windows Terminal, WezTerm, etc.) that makes text clickable.
+/// Terminals that don't support it simply display the link text, which is a
+/// graceful degradation from the raw markdown syntax.
+fn markdown_links_to_osc8(markdown: &str) -> String {
+    let link_re = Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").expect("valid regex");
+    link_re
+        .replace_all(markdown, "\x1b]8;;$2\x1b\\\x1b[34m$1\x1b[39m\x1b]8;;\x1b\\")
+        .into_owned()
 }
 
 /// Create a custom skin with daft's orange accent color
@@ -386,6 +404,23 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_changelog_skips_empty_unreleased() {
+        let content = r#"# Changelog
+
+## [Unreleased]
+
+## [1.0.0] - 2026-01-24
+
+### Features
+
+- Initial release
+"#;
+        let releases = parse_changelog(content).unwrap();
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].version, "1.0.0");
+    }
+
+    #[test]
     fn test_render_markdown_produces_ansi() {
         let md = "## Heading\n\n**bold** text";
         let rendered = render_markdown(md);
@@ -394,5 +429,38 @@ mod tests {
             rendered.contains("\x1b["),
             "Rendered markdown should contain ANSI codes"
         );
+    }
+
+    #[test]
+    fn test_markdown_links_to_osc8() {
+        let input = "see [#42](https://github.com/org/repo/pull/42) for details";
+        let result = markdown_links_to_osc8(input);
+        assert!(
+            result.contains("\x1b]8;;https://github.com/org/repo/pull/42\x1b\\"),
+            "should contain OSC 8 open sequence with URL"
+        );
+        assert!(
+            result.contains("\x1b[34m#42\x1b[39m"),
+            "should contain blue-colored link text"
+        );
+        assert!(
+            !result.contains("[#42]"),
+            "should not contain raw markdown link syntax"
+        );
+    }
+
+    #[test]
+    fn test_markdown_links_to_osc8_multiple() {
+        let input = "[a](https://a.com) and [b](https://b.com)";
+        let result = markdown_links_to_osc8(input);
+        assert!(result.contains("\x1b]8;;https://a.com\x1b\\\x1b[34ma\x1b[39m\x1b]8;;\x1b\\"));
+        assert!(result.contains("\x1b]8;;https://b.com\x1b\\\x1b[34mb\x1b[39m\x1b]8;;\x1b\\"));
+    }
+
+    #[test]
+    fn test_markdown_links_to_osc8_no_links() {
+        let input = "plain text with no links";
+        let result = markdown_links_to_osc8(input);
+        assert_eq!(result, input);
     }
 }
