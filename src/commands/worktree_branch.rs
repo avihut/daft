@@ -115,12 +115,19 @@ pub fn run() -> Result<()> {
     run_with_args(args)
 }
 
-/// Entry point for `daft remove` — injects `-d` before clap parsing
-/// unless `-D` is already present (user wants force delete).
+/// Entry point for `daft remove` — translates daft-style `-f` to git-style `-D`,
+/// and injects `-d` (safe delete) when no force flag is present.
 pub fn run_remove() -> Result<()> {
     let mut raw = crate::get_clap_args("git-worktree-branch");
-    let has_force = raw.iter().any(|a| a == "-D" || a == "--force");
-    if !has_force {
+    // Translate daft-style -f/--force to git-style -D before clap parsing
+    let has_force = raw.iter().any(|a| a == "-f" || a == "-D" || a == "--force");
+    if has_force {
+        for arg in &mut raw {
+            if arg == "-f" {
+                *arg = "-D".to_string();
+            }
+        }
+    } else {
         raw.insert(1, "-d".to_string());
     }
     let args = Args::parse_from(raw);
