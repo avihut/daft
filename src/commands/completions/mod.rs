@@ -21,6 +21,15 @@ pub(super) enum CompletionTarget {
     Fig,
 }
 
+/// Verb aliases that map to underlying git-worktree-* commands.
+/// Each entry is (list of verb names, underlying command name).
+/// Used by completion generators to offer flag completions for verb aliases.
+pub(super) const VERB_ALIAS_GROUPS: &[(&[&str], &str)] = &[
+    (&["go", "start"], "git-worktree-checkout"),
+    (&["carry"], "git-worktree-carry"),
+    (&["fetch"], "git-worktree-fetch"),
+];
+
 /// Available daft commands that need completion scripts
 pub(super) const COMMANDS: &[&str] = &[
     "git-worktree-clone",
@@ -345,7 +354,7 @@ fn generate_daft_subcommand_completions(target: &CompletionTarget) -> String {
     match target {
         CompletionTarget::Bash => bash::DAFT_BASH_COMPLETIONS.to_string(),
         CompletionTarget::Zsh => zsh::DAFT_ZSH_COMPLETIONS.to_string(),
-        CompletionTarget::Fish => fish::DAFT_FISH_COMPLETIONS.to_string(),
+        CompletionTarget::Fish => fish::generate_daft_fish_completions(),
         CompletionTarget::Fig => String::new(), // Handled in fig spec
     }
 }

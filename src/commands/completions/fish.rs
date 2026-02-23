@@ -1,4 +1,4 @@
-use super::{get_command_for_name, get_flag_descriptions};
+use super::{get_command_for_name, get_flag_descriptions, VERB_ALIAS_GROUPS};
 use anyhow::{Context, Result};
 
 /// Generate fish completion string
@@ -88,7 +88,55 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
     Ok(output)
 }
 
-pub(super) const DAFT_FISH_COMPLETIONS: &str = r#"# daft subcommand completions
+/// Generate complete daft fish completions including verb alias flag completions.
+pub(super) fn generate_daft_fish_completions() -> String {
+    let mut output = DAFT_FISH_COMPLETIONS.to_string();
+    output.push('\n');
+    output.push_str(&generate_verb_alias_flag_completions());
+    output
+}
+
+/// Generate fish flag completions for verb aliases (go, start, carry, fetch)
+/// by introspecting the underlying command's clap definition.
+fn generate_verb_alias_flag_completions() -> String {
+    let mut output = String::new();
+    output.push_str("# Flag completions for verb aliases\n");
+
+    for (verbs, command) in VERB_ALIAS_GROUPS {
+        let cmd = match get_command_for_name(command) {
+            Some(cmd) => cmd,
+            None => continue,
+        };
+        let condition = format!("__fish_seen_subcommand_from {}", verbs.join(" "));
+        let flag_descriptions = get_flag_descriptions(&cmd);
+
+        for (short, long, desc) in flag_descriptions {
+            let description = desc.unwrap_or_default();
+
+            if !short.is_empty() && !long.is_empty() {
+                let short_char = short.trim_start_matches('-');
+                let long_name = long.trim_start_matches("--");
+                output.push_str(&format!(
+                    "complete -c daft -n '{condition}' -s {short_char} -l {long_name} -d '{description}'\n"
+                ));
+            } else if !long.is_empty() {
+                let long_name = long.trim_start_matches("--");
+                output.push_str(&format!(
+                    "complete -c daft -n '{condition}' -l {long_name} -d '{description}'\n"
+                ));
+            } else if !short.is_empty() {
+                let short_char = short.trim_start_matches('-');
+                output.push_str(&format!(
+                    "complete -c daft -n '{condition}' -s {short_char} -d '{description}'\n"
+                ));
+            }
+        }
+    }
+
+    output
+}
+
+const DAFT_FISH_COMPLETIONS: &str = r#"# daft subcommand completions
 complete -c daft -f
 complete -c daft -n '__fish_use_subcommand' -a 'hooks' -d 'Manage lifecycle hooks'
 complete -c daft -n '__fish_use_subcommand' -a 'shell-init' -d 'Generate shell wrappers'
