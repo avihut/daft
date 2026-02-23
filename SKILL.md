@@ -114,6 +114,7 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 | `daft worktree-clone <url>`                     | Clone a remote repository into daft's worktree layout                             |
 | `daft worktree-init <name>`                     | Initialize a new local repository in worktree layout                              |
 | `daft worktree-checkout <branch>`               | Create a worktree for an existing local or remote branch                          |
+| `daft worktree-checkout -- -`                   | Switch to the previous worktree (`cd -` style toggle)                             |
 | `daft worktree-checkout -s <branch>`            | Same as above, but auto-creates branch if not found (also `daft.go.autoStart`)    |
 | `daft worktree-checkout -b <new-branch> [base]` | Create a new branch and worktree from current or specified base                   |
 | `daft worktree-branch -d <branch>`              | Safely delete a branch: its worktree, local branch, and remote tracking branch    |
@@ -533,6 +534,7 @@ When working in a daft-managed repository, apply these translations:
 | "Create a branch"     | `daft worktree-checkout -b <name>` -- creates branch + worktree + pushes                           |
 | "Branch from main"    | `daft worktree-checkout -b <name> main` -- branches from the specified base                        |
 | "Switch to branch X"  | Navigate to the worktree directory: `cd ../X/`                                                     |
+| "Go back"             | `daft worktree-checkout -- -` -- toggles to the previous worktree                                  |
 | "Check out a PR"      | `daft worktree-checkout <branch>` -- creates worktree for existing branch                          |
 | "Delete a branch"     | `daft worktree-branch -d <branch>` -- removes worktree, local branch, and remote tracking branch   |
 | "Clean up branches"   | `daft worktree-prune` -- removes worktrees for deleted remote branches                             |

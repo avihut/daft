@@ -25,6 +25,10 @@ remote, a new branch and worktree are created automatically, as if \*(Aqdaft sta
 had been called. This can also be enabled permanently with the daft.go.autoStart
 git config option.
 .PP
+Use \*(Aq\-\*(Aq as the branch name to switch to the previous worktree, similar to
+\*(Aqcd \-\*(Aq. Repeated \*(Aqdaft go \-\*(Aq toggles between the two most recent worktrees.
+Cannot be combined with \-b/\-\-create\-branch.
+.PP
 This command can be run from anywhere within the repository. If a worktree
 for the specified branch already exists, no new worktree is created; the
 working directory is changed to the existing worktree instead.
@@ -67,7 +71,7 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 Print version
 .TP
 <\fIBRANCH_NAME\fR>
-Name of the branch to check out (or create with \-b)
+Name of the branch to check out (or create with \-b); use \*(Aq\-\*(Aq for previous worktree
 .TP
 [\fIBASE_BRANCH_NAME\fR]
 Branch to use as the base for the new branch (only with \-b); defaults to the current branch

@@ -727,6 +727,151 @@ test_checkout_fuzzy_suggestions() {
     return 0
 }
 
+# =============================================================================
+# Go Dash (Previous Worktree) Tests
+# =============================================================================
+
+# Test `daft go -` when no previous worktree exists
+test_checkout_dash_no_previous() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-dash-noprev" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-dash-noprev"
+
+    # Try `go -` with no previous — should fail
+    local output
+    output=$(git-worktree-checkout -- - 2>&1) && {
+        log_error "go - should fail when no previous worktree exists"
+        return 1
+    }
+
+    if ! echo "$output" | grep -q "No previous worktree"; then
+        log_error "Error output should contain 'No previous worktree'"
+        echo "$output"
+        return 1
+    fi
+
+    log_success "go - correctly errors when no previous worktree exists"
+    return 0
+}
+
+# Test `daft go -` toggles between two worktrees
+test_checkout_dash_toggle() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-dash-toggle" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-dash-toggle"
+    local repo_root=$(pwd)
+
+    # Go from main to develop (this saves main as previous)
+    cd main
+    git-worktree-checkout develop || return 1
+
+    # Now go - should take us back to main
+    cd "$repo_root/develop"
+    local cd_file
+    cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
+    local output
+    output=$(DAFT_CD_FILE="$cd_file" git-worktree-checkout -- - 2>&1) || {
+        log_error "go - should succeed after going to develop"
+        echo "$output"
+        rm -f "$cd_file"
+        return 1
+    }
+
+    # Verify DAFT_CD_FILE points to main worktree
+    local cd_target
+    cd_target=$(cat "$cd_file")
+    if ! echo "$cd_target" | grep -q "main"; then
+        log_error "go - should navigate to main worktree, got: $cd_target"
+        rm -f "$cd_file"
+        return 1
+    fi
+    log_success "go - navigated back to main"
+
+    # Now go - again should take us back to develop
+    cd "$repo_root/main"
+    output=$(DAFT_CD_FILE="$cd_file" git-worktree-checkout -- - 2>&1) || {
+        log_error "go - should succeed after going back to main"
+        echo "$output"
+        rm -f "$cd_file"
+        return 1
+    }
+
+    cd_target=$(cat "$cd_file")
+    if ! echo "$cd_target" | grep -q "develop"; then
+        log_error "go - should navigate to develop worktree, got: $cd_target"
+        rm -f "$cd_file"
+        return 1
+    fi
+    rm -f "$cd_file"
+
+    log_success "go - toggles correctly between worktrees"
+    return 0
+}
+
+# Test `daft go -` when previous worktree was deleted
+test_checkout_dash_deleted_previous() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-dash-deleted" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-dash-deleted"
+    local repo_root=$(pwd)
+
+    # Go from main to develop to establish a previous
+    cd main
+    git-worktree-checkout develop || return 1
+
+    # Remove the main worktree
+    cd "$repo_root"
+    git -C develop worktree remove --force "$repo_root/main" 2>/dev/null || rm -rf "$repo_root/main"
+
+    # Now go - should fail because main worktree is gone
+    cd develop
+    local output
+    output=$(git-worktree-checkout -- - 2>&1) && {
+        log_error "go - should fail when previous worktree was deleted"
+        return 1
+    }
+
+    if ! echo "$output" | grep -q "no longer exists"; then
+        log_error "Error output should contain 'no longer exists'"
+        echo "$output"
+        return 1
+    fi
+
+    log_success "go - correctly errors when previous worktree was deleted"
+    return 0
+}
+
+# Test `daft go - -b` (dash with create-branch) is rejected
+test_checkout_dash_with_create_branch() {
+    local remote_repo=$(create_test_remote "test-repo-checkout-dash-create" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-checkout-dash-create"
+
+    # Try `go -b -` — should fail
+    local output
+    output=$(git-worktree-checkout -b -- - 2>&1) && {
+        log_error "go -b - should fail"
+        return 1
+    }
+
+    if ! echo "$output" | grep -q "Cannot use '-' with -b"; then
+        log_error "Error output should contain \"Cannot use '-' with -b\""
+        echo "$output"
+        return 1
+    fi
+
+    log_success "go -b - correctly rejected"
+    return 0
+}
+
 # Run all checkout tests
 run_checkout_tests() {
     log "Running git-worktree-checkout integration tests..."
@@ -762,6 +907,12 @@ run_checkout_tests() {
     run_test "checkout_start_existing_branch" "test_checkout_start_existing_branch"
     run_test "checkout_auto_start_config" "test_checkout_auto_start_config"
     run_test "checkout_fuzzy_suggestions" "test_checkout_fuzzy_suggestions"
+
+    # Go dash (previous worktree) tests
+    run_test "checkout_dash_no_previous" "test_checkout_dash_no_previous"
+    run_test "checkout_dash_toggle" "test_checkout_dash_toggle"
+    run_test "checkout_dash_deleted_previous" "test_checkout_dash_deleted_previous"
+    run_test "checkout_dash_with_create_branch" "test_checkout_dash_with_create_branch"
 }
 
 # Main execution

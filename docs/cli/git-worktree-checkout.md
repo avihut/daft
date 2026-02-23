@@ -33,6 +33,10 @@ remote, a new branch and worktree are created automatically, as if 'daft start'
 had been called. This can also be enabled permanently with the daft.go.autoStart
 git config option.
 
+Use '-' as the branch name to switch to the previous worktree, similar to
+'cd -'. Repeated 'daft go -' toggles between the two most recent worktrees.
+Cannot be combined with -b/--create-branch.
+
 This command can be run from anywhere within the repository. If a worktree
 for the specified branch already exists, no new worktree is created; the
 working directory is changed to the existing worktree instead.
@@ -50,7 +54,7 @@ git worktree-checkout [OPTIONS] <BRANCH_NAME> [BASE_BRANCH_NAME]
 
 | Argument | Description | Required |
 |----------|-------------|----------|
-| `<BRANCH_NAME>` | Name of the branch to check out (or create with -b) | Yes |
+| `<BRANCH_NAME>` | Name of the branch to check out (or create with -b); use '-' for previous worktree | Yes |
 | `<BASE_BRANCH_NAME>` | Branch to use as the base for the new branch (only with -b); defaults to the current branch | No |
 
 ## Options
