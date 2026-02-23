@@ -13,6 +13,7 @@ pub mod fetch;
 pub mod flow_adopt;
 pub mod flow_eject;
 pub mod init;
+pub mod previous;
 pub mod prune;
 
 /// Configuration for worktree operations.

@@ -1,9 +1,9 @@
 use crate::{
     core::{
-        worktree::{checkout, checkout_branch},
+        worktree::{checkout, checkout_branch, previous},
         CommandBridge,
     },
-    get_project_root,
+    get_current_worktree_path, get_git_common_dir, get_project_root,
     git::GitCommand,
     hints::maybe_show_shell_hint,
     hooks::{HookExecutor, HooksConfig},
@@ -40,6 +40,10 @@ remote, a new branch and worktree are created automatically, as if 'daft start'
 had been called. This can also be enabled permanently with the daft.go.autoStart
 git config option.
 
+Use '-' as the branch name to switch to the previous worktree, similar to
+'cd -'. Repeated 'daft go -' toggles between the two most recent worktrees.
+Cannot be combined with -b/--create-branch.
+
 This command can be run from anywhere within the repository. If a worktree
 for the specified branch already exists, no new worktree is created; the
 working directory is changed to the existing worktree instead.
@@ -48,7 +52,10 @@ Lifecycle hooks from .daft/hooks/ are executed if the repository is trusted.
 See git-daft(1) for hook management.
 "#)]
 pub struct Args {
-    #[arg(help = "Name of the branch to check out (or create with -b)")]
+    #[arg(
+        help = "Name of the branch to check out (or create with -b); use '-' for previous worktree",
+        allow_hyphen_values = true
+    )]
     branch_name: String,
 
     #[arg(
@@ -126,6 +133,19 @@ fn run_with_args(args: Args) -> Result<()> {
         anyhow::bail!("Not inside a Git repository");
     }
 
+    // Handle `daft go -` (previous worktree navigation)
+    if args.branch_name == "-" {
+        if args.create_branch {
+            anyhow::bail!("Cannot use '-' with -b/--create-branch");
+        }
+
+        let settings = DaftSettings::load()?;
+        let autocd = settings.autocd && !args.no_cd;
+        let config = OutputConfig::with_autocd(args.quiet, args.verbose, autocd);
+        let mut output = CliOutput::new(config);
+        return run_go_previous(&mut output);
+    }
+
     // Validate: base_branch_name only valid with -b
     if args.base_branch_name.is_some() && !args.create_branch {
         anyhow::bail!("<BASE_BRANCH_NAME> can only be used with -b/--create-branch");
@@ -138,6 +158,9 @@ fn run_with_args(args: Args) -> Result<()> {
     let mut output = CliOutput::new(config);
 
     let original_dir = get_current_directory()?;
+
+    // Capture source worktree before the operation (best-effort)
+    let source_worktree = get_current_worktree_path().ok();
 
     let result = if args.create_branch {
         run_create_branch(&args, &settings, &mut output)
@@ -173,6 +196,45 @@ fn run_with_args(args: Args) -> Result<()> {
         change_directory(&original_dir).ok();
         return Err(e);
     }
+
+    // Save the source worktree as previous (best-effort, after success)
+    if let Some(src) = source_worktree {
+        if let Ok(git_dir) = get_git_common_dir() {
+            let _ = previous::save(&git_dir, &src);
+        }
+    }
+
+    Ok(())
+}
+
+/// Navigate to the previous worktree (`daft go -`).
+fn run_go_previous(output: &mut dyn Output) -> Result<()> {
+    let git_dir = get_git_common_dir()?;
+
+    let previous_path = previous::load(&git_dir)?
+        .ok_or_else(|| anyhow::anyhow!("No previous worktree to switch to"))?;
+
+    if !previous_path.exists() {
+        anyhow::bail!(
+            "Previous worktree no longer exists: '{}'",
+            previous_path.display()
+        );
+    }
+
+    // Save current worktree as the new previous before switching
+    if let Ok(current) = get_current_worktree_path() {
+        let _ = previous::save(&git_dir, &current);
+    }
+
+    change_directory(&previous_path)?;
+
+    // Try to get the branch name for display
+    let branch_display =
+        crate::get_current_branch().unwrap_or_else(|_| previous_path.display().to_string());
+    output.result(&format!("Switched to worktree '{branch_display}'"));
+
+    output.cd_path(&previous_path);
+    maybe_show_shell_hint(output)?;
 
     Ok(())
 }
