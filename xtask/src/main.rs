@@ -21,6 +21,7 @@ const COMMANDS: &[&str] = &[
     "git-worktree-prune",
     "git-worktree-carry",
     "git-worktree-fetch",
+    "git-worktree-rename",
     "git-worktree-flow-adopt",
     "git-worktree-flow-eject",
     "daft-doctor",
@@ -75,6 +76,11 @@ const DAFT_VERBS: &[DaftVerbEntry] = &[
         about_override: None,
     },
     DaftVerbEntry {
+        daft_name: "daft-rename",
+        source_command: "git-worktree-rename",
+        about_override: None,
+    },
+    DaftVerbEntry {
         daft_name: "daft-remove",
         source_command: "git-worktree-branch",
         about_override: None,
@@ -121,6 +127,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-worktree-prune" => Some(daft::commands::prune::Args::command()),
         "git-worktree-carry" => Some(daft::commands::carry::Args::command()),
         "git-worktree-fetch" => Some(daft::commands::fetch::Args::command()),
+        "git-worktree-rename" => Some(daft::commands::rename::Args::command()),
         "git-worktree-flow-adopt" => Some(daft::commands::flow_adopt::Args::command()),
         "git-worktree-flow-eject" => Some(daft::commands::flow_eject::Args::command()),
         "daft-doctor" => Some(daft::commands::doctor::Args::command()),
@@ -149,6 +156,9 @@ fn daft_verb_tip(command_name: &str) -> Option<&'static str> {
         ),
         "git-worktree-prune" => Some(
             "::: tip\nThis command is also available as `daft prune`. See [daft prune](./daft-prune.md).\n:::\n",
+        ),
+        "git-worktree-rename" => Some(
+            "::: tip\nThis command is also available as `daft rename`. See [daft rename](./daft-rename.md).\n:::\n",
         ),
         "git-worktree-branch" => Some(
             "::: tip\nThis command is also available as `daft remove` (safe delete with `-d`).\nSee [daft remove](./daft-remove.md).\n:::\n",
@@ -186,9 +196,18 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
             "git-worktree-flow-eject",
         ],
         // Branching cluster
-        "git-worktree-checkout" => vec!["git-worktree-carry", "git-worktree-branch"],
+        "git-worktree-checkout" => vec![
+            "git-worktree-carry",
+            "git-worktree-branch",
+            "git-worktree-rename",
+        ],
         // Maintenance cluster
-        "git-worktree-branch" => vec!["git-worktree-prune", "git-worktree-checkout"],
+        "git-worktree-rename" => vec!["git-worktree-branch", "git-worktree-checkout"],
+        "git-worktree-branch" => vec![
+            "git-worktree-prune",
+            "git-worktree-checkout",
+            "git-worktree-rename",
+        ],
         "git-worktree-branch-delete" => vec![
             "git-worktree-branch",
             "git-worktree-prune",

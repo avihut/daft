@@ -58,6 +58,27 @@ impl GitCommand {
         Ok(())
     }
 
+    /// Push a branch and set upstream, running from a specific directory.
+    pub fn push_set_upstream_from(
+        &self,
+        remote: &str,
+        branch: &str,
+        cwd: &std::path::Path,
+    ) -> Result<()> {
+        let output = Command::new("git")
+            .args(["push", "--no-verify", "--set-upstream", remote, branch])
+            .current_dir(cwd)
+            .output()
+            .context("Failed to execute git push command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git push failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
     pub fn set_upstream(&self, remote: &str, branch: &str) -> Result<()> {
         let upstream = format!("{remote}/{branch}");
         let output = Command::new("git")

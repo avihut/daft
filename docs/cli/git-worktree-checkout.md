@@ -82,4 +82,5 @@ git worktree-checkout [OPTIONS] <BRANCH_NAME> [BASE_BRANCH_NAME]
 
 - [git-worktree-carry](./git-worktree-carry.md)
 - [git-worktree-branch](./git-worktree-branch.md)
+- [git-worktree-rename](./git-worktree-rename.md)
 

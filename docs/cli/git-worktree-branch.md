@@ -76,4 +76,5 @@ git worktree-branch [OPTIONS] [BRANCHES]
 
 - [git-worktree-prune](./git-worktree-prune.md)
 - [git-worktree-checkout](./git-worktree-checkout.md)
+- [git-worktree-rename](./git-worktree-rename.md)
 

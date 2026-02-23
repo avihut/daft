@@ -4,6 +4,20 @@ use anyhow::{Context, Result};
 use std::process::Command;
 
 impl GitCommand {
+    pub fn branch_rename(&self, old_name: &str, new_name: &str) -> Result<()> {
+        let output = Command::new("git")
+            .args(["branch", "-m", old_name, new_name])
+            .output()
+            .context("Failed to execute git branch -m command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git branch rename failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
     pub fn branch_delete(&self, branch: &str, force: bool) -> Result<()> {
         let mut cmd = Command::new("git");
         cmd.args(["branch"]);

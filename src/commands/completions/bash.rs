@@ -6,7 +6,10 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
     let mut output = String::new();
     let has_branches = matches!(
         command_name,
-        "git-worktree-checkout" | "git-worktree-carry" | "git-worktree-fetch"
+        "git-worktree-checkout"
+            | "git-worktree-carry"
+            | "git-worktree-fetch"
+            | "git-worktree-rename"
     );
 
     let func_name = command_name.replace('-', "_");
@@ -143,6 +146,12 @@ _daft() {
                 _git_worktree_fetch
                 return 0
                 ;;
+            rename)
+                COMP_WORDS=("git-worktree-rename" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _git_worktree_rename
+                return 0
+                ;;
             remove)
                 if [[ "$cur" != -* ]]; then
                     local branches
@@ -156,7 +165,7 @@ _daft() {
 
     # top-level: complete daft subcommands
     if [[ $cword -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "hooks shell-init completions setup multi-remote release-notes doctor clone init go start carry update prune remove adopt eject" -- "$cur") )
+        COMPREPLY=( $(compgen -W "hooks shell-init completions setup multi-remote release-notes doctor clone init go start carry update prune rename remove adopt eject" -- "$cur") )
         return 0
     fi
 }

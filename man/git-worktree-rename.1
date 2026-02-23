@@ -1,0 +1,48 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-worktree-rename 1  "git-worktree-rename 1.0.31" 
+.SH NAME
+git\-worktree\-rename \- Rename a branch and move its worktree
+.SH SYNOPSIS
+\fBgit\-worktree\-rename\fR [\fB\-\-no\-remote\fR] [\fB\-\-dry\-run\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fISOURCE\fR> <\fINEW_BRANCH\fR> 
+.SH DESCRIPTION
+.PP
+Renames a local branch and moves its associated worktree directory to match
+the new branch name. If the branch has a remote tracking branch, the remote
+branch is also renamed (push new name, delete old name) unless \-\-no\-remote
+is specified.
+.PP
+The source can be specified as a branch name or a path to an existing
+worktree (absolute or relative).
+.PP
+If you are currently inside the worktree being renamed, the shell is
+redirected to the new worktree location after the rename completes.
+.PP
+Empty parent directories left behind by the move are automatically cleaned up.
+.SH OPTIONS
+.TP
+\fB\-\-no\-remote\fR
+Skip remote branch rename
+.TP
+\fB\-\-dry\-run\fR
+Preview changes without executing
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress output
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show detailed progress
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+<\fISOURCE\fR>
+Source branch name or worktree path
+.TP
+<\fINEW_BRANCH\fR>
+New branch name
+.SH VERSION
+v1.0.31

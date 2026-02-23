@@ -6,7 +6,10 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     let mut output = String::new();
     let has_branches = matches!(
         command_name,
-        "git-worktree-checkout" | "git-worktree-carry" | "git-worktree-fetch"
+        "git-worktree-checkout"
+            | "git-worktree-carry"
+            | "git-worktree-fetch"
+            | "git-worktree-rename"
     );
 
     let func_name = command_name.replace('-', "_");
@@ -156,6 +159,12 @@ _daft() {
                 __git_worktree_fetch_impl
                 return
                 ;;
+            rename)
+                words=("git-worktree-rename" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __git_worktree_rename_impl
+                return
+                ;;
             remove)
                 if [[ "$curword" != -* ]]; then
                     local -a branches
@@ -172,7 +181,7 @@ _daft() {
     # top-level: complete daft subcommands
     if (( CURRENT == 2 )); then
         compadd hooks shell-init completions setup multi-remote release-notes doctor \
-                clone init go start carry update prune remove adopt eject
+                clone init go start carry update prune rename remove adopt eject
         return
     fi
 }
