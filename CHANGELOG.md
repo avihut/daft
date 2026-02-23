@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.31](https://github.com/avihut/daft/compare/v1.0.30...v1.0.31) - 2026-02-22
+
+### Bug Fixes
+
+- *(gitoxide)* detect gone upstream branches in branch_list_verbose ([#252](https://github.com/avihut/daft/pull/252))
+
+### Features
+
+- *(hooks)* OS-variant run map for polymorphic platform targeting ([#254](https://github.com/avihut/daft/pull/254))
+- consolidate worktree-branch-delete into worktree-branch -d/-D ([#253](https://github.com/avihut/daft/pull/253))
+- add daft verb aliases and consolidate checkout-branch into checkout -b ([#250](https://github.com/avihut/daft/pull/250))
+
 ## [1.0.30](https://github.com/avihut/daft/compare/v1.0.29...v1.0.30) - 2026-02-21
 
 ### Bug Fixes
