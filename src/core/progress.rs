@@ -79,11 +79,7 @@ impl HookRunner for CommandBridge<'_> {
         Ok(HookOutcome {
             success: result.success,
             skipped: result.skipped,
-            skip_reason: if result.skipped {
-                Some(result.stderr.clone())
-            } else {
-                None
-            },
+            skip_reason: result.skip_reason.clone(),
         })
     }
 }
