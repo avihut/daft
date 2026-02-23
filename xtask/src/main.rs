@@ -130,6 +130,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-worktree-flow-eject" => Some(daft::commands::flow_eject::Args::command()),
         "daft-doctor" => Some(daft::commands::doctor::Args::command()),
         "daft-release-notes" => Some(daft::commands::release_notes::Args::command()),
+        "daft-remove" => Some(daft::commands::worktree_branch::RemoveArgs::command()),
         _ => None,
     }
 }
@@ -156,7 +157,7 @@ fn daft_verb_tip(command_name: &str) -> Option<&'static str> {
             "::: tip\nThis command is also available as `daft prune`. See [daft prune](./daft-prune.md).\n:::\n",
         ),
         "git-worktree-branch" => Some(
-            "::: tip\nThis command is also available as `daft remove` (safe delete with `-d`)\nor `daft rename` (rename with `-m`).\nSee [daft remove](./daft-remove.md) and [daft rename](./daft-rename.md).\n:::\n",
+            "::: tip\nThis command is also available as `daft remove` (delete, use `-f` to force)\nor `daft rename` (rename with `-m`).\nSee [daft remove](./daft-remove.md) and [daft rename](./daft-rename.md).\n:::\n",
         ),
         "git-worktree-branch-delete" => Some(
             "::: warning\nThis command is deprecated. Use `git worktree-branch -d/-D` instead.\nSee [git worktree-branch](./git-worktree-branch.md).\n:::\n",
@@ -318,13 +319,19 @@ fn generate_man_pages(output_dir: &PathBuf, command: Option<&str>) -> Result<()>
     };
 
     for verb in &daft_verbs_to_generate {
-        let mut cmd = get_command_for_name(verb.source_command)
-            .with_context(|| format!("Unknown source command: {}", verb.source_command))?;
-
-        cmd = cmd.name(verb.daft_name);
-        if let Some(about) = verb.about_override {
-            cmd = cmd.about(about);
-        }
+        // If the verb has its own dedicated Args struct, use it directly;
+        // otherwise derive from the source git-worktree-* command.
+        let cmd = if let Some(direct) = get_command_for_name(verb.daft_name) {
+            direct
+        } else {
+            let mut derived = get_command_for_name(verb.source_command)
+                .with_context(|| format!("Unknown source command: {}", verb.source_command))?;
+            derived = derived.name(verb.daft_name);
+            if let Some(about) = verb.about_override {
+                derived = derived.about(about);
+            }
+            derived
+        };
 
         let man = Man::new(cmd);
         let mut buffer = Vec::new();

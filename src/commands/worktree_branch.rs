@@ -115,22 +115,74 @@ pub fn run() -> Result<()> {
     run_with_args(args)
 }
 
-/// Entry point for `daft remove` — translates daft-style `-f` to git-style `-D`,
-/// and injects `-d` (safe delete) when no force flag is present.
+/// Daft-style args for `daft remove`. Separate from `Args` so that `-h`/`--help`
+/// shows only the flags relevant to removal, with `-f` instead of git-style `-D`.
+#[derive(Parser)]
+#[command(name = "daft-remove")]
+#[command(version = crate::VERSION)]
+#[command(about = "Delete branches and their worktrees")]
+#[command(long_about = r#"
+Deletes one or more local branches along with their associated worktrees and
+remote tracking branches in a single operation. This is the inverse of
+`daft start` / `daft go`.
+
+By default, performs a safe delete that checks whether each branch has been
+merged. Use -f (--force) to force-delete branches regardless of merge status.
+
+Arguments can be branch names or worktree paths. When a path is given
+(absolute, relative, or "."), the branch checked out in that worktree is
+resolved automatically. This is convenient when you are inside a worktree
+and want to delete it without remembering the branch name.
+
+Safety checks prevent accidental data loss. The command refuses to delete a
+branch that:
+
+  - has uncommitted changes in its worktree
+  - has not been merged (or squash-merged) into the default branch
+  - is out of sync with its remote tracking branch
+
+Use -f to override these safety checks. The command always refuses to delete
+the repository's default branch (e.g. main), even with -f.
+
+All targeted branches are validated before any deletions begin. If any branch
+fails validation without -f, the entire command aborts and no branches are
+deleted.
+
+Pre-remove and post-remove lifecycle hooks are executed for each worktree
+removal if the repository is trusted. See daft-hooks(1) for hook management.
+"#)]
+pub struct RemoveArgs {
+    #[arg(required = true, help = "Branches or worktree paths to delete")]
+    branches: Vec<String>,
+
+    #[arg(
+        short = 'f',
+        long = "force",
+        help = "Force deletion even if not fully merged"
+    )]
+    force: bool,
+
+    #[arg(short, long, help = "Operate quietly; suppress progress reporting")]
+    quiet: bool,
+
+    #[arg(short, long, help = "Be verbose; show detailed progress")]
+    verbose: bool,
+}
+
+/// Entry point for `daft remove`.
 pub fn run_remove() -> Result<()> {
-    let mut raw = crate::get_clap_args("git-worktree-branch");
-    // Translate daft-style -f/--force to git-style -D before clap parsing
-    let has_force = raw.iter().any(|a| a == "-f" || a == "-D" || a == "--force");
-    if has_force {
-        for arg in &mut raw {
-            if arg == "-f" {
-                *arg = "-D".to_string();
-            }
-        }
-    } else {
-        raw.insert(1, "-d".to_string());
-    }
-    let args = Args::parse_from(raw);
+    let raw = crate::get_clap_args("daft-remove");
+    let remove_args = RemoveArgs::parse_from(raw);
+    let args = Args {
+        branches: remove_args.branches,
+        delete: !remove_args.force,
+        force_delete: remove_args.force,
+        rename: false,
+        no_remote: false,
+        dry_run: false,
+        quiet: remove_args.quiet,
+        verbose: remove_args.verbose,
+    };
     run_with_args(args)
 }
 

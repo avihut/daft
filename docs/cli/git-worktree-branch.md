@@ -8,7 +8,7 @@ description: Delete or rename branches and their worktrees
 Delete or rename branches and their worktrees
 
 ::: tip
-This command is also available as `daft remove` (safe delete with `-d`)
+This command is also available as `daft remove` (delete, use `-f` to force)
 or `daft rename` (rename with `-m`).
 See [daft remove](./daft-remove.md) and [daft rename](./daft-rename.md).
 :::
