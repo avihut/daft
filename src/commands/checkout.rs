@@ -159,6 +159,9 @@ fn run_with_args(args: Args) -> Result<()> {
                 } else {
                     change_directory(&original_dir).ok();
                     render_branch_not_found_error(branch, remote, fetch_failed, &settings);
+                    // Exit directly: the error is already rendered to stderr with
+                    // custom formatting. Returning an anyhow error here would cause
+                    // main() to print a redundant "Error:" line.
                     std::process::exit(1);
                 }
             }

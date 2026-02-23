@@ -67,45 +67,31 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
 ///
 /// Returns at most 5 suggestions. Only includes commands whose edit distance
 /// is within a reasonable threshold.
-pub fn find_similar_commands<'a>(input: &str, known: &[&'a str]) -> Vec<&'a str> {
-    let mut candidates: Vec<(&str, usize)> = known
-        .iter()
-        .filter_map(|&cmd| {
-            let dist = levenshtein_distance(input, cmd);
-            if dist == 0 {
-                return None; // exact match already routed
-            }
-            let max_len = input.len().max(cmd.len());
-            let threshold = 3.max(max_len / 3);
-            if dist <= threshold {
-                Some((cmd, dist))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    candidates.sort_by_key(|&(_, dist)| dist);
-    candidates.truncate(5);
-    candidates.into_iter().map(|(cmd, _)| cmd).collect()
+pub fn find_similar_commands<'a>(input: &str, known: &'a [&'a str]) -> Vec<&'a str> {
+    find_similar(input, known, 5)
 }
 
 /// Find strings similar to `input` from a list, sorted by edit distance.
 ///
 /// Returns at most `max` suggestions. Only includes items whose edit distance
 /// is within a reasonable threshold.
-pub fn find_similar<'a>(input: &str, candidates: &'a [String], max: usize) -> Vec<&'a str> {
+pub fn find_similar<'a, S: AsRef<str> + 'a>(
+    input: &str,
+    candidates: &'a [S],
+    max: usize,
+) -> Vec<&'a str> {
     let mut scored: Vec<(&str, usize)> = candidates
         .iter()
         .filter_map(|candidate| {
-            let dist = levenshtein_distance(input, candidate);
+            let s = candidate.as_ref();
+            let dist = levenshtein_distance(input, s);
             if dist == 0 {
                 return None;
             }
-            let max_len = input.len().max(candidate.len());
+            let max_len = input.len().max(s.len());
             let threshold = 3.max(max_len / 3);
             if dist <= threshold {
-                Some((candidate.as_str(), dist))
+                Some((s, dist))
             } else {
                 None
             }

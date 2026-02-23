@@ -461,13 +461,14 @@ fn set_upstream_if_enabled(
 
 /// Collect all local and remote branch names for suggestion purposes.
 pub fn collect_branch_names(git: &GitCommand, remote_name: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
     let mut names = Vec::new();
 
     // Local branches
     if let Ok(output) = git.for_each_ref("%(refname:short)", "refs/heads/") {
         for line in output.lines() {
             let trimmed = line.trim();
-            if !trimmed.is_empty() {
+            if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
                 names.push(trimmed.to_string());
             }
         }
@@ -481,9 +482,9 @@ pub fn collect_branch_names(git: &GitCommand, remote_name: &str) -> Vec<String> 
             if trimmed.is_empty() || trimmed.ends_with("/HEAD") {
                 continue;
             }
-            // Strip "origin/" prefix to get just the branch name
+            // Strip the remote prefix to get just the branch name
             if let Some(branch) = trimmed.strip_prefix(&format!("{remote_name}/")) {
-                if !names.contains(&branch.to_string()) {
+                if seen.insert(branch.to_string()) {
                     names.push(branch.to_string());
                 }
             }
