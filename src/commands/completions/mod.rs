@@ -30,6 +30,7 @@ pub(super) const VERB_ALIAS_GROUPS: &[(&[&str], &str)] = &[
     (&["update"], "git-worktree-fetch"),
     (&["remove"], "daft-remove"),
     (&["rename"], "daft-rename"),
+    (&["sync"], "git-sync"),
 ];
 
 /// Available daft commands that need completion scripts
@@ -44,6 +45,7 @@ pub(super) const COMMANDS: &[&str] = &[
     "git-worktree-flow-eject",
     "daft-remove",
     "daft-rename",
+    "git-sync",
 ];
 
 /// Get the clap Command for a given command name by using CommandFactory
@@ -59,6 +61,7 @@ pub(super) fn get_command_for_name(command_name: &str) -> Option<Command> {
         "git-worktree-flow-eject" => Some(crate::commands::flow_eject::Args::command()),
         "daft-remove" => Some(crate::commands::worktree_branch::RemoveArgs::command()),
         "daft-rename" => Some(crate::commands::worktree_branch::RenameArgs::command()),
+        "git-sync" => Some(crate::commands::sync::Args::command()),
         _ => None,
     }
 }

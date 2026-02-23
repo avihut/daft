@@ -19,6 +19,7 @@ ln -sf daft git-worktree-branch-delete
 ln -sf daft git-worktree-fetch
 ln -sf daft git-worktree-flow-adopt
 ln -sf daft git-worktree-flow-eject
+ln -sf daft git-sync
 ln -sf daft git-daft
 ln -sf daft daft-remove
 ln -sf daft daft-rename
@@ -31,6 +32,7 @@ ln -sf daft gwtprune
 ln -sf daft gwtcarry
 ln -sf daft gwtbd
 ln -sf daft gwtfetch
+ln -sf daft gwtsync
 cd ../..
 echo "Development environment ready!"
 echo ""

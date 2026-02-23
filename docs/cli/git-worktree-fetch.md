@@ -67,5 +67,6 @@ git worktree-fetch [OPTIONS] [TARGETS] [PULL_ARGS]
 ## See Also
 
 - [git-worktree-prune](./git-worktree-prune.md)
+- [git-sync](./git-sync.md)
 - [git-worktree-carry](./git-worktree-carry.md)
 

@@ -169,6 +169,12 @@ _daft() {
                 __daft_rename_impl
                 return
                 ;;
+            sync)
+                words=("git-sync" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __git_sync_impl
+                return
+                ;;
             remove)
                 words=("daft-remove" "${(@)words[3,-1]}")
                 CURRENT=$((CURRENT - 1))
@@ -181,7 +187,7 @@ _daft() {
     # top-level: complete daft subcommands
     if (( CURRENT == 2 )); then
         compadd hooks shell-init completions setup multi-remote release-notes doctor \
-                clone init go start carry update prune rename remove adopt eject
+                clone init go start carry update prune rename sync remove adopt eject
         return
     fi
 }

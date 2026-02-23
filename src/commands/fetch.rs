@@ -167,7 +167,17 @@ fn render_worktree_status(r: &WorktreeFetchResult, output: &mut dyn Output) {
             output.info(&format!(" * {} {}", tag_skipped(), r.worktree_name));
         }
     } else if r.success {
-        output.info(&format!(" * {} {}", tag_updated(), r.worktree_name));
+        if r.up_to_date {
+            output.info(&format!(" * {} {}", tag_up_to_date(), r.worktree_name));
+        } else {
+            output.info(&format!(" * {} {}", tag_updated(), r.worktree_name));
+            // Show captured pull output indented under the branch name
+            if let Some(ref pull_output) = r.pull_output {
+                for line in pull_output.lines() {
+                    output.info(&format!("   {line}"));
+                }
+            }
+        }
     } else {
         output.error(&format!(
             "Failed to update '{}': {}",
@@ -179,6 +189,7 @@ fn render_worktree_status(r: &WorktreeFetchResult, output: &mut dyn Output) {
 
 fn print_summary(result: &fetch::FetchResult, output: &mut dyn Output) {
     let updated = result.updated_count();
+    let up_to_date = result.up_to_date_count();
     let skipped = result.skipped_count();
     let failed = result.failed_count();
 
@@ -187,7 +198,7 @@ fn print_summary(result: &fetch::FetchResult, output: &mut dyn Output) {
         let updated_list: Vec<_> = result
             .results
             .iter()
-            .filter(|r| r.success && !r.skipped)
+            .filter(|r| r.success && !r.skipped && !r.up_to_date)
             .collect();
         let skipped_list: Vec<_> = result.results.iter().filter(|r| r.skipped).collect();
         let failed_list: Vec<_> = result
@@ -227,6 +238,14 @@ fn print_summary(result: &fetch::FetchResult, output: &mut dyn Output) {
             };
             parts.push(format!("Updated {updated} {word}"));
         }
+        if up_to_date > 0 {
+            let phrase = if up_to_date == 1 {
+                "1 already up to date".to_string()
+            } else {
+                format!("{up_to_date} already up to date")
+            };
+            parts.push(phrase);
+        }
         if skipped > 0 {
             let word = if skipped == 1 {
                 "worktree"
@@ -254,6 +273,9 @@ fn print_summary(result: &fetch::FetchResult, output: &mut dyn Output) {
             };
             parts.push(format!("{updated} {word} updated"));
         }
+        if up_to_date > 0 {
+            parts.push(format!("{up_to_date} already up to date"));
+        }
         if skipped > 0 {
             let word = if skipped == 1 {
                 "worktree"
@@ -275,6 +297,14 @@ fn tag_updated() -> String {
         format!("{}[updated]{}", styles::GREEN, styles::RESET)
     } else {
         "[updated]".to_string()
+    }
+}
+
+fn tag_up_to_date() -> String {
+    if styles::colors_enabled() {
+        format!("{}[up to date]{}", styles::DIM, styles::RESET)
+    } else {
+        "[up to date]".to_string()
     }
 }
 

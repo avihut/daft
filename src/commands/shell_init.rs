@@ -143,6 +143,7 @@ git-worktree-branch() { __daft_wrapper git-worktree-branch "$@"; }
 git-worktree-branch-delete() { __daft_wrapper git-worktree-branch-delete "$@"; }
 git-worktree-flow-adopt() { __daft_wrapper git-worktree-flow-adopt "$@"; }
 git-worktree-flow-eject() { __daft_wrapper git-worktree-flow-eject "$@"; }
+git-sync() { __daft_wrapper git-sync "$@"; }
 
 # Git wrapper to intercept "git worktree-*" subcommands (with spaces)
 git() {
@@ -165,6 +166,8 @@ git() {
             shift; __daft_wrapper git-worktree-flow-adopt "$@" ;;
         worktree-flow-eject)
             shift; __daft_wrapper git-worktree-flow-eject "$@" ;;
+        sync)
+            shift; __daft_wrapper git-sync "$@" ;;
         *)
             command git "$@" ;;
     esac
@@ -199,6 +202,8 @@ daft() {
             shift; __daft_wrapper git-worktree-flow-adopt "$@" ;;
         worktree-flow-eject|eject)
             shift; __daft_wrapper git-worktree-flow-eject "$@" ;;
+        sync)
+            shift; __daft_wrapper git-sync "$@" ;;
         *)
             command daft "$@" ;;
     esac
@@ -215,6 +220,7 @@ gwtbd() { __daft_wrapper daft-remove "$@"; }
 gwtcarry() { __daft_wrapper git-worktree-carry "$@"; }
 gwtfetch() { __daft_wrapper git-worktree-fetch "$@"; }
 gwtrn() { __daft_wrapper daft-rename "$@"; }
+gwtsync() { __daft_wrapper git-sync "$@"; }
 
 # Shell-style shortcuts
 gwco() { __daft_wrapper git-worktree-checkout "$@"; }
@@ -361,6 +367,10 @@ function git-worktree-flow-eject
     __daft_wrapper git-worktree-flow-eject $argv
 end
 
+function git-sync
+    __daft_wrapper git-sync $argv
+end
+
 # Git wrapper to intercept "git worktree-*" subcommands (with spaces)
 function git --wraps git
     switch $argv[1]
@@ -382,6 +392,8 @@ function git --wraps git
             __daft_wrapper git-worktree-flow-adopt $argv[2..-1]
         case worktree-flow-eject
             __daft_wrapper git-worktree-flow-eject $argv[2..-1]
+        case sync
+            __daft_wrapper git-sync $argv[2..-1]
         case '*'
             command git $argv
     end
@@ -416,6 +428,8 @@ function daft --wraps daft
             __daft_wrapper git-worktree-flow-adopt $argv[2..-1]
         case worktree-flow-eject eject
             __daft_wrapper git-worktree-flow-eject $argv[2..-1]
+        case sync
+            __daft_wrapper git-sync $argv[2..-1]
         case '*'
             command daft $argv
     end
@@ -457,6 +471,10 @@ end
 
 function gwtrn
     __daft_wrapper daft-rename $argv
+end
+
+function gwtsync
+    __daft_wrapper git-sync $argv
 end
 
 # Shell-style shortcuts

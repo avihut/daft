@@ -156,6 +156,12 @@ _daft() {
                 _daft_rename
                 return 0
                 ;;
+            sync)
+                COMP_WORDS=("git-sync" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _git_sync
+                return 0
+                ;;
             remove)
                 COMP_WORDS=("daft-remove" "${COMP_WORDS[@]:2}")
                 COMP_CWORD=$((COMP_CWORD - 1))
@@ -167,7 +173,7 @@ _daft() {
 
     # top-level: complete daft subcommands
     if [[ $cword -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "hooks shell-init completions setup multi-remote release-notes doctor clone init go start carry update prune rename remove adopt eject" -- "$cur") )
+        COMPREPLY=( $(compgen -W "hooks shell-init completions setup multi-remote release-notes doctor clone init go start carry update prune rename sync remove adopt eject" -- "$cur") )
         return 0
     fi
 }
