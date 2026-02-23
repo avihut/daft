@@ -164,12 +164,22 @@ fn run_checkout(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -
     let hooks_config = HooksConfig::default();
     let executor = HookExecutor::new(hooks_config)?;
 
-    let result = {
+    let (result, executor) = {
         let mut bridge = CommandBridge::new(output, executor);
-        checkout::execute(&params, &git, &project_root, &mut bridge)?
+        let result = checkout::execute(&params, &git, &project_root, &mut bridge)?;
+        (result, bridge.into_executor())
     };
 
     render_checkout_result(&result, output);
+
+    // Show hooks notice if skipped due to trust
+    if result.post_hook_outcome.skipped {
+        if let Some(reason) = &result.post_hook_outcome.skip_reason {
+            if reason == "Repository not trusted" {
+                executor.check_hooks_notice(&result.worktree_path, &result.git_dir, output);
+            }
+        }
+    }
 
     // Run exec commands (after hooks, before cd_path)
     let exec_result = crate::exec::run_exec_commands(&args.exec, output);
@@ -207,12 +217,22 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
     let hooks_config = HooksConfig::default();
     let executor = HookExecutor::new(hooks_config)?;
 
-    let result = {
+    let (result, executor) = {
         let mut bridge = CommandBridge::new(output, executor);
-        checkout_branch::execute(&params, &git, &project_root, &mut bridge)?
+        let result = checkout_branch::execute(&params, &git, &project_root, &mut bridge)?;
+        (result, bridge.into_executor())
     };
 
     render_create_result(&result, output);
+
+    // Show hooks notice if skipped due to trust
+    if result.post_hook_outcome.skipped {
+        if let Some(reason) = &result.post_hook_outcome.skip_reason {
+            if reason == "Repository not trusted" {
+                executor.check_hooks_notice(&result.worktree_path, &result.git_dir, output);
+            }
+        }
+    }
 
     // Run exec commands (after hooks, before cd_path)
     let exec_result = crate::exec::run_exec_commands(&args.exec, output);

@@ -57,6 +57,11 @@ impl<'a> CommandBridge<'a> {
     pub fn new(output: &'a mut dyn Output, executor: HookExecutor) -> Self {
         Self { output, executor }
     }
+
+    /// Consume the bridge and return the hook executor.
+    pub fn into_executor(self) -> HookExecutor {
+        self.executor
+    }
 }
 
 impl ProgressSink for CommandBridge<'_> {
@@ -79,11 +84,7 @@ impl HookRunner for CommandBridge<'_> {
         Ok(HookOutcome {
             success: result.success,
             skipped: result.skipped,
-            skip_reason: if result.skipped {
-                Some(result.stderr.clone())
-            } else {
-                None
-            },
+            skip_reason: result.skip_reason.clone(),
         })
     }
 }

@@ -3,7 +3,7 @@
 //! Creates a worktree with a new branch.
 
 use crate::config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT};
-use crate::core::{HookRunner, ProgressSink};
+use crate::core::{HookOutcome, HookRunner, ProgressSink};
 use crate::git::GitCommand;
 use crate::hooks::{HookContext, HookType};
 use crate::multi_remote::path::{calculate_worktree_path, resolve_remote_for_branch};
@@ -45,6 +45,8 @@ pub struct CheckoutBranchResult {
     pub stash_conflict: bool,
     pub push_set: bool,
     pub push_skipped: bool,
+    pub git_dir: PathBuf,
+    pub post_hook_outcome: HookOutcome,
 }
 
 /// Execute the checkout-branch operation.
@@ -58,7 +60,7 @@ pub fn execute(
 
     let base_branch = resolve_base_branch(params, git, sink)?;
 
-    let git_dir = resolve_git_dir(git)?;
+    let git_dir = crate::core::repo::get_git_common_dir()?;
     let source_worktree = get_current_directory()?;
 
     let remote_for_path = resolve_remote_for_branch(
@@ -150,7 +152,7 @@ pub fn execute(
     .with_new_branch(true)
     .with_base_branch(&base_branch);
 
-    sink.run_hook(&post_hook_ctx)?;
+    let post_hook_outcome = sink.run_hook(&post_hook_ctx)?;
 
     Ok(CheckoutBranchResult {
         new_branch_name: params.new_branch_name.clone(),
@@ -161,21 +163,12 @@ pub fn execute(
         stash_conflict,
         push_set,
         push_skipped,
+        git_dir,
+        post_hook_outcome,
     })
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-
-/// Resolve the git common directory as an absolute path.
-fn resolve_git_dir(git: &GitCommand) -> Result<PathBuf> {
-    let git_dir_str = git.rev_parse_git_common_dir()?;
-    let git_dir = PathBuf::from(&git_dir_str);
-    if git_dir.is_absolute() {
-        Ok(git_dir)
-    } else {
-        Ok(get_current_directory()?.join(git_dir))
-    }
-}
 
 /// Resolve the base branch (explicit or current).
 fn resolve_base_branch(
