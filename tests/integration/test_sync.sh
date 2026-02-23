@@ -115,6 +115,19 @@ test_sync_verbose() {
 test_sync_force() {
     local remote_repo=$(create_test_remote "test-repo-sync-force" "main")
 
+    # Push the branch to the remote first so checkout can find it
+    local temp_clone="$TEMP_BASE_DIR/temp_sync_force_setup"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+    (
+        cd "$temp_clone"
+        git checkout -b feature/dirty-branch >/dev/null 2>&1
+        echo "dirty branch content" >> README.md
+        git add README.md >/dev/null 2>&1
+        git commit -m "Add dirty branch" >/dev/null 2>&1
+        git push origin feature/dirty-branch >/dev/null 2>&1
+    ) >/dev/null 2>&1
+    rm -rf "$temp_clone"
+
     # Clone the repository
     git-worktree-clone "$remote_repo" || return 1
     cd "test-repo-sync-force"
@@ -150,6 +163,19 @@ test_sync_force() {
 # Test sync when current worktree is pruned (CD target handling)
 test_sync_cd_target() {
     local remote_repo=$(create_test_remote "test-repo-sync-cdtarget" "main")
+
+    # Push the branch to the remote first so checkout can find it
+    local temp_clone="$TEMP_BASE_DIR/temp_sync_cdtarget_setup"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+    (
+        cd "$temp_clone"
+        git checkout -b feature/will-be-pruned >/dev/null 2>&1
+        echo "prunable branch content" >> README.md
+        git add README.md >/dev/null 2>&1
+        git commit -m "Add prunable branch" >/dev/null 2>&1
+        git push origin feature/will-be-pruned >/dev/null 2>&1
+    ) >/dev/null 2>&1
+    rm -rf "$temp_clone"
 
     # Clone the repository
     git-worktree-clone "$remote_repo" || return 1
