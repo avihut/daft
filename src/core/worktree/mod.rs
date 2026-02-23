@@ -15,6 +15,7 @@ pub mod flow_eject;
 pub mod init;
 pub mod previous;
 pub mod prune;
+pub mod rebase;
 pub mod rename;
 
 /// Configuration for worktree operations.

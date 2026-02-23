@@ -309,6 +309,44 @@ impl GitCommand {
     }
 
     /// Get the URL of a remote.
+    /// Rebase the current branch onto `base`.
+    ///
+    /// Returns the combined stdout+stderr on success. On failure (e.g., conflicts),
+    /// returns an error with the combined output.
+    pub fn rebase(&self, base: &str) -> Result<String> {
+        let output = Command::new("git")
+            .args(["rebase", base])
+            .output()
+            .context("Failed to execute git rebase command")?;
+
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+
+        if !output.status.success() {
+            anyhow::bail!("{}", combined.trim());
+        }
+
+        Ok(combined)
+    }
+
+    /// Abort an in-progress rebase.
+    pub fn rebase_abort(&self) -> Result<()> {
+        let output = Command::new("git")
+            .args(["rebase", "--abort"])
+            .output()
+            .context("Failed to execute git rebase --abort command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git rebase --abort failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
     pub fn remote_get_url(&self, remote: &str) -> Result<String> {
         if self.use_gitoxide {
             return oxide::remote_get_url(&self.gix_repo()?, remote);

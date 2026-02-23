@@ -237,7 +237,7 @@ fn determine_refspecs(
 }
 
 /// Get all non-bare worktrees with their branch names from git worktree list.
-fn get_all_worktrees_with_branches(git: &GitCommand) -> Result<Vec<(PathBuf, String)>> {
+pub fn get_all_worktrees_with_branches(git: &GitCommand) -> Result<Vec<(PathBuf, String)>> {
     let porcelain_output = git.worktree_list_porcelain()?;
     let mut worktrees: Vec<(PathBuf, String)> = Vec::new();
     let mut current_worktree: Option<PathBuf> = None;

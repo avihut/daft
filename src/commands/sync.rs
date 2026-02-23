@@ -5,7 +5,7 @@
 
 use crate::{
     core::{
-        worktree::{fetch, prune},
+        worktree::{fetch, prune, rebase},
         CommandBridge, OutputSink,
     },
     get_project_root,
@@ -32,6 +32,8 @@ This is equivalent to running `daft prune` followed by `daft update --all`:
   1. Prune: fetches with --prune, removes worktrees and branches for deleted
      remote branches, executes lifecycle hooks for each removal.
   2. Update: pulls all remaining worktrees from their remote tracking branches.
+  3. Rebase (--rebase BRANCH): rebases all remaining worktrees onto BRANCH.
+     Best-effort: conflicts are immediately aborted and reported.
 
 If you are currently inside a worktree that gets pruned, the shell is redirected
 to a safe location (project root by default, or as configured via
@@ -50,6 +52,13 @@ pub struct Args {
         help = "Force removal of worktrees with uncommitted changes"
     )]
     force: bool,
+
+    #[arg(
+        long,
+        value_name = "BRANCH",
+        help = "Rebase all branches onto BRANCH after updating"
+    )]
+    rebase: Option<String>,
 }
 
 pub fn run() -> Result<()> {
@@ -70,6 +79,11 @@ pub fn run() -> Result<()> {
 
     // Phase 2: Update all remaining worktrees
     run_update_phase(&mut output, &settings, args.force)?;
+
+    // Phase 3: Rebase all worktrees onto base branch (if requested)
+    if let Some(ref base_branch) = args.rebase {
+        run_rebase_phase(&mut output, &settings, base_branch, args.force)?;
+    }
 
     // Write the cd target for the shell wrapper (from prune phase)
     if let Some(ref cd_target) = prune_result.cd_target {
@@ -323,6 +337,140 @@ fn render_pruned_branch(detail: &prune::PrunedBranchDetail, output: &mut dyn Out
     ));
 }
 
+fn run_rebase_phase(
+    output: &mut dyn Output,
+    settings: &DaftSettings,
+    base_branch: &str,
+    force: bool,
+) -> Result<()> {
+    let wt_config = WorktreeConfig {
+        remote_name: settings.remote.clone(),
+        quiet: output.is_quiet(),
+    };
+    let git = GitCommand::new(wt_config.quiet).with_gitoxide(settings.use_gitoxide);
+    let project_root = get_project_root()?;
+
+    let params = rebase::RebaseParams {
+        base_branch: base_branch.to_string(),
+        force,
+        quiet: output.is_quiet(),
+    };
+
+    let mut sink = OutputSink(output);
+    let result = rebase::execute(&params, &git, &project_root, &mut sink)?;
+
+    render_rebase_result(&result, output);
+
+    if result.conflict_count() > 0 {
+        output.warning(&format!(
+            "{} worktree(s) had conflicts and were aborted",
+            result.conflict_count()
+        ));
+    }
+
+    Ok(())
+}
+
+fn render_rebase_result(result: &rebase::RebaseResult, output: &mut dyn Output) {
+    if result.results.is_empty() {
+        output.info("No worktrees to rebase.");
+        return;
+    }
+
+    // Header
+    output.result(&format!("Rebasing onto {}", result.base_branch));
+
+    // Per-worktree status
+    for r in &result.results {
+        render_rebase_worktree_status(r, output);
+    }
+
+    // Summary
+    print_rebase_summary(result, output);
+}
+
+fn render_rebase_worktree_status(r: &rebase::WorktreeRebaseResult, output: &mut dyn Output) {
+    if r.skipped {
+        output.info(&format!(
+            " * {} {} — uncommitted changes",
+            tag_skipped(),
+            r.worktree_name
+        ));
+    } else if r.conflict {
+        output.info(&format!(
+            " * {} {} — aborted",
+            tag_conflict(),
+            r.worktree_name
+        ));
+    } else if r.already_rebased {
+        output.info(&format!(" * {} {}", tag_up_to_date(), r.worktree_name));
+    } else if r.success {
+        output.info(&format!(" * {} {}", tag_rebased(), r.worktree_name));
+    } else {
+        output.error(&format!(
+            "Failed to rebase '{}': {}",
+            r.worktree_name, r.message
+        ));
+        output.info(&format!(" * {} {}", tag_failed(), r.worktree_name));
+    }
+}
+
+fn print_rebase_summary(result: &rebase::RebaseResult, output: &mut dyn Output) {
+    let rebased = result.rebased_count();
+    let already = result.already_rebased_count();
+    let conflicts = result.conflict_count();
+    let skipped = result.skipped_count();
+
+    let mut parts: Vec<String> = Vec::new();
+
+    if rebased > 0 {
+        let word = if rebased == 1 {
+            "worktree"
+        } else {
+            "worktrees"
+        };
+        parts.push(format!(
+            "Rebased {rebased} {word} onto {}",
+            result.base_branch
+        ));
+    }
+
+    if already > 0 {
+        let phrase = if already == 1 {
+            "1 already up to date".to_string()
+        } else {
+            format!("{already} already up to date")
+        };
+        parts.push(phrase);
+    }
+
+    if conflicts > 0 {
+        let word = if conflicts == 1 {
+            "conflict"
+        } else {
+            "conflicts"
+        };
+        parts.push(format!("{conflicts} {word} (aborted)"));
+    }
+
+    if skipped > 0 {
+        let word = if skipped == 1 {
+            "worktree"
+        } else {
+            "worktrees"
+        };
+        parts.push(format!("skipped {skipped} {word}"));
+    }
+
+    if parts.is_empty() {
+        output.info("Nothing to rebase");
+    } else if conflicts > 0 {
+        output.warning(&parts.join(", "));
+    } else {
+        output.success(&parts.join(", "));
+    }
+}
+
 // -- Colored status tags --
 
 fn tag_pruned() -> String {
@@ -354,6 +502,22 @@ fn tag_skipped() -> String {
         format!("{}[skipped]{}", styles::YELLOW, styles::RESET)
     } else {
         "[skipped]".to_string()
+    }
+}
+
+fn tag_rebased() -> String {
+    if styles::colors_enabled() {
+        format!("{}[rebased]{}", styles::GREEN, styles::RESET)
+    } else {
+        "[rebased]".to_string()
+    }
+}
+
+fn tag_conflict() -> String {
+    if styles::colors_enabled() {
+        format!("{}[conflict]{}", styles::RED, styles::RESET)
+    } else {
+        "[conflict]".to_string()
     }
 }
 
