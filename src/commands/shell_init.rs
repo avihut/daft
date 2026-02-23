@@ -143,6 +143,7 @@ git-worktree-carry() { __daft_wrapper git-worktree-carry "$@"; }
 git-worktree-prune() { __daft_wrapper git-worktree-prune "$@"; }
 git-worktree-branch() { __daft_wrapper git-worktree-branch "$@"; }
 git-worktree-branch-delete() { __daft_wrapper git-worktree-branch-delete "$@"; }
+git-worktree-rename() { __daft_wrapper git-worktree-rename "$@"; }
 git-worktree-flow-adopt() { __daft_wrapper git-worktree-flow-adopt "$@"; }
 git-worktree-flow-eject() { __daft_wrapper git-worktree-flow-eject "$@"; }
 
@@ -163,6 +164,8 @@ git() {
             shift; __daft_wrapper git-worktree-branch "$@" ;;
         worktree-branch-delete)
             shift; __daft_wrapper git-worktree-branch-delete "$@" ;;
+        worktree-rename)
+            shift; __daft_wrapper git-worktree-rename "$@" ;;
         worktree-flow-adopt)
             shift; __daft_wrapper git-worktree-flow-adopt "$@" ;;
         worktree-flow-eject)
@@ -193,6 +196,8 @@ daft() {
             shift; __daft_wrapper git-worktree-branch -d "$@" ;;
         worktree-branch-delete)
             shift; __daft_wrapper git-worktree-branch-delete "$@" ;;
+        worktree-rename|rename)
+            shift; __daft_wrapper git-worktree-rename "$@" ;;
         worktree-fetch|update)
             shift; __daft_wrapper git-worktree-fetch "$@" ;;
         worktree-flow-adopt|adopt)
@@ -214,6 +219,7 @@ gwtprune() { __daft_wrapper git-worktree-prune "$@"; }
 gwtbd() { __daft_wrapper git-worktree-branch -d "$@"; }
 gwtcarry() { __daft_wrapper git-worktree-carry "$@"; }
 gwtfetch() { __daft_wrapper git-worktree-fetch "$@"; }
+gwtrn() { __daft_wrapper git-worktree-rename "$@"; }
 
 # Shell-style shortcuts
 gwco() { __daft_wrapper git-worktree-checkout "$@"; }
@@ -352,6 +358,10 @@ function git-worktree-branch-delete
     __daft_wrapper git-worktree-branch-delete $argv
 end
 
+function git-worktree-rename
+    __daft_wrapper git-worktree-rename $argv
+end
+
 function git-worktree-flow-adopt
     __daft_wrapper git-worktree-flow-adopt $argv
 end
@@ -377,6 +387,8 @@ function git --wraps git
             __daft_wrapper git-worktree-branch $argv[2..-1]
         case worktree-branch-delete
             __daft_wrapper git-worktree-branch-delete $argv[2..-1]
+        case worktree-rename
+            __daft_wrapper git-worktree-rename $argv[2..-1]
         case worktree-flow-adopt
             __daft_wrapper git-worktree-flow-adopt $argv[2..-1]
         case worktree-flow-eject
@@ -407,6 +419,8 @@ function daft --wraps daft
             __daft_wrapper git-worktree-branch -d $argv[2..-1]
         case worktree-branch-delete
             __daft_wrapper git-worktree-branch-delete $argv[2..-1]
+        case worktree-rename rename
+            __daft_wrapper git-worktree-rename $argv[2..-1]
         case worktree-fetch update
             __daft_wrapper git-worktree-fetch $argv[2..-1]
         case worktree-flow-adopt adopt
@@ -450,6 +464,10 @@ end
 
 function gwtfetch
     __daft_wrapper git-worktree-fetch $argv
+end
+
+function gwtrn
+    __daft_wrapper git-worktree-rename $argv
 end
 
 # Shell-style shortcuts
