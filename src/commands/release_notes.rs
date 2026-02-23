@@ -155,6 +155,9 @@ fn parse_changelog(content: &str) -> Result<Vec<Release>> {
         });
     }
 
+    // Filter out empty sections (e.g., "Unreleased" with no content)
+    releases.retain(|r| !r.content.is_empty());
+
     Ok(releases)
 }
 
@@ -398,6 +401,23 @@ mod tests {
     fn test_embedded_changelog_parses() {
         let releases = parse_changelog(CHANGELOG).unwrap();
         assert!(!releases.is_empty(), "CHANGELOG.md should have releases");
+    }
+
+    #[test]
+    fn test_parse_changelog_skips_empty_unreleased() {
+        let content = r#"# Changelog
+
+## [Unreleased]
+
+## [1.0.0] - 2026-01-24
+
+### Features
+
+- Initial release
+"#;
+        let releases = parse_changelog(content).unwrap();
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].version, "1.0.0");
     }
 
     #[test]
