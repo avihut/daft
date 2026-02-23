@@ -2,7 +2,7 @@
 //!
 //! Creates a worktree for an existing branch.
 
-use crate::core::{HookRunner, ProgressSink};
+use crate::core::{HookOutcome, HookRunner, ProgressSink};
 use crate::git::GitCommand;
 use crate::hooks::{HookContext, HookType};
 use crate::multi_remote::path::{calculate_worktree_path, resolve_remote_for_branch};
@@ -44,6 +44,8 @@ pub struct CheckoutResult {
     pub stash_conflict: bool,
     pub upstream_set: bool,
     pub upstream_skipped: bool,
+    pub git_dir: PathBuf,
+    pub post_hook_outcome: HookOutcome,
 }
 
 /// Execute the checkout operation.
@@ -98,6 +100,12 @@ pub fn execute(
             stash_conflict: false,
             upstream_set: false,
             upstream_skipped: true,
+            git_dir,
+            post_hook_outcome: HookOutcome {
+                success: true,
+                skipped: true,
+                skip_reason: None,
+            },
         });
     }
 
@@ -202,7 +210,7 @@ pub fn execute(
     )
     .with_new_branch(false);
 
-    sink.run_hook(&post_hook_ctx)?;
+    let post_hook_outcome = sink.run_hook(&post_hook_ctx)?;
 
     Ok(CheckoutResult {
         branch_name: params.branch_name.clone(),
@@ -213,6 +221,8 @@ pub fn execute(
         stash_conflict,
         upstream_set,
         upstream_skipped,
+        git_dir,
+        post_hook_outcome,
     })
 }
 
