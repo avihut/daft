@@ -14,6 +14,7 @@
 //! | `daft.remote` | `"origin"` | Default remote name |
 //! | `daft.checkoutBranch.carry` | `true` | Default carry for checkout-branch |
 //! | `daft.checkout.carry` | `false` | Default carry for checkout |
+//! | `daft.go.autoStart` | `false` | Auto-create worktree when branch not found in go |
 //! | `daft.prune.cdTarget` | `root` | Where to cd after pruning current worktree (`root` or `default-branch`) |
 //! | `daft.updateCheck` | `true` | Enable/disable new version notifications |
 //!

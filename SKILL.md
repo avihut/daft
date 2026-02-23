@@ -114,6 +114,7 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 | `daft worktree-clone <url>`                     | Clone a remote repository into daft's worktree layout                            |
 | `daft worktree-init <name>`                     | Initialize a new local repository in worktree layout                             |
 | `daft worktree-checkout <branch>`               | Create a worktree for an existing local or remote branch                         |
+| `daft worktree-checkout -s <branch>`            | Same as above, but auto-creates branch if not found (also `daft.go.autoStart`)   |
 | `daft worktree-checkout -b <new-branch> [base]` | Create a new branch and worktree from current or specified base                  |
 | `daft worktree-branch -d <branch>`              | Safely delete a branch: its worktree, local branch, and remote tracking branch   |
 | `daft worktree-branch -D <branch>`              | Force-delete a branch bypassing safety checks (except default branch protection) |
@@ -597,6 +598,7 @@ Key `git config` settings:
 | `daft.checkoutBranch.carry` | `true`        | Carry uncommitted changes on branch creation           |
 | `daft.fetch.args`           | `"--ff-only"` | Default pull arguments for fetch                       |
 | `daft.prune.cdTarget`       | `"root"`      | Where to cd after pruning (`root` or `default-branch`) |
+| `daft.go.autoStart`         | `false`       | Auto-create worktree when branch not found in go       |
 | `daft.hooks.enabled`        | `true`        | Master switch for hooks                                |
 | `daft.hooks.defaultTrust`   | `"deny"`      | Default trust for unknown repos                        |
 | `daft.hooks.timeout`        | `300`         | Hook timeout in seconds                                |
