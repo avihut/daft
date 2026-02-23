@@ -55,7 +55,7 @@ pub fn execute(
 ) -> Result<CheckoutResult> {
     validate_branch_name(&params.branch_name)?;
 
-    let git_dir = resolve_git_dir(git)?;
+    let git_dir = crate::core::repo::get_git_common_dir()?;
     let source_worktree = get_current_directory()?;
 
     let remote_for_path = resolve_remote_for_branch(
@@ -217,17 +217,6 @@ pub fn execute(
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-
-/// Resolve the git common directory as an absolute path.
-fn resolve_git_dir(git: &GitCommand) -> Result<PathBuf> {
-    let git_dir_str = git.rev_parse_git_common_dir()?;
-    let git_dir = PathBuf::from(&git_dir_str);
-    if git_dir.is_absolute() {
-        Ok(git_dir)
-    } else {
-        Ok(get_current_directory()?.join(git_dir))
-    }
-}
 
 /// Check if a worktree already exists for the given branch name.
 fn find_existing_worktree_for_branch(
