@@ -115,11 +115,14 @@ pub fn run() -> Result<()> {
     run_with_args(args)
 }
 
-/// Entry point for `daft remove` — injects `-d` before clap parsing.
+/// Entry point for `daft remove` — injects `-d` before clap parsing
+/// unless `-D` is already present (user wants force delete).
 pub fn run_remove() -> Result<()> {
     let mut raw = crate::get_clap_args("git-worktree-branch");
-    // Insert `-d` right after the command name so clap sees it
-    raw.insert(1, "-d".to_string());
+    let has_force = raw.iter().any(|a| a == "-D" || a == "--force");
+    if !has_force {
+        raw.insert(1, "-d".to_string());
+    }
     let args = Args::parse_from(raw);
     run_with_args(args)
 }
