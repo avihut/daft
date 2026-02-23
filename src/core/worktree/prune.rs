@@ -26,6 +26,13 @@ pub struct PruneParams {
     pub prune_cd_target: PruneCdTarget,
 }
 
+/// Detail of a single pruned branch.
+pub struct PrunedBranchDetail {
+    pub branch_name: String,
+    pub worktree_removed: bool,
+    pub branch_deleted: bool,
+}
+
 /// Result of a prune operation.
 pub struct PruneResult {
     pub remote_name: String,
@@ -37,6 +44,8 @@ pub struct PruneResult {
     pub cd_target: Option<PathBuf>,
     /// True if no branches were found to prune.
     pub nothing_to_prune: bool,
+    /// Per-branch detail of what was removed.
+    pub pruned_branches: Vec<PrunedBranchDetail>,
 }
 
 /// Parsed worktree entry from `git worktree list --porcelain`.
@@ -114,6 +123,7 @@ pub fn execute(
             has_prunable: false,
             cd_target: None,
             nothing_to_prune: true,
+            pruned_branches: Vec::new(),
         });
     }
 
@@ -132,9 +142,13 @@ pub fn execute(
     let mut branches_deleted: u32 = 0;
     let mut worktrees_removed: u32 = 0;
     let mut deferred_branch: Option<String> = None;
+    let mut pruned_branches: Vec<PrunedBranchDetail> = Vec::new();
 
     for branch_name in &gone_branches {
         sink.on_step(&format!("Processing branch: {branch_name}"));
+
+        let prev_branches = branches_deleted;
+        let prev_worktrees = worktrees_removed;
 
         let wt_info = worktree_map.get(branch_name.as_str()).cloned();
 
@@ -190,9 +204,22 @@ pub fn execute(
                 }
             }
         }
+
+        // Record per-branch detail (skip deferred — it's tracked below)
+        let was_branch_deleted = branches_deleted > prev_branches;
+        let was_worktree_removed = worktrees_removed > prev_worktrees;
+        if was_branch_deleted || was_worktree_removed {
+            pruned_branches.push(PrunedBranchDetail {
+                branch_name: branch_name.clone(),
+                worktree_removed: was_worktree_removed,
+                branch_deleted: was_branch_deleted,
+            });
+        }
     }
 
     // Process deferred branch (user's current worktree) last
+    let prev_branches = branches_deleted;
+    let prev_worktrees = worktrees_removed;
     let cd_target = process_deferred_branch(
         &ctx,
         &deferred_branch,
@@ -202,6 +229,17 @@ pub fn execute(
         &mut branches_deleted,
         &mut worktrees_removed,
     );
+    if let Some(ref branch_name) = deferred_branch {
+        let was_branch_deleted = branches_deleted > prev_branches;
+        let was_worktree_removed = worktrees_removed > prev_worktrees;
+        if was_branch_deleted || was_worktree_removed {
+            pruned_branches.push(PrunedBranchDetail {
+                branch_name: branch_name.clone(),
+                worktree_removed: was_worktree_removed,
+                branch_deleted: was_branch_deleted,
+            });
+        }
+    }
 
     // Check for prunable worktrees
     let worktree_list = git.worktree_list_porcelain()?;
@@ -215,6 +253,7 @@ pub fn execute(
         has_prunable,
         cd_target,
         nothing_to_prune: false,
+        pruned_branches,
     })
 }
 

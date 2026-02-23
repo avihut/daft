@@ -5,7 +5,7 @@ use crate::{
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
-    CD_FILE_ENV,
+    styles, CD_FILE_ENV,
 };
 use anyhow::Result;
 use clap::Parser;
@@ -90,6 +90,11 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings, force: bool) -> R
         output.info(&format!("URL: {url}"));
     }
 
+    // Per-branch detail lines
+    for detail in &result.pruned_branches {
+        render_pruned_branch(detail, output);
+    }
+
     // Pluralized summary
     if result.branches_deleted > 0 || result.worktrees_removed > 0 {
         let branch_word = if result.branches_deleted == 1 {
@@ -128,4 +133,31 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings, force: bool) -> R
     }
 
     Ok(())
+}
+
+fn render_pruned_branch(detail: &prune::PrunedBranchDetail, output: &mut dyn Output) {
+    let mut removed = Vec::new();
+    if detail.worktree_removed {
+        removed.push("worktree");
+    }
+    if detail.branch_deleted {
+        removed.push("local branch");
+    }
+    // The remote tracking branch is always removed (git fetch --prune did it)
+    removed.push("remote tracking branch");
+
+    output.info(&format!(
+        " * {} {} — removed {}",
+        tag_pruned(),
+        detail.branch_name,
+        removed.join(", ")
+    ));
+}
+
+fn tag_pruned() -> String {
+    if styles::colors_enabled() {
+        format!("{}[pruned]{}", styles::RED, styles::RESET)
+    } else {
+        "[pruned]".to_string()
+    }
 }

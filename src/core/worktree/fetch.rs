@@ -70,12 +70,16 @@ pub struct FetchParams {
 }
 
 /// Result of a fetch operation for a single worktree.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct WorktreeFetchResult {
     pub worktree_name: String,
     pub success: bool,
     pub message: String,
     pub skipped: bool,
+    /// True when the pull succeeded but there were no new changes.
+    pub up_to_date: bool,
+    /// Captured git pull stdout (diff stats, fast-forward info). None when up-to-date or on error.
+    pub pull_output: Option<String>,
 }
 
 /// Aggregated result of fetching all worktrees.
@@ -94,7 +98,14 @@ impl FetchResult {
     pub fn updated_count(&self) -> usize {
         self.results
             .iter()
-            .filter(|r| r.success && !r.skipped)
+            .filter(|r| r.success && !r.skipped && !r.up_to_date)
+            .count()
+    }
+
+    pub fn up_to_date_count(&self) -> usize {
+        self.results
+            .iter()
+            .filter(|r| r.success && !r.skipped && r.up_to_date)
             .count()
     }
 
@@ -308,9 +319,8 @@ fn process_worktree(
     if let Err(e) = change_directory(target_path) {
         return WorktreeFetchResult {
             worktree_name: worktree_name.to_string(),
-            success: false,
             message: format!("Failed to change to directory: {e}"),
-            skipped: false,
+            ..Default::default()
         };
     }
 
@@ -326,15 +336,15 @@ fn process_worktree(
                     success: true,
                     message: "Skipped: uncommitted changes".to_string(),
                     skipped: true,
+                    ..Default::default()
                 };
             }
         }
         Err(e) => {
             return WorktreeFetchResult {
                 worktree_name: worktree_name.to_string(),
-                success: false,
                 message: format!("Failed to check status: {e}"),
-                skipped: false,
+                ..Default::default()
             };
         }
     }
@@ -371,6 +381,7 @@ fn process_same_branch(
             success: true,
             message: "Skipped: no tracking branch".to_string(),
             skipped: true,
+            ..Default::default()
         };
     }
 
@@ -381,30 +392,40 @@ fn process_same_branch(
             success: true,
             message: format!("Dry run: would pull with: git pull {}", pull_args.join(" ")),
             skipped: true,
+            ..Default::default()
         };
     }
 
-    // Run git pull
+    // Run git pull (always capture output for structured rendering)
     let pull_args_refs: Vec<&str> = pull_args.iter().map(|s| s.as_str()).collect();
 
-    let pull_result = if params.quiet {
-        git.pull(&pull_args_refs).map(|_| ())
-    } else {
-        git.pull_passthrough(&pull_args_refs)
-    };
-
-    match pull_result {
-        Ok(()) => WorktreeFetchResult {
-            worktree_name: worktree_name.to_string(),
-            success: true,
-            message: "Updated successfully".to_string(),
-            skipped: false,
-        },
+    match git.pull(&pull_args_refs) {
+        Ok(output) => {
+            let trimmed = output.trim();
+            let up_to_date =
+                trimmed.contains("Already up to date") || trimmed.contains("is up to date");
+            let pull_output = if up_to_date || trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+            WorktreeFetchResult {
+                worktree_name: worktree_name.to_string(),
+                success: true,
+                message: if up_to_date {
+                    "Already up to date".to_string()
+                } else {
+                    "Updated successfully".to_string()
+                },
+                skipped: false,
+                up_to_date,
+                pull_output,
+            }
+        }
         Err(e) => WorktreeFetchResult {
             worktree_name: worktree_name.to_string(),
-            success: false,
             message: format!("Failed: {e}"),
-            skipped: false,
+            ..Default::default()
         },
     }
 }
@@ -430,6 +451,7 @@ fn process_cross_branch(
                 remote_name, refspec.source, remote_ref
             ),
             skipped: true,
+            ..Default::default()
         };
     }
 
@@ -442,9 +464,8 @@ fn process_cross_branch(
     if let Err(e) = git.fetch_refspec(remote_name, &refspec.source) {
         return WorktreeFetchResult {
             worktree_name: worktree_name.to_string(),
-            success: false,
             message: format!("Failed to fetch {}/{}: {e}", remote_name, refspec.source),
-            skipped: false,
+            ..Default::default()
         };
     }
 
@@ -452,9 +473,8 @@ fn process_cross_branch(
     if let Err(e) = git.reset_hard(&remote_ref) {
         return WorktreeFetchResult {
             worktree_name: worktree_name.to_string(),
-            success: false,
             message: format!("Failed to reset to {remote_ref}: {e}"),
-            skipped: false,
+            ..Default::default()
         };
     }
 
@@ -462,7 +482,7 @@ fn process_cross_branch(
         worktree_name: worktree_name.to_string(),
         success: true,
         message: format!("Updated to {remote_ref}"),
-        skipped: false,
+        ..Default::default()
     }
 }
 
