@@ -157,9 +157,13 @@ _daft() {
                 return
                 ;;
             rename)
-                words=("git-worktree-rename" "${(@)words[3,-1]}")
-                CURRENT=$((CURRENT - 1))
-                __git_worktree_rename_impl
+                if [[ "$curword" != -* ]]; then
+                    local -a branches
+                    branches=($(daft __complete git-worktree-checkout "$curword" 2>/dev/null))
+                    if [[ ${#branches[@]} -gt 0 ]]; then
+                        compadd -a branches
+                    fi
+                fi
                 return
                 ;;
             remove)

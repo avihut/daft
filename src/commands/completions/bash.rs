@@ -144,9 +144,11 @@ _daft() {
                 return 0
                 ;;
             rename)
-                COMP_WORDS=("git-worktree-rename" "${COMP_WORDS[@]:2}")
-                COMP_CWORD=$((COMP_CWORD - 1))
-                _git_worktree_rename
+                if [[ "$cur" != -* ]]; then
+                    local branches
+                    branches=$(daft __complete git-worktree-checkout "$cur" 2>/dev/null)
+                    COMPREPLY=( $(compgen -W "$branches" -- "$cur") )
+                fi
                 return 0
                 ;;
             remove)
