@@ -119,12 +119,14 @@ impl GitCommand {
     /// Pull from remote with specified arguments
     pub fn pull(&self, args: &[&str]) -> Result<String> {
         let mut cmd = Command::new("git");
-        cmd.arg("pull");
 
-        // Preserve colors in captured output so diff stats render correctly
+        // Force colored diff stats even when stdout is captured,
+        // so the output renders correctly when printed to the terminal.
         if styles::colors_enabled() {
-            cmd.arg("--color=always");
+            cmd.args(["-c", "color.diff=always"]);
         }
+
+        cmd.arg("pull");
 
         for arg in args {
             cmd.arg(arg);
