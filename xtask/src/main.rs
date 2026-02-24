@@ -52,13 +52,13 @@ const DAFT_VERBS: &[DaftVerbEntry] = &[
     },
     DaftVerbEntry {
         daft_name: "daft-go",
-        source_command: "git-worktree-checkout",
-        about_override: Some("Open an existing branch in a worktree"),
+        source_command: "git-worktree-checkout", // fallback only; dedicated GoArgs used via get_command_for_name
+        about_override: None,
     },
     DaftVerbEntry {
         daft_name: "daft-start",
-        source_command: "git-worktree-checkout",
-        about_override: Some("Create a new branch and worktree"),
+        source_command: "git-worktree-checkout", // fallback only; dedicated StartArgs used via get_command_for_name
+        about_override: None,
     },
     DaftVerbEntry {
         daft_name: "daft-carry",
@@ -139,6 +139,8 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "daft-release-notes" => Some(daft::commands::release_notes::Args::command()),
         "daft-remove" => Some(daft::commands::worktree_branch::RemoveArgs::command()),
         "daft-rename" => Some(daft::commands::worktree_branch::RenameArgs::command()),
+        "daft-go" => Some(daft::commands::checkout::GoArgs::command()),
+        "daft-start" => Some(daft::commands::checkout::StartArgs::command()),
         _ => None,
     }
 }

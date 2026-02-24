@@ -49,6 +49,8 @@ fn main() -> Result<()> {
         "git-sync" => commands::sync::run(),
 
         // Daft-style commands (via symlinks)
+        "daft-go" => commands::checkout::run_go(),
+        "daft-start" => commands::checkout::run_start(),
         "daft-remove" => commands::worktree_branch::run_remove(),
         "daft-rename" => commands::worktree_branch::run_rename(),
 
@@ -86,8 +88,8 @@ fn main() -> Result<()> {
                     // Daft verb aliases (short names)
                     "clone" => commands::clone::run(),
                     "init" => commands::init::run(),
-                    "go" => commands::checkout::run(),
-                    "start" => commands::checkout::run_create(),
+                    "go" => commands::checkout::run_go(),
+                    "start" => commands::checkout::run_start(),
                     "carry" => commands::carry::run(),
                     "update" => commands::fetch::run(),
                     "prune" => commands::prune::run(),

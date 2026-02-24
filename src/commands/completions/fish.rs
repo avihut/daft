@@ -9,6 +9,8 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
         "git-worktree-checkout"
             | "git-worktree-carry"
             | "git-worktree-fetch"
+            | "daft-go"
+            | "daft-start"
             | "daft-remove"
             | "daft-rename"
     );
@@ -170,7 +172,9 @@ complete -c daft -n '__fish_use_subcommand' -a 'remove' -d 'Delete branch and wo
 complete -c daft -n '__fish_use_subcommand' -a 'adopt' -d 'Convert repo to worktree layout'
 complete -c daft -n '__fish_use_subcommand' -a 'sync' -d 'Synchronize worktrees with remote'
 complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to traditional layout'
-complete -c daft -n '__fish_seen_subcommand_from go start carry update' -f -a "(daft __complete git-worktree-checkout '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from go' -f -a "(daft __complete daft-go '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from start' -f -a "(daft __complete daft-start '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from carry update' -f -a "(daft __complete git-worktree-checkout '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from rename' -f -a "(daft __complete daft-rename '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from multi-remote; and not __fish_seen_subcommand_from enable disable status set-default move' -f -a 'enable disable status set-default move'

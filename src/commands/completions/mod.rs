@@ -25,7 +25,8 @@ pub(super) enum CompletionTarget {
 /// Each entry is (list of verb names, underlying command name).
 /// Used by completion generators to offer flag completions for verb aliases.
 pub(super) const VERB_ALIAS_GROUPS: &[(&[&str], &str)] = &[
-    (&["go", "start"], "git-worktree-checkout"),
+    (&["go"], "daft-go"),
+    (&["start"], "daft-start"),
     (&["carry"], "git-worktree-carry"),
     (&["update"], "git-worktree-fetch"),
     (&["remove"], "daft-remove"),
@@ -43,6 +44,8 @@ pub(super) const COMMANDS: &[&str] = &[
     "git-worktree-fetch",
     "git-worktree-flow-adopt",
     "git-worktree-flow-eject",
+    "daft-go",
+    "daft-start",
     "daft-remove",
     "daft-rename",
     "git-sync",
@@ -59,6 +62,8 @@ pub(super) fn get_command_for_name(command_name: &str) -> Option<Command> {
         "git-worktree-fetch" => Some(crate::commands::fetch::Args::command()),
         "git-worktree-flow-adopt" => Some(crate::commands::flow_adopt::Args::command()),
         "git-worktree-flow-eject" => Some(crate::commands::flow_eject::Args::command()),
+        "daft-go" => Some(crate::commands::checkout::GoArgs::command()),
+        "daft-start" => Some(crate::commands::checkout::StartArgs::command()),
         "daft-remove" => Some(crate::commands::worktree_branch::RemoveArgs::command()),
         "daft-rename" => Some(crate::commands::worktree_branch::RenameArgs::command()),
         "git-sync" => Some(crate::commands::sync::Args::command()),

@@ -1,50 +1,43 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH daft-go 1  "daft-go 1.0.31" 
+.TH "daft go" 1  "daft go 1.0.31" 
 .SH NAME
-daft\-go \- Open an existing branch in a worktree
+daft go \- Open a worktree for an existing branch, or create one with \-b
 .SH SYNOPSIS
-\fBdaft\-go\fR [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
+\fBdaft go\fR [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
 .SH DESCRIPTION
 .PP
-Creates a new worktree for an existing local or remote branch. The worktree
-is placed at the project root level as a sibling to other worktrees, using
-the branch name as the directory name.
+Opens a worktree for an existing local or remote branch. The worktree is
+placed at the project root level as a sibling to other worktrees, using the
+branch name as the directory name.
 .PP
 If the branch exists only on the remote, a local tracking branch is created
 automatically. If the branch exists both locally and on the remote, the local
 branch is checked out and upstream tracking is configured.
 .PP
-With \-b, creates a new branch and a corresponding worktree in a single
-operation. The new branch is based on the current branch, or on <base\-branch>
-if specified. After creating the branch locally, it is pushed to the remote
-and upstream tracking is configured.
-.PP
-With \-\-start (or \-s), if the specified branch does not exist locally or on the
-remote, a new branch and worktree are created automatically, as if \*(Aqdaft start\*(Aq
-had been called. This can also be enabled permanently with the daft.go.autoStart
-git config option.
+If a worktree for the specified branch already exists, no new worktree is
+created; the working directory is changed to the existing worktree instead.
 .PP
 Use \*(Aq\-\*(Aq as the branch name to switch to the previous worktree, similar to
 \*(Aqcd \-\*(Aq. Repeated \*(Aqdaft go \-\*(Aq toggles between the two most recent worktrees.
-Cannot be combined with \-b/\-\-create\-branch.
 .PP
-This command can be run from anywhere within the repository. If a worktree
-for the specified branch already exists, no new worktree is created; the
-working directory is changed to the existing worktree instead.
+With \-b, creates a new branch and worktree in a single operation. The new
+branch is based on the current branch, or on <base\-branch> if specified.
+Prefer \*(Aqdaft start\*(Aq for creating new branches.
+.PP
+With \-s (\-\-start), if the specified branch does not exist locally or on the
+remote, a new branch and worktree are created automatically. This can also
+be enabled permanently with the daft.go.autoStart git config option.
 .PP
 Lifecycle hooks from .daft/hooks/ are executed if the repository is trusted.
-See git\-daft(1) for hook management.
+See daft\-hooks(1) for hook management.
 .SH OPTIONS
 .TP
 \fB\-b\fR, \fB\-\-create\-branch\fR
-Create a new branch instead of checking out an existing one
+Create a new branch (prefer \*(Aqdaft start\*(Aq instead)
 .TP
-\fB\-q\fR, \fB\-\-quiet\fR
-Operate quietly; suppress progress reporting
-.TP
-\fB\-v\fR, \fB\-\-verbose\fR
-Be verbose; show detailed progress
+\fB\-s\fR, \fB\-\-start\fR
+Create a new worktree if the branch does not exist
 .TP
 \fB\-c\fR, \fB\-\-carry\fR
 Apply uncommitted changes from the current worktree to the new one
@@ -61,8 +54,11 @@ Do not change directory to the new worktree
 \fB\-x\fR, \fB\-\-exec\fR \fI<EXEC>\fR
 Run a command in the worktree after setup completes (repeatable)
 .TP
-\fB\-s\fR, \fB\-\-start\fR
-Create a new worktree if the branch does not exist
+\fB\-q\fR, \fB\-\-quiet\fR
+Operate quietly; suppress progress reporting
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Be verbose; show detailed progress
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
@@ -71,9 +67,9 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 Print version
 .TP
 <\fIBRANCH_NAME\fR>
-Name of the branch to check out (or create with \-b); use \*(Aq\-\*(Aq for previous worktree
+Branch to open; use \*(Aq\-\*(Aq for previous worktree
 .TP
 [\fIBASE_BRANCH_NAME\fR]
-Branch to use as the base for the new branch (only with \-b); defaults to the current branch
+Base branch for \-b (defaults to current branch)
 .SH VERSION
 v1.0.31

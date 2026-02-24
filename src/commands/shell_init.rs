@@ -180,10 +180,12 @@ daft() {
             shift; __daft_wrapper git-worktree-clone "$@" ;;
         worktree-init|init)
             shift; __daft_wrapper git-worktree-init "$@" ;;
-        worktree-checkout|go)
+        worktree-checkout)
             shift; __daft_wrapper git-worktree-checkout "$@" ;;
+        go)
+            shift; __daft_wrapper daft-go "$@" ;;
         start)
-            shift; __daft_wrapper git-worktree-checkout -b "$@" ;;
+            shift; __daft_wrapper daft-start "$@" ;;
         worktree-carry|carry)
             shift; __daft_wrapper git-worktree-carry "$@" ;;
         worktree-prune|prune)
@@ -406,10 +408,12 @@ function daft --wraps daft
             __daft_wrapper git-worktree-clone $argv[2..-1]
         case worktree-init init
             __daft_wrapper git-worktree-init $argv[2..-1]
-        case worktree-checkout go
+        case worktree-checkout
             __daft_wrapper git-worktree-checkout $argv[2..-1]
+        case go
+            __daft_wrapper daft-go $argv[2..-1]
         case start
-            __daft_wrapper git-worktree-checkout -b $argv[2..-1]
+            __daft_wrapper daft-start $argv[2..-1]
         case worktree-carry carry
             __daft_wrapper git-worktree-carry $argv[2..-1]
         case worktree-prune prune
