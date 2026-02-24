@@ -273,6 +273,7 @@ export default defineConfig({
           {
             text: "Maintenance",
             items: [
+              { text: "sync", link: "/cli/daft-sync" },
               { text: "prune", link: "/cli/daft-prune" },
               { text: "update", link: "/cli/daft-update" },
               { text: "carry", link: "/cli/daft-carry" },
@@ -325,6 +326,7 @@ export default defineConfig({
           {
             text: "Maintenance",
             items: [
+              { text: "sync", link: "/cli/git-sync" },
               { text: "worktree-list", link: "/cli/git-worktree-list" },
               { text: "worktree-prune", link: "/cli/git-worktree-prune" },
               { text: "worktree-fetch", link: "/cli/git-worktree-fetch" },
