@@ -105,16 +105,16 @@ test_list_dirty_marker() {
     local output
     output=$(NO_COLOR=1 git-worktree-list 2>&1)
 
-    # develop should show the * dirty marker
-    if ! echo "$output" | grep "develop" | grep -q '\*'; then
-        log_error "Dirty worktree 'develop' should have * marker"
+    # develop should show -N for unstaged changes
+    if ! echo "$output" | grep "develop" | grep -q '\-[0-9]'; then
+        log_error "Dirty worktree 'develop' should have -N unstaged indicator"
         log_error "Output: $output"
         return 1
     fi
 
-    # main should NOT have the * dirty marker
-    if echo "$output" | grep "main" | grep -q '\*'; then
-        log_error "Clean worktree 'main' should not have * marker"
+    # main should NOT have change indicators
+    if echo "$output" | grep "main" | grep -qE '[+\-?][0-9]'; then
+        log_error "Clean worktree 'main' should not have change indicators"
         log_error "Output: $output"
         return 1
     fi
@@ -148,7 +148,7 @@ test_list_json() {
     fi
 
     # Check for expected JSON fields
-    local required_fields=("name" "path" "is_current" "ahead" "behind" "is_dirty" "last_commit_age" "last_commit_subject")
+    local required_fields=("name" "path" "is_current" "is_default_branch" "ahead" "behind" "staged" "unstaged" "untracked" "remote_ahead" "remote_behind" "last_commit_age" "last_commit_subject" "branch_age")
     for field in "${required_fields[@]}"; do
         if ! echo "$output" | grep -q "\"$field\""; then
             log_error "JSON output should contain field '$field'"
@@ -170,11 +170,11 @@ test_list_json() {
         return 1
     fi
 
-    # Verify develop shows as dirty
+    # Verify develop shows as dirty (unstaged > 0 since we modified a tracked file)
     local develop_block
     develop_block=$(echo "$output" | awk '/"name": "develop"/{found=1} found && /\}/{print; found=0} found{print}' RS='{' ORS='{')
-    if ! echo "$develop_block" | grep -q '"is_dirty": true'; then
-        log_error "JSON should show develop as dirty"
+    if ! echo "$develop_block" | grep -qE '"unstaged": [1-9]'; then
+        log_error "JSON should show develop with non-zero unstaged count"
         log_error "Output: $output"
         return 1
     fi
@@ -466,6 +466,237 @@ test_list_json_ahead_behind() {
     return 0
 }
 
+# Test that Age header appears in table output
+test_list_branch_age() {
+    local remote_repo=$(create_test_remote "test-repo-list-age" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-age"
+
+    # Run list from the main worktree
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1) || {
+        log_error "git-worktree-list failed"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # Verify the Age header appears (check all lines since stderr may precede header)
+    if ! echo "$output" | grep -q "Age"; then
+        log_error "List header should contain 'Age'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Branch age column header shown"
+    return 0
+}
+
+# Test that shorthand ages are used (no "ago" in output)
+test_list_shorthand_age() {
+    local remote_repo=$(create_test_remote "test-repo-list-shorthand" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-shorthand"
+
+    # Run list from the main worktree
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1) || {
+        log_error "git-worktree-list failed"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # Output should NOT contain verbose "ago" dates
+    if echo "$output" | grep -q " ago"; then
+        log_error "List output should use shorthand ages, not verbose dates with 'ago'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Shorthand ages used instead of verbose dates"
+    return 0
+}
+
+# Test that branch_age field exists in JSON output
+test_list_json_branch_age() {
+    local remote_repo=$(create_test_remote "test-repo-list-json-age" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-json-age"
+
+    # Run list with --json
+    cd main
+    local output
+    output=$(git-worktree-list --json 2>&1)
+
+    # Check for branch_age field
+    if ! echo "$output" | grep -q '"branch_age"'; then
+        log_error "JSON output should contain 'branch_age' field"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "JSON output contains branch_age field"
+    return 0
+}
+
+# Test that Head column shows uncommitted change count
+test_list_head_column() {
+    local remote_repo=$(create_test_remote "test-repo-list-head" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-head"
+
+    # Create a worktree and make changes
+    git-worktree-checkout develop || return 1
+    echo "dirty" >> develop/README.md
+
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1) || {
+        log_error "git-worktree-list failed"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # Verify the Head header appears
+    if ! echo "$output" | grep -q "Head"; then
+        log_error "List header should contain 'Head'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # develop should show -N for unstaged changes
+    if ! echo "$output" | grep "develop" | grep -q '\-[0-9]'; then
+        log_error "Dirty worktree should show -N in Head column"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Head column shows file status indicators"
+    return 0
+}
+
+# Test that Remote column shows ahead/behind vs upstream
+test_list_remote_column() {
+    local remote_repo=$(create_test_remote "test-repo-list-remote" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-remote"
+
+    # Create a worktree and make a local commit (ahead of remote)
+    git-worktree-checkout develop || return 1
+    cd develop
+    echo "local change" > local.txt
+    git add local.txt
+    git commit -m "Local commit" >/dev/null 2>&1
+    cd ..
+
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1) || {
+        log_error "git-worktree-list failed"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # Verify the Remote header appears
+    if ! echo "$output" | grep -q "Remote"; then
+        log_error "List header should contain 'Remote'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Remote column shown correctly"
+    return 0
+}
+
+# Test that path is shown relative to current directory
+test_list_relative_path() {
+    local remote_repo=$(create_test_remote "test-repo-list-relpath" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-relpath"
+
+    git-worktree-checkout develop || return 1
+
+    # Run from the main worktree — current should show "."
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1) || {
+        log_error "git-worktree-list failed"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # Current worktree path should be "." (relative to itself)
+    if ! echo "$output" | grep "main" | grep -q '\.'; then
+        log_error "Current worktree path should show '.'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # develop should show as a relative path (../develop)
+    if ! echo "$output" | grep "develop" | grep -q '\.\.'; then
+        log_error "Other worktree path should be relative (contain '..')"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Paths shown relative to current directory"
+    return 0
+}
+
+# Test JSON includes head_changes and remote_ahead/behind fields
+test_list_json_head_remote() {
+    local remote_repo=$(create_test_remote "test-repo-list-json-hr" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-json-hr"
+
+    cd main
+    local output
+    output=$(git-worktree-list --json 2>&1)
+
+    # Check for staged/unstaged/untracked fields
+    for field in "staged" "unstaged" "untracked"; do
+        if ! echo "$output" | grep -q "\"$field\""; then
+            log_error "JSON output should contain '$field' field"
+            log_error "Output: $output"
+            return 1
+        fi
+    done
+
+    # Check for remote_ahead and remote_behind fields
+    if ! echo "$output" | grep -q '"remote_ahead"'; then
+        log_error "JSON output should contain 'remote_ahead' field"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    if ! echo "$output" | grep -q '"remote_behind"'; then
+        log_error "JSON output should contain 'remote_behind' field"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Check for is_default_branch field
+    if ! echo "$output" | grep -q '"is_default_branch"'; then
+        log_error "JSON output should contain 'is_default_branch' field"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "JSON output contains head_changes and remote fields"
+    return 0
+}
+
 # Run all list tests
 run_list_tests() {
     log "Running git-worktree-list integration tests..."
@@ -483,6 +714,13 @@ run_list_tests() {
     run_test "list_commit_subject" "test_list_commit_subject"
     run_test "list_from_subdirectory" "test_list_from_subdirectory"
     run_test "list_json_ahead_behind" "test_list_json_ahead_behind"
+    run_test "list_branch_age" "test_list_branch_age"
+    run_test "list_shorthand_age" "test_list_shorthand_age"
+    run_test "list_json_branch_age" "test_list_json_branch_age"
+    run_test "list_head_column" "test_list_head_column"
+    run_test "list_remote_column" "test_list_remote_column"
+    run_test "list_relative_path" "test_list_relative_path"
+    run_test "list_json_head_remote" "test_list_json_head_remote"
 }
 
 # Main execution
