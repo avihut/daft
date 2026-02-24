@@ -1,0 +1,38 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH daft-list 1  "daft-list 1.0.31" 
+.SH NAME
+daft\-list \- List all worktrees with status information
+.SH SYNOPSIS
+\fBdaft\-list\fR [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+.SH DESCRIPTION
+.PP
+Lists all worktrees in the current project with enriched status information
+including ahead/behind counts relative to the base branch, dirty status,
+and last commit details.
+.PP
+Each worktree is shown with:
+  \- A `>` marker for the current worktree
+  \- Branch name (or "(detached)" for detached HEAD)
+  \- Relative path from the project root
+  \- Ahead/behind counts vs. the base branch (e.g. +3 \-1)
+  \- A `*` dirty marker if there are uncommitted changes
+  \- Relative age of the last commit
+  \- Subject line of the last commit (truncated to 40 chars)
+.PP
+Use \-\-json for machine\-readable output suitable for scripting.
+.SH OPTIONS
+.TP
+\fB\-\-json\fR
+Output in JSON format
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Be verbose; show detailed progress
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH VERSION
+v1.0.31
