@@ -85,12 +85,13 @@ pub fn run() -> Result<()> {
     let git_common_dir = get_git_common_dir()?;
     let base_branch = get_default_branch_local(&git_common_dir, "origin", settings.use_gitoxide)
         .unwrap_or_else(|_| "master".to_string());
-    let raw_path = get_current_worktree_path()?;
-    let current_path = raw_path.canonicalize().unwrap_or(raw_path);
+    let current_path = get_current_worktree_path()
+        .ok()
+        .and_then(|p| p.canonicalize().ok());
     let project_root = get_project_root()?;
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
-    let infos = collect_worktree_info(&git, &base_branch, &current_path)?;
+    let infos = collect_worktree_info(&git, &base_branch, current_path.as_deref())?;
 
     if args.json {
         return print_json(&infos, &project_root, &cwd);
