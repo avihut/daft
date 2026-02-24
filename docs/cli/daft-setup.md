@@ -73,7 +73,7 @@ Without a subcommand, shows the current shortcut installation status.
 
 | Style    | Shortcuts                                                             |
 | -------- | --------------------------------------------------------------------- |
-| `git`    | gwtclone, gwtinit, gwtco, gwtcb, gwtbd, gwtprune, gwtcarry, gwtfetch |
+| `git`    | gwtclone, gwtinit, gwtco, gwtcb, gwtbd, gwtls, gwtprune, gwtcarry, gwtfetch |
 | `shell`  | gwco, gwcob                                                          |
 | `legacy` | gclone, gcw, gcbw, gprune                                           |
 

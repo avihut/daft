@@ -77,9 +77,8 @@ pub fn run() -> Result<()> {
     let git_common_dir = get_git_common_dir()?;
     let base_branch = get_default_branch_local(&git_common_dir, "origin", settings.use_gitoxide)
         .unwrap_or_else(|_| "master".to_string());
-    let current_path = get_current_worktree_path()?
-        .canonicalize()
-        .unwrap_or_else(|_| get_current_worktree_path().unwrap_or_default());
+    let raw_path = get_current_worktree_path()?;
+    let current_path = raw_path.canonicalize().unwrap_or(raw_path);
     let project_root = get_project_root()?;
 
     let infos = collect_worktree_info(&git, &base_branch, &current_path)?;
