@@ -105,16 +105,16 @@ test_list_dirty_marker() {
     local output
     output=$(NO_COLOR=1 git-worktree-list 2>&1)
 
-    # develop should show the ~N head changes indicator
-    if ! echo "$output" | grep "develop" | grep -q '~[0-9]'; then
-        log_error "Dirty worktree 'develop' should have ~N changes indicator"
+    # develop should show -N for unstaged changes
+    if ! echo "$output" | grep "develop" | grep -q '\-[0-9]'; then
+        log_error "Dirty worktree 'develop' should have -N unstaged indicator"
         log_error "Output: $output"
         return 1
     fi
 
-    # main should NOT have the ~N indicator
-    if echo "$output" | grep "main" | grep -q '~[0-9]'; then
-        log_error "Clean worktree 'main' should not have ~N changes indicator"
+    # main should NOT have change indicators
+    if echo "$output" | grep "main" | grep -qE '[+\-?][0-9]'; then
+        log_error "Clean worktree 'main' should not have change indicators"
         log_error "Output: $output"
         return 1
     fi
@@ -148,7 +148,7 @@ test_list_json() {
     fi
 
     # Check for expected JSON fields
-    local required_fields=("name" "path" "is_current" "is_default_branch" "ahead" "behind" "head_changes" "remote_ahead" "remote_behind" "last_commit_age" "last_commit_subject" "branch_age")
+    local required_fields=("name" "path" "is_current" "is_default_branch" "ahead" "behind" "staged" "unstaged" "untracked" "remote_ahead" "remote_behind" "last_commit_age" "last_commit_subject" "branch_age")
     for field in "${required_fields[@]}"; do
         if ! echo "$output" | grep -q "\"$field\""; then
             log_error "JSON output should contain field '$field'"
@@ -170,11 +170,11 @@ test_list_json() {
         return 1
     fi
 
-    # Verify develop shows as dirty (head_changes > 0)
+    # Verify develop shows as dirty (unstaged > 0 since we modified a tracked file)
     local develop_block
     develop_block=$(echo "$output" | awk '/"name": "develop"/{found=1} found && /\}/{print; found=0} found{print}' RS='{' ORS='{')
-    if ! echo "$develop_block" | grep -qE '"head_changes": [1-9]'; then
-        log_error "JSON should show develop with non-zero head_changes"
+    if ! echo "$develop_block" | grep -qE '"unstaged": [1-9]'; then
+        log_error "JSON should show develop with non-zero unstaged count"
         log_error "Output: $output"
         return 1
     fi
@@ -572,14 +572,14 @@ test_list_head_column() {
         return 1
     fi
 
-    # develop should show ~N for uncommitted changes
-    if ! echo "$output" | grep "develop" | grep -q '~[0-9]'; then
-        log_error "Dirty worktree should show ~N in Head column"
+    # develop should show -N for unstaged changes
+    if ! echo "$output" | grep "develop" | grep -q '\-[0-9]'; then
+        log_error "Dirty worktree should show -N in Head column"
         log_error "Output: $output"
         return 1
     fi
 
-    log_success "Head column shows uncommitted change count"
+    log_success "Head column shows file status indicators"
     return 0
 }
 
@@ -664,12 +664,14 @@ test_list_json_head_remote() {
     local output
     output=$(git-worktree-list --json 2>&1)
 
-    # Check for head_changes field
-    if ! echo "$output" | grep -q '"head_changes"'; then
-        log_error "JSON output should contain 'head_changes' field"
-        log_error "Output: $output"
-        return 1
-    fi
+    # Check for staged/unstaged/untracked fields
+    for field in "staged" "unstaged" "untracked"; do
+        if ! echo "$output" | grep -q "\"$field\""; then
+            log_error "JSON output should contain '$field' field"
+            log_error "Output: $output"
+            return 1
+        fi
+    done
 
     # Check for remote_ahead and remote_behind fields
     if ! echo "$output" | grep -q '"remote_ahead"'; then

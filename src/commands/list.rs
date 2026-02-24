@@ -30,11 +30,11 @@ and the remote tracking branch, branch age, and last commit details.
 
 Each worktree is shown with:
   - A `>` marker for the current worktree
-  - Branch name, with `*` for the default branch (like git branch)
+  - Branch name, with `◉` for the default branch
   - Relative path from the current directory
   - Ahead/behind counts vs. the base branch (e.g. +3 -1)
-  - Count of uncommitted/untracked files (e.g. ~3)
-  - Ahead/behind counts vs. remote tracking branch (e.g. +1 -2)
+  - File status: +N staged, -N unstaged, ?N untracked
+  - Remote tracking status: ⇡N unpushed, ⇣N unpulled
   - Branch age since creation (e.g. 3d, 2w, 5mo)
   - Last commit: shorthand age + subject (e.g. 1h fix login bug)
 
@@ -60,9 +60,9 @@ struct TableRow {
     path: String,
     /// Ahead/behind base branch (e.g. "+3 -1").
     base: String,
-    /// Count of uncommitted changes (e.g. "~3") or empty.
+    /// Worktrunk-style status indicators (e.g. "+3 -2 ?1").
     head: String,
-    /// Ahead/behind remote tracking branch.
+    /// Ahead/behind remote tracking branch (e.g. "⇡1 ⇣2").
     remote: String,
     /// Branch age since creation (shorthand).
     branch_age: String,
@@ -124,7 +124,9 @@ fn print_json(
                 "is_default_branch": info.is_default_branch,
                 "ahead": info.ahead,
                 "behind": info.behind,
-                "head_changes": info.head_changes,
+                "staged": info.staged,
+                "unstaged": info.unstaged,
+                "untracked": info.untracked,
                 "remote_ahead": info.remote_ahead,
                 "remote_behind": info.remote_behind,
                 "last_commit_age": last_commit_age,
@@ -163,12 +165,12 @@ fn print_table(
                 " ".to_string()
             };
 
-            // Branch name with default branch indicator (*)
+            // Branch name with default branch indicator (◉)
             let name = if info.is_default_branch {
                 if use_color {
-                    format!("{} {}", info.name, styles::dim("*"))
+                    format!("{} {}", info.name, styles::dim("\u{25C9}"))
                 } else {
-                    format!("{} *", info.name)
+                    format!("{} \u{25C9}", info.name)
                 }
             } else {
                 info.name.clone()
@@ -178,19 +180,11 @@ fn print_table(
 
             let base = format_ahead_behind(info.ahead, info.behind, use_color);
 
-            // Head: count of uncommitted changes
-            let head = if info.head_changes > 0 {
-                let text = format!("~{}", info.head_changes);
-                if use_color {
-                    styles::yellow(&text)
-                } else {
-                    text
-                }
-            } else {
-                String::new()
-            };
+            // Head: worktrunk-style status indicators
+            let head = format_head_status(info.staged, info.unstaged, info.untracked, use_color);
 
-            let remote = format_ahead_behind(info.remote_ahead, info.remote_behind, use_color);
+            // Remote: ⇡/⇣ arrows for upstream ahead/behind
+            let remote = format_remote_status(info.remote_ahead, info.remote_behind, use_color);
 
             let branch_age = format_shorthand_age(info.branch_creation_timestamp, now, use_color);
 
@@ -298,6 +292,69 @@ fn format_ahead_behind(ahead: Option<usize>, behind: Option<usize>, use_color: b
     if let Some(b) = behind {
         if b > 0 {
             let text = format!("-{b}");
+            if use_color {
+                parts.push(styles::red(&text));
+            } else {
+                parts.push(text);
+            }
+        }
+    }
+
+    parts.join(" ")
+}
+
+/// Format head status using worktrunk-style indicators: `+` staged, `-` unstaged, `?` untracked.
+fn format_head_status(staged: usize, unstaged: usize, untracked: usize, use_color: bool) -> String {
+    let mut parts = Vec::new();
+
+    if staged > 0 {
+        let text = format!("+{staged}");
+        if use_color {
+            parts.push(styles::green(&text));
+        } else {
+            parts.push(text);
+        }
+    }
+
+    if unstaged > 0 {
+        let text = format!("-{unstaged}");
+        if use_color {
+            parts.push(styles::red(&text));
+        } else {
+            parts.push(text);
+        }
+    }
+
+    if untracked > 0 {
+        let text = format!("?{untracked}");
+        if use_color {
+            parts.push(styles::dim(&text));
+        } else {
+            parts.push(text);
+        }
+    }
+
+    parts.join(" ")
+}
+
+/// Format remote status using ⇡/⇣ arrows for upstream ahead/behind.
+fn format_remote_status(ahead: Option<usize>, behind: Option<usize>, use_color: bool) -> String {
+    let mut parts = Vec::new();
+
+    if let Some(a) = ahead {
+        if a > 0 {
+            let text = format!("\u{21E1}{a}");
+            if use_color {
+                parts.push(styles::green(&text));
+            } else {
+                parts.push(text);
+            }
+        }
+    }
+
+    if let Some(b) = behind {
+        if b > 0 {
+            let text = format!("\u{21E3}{b}");
             if use_color {
                 parts.push(styles::red(&text));
             } else {

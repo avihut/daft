@@ -13,11 +13,11 @@ and the remote tracking branch, branch age, and last commit details.
 .PP
 Each worktree is shown with:
   \- A `>` marker for the current worktree
-  \- Branch name, with `*` for the default branch (like git branch)
+  \- Branch name, with `◉` for the default branch
   \- Relative path from the current directory
   \- Ahead/behind counts vs. the base branch (e.g. +3 \-1)
-  \- Count of uncommitted/untracked files (e.g. ~3)
-  \- Ahead/behind counts vs. remote tracking branch (e.g. +1 \-2)
+  \- File status: +N staged, \-N unstaged, ?N untracked
+  \- Remote tracking status: ⇡N unpushed, ⇣N unpulled
   \- Branch age since creation (e.g. 3d, 2w, 5mo)
   \- Last commit: shorthand age + subject (e.g. 1h fix login bug)
 .PP

@@ -22,8 +22,12 @@ pub struct WorktreeInfo {
     pub ahead: Option<usize>,
     /// Commits behind the base branch (None if not computable).
     pub behind: Option<usize>,
-    /// Number of uncommitted/untracked changed files (0 = clean).
-    pub head_changes: usize,
+    /// Number of staged files.
+    pub staged: usize,
+    /// Number of unstaged (modified/deleted) tracked files.
+    pub unstaged: usize,
+    /// Number of untracked files.
+    pub untracked: usize,
     /// Commits ahead of the remote tracking branch (None if no upstream).
     pub remote_ahead: Option<usize>,
     /// Commits behind the remote tracking branch (None if no upstream).
@@ -195,8 +199,10 @@ fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) -> Option<i
     None
 }
 
-/// Count the number of changed (modified, staged, untracked) files in a worktree.
-fn count_changed_files(worktree_path: &Path) -> usize {
+/// Count staged, unstaged, and untracked files in a worktree.
+///
+/// Returns `(staged, unstaged, untracked)`.
+fn count_changed_files(worktree_path: &Path) -> (usize, usize, usize) {
     let output = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(worktree_path)
@@ -205,9 +211,30 @@ fn count_changed_files(worktree_path: &Path) -> usize {
     match output {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout.trim().lines().filter(|l| !l.is_empty()).count()
+            let mut staged = 0;
+            let mut unstaged = 0;
+            let mut untracked = 0;
+            for line in stdout.lines() {
+                if line.len() < 2 {
+                    continue;
+                }
+                let bytes = line.as_bytes();
+                let x = bytes[0]; // index (staged) status
+                let y = bytes[1]; // worktree (unstaged) status
+                if x == b'?' {
+                    untracked += 1;
+                } else {
+                    if x != b' ' && x != b'?' {
+                        staged += 1;
+                    }
+                    if y != b' ' && y != b'?' {
+                        unstaged += 1;
+                    }
+                }
+            }
+            (staged, unstaged, untracked)
         }
-        _ => 0,
+        _ => (0, 0, 0),
     }
 }
 
@@ -285,8 +312,8 @@ pub fn collect_worktree_info(
             (None, None)
         };
 
-        // Count of uncommitted/untracked changed files
-        let head_changes = count_changed_files(&entry.path);
+        // Count staged, unstaged, and untracked files
+        let (staged, unstaged, untracked) = count_changed_files(&entry.path);
 
         // Ahead/behind relative to upstream tracking branch
         let (remote_ahead, remote_behind) = if !entry.is_detached {
@@ -325,7 +352,9 @@ pub fn collect_worktree_info(
             is_default_branch,
             ahead,
             behind,
-            head_changes,
+            staged,
+            unstaged,
+            untracked,
             remote_ahead,
             remote_behind,
             last_commit_timestamp,
