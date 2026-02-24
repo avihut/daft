@@ -1,5 +1,6 @@
 use crate::{
     core::{worktree::flow_eject, CommandBridge},
+    git::should_show_gitoxide_notice,
     hooks::{HookExecutor, HooksConfig},
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -123,10 +124,18 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     let hooks_config = HooksConfig::default();
     let executor = HookExecutor::new(hooks_config)?;
 
+    if should_show_gitoxide_notice(settings.use_gitoxide) {
+        output.warning("[experimental] Using gitoxide backend for git operations");
+    }
+
+    if !params.dry_run {
+        output.start_spinner("Converting to traditional layout...");
+    }
     let result = {
         let mut bridge = CommandBridge::new(output, executor);
         flow_eject::execute(&params, &mut bridge)?
     };
+    output.finish_spinner();
 
     if result.dry_run {
         output.result(&format!(

@@ -9,7 +9,7 @@ use crate::{
         OutputSink,
     },
     get_project_root,
-    git::GitCommand,
+    git::{should_show_gitoxide_notice, GitCommand},
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -126,8 +126,16 @@ pub fn run() -> Result<()> {
         remote_name: wt_config.remote_name.clone(),
     };
 
-    let mut sink = OutputSink(&mut output);
-    let result = fetch::execute(&params, &git, &project_root, &mut sink)?;
+    if should_show_gitoxide_notice(settings.use_gitoxide) {
+        output.warning("[experimental] Using gitoxide backend for git operations");
+    }
+
+    output.start_spinner("Updating worktrees...");
+    let result = {
+        let mut sink = OutputSink(&mut output);
+        fetch::execute(&params, &git, &project_root, &mut sink)?
+    };
+    output.finish_spinner();
 
     render_fetch_result(&result, &mut output);
 

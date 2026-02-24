@@ -1,7 +1,7 @@
 use crate::{
     core::{worktree::carry, OutputSink},
     get_project_root,
-    git::GitCommand,
+    git::{should_show_gitoxide_notice, GitCommand},
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -74,8 +74,16 @@ pub fn run() -> Result<()> {
         copy: args.copy,
     };
 
-    let mut sink = OutputSink(&mut output);
-    let result = carry::execute(&params, &git, &project_root, &mut sink)?;
+    if should_show_gitoxide_notice(settings.use_gitoxide) {
+        output.warning("[experimental] Using gitoxide backend for git operations");
+    }
+
+    output.start_spinner("Carrying changes...");
+    let result = {
+        let mut sink = OutputSink(&mut output);
+        carry::execute(&params, &git, &project_root, &mut sink)?
+    };
+    output.finish_spinner();
 
     render_carry_result(&result, &mut output);
     output.cd_path(&result.cd_target);

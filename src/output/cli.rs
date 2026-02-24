@@ -6,8 +6,10 @@
 use super::{Output, OutputConfig};
 use crate::styles::{self, colors_enabled, colors_enabled_stderr};
 use crate::CD_FILE_ENV;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::env;
 use std::path::Path;
+use std::time::Duration;
 
 /// CLI output implementation that writes directly to stdout/stderr.
 ///
@@ -18,15 +20,18 @@ use std::path::Path;
 /// - `error()` → `eprintln!("error: {msg}")`
 /// - `progress()` → deprecated, delegates to `step()`
 /// - `divider()` → deprecated, no-op
-#[derive(Debug)]
 pub struct CliOutput {
     config: OutputConfig,
+    spinner: Option<ProgressBar>,
 }
 
 impl CliOutput {
     /// Create a new CLI output with the given configuration.
     pub fn new(config: OutputConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            spinner: None,
+        }
     }
 
     /// Create a CLI output with default (non-quiet, non-verbose) settings.
@@ -45,19 +50,41 @@ impl CliOutput {
     }
 }
 
+impl CliOutput {
+    /// Print a line to stdout, suspending any active spinner first.
+    fn stdout_line(&self, line: &str) {
+        if let Some(ref spinner) = self.spinner {
+            spinner.suspend(|| println!("{line}"));
+        } else {
+            println!("{line}");
+        }
+    }
+
+    /// Print a line to stderr, printing above any active spinner.
+    fn stderr_line(&self, line: &str) {
+        if let Some(ref spinner) = self.spinner {
+            // println() prints above the spinner and redraws it below,
+            // keeping indicatif's cursor tracking correct.
+            spinner.println(line);
+        } else {
+            eprintln!("{line}");
+        }
+    }
+}
+
 impl Output for CliOutput {
     fn info(&mut self, msg: &str) {
         if !self.config.quiet {
-            println!("{msg}");
+            self.stdout_line(msg);
         }
     }
 
     fn success(&mut self, msg: &str) {
         if !self.config.quiet {
             if colors_enabled() {
-                println!("{}{msg}{}", styles::GREEN, styles::RESET);
+                self.stdout_line(&format!("{}{msg}{}", styles::GREEN, styles::RESET));
             } else {
-                println!("{msg}");
+                self.stdout_line(msg);
             }
         }
     }
@@ -66,9 +93,13 @@ impl Output for CliOutput {
         // Warnings are always shown (not affected by quiet mode)
         // Git-like format: lowercase prefix
         if colors_enabled_stderr() {
-            eprintln!("{}warning:{} {msg}", styles::YELLOW, styles::RESET);
+            self.stderr_line(&format!(
+                "{}warning:{} {msg}",
+                styles::YELLOW,
+                styles::RESET
+            ));
         } else {
-            eprintln!("warning: {msg}");
+            self.stderr_line(&format!("warning: {msg}"));
         }
     }
 
@@ -76,29 +107,34 @@ impl Output for CliOutput {
         // Errors are always shown (not affected by quiet mode)
         // Git-like format: lowercase prefix
         if colors_enabled_stderr() {
-            eprintln!("{}error:{} {msg}", styles::RED, styles::RESET);
+            self.stderr_line(&format!("{}error:{} {msg}", styles::RED, styles::RESET));
         } else {
-            eprintln!("error: {msg}");
+            self.stderr_line(&format!("error: {msg}"));
         }
     }
 
     fn debug(&mut self, msg: &str) {
         if self.config.verbose {
             if colors_enabled() {
-                println!("{}debug: {msg}{}", styles::DIM, styles::RESET);
+                self.stdout_line(&format!("{}debug: {msg}{}", styles::DIM, styles::RESET));
             } else {
-                println!("debug: {msg}");
+                self.stdout_line(&format!("debug: {msg}"));
             }
         }
     }
 
     fn step(&mut self, msg: &str) {
+        // If a spinner is active, update its message text
+        if let Some(ref spinner) = self.spinner {
+            spinner.set_message(msg.to_string());
+            return;
+        }
         // Steps are only shown in verbose mode
         if self.config.verbose && !self.config.quiet {
             if colors_enabled() {
-                println!("{}{msg}{}", styles::DIM, styles::RESET);
+                self.stdout_line(&format!("{}{msg}{}", styles::DIM, styles::RESET));
             } else {
-                println!("{msg}");
+                self.stdout_line(msg);
             }
         }
     }
@@ -106,9 +142,9 @@ impl Output for CliOutput {
     fn result(&mut self, msg: &str) {
         if !self.config.quiet {
             if colors_enabled() {
-                println!("{}{msg}{}", styles::BOLD, styles::RESET);
+                self.stdout_line(&format!("{}{msg}{}", styles::BOLD, styles::RESET));
             } else {
-                println!("{msg}");
+                self.stdout_line(msg);
             }
         }
     }
@@ -127,16 +163,20 @@ impl Output for CliOutput {
     fn detail(&mut self, key: &str, value: &str) {
         if !self.config.quiet {
             if colors_enabled() {
-                println!("  {}{key}:{} {value}", styles::BOLD, styles::RESET);
+                self.stdout_line(&format!(
+                    "  {}{key}:{} {value}",
+                    styles::BOLD,
+                    styles::RESET
+                ));
             } else {
-                println!("  {key}: {value}");
+                self.stdout_line(&format!("  {key}: {value}"));
             }
         }
     }
 
     fn list_item(&mut self, item: &str) {
         if !self.config.quiet {
-            println!(" - {item}");
+            self.stdout_line(&format!(" - {item}"));
         }
     }
 
@@ -148,10 +188,52 @@ impl Output for CliOutput {
     fn operation_end(&mut self, operation: &str, success: bool) {
         if self.config.verbose && !self.config.quiet {
             if success {
-                println!("{operation} completed");
+                self.stdout_line(&format!("{operation} completed"));
             } else {
-                eprintln!("{operation} failed");
+                self.stderr_line(&format!("{operation} failed"));
             }
+        }
+    }
+
+    fn start_spinner(&mut self, msg: &str) {
+        if self.config.quiet {
+            return;
+        }
+        if cfg!(test) || env::var("DAFT_TESTING").is_ok() {
+            return;
+        }
+        if !colors_enabled_stderr() {
+            // Non-TTY stderr: skip spinner
+            return;
+        }
+
+        let style = ProgressStyle::with_template("{spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_chars(
+                "\u{2807}\u{2819}\u{2839}\u{2838}\u{283c}\u{2834}\u{2826}\u{2827}\u{2807}\u{280f}",
+            );
+
+        // ProgressBar::new_spinner() defaults to ProgressDrawTarget::stderr().
+        // Important: do NOT call set_draw_target() after creation, as that
+        // replaces the target with a fresh instance that has lost track of
+        // any lines already drawn, causing finish_and_clear() to fail.
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(style);
+        spinner.set_message(msg.to_string());
+        spinner.enable_steady_tick(Duration::from_millis(80));
+
+        self.spinner = Some(spinner);
+    }
+
+    fn finish_spinner(&mut self) {
+        if let Some(spinner) = self.spinner.take() {
+            spinner.finish_and_clear();
+            // Belt-and-suspenders: ensure the spinner line is fully erased.
+            // In some edge cases (e.g., interleaved stdout/stderr writes),
+            // finish_and_clear() may not fully clear the line.
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(b"\x1b[2K\r");
+            let _ = std::io::stderr().flush();
         }
     }
 
@@ -159,7 +241,9 @@ impl Output for CliOutput {
         if self.config.autocd {
             if let Ok(cd_file) = env::var(CD_FILE_ENV) {
                 if let Err(e) = std::fs::write(&cd_file, path.display().to_string()) {
-                    eprintln!("warning: failed to write cd path to {cd_file}: {e}");
+                    self.stderr_line(&format!(
+                        "warning: failed to write cd path to {cd_file}: {e}"
+                    ));
                 }
             }
         }
@@ -167,7 +251,11 @@ impl Output for CliOutput {
 
     fn raw(&mut self, content: &str) {
         // Raw output is not affected by quiet mode - it's explicit content
-        print!("{content}");
+        if let Some(ref spinner) = self.spinner {
+            spinner.suspend(|| print!("{content}"));
+        } else {
+            print!("{content}");
+        }
     }
 
     fn is_quiet(&self) -> bool {
@@ -176,6 +264,12 @@ impl Output for CliOutput {
 
     fn is_verbose(&self) -> bool {
         self.config.verbose
+    }
+}
+
+impl Drop for CliOutput {
+    fn drop(&mut self) {
+        self.finish_spinner();
     }
 }
 

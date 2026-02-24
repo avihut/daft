@@ -1,7 +1,7 @@
 use crate::{
     check_dependencies,
     core::{worktree::init, OutputSink},
-    git::GitCommand,
+    git::{should_show_gitoxide_notice, GitCommand},
     hints::maybe_show_shell_hint,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -124,8 +124,16 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
         multi_remote_default: settings.multi_remote_default.clone(),
     };
 
-    let mut sink = OutputSink(output);
-    let result = init::execute(&params, &git, &mut sink)?;
+    if should_show_gitoxide_notice(settings.use_gitoxide) {
+        output.warning("[experimental] Using gitoxide backend for git operations");
+    }
+
+    output.start_spinner("Initializing repository...");
+    let result = {
+        let mut sink = OutputSink(output);
+        init::execute(&params, &git, &mut sink)?
+    };
+    output.finish_spinner();
 
     render_init_result(&result, output);
 

@@ -1,5 +1,6 @@
 use crate::{
     core::{worktree::branch_delete, CommandBridge},
+    git::should_show_gitoxide_notice,
     hooks::{HookExecutor, HooksConfig},
     is_git_repository,
     logging::init_logging,
@@ -85,10 +86,16 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
     let hooks_config = HooksConfig::default();
     let executor = HookExecutor::new(hooks_config)?;
 
+    if should_show_gitoxide_notice(settings.use_gitoxide) {
+        output.warning("[experimental] Using gitoxide backend for git operations");
+    }
+
+    output.start_spinner("Deleting branches...");
     let result = {
         let mut bridge = CommandBridge::new(output, executor);
         branch_delete::execute(&params, &mut bridge)?
     };
+    output.finish_spinner();
 
     // Handle validation errors
     if !result.validation_errors.is_empty() {
