@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.32](https://github.com/avihut/daft/compare/v1.0.31...v1.0.32) - 2026-02-24
+
+### Bug Fixes
+
+- *(docs)* build issue and missing docs
+- *(release-notes)* add PR links to older changelog entries
+- *(release-notes)* improve link rendering and skip empty sections ([#260](https://github.com/avihut/daft/pull/260))
+- *(hooks)* resolve hooks not executing on first run after upgrade ([#259](https://github.com/avihut/daft/pull/259))
+
+### Features
+
+- *(list)* enrich daft list with status indicators, branch age, and relative paths ([#266](https://github.com/avihut/daft/pull/266))
+- *(list)* add daft list / git worktree-list command ([#264](https://github.com/avihut/daft/pull/264))
+- *(sync)* add daft sync / git sync command ([#263](https://github.com/avihut/daft/pull/263))
+- add `daft rename` / `git worktree-rename` command ([#256](https://github.com/avihut/daft/pull/256))
+- *(go)* add `daft go -` to toggle between previous worktrees ([#262](https://github.com/avihut/daft/pull/262))
+- *(update)* rename daft fetch to daft update with refspec support ([#261](https://github.com/avihut/daft/pull/261))
+- *(go)* auto-start worktrees and improved branch-not-found errors ([#257](https://github.com/avihut/daft/pull/257))
+
+### Refactoring
+
+- *(cli)* separate daft go/start from git-worktree-checkout ([#265](https://github.com/avihut/daft/pull/265))
+
 ## [1.0.31](https://github.com/avihut/daft/compare/v1.0.30...v1.0.31) - 2026-02-22
 
 ### Bug Fixes
