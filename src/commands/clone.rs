@@ -1,6 +1,7 @@
 use crate::{
     check_dependencies,
     core::{worktree::clone, OutputSink},
+    git::should_show_gitoxide_notice,
     hints::maybe_show_shell_hint,
     hooks::{HookContext, HookExecutor, HookType, HooksConfig, TrustLevel},
     logging::init_logging,
@@ -151,10 +152,16 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         use_gitoxide: settings.use_gitoxide,
     };
 
+    if should_show_gitoxide_notice(settings.use_gitoxide) {
+        output.warning("[experimental] Using gitoxide backend for git operations");
+    }
+
+    output.start_spinner("Cloning repository...");
     let result = {
         let mut sink = OutputSink(output);
         clone::execute(&params, &mut sink)?
     };
+    output.finish_spinner();
 
     render_clone_result(&result, output);
 

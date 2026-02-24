@@ -12,6 +12,19 @@ mod worktree;
 
 static GITOXIDE_NOTICE: Once = Once::new();
 
+/// Returns true (once per process) if the gitoxide experimental notice should be shown.
+/// Safe to call multiple times; only the first call returns true.
+pub fn should_show_gitoxide_notice(use_gitoxide: bool) -> bool {
+    if use_gitoxide {
+        let mut fired = false;
+        GITOXIDE_NOTICE.call_once(|| {
+            fired = true;
+        });
+        return fired;
+    }
+    false
+}
+
 pub struct GitCommand {
     pub(crate) quiet: bool,
     pub(crate) use_gitoxide: bool,
@@ -29,12 +42,12 @@ impl GitCommand {
 
     pub fn with_gitoxide(mut self, enabled: bool) -> Self {
         self.use_gitoxide = enabled;
-        if enabled {
-            GITOXIDE_NOTICE.call_once(|| {
-                eprintln!("[experimental] Using gitoxide backend for git operations");
-            });
-        }
         self
+    }
+
+    /// Returns true (once per process) if the gitoxide notice should be shown.
+    pub fn take_gitoxide_notice(&self) -> bool {
+        should_show_gitoxide_notice(self.use_gitoxide)
     }
 
     /// Lazily discover and open the git repository via gitoxide.

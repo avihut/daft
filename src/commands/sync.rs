@@ -9,7 +9,7 @@ use crate::{
         CommandBridge, OutputSink,
     },
     get_project_root,
-    git::GitCommand,
+    git::{should_show_gitoxide_notice, GitCommand},
     hooks::{HookExecutor, HooksConfig},
     is_git_repository,
     logging::init_logging,
@@ -74,6 +74,10 @@ pub fn run() -> Result<()> {
     let config = OutputConfig::with_autocd(false, args.verbose, settings.autocd);
     let mut output = CliOutput::new(config);
 
+    if should_show_gitoxide_notice(settings.use_gitoxide) {
+        output.warning("[experimental] Using gitoxide backend for git operations");
+    }
+
     // Phase 1: Prune stale branches and worktrees
     let prune_result = run_prune_phase(&mut output, &settings, args.force)?;
 
@@ -116,10 +120,12 @@ fn run_prune_phase(
     let hooks_config = HooksConfig::default();
     let executor = HookExecutor::new(hooks_config)?;
 
+    output.start_spinner("Pruning stale branches...");
     let result = {
         let mut bridge = CommandBridge::new(output, executor);
         prune::execute(&params, &mut bridge)?
     };
+    output.finish_spinner();
 
     if result.nothing_to_prune {
         return Ok(result);
@@ -191,8 +197,12 @@ fn run_update_phase(output: &mut dyn Output, settings: &DaftSettings, force: boo
         remote_name: wt_config.remote_name.clone(),
     };
 
-    let mut sink = OutputSink(output);
-    let result = fetch::execute(&params, &git, &project_root, &mut sink)?;
+    output.start_spinner("Updating worktrees...");
+    let result = {
+        let mut sink = OutputSink(output);
+        fetch::execute(&params, &git, &project_root, &mut sink)?
+    };
+    output.finish_spinner();
 
     render_fetch_result(&result, output);
 
@@ -356,8 +366,12 @@ fn run_rebase_phase(
         quiet: output.is_quiet(),
     };
 
-    let mut sink = OutputSink(output);
-    let result = rebase::execute(&params, &git, &project_root, &mut sink)?;
+    output.start_spinner("Rebasing worktrees...");
+    let result = {
+        let mut sink = OutputSink(output);
+        rebase::execute(&params, &git, &project_root, &mut sink)?
+    };
+    output.finish_spinner();
 
     render_rebase_result(&result, output);
 

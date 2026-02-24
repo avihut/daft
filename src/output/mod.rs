@@ -154,6 +154,19 @@ pub trait Output {
     fn operation_end(&mut self, operation: &str, success: bool);
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Spinner
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Start a spinner with the given message.
+    /// While active, `step()` updates the spinner text instead of printing.
+    /// No-op in quiet mode, non-TTY, or when `DAFT_TESTING` is set.
+    fn start_spinner(&mut self, msg: &str);
+
+    /// Stop and clear the active spinner.
+    /// Called explicitly before printing results, and also on `Drop` as safety net.
+    fn finish_spinner(&mut self);
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Special Output
     // ─────────────────────────────────────────────────────────────────────────
 

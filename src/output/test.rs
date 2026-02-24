@@ -40,6 +40,10 @@ pub enum OutputEntry {
     CdPath(PathBuf),
     /// Raw output
     Raw(String),
+    /// Spinner started with message
+    SpinnerStart(String),
+    /// Spinner finished
+    SpinnerFinish,
 }
 
 /// Test output implementation that captures all output for assertions.
@@ -376,6 +380,15 @@ impl Output for TestOutput {
 
     fn raw(&mut self, content: &str) {
         self.entries.push(OutputEntry::Raw(content.to_string()));
+    }
+
+    fn start_spinner(&mut self, msg: &str) {
+        self.entries
+            .push(OutputEntry::SpinnerStart(msg.to_string()));
+    }
+
+    fn finish_spinner(&mut self) {
+        self.entries.push(OutputEntry::SpinnerFinish);
     }
 
     fn is_quiet(&self) -> bool {

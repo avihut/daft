@@ -1,5 +1,6 @@
 use crate::{
     core::{worktree::prune, CommandBridge},
+    git::should_show_gitoxide_notice,
     hooks::{HookExecutor, HooksConfig},
     is_git_repository,
     logging::init_logging,
@@ -75,10 +76,16 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings, force: bool) -> R
     let hooks_config = HooksConfig::default();
     let executor = HookExecutor::new(hooks_config)?;
 
+    if should_show_gitoxide_notice(settings.use_gitoxide) {
+        output.warning("[experimental] Using gitoxide backend for git operations");
+    }
+
+    output.start_spinner("Pruning stale branches...");
     let result = {
         let mut bridge = CommandBridge::new(output, executor);
         prune::execute(&params, &mut bridge)?
     };
+    output.finish_spinner();
 
     if result.nothing_to_prune {
         return Ok(());
