@@ -88,7 +88,7 @@ pub struct Shortcut {
 /// that resolve the default branch dynamically. They are not included here
 /// because they cannot be implemented as simple symlink aliases.
 pub const SHORTCUTS: &[Shortcut] = &[
-    // Git style (9 shortcuts)
+    // Git style (10 shortcuts)
     Shortcut {
         alias: "gwtclone",
         command: "git-worktree-clone",
@@ -132,6 +132,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut {
         alias: "gwtsync",
         command: "git-sync",
+        style: ShortcutStyle::Git,
+    },
+    Shortcut {
+        alias: "gwtls",
+        command: "git-worktree-list",
         style: ShortcutStyle::Git,
     },
     // Shell style (2 shortcuts)
@@ -241,6 +246,7 @@ mod tests {
             "git-worktree-clone",
             "git-worktree-init",
             "git-worktree-checkout",
+            "git-worktree-list",
             "git-worktree-prune",
             "git-worktree-carry",
             "git-worktree-branch",
@@ -271,7 +277,7 @@ mod tests {
     #[test]
     fn test_shortcuts_for_style() {
         let git_shortcuts = shortcuts_for_style(ShortcutStyle::Git);
-        assert_eq!(git_shortcuts.len(), 9);
+        assert_eq!(git_shortcuts.len(), 10);
 
         let shell_shortcuts = shortcuts_for_style(ShortcutStyle::Shell);
         assert_eq!(shell_shortcuts.len(), 2);
