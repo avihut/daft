@@ -177,8 +177,18 @@ fn print_table(
         })
         .collect();
 
-    // Build table without header row using Builder
     let mut builder = Builder::new();
+    let header: Vec<String> = ["", "Branch", "Path", "Base", "", "Age", "Last Commit"]
+        .iter()
+        .map(|h| {
+            if use_color && !h.is_empty() {
+                styles::dim(h)
+            } else {
+                h.to_string()
+            }
+        })
+        .collect();
+    builder.push_record(header);
     for row in &rows {
         builder.push_record([
             &row.current,
