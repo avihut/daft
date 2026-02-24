@@ -270,7 +270,7 @@ fn get_upstream_ahead_behind(branch: &str, worktree_path: &Path) -> Option<(usiz
 pub fn collect_worktree_info(
     git: &GitCommand,
     base_branch: &str,
-    current_worktree_path: &Path,
+    current_worktree_path: Option<&Path>,
 ) -> Result<Vec<WorktreeInfo>> {
     let porcelain_output = git
         .worktree_list_porcelain()
@@ -296,7 +296,7 @@ pub fn collect_worktree_info(
             .path
             .canonicalize()
             .unwrap_or_else(|_| entry.path.clone());
-        let is_current = canonical_entry == current_worktree_path;
+        let is_current = current_worktree_path == Some(canonical_entry.as_path());
 
         // Ahead/behind relative to base branch
         let (ahead, behind) = if !entry.is_detached {
