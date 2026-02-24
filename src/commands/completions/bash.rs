@@ -9,6 +9,8 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
         "git-worktree-checkout"
             | "git-worktree-carry"
             | "git-worktree-fetch"
+            | "daft-go"
+            | "daft-start"
             | "daft-remove"
             | "daft-rename"
     );
@@ -132,10 +134,16 @@ _daft() {
     # verb aliases: delegate to underlying command completions
     if [[ $cword -ge 2 ]]; then
         case "${words[1]}" in
-            go|start)
-                COMP_WORDS=("git-worktree-checkout" "${COMP_WORDS[@]:2}")
+            go)
+                COMP_WORDS=("daft-go" "${COMP_WORDS[@]:2}")
                 COMP_CWORD=$((COMP_CWORD - 1))
-                _git_worktree_checkout
+                _daft_go
+                return 0
+                ;;
+            start)
+                COMP_WORDS=("daft-start" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _daft_start
                 return 0
                 ;;
             carry)

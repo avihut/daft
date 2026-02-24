@@ -9,6 +9,8 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         "git-worktree-checkout"
             | "git-worktree-carry"
             | "git-worktree-fetch"
+            | "daft-go"
+            | "daft-start"
             | "daft-remove"
             | "daft-rename"
     );
@@ -145,10 +147,16 @@ _daft() {
     # verb aliases: delegate to underlying command completions
     if (( CURRENT >= 3 )); then
         case "$words[2]" in
-            go|start)
-                words=("git-worktree-checkout" "${(@)words[3,-1]}")
+            go)
+                words=("daft-go" "${(@)words[3,-1]}")
                 CURRENT=$((CURRENT - 1))
-                __git_worktree_checkout_impl
+                __daft_go_impl
+                return
+                ;;
+            start)
+                words=("daft-start" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __daft_start_impl
                 return
                 ;;
             carry)

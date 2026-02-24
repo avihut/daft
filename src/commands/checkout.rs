@@ -111,18 +111,207 @@ pub struct Args {
     start: bool,
 }
 
-/// Entry point for `git-worktree-checkout` / `daft go`.
+/// Daft-style args for `daft go`. Separate from `Args` so that `-h`/`--help`
+/// shows only the flags relevant to navigating worktrees, with tailored about text.
+#[derive(Parser)]
+#[command(name = "daft go")]
+#[command(version = crate::VERSION)]
+#[command(about = "Open a worktree for an existing branch, or create one with -b")]
+#[command(long_about = r#"
+Opens a worktree for an existing local or remote branch. The worktree is
+placed at the project root level as a sibling to other worktrees, using the
+branch name as the directory name.
+
+If the branch exists only on the remote, a local tracking branch is created
+automatically. If the branch exists both locally and on the remote, the local
+branch is checked out and upstream tracking is configured.
+
+If a worktree for the specified branch already exists, no new worktree is
+created; the working directory is changed to the existing worktree instead.
+
+Use '-' as the branch name to switch to the previous worktree, similar to
+'cd -'. Repeated 'daft go -' toggles between the two most recent worktrees.
+
+With -b, creates a new branch and worktree in a single operation. The new
+branch is based on the current branch, or on <base-branch> if specified.
+Prefer 'daft start' for creating new branches.
+
+With -s (--start), if the specified branch does not exist locally or on the
+remote, a new branch and worktree are created automatically. This can also
+be enabled permanently with the daft.go.autoStart git config option.
+
+Lifecycle hooks from .daft/hooks/ are executed if the repository is trusted.
+See daft-hooks(1) for hook management.
+"#)]
+pub struct GoArgs {
+    #[arg(
+        help = "Branch to open; use '-' for previous worktree",
+        allow_hyphen_values = true
+    )]
+    branch_name: String,
+
+    #[arg(
+        help = "Base branch for -b (defaults to current branch)",
+        requires = "create_branch"
+    )]
+    base_branch_name: Option<String>,
+
+    #[arg(
+        short = 'b',
+        long = "create-branch",
+        help = "Create a new branch (prefer 'daft start' instead)"
+    )]
+    create_branch: bool,
+
+    #[arg(
+        short = 's',
+        long = "start",
+        help = "Create a new worktree if the branch does not exist"
+    )]
+    start: bool,
+
+    #[arg(
+        short = 'c',
+        long = "carry",
+        help = "Apply uncommitted changes from the current worktree to the new one"
+    )]
+    carry: bool,
+
+    #[arg(long, help = "Do not carry uncommitted changes")]
+    no_carry: bool,
+
+    #[arg(
+        short = 'r',
+        long = "remote",
+        help = "Remote for worktree organization (multi-remote mode)"
+    )]
+    remote: Option<String>,
+
+    #[arg(long, help = "Do not change directory to the new worktree")]
+    no_cd: bool,
+
+    #[arg(
+        short = 'x',
+        long = "exec",
+        help = "Run a command in the worktree after setup completes (repeatable)"
+    )]
+    exec: Vec<String>,
+
+    #[arg(short, long, help = "Operate quietly; suppress progress reporting")]
+    quiet: bool,
+
+    #[arg(short, long, help = "Be verbose; show detailed progress")]
+    verbose: bool,
+}
+
+/// Daft-style args for `daft start`. Separate from `Args` so that `-h`/`--help`
+/// shows only the flags relevant to creating new branches, without `-b` or `--start`.
+#[derive(Parser)]
+#[command(name = "daft start")]
+#[command(version = crate::VERSION)]
+#[command(about = "Create a new branch and worktree")]
+#[command(long_about = r#"
+Creates a new branch and a corresponding worktree in a single operation. The
+worktree is placed at the project root level as a sibling to other worktrees,
+using the branch name as the directory name.
+
+The new branch is based on the current branch, or on <base-branch> if
+specified. After creating the branch locally, it is pushed to the remote and
+upstream tracking is configured (unless disabled via daft.checkoutBranch.push).
+
+This command can be run from anywhere within the repository.
+
+Lifecycle hooks from .daft/hooks/ are executed if the repository is trusted.
+See daft-hooks(1) for hook management.
+"#)]
+pub struct StartArgs {
+    #[arg(help = "Name for the new branch")]
+    new_branch_name: String,
+
+    #[arg(help = "Branch to use as the base; defaults to the current branch")]
+    base_branch_name: Option<String>,
+
+    #[arg(
+        short = 'c',
+        long = "carry",
+        help = "Apply uncommitted changes from the current worktree to the new one"
+    )]
+    carry: bool,
+
+    #[arg(long, help = "Do not carry uncommitted changes")]
+    no_carry: bool,
+
+    #[arg(
+        short = 'r',
+        long = "remote",
+        help = "Remote for worktree organization (multi-remote mode)"
+    )]
+    remote: Option<String>,
+
+    #[arg(long, help = "Do not change directory to the new worktree")]
+    no_cd: bool,
+
+    #[arg(
+        short = 'x',
+        long = "exec",
+        help = "Run a command in the worktree after setup completes (repeatable)"
+    )]
+    exec: Vec<String>,
+
+    #[arg(short, long, help = "Operate quietly; suppress progress reporting")]
+    quiet: bool,
+
+    #[arg(short, long, help = "Be verbose; show detailed progress")]
+    verbose: bool,
+}
+
+/// Entry point for `git-worktree-checkout`.
 pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-checkout"));
     run_with_args(args)
 }
 
-/// Entry point for `daft start` — injects `-b` before clap parsing.
-pub fn run_create() -> Result<()> {
-    let mut raw = crate::get_clap_args("git-worktree-checkout");
-    // Insert `-b` right after the command name so clap sees it
-    raw.insert(1, "-b".to_string());
-    let args = Args::parse_from(raw);
+/// Entry point for `daft go`.
+pub fn run_go() -> Result<()> {
+    let mut raw = crate::get_clap_args("daft-go");
+    raw[0] = "daft go".to_string();
+    let go_args = GoArgs::parse_from(raw);
+
+    let args = Args {
+        branch_name: go_args.branch_name,
+        base_branch_name: go_args.base_branch_name,
+        create_branch: go_args.create_branch,
+        start: go_args.start,
+        carry: go_args.carry,
+        no_carry: go_args.no_carry,
+        remote: go_args.remote,
+        no_cd: go_args.no_cd,
+        exec: go_args.exec,
+        quiet: go_args.quiet,
+        verbose: go_args.verbose,
+    };
+    run_with_args(args)
+}
+
+/// Entry point for `daft start`.
+pub fn run_start() -> Result<()> {
+    let mut raw = crate::get_clap_args("daft-start");
+    raw[0] = "daft start".to_string();
+    let start_args = StartArgs::parse_from(raw);
+
+    let args = Args {
+        branch_name: start_args.new_branch_name,
+        base_branch_name: start_args.base_branch_name,
+        create_branch: true,
+        start: false,
+        carry: start_args.carry,
+        no_carry: start_args.no_carry,
+        remote: start_args.remote,
+        no_cd: start_args.no_cd,
+        exec: start_args.exec,
+        quiet: start_args.quiet,
+        verbose: start_args.verbose,
+    };
     run_with_args(args)
 }
 

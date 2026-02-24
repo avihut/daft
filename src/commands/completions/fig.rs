@@ -134,7 +134,13 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
 
     let has_branches = matches!(
         command_name,
-        "git-worktree-checkout" | "git-worktree-carry" | "git-worktree-fetch"
+        "git-worktree-checkout"
+            | "git-worktree-carry"
+            | "git-worktree-fetch"
+            | "daft-go"
+            | "daft-start"
+            | "daft-remove"
+            | "daft-rename"
     );
 
     let about = cmd.get_about().map(|a| a.to_string());

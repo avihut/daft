@@ -79,6 +79,12 @@ fn complete(command: &str, position: usize, word: &str, verbose: bool) -> Result
         // git-worktree-branch: complete existing branch names for deletion
         ("git-worktree-branch", _) => complete_existing_branches(word, verbose),
 
+        // daft-go: complete existing branch names
+        ("daft-go", 1) => complete_existing_branches(word, verbose),
+
+        // daft-start: no dynamic completion for new branch names
+        ("daft-start", _) => Ok(vec![]),
+
         // daft-remove: complete existing branch names for deletion
         ("daft-remove", _) => complete_existing_branches(word, verbose),
 
