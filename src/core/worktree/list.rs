@@ -22,10 +22,12 @@ pub struct WorktreeInfo {
     pub behind: Option<usize>,
     /// Whether the worktree has uncommitted or untracked changes.
     pub is_dirty: bool,
-    /// Human-readable relative age of the last commit (e.g. "3 days ago").
-    pub last_commit_age: String,
+    /// Unix timestamp of the last commit (None if unavailable).
+    pub last_commit_timestamp: Option<i64>,
     /// Subject line of the last commit.
     pub last_commit_subject: String,
+    /// Unix timestamp of branch creation (None for detached HEAD or if unavailable).
+    pub branch_creation_timestamp: Option<i64>,
 }
 
 /// Raw entry parsed from `git worktree list --porcelain`.
@@ -121,12 +123,12 @@ fn get_ahead_behind(
     }
 }
 
-/// Get the last commit's relative age and subject for a worktree.
+/// Get the last commit's Unix timestamp and subject for a worktree.
 ///
-/// Returns `(age, subject)` where age is something like "3 days ago".
-fn get_last_commit_info(worktree_path: &Path) -> (String, String) {
+/// Returns `(timestamp, subject)` where timestamp is seconds since epoch.
+fn get_last_commit_info(worktree_path: &Path) -> (Option<i64>, String) {
     let output = Command::new("git")
-        .args(["log", "-1", "--format=%cr\x1f%s"])
+        .args(["log", "-1", "--format=%ct\x1f%s"])
         .current_dir(worktree_path)
         .output();
 
@@ -134,14 +136,57 @@ fn get_last_commit_info(worktree_path: &Path) -> (String, String) {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let trimmed = stdout.trim();
-            if let Some((age, subject)) = trimmed.split_once('\x1f') {
-                (age.to_string(), subject.to_string())
+            if let Some((ts_str, subject)) = trimmed.split_once('\x1f') {
+                let timestamp = ts_str.parse::<i64>().ok();
+                (timestamp, subject.to_string())
             } else {
-                (String::new(), String::new())
+                (None, String::new())
             }
         }
-        _ => (String::new(), String::new()),
+        _ => (None, String::new()),
     }
+}
+
+/// Get the Unix timestamp of when a branch was first created.
+///
+/// Primary: oldest reflog entry for the branch.
+/// Fallback: timestamp of the first commit on the branch.
+/// Returns `None` for detached HEAD or if both methods fail.
+fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) -> Option<i64> {
+    // Primary: oldest reflog entry
+    let reflog_output = Command::new("git")
+        .args(["reflog", "show", branch, "--format=%ct"])
+        .current_dir(worktree_path)
+        .output()
+        .ok()?;
+
+    if reflog_output.status.success() {
+        let stdout = String::from_utf8_lossy(&reflog_output.stdout);
+        // Last line is the oldest reflog entry
+        if let Some(last_line) = stdout.trim().lines().last() {
+            if let Ok(ts) = last_line.trim().parse::<i64>() {
+                return Some(ts);
+            }
+        }
+    }
+
+    // Fallback: first commit on the branch
+    let log_output = Command::new("git")
+        .args(["log", "--reverse", "--format=%ct", branch])
+        .current_dir(worktree_path)
+        .output()
+        .ok()?;
+
+    if log_output.status.success() {
+        let stdout = String::from_utf8_lossy(&log_output.stdout);
+        if let Some(first_line) = stdout.trim().lines().next() {
+            if let Ok(ts) = first_line.trim().parse::<i64>() {
+                return Some(ts);
+            }
+        }
+    }
+
+    None
 }
 
 /// Collect enriched worktree information for all worktrees in the project.
@@ -198,7 +243,17 @@ pub fn collect_worktree_info(
         let is_dirty = git.has_uncommitted_changes_in(&entry.path).unwrap_or(false);
 
         // Last commit info
-        let (last_commit_age, last_commit_subject) = get_last_commit_info(&entry.path);
+        let (last_commit_timestamp, last_commit_subject) = get_last_commit_info(&entry.path);
+
+        // Branch creation timestamp (only for non-detached worktrees)
+        let branch_creation_timestamp = if !entry.is_detached {
+            entry
+                .branch
+                .as_deref()
+                .and_then(|b| get_branch_creation_timestamp(b, &entry.path))
+        } else {
+            None
+        };
 
         infos.push(WorktreeInfo {
             name: branch_display,
@@ -207,8 +262,9 @@ pub fn collect_worktree_info(
             ahead,
             behind,
             is_dirty,
-            last_commit_age,
+            last_commit_timestamp,
             last_commit_subject,
+            branch_creation_timestamp,
         });
     }
 

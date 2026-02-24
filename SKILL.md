@@ -135,7 +135,7 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 
 | Command                             | Description                                                                                                                                 |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `daft worktree-list [--json]`       | List all worktrees with branch, status, ahead/behind counts, and commit info                                                                |
+| `daft worktree-list [--json]`       | List all worktrees with branch, status, ahead/behind counts, branch age, and commit info. JSON includes `branch_age` field.                 |
 | `daft hooks <subcommand>`           | Manage hooks trust and configuration (`trust`, `prompt`, `deny`, `status`, `run`, `install`, `validate`, `dump`, `migrate`)                 |
 | `daft doctor`                       | Diagnose installation and configuration issues; `--fix` auto-repairs symlinks, shortcuts, refspecs, hooks; `--fix --dry-run` previews fixes |
 | `daft setup shortcuts <subcommand>` | Manage command shortcut symlinks                                                                                                            |

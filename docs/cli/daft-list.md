@@ -29,8 +29,11 @@ Each worktree is shown with:
 - Relative path from the project root
 - Ahead/behind counts vs. the base branch (e.g. +3 -1)
 - A `*` dirty marker if there are uncommitted changes
-- Relative age of the last commit
+- Branch age since creation (e.g. 3d, 2w, 5mo)
+- Shorthand age of the last commit (e.g. 1h, 4d)
 - Subject line of the last commit (truncated to 40 chars)
+
+Ages use shorthand notation: `<1m`, `Xm`, `Xh`, `Xd`, `Xw`, `Xmo`, `Xy`.
 
 Use `--json` for machine-readable output suitable for scripting.
 

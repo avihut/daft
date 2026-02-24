@@ -148,7 +148,7 @@ test_list_json() {
     fi
 
     # Check for expected JSON fields
-    local required_fields=("name" "path" "is_current" "ahead" "behind" "is_dirty" "last_commit_age" "last_commit_subject")
+    local required_fields=("name" "path" "is_current" "ahead" "behind" "is_dirty" "last_commit_age" "last_commit_subject" "branch_age")
     for field in "${required_fields[@]}"; do
         if ! echo "$output" | grep -q "\"$field\""; then
             log_error "JSON output should contain field '$field'"
@@ -466,6 +466,86 @@ test_list_json_ahead_behind() {
     return 0
 }
 
+# Test that Age header appears in table output
+test_list_branch_age() {
+    local remote_repo=$(create_test_remote "test-repo-list-age" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-age"
+
+    # Run list from the main worktree
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1) || {
+        log_error "git-worktree-list failed"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # Verify the Age header appears (check all lines since stderr may precede header)
+    if ! echo "$output" | grep -q "Age"; then
+        log_error "List header should contain 'Age'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Branch age column header shown"
+    return 0
+}
+
+# Test that shorthand ages are used (no "ago" in output)
+test_list_shorthand_age() {
+    local remote_repo=$(create_test_remote "test-repo-list-shorthand" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-shorthand"
+
+    # Run list from the main worktree
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1) || {
+        log_error "git-worktree-list failed"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # Output should NOT contain verbose "ago" dates
+    if echo "$output" | grep -q " ago"; then
+        log_error "List output should use shorthand ages, not verbose dates with 'ago'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Shorthand ages used instead of verbose dates"
+    return 0
+}
+
+# Test that branch_age field exists in JSON output
+test_list_json_branch_age() {
+    local remote_repo=$(create_test_remote "test-repo-list-json-age" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-json-age"
+
+    # Run list with --json
+    cd main
+    local output
+    output=$(git-worktree-list --json 2>&1)
+
+    # Check for branch_age field
+    if ! echo "$output" | grep -q '"branch_age"'; then
+        log_error "JSON output should contain 'branch_age' field"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "JSON output contains branch_age field"
+    return 0
+}
+
 # Run all list tests
 run_list_tests() {
     log "Running git-worktree-list integration tests..."
@@ -483,6 +563,9 @@ run_list_tests() {
     run_test "list_commit_subject" "test_list_commit_subject"
     run_test "list_from_subdirectory" "test_list_from_subdirectory"
     run_test "list_json_ahead_behind" "test_list_json_ahead_behind"
+    run_test "list_branch_age" "test_list_branch_age"
+    run_test "list_shorthand_age" "test_list_shorthand_age"
+    run_test "list_json_branch_age" "test_list_json_branch_age"
 }
 
 # Main execution
