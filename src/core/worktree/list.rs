@@ -10,7 +10,7 @@ use std::process::Command;
 
 /// Enriched information about a single worktree.
 pub struct WorktreeInfo {
-    /// The directory name (last path component) of the worktree.
+    /// Branch name (stripped of `refs/heads/` prefix), or `"(detached)"`.
     pub name: String,
     /// Absolute path to the worktree.
     pub path: PathBuf,

@@ -1,11 +1,13 @@
 use crate::{
     core::{
-        repo::{get_current_worktree_path, get_project_root, resolve_initial_branch},
+        repo::{get_current_worktree_path, get_git_common_dir, get_project_root},
         worktree::list::collect_worktree_info,
     },
     git::GitCommand,
     is_git_repository,
     logging::init_logging,
+    remote::get_default_branch_local,
+    settings::DaftSettings,
     styles,
 };
 use anyhow::Result;
@@ -70,9 +72,14 @@ pub fn run() -> Result<()> {
         anyhow::bail!("Not inside a Git repository");
     }
 
-    let git = GitCommand::new(false);
-    let base_branch = resolve_initial_branch(&None);
-    let current_path = get_current_worktree_path()?.canonicalize()?;
+    let settings = DaftSettings::load()?;
+    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let git_common_dir = get_git_common_dir()?;
+    let base_branch = get_default_branch_local(&git_common_dir, "origin", settings.use_gitoxide)
+        .unwrap_or_else(|_| "master".to_string());
+    let current_path = get_current_worktree_path()?
+        .canonicalize()
+        .unwrap_or_else(|_| get_current_worktree_path().unwrap_or_default());
     let project_root = get_project_root()?;
 
     let infos = collect_worktree_info(&git, &base_branch, &current_path)?;
