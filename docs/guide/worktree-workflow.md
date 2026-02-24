@@ -113,6 +113,18 @@ daft go feature/teammate-work
 git worktree-checkout feature/teammate-work
 ```
 
+### Toggling Between Worktrees
+
+Quickly switch back and forth between two worktrees:
+
+```bash
+daft go -           # switch to the previous worktree
+daft go -           # switch back
+```
+
+Each `daft go` or `daft start` records the source worktree, so `daft go -`
+always takes you to the last one you came from.
+
 ### Branching from Default
 
 When your current branch has diverged and you need a fresh start:
@@ -133,12 +145,57 @@ Started work in the wrong branch? Move it:
 daft carry feature/correct-branch
 ```
 
+### Renaming a Branch
+
+Rename a branch and its worktree directory in one step. The remote branch is
+updated too:
+
+```bash
+daft rename feature/old-name feature/new-name
+```
+
+### Listing Worktrees
+
+See all worktrees with status indicators, ahead/behind counts, and branch age:
+
+```bash
+daft list
+```
+
+Use `daft list --json` for machine-readable output.
+
 ### Cleaning Up
 
 After branches are merged and deleted on the remote:
 
 ```bash
 daft prune
+```
+
+### Syncing Everything
+
+Prune stale worktrees and update all remaining ones in a single command:
+
+```bash
+daft sync
+```
+
+This is equivalent to `daft prune` followed by `daft update --all`. Use
+`--rebase main` to also rebase all branches onto main after updating.
+
+### Updating Branches
+
+Pull the latest changes for specific worktrees or all at once:
+
+```bash
+# Update a specific worktree
+daft update feature/auth
+
+# Update all worktrees
+daft update --all
+
+# Reset a worktree to match a different remote branch
+daft update master:test
 ```
 
 ## How Commands Find the Project Root

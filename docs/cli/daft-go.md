@@ -13,9 +13,6 @@ Open an existing branch in a worktree
 daft go [OPTIONS] <BRANCH_NAME>
 ```
 
-This is equivalent to `git worktree-checkout`. All options and arguments are
-the same.
-
 ## Description
 
 Creates a new worktree for an existing local or remote branch. The worktree
@@ -45,7 +42,52 @@ daft go -           # back to feature/x
 
 Cannot be combined with `-b`/`--create-branch`.
 
+## Arguments
+
+| Argument | Description | Required |
+|----------|-------------|----------|
+| `<BRANCH_NAME>` | Name of the branch to check out; use `-` for previous worktree | Yes |
+
+## Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-s, --start` | Create a new worktree if the branch does not exist | |
+| `-x, --exec <EXEC>` | Run a command in the worktree after setup (repeatable) | |
+| `--no-cd` | Do not change directory to the new worktree | |
+| `-c, --carry` | Apply uncommitted changes from the current worktree | |
+| `--no-carry` | Do not carry uncommitted changes | |
+| `-r, --remote <REMOTE>` | Remote for worktree organization (multi-remote mode) | |
+| `-v, --verbose` | Be verbose; show detailed progress | |
+| `-q, --quiet` | Suppress non-error output | |
+
+## Global Options
+
+| Option | Description |
+|--------|-------------|
+| `-h`, `--help` | Print help information |
+| `-V`, `--version` | Print version information |
+
+## Examples
+
+```bash
+# Check out an existing branch
+daft go feature/auth
+
+# Switch to the previous worktree (toggle)
+daft go -
+
+# Check out a branch, auto-creating if it doesn't exist
+daft go -s feature/new-idea
+
+# Check out and run a command after setup
+daft go feature/auth -x 'npm install'
+
+# Check out without changing directory
+daft go feature/auth --no-cd
+```
+
 ## See Also
 
 - [daft start](./daft-start.md) to create a new branch
-- [git worktree-checkout](./git-worktree-checkout.md) for full options reference
+- [git worktree-checkout](./git-worktree-checkout.md) for the underlying git-native command
