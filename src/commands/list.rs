@@ -178,7 +178,7 @@ fn print_table(
         .collect();
 
     let mut builder = Builder::new();
-    let header: Vec<String> = ["", "Branch", "Path", "Base", "", "Age", "Last Commit"]
+    let header: Vec<String> = ["", "Branch", "Path", "Base", "", "Last Commit", ""]
         .iter()
         .map(|h| {
             if use_color && !h.is_empty() {
