@@ -7,7 +7,7 @@ use clap::{Command, CommandFactory};
 use std::path::Path;
 
 use crate::commands::{
-    carry, checkout, clone, completions, doctor, fetch, flow_adopt, flow_eject, hooks, init,
+    carry, checkout, clone, completions, doctor, fetch, flow_adopt, flow_eject, hooks, init, list,
     multi_remote, prune, release_notes, shell_init, shortcuts, sync, worktree_branch,
 };
 
@@ -60,6 +60,10 @@ fn get_command_categories() -> Vec<CommandCategory> {
         CommandCategory {
             title: "maintain your worktrees",
             commands: vec![
+                CommandEntry {
+                    display_name: "worktree-list",
+                    command: list::Args::command(),
+                },
                 CommandEntry {
                     display_name: "worktree-branch",
                     command: worktree_branch::Args::command(),
@@ -182,7 +186,7 @@ pub fn run() -> Result<()> {
     println!("short aliases (daft <verb>)");
     println!("   go <branch>          Check out an existing branch worktree");
     println!("   start <branch>       Create a new branch worktree (-b)");
-    println!("   clone, init, carry, update, prune, rename, sync, remove, adopt, eject");
+    println!("   clone, init, carry, update, list, prune, rename, sync, remove, adopt, eject");
 
     println!();
     println!("'{primary} worktree-<command> --help' to read about a specific command.");

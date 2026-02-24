@@ -282,6 +282,7 @@ export default defineConfig({
           {
             text: "Utilities",
             items: [
+              { text: "list", link: "/cli/daft-list" },
               { text: "doctor", link: "/cli/daft-doctor" },
               { text: "release-notes", link: "/cli/daft-release-notes" },
               { text: "shell-init", link: "/cli/daft-shell-init" },
@@ -324,6 +325,7 @@ export default defineConfig({
           {
             text: "Maintenance",
             items: [
+              { text: "worktree-list", link: "/cli/git-worktree-list" },
               { text: "worktree-prune", link: "/cli/git-worktree-prune" },
               { text: "worktree-fetch", link: "/cli/git-worktree-fetch" },
               { text: "worktree-carry", link: "/cli/git-worktree-carry" },

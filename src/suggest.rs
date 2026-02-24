@@ -14,6 +14,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "go",
     "hooks",
     "init",
+    "list",
     "multi-remote",
     "prune",
     "release-notes",
@@ -33,6 +34,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "worktree-flow-adopt",
     "worktree-flow-eject",
     "worktree-init",
+    "worktree-list",
     "worktree-prune",
 ];
 

@@ -27,6 +27,7 @@ Prefix: `gwt` (Git Worktree)
 | `gwtprune` | `git-worktree-prune`       |
 | `gwtcarry` | `git-worktree-carry`       |
 | `gwtfetch` | `git-worktree-fetch`       |
+| `gwtls`    | `git-worktree-list`        |
 
 ### Shell Style
 

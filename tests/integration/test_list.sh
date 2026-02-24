@@ -1,0 +1,493 @@
+#!/bin/bash
+
+# Integration tests for git-worktree-list / daft list
+
+source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
+
+# Test basic listing shows all worktrees with branch names
+test_list_basic() {
+    local remote_repo=$(create_test_remote "test-repo-list-basic" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-basic"
+
+    # Create additional worktrees
+    git-worktree-checkout develop || return 1
+    git-worktree-checkout feature/test-feature || return 1
+
+    # Run list from the main worktree
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1) || {
+        log_error "git-worktree-list failed"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # Verify all worktrees are shown
+    if ! echo "$output" | grep -q "main"; then
+        log_error "List output should contain 'main'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    if ! echo "$output" | grep -q "develop"; then
+        log_error "List output should contain 'develop'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    if ! echo "$output" | grep -q "feature/test-feature"; then
+        log_error "List output should contain 'feature/test-feature'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Basic listing shows all worktrees"
+    return 0
+}
+
+# Test current worktree marker
+test_list_current_marker() {
+    local remote_repo=$(create_test_remote "test-repo-list-current" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-current"
+
+    # Create another worktree
+    git-worktree-checkout develop || return 1
+
+    # Run from inside the develop worktree
+    cd develop
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1)
+
+    # The current worktree (develop) should have the > marker
+    # and other worktrees should not
+    if ! echo "$output" | grep "develop" | grep -q ">"; then
+        log_error "Current worktree 'develop' should have > marker"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Run from inside the main worktree
+    cd ../main
+    output=$(NO_COLOR=1 git-worktree-list 2>&1)
+
+    if ! echo "$output" | grep "main" | grep -q ">"; then
+        log_error "Current worktree 'main' should have > marker"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Current worktree marker works correctly"
+    return 0
+}
+
+# Test dirty marker shows for uncommitted changes
+test_list_dirty_marker() {
+    local remote_repo=$(create_test_remote "test-repo-list-dirty" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-dirty"
+
+    # Create a worktree
+    git-worktree-checkout develop || return 1
+
+    # Make uncommitted changes in develop
+    echo "dirty change" >> develop/README.md
+
+    # Run list
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1)
+
+    # develop should show the * dirty marker
+    if ! echo "$output" | grep "develop" | grep -q '\*'; then
+        log_error "Dirty worktree 'develop' should have * marker"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # main should NOT have the * dirty marker
+    if echo "$output" | grep "main" | grep -q '\*'; then
+        log_error "Clean worktree 'main' should not have * marker"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Dirty marker shows correctly"
+    return 0
+}
+
+# Test JSON output format
+test_list_json() {
+    local remote_repo=$(create_test_remote "test-repo-list-json" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-json"
+
+    # Create a worktree with dirty state
+    git-worktree-checkout develop || return 1
+    echo "dirty" >> develop/README.md
+
+    # Run list with --json
+    cd main
+    local output
+    output=$(git-worktree-list --json 2>&1)
+
+    # Verify it's valid JSON (check for array brackets)
+    if ! echo "$output" | grep -q '^\['; then
+        log_error "JSON output should start with ["
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Check for expected JSON fields
+    local required_fields=("name" "path" "is_current" "ahead" "behind" "is_dirty" "last_commit_age" "last_commit_subject")
+    for field in "${required_fields[@]}"; do
+        if ! echo "$output" | grep -q "\"$field\""; then
+            log_error "JSON output should contain field '$field'"
+            log_error "Output: $output"
+            return 1
+        fi
+    done
+
+    # Verify is_current is true for main (we're in the main worktree)
+    # The JSON entries are objects with fields sorted alphabetically.
+    # We need to find the main entry and check is_current.
+    # Use a block-based approach: find the block containing "name": "main"
+    # and verify it also contains "is_current": true.
+    local main_block
+    main_block=$(echo "$output" | awk '/"name": "main"/{found=1} found && /\}/{print; found=0} found{print}' RS='{' ORS='{')
+    if ! echo "$main_block" | grep -q '"is_current": true'; then
+        log_error "JSON should show main as current worktree"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Verify develop shows as dirty
+    local develop_block
+    develop_block=$(echo "$output" | awk '/"name": "develop"/{found=1} found && /\}/{print; found=0} found{print}' RS='{' ORS='{')
+    if ! echo "$develop_block" | grep -q '"is_dirty": true'; then
+        log_error "JSON should show develop as dirty"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "JSON output format is correct"
+    return 0
+}
+
+# Test detached HEAD state
+test_list_detached_head() {
+    git-worktree-init detached-test || return 1
+    cd "detached-test"
+
+    # Create an initial commit
+    cd master
+    echo "Initial content" > README.md
+    git add README.md
+    git commit -m "Initial commit" >/dev/null 2>&1
+    local commit_sha=$(git rev-parse HEAD)
+    cd ..
+
+    # Create a detached HEAD worktree
+    git worktree add --detach detached-wt "$commit_sha" >/dev/null 2>&1 || {
+        log_error "Failed to create detached worktree"
+        return 1
+    }
+
+    # Run list
+    cd master
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1)
+
+    # Verify "(detached)" appears in the output
+    if ! echo "$output" | grep -q "(detached)"; then
+        log_error "List should show '(detached)' for detached HEAD worktree"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Detached HEAD state shown correctly"
+    return 0
+}
+
+# Test ahead/behind counts
+test_list_ahead_behind() {
+    local remote_repo=$(create_test_remote "test-repo-list-ahead" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-ahead"
+
+    # Checkout develop and make additional commits ahead of main
+    git-worktree-checkout develop || return 1
+
+    cd develop
+    echo "ahead commit 1" > ahead1.txt
+    git add ahead1.txt
+    git commit -m "Ahead commit 1" >/dev/null 2>&1
+    echo "ahead commit 2" > ahead2.txt
+    git add ahead2.txt
+    git commit -m "Ahead commit 2" >/dev/null 2>&1
+    cd ..
+
+    # Run list
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1)
+
+    # develop should show ahead count (+N where N > 0)
+    if ! echo "$output" | grep "develop" | grep -q '+[0-9]'; then
+        log_error "Develop should show ahead count (+N)"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Ahead/behind counts shown correctly"
+    return 0
+}
+
+# Test listing outside a git repository fails
+test_list_outside_repo() {
+    assert_command_failure "git-worktree-list" "Should fail outside git repository"
+
+    return 0
+}
+
+# Test help functionality
+test_list_help() {
+    assert_command_help "git-worktree-list" || return 1
+    assert_command_version "git-worktree-list" || return 1
+
+    return 0
+}
+
+# Test JSON output for a single worktree (init creates one worktree)
+test_list_json_single() {
+    git-worktree-init json-single-test || return 1
+    cd "json-single-test"
+
+    # Create an initial commit so we have commit info
+    cd master
+    echo "Content" > README.md
+    git add README.md
+    git commit -m "Initial commit" >/dev/null 2>&1
+
+    # JSON should return an array with exactly one entry
+    local output
+    output=$(git-worktree-list --json 2>&1)
+
+    if ! echo "$output" | grep -q '^\['; then
+        log_error "JSON output should be a valid JSON array"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Should contain exactly one "name" field (for master)
+    local name_count
+    name_count=$(echo "$output" | grep -c '"name"')
+    if [[ "$name_count" -ne 1 ]]; then
+        log_error "Expected exactly 1 entry in JSON, got $name_count"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    if ! echo "$output" | grep -q '"name": "master"'; then
+        log_error "JSON should contain master worktree"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "JSON output for single worktree is correct"
+    return 0
+}
+
+# Test listing with many worktrees
+test_list_many_worktrees() {
+    local remote_repo=$(create_test_remote "test-repo-list-many" "main")
+
+    # Create many branches in remote
+    local temp_clone="$TEMP_BASE_DIR/temp_list_many_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        for i in {1..5}; do
+            git checkout -b "feature/branch$i" >/dev/null 2>&1
+            echo "Branch $i" > "branch$i.txt"
+            git add "branch$i.txt" >/dev/null 2>&1
+            git commit -m "Add branch$i" >/dev/null 2>&1
+            git push origin "feature/branch$i" >/dev/null 2>&1
+        done
+    ) >/dev/null 2>&1
+
+    rm -rf "$temp_clone"
+
+    # Clone and checkout all branches
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-many"
+
+    git fetch origin >/dev/null 2>&1
+    for i in {1..5}; do
+        git-worktree-checkout "feature/branch$i" || return 1
+    done
+
+    # Run list
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1)
+
+    # Verify all branches are listed
+    for i in {1..5}; do
+        if ! echo "$output" | grep -q "feature/branch$i"; then
+            log_error "List should contain feature/branch$i"
+            log_error "Output: $output"
+            return 1
+        fi
+    done
+
+    # Also verify main is listed
+    if ! echo "$output" | grep -q "main"; then
+        log_error "List should contain main"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Many worktrees listed correctly"
+    return 0
+}
+
+# Test list shows last commit subject
+test_list_commit_subject() {
+    git-worktree-init subject-test || return 1
+    cd "subject-test"
+
+    # Create a commit with a specific subject
+    cd master
+    echo "Content" > test.txt
+    git add test.txt
+    git commit -m "My specific commit subject" >/dev/null 2>&1
+    cd ..
+
+    # Run list
+    cd master
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1)
+
+    # Verify the commit subject appears
+    if ! echo "$output" | grep -q "My specific commit subject"; then
+        log_error "List should show last commit subject"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Last commit subject shown correctly"
+    return 0
+}
+
+# Test list from subdirectory of a worktree
+test_list_from_subdirectory() {
+    local remote_repo=$(create_test_remote "test-repo-list-subdir" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-subdir"
+
+    # Create a worktree
+    git-worktree-checkout develop || return 1
+
+    # Run from a subdirectory inside a worktree
+    mkdir -p "main/subdir/deep"
+    cd "main/subdir/deep"
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1) || {
+        log_error "git-worktree-list should work from subdirectory"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # Should still list all worktrees
+    if ! echo "$output" | grep -q "main"; then
+        log_error "List from subdirectory should show main"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    if ! echo "$output" | grep -q "develop"; then
+        log_error "List from subdirectory should show develop"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "List works from subdirectory"
+    return 0
+}
+
+# Test JSON ahead/behind values
+test_list_json_ahead_behind() {
+    local remote_repo=$(create_test_remote "test-repo-list-json-ab" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-json-ab"
+
+    # Checkout develop and make commits
+    git-worktree-checkout develop || return 1
+
+    cd develop
+    echo "ahead" > ahead.txt
+    git add ahead.txt
+    git commit -m "Ahead commit" >/dev/null 2>&1
+    cd ..
+
+    # Run list with --json
+    cd main
+    local output
+    output=$(git-worktree-list --json 2>&1)
+
+    # Verify develop has non-zero ahead count in JSON
+    # Find the block containing "name": "develop" and check its "ahead" field
+    local develop_block
+    develop_block=$(echo "$output" | awk '/"name": "develop"/{found=1} found && /\}/{print; found=0} found{print}' RS='{' ORS='{')
+    if ! echo "$develop_block" | grep -qE '"ahead": [1-9]'; then
+        log_error "JSON should show non-zero ahead count for develop"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "JSON ahead/behind values are correct"
+    return 0
+}
+
+# Run all list tests
+run_list_tests() {
+    log "Running git-worktree-list integration tests..."
+
+    run_test "list_basic" "test_list_basic"
+    run_test "list_current_marker" "test_list_current_marker"
+    run_test "list_dirty_marker" "test_list_dirty_marker"
+    run_test "list_json" "test_list_json"
+    run_test "list_detached_head" "test_list_detached_head"
+    run_test "list_ahead_behind" "test_list_ahead_behind"
+    run_test "list_outside_repo" "test_list_outside_repo"
+    run_test "list_help" "test_list_help"
+    run_test "list_json_single" "test_list_json_single"
+    run_test "list_many_worktrees" "test_list_many_worktrees"
+    run_test "list_commit_subject" "test_list_commit_subject"
+    run_test "list_from_subdirectory" "test_list_from_subdirectory"
+    run_test "list_json_ahead_behind" "test_list_json_ahead_behind"
+}
+
+# Main execution
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    setup
+    run_list_tests
+    print_summary
+fi
