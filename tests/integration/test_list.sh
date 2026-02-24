@@ -148,7 +148,7 @@ test_list_json() {
     fi
 
     # Check for expected JSON fields
-    local required_fields=("name" "path" "is_current" "ahead" "behind" "is_dirty" "last_commit_age" "last_commit_subject" "branch_age")
+    local required_fields=("name" "path" "is_current" "head" "ahead" "behind" "is_dirty" "remote_branch" "last_commit_age" "last_commit_subject" "branch_age")
     for field in "${required_fields[@]}"; do
         if ! echo "$output" | grep -q "\"$field\""; then
             log_error "JSON output should contain field '$field'"
@@ -546,6 +546,137 @@ test_list_json_branch_age() {
     return 0
 }
 
+# Test that Head column with short SHA appears in table output
+test_list_head_column() {
+    local remote_repo=$(create_test_remote "test-repo-list-head" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-head"
+
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1) || {
+        log_error "git-worktree-list failed"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # Verify the Head header appears
+    if ! echo "$output" | grep -q "Head"; then
+        log_error "List header should contain 'Head'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Verify a 7-char SHA appears in the output (at least one row)
+    if ! echo "$output" | grep -qE '[0-9a-f]{7}'; then
+        log_error "List should contain 7-char commit SHA"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Head column with short SHA shown"
+    return 0
+}
+
+# Test that Remote column appears in table output
+test_list_remote_column() {
+    local remote_repo=$(create_test_remote "test-repo-list-remote" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-remote"
+
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1) || {
+        log_error "git-worktree-list failed"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # Verify the Remote header appears
+    if ! echo "$output" | grep -q "Remote"; then
+        log_error "List header should contain 'Remote'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Verify remote tracking branch appears (origin/main)
+    if ! echo "$output" | grep -q "origin/main"; then
+        log_error "List should show remote tracking branch 'origin/main'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Remote column shown correctly"
+    return 0
+}
+
+# Test that path is shown relative to current directory
+test_list_relative_path() {
+    local remote_repo=$(create_test_remote "test-repo-list-relpath" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-relpath"
+
+    git-worktree-checkout develop || return 1
+
+    # Run from the main worktree — current should show "."
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1) || {
+        log_error "git-worktree-list failed"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # Current worktree path should be "." (relative to itself)
+    if ! echo "$output" | grep "main" | grep -q '\.'; then
+        log_error "Current worktree path should show '.'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # develop should show as a relative path (../develop)
+    if ! echo "$output" | grep "develop" | grep -q '\.\.'; then
+        log_error "Other worktree path should be relative (contain '..')"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Paths shown relative to current directory"
+    return 0
+}
+
+# Test JSON includes head and remote_branch fields
+test_list_json_head_remote() {
+    local remote_repo=$(create_test_remote "test-repo-list-json-hr" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-json-hr"
+
+    cd main
+    local output
+    output=$(git-worktree-list --json 2>&1)
+
+    # Check for head field with 7-char SHA
+    if ! echo "$output" | grep -qE '"head": "[0-9a-f]{7}"'; then
+        log_error "JSON output should contain 'head' field with 7-char SHA"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Check for remote_branch field
+    if ! echo "$output" | grep -q '"remote_branch"'; then
+        log_error "JSON output should contain 'remote_branch' field"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "JSON output contains head and remote_branch fields"
+    return 0
+}
+
 # Run all list tests
 run_list_tests() {
     log "Running git-worktree-list integration tests..."
@@ -566,6 +697,10 @@ run_list_tests() {
     run_test "list_branch_age" "test_list_branch_age"
     run_test "list_shorthand_age" "test_list_shorthand_age"
     run_test "list_json_branch_age" "test_list_json_branch_age"
+    run_test "list_head_column" "test_list_head_column"
+    run_test "list_remote_column" "test_list_remote_column"
+    run_test "list_relative_path" "test_list_relative_path"
+    run_test "list_json_head_remote" "test_list_json_head_remote"
 }
 
 # Main execution

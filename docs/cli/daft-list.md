@@ -19,19 +19,20 @@ the same.
 ## Description
 
 Lists all worktrees in the current project with enriched status information
-including ahead/behind counts relative to the base branch, dirty status,
-and last commit details.
+including HEAD SHA, ahead/behind counts, remote tracking, dirty status,
+branch age, and last commit details.
 
 Each worktree is shown with:
 
 - A `>` marker for the current worktree
 - Branch name (or "(detached)" for detached HEAD)
-- Relative path from the project root
+- Relative path from the current directory
+- Short HEAD commit SHA
 - Ahead/behind counts vs. the base branch (e.g. +3 -1)
 - A `*` dirty marker if there are uncommitted changes
+- Remote tracking branch (e.g. origin/main)
 - Branch age since creation (e.g. 3d, 2w, 5mo)
-- Shorthand age of the last commit (e.g. 1h, 4d)
-- Subject line of the last commit (truncated to 40 chars)
+- Last commit: shorthand age + subject (e.g. 1h fix login bug)
 
 Ages use shorthand notation: `<1m`, `Xm`, `Xh`, `Xd`, `Xw`, `Xmo`, `Xy`.
 

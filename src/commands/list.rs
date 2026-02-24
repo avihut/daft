@@ -13,6 +13,7 @@ use crate::{
 use anyhow::Result;
 use chrono::Utc;
 use clap::Parser;
+use pathdiff::diff_paths;
 use tabled::{
     builder::Builder,
     settings::{object::Columns, Modify, Style, Width},
@@ -24,18 +25,19 @@ use tabled::{
 #[command(about = "List all worktrees with status information")]
 #[command(long_about = r#"
 Lists all worktrees in the current project with enriched status information
-including ahead/behind counts relative to the base branch, dirty status,
+including HEAD SHA, ahead/behind counts, remote tracking, dirty status,
 branch age, and last commit details.
 
 Each worktree is shown with:
   - A `>` marker for the current worktree
   - Branch name (or "(detached)" for detached HEAD)
-  - Relative path from the project root
+  - Relative path from the current directory
+  - Short HEAD commit SHA
   - Ahead/behind counts vs. the base branch (e.g. +3 -1)
   - A `*` dirty marker if there are uncommitted changes
+  - Remote tracking branch (e.g. origin/main)
   - Branch age since creation (e.g. 3d, 2w, 5mo)
-  - Shorthand age of the last commit (e.g. 1h, 4d)
-  - Subject line of the last commit (truncated to 40 chars)
+  - Last commit: shorthand age + subject (e.g. 1h fix login bug)
 
 Ages use shorthand notation: <1m, Xm, Xh, Xd, Xw, Xmo, Xy.
 
@@ -55,18 +57,20 @@ struct TableRow {
     current: String,
     /// Branch name.
     name: String,
-    /// Relative path from project root.
+    /// Relative path from current directory.
     path: String,
+    /// Short HEAD SHA.
+    head: String,
     /// Ahead/behind base branch (e.g. "+3 -1").
     base: String,
     /// Dirty marker ("*" or "").
     dirty: String,
+    /// Remote tracking branch.
+    remote: String,
     /// Branch age since creation (shorthand).
     branch_age: String,
-    /// Shorthand age of last commit.
-    age: String,
-    /// Last commit subject line.
-    subject: String,
+    /// Last commit: shorthand age + subject combined.
+    last_commit: String,
 }
 
 pub fn run() -> Result<()> {
@@ -87,30 +91,27 @@ pub fn run() -> Result<()> {
     let current_path = raw_path.canonicalize().unwrap_or(raw_path);
     let project_root = get_project_root()?;
 
+    let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
     let infos = collect_worktree_info(&git, &base_branch, &current_path)?;
 
     if args.json {
-        return print_json(&infos, &project_root);
+        return print_json(&infos, &project_root, &cwd);
     }
 
-    print_table(&infos, &project_root);
+    print_table(&infos, &project_root, &cwd);
     Ok(())
 }
 
 fn print_json(
     infos: &[crate::core::worktree::list::WorktreeInfo],
     project_root: &std::path::Path,
+    cwd: &std::path::Path,
 ) -> Result<()> {
     let now = Utc::now().timestamp();
     let entries: Vec<serde_json::Value> = infos
         .iter()
         .map(|info| {
-            let rel_path = info
-                .path
-                .strip_prefix(project_root)
-                .unwrap_or(&info.path)
-                .display()
-                .to_string();
+            let rel_path = relative_display_path(&info.path, project_root, cwd);
             let last_commit_age = info
                 .last_commit_timestamp
                 .map(|ts| shorthand_from_seconds(now - ts))
@@ -123,9 +124,11 @@ fn print_json(
                 "name": info.name,
                 "path": rel_path,
                 "is_current": info.is_current,
+                "head": info.head_sha,
                 "ahead": info.ahead,
                 "behind": info.behind,
                 "is_dirty": info.is_dirty,
+                "remote_branch": info.remote_branch,
                 "last_commit_age": last_commit_age,
                 "last_commit_subject": info.last_commit_subject,
                 "branch_age": branch_age,
@@ -140,6 +143,7 @@ fn print_json(
 fn print_table(
     infos: &[crate::core::worktree::list::WorktreeInfo],
     project_root: &std::path::Path,
+    cwd: &std::path::Path,
 ) {
     if infos.is_empty() {
         return;
@@ -161,12 +165,13 @@ fn print_table(
                 " ".to_string()
             };
 
-            let rel_path = info
-                .path
-                .strip_prefix(project_root)
-                .unwrap_or(&info.path)
-                .display()
-                .to_string();
+            let rel_path = relative_display_path(&info.path, project_root, cwd);
+
+            let head = if use_color {
+                styles::dim(&info.head_sha)
+            } else {
+                info.head_sha.clone()
+            };
 
             let base = format_ahead_behind(info.ahead, info.behind, use_color);
 
@@ -180,53 +185,108 @@ fn print_table(
                 String::new()
             };
 
+            let remote = info
+                .remote_branch
+                .as_deref()
+                .map(|r| {
+                    if use_color {
+                        styles::dim(r)
+                    } else {
+                        r.to_string()
+                    }
+                })
+                .unwrap_or_default();
+
             let branch_age = format_shorthand_age(info.branch_creation_timestamp, now, use_color);
-            let age = format_shorthand_age(info.last_commit_timestamp, now, use_color);
+
+            // Combine last commit age + subject into one column
+            let commit_age = format_shorthand_age(info.last_commit_timestamp, now, use_color);
+            let last_commit = if commit_age.is_empty() {
+                info.last_commit_subject.clone()
+            } else if info.last_commit_subject.is_empty() {
+                commit_age
+            } else {
+                format!("{commit_age} {}", info.last_commit_subject)
+            };
 
             TableRow {
                 current,
                 name: info.name.clone(),
                 path: rel_path,
+                head,
                 base,
                 dirty,
+                remote,
                 branch_age,
-                age,
-                subject: info.last_commit_subject.clone(),
+                last_commit,
             }
         })
         .collect();
 
     let mut builder = Builder::new();
-    let header: Vec<String> = ["", "Branch", "Path", "Base", "", "Age", "Last Commit", ""]
-        .iter()
-        .map(|h| {
-            if use_color && !h.is_empty() {
-                styles::dim(h)
-            } else {
-                h.to_string()
-            }
-        })
-        .collect();
+    let header: Vec<String> = [
+        "",
+        "Branch",
+        "Path",
+        "Head",
+        "Base",
+        "",
+        "Remote",
+        "Age",
+        "Last Commit",
+    ]
+    .iter()
+    .map(|h| {
+        if use_color && !h.is_empty() {
+            styles::dim(h)
+        } else {
+            h.to_string()
+        }
+    })
+    .collect();
     builder.push_record(header);
     for row in &rows {
         builder.push_record([
             &row.current,
             &row.name,
             &row.path,
+            &row.head,
             &row.base,
             &row.dirty,
+            &row.remote,
             &row.branch_age,
-            &row.age,
-            &row.subject,
+            &row.last_commit,
         ]);
     }
 
     let mut table = builder.build();
     table
         .with(Style::blank())
-        .with(Modify::new(Columns::last()).with(Width::truncate(40).suffix("...")));
+        .with(Modify::new(Columns::last()).with(Width::truncate(50).suffix("...")));
 
     println!("{table}");
+}
+
+/// Compute a display path relative to cwd, falling back to project-root-relative.
+fn relative_display_path(
+    abs_path: &std::path::Path,
+    project_root: &std::path::Path,
+    cwd: &std::path::Path,
+) -> String {
+    // Try relative to cwd first
+    if let Some(rel) = diff_paths(abs_path, cwd) {
+        let s = rel.display().to_string();
+        if s.is_empty() {
+            return ".".to_string();
+        }
+        return s;
+    }
+    // Fallback: relative to project root
+    abs_path
+        .strip_prefix(project_root)
+        .unwrap_or(abs_path)
+        .display()
+        .to_string()
 }
 
 fn format_ahead_behind(ahead: Option<usize>, behind: Option<usize>, use_color: bool) -> String {

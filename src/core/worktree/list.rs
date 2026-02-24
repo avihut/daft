@@ -28,11 +28,16 @@ pub struct WorktreeInfo {
     pub last_commit_subject: String,
     /// Unix timestamp of branch creation (None for detached HEAD or if unavailable).
     pub branch_creation_timestamp: Option<i64>,
+    /// Short HEAD commit SHA.
+    pub head_sha: String,
+    /// Remote tracking branch (e.g. "origin/main"), if any.
+    pub remote_branch: Option<String>,
 }
 
 /// Raw entry parsed from `git worktree list --porcelain`.
 struct PorcelainEntry {
     path: PathBuf,
+    head_sha: String,
     branch: Option<String>,
     is_bare: bool,
     is_detached: bool,
@@ -51,6 +56,7 @@ struct PorcelainEntry {
 fn parse_porcelain(output: &str) -> Vec<PorcelainEntry> {
     let mut entries = Vec::new();
     let mut current_path: Option<PathBuf> = None;
+    let mut current_head: String = String::new();
     let mut current_branch: Option<String> = None;
     let mut is_bare = false;
     let mut is_detached = false;
@@ -61,15 +67,19 @@ fn parse_porcelain(output: &str) -> Vec<PorcelainEntry> {
             if let Some(path) = current_path.take() {
                 entries.push(PorcelainEntry {
                     path,
+                    head_sha: std::mem::take(&mut current_head),
                     branch: current_branch.take(),
                     is_bare,
                     is_detached,
                 });
             }
             current_path = Some(PathBuf::from(path_str));
+            current_head = String::new();
             current_branch = None;
             is_bare = false;
             is_detached = false;
+        } else if let Some(sha) = line.strip_prefix("HEAD ") {
+            current_head = sha.to_string();
         } else if let Some(branch_ref) = line.strip_prefix("branch ") {
             current_branch = branch_ref.strip_prefix("refs/heads/").map(String::from);
         } else if line == "bare" {
@@ -82,6 +92,7 @@ fn parse_porcelain(output: &str) -> Vec<PorcelainEntry> {
     if let Some(path) = current_path.take() {
         entries.push(PorcelainEntry {
             path,
+            head_sha: current_head,
             branch: current_branch.take(),
             is_bare,
             is_detached,
@@ -189,6 +200,27 @@ fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) -> Option<i
     None
 }
 
+/// Get the remote tracking branch for a local branch (e.g. "origin/main").
+fn get_remote_tracking_branch(branch: &str, worktree_path: &Path) -> Option<String> {
+    let refspec = format!("refs/heads/{branch}");
+    let output = Command::new("git")
+        .args(["for-each-ref", "--format=%(upstream:short)", &refspec])
+        .current_dir(worktree_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let upstream = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if upstream.is_empty() {
+        None
+    } else {
+        Some(upstream)
+    }
+}
+
 /// Collect enriched worktree information for all worktrees in the project.
 ///
 /// Parses the porcelain output, skips bare entries, enriches each entry with
@@ -255,6 +287,23 @@ pub fn collect_worktree_info(
             None
         };
 
+        // Short HEAD SHA (first 7 characters)
+        let head_sha = if entry.head_sha.len() >= 7 {
+            entry.head_sha[..7].to_string()
+        } else {
+            entry.head_sha.clone()
+        };
+
+        // Remote tracking branch
+        let remote_branch = if !entry.is_detached {
+            entry
+                .branch
+                .as_deref()
+                .and_then(|b| get_remote_tracking_branch(b, &entry.path))
+        } else {
+            None
+        };
+
         infos.push(WorktreeInfo {
             name: branch_display,
             path: entry.path,
@@ -265,6 +314,8 @@ pub fn collect_worktree_info(
             last_commit_timestamp,
             last_commit_subject,
             branch_creation_timestamp,
+            head_sha,
+            remote_branch,
         });
     }
 
