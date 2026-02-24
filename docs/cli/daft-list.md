@@ -13,9 +13,6 @@ List all worktrees with status information
 daft list [OPTIONS]
 ```
 
-This is equivalent to `git worktree-list`. All options and arguments are
-the same.
-
 ## Description
 
 Lists all worktrees in the current project with enriched status information
@@ -35,8 +32,37 @@ Each worktree is shown with:
 
 Ages use shorthand notation: `<1m`, `Xm`, `Xh`, `Xd`, `Xw`, `Xmo`, `Xy`.
 
-Use `--json` for machine-readable output suitable for scripting.
+Use `--json` for machine-readable output suitable for scripting. JSON output
+includes fields like `is_default_branch`, `staged`, `unstaged`, `untracked`,
+`remote_ahead`, `remote_behind`, and `branch_age`.
+
+## Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--json` | Output in JSON format | |
+| `-v, --verbose` | Be verbose; show detailed progress | |
+
+## Global Options
+
+| Option | Description |
+|--------|-------------|
+| `-h`, `--help` | Print help information |
+| `-V`, `--version` | Print version information |
+
+## Examples
+
+```bash
+# List all worktrees with status
+daft list
+
+# Machine-readable JSON output
+daft list --json
+
+# Pipe JSON to jq for filtering
+daft list --json | jq '.[] | select(.unstaged > 0)'
+```
 
 ## See Also
 
-- [git worktree-list](./git-worktree-list.md) for full options reference
+- [git worktree-list](./git-worktree-list.md) for the underlying git-native command

@@ -88,6 +88,8 @@ daft provides short verb aliases for common commands:
 | `daft update` | `daft worktree-fetch`       |
 | `daft prune`  | `daft worktree-prune`       |
 | `daft remove` | `daft worktree-branch -d`   |
+| `daft rename` | `daft worktree-branch -m`   |
+| `daft sync`   | `daft git-sync`             |
 | `daft adopt`  | `daft worktree-flow-adopt`  |
 | `daft eject`  | `daft worktree-flow-eject`  |
 
@@ -123,6 +125,8 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 | `daft worktree-prune`                           | Remove worktrees whose remote branches have been deleted                          |
 | `daft worktree-carry <targets>`                 | Transfer uncommitted changes to one or more other worktrees                       |
 | `daft worktree-fetch [targets]`                 | Update worktree branches from remote (supports refspec syntax source:destination) |
+| `daft worktree-branch -m <source> <new-branch>` | Rename a branch, move its worktree, and rename the remote branch                  |
+| `daft git-sync`                                 | Synchronize all worktrees: prune stale + update all + optional rebase             |
 
 ### Adoption and Ejection
 
@@ -568,11 +572,11 @@ in one worktree must be committed and merged to propagate to other worktrees.
 
 daft supports three shortcut styles as symlink aliases for faster terminal use:
 
-| Style         | Shortcuts                                                                            | Example              |
-| ------------- | ------------------------------------------------------------------------------------ | -------------------- |
-| Git (default) | `gwtclone`, `gwtinit`, `gwtco`, `gwtcb`, `gwtbd`, `gwtprune`, `gwtcarry`, `gwtfetch` | `gwtco feature/auth` |
-| Shell         | `gwco`, `gwcob`                                                                      | `gwco feature/auth`  |
-| Legacy        | `gclone`, `gcw`, `gcbw`, `gprune`                                                    | `gcw feature/auth`   |
+| Style         | Shortcuts                                                                                                | Example              |
+| ------------- | -------------------------------------------------------------------------------------------------------- | -------------------- |
+| Git (default) | `gwtclone`, `gwtinit`, `gwtco`, `gwtcb`, `gwtbd`, `gwtprune`, `gwtcarry`, `gwtfetch`, `gwtls`, `gwtsync` | `gwtco feature/auth` |
+| Shell         | `gwco`, `gwcob`                                                                                          | `gwco feature/auth`  |
+| Legacy        | `gclone`, `gcw`, `gcbw`, `gprune`                                                                        | `gcw feature/auth`   |
 
 The `gwtcb`, `gwcob`, and `gcbw` shortcuts map to `git-worktree-checkout -b`
 (branch creation mode).
@@ -580,6 +584,9 @@ The `gwtcb`, `gwcob`, and `gcbw` shortcuts map to `git-worktree-checkout -b`
 Default-branch shortcuts (`gwtcm`, `gwtcbm`, `gwcobd`, `gcbdw`) are available
 via shell integration only (`daft shell-init`). They resolve the remote's
 default branch dynamically and use `git-worktree-checkout -b`.
+
+Shell integration also provides `gwtrn` (maps to `daft rename`) and `gwtsync`
+(maps to `git-sync`) as shell functions with cd behavior.
 
 Manage with `daft setup shortcuts list`, `enable <style>`, `disable <style>`,
 `only <style>`.
