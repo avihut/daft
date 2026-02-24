@@ -25,17 +25,16 @@ use tabled::{
 #[command(about = "List all worktrees with status information")]
 #[command(long_about = r#"
 Lists all worktrees in the current project with enriched status information
-including HEAD SHA, ahead/behind counts, remote tracking, dirty status,
-branch age, and last commit details.
+including uncommitted changes, ahead/behind counts vs. both the base branch
+and the remote tracking branch, branch age, and last commit details.
 
 Each worktree is shown with:
   - A `>` marker for the current worktree
-  - Branch name (or "(detached)" for detached HEAD)
+  - Branch name, with `*` for the default branch (like git branch)
   - Relative path from the current directory
-  - Short HEAD commit SHA
   - Ahead/behind counts vs. the base branch (e.g. +3 -1)
-  - A `*` dirty marker if there are uncommitted changes
-  - Remote tracking branch (e.g. origin/main)
+  - Count of uncommitted/untracked files (e.g. ~3)
+  - Ahead/behind counts vs. remote tracking branch (e.g. +1 -2)
   - Branch age since creation (e.g. 3d, 2w, 5mo)
   - Last commit: shorthand age + subject (e.g. 1h fix login bug)
 
@@ -53,19 +52,17 @@ pub struct Args {
 
 /// A row in the worktree list table.
 struct TableRow {
-    /// Current worktree marker ("> " or "  ").
+    /// Current worktree marker (">") or empty.
     current: String,
-    /// Branch name.
+    /// Branch name (with default branch indicator).
     name: String,
     /// Relative path from current directory.
     path: String,
-    /// Short HEAD SHA.
-    head: String,
     /// Ahead/behind base branch (e.g. "+3 -1").
     base: String,
-    /// Dirty marker ("*" or "").
-    dirty: String,
-    /// Remote tracking branch.
+    /// Count of uncommitted changes (e.g. "~3") or empty.
+    head: String,
+    /// Ahead/behind remote tracking branch.
     remote: String,
     /// Branch age since creation (shorthand).
     branch_age: String,
@@ -124,11 +121,12 @@ fn print_json(
                 "name": info.name,
                 "path": rel_path,
                 "is_current": info.is_current,
-                "head": info.head_sha,
+                "is_default_branch": info.is_default_branch,
                 "ahead": info.ahead,
                 "behind": info.behind,
-                "is_dirty": info.is_dirty,
-                "remote_branch": info.remote_branch,
+                "head_changes": info.head_changes,
+                "remote_ahead": info.remote_ahead,
+                "remote_behind": info.remote_behind,
                 "last_commit_age": last_commit_age,
                 "last_commit_subject": info.last_commit_subject,
                 "branch_age": branch_age,
@@ -165,37 +163,34 @@ fn print_table(
                 " ".to_string()
             };
 
-            let rel_path = relative_display_path(&info.path, project_root, cwd);
-
-            let head = if use_color {
-                styles::dim(&info.head_sha)
+            // Branch name with default branch indicator (*)
+            let name = if info.is_default_branch {
+                if use_color {
+                    format!("{} {}", info.name, styles::dim("*"))
+                } else {
+                    format!("{} *", info.name)
+                }
             } else {
-                info.head_sha.clone()
+                info.name.clone()
             };
+
+            let rel_path = relative_display_path(&info.path, project_root, cwd);
 
             let base = format_ahead_behind(info.ahead, info.behind, use_color);
 
-            let dirty = if info.is_dirty {
+            // Head: count of uncommitted changes
+            let head = if info.head_changes > 0 {
+                let text = format!("~{}", info.head_changes);
                 if use_color {
-                    styles::yellow("*")
+                    styles::yellow(&text)
                 } else {
-                    "*".to_string()
+                    text
                 }
             } else {
                 String::new()
             };
 
-            let remote = info
-                .remote_branch
-                .as_deref()
-                .map(|r| {
-                    if use_color {
-                        styles::dim(r)
-                    } else {
-                        r.to_string()
-                    }
-                })
-                .unwrap_or_default();
+            let remote = format_ahead_behind(info.remote_ahead, info.remote_behind, use_color);
 
             let branch_age = format_shorthand_age(info.branch_creation_timestamp, now, use_color);
 
@@ -211,11 +206,10 @@ fn print_table(
 
             TableRow {
                 current,
-                name: info.name.clone(),
+                name,
                 path: rel_path,
-                head,
                 base,
-                dirty,
+                head,
                 remote,
                 branch_age,
                 last_commit,
@@ -228,9 +222,8 @@ fn print_table(
         "",
         "Branch",
         "Path",
-        "Head",
         "Base",
-        "",
+        "Head",
         "Remote",
         "Age",
         "Last Commit",
@@ -250,9 +243,8 @@ fn print_table(
             &row.current,
             &row.name,
             &row.path,
-            &row.head,
             &row.base,
-            &row.dirty,
+            &row.head,
             &row.remote,
             &row.branch_age,
             &row.last_commit,

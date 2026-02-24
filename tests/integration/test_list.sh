@@ -105,16 +105,16 @@ test_list_dirty_marker() {
     local output
     output=$(NO_COLOR=1 git-worktree-list 2>&1)
 
-    # develop should show the * dirty marker
-    if ! echo "$output" | grep "develop" | grep -q '\*'; then
-        log_error "Dirty worktree 'develop' should have * marker"
+    # develop should show the ~N head changes indicator
+    if ! echo "$output" | grep "develop" | grep -q '~[0-9]'; then
+        log_error "Dirty worktree 'develop' should have ~N changes indicator"
         log_error "Output: $output"
         return 1
     fi
 
-    # main should NOT have the * dirty marker
-    if echo "$output" | grep "main" | grep -q '\*'; then
-        log_error "Clean worktree 'main' should not have * marker"
+    # main should NOT have the ~N indicator
+    if echo "$output" | grep "main" | grep -q '~[0-9]'; then
+        log_error "Clean worktree 'main' should not have ~N changes indicator"
         log_error "Output: $output"
         return 1
     fi
@@ -148,7 +148,7 @@ test_list_json() {
     fi
 
     # Check for expected JSON fields
-    local required_fields=("name" "path" "is_current" "head" "ahead" "behind" "is_dirty" "remote_branch" "last_commit_age" "last_commit_subject" "branch_age")
+    local required_fields=("name" "path" "is_current" "is_default_branch" "ahead" "behind" "head_changes" "remote_ahead" "remote_behind" "last_commit_age" "last_commit_subject" "branch_age")
     for field in "${required_fields[@]}"; do
         if ! echo "$output" | grep -q "\"$field\""; then
             log_error "JSON output should contain field '$field'"
@@ -170,11 +170,11 @@ test_list_json() {
         return 1
     fi
 
-    # Verify develop shows as dirty
+    # Verify develop shows as dirty (head_changes > 0)
     local develop_block
     develop_block=$(echo "$output" | awk '/"name": "develop"/{found=1} found && /\}/{print; found=0} found{print}' RS='{' ORS='{')
-    if ! echo "$develop_block" | grep -q '"is_dirty": true'; then
-        log_error "JSON should show develop as dirty"
+    if ! echo "$develop_block" | grep -qE '"head_changes": [1-9]'; then
+        log_error "JSON should show develop with non-zero head_changes"
         log_error "Output: $output"
         return 1
     fi
@@ -546,12 +546,16 @@ test_list_json_branch_age() {
     return 0
 }
 
-# Test that Head column with short SHA appears in table output
+# Test that Head column shows uncommitted change count
 test_list_head_column() {
     local remote_repo=$(create_test_remote "test-repo-list-head" "main")
 
     git-worktree-clone "$remote_repo" || return 1
     cd "test-repo-list-head"
+
+    # Create a worktree and make changes
+    git-worktree-checkout develop || return 1
+    echo "dirty" >> develop/README.md
 
     cd main
     local output
@@ -568,23 +572,31 @@ test_list_head_column() {
         return 1
     fi
 
-    # Verify a 7-char SHA appears in the output (at least one row)
-    if ! echo "$output" | grep -qE '[0-9a-f]{7}'; then
-        log_error "List should contain 7-char commit SHA"
+    # develop should show ~N for uncommitted changes
+    if ! echo "$output" | grep "develop" | grep -q '~[0-9]'; then
+        log_error "Dirty worktree should show ~N in Head column"
         log_error "Output: $output"
         return 1
     fi
 
-    log_success "Head column with short SHA shown"
+    log_success "Head column shows uncommitted change count"
     return 0
 }
 
-# Test that Remote column appears in table output
+# Test that Remote column shows ahead/behind vs upstream
 test_list_remote_column() {
     local remote_repo=$(create_test_remote "test-repo-list-remote" "main")
 
     git-worktree-clone "$remote_repo" || return 1
     cd "test-repo-list-remote"
+
+    # Create a worktree and make a local commit (ahead of remote)
+    git-worktree-checkout develop || return 1
+    cd develop
+    echo "local change" > local.txt
+    git add local.txt
+    git commit -m "Local commit" >/dev/null 2>&1
+    cd ..
 
     cd main
     local output
@@ -597,13 +609,6 @@ test_list_remote_column() {
     # Verify the Remote header appears
     if ! echo "$output" | grep -q "Remote"; then
         log_error "List header should contain 'Remote'"
-        log_error "Output: $output"
-        return 1
-    fi
-
-    # Verify remote tracking branch appears (origin/main)
-    if ! echo "$output" | grep -q "origin/main"; then
-        log_error "List should show remote tracking branch 'origin/main'"
         log_error "Output: $output"
         return 1
     fi
@@ -648,7 +653,7 @@ test_list_relative_path() {
     return 0
 }
 
-# Test JSON includes head and remote_branch fields
+# Test JSON includes head_changes and remote_ahead/behind fields
 test_list_json_head_remote() {
     local remote_repo=$(create_test_remote "test-repo-list-json-hr" "main")
 
@@ -659,21 +664,34 @@ test_list_json_head_remote() {
     local output
     output=$(git-worktree-list --json 2>&1)
 
-    # Check for head field with 7-char SHA
-    if ! echo "$output" | grep -qE '"head": "[0-9a-f]{7}"'; then
-        log_error "JSON output should contain 'head' field with 7-char SHA"
+    # Check for head_changes field
+    if ! echo "$output" | grep -q '"head_changes"'; then
+        log_error "JSON output should contain 'head_changes' field"
         log_error "Output: $output"
         return 1
     fi
 
-    # Check for remote_branch field
-    if ! echo "$output" | grep -q '"remote_branch"'; then
-        log_error "JSON output should contain 'remote_branch' field"
+    # Check for remote_ahead and remote_behind fields
+    if ! echo "$output" | grep -q '"remote_ahead"'; then
+        log_error "JSON output should contain 'remote_ahead' field"
         log_error "Output: $output"
         return 1
     fi
 
-    log_success "JSON output contains head and remote_branch fields"
+    if ! echo "$output" | grep -q '"remote_behind"'; then
+        log_error "JSON output should contain 'remote_behind' field"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Check for is_default_branch field
+    if ! echo "$output" | grep -q '"is_default_branch"'; then
+        log_error "JSON output should contain 'is_default_branch' field"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "JSON output contains head_changes and remote fields"
     return 0
 }
 

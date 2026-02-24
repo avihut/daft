@@ -16,28 +16,29 @@ pub struct WorktreeInfo {
     pub path: PathBuf,
     /// Whether this worktree is the one the user is currently inside.
     pub is_current: bool,
+    /// Whether this is the default (base) branch.
+    pub is_default_branch: bool,
     /// Commits ahead of the base branch (None if not computable).
     pub ahead: Option<usize>,
     /// Commits behind the base branch (None if not computable).
     pub behind: Option<usize>,
-    /// Whether the worktree has uncommitted or untracked changes.
-    pub is_dirty: bool,
+    /// Number of uncommitted/untracked changed files (0 = clean).
+    pub head_changes: usize,
+    /// Commits ahead of the remote tracking branch (None if no upstream).
+    pub remote_ahead: Option<usize>,
+    /// Commits behind the remote tracking branch (None if no upstream).
+    pub remote_behind: Option<usize>,
     /// Unix timestamp of the last commit (None if unavailable).
     pub last_commit_timestamp: Option<i64>,
     /// Subject line of the last commit.
     pub last_commit_subject: String,
     /// Unix timestamp of branch creation (None for detached HEAD or if unavailable).
     pub branch_creation_timestamp: Option<i64>,
-    /// Short HEAD commit SHA.
-    pub head_sha: String,
-    /// Remote tracking branch (e.g. "origin/main"), if any.
-    pub remote_branch: Option<String>,
 }
 
 /// Raw entry parsed from `git worktree list --porcelain`.
 struct PorcelainEntry {
     path: PathBuf,
-    head_sha: String,
     branch: Option<String>,
     is_bare: bool,
     is_detached: bool,
@@ -56,7 +57,6 @@ struct PorcelainEntry {
 fn parse_porcelain(output: &str) -> Vec<PorcelainEntry> {
     let mut entries = Vec::new();
     let mut current_path: Option<PathBuf> = None;
-    let mut current_head: String = String::new();
     let mut current_branch: Option<String> = None;
     let mut is_bare = false;
     let mut is_detached = false;
@@ -67,19 +67,15 @@ fn parse_porcelain(output: &str) -> Vec<PorcelainEntry> {
             if let Some(path) = current_path.take() {
                 entries.push(PorcelainEntry {
                     path,
-                    head_sha: std::mem::take(&mut current_head),
                     branch: current_branch.take(),
                     is_bare,
                     is_detached,
                 });
             }
             current_path = Some(PathBuf::from(path_str));
-            current_head = String::new();
             current_branch = None;
             is_bare = false;
             is_detached = false;
-        } else if let Some(sha) = line.strip_prefix("HEAD ") {
-            current_head = sha.to_string();
         } else if let Some(branch_ref) = line.strip_prefix("branch ") {
             current_branch = branch_ref.strip_prefix("refs/heads/").map(String::from);
         } else if line == "bare" {
@@ -92,7 +88,6 @@ fn parse_porcelain(output: &str) -> Vec<PorcelainEntry> {
     if let Some(path) = current_path.take() {
         entries.push(PorcelainEntry {
             path,
-            head_sha: current_head,
             branch: current_branch.take(),
             is_bare,
             is_detached,
@@ -200,11 +195,27 @@ fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) -> Option<i
     None
 }
 
-/// Get the remote tracking branch for a local branch (e.g. "origin/main").
-fn get_remote_tracking_branch(branch: &str, worktree_path: &Path) -> Option<String> {
-    let refspec = format!("refs/heads/{branch}");
+/// Count the number of changed (modified, staged, untracked) files in a worktree.
+fn count_changed_files(worktree_path: &Path) -> usize {
     let output = Command::new("git")
-        .args(["for-each-ref", "--format=%(upstream:short)", &refspec])
+        .args(["status", "--porcelain"])
+        .current_dir(worktree_path)
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout.trim().lines().filter(|l| !l.is_empty()).count()
+        }
+        _ => 0,
+    }
+}
+
+/// Get ahead/behind counts for a branch relative to its remote tracking branch.
+fn get_upstream_ahead_behind(branch: &str, worktree_path: &Path) -> Option<(usize, usize)> {
+    let range = format!("{branch}@{{upstream}}...{branch}");
+    let output = Command::new("git")
+        .args(["rev-list", "--left-right", "--count", &range])
         .current_dir(worktree_path)
         .output()
         .ok()?;
@@ -213,11 +224,14 @@ fn get_remote_tracking_branch(branch: &str, worktree_path: &Path) -> Option<Stri
         return None;
     }
 
-    let upstream = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if upstream.is_empty() {
-        None
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let parts: Vec<&str> = stdout.trim().split('\t').collect();
+    if parts.len() == 2 {
+        let behind = parts[0].parse::<usize>().ok()?;
+        let ahead = parts[1].parse::<usize>().ok()?;
+        Some((ahead, behind))
     } else {
-        Some(upstream)
+        None
     }
 }
 
@@ -271,8 +285,22 @@ pub fn collect_worktree_info(
             (None, None)
         };
 
-        // Dirty check
-        let is_dirty = git.has_uncommitted_changes_in(&entry.path).unwrap_or(false);
+        // Count of uncommitted/untracked changed files
+        let head_changes = count_changed_files(&entry.path);
+
+        // Ahead/behind relative to upstream tracking branch
+        let (remote_ahead, remote_behind) = if !entry.is_detached {
+            if let Some(branch) = &entry.branch {
+                match get_upstream_ahead_behind(branch, &entry.path) {
+                    Some((a, b)) => (Some(a), Some(b)),
+                    None => (None, None),
+                }
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
 
         // Last commit info
         let (last_commit_timestamp, last_commit_subject) = get_last_commit_info(&entry.path);
@@ -287,35 +315,22 @@ pub fn collect_worktree_info(
             None
         };
 
-        // Short HEAD SHA (first 7 characters)
-        let head_sha = if entry.head_sha.len() >= 7 {
-            entry.head_sha[..7].to_string()
-        } else {
-            entry.head_sha.clone()
-        };
-
-        // Remote tracking branch
-        let remote_branch = if !entry.is_detached {
-            entry
-                .branch
-                .as_deref()
-                .and_then(|b| get_remote_tracking_branch(b, &entry.path))
-        } else {
-            None
-        };
+        // Whether this is the default (base) branch
+        let is_default_branch = entry.branch.as_deref().is_some_and(|b| b == base_branch);
 
         infos.push(WorktreeInfo {
             name: branch_display,
             path: entry.path,
             is_current,
+            is_default_branch,
             ahead,
             behind,
-            is_dirty,
+            head_changes,
+            remote_ahead,
+            remote_behind,
             last_commit_timestamp,
             last_commit_subject,
             branch_creation_timestamp,
-            head_sha,
-            remote_branch,
         });
     }
 

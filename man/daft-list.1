@@ -8,17 +8,16 @@ daft\-list \- List all worktrees with status information
 .SH DESCRIPTION
 .PP
 Lists all worktrees in the current project with enriched status information
-including HEAD SHA, ahead/behind counts, remote tracking, dirty status,
-branch age, and last commit details.
+including uncommitted changes, ahead/behind counts vs. both the base branch
+and the remote tracking branch, branch age, and last commit details.
 .PP
 Each worktree is shown with:
   \- A `>` marker for the current worktree
-  \- Branch name (or "(detached)" for detached HEAD)
+  \- Branch name, with `*` for the default branch (like git branch)
   \- Relative path from the current directory
-  \- Short HEAD commit SHA
   \- Ahead/behind counts vs. the base branch (e.g. +3 \-1)
-  \- A `*` dirty marker if there are uncommitted changes
-  \- Remote tracking branch (e.g. origin/main)
+  \- Count of uncommitted/untracked files (e.g. ~3)
+  \- Ahead/behind counts vs. remote tracking branch (e.g. +1 \-2)
   \- Branch age since creation (e.g. 3d, 2w, 5mo)
   \- Last commit: shorthand age + subject (e.g. 1h fix login bug)
 .PP
