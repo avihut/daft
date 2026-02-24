@@ -176,12 +176,18 @@ _daft() {
                 _daft_remove
                 return 0
                 ;;
+            list)
+                COMP_WORDS=("git-worktree-list" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _git_worktree_list
+                return 0
+                ;;
         esac
     fi
 
     # top-level: complete daft subcommands
     if [[ $cword -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "hooks shell-init completions setup multi-remote release-notes doctor clone init go start carry update prune rename sync remove adopt eject" -- "$cur") )
+        COMPREPLY=( $(compgen -W "hooks shell-init completions setup multi-remote release-notes doctor clone init go start carry update list prune rename sync remove adopt eject" -- "$cur") )
         return 0
     fi
 }

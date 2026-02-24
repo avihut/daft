@@ -171,6 +171,7 @@ complete -c daft -n '__fish_use_subcommand' -a 'rename' -d 'Rename branch and mo
 complete -c daft -n '__fish_use_subcommand' -a 'remove' -d 'Delete branch and worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'adopt' -d 'Convert repo to worktree layout'
 complete -c daft -n '__fish_use_subcommand' -a 'sync' -d 'Synchronize worktrees with remote'
+complete -c daft -n '__fish_use_subcommand' -a 'list' -d 'List worktrees with status'
 complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to traditional layout'
 complete -c daft -n '__fish_seen_subcommand_from go' -f -a "(daft __complete daft-go '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from start' -f -a "(daft __complete daft-start '' 2>/dev/null)"

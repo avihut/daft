@@ -189,13 +189,19 @@ _daft() {
                 __daft_remove_impl
                 return
                 ;;
+            list)
+                words=("git-worktree-list" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __git_worktree_list_impl
+                return
+                ;;
         esac
     fi
 
     # top-level: complete daft subcommands
     if (( CURRENT == 2 )); then
         compadd hooks shell-init completions setup multi-remote release-notes doctor \
-                clone init go start carry update prune rename sync remove adopt eject
+                clone init go start carry update list prune rename sync remove adopt eject
         return
     fi
 }

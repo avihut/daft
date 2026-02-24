@@ -32,6 +32,7 @@ pub(super) const VERB_ALIAS_GROUPS: &[(&[&str], &str)] = &[
     (&["remove"], "daft-remove"),
     (&["rename"], "daft-rename"),
     (&["sync"], "git-sync"),
+    (&["list"], "git-worktree-list"),
 ];
 
 /// Available daft commands that need completion scripts
@@ -44,6 +45,7 @@ pub(super) const COMMANDS: &[&str] = &[
     "git-worktree-fetch",
     "git-worktree-flow-adopt",
     "git-worktree-flow-eject",
+    "git-worktree-list",
     "daft-go",
     "daft-start",
     "daft-remove",
@@ -62,6 +64,7 @@ pub(super) fn get_command_for_name(command_name: &str) -> Option<Command> {
         "git-worktree-fetch" => Some(crate::commands::fetch::Args::command()),
         "git-worktree-flow-adopt" => Some(crate::commands::flow_adopt::Args::command()),
         "git-worktree-flow-eject" => Some(crate::commands::flow_eject::Args::command()),
+        "git-worktree-list" => Some(crate::commands::list::Args::command()),
         "daft-go" => Some(crate::commands::checkout::GoArgs::command()),
         "daft-start" => Some(crate::commands::checkout::StartArgs::command()),
         "daft-remove" => Some(crate::commands::worktree_branch::RemoveArgs::command()),
