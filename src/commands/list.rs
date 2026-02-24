@@ -16,8 +16,9 @@ use clap::Parser;
 use pathdiff::diff_paths;
 use tabled::{
     builder::Builder,
-    settings::{object::Columns, Modify, Style, Width},
+    settings::{peaker::Priority, Style, Width},
 };
+use terminal_size::{terminal_size, Width as TermWidth};
 
 #[derive(Parser)]
 #[command(name = "git-worktree-list")]
@@ -246,9 +247,15 @@ fn print_table(
     }
 
     let mut table = builder.build();
-    table
-        .with(Style::blank())
-        .with(Modify::new(Columns::last()).with(Width::truncate(50).suffix("...")));
+    table.with(Style::blank());
+
+    if let Some((TermWidth(width), _)) = terminal_size() {
+        table.with(
+            Width::truncate(width as usize)
+                .suffix("...")
+                .priority(Priority::max(true)),
+        );
+    }
 
     println!("{table}");
 }
