@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.33](https://github.com/avihut/daft/compare/v1.0.32...v1.0.33) - 2026-02-24
+
+### Bug Fixes
+
+- *(list)* respect terminal width and work from repo root ([#268](https://github.com/avihut/daft/pull/268))
+
 ## [1.0.32](https://github.com/avihut/daft/compare/v1.0.31...v1.0.32) - 2026-02-24
 
 ### Bug Fixes
