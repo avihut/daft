@@ -187,7 +187,7 @@ _daft() {
 
     # top-level: complete daft subcommands
     if [[ $cword -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "hooks shell-init completions setup multi-remote release-notes doctor clone init go start carry update list prune rename sync remove adopt eject" -- "$cur") )
+        COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor clone init go start carry update list prune rename sync remove adopt eject" -- "$cur") )
         return 0
     fi
 }
