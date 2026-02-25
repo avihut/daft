@@ -371,6 +371,9 @@ impl HookExecutor {
         }
 
         // Execute all hooks in order using the renderer for output
+        // Clear any active spinner — the hook renderer writes directly to stderr.
+        output.finish_spinner();
+
         let mut renderer = HookRenderer::auto(&self.config.output);
         let env = HookEnvironment::from_context(ctx);
         let working_dir = env.working_directory(ctx);
