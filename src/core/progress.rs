@@ -80,6 +80,9 @@ impl ProgressSink for CommandBridge<'_> {
 
 impl HookRunner for CommandBridge<'_> {
     fn run_hook(&mut self, ctx: &crate::hooks::HookContext) -> anyhow::Result<HookOutcome> {
+        // Hooks use their own renderer that writes directly to stderr,
+        // so clear any active spinner to avoid ghost lines.
+        self.output.finish_spinner();
         let result = self.executor.execute(ctx, self.output)?;
         Ok(HookOutcome {
             success: result.success,
