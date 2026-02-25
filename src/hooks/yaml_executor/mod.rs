@@ -213,6 +213,9 @@ pub fn execute_yaml_hook_with_rc(
         job_results: Arc::clone(&job_results),
     };
 
+    // Clear any active spinner — the hook renderer writes directly to stderr.
+    output.finish_spinner();
+
     // Print header and track total time
     crate::output::hook_progress::print_hook_header(hook_name);
     let hook_start = std::time::Instant::now();
