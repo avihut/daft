@@ -200,7 +200,7 @@ _daft() {
 
     # top-level: complete daft subcommands
     if (( CURRENT == 2 )); then
-        compadd hooks shell-init completions setup multi-remote release-notes doctor \
+        compadd hooks shell-init setup multi-remote release-notes doctor \
                 clone init go start carry update list prune rename sync remove adopt eject
         return
     fi

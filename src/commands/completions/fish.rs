@@ -155,7 +155,6 @@ const DAFT_FISH_COMPLETIONS: &str = r#"# daft subcommand completions
 complete -c daft -f
 complete -c daft -n '__fish_use_subcommand' -a 'hooks' -d 'Manage lifecycle hooks'
 complete -c daft -n '__fish_use_subcommand' -a 'shell-init' -d 'Generate shell wrappers'
-complete -c daft -n '__fish_use_subcommand' -a 'completions' -d 'Generate completions'
 complete -c daft -n '__fish_use_subcommand' -a 'setup' -d 'Setup and configuration'
 complete -c daft -n '__fish_use_subcommand' -a 'multi-remote' -d 'Multi-remote management'
 complete -c daft -n '__fish_use_subcommand' -a 'release-notes' -d 'Generate release notes'

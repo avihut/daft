@@ -310,7 +310,6 @@ fn build_fig_multi_remote_subcommand() -> FigSubcommand {
 pub(super) fn generate_fig_daft_spec() -> Result<String> {
     let simple_subcommands = [
         ("shell-init", "Generate shell initialization scripts"),
-        ("completions", "Generate shell completion scripts"),
         ("setup", "Setup and configuration"),
         ("release-notes", "Generate release notes"),
     ];
