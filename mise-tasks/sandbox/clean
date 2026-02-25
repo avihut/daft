@@ -2,17 +2,11 @@
 #MISE description="Remove the sandbox for this worktree"
 set -euo pipefail
 
-# --- Configuration ---
-DAFT_SANDBOX_BASE="${DAFT_SANDBOX_BASE:-/tmp}"
-
 # --- Compute deterministic sandbox path ---
-worktree_path="$(pwd)"
-if command -v sha256sum &>/dev/null; then
-    hash=$(echo -n "$worktree_path" | sha256sum | cut -c1-8)
-else
-    hash=$(echo -n "$worktree_path" | shasum -a 256 | cut -c1-8)
-fi
-sandbox_dir="${DAFT_SANDBOX_BASE}/daft-sandbox-${hash}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/_lib.sh"
+
+sandbox_dir="$(sandbox_dir)"
 
 # --- Remove if exists ---
 if [ -d "$sandbox_dir" ]; then

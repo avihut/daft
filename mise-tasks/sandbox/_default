@@ -3,19 +3,16 @@
 set -euo pipefail
 
 # --- Configuration (override via env vars) ---
-DAFT_SANDBOX_BASE="${DAFT_SANDBOX_BASE:-/tmp}"
 DAFT_SANDBOX_GIT_NAME="${DAFT_SANDBOX_GIT_NAME:-Daft Developer}"
 DAFT_SANDBOX_GIT_EMAIL="${DAFT_SANDBOX_GIT_EMAIL:-dev@daft.test}"
 
 # --- Compute deterministic sandbox path ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/_lib.sh"
+
+sandbox_dir="$(sandbox_dir)"
 # pwd returns the project root because mise always runs tasks from there
 worktree_path="$(pwd)"
-if command -v sha256sum &>/dev/null; then
-    hash=$(echo -n "$worktree_path" | sha256sum | cut -c1-8)
-else
-    hash=$(echo -n "$worktree_path" | shasum -a 256 | cut -c1-8)
-fi
-sandbox_dir="${DAFT_SANDBOX_BASE}/daft-sandbox-${hash}"
 
 # --- Detect shell for shell-init ---
 shell_name="$(basename "${SHELL:-/bin/bash}")"
