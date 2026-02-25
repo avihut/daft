@@ -16,7 +16,7 @@ use clap::Parser;
 use pathdiff::diff_paths;
 use tabled::{
     builder::Builder,
-    settings::{peaker::Priority, Style, Width},
+    settings::{object::Columns, peaker::Priority, Padding, Style, Width},
 };
 use terminal_size::{terminal_size, Width as TermWidth};
 
@@ -170,7 +170,7 @@ fn print_table(
             // Branch name with default branch indicator (◉)
             let name = if info.is_default_branch {
                 if use_color {
-                    format!("{} {}", info.name, styles::dim("\u{25C9}"))
+                    format!("{} {}", info.name, styles::orange("\u{25C9}"))
                 } else {
                     format!("{} \u{25C9}", info.name)
                 }
@@ -249,6 +249,7 @@ fn print_table(
 
     let mut table = builder.build();
     table.with(Style::blank());
+    table.modify(Columns::first(), Padding::new(1, 0, 0, 0));
 
     if let Some((TermWidth(width), _)) = terminal_size() {
         table.with(
