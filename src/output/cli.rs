@@ -220,6 +220,10 @@ impl Output for CliOutput {
         let spinner = ProgressBar::new_spinner();
         spinner.set_style(style);
         spinner.set_message(msg.to_string());
+        // Force an immediate draw so the spinner is visible right away.
+        // enable_steady_tick() only schedules future ticks — without this
+        // explicit tick(), fast operations finish before the first draw.
+        spinner.tick();
         spinner.enable_steady_tick(Duration::from_millis(80));
 
         self.spinner = Some(spinner);
