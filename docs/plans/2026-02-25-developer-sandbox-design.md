@@ -94,13 +94,14 @@ The hash is computed from the worktree's absolute path, so:
 ## Shell Integration
 
 The `mise run sandbox` task writes the sandbox path to `$DAFT_CD_FILE`, but mise
-tasks are not routed through daft's shell wrapper. Add this function to your
-shell config for automatic cd:
+tasks are not routed through daft's shell wrapper. Run `mise run sandbox:setup`
+to install a `daft-dev-sandbox` function into your RC file, or add it manually:
 
 ### Bash / Zsh
 
 ```bash
-sandbox() {
+# daft sandbox - cd into per-worktree test environment
+daft-dev-sandbox() {
     local cd_file
     cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd.XXXXXX")
     DAFT_CD_FILE="$cd_file" mise run sandbox
@@ -114,7 +115,8 @@ sandbox() {
 ### Fish
 
 ```fish
-function sandbox
+# daft sandbox - cd into per-worktree test environment
+function daft-dev-sandbox
     set -l cd_file (mktemp (set -q TMPDIR; and echo $TMPDIR; or echo /tmp)"/daft-cd.XXXXXX")
     env DAFT_CD_FILE="$cd_file" mise run sandbox
     if test -s "$cd_file"
@@ -124,8 +126,8 @@ function sandbox
 end
 ```
 
-After adding, run `sandbox` from any daft worktree to create and enter the
-sandbox.
+After adding, run `daft-dev-sandbox` from any daft worktree to create and enter
+the sandbox.
 
 ## Dependencies
 

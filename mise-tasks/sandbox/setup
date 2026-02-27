@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+#MISE description="Install daft-dev-sandbox shell function into your RC file"
+set -euo pipefail
+
+# --- Detect shell and RC file ---
+shell_name="$(basename "${SHELL:-/bin/bash}")"
+case "$shell_name" in
+    zsh)  rc_file="${HOME}/.zshrc" ;;
+    fish) rc_file="${HOME}/.config/fish/config.fish" ;;
+    *)    shell_name="bash"; rc_file="${HOME}/.bashrc" ;;
+esac
+
+# --- Check if already installed ---
+case "$shell_name" in
+    fish) pattern='function daft-dev-sandbox' ;;
+    *)    pattern='daft-dev-sandbox()' ;;
+esac
+
+if [ -f "$rc_file" ] && grep -q "$pattern" "$rc_file"; then
+    echo "daft-dev-sandbox function already installed in ${rc_file}"
+    exit 0
+fi
+
+# --- Ensure RC file exists ---
+mkdir -p "$(dirname "$rc_file")"
+touch "$rc_file"
+
+# --- Append shell function ---
+case "$shell_name" in
+    fish)
+        cat >> "$rc_file" <<'EOF'
+
+# daft sandbox - cd into per-worktree test environment
+function daft-dev-sandbox
+    set -l cd_file (mktemp (set -q TMPDIR; and echo $TMPDIR; or echo /tmp)"/daft-cd.XXXXXX")
+    env DAFT_CD_FILE="$cd_file" mise run sandbox
+    if test -s "$cd_file"
+        cd (cat "$cd_file")
+    end
+    rm -f "$cd_file"
+end
+EOF
+        ;;
+    *)
+        cat >> "$rc_file" <<'EOF'
+
+# daft sandbox - cd into per-worktree test environment
+daft-dev-sandbox() {
+    local cd_file
+    cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd.XXXXXX")
+    DAFT_CD_FILE="$cd_file" mise run sandbox
+    if [ -s "$cd_file" ]; then
+        cd "$(cat "$cd_file")" || true
+    fi
+    rm -f "$cd_file"
+}
+EOF
+        ;;
+esac
+
+echo "Added daft-dev-sandbox function to ${rc_file} — restart your shell or run: source ${rc_file}"
