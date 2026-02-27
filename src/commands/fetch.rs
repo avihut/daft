@@ -131,11 +131,12 @@ pub fn run() -> Result<()> {
     }
 
     output.start_spinner("Updating worktrees...");
-    let result = {
+    let exec_result = {
         let mut sink = OutputSink(&mut output);
-        fetch::execute(&params, &git, &project_root, &mut sink)?
+        fetch::execute(&params, &git, &project_root, &mut sink)
     };
     output.finish_spinner();
+    let result = exec_result?;
 
     render_fetch_result(&result, &mut output);
 

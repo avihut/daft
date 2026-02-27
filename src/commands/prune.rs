@@ -81,11 +81,12 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings, force: bool) -> R
     }
 
     output.start_spinner("Pruning stale branches...");
-    let result = {
+    let exec_result = {
         let mut bridge = CommandBridge::new(output, executor);
-        prune::execute(&params, &mut bridge)?
+        prune::execute(&params, &mut bridge)
     };
     output.finish_spinner();
+    let result = exec_result?;
 
     if result.nothing_to_prune {
         return Ok(());

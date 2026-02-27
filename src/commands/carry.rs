@@ -79,11 +79,12 @@ pub fn run() -> Result<()> {
     }
 
     output.start_spinner("Carrying changes...");
-    let result = {
+    let exec_result = {
         let mut sink = OutputSink(&mut output);
-        carry::execute(&params, &git, &project_root, &mut sink)?
+        carry::execute(&params, &git, &project_root, &mut sink)
     };
     output.finish_spinner();
+    let result = exec_result?;
 
     render_carry_result(&result, &mut output);
     output.cd_path(&result.cd_target);

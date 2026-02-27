@@ -147,11 +147,12 @@ fn run_adopt(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     if !params.dry_run {
         output.start_spinner("Converting to worktree layout...");
     }
-    let result = {
+    let exec_result = {
         let mut sink = OutputSink(output);
-        flow_adopt::execute(&params, &mut sink)?
+        flow_adopt::execute(&params, &mut sink)
     };
     output.finish_spinner();
+    let result = exec_result?;
 
     if result.dry_run {
         output.result(&format!(

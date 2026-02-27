@@ -129,11 +129,12 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
     }
 
     output.start_spinner("Initializing repository...");
-    let result = {
+    let exec_result = {
         let mut sink = OutputSink(output);
-        init::execute(&params, &git, &mut sink)?
+        init::execute(&params, &git, &mut sink)
     };
     output.finish_spinner();
+    let result = exec_result?;
 
     render_init_result(&result, output);
 

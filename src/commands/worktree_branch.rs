@@ -345,11 +345,12 @@ fn run_branch_delete(
     }
 
     output.start_spinner("Deleting branches...");
-    let result = {
+    let exec_result = {
         let mut bridge = CommandBridge::new(output, executor);
-        branch_delete::execute(&params, &mut bridge)?
+        branch_delete::execute(&params, &mut bridge)
     };
     output.finish_spinner();
+    let result = exec_result?;
 
     // Handle validation errors
     if !result.validation_errors.is_empty() {
@@ -432,11 +433,12 @@ fn run_rename_inner(
     if !params.dry_run {
         output.start_spinner("Renaming branch...");
     }
-    let result = {
+    let exec_result = {
         let mut sink = OutputSink(output);
-        rename::execute(&params, &mut sink)?
+        rename::execute(&params, &mut sink)
     };
     output.finish_spinner();
+    let result = exec_result?;
 
     // Render result
     if result.dry_run {

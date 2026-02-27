@@ -131,11 +131,12 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     if !params.dry_run {
         output.start_spinner("Converting to traditional layout...");
     }
-    let result = {
+    let exec_result = {
         let mut bridge = CommandBridge::new(output, executor);
-        flow_eject::execute(&params, &mut bridge)?
+        flow_eject::execute(&params, &mut bridge)
     };
     output.finish_spinner();
+    let result = exec_result?;
 
     if result.dry_run {
         output.result(&format!(

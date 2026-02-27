@@ -460,12 +460,13 @@ fn run_checkout(
     }
 
     output.start_spinner("Preparing worktree...");
-    let (result, executor) = {
+    let (checkout_result, executor) = {
         let mut bridge = CommandBridge::new(output, executor);
-        let result = checkout::execute(&params, &git, &project_root, &mut bridge)?;
-        (result, bridge.into_executor())
+        let r = checkout::execute(&params, &git, &project_root, &mut bridge);
+        (r, bridge.into_executor())
     };
     output.finish_spinner();
+    let result = checkout_result?;
 
     render_checkout_result(&result, output);
 
@@ -519,12 +520,13 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
     }
 
     output.start_spinner("Creating worktree...");
-    let (result, executor) = {
+    let (checkout_result, executor) = {
         let mut bridge = CommandBridge::new(output, executor);
-        let result = checkout_branch::execute(&params, &git, &project_root, &mut bridge)?;
-        (result, bridge.into_executor())
+        let r = checkout_branch::execute(&params, &git, &project_root, &mut bridge);
+        (r, bridge.into_executor())
     };
     output.finish_spinner();
+    let result = checkout_result?;
 
     render_create_result(&result, output);
 

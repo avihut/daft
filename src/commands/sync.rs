@@ -121,11 +121,12 @@ fn run_prune_phase(
     let executor = HookExecutor::new(hooks_config)?;
 
     output.start_spinner("Pruning stale branches...");
-    let result = {
+    let exec_result = {
         let mut bridge = CommandBridge::new(output, executor);
-        prune::execute(&params, &mut bridge)?
+        prune::execute(&params, &mut bridge)
     };
     output.finish_spinner();
+    let result = exec_result?;
 
     if result.nothing_to_prune {
         return Ok(result);
@@ -198,11 +199,12 @@ fn run_update_phase(output: &mut dyn Output, settings: &DaftSettings, force: boo
     };
 
     output.start_spinner("Updating worktrees...");
-    let result = {
+    let exec_result = {
         let mut sink = OutputSink(output);
-        fetch::execute(&params, &git, &project_root, &mut sink)?
+        fetch::execute(&params, &git, &project_root, &mut sink)
     };
     output.finish_spinner();
+    let result = exec_result?;
 
     render_fetch_result(&result, output);
 
@@ -367,11 +369,12 @@ fn run_rebase_phase(
     };
 
     output.start_spinner("Rebasing worktrees...");
-    let result = {
+    let exec_result = {
         let mut sink = OutputSink(output);
-        rebase::execute(&params, &git, &project_root, &mut sink)?
+        rebase::execute(&params, &git, &project_root, &mut sink)
     };
     output.finish_spinner();
+    let result = exec_result?;
 
     render_rebase_result(&result, output);
 

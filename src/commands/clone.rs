@@ -157,11 +157,12 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     }
 
     output.start_spinner("Cloning repository...");
-    let result = {
+    let exec_result = {
         let mut sink = OutputSink(output);
-        clone::execute(&params, &mut sink)?
+        clone::execute(&params, &mut sink)
     };
     output.finish_spinner();
+    let result = exec_result?;
 
     render_clone_result(&result, output);
 

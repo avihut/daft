@@ -91,11 +91,12 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
     }
 
     output.start_spinner("Deleting branches...");
-    let result = {
+    let exec_result = {
         let mut bridge = CommandBridge::new(output, executor);
-        branch_delete::execute(&params, &mut bridge)?
+        branch_delete::execute(&params, &mut bridge)
     };
     output.finish_spinner();
+    let result = exec_result?;
 
     // Handle validation errors
     if !result.validation_errors.is_empty() {
