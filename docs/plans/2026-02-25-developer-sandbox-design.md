@@ -109,6 +109,8 @@ daft-dev-sandbox() {
         cd "$(cat "$cd_file")" || true
     fi
     rm -f "$cd_file"
+    # Load dev build's shell wrappers into current shell
+    eval "$(daft shell-init "$(basename "$SHELL")")"
 }
 ```
 
@@ -123,6 +125,8 @@ function daft-dev-sandbox
         cd (cat "$cd_file")
     end
     rm -f "$cd_file"
+    # Load dev build's shell wrappers into current shell
+    daft shell-init fish | source
 end
 ```
 

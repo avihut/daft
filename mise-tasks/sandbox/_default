@@ -14,13 +14,6 @@ sandbox_dir="$(sandbox_dir)"
 # pwd returns the project root because mise always runs tasks from there
 worktree_path="$(pwd)"
 
-# --- Detect shell for shell-init ---
-shell_name="$(basename "${SHELL:-/bin/bash}")"
-case "$shell_name" in
-    bash|zsh|fish) ;;
-    *) shell_name="bash" ;;
-esac
-
 # --- Warn if release binary hasn't been built yet ---
 if [ ! -d "${worktree_path}/target/release" ]; then
     echo "Warning: target/release not found — run 'mise run dev' first" >&2
@@ -47,11 +40,6 @@ export GIT_AUTHOR_NAME="${DAFT_SANDBOX_GIT_NAME}"
 export GIT_AUTHOR_EMAIL="${DAFT_SANDBOX_GIT_EMAIL}"
 export GIT_COMMITTER_NAME="${DAFT_SANDBOX_GIT_NAME}"
 export GIT_COMMITTER_EMAIL="${DAFT_SANDBOX_GIT_EMAIL}"
-
-# Stub compdef — direnv doesn't have zsh's completion system
-command -v compdef >/dev/null 2>&1 || compdef() { :; }
-
-eval "\$(daft shell-init ${shell_name})"
 ENVRC
 
 # --- Write helper scripts ---
