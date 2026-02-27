@@ -24,7 +24,7 @@ fn main() -> Result<()> {
     if resolved == "daft" || resolved == "git-daft" {
         let args: Vec<String> = std::env::args().collect();
         if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
-            println!("daft {}", daft::VERSION);
+            println!("daft {}", daft::VERSION_DISPLAY);
             return Ok(());
         }
     }

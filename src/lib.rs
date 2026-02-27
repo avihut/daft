@@ -1,10 +1,11 @@
 use std::env;
 use std::path::Path;
 
-/// Version string from Cargo.toml.
-/// Using CARGO_PKG_VERSION ensures consistency across all build methods
-/// (git clone, tarball, Homebrew, etc.)
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Clean version string from Cargo.toml, used by clap attributes and man pages.
+pub const VERSION: &str = env!("DAFT_VERSION");
+
+/// Display version for `daft --version`. Includes branch and commit hash in dev builds.
+pub const VERSION_DISPLAY: &str = env!("DAFT_VERSION_DISPLAY");
 
 /// Environment variable containing the path to a temp file where the shell
 /// wrapper expects the cd target to be written.
