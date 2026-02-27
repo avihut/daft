@@ -47,6 +47,9 @@ export GIT_AUTHOR_EMAIL="${DAFT_SANDBOX_GIT_EMAIL}"
 export GIT_COMMITTER_NAME="${DAFT_SANDBOX_GIT_NAME}"
 export GIT_COMMITTER_EMAIL="${DAFT_SANDBOX_GIT_EMAIL}"
 
+# Stub compdef — direnv doesn't have zsh's completion system
+command -v compdef >/dev/null 2>&1 || compdef() { :; }
+
 eval "\$(daft shell-init ${shell_name})"
 ENVRC
 
