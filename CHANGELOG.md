@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0](https://github.com/avihut/daft/compare/v1.0.33...v1.1.0) - 2026-03-07
+
+### Bug Fixes
+
+- *(list)* use orange for default branch indicator and tighten first column ([#272](https://github.com/avihut/daft/pull/272))
+
+### Features
+
+- add spinner feedback for long-running operations ([#277](https://github.com/avihut/daft/pull/277))
+
+### Refactoring
+
+- hide completions command from help and shell completions ([#270](https://github.com/avihut/daft/pull/270))
+
 ## [1.0.33](https://github.com/avihut/daft/compare/v1.0.32...v1.0.33) - 2026-02-24
 
 ### Bug Fixes
