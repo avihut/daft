@@ -72,6 +72,9 @@ pub const CYAN: &str = "\x1b[36m";
 /// ANSI escape code for orange text (256-color).
 pub const ORANGE: &str = "\x1b[38;5;208m";
 
+/// ANSI escape code for dark gray text (bright black).
+pub const DARK_GRAY: &str = "\x1b[90m";
+
 /// Wraps text in bold styling.
 pub fn bold(text: &str) -> String {
     format!("{BOLD}{text}{RESET}")
@@ -105,6 +108,11 @@ pub fn cyan(text: &str) -> String {
 /// Wraps text in orange styling (brand color).
 pub fn orange(text: &str) -> String {
     format!("{ORANGE}{text}{RESET}")
+}
+
+/// Wraps text in dark gray styling (bright black).
+pub fn dark_gray(text: &str) -> String {
+    format!("{DARK_GRAY}{text}{RESET}")
 }
 
 /// Formats a definition list item with a bold term.

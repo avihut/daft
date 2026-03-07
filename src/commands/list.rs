@@ -53,9 +53,9 @@ pub struct Args {
 
 /// A row in the worktree list table.
 struct TableRow {
-    /// Current worktree marker (">") or empty.
-    current: String,
-    /// Branch name (with default branch indicator).
+    /// Annotation column: current marker (">") and/or default branch indicator ("◉").
+    annotation: String,
+    /// Branch name.
     name: String,
     /// Relative path from current directory.
     path: String,
@@ -154,29 +154,42 @@ fn print_table(
     let use_color = styles::colors_enabled();
     let now = Utc::now().timestamp();
 
+    // Determine which annotation types exist across all rows
+    let has_any_current = infos.iter().any(|i| i.is_current);
+    let has_any_default = infos.iter().any(|i| i.is_default_branch);
+
     let rows: Vec<TableRow> = infos
         .iter()
         .map(|info| {
-            let current = if info.is_current {
-                if use_color {
-                    styles::cyan(">")
+            // Build annotation: ">" first (cyan), then "◉" (dark gray)
+            let mut annotation = String::new();
+            if has_any_current {
+                if info.is_current {
+                    if use_color {
+                        annotation.push_str(&styles::cyan(">"));
+                    } else {
+                        annotation.push('>');
+                    }
                 } else {
-                    ">".to_string()
+                    annotation.push(' ');
                 }
-            } else {
-                " ".to_string()
-            };
+                if has_any_default {
+                    annotation.push(' ');
+                }
+            }
+            if has_any_default {
+                if info.is_default_branch {
+                    if use_color {
+                        annotation.push_str(&styles::dark_gray("\u{25C9}"));
+                    } else {
+                        annotation.push('\u{25C9}');
+                    }
+                } else {
+                    annotation.push(' ');
+                }
+            }
 
-            // Branch name with default branch indicator (◉)
-            let name = if info.is_default_branch {
-                if use_color {
-                    format!("{} {}", info.name, styles::orange("\u{25C9}"))
-                } else {
-                    format!("{} \u{25C9}", info.name)
-                }
-            } else {
-                info.name.clone()
-            };
+            let name = info.name.clone();
 
             let rel_path = relative_display_path(&info.path, project_root, cwd);
 
@@ -201,7 +214,7 @@ fn print_table(
             };
 
             TableRow {
-                current,
+                annotation,
                 name,
                 path: rel_path,
                 base,
@@ -213,9 +226,10 @@ fn print_table(
         })
         .collect();
 
+    let has_annotations = has_any_current || has_any_default;
+
     let mut builder = Builder::new();
-    let header: Vec<String> = [
-        "",
+    let data_headers = [
         "Branch",
         "Path",
         "Base",
@@ -223,20 +237,32 @@ fn print_table(
         "Remote",
         "Age",
         "Last Commit",
-    ]
-    .iter()
-    .map(|h| {
-        if use_color && !h.is_empty() {
-            styles::dim(h)
-        } else {
-            h.to_string()
-        }
-    })
-    .collect();
+    ];
+    let header: Vec<String> = if has_annotations {
+        std::iter::once("".to_string())
+            .chain(data_headers.iter().map(|h| {
+                if use_color {
+                    styles::dim(h)
+                } else {
+                    h.to_string()
+                }
+            }))
+            .collect()
+    } else {
+        data_headers
+            .iter()
+            .map(|h| {
+                if use_color {
+                    styles::dim(h)
+                } else {
+                    h.to_string()
+                }
+            })
+            .collect()
+    };
     builder.push_record(header);
     for row in &rows {
-        builder.push_record([
-            &row.current,
+        let data_cols: Vec<&str> = vec![
             &row.name,
             &row.path,
             &row.base,
@@ -244,7 +270,14 @@ fn print_table(
             &row.remote,
             &row.branch_age,
             &row.last_commit,
-        ]);
+        ];
+        if has_annotations {
+            let mut record = vec![row.annotation.as_str()];
+            record.extend(data_cols);
+            builder.push_record(record);
+        } else {
+            builder.push_record(data_cols);
+        }
     }
 
     let mut table = builder.build();
