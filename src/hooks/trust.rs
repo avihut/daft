@@ -249,11 +249,14 @@ impl TrustDatabase {
     /// Get the trust level for a repository.
     ///
     /// Checks in order:
-    /// 1. Exact repository match
+    /// 1. Exact repository match (canonicalized)
     /// 2. Pattern matches
     /// 3. Default level
     pub fn get_trust_level(&self, git_dir: &Path) -> TrustLevel {
-        let git_dir_str = git_dir.to_string_lossy();
+        let canonical = git_dir
+            .canonicalize()
+            .unwrap_or_else(|_| git_dir.to_path_buf());
+        let git_dir_str = canonical.to_string_lossy();
 
         // Check exact match
         if let Some(entry) = self.repositories.get(git_dir_str.as_ref()) {
@@ -272,15 +275,24 @@ impl TrustDatabase {
     }
 
     /// Set the trust level for a repository.
+    ///
+    /// The path is canonicalized before storage to ensure consistent lookups
+    /// (callers may pass relative or non-canonical paths).
     pub fn set_trust_level(&mut self, git_dir: &Path, level: TrustLevel) {
-        let git_dir_str = git_dir.to_string_lossy().to_string();
+        let canonical = git_dir
+            .canonicalize()
+            .unwrap_or_else(|_| git_dir.to_path_buf());
+        let git_dir_str = canonical.to_string_lossy().to_string();
         self.repositories
             .insert(git_dir_str, TrustEntry::new(level));
     }
 
     /// Remove trust for a repository.
     pub fn remove_trust(&mut self, git_dir: &Path) -> bool {
-        let git_dir_str = git_dir.to_string_lossy();
+        let canonical = git_dir
+            .canonicalize()
+            .unwrap_or_else(|_| git_dir.to_path_buf());
+        let git_dir_str = canonical.to_string_lossy();
         self.repositories.remove(git_dir_str.as_ref()).is_some()
     }
 
@@ -317,7 +329,10 @@ impl TrustDatabase {
 
     /// Check if a repository has explicit trust configured.
     pub fn has_explicit_trust(&self, git_dir: &Path) -> bool {
-        let git_dir_str = git_dir.to_string_lossy();
+        let canonical = git_dir
+            .canonicalize()
+            .unwrap_or_else(|_| git_dir.to_path_buf());
+        let git_dir_str = canonical.to_string_lossy();
         self.repositories.contains_key(git_dir_str.as_ref())
     }
 
