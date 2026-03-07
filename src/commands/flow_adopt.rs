@@ -1,7 +1,9 @@
 use crate::{
     core::{worktree::flow_adopt, OutputSink},
     git::should_show_gitoxide_notice,
-    hooks::{HookContext, HookExecutor, HookType, HooksConfig, TrustLevel},
+    hooks::{
+        get_remote_url_for_git_dir, HookContext, HookExecutor, HookType, HooksConfig, TrustLevel,
+    },
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
@@ -191,7 +193,11 @@ fn run_post_adopt_hook(
 
     if args.trust_hooks {
         output.step("Trusting repository for hooks (--trust-hooks flag)");
-        executor.trust_repository(&result.git_dir, TrustLevel::Allow)?;
+        if let Some(fp) = get_remote_url_for_git_dir(&result.git_dir) {
+            executor.trust_repository_with_fingerprint(&result.git_dir, TrustLevel::Allow, fp)?;
+        } else {
+            executor.trust_repository(&result.git_dir, TrustLevel::Allow)?;
+        }
     }
 
     let ctx = HookContext::new(

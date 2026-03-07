@@ -71,6 +71,12 @@ pub struct TrustEntry {
     /// How trust was granted.
     #[serde(default = "default_granted_by")]
     pub granted_by: String,
+    /// Repository fingerprint for identity verification.
+    /// Stores the remote URL at the time trust was granted.
+    /// `None` means the entry was created before fingerprinting was added.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub fingerprint: Option<String>,
 }
 
 fn default_granted_by() -> String {
@@ -89,7 +95,15 @@ impl TrustEntry {
             level,
             granted_at: epoch,
             granted_by: "user".to_string(),
+            fingerprint: None,
         }
+    }
+
+    /// Create a new trust entry with a fingerprint (remote URL).
+    pub fn with_fingerprint(level: TrustLevel, fingerprint: String) -> Self {
+        let mut entry = Self::new(level);
+        entry.fingerprint = Some(fingerprint);
+        entry
     }
 
     /// Format the granted_at timestamp for display.
@@ -274,6 +288,18 @@ impl TrustDatabase {
         self.default_level
     }
 
+    /// Get the full trust entry for a repository (if an explicit entry exists).
+    ///
+    /// Unlike `get_trust_level`, this does not fall through to patterns or the
+    /// default level. Returns `None` if no explicit entry exists.
+    pub fn get_trust_entry(&self, git_dir: &Path) -> Option<&TrustEntry> {
+        let canonical = git_dir
+            .canonicalize()
+            .unwrap_or_else(|_| git_dir.to_path_buf());
+        let git_dir_str = canonical.to_string_lossy();
+        self.repositories.get(git_dir_str.as_ref())
+    }
+
     /// Set the trust level for a repository.
     ///
     /// The path is canonicalized before storage to ensure consistent lookups
@@ -285,6 +311,23 @@ impl TrustDatabase {
         let git_dir_str = canonical.to_string_lossy().to_string();
         self.repositories
             .insert(git_dir_str, TrustEntry::new(level));
+    }
+
+    /// Set the trust level for a repository with a fingerprint (remote URL).
+    pub fn set_trust_level_with_fingerprint(
+        &mut self,
+        git_dir: &Path,
+        level: TrustLevel,
+        fingerprint: String,
+    ) {
+        let canonical = git_dir
+            .canonicalize()
+            .unwrap_or_else(|_| git_dir.to_path_buf());
+        let git_dir_str = canonical.to_string_lossy().to_string();
+        self.repositories.insert(
+            git_dir_str,
+            TrustEntry::with_fingerprint(level, fingerprint),
+        );
     }
 
     /// Remove trust for a repository.
@@ -354,6 +397,51 @@ impl TrustDatabase {
 
         stale
     }
+
+    /// Backfill fingerprints for entries that exist on disk but have no
+    /// fingerprint stored. Returns the number of entries updated. The caller
+    /// is responsible for calling `save()` to persist the changes.
+    pub fn backfill_fingerprints(&mut self) -> usize {
+        let to_backfill: Vec<(String, String)> = self
+            .repositories
+            .iter()
+            .filter(|(_, entry)| entry.fingerprint.is_none())
+            .filter_map(|(path, _)| {
+                let git_dir = Path::new(path.as_str());
+                get_remote_url_for_git_dir(git_dir).map(|url| (path.clone(), url))
+            })
+            .collect();
+
+        let count = to_backfill.len();
+        for (path, url) in to_backfill {
+            if let Some(entry) = self.repositories.get_mut(&path) {
+                entry.fingerprint = Some(url);
+            }
+        }
+        count
+    }
+}
+
+/// Get the remote "origin" URL for a repository given its `.git` directory.
+///
+/// Returns `None` if the remote cannot be queried (no remote configured,
+/// path doesn't exist, etc.).
+pub fn get_remote_url_for_git_dir(git_dir: &Path) -> Option<String> {
+    use std::process::Command;
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .env("GIT_DIR", git_dir)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Detect the actual schema version by examining the data structure.
@@ -747,5 +835,142 @@ mod tests {
         )
         .unwrap();
         assert_eq!(detect_schema_version(&stated_v2, 2), 2);
+    }
+
+    #[test]
+    fn test_trust_entry_with_fingerprint() {
+        let entry = TrustEntry::with_fingerprint(
+            TrustLevel::Allow,
+            "git@github.com:user/repo.git".to_string(),
+        );
+        assert_eq!(entry.level, TrustLevel::Allow);
+        assert_eq!(
+            entry.fingerprint,
+            Some("git@github.com:user/repo.git".to_string())
+        );
+        assert!(entry.granted_at > 0);
+    }
+
+    #[test]
+    fn test_trust_entry_without_fingerprint() {
+        let entry = TrustEntry::new(TrustLevel::Allow);
+        assert_eq!(entry.level, TrustLevel::Allow);
+        assert_eq!(entry.fingerprint, None);
+    }
+
+    #[test]
+    fn test_set_and_get_trust_with_fingerprint() {
+        let mut db = TrustDatabase::default();
+        let git_dir = Path::new("/path/to/repo/.git");
+
+        db.set_trust_level_with_fingerprint(
+            git_dir,
+            TrustLevel::Allow,
+            "git@github.com:user/repo.git".to_string(),
+        );
+
+        let entry = db.get_trust_entry(git_dir).unwrap();
+        assert_eq!(entry.level, TrustLevel::Allow);
+        assert_eq!(
+            entry.fingerprint,
+            Some("git@github.com:user/repo.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_trust_entry_returns_none_for_missing() {
+        let db = TrustDatabase::default();
+        assert!(db.get_trust_entry(Path::new("/missing/.git")).is_none());
+    }
+
+    #[test]
+    fn test_fingerprint_survives_serialization() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("trust.json");
+
+        let mut db = TrustDatabase::default();
+        db.set_trust_level_with_fingerprint(
+            Path::new("/project/.git"),
+            TrustLevel::Allow,
+            "https://github.com/user/project.git".to_string(),
+        );
+        db.save_to(&path).unwrap();
+
+        let loaded = TrustDatabase::load_from(&path).unwrap();
+        let entry = loaded.repositories.get("/project/.git").unwrap();
+        assert_eq!(
+            entry.fingerprint,
+            Some("https://github.com/user/project.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_loading_db_without_fingerprint_field() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("trust.json");
+
+        // Simulate a V2 database without fingerprint fields (pre-upgrade)
+        let json = r#"{
+            "version": 2,
+            "default_level": "deny",
+            "repositories": {
+                "/old/repo/.git": {
+                    "level": "allow",
+                    "granted_at": 1700000000,
+                    "granted_by": "user"
+                }
+            },
+            "patterns": []
+        }"#;
+        std::fs::write(&path, json).unwrap();
+
+        let db = TrustDatabase::load_from(&path).unwrap();
+        let entry = db.repositories.get("/old/repo/.git").unwrap();
+        assert_eq!(entry.level, TrustLevel::Allow);
+        assert_eq!(entry.fingerprint, None);
+    }
+
+    #[test]
+    fn test_backfill_fingerprints_skips_nonexistent_paths() {
+        let mut db = TrustDatabase::default();
+        // Entry at a path that doesn't exist — git can't resolve a remote
+        db.set_trust_level(Path::new("/nonexistent/repo/.git"), TrustLevel::Allow);
+        assert_eq!(db.backfill_fingerprints(), 0);
+        // Fingerprint should remain None
+        let entry = db.repositories.get("/nonexistent/repo/.git").unwrap();
+        assert_eq!(entry.fingerprint, None);
+    }
+
+    #[test]
+    fn test_backfill_fingerprints_skips_already_fingerprinted() {
+        let mut db = TrustDatabase::default();
+        db.set_trust_level_with_fingerprint(
+            Path::new("/some/repo/.git"),
+            TrustLevel::Allow,
+            "https://github.com/user/repo.git".to_string(),
+        );
+        // Already has a fingerprint, so backfill should skip it
+        assert_eq!(db.backfill_fingerprints(), 0);
+        let entry = db.repositories.get("/some/repo/.git").unwrap();
+        assert_eq!(
+            entry.fingerprint,
+            Some("https://github.com/user/repo.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_fingerprint_not_serialized_when_none() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("trust.json");
+
+        let mut db = TrustDatabase::default();
+        db.set_trust_level(Path::new("/project/.git"), TrustLevel::Allow);
+        db.save_to(&path).unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !contents.contains("fingerprint"),
+            "fingerprint should not appear in JSON when None"
+        );
     }
 }

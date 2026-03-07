@@ -3,7 +3,7 @@ use crate::{
     core::{worktree::clone, OutputSink},
     git::should_show_gitoxide_notice,
     hints::maybe_show_shell_hint,
-    hooks::{HookContext, HookExecutor, HookType, HooksConfig, TrustLevel},
+    hooks::{HookContext, HookExecutor, HookType, HooksConfig, TrustDatabase, TrustLevel},
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
@@ -166,6 +166,21 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 
     render_clone_result(&result, output);
 
+    // Remove stale trust entry if cloning to a path that was previously trusted.
+    // The old repo at this path no longer exists (overwritten by clone), so the
+    // trust entry is for a different repo.
+    if !args.trust_hooks {
+        let mut trust_db = TrustDatabase::load().unwrap_or_default();
+        if trust_db.has_explicit_trust(&result.git_dir) {
+            trust_db.remove_trust(&result.git_dir);
+            if let Err(e) = trust_db.save() {
+                output.warning(&format!("Could not remove stale trust entry: {e}"));
+            } else {
+                output.step("Removed stale trust entry for previous repository at this path");
+            }
+        }
+    }
+
     // Run hooks and exec only if a worktree was created
     if result.worktree_dir.is_some() {
         run_post_clone_hook(args, &result, output)?;
@@ -220,7 +235,11 @@ fn run_post_clone_hook(
 
     if args.trust_hooks {
         output.step("Trusting repository for hooks (--trust-hooks flag)");
-        executor.trust_repository(&result.git_dir, TrustLevel::Allow)?;
+        executor.trust_repository_with_fingerprint(
+            &result.git_dir,
+            TrustLevel::Allow,
+            result.repository_url.clone(),
+        )?;
     }
 
     let worktree_path = result.worktree_dir.as_ref().unwrap();
@@ -265,7 +284,11 @@ fn run_post_create_hook(
     let mut executor = HookExecutor::new(hooks_config)?;
 
     if args.trust_hooks {
-        executor.trust_repository(&result.git_dir, TrustLevel::Allow)?;
+        executor.trust_repository_with_fingerprint(
+            &result.git_dir,
+            TrustLevel::Allow,
+            result.repository_url.clone(),
+        )?;
     }
 
     let worktree_path = result.worktree_dir.as_ref().unwrap();

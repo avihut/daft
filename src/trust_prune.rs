@@ -52,8 +52,9 @@ pub fn run_prune_trust() -> Result<()> {
     let mut db = TrustDatabase::load().context("Failed to load trust database")?;
 
     let removed = db.prune();
+    let backfilled = db.backfill_fingerprints();
 
-    if !removed.is_empty() {
+    if !removed.is_empty() || backfilled > 0 {
         db.save().context("Failed to save trust database")?;
     }
 

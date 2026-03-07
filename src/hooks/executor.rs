@@ -240,7 +240,7 @@ impl HookExecutor {
 
         // Check trust level (unless bypassed by explicit invocation)
         if !self.bypass_trust {
-            let trust_level = self.trust_db.get_trust_level(&ctx.git_dir);
+            let trust_level = self.get_verified_trust_level(&ctx.git_dir, output);
             match trust_level {
                 TrustLevel::Deny => {
                     output.debug(&format!(
@@ -342,7 +342,7 @@ impl HookExecutor {
 
         // Check trust level (unless bypassed by explicit invocation)
         if !self.bypass_trust {
-            let trust_level = self.trust_db.get_trust_level(&ctx.git_dir);
+            let trust_level = self.get_verified_trust_level(&ctx.git_dir, output);
 
             let has_project_hooks = discovery
                 .hooks
@@ -623,10 +623,74 @@ impl HookExecutor {
         self.trust_db.save()
     }
 
+    /// Trust a repository with a fingerprint (remote URL).
+    pub fn trust_repository_with_fingerprint(
+        &mut self,
+        git_dir: &Path,
+        level: TrustLevel,
+        fingerprint: String,
+    ) -> Result<()> {
+        self.trust_db
+            .set_trust_level_with_fingerprint(git_dir, level, fingerprint);
+        self.trust_db.save()
+    }
+
     /// Untrust a repository.
     pub fn untrust_repository(&mut self, git_dir: &Path) -> Result<()> {
         self.trust_db.remove_trust(git_dir);
         self.trust_db.save()
+    }
+
+    /// Get the effective trust level, considering fingerprint verification.
+    ///
+    /// If a trust entry has a stored fingerprint (remote URL), the current
+    /// remote URL is checked against it. On mismatch, the level is downgraded
+    /// to `Prompt` and a warning is emitted.
+    ///
+    /// Entries without a fingerprint (created before this feature) are treated
+    /// as valid without verification.
+    fn get_verified_trust_level(&self, git_dir: &Path, output: &mut dyn Output) -> TrustLevel {
+        let entry = match self.trust_db.get_trust_entry(git_dir) {
+            Some(entry) => entry,
+            None => {
+                // No explicit entry — fall through to pattern matching / default
+                return self.trust_db.get_trust_level(git_dir);
+            }
+        };
+
+        // If no fingerprint stored, this is a legacy entry — trust it as-is
+        let stored_fingerprint = match &entry.fingerprint {
+            Some(fp) => fp,
+            None => return entry.level,
+        };
+
+        // Get the current remote URL from the repo
+        let current_url = super::get_remote_url_for_git_dir(git_dir);
+
+        match current_url {
+            Some(ref url) if url == stored_fingerprint => {
+                // Fingerprint matches — trust level is valid
+                entry.level
+            }
+            Some(ref url) => {
+                // Fingerprint mismatch — different repo at same path
+                output.warning(&format!(
+                    "Trust fingerprint mismatch for {}",
+                    git_dir.display()
+                ));
+                output.warning(&format!("  Trusted remote: {stored_fingerprint}"));
+                output.warning(&format!("  Current remote: {url}"));
+                output.warning(
+                    "A different repository may now be at this path. \
+                     Run 'git daft hooks trust' to re-trust.",
+                );
+                TrustLevel::Prompt
+            }
+            None => {
+                // Can't determine remote URL — don't penalize
+                entry.level
+            }
+        }
     }
 }
 

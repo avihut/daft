@@ -41,6 +41,12 @@ This lets `post-clone` install foundational tools (pnpm, bun, uv, etc.) that
 For security, hooks from untrusted repositories don't run automatically. Trust
 is managed per-repository.
 
+When a repository is trusted, daft stores the remote URL as a fingerprint. If
+the remote URL changes later (for example, a different repository is cloned to
+the same path), trust is automatically downgraded to `prompt` with a warning.
+Run `git daft hooks trust` to re-trust the repository. Trust entries created
+before this feature continue to work without verification.
+
 ### Trust Levels
 
 | Level            | Behavior                                    |
