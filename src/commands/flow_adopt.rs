@@ -1,5 +1,6 @@
 use crate::{
     core::{worktree::flow_adopt, OutputSink},
+    git::should_show_gitoxide_notice,
     hooks::{HookContext, HookExecutor, HookType, HooksConfig, TrustLevel},
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -139,10 +140,19 @@ fn run_adopt(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         use_gitoxide: settings.use_gitoxide,
     };
 
-    let result = {
+    if should_show_gitoxide_notice(settings.use_gitoxide) {
+        output.warning("[experimental] Using gitoxide backend for git operations");
+    }
+
+    if !params.dry_run {
+        output.start_spinner("Converting to worktree layout...");
+    }
+    let exec_result = {
         let mut sink = OutputSink(output);
-        flow_adopt::execute(&params, &mut sink)?
+        flow_adopt::execute(&params, &mut sink)
     };
+    output.finish_spinner();
+    let result = exec_result?;
 
     if result.dry_run {
         output.result(&format!(

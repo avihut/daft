@@ -4,7 +4,7 @@ use crate::{
         CommandBridge,
     },
     get_current_worktree_path, get_git_common_dir, get_project_root,
-    git::GitCommand,
+    git::{should_show_gitoxide_notice, GitCommand},
     hints::maybe_show_shell_hint,
     hooks::{HookExecutor, HooksConfig},
     is_git_repository,
@@ -455,11 +455,18 @@ fn run_checkout(
     let hooks_config = HooksConfig::default();
     let executor = HookExecutor::new(hooks_config)?;
 
-    let (result, executor) = {
+    if should_show_gitoxide_notice(settings.use_gitoxide) {
+        output.warning("[experimental] Using gitoxide backend for git operations");
+    }
+
+    output.start_spinner("Preparing worktree...");
+    let (checkout_result, executor) = {
         let mut bridge = CommandBridge::new(output, executor);
-        let result = checkout::execute(&params, &git, &project_root, &mut bridge)?;
-        (result, bridge.into_executor())
+        let r = checkout::execute(&params, &git, &project_root, &mut bridge);
+        (r, bridge.into_executor())
     };
+    output.finish_spinner();
+    let result = checkout_result?;
 
     render_checkout_result(&result, output);
 
@@ -508,11 +515,18 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
     let hooks_config = HooksConfig::default();
     let executor = HookExecutor::new(hooks_config)?;
 
-    let (result, executor) = {
+    if should_show_gitoxide_notice(settings.use_gitoxide) {
+        output.warning("[experimental] Using gitoxide backend for git operations");
+    }
+
+    output.start_spinner("Creating worktree...");
+    let (checkout_result, executor) = {
         let mut bridge = CommandBridge::new(output, executor);
-        let result = checkout_branch::execute(&params, &git, &project_root, &mut bridge)?;
-        (result, bridge.into_executor())
+        let r = checkout_branch::execute(&params, &git, &project_root, &mut bridge);
+        (r, bridge.into_executor())
     };
+    output.finish_spinner();
+    let result = checkout_result?;
 
     render_create_result(&result, output);
 

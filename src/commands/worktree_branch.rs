@@ -3,6 +3,7 @@ use crate::{
         worktree::{branch_delete, rename},
         CommandBridge, OutputSink,
     },
+    git::should_show_gitoxide_notice,
     hooks::{HookExecutor, HooksConfig},
     is_git_repository,
     logging::init_logging,
@@ -339,10 +340,17 @@ fn run_branch_delete(
     let hooks_config = HooksConfig::default();
     let executor = HookExecutor::new(hooks_config)?;
 
-    let result = {
+    if should_show_gitoxide_notice(settings.use_gitoxide) {
+        output.warning("[experimental] Using gitoxide backend for git operations");
+    }
+
+    output.start_spinner("Deleting branches...");
+    let exec_result = {
         let mut bridge = CommandBridge::new(output, executor);
-        branch_delete::execute(&params, &mut bridge)?
+        branch_delete::execute(&params, &mut bridge)
     };
+    output.finish_spinner();
+    let result = exec_result?;
 
     // Handle validation errors
     if !result.validation_errors.is_empty() {
@@ -418,10 +426,19 @@ fn run_rename_inner(
         multi_remote_default: settings.multi_remote_default.clone(),
     };
 
-    let result = {
+    if should_show_gitoxide_notice(settings.use_gitoxide) {
+        output.warning("[experimental] Using gitoxide backend for git operations");
+    }
+
+    if !params.dry_run {
+        output.start_spinner("Renaming branch...");
+    }
+    let exec_result = {
         let mut sink = OutputSink(output);
-        rename::execute(&params, &mut sink)?
+        rename::execute(&params, &mut sink)
     };
+    output.finish_spinner();
+    let result = exec_result?;
 
     // Render result
     if result.dry_run {

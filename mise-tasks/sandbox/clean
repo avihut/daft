@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+#MISE description="Remove the sandbox for this worktree"
+set -euo pipefail
+
+# --- Compute deterministic sandbox path ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/_lib.sh"
+
+sandbox_dir="$(sandbox_dir)"
+
+# --- Remove if exists ---
+if [ -d "$sandbox_dir" ]; then
+    rm -rf "$sandbox_dir"
+    echo "Removed sandbox at ${sandbox_dir}"
+else
+    echo "No sandbox found for this worktree"
+fi

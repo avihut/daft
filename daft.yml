@@ -43,4 +43,7 @@ hooks:
         needs: [mise install]
 
   worktree-pre-remove:
-    jobs: []
+    jobs:
+      - name: sandbox-clean
+        description: Remove the sandbox for this worktree
+        run: mise run sandbox:clean
