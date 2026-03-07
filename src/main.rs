@@ -32,6 +32,9 @@ fn main() -> Result<()> {
     // Check for updates (reads cache, spawns background check if stale)
     let update_notification = daft::update_check::maybe_check_for_update();
 
+    // Prune stale trust entries (background, once per 24h)
+    daft::trust_prune::maybe_prune_trust();
+
     // Route to the appropriate command based on invocation name
     let result = match resolved {
         // Git worktree extension commands (via symlinks)
@@ -72,6 +75,10 @@ fn main() -> Result<()> {
                     "__complete" => commands::complete::run(),
                     "__check-update" => {
                         let _ = daft::update_check::run_check_update();
+                        return Ok(());
+                    }
+                    "__prune-trust" => {
+                        let _ = daft::trust_prune::run_prune_trust();
                         return Ok(());
                     }
                     "hooks" => commands::hooks::run(),

@@ -190,6 +190,9 @@ pub mod keys {
         /// Config key for hooks.output.verbose setting.
         pub const OUTPUT_VERBOSE: &str = "daft.hooks.output.verbose";
 
+        /// Config key for hooks.trustPrune setting (auto-prune stale trust entries).
+        pub const TRUST_PRUNE: &str = "daft.hooks.trustPrune";
+
         /// Generate a config key for a hook-specific setting.
         pub fn hook_key(hook_name: &str, setting: &str) -> String {
             format!("daft.hooks.{hook_name}.{setting}")

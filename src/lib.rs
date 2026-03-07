@@ -61,6 +61,7 @@ pub mod output;
 pub mod shortcuts;
 pub mod styles;
 pub mod suggest;
+pub mod trust_prune;
 pub mod update_check;
 pub mod utils;
 

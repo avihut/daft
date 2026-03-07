@@ -134,6 +134,23 @@ fn list_long_about() -> String {
     .join("\n")
 }
 
+fn prune_long_about() -> String {
+    [
+        "Remove stale entries from the trust database.",
+        "",
+        "Iterates all repository entries in the trust database and removes",
+        "any whose path no longer exists on disk. This cleans up entries",
+        "left behind when repositories are deleted or moved.",
+        "",
+        "This runs automatically in the background once per 24 hours.",
+        &format!(
+            "To disable auto-pruning: {}",
+            bold("git config --global daft.hooks.trustPrune false")
+        ),
+    ]
+    .join("\n")
+}
+
 fn reset_long_about() -> String {
     [
         "Remove the trust entry for a repository, or clear all trust settings.",
@@ -366,7 +383,7 @@ pub(super) struct HooksRunArgs {
 }
 
 mod trust_cmd {
-    use super::{list_long_about, reset_all_long_about, reset_long_about};
+    use super::{list_long_about, prune_long_about, reset_all_long_about, reset_long_about};
     use clap::{Args, Subcommand};
     use std::path::PathBuf;
 
@@ -395,6 +412,10 @@ mod trust_cmd {
         /// Remove trust entry for a repository or clear all trust settings
         #[command(long_about = reset_long_about())]
         Reset(ResetArgs),
+
+        /// Remove stale entries from the trust database
+        #[command(long_about = prune_long_about())]
+        Prune,
     }
 
     #[derive(Args)]
@@ -429,6 +450,7 @@ pub fn run() -> Result<()> {
     match args.command {
         Some(HooksCommand::Trust(trust_args)) => match trust_args.command {
             Some(trust_cmd::TrustSubcommand::List { all }) => trust::cmd_list(all, &mut output),
+            Some(trust_cmd::TrustSubcommand::Prune) => trust::cmd_prune(&mut output),
             Some(trust_cmd::TrustSubcommand::Reset(reset_args)) => match reset_args.command {
                 Some(trust_cmd::ResetSubcommand::All { force }) => {
                     trust::cmd_reset_trust(force, &mut output)

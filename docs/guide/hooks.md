@@ -70,6 +70,9 @@ git daft hooks status
 # List all trusted repositories
 git daft hooks trust list
 
+# Prune stale entries from the trust database
+git daft hooks trust prune
+
 # Clear all trust settings
 git daft hooks trust reset all
 ```

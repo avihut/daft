@@ -189,6 +189,37 @@ pub(super) fn cmd_deny(path: &Path, force: bool, output: &mut dyn Output) -> Res
     result
 }
 
+/// Prune stale entries from the trust database.
+pub(super) fn cmd_prune(output: &mut dyn Output) -> Result<()> {
+    let mut db = TrustDatabase::load().context("Failed to load trust database")?;
+
+    let removed = db.prune();
+
+    if removed.is_empty() {
+        output.info(&dim("No stale entries found."));
+        return Ok(());
+    }
+
+    db.save().context("Failed to save trust database")?;
+
+    output.info(&bold("Pruned stale entries:"));
+    for path in &removed {
+        let repo_path = path.strip_suffix("/.git").unwrap_or(path);
+        output.info(&format!("  {}", dim(repo_path)));
+    }
+    output.result(&format!(
+        "Removed {} stale {}.",
+        green(&removed.len().to_string()),
+        if removed.len() == 1 {
+            "entry"
+        } else {
+            "entries"
+        }
+    ));
+
+    Ok(())
+}
+
 /// List all trusted repositories.
 pub(super) fn cmd_list(show_all: bool, output: &mut dyn Output) -> Result<()> {
     let db = TrustDatabase::load().context("Failed to load trust database")?;

@@ -65,6 +65,7 @@ git config --global daft.autocd false
 | `daft.hooks.defaultTrust`  | `"deny"`                | Default trust level for unknown repositories (`deny`, `prompt`, or `allow`) |
 | `daft.hooks.userDirectory` | `~/.config/daft/hooks/` | Path to user-global hooks directory                                         |
 | `daft.hooks.timeout`       | `300`                   | Hook execution timeout in seconds                                           |
+| `daft.hooks.trustPrune`    | `true`                  | Auto-prune stale entries from the trust database (background, once per 24h) |
 
 ### Per-Hook Settings
 
@@ -134,6 +135,7 @@ git config daft.hooks.worktreePostCreate.failMode abort
 | ---------------------- | ------------------------------------------------------------------------- |
 | `DAFT_CD_FILE`         | Temp file path for shell wrapper CD communication (set by shell wrappers) |
 | `DAFT_NO_HINTS`        | Set to suppress contextual hint messages                                  |
+| `DAFT_NO_TRUST_PRUNE`  | Set to disable automatic trust database pruning                           |
 | `DAFT_NO_UPDATE_CHECK` | Set to disable version update notifications                               |
 | `NO_COLOR`             | Standard variable to disable colored output                               |
 | `PAGER`                | Override the pager for `daft release-notes`                               |

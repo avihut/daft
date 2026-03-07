@@ -320,6 +320,25 @@ impl TrustDatabase {
         let git_dir_str = git_dir.to_string_lossy();
         self.repositories.contains_key(git_dir_str.as_ref())
     }
+
+    /// Remove entries whose paths no longer exist on disk.
+    ///
+    /// Returns the list of paths that were removed. The caller is responsible
+    /// for calling `save()` to persist the changes.
+    pub fn prune(&mut self) -> Vec<String> {
+        let stale: Vec<String> = self
+            .repositories
+            .keys()
+            .filter(|path| !Path::new(path.as_str()).exists())
+            .cloned()
+            .collect();
+
+        for key in &stale {
+            self.repositories.remove(key);
+        }
+
+        stale
+    }
 }
 
 /// Detect the actual schema version by examining the data structure.
@@ -551,6 +570,41 @@ mod tests {
 
         let trusted = db.list_trusted();
         assert_eq!(trusted.len(), 2);
+    }
+
+    #[test]
+    fn test_prune_removes_nonexistent() {
+        let mut db = TrustDatabase::default();
+        db.set_trust_level(Path::new("/nonexistent/path/a/.git"), TrustLevel::Allow);
+        db.set_trust_level(Path::new("/nonexistent/path/b/.git"), TrustLevel::Prompt);
+
+        let removed = db.prune();
+        assert_eq!(removed.len(), 2);
+        assert!(db.repositories.is_empty());
+    }
+
+    #[test]
+    fn test_prune_keeps_existing() {
+        let temp = tempdir().unwrap();
+        let existing_path = temp.path().join(".git");
+        std::fs::create_dir_all(&existing_path).unwrap();
+
+        let mut db = TrustDatabase::default();
+        db.set_trust_level(&existing_path, TrustLevel::Allow);
+        db.set_trust_level(Path::new("/nonexistent/path/.git"), TrustLevel::Allow);
+
+        let removed = db.prune();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0], "/nonexistent/path/.git");
+        assert_eq!(db.repositories.len(), 1);
+        assert!(db.has_explicit_trust(&existing_path));
+    }
+
+    #[test]
+    fn test_prune_empty_database() {
+        let mut db = TrustDatabase::default();
+        let removed = db.prune();
+        assert!(removed.is_empty());
     }
 
     #[test]
