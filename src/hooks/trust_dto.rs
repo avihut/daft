@@ -64,6 +64,9 @@ pub struct TrustEntryV2_0_0 {
     pub granted_at: i64, // Unix epoch seconds
     #[serde(default = "default_granted_by")]
     pub granted_by: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub fingerprint: Option<String>,
 }
 
 /// Migration: V1 -> V2 (string timestamps to epoch).
@@ -91,6 +94,7 @@ impl MigratesTo<TrustDatabaseV2_0_0> for TrustDatabaseV1_0_0 {
                         level: entry.level,
                         granted_at,
                         granted_by: entry.granted_by,
+                        fingerprint: None,
                     },
                 )
             })
@@ -117,6 +121,7 @@ impl IntoDomain<TrustDatabase> for TrustDatabaseV2_0_0 {
                         level: entry.level,
                         granted_at: entry.granted_at,
                         granted_by: entry.granted_by,
+                        fingerprint: entry.fingerprint,
                     },
                 )
             })
@@ -226,6 +231,7 @@ mod tests {
                         level: TrustLevel::Allow,
                         granted_at: 1738060200,
                         granted_by: "user".to_string(),
+                        fingerprint: None,
                     },
                 );
                 map

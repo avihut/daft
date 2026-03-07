@@ -52,7 +52,7 @@ pub mod yaml_executor;
 
 pub use environment::{HookContext, HookEnvironment, RemovalReason};
 pub use executor::{HookExecutor, HookResult};
-pub use trust::{TrustDatabase, TrustEntry, TrustLevel};
+pub use trust::{get_remote_url_for_git_dir, TrustDatabase, TrustEntry, TrustLevel};
 
 use crate::settings::HookOutputConfig;
 use std::fmt;

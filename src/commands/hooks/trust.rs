@@ -1,5 +1,5 @@
 use super::{find_project_hooks, styled_trust_level};
-use crate::hooks::{TrustDatabase, TrustLevel};
+use crate::hooks::{get_remote_url_for_git_dir, TrustDatabase, TrustLevel};
 use crate::output::Output;
 use crate::styles::{bold, cyan, dim, green, red, yellow};
 use crate::{get_git_common_dir, is_git_repository};
@@ -78,7 +78,11 @@ pub(super) fn cmd_set_trust(
 
         // Update and save the trust database
         let mut db = db;
-        db.set_trust_level(&git_dir, new_level);
+        if let Some(fp) = get_remote_url_for_git_dir(&git_dir) {
+            db.set_trust_level_with_fingerprint(&git_dir, new_level, fp);
+        } else {
+            db.set_trust_level(&git_dir, new_level);
+        }
         db.save().context("Failed to save trust database")?;
 
         // Show new status
@@ -189,6 +193,52 @@ pub(super) fn cmd_deny(path: &Path, force: bool, output: &mut dyn Output) -> Res
     result
 }
 
+/// Prune stale entries from the trust database.
+pub(super) fn cmd_prune(output: &mut dyn Output) -> Result<()> {
+    let mut db = TrustDatabase::load().context("Failed to load trust database")?;
+
+    let removed = db.prune();
+    let backfilled = db.backfill_fingerprints();
+
+    if removed.is_empty() && backfilled == 0 {
+        output.info(&dim("No stale entries found."));
+        return Ok(());
+    }
+
+    db.save().context("Failed to save trust database")?;
+
+    if !removed.is_empty() {
+        output.info(&bold("Pruned stale entries:"));
+        for path in &removed {
+            let repo_path = path.strip_suffix("/.git").unwrap_or(path);
+            output.info(&format!("  {}", dim(repo_path)));
+        }
+        output.result(&format!(
+            "Removed {} stale {}.",
+            green(&removed.len().to_string()),
+            if removed.len() == 1 {
+                "entry"
+            } else {
+                "entries"
+            }
+        ));
+    }
+
+    if backfilled > 0 {
+        output.result(&format!(
+            "Backfilled fingerprints for {} {}.",
+            green(&backfilled.to_string()),
+            if backfilled == 1 {
+                "repository"
+            } else {
+                "repositories"
+            }
+        ));
+    }
+
+    Ok(())
+}
+
 /// List all trusted repositories.
 pub(super) fn cmd_list(show_all: bool, output: &mut dyn Output) -> Result<()> {
     let db = TrustDatabase::load().context("Failed to load trust database")?;
@@ -241,6 +291,9 @@ pub(super) fn cmd_list(show_all: bool, output: &mut dyn Output) -> Result<()> {
             styled_trust_level(entry.level),
             dim(&format!("(trusted: {display_time})"))
         ));
+        if let Some(ref fp) = entry.fingerprint {
+            text.push_str(&format!("    Remote: {}\n", dim(fp)));
+        }
     }
 
     // Show patterns if any

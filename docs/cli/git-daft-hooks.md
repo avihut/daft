@@ -33,6 +33,7 @@ Trust a repository to run hooks automatically.
 ```
 git daft hooks trust [OPTIONS] [PATH]
 git daft hooks trust list [--all]
+git daft hooks trust prune
 git daft hooks trust reset [OPTIONS] [PATH]
 git daft hooks trust reset all [OPTIONS]
 ```
@@ -53,6 +54,22 @@ git daft hooks trust list [OPTIONS]
 | Option  | Description                                  |
 | ------- | -------------------------------------------- |
 | `--all` | Include repositories with `deny` trust level |
+
+#### trust prune
+
+Remove stale entries from the trust database. Entries whose paths no longer
+exist on disk are removed.
+
+```
+git daft hooks trust prune
+```
+
+This also runs automatically in the background once per 24 hours. Disable
+with:
+
+```bash
+git config --global daft.hooks.trustPrune false
+```
 
 #### trust reset
 

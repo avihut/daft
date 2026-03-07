@@ -94,47 +94,97 @@ pub(super) const DAFT_ZSH_COMPLETIONS: &str = r#"# daft subcommand completions
 _daft() {
     local curword="${words[$CURRENT]}"
 
-    # hooks run: dynamic hook type and job name completion
-    if (( CURRENT >= 4 )) && [[ "$words[2]" == "hooks" && "$words[3]" == "run" ]]; then
-        local prev="$words[$((CURRENT-1))]"
-        if [[ "$prev" == "--job" ]]; then
-            local hook_type="" i
-            for ((i=4; i<CURRENT; i++)); do
-                if [[ "$words[$i]" != -* ]]; then
-                    hook_type="$words[$i]"
-                    break
-                fi
-            done
-            if [[ -n "$hook_type" ]]; then
-                local -a job_specs
-                local line
-                while IFS= read -r line; do
-                    if [[ "$line" == *$'\t'* ]]; then
-                        local jname="${line%%	*}"
-                        local jdesc="${line#*	}"
-                        job_specs+=("${jname}:${jdesc}")
-                    else
-                        job_specs+=("${line}")
-                    fi
-                done < <(DAFT_COMPLETE_HOOK="$hook_type" daft __complete hooks-run-job "$curword" 2>/dev/null)
-                _describe 'job' job_specs
-            fi
+    # hooks: subcommand and argument completion
+    if (( CURRENT >= 3 )) && [[ "$words[2]" == "hooks" ]]; then
+        # hooks subcommand completion (position 3)
+        if (( CURRENT == 3 )); then
+            compadd trust prompt deny status migrate install validate dump run
+            _files -/
             return
         fi
-        [[ "$prev" == "--tag" ]] && return
-        if [[ "$curword" == -* ]]; then
-            compadd -- --job --tag --dry-run -h --help
-            return
-        fi
-        local -a hooks
-        hooks=(${(f)"$(daft __complete hooks-run "$curword" 2>/dev/null)"})
-        compadd -a hooks
-        return
-    fi
 
-    # hooks: complete subcommands
-    if (( CURRENT == 3 )) && [[ "$words[2]" == "hooks" ]]; then
-        compadd trust prompt deny status migrate install validate dump run
+        # hooks subcommand arguments (position 4+)
+        case "$words[3]" in
+            run)
+                local prev="$words[$((CURRENT-1))]"
+                if [[ "$prev" == "--job" ]]; then
+                    local hook_type="" i
+                    for ((i=4; i<CURRENT; i++)); do
+                        if [[ "$words[$i]" != -* ]]; then
+                            hook_type="$words[$i]"
+                            break
+                        fi
+                    done
+                    if [[ -n "$hook_type" ]]; then
+                        local -a job_specs
+                        local line
+                        while IFS= read -r line; do
+                            if [[ "$line" == *$'\t'* ]]; then
+                                local jname="${line%%	*}"
+                                local jdesc="${line#*	}"
+                                job_specs+=("${jname}:${jdesc}")
+                            else
+                                job_specs+=("${line}")
+                            fi
+                        done < <(DAFT_COMPLETE_HOOK="$hook_type" daft __complete hooks-run-job "$curword" 2>/dev/null)
+                        _describe 'job' job_specs
+                    fi
+                    return
+                fi
+                [[ "$prev" == "--tag" ]] && return
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --job --tag --dry-run -v --verbose -h --help
+                    return
+                fi
+                local -a hooks
+                hooks=(${(f)"$(daft __complete hooks-run "$curword" 2>/dev/null)"})
+                compadd -a hooks
+                return
+                ;;
+            status)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- -s --short -h --help
+                    return
+                fi
+                _files -/
+                return
+                ;;
+            prompt|deny)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- -f --force -h --help
+                    return
+                fi
+                _files -/
+                return
+                ;;
+            trust)
+                if (( CURRENT == 4 )); then
+                    if [[ "$curword" == -* ]]; then
+                        compadd -- -f --force -h --help
+                        return
+                    fi
+                    compadd list reset prune
+                    _files -/
+                    return
+                fi
+                if (( CURRENT == 5 )) && [[ "$words[4]" == "reset" ]]; then
+                    if [[ "$curword" == -* ]]; then
+                        compadd -- -f --force -h --help
+                        return
+                    fi
+                    compadd all
+                    _files -/
+                    return
+                fi
+                return
+                ;;
+            migrate)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --dry-run -h --help
+                fi
+                return
+                ;;
+        esac
         return
     fi
 

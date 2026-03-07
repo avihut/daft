@@ -183,5 +183,20 @@ complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcomma
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l job -d 'Run only the named job' -r -f -a "(set -l hook (commandline -opc | string match -rv '^-' | tail -n1); DAFT_COMPLETE_HOOK=\$hook daft __complete hooks-run-job '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l tag -d 'Run only jobs with this tag'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l dry-run -d 'Preview what would run'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -s v -l verbose -d 'Show verbose output'
+# hooks: also allow path completion alongside subcommands
+complete -c daft -n '__fish_seen_subcommand_from hooks; and not __fish_seen_subcommand_from trust prompt deny status migrate install validate dump run' -F
+# hooks status: path + flags
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from status' -F
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from status' -s s -l short -d 'Show compact one-line summary'
+# hooks trust: sub-subcommands + path + flags
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from trust; and not __fish_seen_subcommand_from list reset prune' -f -a 'list reset prune'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from trust' -F
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from trust' -s f -l force -d 'Do not ask for confirmation'
+# hooks prompt/deny: path + flags
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from prompt deny' -F
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from prompt deny' -s f -l force -d 'Do not ask for confirmation'
+# hooks migrate: flags
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from migrate' -l dry-run -d 'Preview renames without making changes'
 complete -c git-daft -w daft
 "#;
