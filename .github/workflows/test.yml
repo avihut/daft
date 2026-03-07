@@ -203,7 +203,7 @@ jobs:
           ls -lh target/release/daft
 
       - name: Upload binary
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: daft-binary
           path: target/release/daft
@@ -226,7 +226,7 @@ jobs:
           git config --global user.email "test@example.com"
 
       - name: Download binary
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: daft-binary
           path: target/release
@@ -286,7 +286,7 @@ jobs:
           ./target/release/git-daft | head -20
 
       - name: Upload test results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-results-${{ matrix.entry }}
