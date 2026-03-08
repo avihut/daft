@@ -16,6 +16,7 @@
 //! | `daft.checkout.carry` | `false` | Default carry for checkout |
 //! | `daft.go.autoStart` | `false` | Auto-create worktree when branch not found in go |
 //! | `daft.prune.cdTarget` | `root` | Where to cd after pruning current worktree (`root` or `default-branch`) |
+//! | `daft.list.stat` | `summary` | Default statistics mode for list command (`summary` or `lines`) |
 //! | `daft.updateCheck` | `true` | Enable/disable new version notifications |
 //!
 //! # Hooks Config Keys
@@ -48,6 +49,7 @@
 //! git config daft.hooks.postCreate.failMode abort
 //! ```
 
+use crate::core::worktree::list::Stat;
 use crate::git::GitCommand;
 use crate::hooks::{FailMode, HookConfig, HookType, HooksConfig, TrustLevel};
 use anyhow::Result;
@@ -76,6 +78,7 @@ impl PruneCdTarget {
 /// Default values for settings.
 pub mod defaults {
     use super::PruneCdTarget;
+    use crate::core::worktree::list::Stat;
 
     /// Default value for autocd setting.
     pub const AUTOCD: bool = true;
@@ -112,6 +115,9 @@ pub mod defaults {
 
     /// Default value for go.autoStart setting.
     pub const GO_AUTO_START: bool = false;
+
+    /// Default value for list.stat setting.
+    pub const LIST_STAT: Stat = Stat::Summary;
 }
 
 /// Git config keys for daft settings.
@@ -157,6 +163,9 @@ pub mod keys {
 
     /// Config key for go.autoStart setting.
     pub const GO_AUTO_START: &str = "daft.go.autoStart";
+
+    /// Config key for list.stat setting.
+    pub const LIST_STAT: &str = "daft.list.stat";
 
     /// Experimental config keys.
     pub mod experimental {
@@ -243,6 +252,9 @@ pub struct DaftSettings {
 
     /// Automatically create worktree when branch not found in go command.
     pub go_auto_start: bool,
+
+    /// Default statistics mode for list command.
+    pub list_stat: Stat,
 }
 
 impl Default for DaftSettings {
@@ -260,6 +272,7 @@ impl Default for DaftSettings {
             multi_remote_default: defaults::MULTI_REMOTE_DEFAULT_REMOTE.to_string(),
             use_gitoxide: defaults::USE_GITOXIDE,
             go_auto_start: defaults::GO_AUTO_START,
+            list_stat: defaults::LIST_STAT,
         }
     }
 }
@@ -334,6 +347,12 @@ impl DaftSettings {
             settings.go_auto_start = parse_bool(&value, defaults::GO_AUTO_START);
         }
 
+        if let Some(value) = git.config_get(keys::LIST_STAT)? {
+            if let Some(stat) = Stat::parse(&value) {
+                settings.list_stat = stat;
+            }
+        }
+
         Ok(settings)
     }
 
@@ -403,6 +422,12 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get_global(keys::GO_AUTO_START)? {
             settings.go_auto_start = parse_bool(&value, defaults::GO_AUTO_START);
+        }
+
+        if let Some(value) = git.config_get_global(keys::LIST_STAT)? {
+            if let Some(stat) = Stat::parse(&value) {
+                settings.list_stat = stat;
+            }
         }
 
         Ok(settings)
@@ -679,6 +704,7 @@ mod tests {
         assert_eq!(settings.multi_remote_default, "origin");
         assert!(!settings.use_gitoxide);
         assert!(!settings.go_auto_start);
+        assert_eq!(settings.list_stat, Stat::Summary);
     }
 
     #[test]
