@@ -248,7 +248,7 @@ fn print_table(
         "Branch",
         "Path",
         "Base",
-        "Head",
+        "Changes",
         "Remote",
         "Age",
         "Last Commit",
