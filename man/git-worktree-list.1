@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-list \- List all worktrees with status information
 .SH SYNOPSIS
-\fBgit\-worktree\-list\fR [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-unit\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBgit\-worktree\-list\fR [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-stat\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Lists all worktrees in the current project with enriched status information
@@ -23,9 +23,9 @@ Each worktree is shown with:
 .PP
 Ages use shorthand notation: <1m, Xm, Xh, Xd, Xw, Xmo, Xy.
 .PP
-Use \-\-unit lines to show line\-level change counts (insertions and deletions)
-instead of file/commit counts. This is slower as it requires computing diffs
-for each worktree.
+Use \-\-stat lines to show line\-level change counts (insertions and deletions)
+instead of the default summary (commit counts for base/remote, file counts for
+changes). This is slower as it requires computing diffs for each worktree.
 .PP
 Use \-\-json for machine\-readable output suitable for scripting.
 .SH OPTIONS
@@ -36,17 +36,17 @@ Output in JSON format
 \fB\-v\fR, \fB\-\-verbose\fR
 Be verbose; show detailed progress
 .TP
-\fB\-\-unit\fR \fI<UNIT>\fR [default: files]
-Unit for diff counts: files (default) or lines
+\fB\-\-stat\fR \fI<STAT>\fR [default: summary]
+Statistics mode: summary (default) or lines
 .br
 
 .br
 \fIPossible values:\fR
 .RS 14
 .IP \(bu 2
-files: Count files (default)
+summary: Summary counts: commits for base/remote, files for changes (default)
 .IP \(bu 2
-lines: Count lines changed (insertions/deletions)
+lines: Line\-level counts: insertions/deletions for all columns
 .RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR

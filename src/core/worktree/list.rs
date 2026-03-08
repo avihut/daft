@@ -8,13 +8,13 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Unit of measurement for diff counts in the list output.
+/// Statistics mode for diff counts in the list output.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
-pub enum Unit {
-    /// Count files (default).
+pub enum Stat {
+    /// Summary counts: commits for base/remote, files for changes (default).
     #[default]
-    Files,
-    /// Count lines changed (insertions/deletions).
+    Summary,
+    /// Line-level counts: insertions/deletions for all columns.
     Lines,
 }
 
@@ -381,7 +381,7 @@ pub fn collect_worktree_info(
     git: &GitCommand,
     base_branch: &str,
     current_worktree_path: Option<&Path>,
-    unit: Unit,
+    stat: Stat,
 ) -> Result<Vec<WorktreeInfo>> {
     let porcelain_output = git
         .worktree_list_porcelain()
@@ -456,8 +456,8 @@ pub fn collect_worktree_info(
         // Whether this is the default (base) branch
         let is_default_branch = entry.branch.as_deref().is_some_and(|b| b == base_branch);
 
-        // Line-level diff counts (only when unit is Lines)
-        let (base_lines_inserted, base_lines_deleted) = if unit == Unit::Lines && !entry.is_detached
+        // Line-level diff counts (only when stat is Lines)
+        let (base_lines_inserted, base_lines_deleted) = if stat == Stat::Lines && !entry.is_detached
         {
             if let Some(branch) = &entry.branch {
                 match get_base_line_counts(base_branch, branch, &entry.path) {
@@ -476,7 +476,7 @@ pub fn collect_worktree_info(
             staged_lines_deleted,
             unstaged_lines_inserted,
             unstaged_lines_deleted,
-        ) = if unit == Unit::Lines {
+        ) = if stat == Stat::Lines {
             let ((si, sd), (ui, ud)) = count_changed_lines(&entry.path);
             (Some(si), Some(sd), Some(ui), Some(ud))
         } else {
@@ -484,7 +484,7 @@ pub fn collect_worktree_info(
         };
 
         let (remote_lines_inserted, remote_lines_deleted) =
-            if unit == Unit::Lines && !entry.is_detached {
+            if stat == Stat::Lines && !entry.is_detached {
                 if let Some(branch) = &entry.branch {
                     match get_remote_line_counts(branch, &entry.path) {
                         Some((ins, del)) => (Some(ins), Some(del)),

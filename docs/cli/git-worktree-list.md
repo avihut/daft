@@ -29,9 +29,9 @@ Each worktree is shown with:
 
 Ages use shorthand notation: <1m, Xm, Xh, Xd, Xw, Xmo, Xy.
 
-Use --unit lines to show line-level change counts (insertions and deletions)
-instead of file/commit counts. This is slower as it requires computing diffs
-for each worktree.
+Use --stat lines to show line-level change counts (insertions and deletions)
+instead of the default summary (commit counts for base/remote, file counts for
+changes). This is slower as it requires computing diffs for each worktree.
 
 Use --json for machine-readable output suitable for scripting.
 
@@ -47,7 +47,7 @@ git worktree-list [OPTIONS]
 |--------|-------------|----------|
 | `--json` | Output in JSON format |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
-| `--unit <UNIT>` | Unit for diff counts: files (default) or lines | `files` |
+| `--stat <STAT>` | Statistics mode: summary (default) or lines | `summary` |
 
 ## Global Options
 

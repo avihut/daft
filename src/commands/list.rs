@@ -1,7 +1,7 @@
 use crate::{
     core::{
         repo::{get_current_worktree_path, get_git_common_dir, get_project_root},
-        worktree::list::{collect_worktree_info, Unit},
+        worktree::list::{collect_worktree_info, Stat},
     },
     git::GitCommand,
     is_git_repository,
@@ -42,9 +42,9 @@ Each worktree is shown with:
 
 Ages use shorthand notation: <1m, Xm, Xh, Xd, Xw, Xmo, Xy.
 
-Use --unit lines to show line-level change counts (insertions and deletions)
-instead of file/commit counts. This is slower as it requires computing diffs
-for each worktree.
+Use --stat lines to show line-level change counts (insertions and deletions)
+instead of the default summary (commit counts for base/remote, file counts for
+changes). This is slower as it requires computing diffs for each worktree.
 
 Use --json for machine-readable output suitable for scripting.
 "#)]
@@ -58,10 +58,10 @@ pub struct Args {
     #[arg(
         long,
         value_enum,
-        default_value_t = Unit::Files,
-        help = "Unit for diff counts: files (default) or lines"
+        default_value_t = Stat::Summary,
+        help = "Statistics mode: summary (default) or lines"
     )]
-    unit: Unit,
+    stat: Stat,
 }
 
 /// A row in the worktree list table.
@@ -104,21 +104,21 @@ pub fn run() -> Result<()> {
     let project_root = get_project_root()?;
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
-    let infos = if args.unit == Unit::Lines {
+    let infos = if args.stat == Stat::Lines {
         let mut output = CliOutput::new(OutputConfig::new(false, args.verbose));
         output.start_spinner("Computing line statistics...");
-        let result = collect_worktree_info(&git, &base_branch, current_path.as_deref(), args.unit)?;
+        let result = collect_worktree_info(&git, &base_branch, current_path.as_deref(), args.stat)?;
         output.finish_spinner();
         result
     } else {
-        collect_worktree_info(&git, &base_branch, current_path.as_deref(), args.unit)?
+        collect_worktree_info(&git, &base_branch, current_path.as_deref(), args.stat)?
     };
 
     if args.json {
-        return print_json(&infos, &project_root, &cwd, args.unit);
+        return print_json(&infos, &project_root, &cwd, args.stat);
     }
 
-    print_table(&infos, &project_root, &cwd, args.unit);
+    print_table(&infos, &project_root, &cwd, args.stat);
     Ok(())
 }
 
@@ -126,7 +126,7 @@ fn print_json(
     infos: &[crate::core::worktree::list::WorktreeInfo],
     project_root: &std::path::Path,
     cwd: &std::path::Path,
-    unit: Unit,
+    stat: Stat,
 ) -> Result<()> {
     let now = Utc::now().timestamp();
     let entries: Vec<serde_json::Value> = infos
@@ -157,7 +157,7 @@ fn print_json(
                 "last_commit_subject": info.last_commit_subject,
                 "branch_age": branch_age,
             });
-            if unit == Unit::Lines {
+            if stat == Stat::Lines {
                 let obj = entry.as_object_mut().unwrap();
                 obj.insert(
                     "base_lines_inserted".into(),
@@ -204,7 +204,7 @@ fn print_table(
     infos: &[crate::core::worktree::list::WorktreeInfo],
     project_root: &std::path::Path,
     cwd: &std::path::Path,
-    unit: Unit,
+    stat: Stat,
 ) {
     if infos.is_empty() {
         return;
@@ -262,13 +262,13 @@ fn print_table(
 
             let rel_path = relative_display_path(&info.path, project_root, cwd);
 
-            let base = if unit == Unit::Lines {
+            let base = if stat == Stat::Lines {
                 format_ahead_behind(info.base_lines_inserted, info.base_lines_deleted, use_color)
             } else {
                 format_ahead_behind(info.ahead, info.behind, use_color)
             };
 
-            let head = if unit == Unit::Lines {
+            let head = if stat == Stat::Lines {
                 let ins = info.staged_lines_inserted.unwrap_or(0)
                     + info.unstaged_lines_inserted.unwrap_or(0);
                 let del = info.staged_lines_deleted.unwrap_or(0)
@@ -303,7 +303,7 @@ fn print_table(
                 format_head_status(info.staged, info.unstaged, info.untracked, use_color)
             };
 
-            let remote = if unit == Unit::Lines {
+            let remote = if stat == Stat::Lines {
                 format_ahead_behind(
                     info.remote_lines_inserted,
                     info.remote_lines_deleted,
