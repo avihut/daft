@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.34](https://github.com/avihut/daft/compare/v1.0.33...v1.0.34) - 2026-03-08
+
+### Bug Fixes
+
+- *(completions)* remote branches not matching when typing prefix
+- *(ci)* pin release-plz to 0.3.156 to fix release PR creation
+- *(ci)* add version to xtask path dependency for cargo package compatibility
+- *(hooks)* trust fingerprinting, stale entry protection, and prune improvements ([#278](https://github.com/avihut/daft/pull/278))
+- *(list)* use orange for default branch indicator and tighten first column ([#272](https://github.com/avihut/daft/pull/272))
+
+### Features
+
+- *(list)* enhance list command with stat modes, branch flags, and config ([#280](https://github.com/avihut/daft/pull/280))
+- add spinner feedback for long-running operations ([#277](https://github.com/avihut/daft/pull/277))
+
+### Refactoring
+
+- hide completions command from help and shell completions ([#270](https://github.com/avihut/daft/pull/270))
+
 ## [1.0.33](https://github.com/avihut/daft/compare/v1.0.32...v1.0.33) - 2026-02-24
 
 ### Bug Fixes
