@@ -158,6 +158,16 @@ fn print_table(
     let has_any_current = infos.iter().any(|i| i.is_current);
     let has_any_default = infos.iter().any(|i| i.is_default_branch);
 
+    // Pre-compute max visible width of commit ages to align subjects
+    let max_commit_age_width = infos
+        .iter()
+        .filter_map(|info| {
+            info.last_commit_timestamp
+                .map(|ts| shorthand_from_seconds(now - ts).len())
+        })
+        .max()
+        .unwrap_or(0);
+
     let rows: Vec<TableRow> = infos
         .iter()
         .map(|info| {
@@ -203,14 +213,19 @@ fn print_table(
 
             let branch_age = format_shorthand_age(info.branch_creation_timestamp, now, use_color);
 
-            // Combine last commit age + subject into one column
+            // Combine last commit age + subject into one column, with age right-padded for alignment
             let commit_age = format_shorthand_age(info.last_commit_timestamp, now, use_color);
+            let commit_age_visible_len = info
+                .last_commit_timestamp
+                .map(|ts| shorthand_from_seconds(now - ts).len())
+                .unwrap_or(0);
             let last_commit = if commit_age.is_empty() {
                 info.last_commit_subject.clone()
             } else if info.last_commit_subject.is_empty() {
                 commit_age
             } else {
-                format!("{commit_age} {}", info.last_commit_subject)
+                let pad = " ".repeat(max_commit_age_width - commit_age_visible_len);
+                format!("{commit_age}{pad} {}", info.last_commit_subject)
             };
 
             TableRow {
