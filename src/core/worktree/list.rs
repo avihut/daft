@@ -8,6 +8,16 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Unit of measurement for diff counts in the list output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum Unit {
+    /// Count files (default).
+    #[default]
+    Files,
+    /// Count lines changed (insertions/deletions).
+    Lines,
+}
+
 /// Enriched information about a single worktree.
 pub struct WorktreeInfo {
     /// Branch name (stripped of `refs/heads/` prefix), or `"(detached)"`.
@@ -38,6 +48,22 @@ pub struct WorktreeInfo {
     pub last_commit_subject: String,
     /// Unix timestamp of branch creation (None for detached HEAD or if unavailable).
     pub branch_creation_timestamp: Option<i64>,
+    /// Lines inserted vs base branch (None if not computed or not applicable).
+    pub base_lines_inserted: Option<usize>,
+    /// Lines deleted vs base branch (None if not computed or not applicable).
+    pub base_lines_deleted: Option<usize>,
+    /// Lines inserted in staged changes (None if not computed).
+    pub staged_lines_inserted: Option<usize>,
+    /// Lines deleted in staged changes (None if not computed).
+    pub staged_lines_deleted: Option<usize>,
+    /// Lines inserted in unstaged changes (None if not computed).
+    pub unstaged_lines_inserted: Option<usize>,
+    /// Lines deleted in unstaged changes (None if not computed).
+    pub unstaged_lines_deleted: Option<usize>,
+    /// Lines inserted vs remote tracking branch (None if not computed or no upstream).
+    pub remote_lines_inserted: Option<usize>,
+    /// Lines deleted vs remote tracking branch (None if not computed or no upstream).
+    pub remote_lines_deleted: Option<usize>,
 }
 
 /// Raw entry parsed from `git worktree list --porcelain`.
@@ -262,6 +288,90 @@ fn get_upstream_ahead_behind(branch: &str, worktree_path: &Path) -> Option<(usiz
     }
 }
 
+/// Parse `git diff --numstat` output and return (total_insertions, total_deletions).
+///
+/// Each line has the format: `insertions\tdeletions\tfilename`.
+/// Binary files show `-\t-\tfilename` and are counted as (0, 0).
+fn parse_numstat(output: &str) -> (usize, usize) {
+    let mut insertions = 0;
+    let mut deletions = 0;
+    for line in output.lines() {
+        let mut parts = line.splitn(3, '\t');
+        if let (Some(ins), Some(del)) = (parts.next(), parts.next()) {
+            insertions += ins.parse::<usize>().unwrap_or(0);
+            deletions += del.parse::<usize>().unwrap_or(0);
+        }
+    }
+    (insertions, deletions)
+}
+
+/// Count lines inserted/deleted for staged and unstaged changes in a worktree.
+///
+/// Returns `((staged_ins, staged_del), (unstaged_ins, unstaged_del))`.
+fn count_changed_lines(worktree_path: &Path) -> ((usize, usize), (usize, usize)) {
+    let staged = Command::new("git")
+        .args(["diff", "--cached", "--numstat"])
+        .current_dir(worktree_path)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| parse_numstat(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or((0, 0));
+
+    let unstaged = Command::new("git")
+        .args(["diff", "--numstat"])
+        .current_dir(worktree_path)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| parse_numstat(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or((0, 0));
+
+    (staged, unstaged)
+}
+
+/// Get line counts between base branch and current branch.
+///
+/// Runs `git diff --numstat base...branch`.
+/// Returns `(insertions, deletions)` or `None` if not computable.
+fn get_base_line_counts(
+    base_branch: &str,
+    branch: &str,
+    worktree_path: &Path,
+) -> Option<(usize, usize)> {
+    let range = format!("{base_branch}...{branch}");
+    let output = Command::new("git")
+        .args(["diff", "--numstat", &range])
+        .current_dir(worktree_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(parse_numstat(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Get line counts between branch and its remote tracking branch.
+///
+/// Runs `git diff --numstat branch@{upstream}...branch`.
+/// Returns `(insertions, deletions)` or `None` if no upstream.
+fn get_remote_line_counts(branch: &str, worktree_path: &Path) -> Option<(usize, usize)> {
+    let range = format!("{branch}@{{upstream}}...{branch}");
+    let output = Command::new("git")
+        .args(["diff", "--numstat", &range])
+        .current_dir(worktree_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(parse_numstat(&String::from_utf8_lossy(&output.stdout)))
+}
+
 /// Collect enriched worktree information for all worktrees in the project.
 ///
 /// Parses the porcelain output, skips bare entries, enriches each entry with
@@ -271,6 +381,7 @@ pub fn collect_worktree_info(
     git: &GitCommand,
     base_branch: &str,
     current_worktree_path: Option<&Path>,
+    unit: Unit,
 ) -> Result<Vec<WorktreeInfo>> {
     let porcelain_output = git
         .worktree_list_porcelain()
@@ -345,6 +456,47 @@ pub fn collect_worktree_info(
         // Whether this is the default (base) branch
         let is_default_branch = entry.branch.as_deref().is_some_and(|b| b == base_branch);
 
+        // Line-level diff counts (only when unit is Lines)
+        let (base_lines_inserted, base_lines_deleted) = if unit == Unit::Lines && !entry.is_detached
+        {
+            if let Some(branch) = &entry.branch {
+                match get_base_line_counts(base_branch, branch, &entry.path) {
+                    Some((ins, del)) => (Some(ins), Some(del)),
+                    None => (None, None),
+                }
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+
+        let (
+            staged_lines_inserted,
+            staged_lines_deleted,
+            unstaged_lines_inserted,
+            unstaged_lines_deleted,
+        ) = if unit == Unit::Lines {
+            let ((si, sd), (ui, ud)) = count_changed_lines(&entry.path);
+            (Some(si), Some(sd), Some(ui), Some(ud))
+        } else {
+            (None, None, None, None)
+        };
+
+        let (remote_lines_inserted, remote_lines_deleted) =
+            if unit == Unit::Lines && !entry.is_detached {
+                if let Some(branch) = &entry.branch {
+                    match get_remote_line_counts(branch, &entry.path) {
+                        Some((ins, del)) => (Some(ins), Some(del)),
+                        None => (None, None),
+                    }
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
+
         infos.push(WorktreeInfo {
             name: branch_display,
             path: entry.path,
@@ -360,6 +512,14 @@ pub fn collect_worktree_info(
             last_commit_timestamp,
             last_commit_subject,
             branch_creation_timestamp,
+            base_lines_inserted,
+            base_lines_deleted,
+            staged_lines_inserted,
+            staged_lines_deleted,
+            unstaged_lines_inserted,
+            unstaged_lines_deleted,
+            remote_lines_inserted,
+            remote_lines_deleted,
         });
     }
 
@@ -372,6 +532,21 @@ pub fn collect_worktree_info(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_numstat_basic() {
+        assert_eq!(parse_numstat("10\t5\tfile.rs\n3\t1\tother.rs\n"), (13, 6));
+    }
+
+    #[test]
+    fn test_parse_numstat_binary() {
+        assert_eq!(parse_numstat("-\t-\timage.png\n5\t2\tcode.rs\n"), (5, 2));
+    }
+
+    #[test]
+    fn test_parse_numstat_empty() {
+        assert_eq!(parse_numstat(""), (0, 0));
+    }
 
     #[test]
     fn test_parse_porcelain_basic() {

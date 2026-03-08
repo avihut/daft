@@ -4,7 +4,7 @@
 .SH NAME
 daft\-list \- List all worktrees with status information
 .SH SYNOPSIS
-\fBdaft\-list\fR [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBdaft\-list\fR [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-unit\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Lists all worktrees in the current project with enriched status information
@@ -23,6 +23,10 @@ Each worktree is shown with:
 .PP
 Ages use shorthand notation: <1m, Xm, Xh, Xd, Xw, Xmo, Xy.
 .PP
+Use \-\-unit lines to show line\-level change counts (insertions and deletions)
+instead of file/commit counts. This is slower as it requires computing diffs
+for each worktree.
+.PP
 Use \-\-json for machine\-readable output suitable for scripting.
 .SH OPTIONS
 .TP
@@ -31,6 +35,19 @@ Output in JSON format
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Be verbose; show detailed progress
+.TP
+\fB\-\-unit\fR \fI<UNIT>\fR [default: files]
+Unit for diff counts: files (default) or lines
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+files: Count files (default)
+.IP \(bu 2
+lines: Count lines changed (insertions/deletions)
+.RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

@@ -1,11 +1,12 @@
 use crate::{
     core::{
         repo::{get_current_worktree_path, get_git_common_dir, get_project_root},
-        worktree::list::collect_worktree_info,
+        worktree::list::{collect_worktree_info, Unit},
     },
     git::GitCommand,
     is_git_repository,
     logging::init_logging,
+    output::{CliOutput, Output, OutputConfig},
     remote::get_default_branch_local,
     settings::DaftSettings,
     styles,
@@ -41,6 +42,10 @@ Each worktree is shown with:
 
 Ages use shorthand notation: <1m, Xm, Xh, Xd, Xw, Xmo, Xy.
 
+Use --unit lines to show line-level change counts (insertions and deletions)
+instead of file/commit counts. This is slower as it requires computing diffs
+for each worktree.
+
 Use --json for machine-readable output suitable for scripting.
 "#)]
 pub struct Args {
@@ -49,6 +54,14 @@ pub struct Args {
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = Unit::Files,
+        help = "Unit for diff counts: files (default) or lines"
+    )]
+    unit: Unit,
 }
 
 /// A row in the worktree list table.
@@ -91,13 +104,21 @@ pub fn run() -> Result<()> {
     let project_root = get_project_root()?;
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
-    let infos = collect_worktree_info(&git, &base_branch, current_path.as_deref())?;
+    let infos = if args.unit == Unit::Lines {
+        let mut output = CliOutput::new(OutputConfig::new(false, args.verbose));
+        output.start_spinner("Computing line statistics...");
+        let result = collect_worktree_info(&git, &base_branch, current_path.as_deref(), args.unit)?;
+        output.finish_spinner();
+        result
+    } else {
+        collect_worktree_info(&git, &base_branch, current_path.as_deref(), args.unit)?
+    };
 
     if args.json {
-        return print_json(&infos, &project_root, &cwd);
+        return print_json(&infos, &project_root, &cwd, args.unit);
     }
 
-    print_table(&infos, &project_root, &cwd);
+    print_table(&infos, &project_root, &cwd, args.unit);
     Ok(())
 }
 
@@ -105,6 +126,7 @@ fn print_json(
     infos: &[crate::core::worktree::list::WorktreeInfo],
     project_root: &std::path::Path,
     cwd: &std::path::Path,
+    unit: Unit,
 ) -> Result<()> {
     let now = Utc::now().timestamp();
     let entries: Vec<serde_json::Value> = infos
@@ -119,7 +141,7 @@ fn print_json(
                 .branch_creation_timestamp
                 .map(|ts| shorthand_from_seconds(now - ts))
                 .unwrap_or_default();
-            serde_json::json!({
+            let mut entry = serde_json::json!({
                 "name": info.name,
                 "path": rel_path,
                 "is_current": info.is_current,
@@ -134,7 +156,43 @@ fn print_json(
                 "last_commit_age": last_commit_age,
                 "last_commit_subject": info.last_commit_subject,
                 "branch_age": branch_age,
-            })
+            });
+            if unit == Unit::Lines {
+                let obj = entry.as_object_mut().unwrap();
+                obj.insert(
+                    "base_lines_inserted".into(),
+                    serde_json::json!(info.base_lines_inserted),
+                );
+                obj.insert(
+                    "base_lines_deleted".into(),
+                    serde_json::json!(info.base_lines_deleted),
+                );
+                obj.insert(
+                    "staged_lines_inserted".into(),
+                    serde_json::json!(info.staged_lines_inserted),
+                );
+                obj.insert(
+                    "staged_lines_deleted".into(),
+                    serde_json::json!(info.staged_lines_deleted),
+                );
+                obj.insert(
+                    "unstaged_lines_inserted".into(),
+                    serde_json::json!(info.unstaged_lines_inserted),
+                );
+                obj.insert(
+                    "unstaged_lines_deleted".into(),
+                    serde_json::json!(info.unstaged_lines_deleted),
+                );
+                obj.insert(
+                    "remote_lines_inserted".into(),
+                    serde_json::json!(info.remote_lines_inserted),
+                );
+                obj.insert(
+                    "remote_lines_deleted".into(),
+                    serde_json::json!(info.remote_lines_deleted),
+                );
+            }
+            entry
         })
         .collect();
 
@@ -146,6 +204,7 @@ fn print_table(
     infos: &[crate::core::worktree::list::WorktreeInfo],
     project_root: &std::path::Path,
     cwd: &std::path::Path,
+    unit: Unit,
 ) {
     if infos.is_empty() {
         return;
@@ -203,13 +262,56 @@ fn print_table(
 
             let rel_path = relative_display_path(&info.path, project_root, cwd);
 
-            let base = format_ahead_behind(info.ahead, info.behind, use_color);
+            let base = if unit == Unit::Lines {
+                format_ahead_behind(info.base_lines_inserted, info.base_lines_deleted, use_color)
+            } else {
+                format_ahead_behind(info.ahead, info.behind, use_color)
+            };
 
-            // Head: worktrunk-style status indicators
-            let head = format_head_status(info.staged, info.unstaged, info.untracked, use_color);
+            let head = if unit == Unit::Lines {
+                let ins = info.staged_lines_inserted.unwrap_or(0)
+                    + info.unstaged_lines_inserted.unwrap_or(0);
+                let del = info.staged_lines_deleted.unwrap_or(0)
+                    + info.unstaged_lines_deleted.unwrap_or(0);
+                let mut parts = Vec::new();
+                if ins > 0 {
+                    let text = format!("+{ins}");
+                    if use_color {
+                        parts.push(styles::green(&text));
+                    } else {
+                        parts.push(text);
+                    }
+                }
+                if del > 0 {
+                    let text = format!("-{del}");
+                    if use_color {
+                        parts.push(styles::red(&text));
+                    } else {
+                        parts.push(text);
+                    }
+                }
+                if info.untracked > 0 {
+                    let text = format!("?{}", info.untracked);
+                    if use_color {
+                        parts.push(styles::dim(&text));
+                    } else {
+                        parts.push(text);
+                    }
+                }
+                parts.join(" ")
+            } else {
+                format_head_status(info.staged, info.unstaged, info.untracked, use_color)
+            };
 
-            // Remote: ⇡/⇣ arrows for upstream ahead/behind
-            let remote = format_remote_status(info.remote_ahead, info.remote_behind, use_color);
+            let remote = if unit == Unit::Lines {
+                format_ahead_behind(
+                    info.remote_lines_inserted,
+                    info.remote_lines_deleted,
+                    use_color,
+                )
+            } else {
+                format_remote_status(info.remote_ahead, info.remote_behind, use_color)
+            };
 
             let branch_age = format_shorthand_age(info.branch_creation_timestamp, now, use_color);
 

@@ -565,21 +565,21 @@ test_list_head_column() {
         return 1
     }
 
-    # Verify the Head header appears
-    if ! echo "$output" | grep -q "Head"; then
-        log_error "List header should contain 'Head'"
+    # Verify the Changes header appears
+    if ! echo "$output" | grep -q "Changes"; then
+        log_error "List header should contain 'Changes'"
         log_error "Output: $output"
         return 1
     fi
 
     # develop should show -N for unstaged changes
     if ! echo "$output" | grep "develop" | grep -q '\-[0-9]'; then
-        log_error "Dirty worktree should show -N in Head column"
+        log_error "Dirty worktree should show -N in Changes column"
         log_error "Output: $output"
         return 1
     fi
 
-    log_success "Head column shows file status indicators"
+    log_success "Changes column shows file status indicators"
     return 0
 }
 
@@ -697,6 +697,85 @@ test_list_json_head_remote() {
     return 0
 }
 
+# Test --unit lines shows line counts instead of file counts
+test_list_unit_lines() {
+    local remote_repo=$(create_test_remote "test-repo-list-unit-lines" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-unit-lines"
+
+    git-worktree-checkout develop || return 1
+
+    # Make changes with known line counts in develop
+    cd develop
+    printf "line1\nline2\nline3\n" > newfile.txt
+    git add newfile.txt
+    git commit -m "Add 3 lines" >/dev/null 2>&1
+
+    # Also add unstaged changes
+    echo "unstaged line" >> README.md
+    cd ..
+
+    cd main
+    local output
+    output=$(NO_COLOR=1 git-worktree-list --unit lines 2>&1) || {
+        log_error "git-worktree-list --unit lines failed"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # develop should show line counts in the Base column (+N for lines inserted)
+    if ! echo "$output" | grep "develop" | grep -q '+[0-9]'; then
+        log_error "Develop should show +N line counts in Base column with --unit lines"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "--unit lines shows line counts"
+    return 0
+}
+
+# Test --unit lines with JSON output includes line count fields
+test_list_unit_lines_json() {
+    local remote_repo=$(create_test_remote "test-repo-list-unit-lines-json" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-unit-lines-json"
+
+    git-worktree-checkout develop || return 1
+
+    # Make changes
+    cd develop
+    printf "line1\nline2\n" > newfile.txt
+    git add newfile.txt
+    git commit -m "Add lines" >/dev/null 2>&1
+    cd ..
+
+    cd main
+    local output
+    output=$(git-worktree-list --unit lines --json 2>&1)
+
+    # Check for line count fields in JSON
+    local line_fields=("base_lines_inserted" "base_lines_deleted" "staged_lines_inserted" "staged_lines_deleted" "unstaged_lines_inserted" "unstaged_lines_deleted" "remote_lines_inserted" "remote_lines_deleted")
+    for field in "${line_fields[@]}"; do
+        if ! echo "$output" | grep -q "\"$field\""; then
+            log_error "JSON output with --unit lines should contain '$field' field"
+            log_error "Output: $output"
+            return 1
+        fi
+    done
+
+    # Existing fields should still be present
+    if ! echo "$output" | grep -q '"ahead"'; then
+        log_error "JSON with --unit lines should still contain 'ahead' field"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "--unit lines JSON output contains line count fields"
+    return 0
+}
+
 # Run all list tests
 run_list_tests() {
     log "Running git-worktree-list integration tests..."
@@ -721,6 +800,8 @@ run_list_tests() {
     run_test "list_remote_column" "test_list_remote_column"
     run_test "list_relative_path" "test_list_relative_path"
     run_test "list_json_head_remote" "test_list_json_head_remote"
+    run_test "list_unit_lines" "test_list_unit_lines"
+    run_test "list_unit_lines_json" "test_list_unit_lines_json"
 }
 
 # Main execution
