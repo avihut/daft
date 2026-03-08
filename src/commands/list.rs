@@ -1,7 +1,7 @@
 use crate::{
     core::{
         repo::{get_current_worktree_path, get_git_common_dir, get_project_root},
-        worktree::list::{collect_worktree_info, Stat},
+        worktree::list::{collect_branch_info, collect_worktree_info, EntryKind, Stat},
     },
     git::GitCommand,
     is_git_repository,
@@ -15,6 +15,7 @@ use anyhow::Result;
 use chrono::Utc;
 use clap::Parser;
 use pathdiff::diff_paths;
+use std::collections::HashSet;
 use tabled::{
     builder::Builder,
     settings::{object::Columns, peaker::Priority, Padding, Style, Width},
@@ -42,6 +43,12 @@ Each worktree is shown with:
 
 Ages use shorthand notation: <1m, Xm, Xh, Xd, Xw, Xmo, Xy.
 
+Use -b / --branches to also show local branches without a worktree.
+Use -r / --remotes to also show remote tracking branches.
+Use -a / --all to show both (equivalent to -b -r).
+
+Non-worktree branches are shown with dimmed styling and blank Path/Changes columns.
+
 Use --stat lines to show line-level change counts (insertions and deletions)
 instead of the default summary (commit counts for base/remote, file counts for
 changes). This is slower as it requires computing diffs for each worktree.
@@ -54,6 +61,27 @@ pub struct Args {
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
+
+    #[arg(
+        short = 'b',
+        long = "branches",
+        help = "Also show local branches without a worktree"
+    )]
+    branches: bool,
+
+    #[arg(
+        short = 'r',
+        long = "remotes",
+        help = "Also show remote tracking branches"
+    )]
+    remotes: bool,
+
+    #[arg(
+        short = 'a',
+        long = "all",
+        help = "Show all branches (equivalent to -b -r)"
+    )]
+    all: bool,
 
     #[arg(
         long,
@@ -104,12 +132,40 @@ pub fn run() -> Result<()> {
     let project_root = get_project_root()?;
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
-    let infos = if args.stat == Stat::Lines {
+    let show_local = args.branches || args.all;
+    let show_remote = args.remotes || args.all;
+    let needs_spinner = args.stat == Stat::Lines || show_local || show_remote;
+
+    let infos = if needs_spinner {
         let mut output = CliOutput::new(OutputConfig::new(false, args.verbose));
-        output.start_spinner("Computing line statistics...");
+        let msg = if args.stat == Stat::Lines {
+            "Computing line statistics..."
+        } else {
+            "Collecting branch information..."
+        };
+        output.start_spinner(msg);
         let result = collect_worktree_info(&git, &base_branch, current_path.as_deref(), args.stat)?;
-        output.finish_spinner();
-        result
+        if show_local || show_remote {
+            let worktree_branches: HashSet<String> =
+                result.iter().map(|i| i.name.clone()).collect();
+            let branch_infos = collect_branch_info(
+                &git,
+                &base_branch,
+                args.stat,
+                show_local,
+                show_remote,
+                &worktree_branches,
+                &project_root,
+            )?;
+            let mut merged = result;
+            merged.extend(branch_infos);
+            merged.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            output.finish_spinner();
+            merged
+        } else {
+            output.finish_spinner();
+            result
+        }
     } else {
         collect_worktree_info(&git, &base_branch, current_path.as_deref(), args.stat)?
     };
@@ -132,7 +188,10 @@ fn print_json(
     let entries: Vec<serde_json::Value> = infos
         .iter()
         .map(|info| {
-            let rel_path = relative_display_path(&info.path, project_root, cwd);
+            let rel_path = info
+                .path
+                .as_ref()
+                .map(|p| relative_display_path(p, project_root, cwd));
             let last_commit_age = info
                 .last_commit_timestamp
                 .map(|ts| shorthand_from_seconds(now - ts))
@@ -141,7 +200,13 @@ fn print_json(
                 .branch_creation_timestamp
                 .map(|ts| shorthand_from_seconds(now - ts))
                 .unwrap_or_default();
+            let kind = match info.kind {
+                EntryKind::Worktree => "worktree",
+                EntryKind::LocalBranch => "branch",
+                EntryKind::RemoteBranch => "remote",
+            };
             let mut entry = serde_json::json!({
+                "kind": kind,
                 "name": info.name,
                 "path": rel_path,
                 "is_current": info.is_current,
@@ -260,7 +325,11 @@ fn print_table(
 
             let name = info.name.clone();
 
-            let rel_path = relative_display_path(&info.path, project_root, cwd);
+            let rel_path = info
+                .path
+                .as_ref()
+                .map(|p| relative_display_path(p, project_root, cwd))
+                .unwrap_or_default();
 
             let base = if stat == Stat::Lines {
                 format_ahead_behind(info.base_lines_inserted, info.base_lines_deleted, use_color)
@@ -330,15 +399,49 @@ fn print_table(
                 format!("{commit_age}{pad} {}", info.last_commit_subject)
             };
 
-            TableRow {
-                annotation,
-                name,
-                path: rel_path,
-                base,
-                head,
-                remote,
-                branch_age,
-                last_commit,
+            let is_non_worktree = info.kind != EntryKind::Worktree;
+            if use_color && is_non_worktree {
+                TableRow {
+                    annotation,
+                    name: styles::dim(&name),
+                    path: styles::dim(&rel_path),
+                    base: if base.is_empty() {
+                        base
+                    } else {
+                        styles::dim(&strip_ansi(&base))
+                    },
+                    head: if head.is_empty() {
+                        head
+                    } else {
+                        styles::dim(&strip_ansi(&head))
+                    },
+                    remote: if remote.is_empty() {
+                        remote
+                    } else {
+                        styles::dim(&strip_ansi(&remote))
+                    },
+                    branch_age: if branch_age.is_empty() {
+                        branch_age
+                    } else {
+                        styles::dim(&strip_ansi(&branch_age))
+                    },
+                    last_commit: if last_commit.is_empty() {
+                        last_commit
+                    } else {
+                        styles::dim(&strip_ansi(&last_commit))
+                    },
+                }
+            } else {
+                TableRow {
+                    annotation,
+                    name,
+                    path: rel_path,
+                    base,
+                    head,
+                    remote,
+                    branch_age,
+                    last_commit,
+                }
             }
         })
         .collect();
@@ -432,6 +535,24 @@ fn relative_display_path(
         .unwrap_or(abs_path)
         .display()
         .to_string()
+}
+
+/// Strip ANSI escape codes from a string so it can be re-wrapped with a single style.
+fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut in_escape = false;
+    for c in s.chars() {
+        if in_escape {
+            if c.is_ascii_alphabetic() {
+                in_escape = false;
+            }
+        } else if c == '\x1b' {
+            in_escape = true;
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
 fn format_ahead_behind(ahead: Option<usize>, behind: Option<usize>, use_color: bool) -> String {

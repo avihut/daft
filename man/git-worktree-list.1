@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-list \- List all worktrees with status information
 .SH SYNOPSIS
-\fBgit\-worktree\-list\fR [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-stat\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBgit\-worktree\-list\fR [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-stat\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Lists all worktrees in the current project with enriched status information
@@ -23,6 +23,12 @@ Each worktree is shown with:
 .PP
 Ages use shorthand notation: <1m, Xm, Xh, Xd, Xw, Xmo, Xy.
 .PP
+Use \-b / \-\-branches to also show local branches without a worktree.
+Use \-r / \-\-remotes to also show remote tracking branches.
+Use \-a / \-\-all to show both (equivalent to \-b \-r).
+.PP
+Non\-worktree branches are shown with dimmed styling and blank Path/Changes columns.
+.PP
 Use \-\-stat lines to show line\-level change counts (insertions and deletions)
 instead of the default summary (commit counts for base/remote, file counts for
 changes). This is slower as it requires computing diffs for each worktree.
@@ -35,6 +41,15 @@ Output in JSON format
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Be verbose; show detailed progress
+.TP
+\fB\-b\fR, \fB\-\-branches\fR
+Also show local branches without a worktree
+.TP
+\fB\-r\fR, \fB\-\-remotes\fR
+Also show remote tracking branches
+.TP
+\fB\-a\fR, \fB\-\-all\fR
+Show all branches (equivalent to \-b \-r)
 .TP
 \fB\-\-stat\fR \fI<STAT>\fR [default: summary]
 Statistics mode: summary (default) or lines

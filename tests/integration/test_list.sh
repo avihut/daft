@@ -776,6 +776,278 @@ test_list_stat_lines_json() {
     return 0
 }
 
+# Test -b flag shows local branches without worktrees
+test_list_branches_flag() {
+    local remote_repo=$(create_test_remote "test-repo-list-branches" "main")
+
+    # Create extra branches in remote
+    local temp_clone="$TEMP_BASE_DIR/temp_list_branches_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git checkout -b feature/extra-branch >/dev/null 2>&1
+        echo "extra" > extra.txt
+        git add extra.txt >/dev/null 2>&1
+        git commit -m "Add extra" >/dev/null 2>&1
+        git push origin feature/extra-branch >/dev/null 2>&1
+    ) >/dev/null 2>&1
+    rm -rf "$temp_clone"
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-branches"
+
+    # Fetch and create local branch without worktree
+    cd main
+    git fetch origin >/dev/null 2>&1
+    git branch feature/extra-branch origin/feature/extra-branch >/dev/null 2>&1
+
+    # Without -b: should NOT show the extra branch
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1)
+    if echo "$output" | grep -q "feature/extra-branch"; then
+        log_error "Default list should NOT show non-worktree branches"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # With -b: should show the extra branch
+    output=$(NO_COLOR=1 git-worktree-list -b 2>&1)
+    if ! echo "$output" | grep -q "feature/extra-branch"; then
+        log_error "List -b should show local branches without worktrees"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # The extra branch should NOT have a path (empty path column)
+    # main should still have a path
+    if ! echo "$output" | grep "main" | grep -q '\.'; then
+        log_error "Worktree branches should still show paths"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "-b flag shows local branches without worktrees"
+    return 0
+}
+
+# Test -r flag shows remote-only branches
+test_list_remotes_flag() {
+    local remote_repo=$(create_test_remote "test-repo-list-remotes" "main")
+
+    # Clone first (bare repo gets all existing branches in refs/heads/)
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-remotes"
+    cd main
+
+    # Push a new branch to remote AFTER the clone so it only exists in
+    # refs/remotes/origin/ after fetch (not in refs/heads/)
+    local temp_clone="$TEMP_BASE_DIR/temp_list_remotes_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git checkout -b feature/remote-only >/dev/null 2>&1
+        echo "remote" > remote.txt
+        git add remote.txt >/dev/null 2>&1
+        git commit -m "Remote only" >/dev/null 2>&1
+        git push origin feature/remote-only >/dev/null 2>&1
+    ) >/dev/null 2>&1
+    rm -rf "$temp_clone"
+
+    git fetch origin >/dev/null 2>&1
+
+    # With -r: should show the post-clone remote branch
+    local output
+    output=$(NO_COLOR=1 git-worktree-list -r 2>&1)
+    if ! echo "$output" | grep -q "origin/feature/remote-only"; then
+        log_error "List -r should show remote-only branches"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # main should NOT be duplicated as origin/main (already has a worktree)
+    if echo "$output" | grep -q "origin/main"; then
+        log_error "Remote branches with worktrees should be deduplicated"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "-r flag shows remote-only branches"
+    return 0
+}
+
+# Test -a flag shows both local and remote branches
+test_list_all_flag() {
+    local remote_repo=$(create_test_remote "test-repo-list-all" "main")
+
+    # Push a branch that will exist before clone (becomes local in bare repo)
+    local temp_clone="$TEMP_BASE_DIR/temp_list_all_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git checkout -b feature/local-extra >/dev/null 2>&1
+        echo "local" > local.txt
+        git add local.txt >/dev/null 2>&1
+        git commit -m "Local extra" >/dev/null 2>&1
+        git push origin feature/local-extra >/dev/null 2>&1
+    ) >/dev/null 2>&1
+    rm -rf "$temp_clone"
+
+    # Clone (bare repo picks up feature/local-extra in refs/heads/)
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-all"
+    cd main
+
+    # Push a new branch AFTER clone so it's remote-only
+    temp_clone="$TEMP_BASE_DIR/temp_list_all_clone2"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git checkout -b feature/remote-extra >/dev/null 2>&1
+        echo "remote" > remote.txt
+        git add remote.txt >/dev/null 2>&1
+        git commit -m "Remote extra" >/dev/null 2>&1
+        git push origin feature/remote-extra >/dev/null 2>&1
+    ) >/dev/null 2>&1
+    rm -rf "$temp_clone"
+
+    git fetch origin >/dev/null 2>&1
+
+    local output
+    output=$(NO_COLOR=1 git-worktree-list -a 2>&1)
+
+    # Should show local branch (from initial clone, no worktree)
+    if ! echo "$output" | grep -q "feature/local-extra"; then
+        log_error "List -a should show local branches"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Should show remote-only branch (pushed after clone)
+    if ! echo "$output" | grep -q "origin/feature/remote-extra"; then
+        log_error "List -a should show remote-only branches"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Should still show the worktree
+    if ! echo "$output" | grep -q "main"; then
+        log_error "List -a should still show worktrees"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "-a flag shows both local and remote branches"
+    return 0
+}
+
+# Test JSON output includes kind field with -b flag
+test_list_branches_json() {
+    local remote_repo=$(create_test_remote "test-repo-list-branches-json" "main")
+
+    local temp_clone="$TEMP_BASE_DIR/temp_list_branches_json_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git checkout -b feature/json-test >/dev/null 2>&1
+        echo "test" > test.txt
+        git add test.txt >/dev/null 2>&1
+        git commit -m "Json test" >/dev/null 2>&1
+        git push origin feature/json-test >/dev/null 2>&1
+    ) >/dev/null 2>&1
+    rm -rf "$temp_clone"
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-branches-json"
+    cd main
+    git fetch origin >/dev/null 2>&1
+    git branch feature/json-test origin/feature/json-test >/dev/null 2>&1
+
+    local output
+    output=$(git-worktree-list -b --json 2>&1)
+
+    # Check for kind field
+    if ! echo "$output" | grep -q '"kind"'; then
+        log_error "JSON output should contain 'kind' field"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Worktree entry should have kind: "worktree"
+    if ! echo "$output" | grep -q '"kind": "worktree"'; then
+        log_error "Worktree entries should have kind 'worktree'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Non-worktree branch should have kind: "branch"
+    if ! echo "$output" | grep -q '"kind": "branch"'; then
+        log_error "Non-worktree branches should have kind 'branch'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Non-worktree branch should have path: null
+    local branch_block
+    branch_block=$(echo "$output" | awk '/"name": "feature\/json-test"/{found=1} found && /\}/{print; found=0} found{print}' RS='{' ORS='{')
+    if ! echo "$branch_block" | grep -q '"path": null'; then
+        log_error "Non-worktree branch should have path: null in JSON"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "JSON output includes kind field with -b flag"
+    return 0
+}
+
+# Test default output has no extra branches (regression)
+test_list_default_unchanged() {
+    local remote_repo=$(create_test_remote "test-repo-list-default" "main")
+
+    local temp_clone="$TEMP_BASE_DIR/temp_list_default_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+
+    (
+        cd "$temp_clone"
+        git checkout -b feature/hidden >/dev/null 2>&1
+        echo "hidden" > hidden.txt
+        git add hidden.txt >/dev/null 2>&1
+        git commit -m "Hidden branch" >/dev/null 2>&1
+        git push origin feature/hidden >/dev/null 2>&1
+    ) >/dev/null 2>&1
+    rm -rf "$temp_clone"
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-default"
+    cd main
+    git fetch origin >/dev/null 2>&1
+    git branch feature/hidden origin/feature/hidden >/dev/null 2>&1
+
+    # Default list should NOT show the extra branch
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1)
+
+    if echo "$output" | grep -q "feature/hidden"; then
+        log_error "Default list should not show non-worktree branches"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Should still show main worktree
+    if ! echo "$output" | grep -q "main"; then
+        log_error "Default list should show worktrees"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Default output unchanged (no extra branches)"
+    return 0
+}
+
 # Run all list tests
 run_list_tests() {
     log "Running git-worktree-list integration tests..."
@@ -802,6 +1074,11 @@ run_list_tests() {
     run_test "list_json_head_remote" "test_list_json_head_remote"
     run_test "list_stat_lines" "test_list_stat_lines"
     run_test "list_stat_lines_json" "test_list_stat_lines_json"
+    run_test "list_branches_flag" "test_list_branches_flag"
+    run_test "list_remotes_flag" "test_list_remotes_flag"
+    run_test "list_all_flag" "test_list_all_flag"
+    run_test "list_branches_json" "test_list_branches_json"
+    run_test "list_default_unchanged" "test_list_default_unchanged"
 }
 
 # Main execution

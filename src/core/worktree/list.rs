@@ -5,6 +5,7 @@
 
 use crate::git::GitCommand;
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -18,12 +19,25 @@ pub enum Stat {
     Lines,
 }
 
-/// Enriched information about a single worktree.
+/// The kind of entry in the list output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryKind {
+    /// Branch checked out in an active worktree.
+    Worktree,
+    /// Local branch without an active worktree.
+    LocalBranch,
+    /// Remote tracking branch without a local branch or worktree.
+    RemoteBranch,
+}
+
+/// Enriched information about a single worktree or branch.
 pub struct WorktreeInfo {
+    /// The kind of entry.
+    pub kind: EntryKind,
     /// Branch name (stripped of `refs/heads/` prefix), or `"(detached)"`.
     pub name: String,
-    /// Absolute path to the worktree.
-    pub path: PathBuf,
+    /// Absolute path to the worktree (None for non-worktree branches).
+    pub path: Option<PathBuf>,
     /// Whether this worktree is the one the user is currently inside.
     pub is_current: bool,
     /// Whether this is the default (base) branch.
@@ -166,6 +180,31 @@ fn get_last_commit_info(worktree_path: &Path) -> (Option<i64>, String) {
     let output = Command::new("git")
         .args(["log", "-1", "--format=%ct\x1f%s"])
         .current_dir(worktree_path)
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let trimmed = stdout.trim();
+            if let Some((ts_str, subject)) = trimmed.split_once('\x1f') {
+                let timestamp = ts_str.parse::<i64>().ok();
+                (timestamp, subject.to_string())
+            } else {
+                (None, String::new())
+            }
+        }
+        _ => (None, String::new()),
+    }
+}
+
+/// Get the last commit's Unix timestamp and subject for a specific branch ref.
+///
+/// Unlike `get_last_commit_info`, this targets a named ref rather than HEAD,
+/// so it can be called from any directory in the repository.
+fn get_last_commit_info_for_ref(branch_ref: &str, cwd: &Path) -> (Option<i64>, String) {
+    let output = Command::new("git")
+        .args(["log", "-1", "--format=%ct\x1f%s", branch_ref])
+        .current_dir(cwd)
         .output();
 
     match output {
@@ -498,8 +537,9 @@ pub fn collect_worktree_info(
             };
 
         infos.push(WorktreeInfo {
+            kind: EntryKind::Worktree,
             name: branch_display,
-            path: entry.path,
+            path: Some(entry.path),
             is_current,
             is_default_branch,
             ahead,
@@ -525,6 +565,175 @@ pub fn collect_worktree_info(
 
     // Sort alphabetically by name (case-insensitive)
     infos.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    Ok(infos)
+}
+
+/// Collect enriched information for branches that don't have active worktrees.
+///
+/// Enumerates local and/or remote branches, filters out those already represented
+/// by a worktree, and enriches each with ahead/behind, commit info, and optionally
+/// line-level stats.
+pub fn collect_branch_info(
+    git: &GitCommand,
+    base_branch: &str,
+    stat: Stat,
+    include_local: bool,
+    include_remote: bool,
+    worktree_branches: &HashSet<String>,
+    cwd: &Path,
+) -> Result<Vec<WorktreeInfo>> {
+    let mut infos = Vec::new();
+    let mut local_branch_names: HashSet<String> = HashSet::new();
+
+    // Collect local branches without worktrees
+    if include_local {
+        let output = git
+            .for_each_ref("%(refname:short)", "refs/heads/")
+            .context("Failed to list local branches")?;
+
+        for branch in output.lines() {
+            let branch = branch.trim();
+            if branch.is_empty() || worktree_branches.contains(branch) {
+                continue;
+            }
+            local_branch_names.insert(branch.to_string());
+
+            let (ahead, behind) = match get_ahead_behind(base_branch, branch, cwd) {
+                Some((a, b)) => (Some(a), Some(b)),
+                None => (None, None),
+            };
+
+            let (remote_ahead, remote_behind) = match get_upstream_ahead_behind(branch, cwd) {
+                Some((a, b)) => (Some(a), Some(b)),
+                None => (None, None),
+            };
+
+            let (last_commit_timestamp, last_commit_subject) =
+                get_last_commit_info_for_ref(branch, cwd);
+
+            let branch_creation_timestamp = get_branch_creation_timestamp(branch, cwd);
+
+            let is_default_branch = branch == base_branch;
+
+            // Line-level stats (base and remote only — no working dir for staged/unstaged)
+            let (base_lines_inserted, base_lines_deleted) = if stat == Stat::Lines {
+                match get_base_line_counts(base_branch, branch, cwd) {
+                    Some((ins, del)) => (Some(ins), Some(del)),
+                    None => (None, None),
+                }
+            } else {
+                (None, None)
+            };
+
+            let (remote_lines_inserted, remote_lines_deleted) = if stat == Stat::Lines {
+                match get_remote_line_counts(branch, cwd) {
+                    Some((ins, del)) => (Some(ins), Some(del)),
+                    None => (None, None),
+                }
+            } else {
+                (None, None)
+            };
+
+            infos.push(WorktreeInfo {
+                kind: EntryKind::LocalBranch,
+                name: branch.to_string(),
+                path: None,
+                is_current: false,
+                is_default_branch,
+                ahead,
+                behind,
+                staged: 0,
+                unstaged: 0,
+                untracked: 0,
+                remote_ahead,
+                remote_behind,
+                last_commit_timestamp,
+                last_commit_subject,
+                branch_creation_timestamp,
+                base_lines_inserted,
+                base_lines_deleted,
+                staged_lines_inserted: None,
+                staged_lines_deleted: None,
+                unstaged_lines_inserted: None,
+                unstaged_lines_deleted: None,
+                remote_lines_inserted,
+                remote_lines_deleted,
+            });
+        }
+    }
+
+    // Collect remote branches without local branches or worktrees
+    if include_remote {
+        let output = git
+            .for_each_ref("%(refname:short)", "refs/remotes/origin/")
+            .context("Failed to list remote branches")?;
+
+        for remote_branch in output.lines() {
+            let remote_branch = remote_branch.trim();
+            // %(refname:short) renders origin/HEAD as just "origin"
+            if remote_branch.is_empty()
+                || remote_branch == "origin/HEAD"
+                || remote_branch == "origin"
+            {
+                continue;
+            }
+
+            // Strip origin/ prefix for deduplication check
+            let short_name = remote_branch
+                .strip_prefix("origin/")
+                .unwrap_or(remote_branch);
+
+            // Skip if already represented by a worktree or local branch
+            if worktree_branches.contains(short_name) || local_branch_names.contains(short_name) {
+                continue;
+            }
+
+            let (ahead, behind) = match get_ahead_behind(base_branch, remote_branch, cwd) {
+                Some((a, b)) => (Some(a), Some(b)),
+                None => (None, None),
+            };
+
+            let (last_commit_timestamp, last_commit_subject) =
+                get_last_commit_info_for_ref(remote_branch, cwd);
+
+            // Line-level stats (base only — no upstream concept for remote branches)
+            let (base_lines_inserted, base_lines_deleted) = if stat == Stat::Lines {
+                match get_base_line_counts(base_branch, remote_branch, cwd) {
+                    Some((ins, del)) => (Some(ins), Some(del)),
+                    None => (None, None),
+                }
+            } else {
+                (None, None)
+            };
+
+            infos.push(WorktreeInfo {
+                kind: EntryKind::RemoteBranch,
+                name: remote_branch.to_string(),
+                path: None,
+                is_current: false,
+                is_default_branch: false,
+                ahead,
+                behind,
+                staged: 0,
+                unstaged: 0,
+                untracked: 0,
+                remote_ahead: None,
+                remote_behind: None,
+                last_commit_timestamp,
+                last_commit_subject,
+                branch_creation_timestamp: None,
+                base_lines_inserted,
+                base_lines_deleted,
+                staged_lines_inserted: None,
+                staged_lines_deleted: None,
+                unstaged_lines_inserted: None,
+                unstaged_lines_deleted: None,
+                remote_lines_inserted: None,
+                remote_lines_deleted: None,
+            });
+        }
+    }
 
     Ok(infos)
 }
