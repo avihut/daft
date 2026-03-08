@@ -138,14 +138,12 @@ fn complete_existing_branches(prefix: &str, verbose: bool) -> Result<Vec<String>
 
     let branches: Vec<String> = String::from_utf8_lossy(&output.stdout)
         .lines()
-        .filter(|branch| {
-            // Filter out HEAD reference and apply prefix filter
-            !branch.contains("HEAD") && branch.starts_with(prefix)
-        })
+        .filter(|branch| !branch.contains("HEAD"))
         .map(|branch| {
             // Remove "origin/" prefix for cleaner suggestions
             branch.trim_start_matches("origin/").to_string()
         })
+        .filter(|branch| branch.starts_with(prefix))
         .collect();
 
     // Deduplicate branches (local and remote might have same name)
