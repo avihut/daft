@@ -90,38 +90,88 @@ _daft() {
     local cur prev words cword
     _init_completion || return
 
-    # hooks run: dynamic hook type and job name completion
-    if [[ $cword -ge 3 && "${words[1]}" == "hooks" && "${words[2]}" == "run" ]]; then
-        # --job: complete job names for the given hook type
-        if [[ "$prev" == "--job" ]]; then
-            local hook_type="" i
-            for ((i=3; i<cword; i++)); do
-                if [[ "${words[$i]}" != -* ]]; then
-                    hook_type="${words[$i]}"
-                    break
-                fi
-            done
-            if [[ -n "$hook_type" ]]; then
-                local jobs
-                jobs=$(DAFT_COMPLETE_HOOK="$hook_type" daft __complete hooks-run-job "$cur" 2>/dev/null | cut -f1)
-                COMPREPLY=( $(compgen -W "$jobs" -- "$cur") )
-            fi
+    # hooks: subcommand and argument completion
+    if [[ $cword -ge 2 && "${words[1]}" == "hooks" ]]; then
+        # hooks subcommand completion (position 2)
+        if [[ $cword -eq 2 ]]; then
+            COMPREPLY=( $(compgen -W "trust prompt deny status migrate install validate dump run" -- "$cur") )
+            COMPREPLY+=( $(compgen -d -- "$cur") )
             return 0
         fi
-        [[ "$prev" == "--tag" ]] && return 0
-        if [[ "$cur" == -* ]]; then
-            COMPREPLY=( $(compgen -W "--job --tag --dry-run -h --help" -- "$cur") )
-            return 0
-        fi
-        local hooks
-        hooks=$(daft __complete hooks-run "$cur" 2>/dev/null)
-        COMPREPLY=( $(compgen -W "$hooks" -- "$cur") )
-        return 0
-    fi
 
-    # hooks: complete subcommands
-    if [[ $cword -eq 2 && "${words[1]}" == "hooks" ]]; then
-        COMPREPLY=( $(compgen -W "trust prompt deny status migrate install validate dump run" -- "$cur") )
+        # hooks subcommand arguments (position 3+)
+        case "${words[2]}" in
+            run)
+                if [[ "$prev" == "--job" ]]; then
+                    local hook_type="" i
+                    for ((i=3; i<cword; i++)); do
+                        if [[ "${words[$i]}" != -* ]]; then
+                            hook_type="${words[$i]}"
+                            break
+                        fi
+                    done
+                    if [[ -n "$hook_type" ]]; then
+                        local jobs
+                        jobs=$(DAFT_COMPLETE_HOOK="$hook_type" daft __complete hooks-run-job "$cur" 2>/dev/null | cut -f1)
+                        COMPREPLY=( $(compgen -W "$jobs" -- "$cur") )
+                    fi
+                    return 0
+                fi
+                [[ "$prev" == "--tag" ]] && return 0
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--job --tag --dry-run -v --verbose -h --help" -- "$cur") )
+                    return 0
+                fi
+                local hooks
+                hooks=$(daft __complete hooks-run "$cur" 2>/dev/null)
+                COMPREPLY=( $(compgen -W "$hooks" -- "$cur") )
+                return 0
+                ;;
+            status)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "-s --short -h --help" -- "$cur") )
+                    return 0
+                fi
+                COMPREPLY=( $(compgen -d -- "$cur") )
+                return 0
+                ;;
+            prompt|deny)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "-f --force -h --help" -- "$cur") )
+                    return 0
+                fi
+                COMPREPLY=( $(compgen -d -- "$cur") )
+                return 0
+                ;;
+            trust)
+                if [[ $cword -eq 3 ]]; then
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=( $(compgen -W "-f --force -h --help" -- "$cur") )
+                        return 0
+                    fi
+                    COMPREPLY=( $(compgen -W "list reset prune" -- "$cur") )
+                    COMPREPLY+=( $(compgen -d -- "$cur") )
+                    return 0
+                fi
+                if [[ $cword -eq 4 && "${words[3]}" == "reset" ]]; then
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=( $(compgen -W "-f --force -h --help" -- "$cur") )
+                        return 0
+                    fi
+                    COMPREPLY=( $(compgen -W "all" -- "$cur") )
+                    COMPREPLY+=( $(compgen -d -- "$cur") )
+                    return 0
+                fi
+                COMPREPLY=( $(compgen -d -- "$cur") )
+                return 0
+                ;;
+            migrate)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--dry-run -h --help" -- "$cur") )
+                fi
+                return 0
+                ;;
+        esac
         return 0
     fi
 

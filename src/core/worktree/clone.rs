@@ -112,6 +112,15 @@ pub fn execute(params: &CloneParams, progress: &mut dyn ProgressSink) -> Result<
         return Err(e.context("Git clone failed"));
     }
 
+    // Canonicalize git_dir now that it exists on disk, so that trust entries
+    // and all other consumers use a consistent absolute path.
+    let git_dir = git_dir.canonicalize().with_context(|| {
+        format!(
+            "Failed to canonicalize git directory: {}",
+            git_dir.display()
+        )
+    })?;
+
     progress.on_step(&format!(
         "Changing directory to './{}'",
         parent_dir.display()
