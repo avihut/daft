@@ -86,10 +86,9 @@ pub struct Args {
     #[arg(
         long,
         value_enum,
-        default_value_t = Stat::Summary,
-        help = "Statistics mode: summary (default) or lines"
+        help = "Statistics mode: summary or lines (default: from git config daft.list.stat, or summary)"
     )]
-    stat: Stat,
+    stat: Option<Stat>,
 }
 
 /// A row in the worktree list table.
@@ -122,6 +121,7 @@ pub fn run() -> Result<()> {
     }
 
     let settings = DaftSettings::load()?;
+    let stat = args.stat.unwrap_or(settings.list_stat);
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let git_common_dir = get_git_common_dir()?;
     let base_branch = get_default_branch_local(&git_common_dir, "origin", settings.use_gitoxide)
@@ -134,24 +134,24 @@ pub fn run() -> Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
     let show_local = args.branches || args.all;
     let show_remote = args.remotes || args.all;
-    let needs_spinner = args.stat == Stat::Lines || show_local || show_remote;
+    let needs_spinner = stat == Stat::Lines || show_local || show_remote;
 
     let infos = if needs_spinner {
         let mut output = CliOutput::new(OutputConfig::new(false, args.verbose));
-        let msg = if args.stat == Stat::Lines {
+        let msg = if stat == Stat::Lines {
             "Computing line statistics..."
         } else {
             "Collecting branch information..."
         };
         output.start_spinner(msg);
-        let result = collect_worktree_info(&git, &base_branch, current_path.as_deref(), args.stat)?;
+        let result = collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat)?;
         if show_local || show_remote {
             let worktree_branches: HashSet<String> =
                 result.iter().map(|i| i.name.clone()).collect();
             let branch_infos = collect_branch_info(
                 &git,
                 &base_branch,
-                args.stat,
+                stat,
                 show_local,
                 show_remote,
                 &worktree_branches,
@@ -167,14 +167,14 @@ pub fn run() -> Result<()> {
             result
         }
     } else {
-        collect_worktree_info(&git, &base_branch, current_path.as_deref(), args.stat)?
+        collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat)?
     };
 
     if args.json {
-        return print_json(&infos, &project_root, &cwd, args.stat);
+        return print_json(&infos, &project_root, &cwd, stat);
     }
 
-    print_table(&infos, &project_root, &cwd, args.stat);
+    print_table(&infos, &project_root, &cwd, stat);
     Ok(())
 }
 

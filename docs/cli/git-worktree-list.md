@@ -56,7 +56,7 @@ git worktree-list [OPTIONS]
 | `-b, --branches` | Also show local branches without a worktree |  |
 | `-r, --remotes` | Also show remote tracking branches |  |
 | `-a, --all` | Show all branches (equivalent to -b -r) |  |
-| `--stat <STAT>` | Statistics mode: summary (default) or lines | `summary` |
+| `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.list.stat, or summary) |  |
 
 ## Global Options
 

@@ -19,6 +19,17 @@ pub enum Stat {
     Lines,
 }
 
+impl Stat {
+    /// Parse a string value into a Stat mode.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_lowercase().as_str() {
+            "summary" => Some(Self::Summary),
+            "lines" => Some(Self::Lines),
+            _ => None,
+        }
+    }
+}
+
 /// The kind of entry in the list output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryKind {

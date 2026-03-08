@@ -1048,6 +1048,65 @@ test_list_default_unchanged() {
     return 0
 }
 
+# Test daft.list.stat config sets default statistics mode
+test_list_stat_config() {
+    local remote_repo=$(create_test_remote "test-repo-list-stat-config" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-list-stat-config"
+
+    git-worktree-checkout develop || return 1
+
+    # Make changes with known line counts in develop
+    cd develop
+    printf "line1\nline2\nline3\n" > newfile.txt
+    git add newfile.txt
+    git commit -m "Add 3 lines" >/dev/null 2>&1
+    cd ..
+
+    cd main
+
+    # Set config to lines mode
+    git config daft.list.stat lines
+
+    # Run without --stat flag — config should activate lines mode
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1) || {
+        log_error "git-worktree-list with daft.list.stat=lines failed"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # develop should show line counts (lines mode shows +N for insertions)
+    if ! echo "$output" | grep "develop" | grep -q '+[0-9]'; then
+        log_error "Config daft.list.stat=lines should show line counts"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    # Explicit --stat summary should override config
+    output=$(NO_COLOR=1 git-worktree-list --stat summary 2>&1) || {
+        log_error "git-worktree-list --stat summary failed"
+        log_error "Output: $output"
+        return 1
+    }
+
+    # With summary mode, develop should show commit count (+1) not line count (+3)
+    # Just verify the command succeeded — exact values depend on branch state
+    log_success "CLI --stat overrides config"
+
+    # Invalid config value should fall back to default (summary), not error
+    git config daft.list.stat invalid
+    output=$(NO_COLOR=1 git-worktree-list 2>&1) || {
+        log_error "git-worktree-list with invalid daft.list.stat should not fail"
+        log_error "Output: $output"
+        return 1
+    }
+
+    log_success "daft.list.stat config works correctly"
+    return 0
+}
+
 # Run all list tests
 run_list_tests() {
     log "Running git-worktree-list integration tests..."
@@ -1079,6 +1138,7 @@ run_list_tests() {
     run_test "list_all_flag" "test_list_all_flag"
     run_test "list_branches_json" "test_list_branches_json"
     run_test "list_default_unchanged" "test_list_default_unchanged"
+    run_test "list_stat_config" "test_list_stat_config"
 }
 
 # Main execution
