@@ -1,0 +1,2 @@
+[commit_types]
+deps = { changelog_title = "Dependencies" }

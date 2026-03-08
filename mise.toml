@@ -4,6 +4,7 @@
 [tools]
 rust = "stable"
 lefthook = "latest"
+cocogitto = "latest"
 bun = "latest"
 
 [env]
