@@ -20,6 +20,7 @@
 mod cli;
 pub mod hook_progress;
 mod test;
+pub mod tui;
 
 pub use cli::CliOutput;
 pub use test::{OutputEntry, TestOutput};
