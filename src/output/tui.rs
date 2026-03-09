@@ -341,7 +341,7 @@ impl Column {
     fn constraint(self) -> Constraint {
         match self {
             Self::Status => Constraint::Length(14),
-            Self::Annotation => Constraint::Length(3),
+            Self::Annotation => Constraint::Length(4),
             Self::Branch => Constraint::Fill(2),
             Self::Path => Constraint::Fill(2),
             Self::Base => Constraint::Length(8),
@@ -356,7 +356,7 @@ impl Column {
     fn min_width(self) -> u16 {
         match self {
             Self::Status => 14,
-            Self::Annotation => 3,
+            Self::Annotation => 4,
             Self::Branch => 8,
             Self::Path => 8,
             Self::Base => 8,
@@ -519,6 +519,9 @@ fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
     } else {
         spans.push(Span::raw(" "));
     }
+
+    // Trailing space to match `list` column padding
+    spans.push(Span::raw(" "));
 
     Cell::from(Line::from(spans))
 }
