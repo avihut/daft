@@ -5,7 +5,7 @@
 
 use crate::core::worktree::list::WorktreeInfo;
 use crate::core::worktree::sync_dag::{DagEvent, OperationPhase, TaskStatus};
-use crate::output::format;
+use crate::output::format::{self, ColumnContext, ColumnValues};
 use crate::styles;
 
 use ratatui::{
@@ -15,6 +15,7 @@ use ratatui::{
     widgets::{Cell, Paragraph, Row, Table},
     Frame, Terminal, TerminalOptions, Viewport,
 };
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -68,6 +69,8 @@ pub struct TuiState {
     pub worktrees: Vec<WorktreeRow>,
     pub done: bool,
     pub tick: usize,
+    pub project_root: PathBuf,
+    pub cwd: PathBuf,
 }
 
 /// A single row in the worktree table.
@@ -77,7 +80,12 @@ pub struct WorktreeRow {
 }
 
 impl TuiState {
-    pub fn new(phases: Vec<OperationPhase>, worktree_infos: Vec<WorktreeInfo>) -> Self {
+    pub fn new(
+        phases: Vec<OperationPhase>,
+        worktree_infos: Vec<WorktreeInfo>,
+        project_root: PathBuf,
+        cwd: PathBuf,
+    ) -> Self {
         Self {
             phases: phases
                 .into_iter()
@@ -95,6 +103,8 @@ impl TuiState {
                 .collect(),
             done: false,
             tick: 0,
+            project_root,
+            cwd,
         }
     }
 
@@ -259,13 +269,21 @@ impl TuiState {
             .collect();
         let header_row = Row::new(header_cells);
 
+        let now = chrono::Utc::now().timestamp();
+        let ctx = ColumnContext {
+            project_root: &self.project_root,
+            cwd: &self.cwd,
+            now,
+        };
+
         let rows: Vec<Row> = self
             .worktrees
             .iter()
             .map(|wt| {
+                let vals = format::compute_column_values(&wt.info, &ctx);
                 let cells: Vec<Cell> = columns
                     .iter()
-                    .map(|col| render_cell(col, wt, self.tick))
+                    .map(|col| render_cell(col, wt, &vals, self.tick))
                     .collect();
                 Row::new(cells)
             })
@@ -407,42 +425,45 @@ pub fn select_columns(width: u16) -> Vec<Column> {
 }
 
 /// Render a single cell for the given column and worktree row.
-fn render_cell(col: &Column, wt: &WorktreeRow, tick: usize) -> Cell<'static> {
+fn render_cell(col: &Column, wt: &WorktreeRow, vals: &ColumnValues, tick: usize) -> Cell<'static> {
     match col {
         Column::Status => render_status_cell(&wt.status, tick),
         Column::Annotation => render_annotation_cell(&wt.info),
-        Column::Branch => Cell::from(wt.info.name.clone()),
-        Column::Path => {
-            let text = wt
-                .info
-                .path
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
-            Cell::from(text)
+        Column::Branch => Cell::from(vals.branch.clone()),
+        Column::Path => Cell::from(vals.path.clone()),
+        Column::Base => Cell::from(vals.base.clone()),
+        Column::Remote => Cell::from(vals.remote.clone()),
+        Column::Changes => Cell::from(vals.changes.clone()),
+        Column::Age => {
+            let cell = Cell::from(vals.branch_age.clone());
+            if vals.is_old_branch {
+                cell.style(Style::default().add_modifier(Modifier::DIM))
+            } else {
+                cell
+            }
         }
-        Column::Base => Cell::from(format::format_ahead_behind(
-            wt.info.ahead,
-            wt.info.behind,
-            false,
-        )),
-        Column::Remote => Cell::from(format::format_remote_status(
-            wt.info.remote_ahead,
-            wt.info.remote_behind,
-            false,
-        )),
-        Column::Changes => Cell::from(format::format_head_status(
-            wt.info.staged,
-            wt.info.unstaged,
-            wt.info.untracked,
-            false,
-        )),
-        Column::Age => Cell::from(format::format_shorthand_age(
-            wt.info.branch_creation_timestamp,
-            chrono::Utc::now().timestamp(),
-            false,
-        )),
-        Column::LastCommit => Cell::from(wt.info.last_commit_subject.clone()),
+        Column::LastCommit => {
+            if vals.last_commit_age.is_empty() {
+                Cell::from(vals.last_commit_subject.clone())
+            } else if vals.last_commit_subject.is_empty() {
+                let cell = Cell::from(vals.last_commit_age.clone());
+                if vals.is_old_commit {
+                    cell.style(Style::default().add_modifier(Modifier::DIM))
+                } else {
+                    cell
+                }
+            } else {
+                let age_style = if vals.is_old_commit {
+                    Style::default().add_modifier(Modifier::DIM)
+                } else {
+                    Style::default()
+                };
+                Cell::from(Line::from(vec![
+                    Span::styled(vals.last_commit_age.clone(), age_style),
+                    Span::raw(format!(" {}", vals.last_commit_subject)),
+                ]))
+            }
+        }
     }
 }
 
@@ -672,7 +693,12 @@ mod tests {
             WorktreeInfo::empty("feat/old"),
         ];
 
-        TuiState::new(phases, worktree_infos)
+        TuiState::new(
+            phases,
+            worktree_infos,
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test"),
+        )
     }
 
     #[test]

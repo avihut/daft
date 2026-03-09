@@ -204,7 +204,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     // ── Create TUI state with known phases and worktrees ───────────────
     let phases = vec![OperationPhase::Fetch, OperationPhase::Prune];
-    let state = TuiState::new(phases, worktree_infos);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
+    let state = TuiState::new(phases, worktree_infos, project_root.clone(), cwd);
 
     // ── Create channel and spawn orchestrator ──────────────────────────
     let (tx, rx) = std::sync::mpsc::channel();

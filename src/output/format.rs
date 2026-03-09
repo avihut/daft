@@ -3,6 +3,7 @@
 //! These formatters produce plain or ANSI-colored strings used by both the
 //! `tabled`-based CLI table (`list.rs`) and the ratatui TUI table (`tui.rs`).
 
+use crate::core::worktree::list::WorktreeInfo;
 use crate::styles;
 use pathdiff::diff_paths;
 use std::path::Path;
@@ -176,6 +177,79 @@ pub fn relative_display_path(abs_path: &Path, project_root: &Path, cwd: &Path) -
         .unwrap_or(abs_path)
         .display()
         .to_string()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unified column value computation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Pre-computed plain-text column values for a single worktree row.
+/// No ANSI codes — renderers apply their own styling.
+pub struct ColumnValues {
+    pub branch: String,
+    pub path: String,
+    pub base: String,
+    pub changes: String,
+    pub remote: String,
+    pub branch_age: String,
+    pub last_commit_age: String,
+    pub last_commit_subject: String,
+    pub is_old_branch: bool,
+    pub is_old_commit: bool,
+}
+
+/// Context needed to compute column values for a row.
+pub struct ColumnContext<'a> {
+    pub project_root: &'a Path,
+    pub cwd: &'a Path,
+    pub now: i64,
+}
+
+/// Compute plain-text column values for a single `WorktreeInfo`.
+///
+/// Returns Summary-mode values only. For `Stat::Lines` mode, callers can
+/// override the `base`, `changes`, and `remote` fields after this call.
+pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> ColumnValues {
+    let branch = info.name.clone();
+
+    let path = info
+        .path
+        .as_ref()
+        .map(|p| relative_display_path(p, ctx.project_root, ctx.cwd))
+        .unwrap_or_default();
+
+    let base = format_ahead_behind(info.ahead, info.behind, false);
+    let changes = format_head_status(info.staged, info.unstaged, info.untracked, false);
+    let remote = format_remote_status(info.remote_ahead, info.remote_behind, false);
+
+    let branch_age_secs = info.branch_creation_timestamp.map(|ts| ctx.now - ts);
+    let branch_age = info
+        .branch_creation_timestamp
+        .map(|ts| shorthand_from_seconds(ctx.now - ts))
+        .unwrap_or_default();
+    let is_old_branch = branch_age_secs.is_some_and(is_old_seconds);
+
+    let commit_age_secs = info.last_commit_timestamp.map(|ts| ctx.now - ts);
+    let last_commit_age = info
+        .last_commit_timestamp
+        .map(|ts| shorthand_from_seconds(ctx.now - ts))
+        .unwrap_or_default();
+    let is_old_commit = commit_age_secs.is_some_and(is_old_seconds);
+
+    let last_commit_subject = info.last_commit_subject.clone();
+
+    ColumnValues {
+        branch,
+        path,
+        base,
+        changes,
+        remote,
+        branch_age,
+        last_commit_age,
+        last_commit_subject,
+        is_old_branch,
+        is_old_commit,
+    }
 }
 
 #[cfg(test)]

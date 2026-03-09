@@ -173,7 +173,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     if let Some(ref base) = args.rebase {
         phases.push(sync_dag::OperationPhase::Rebase(base.clone()));
     }
-    let state = TuiState::new(phases, worktree_infos);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
+    let state = TuiState::new(phases, worktree_infos, project_root.clone(), cwd);
 
     // ── Create channel and spawn orchestrator ──────────────────────────
     let (tx, rx) = std::sync::mpsc::channel();

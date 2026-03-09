@@ -8,8 +8,8 @@ use crate::{
     logging::init_logging,
     output::{
         format::{
-            format_ahead_behind, format_head_status, format_remote_status, format_shorthand_age,
-            relative_display_path, shorthand_from_seconds,
+            compute_column_values, format_ahead_behind, format_head_status, format_remote_status,
+            format_shorthand_age, relative_display_path, shorthand_from_seconds, ColumnContext,
         },
         CliOutput, Output, OutputConfig,
     },
@@ -287,19 +287,29 @@ fn print_table(
     let has_any_current = infos.iter().any(|i| i.is_current);
     let has_any_default = infos.iter().any(|i| i.is_default_branch);
 
-    // Pre-compute max visible width of commit ages to align subjects
-    let max_commit_age_width = infos
+    let col_ctx = ColumnContext {
+        project_root,
+        cwd,
+        now,
+    };
+
+    // Pre-compute plain column values for alignment and reuse
+    let col_vals: Vec<_> = infos
         .iter()
-        .filter_map(|info| {
-            info.last_commit_timestamp
-                .map(|ts| shorthand_from_seconds(now - ts).len())
-        })
+        .map(|i| compute_column_values(i, &col_ctx))
+        .collect();
+
+    // Max visible width of commit ages (for subject alignment)
+    let max_commit_age_width = col_vals
+        .iter()
+        .map(|v| v.last_commit_age.len())
         .max()
         .unwrap_or(0);
 
     let rows: Vec<TableRow> = infos
         .iter()
-        .map(|info| {
+        .zip(col_vals.iter())
+        .map(|(info, vals)| {
             // Build annotation: ">" first (cyan), then "◉" (dark gray)
             let mut annotation = String::new();
             if has_any_current {
@@ -328,21 +338,14 @@ fn print_table(
                 }
             }
 
-            let name = info.name.clone();
+            // Stat::Lines mode overrides base/changes/remote with line-level counts
+            let (base, head, remote) = if stat == Stat::Lines {
+                let base = format_ahead_behind(
+                    info.base_lines_inserted,
+                    info.base_lines_deleted,
+                    use_color,
+                );
 
-            let rel_path = info
-                .path
-                .as_ref()
-                .map(|p| relative_display_path(p, project_root, cwd))
-                .unwrap_or_default();
-
-            let base = if stat == Stat::Lines {
-                format_ahead_behind(info.base_lines_inserted, info.base_lines_deleted, use_color)
-            } else {
-                format_ahead_behind(info.ahead, info.behind, use_color)
-            };
-
-            let head = if stat == Stat::Lines {
                 let ins = info.staged_lines_inserted.unwrap_or(0)
                     + info.unstaged_lines_inserted.unwrap_or(0);
                 let del = info.staged_lines_deleted.unwrap_or(0)
@@ -372,44 +375,42 @@ fn print_table(
                         parts.push(text);
                     }
                 }
-                parts.join(" ")
-            } else {
-                format_head_status(info.staged, info.unstaged, info.untracked, use_color)
-            };
+                let head = parts.join(" ");
 
-            let remote = if stat == Stat::Lines {
-                format_ahead_behind(
+                let remote = format_ahead_behind(
                     info.remote_lines_inserted,
                     info.remote_lines_deleted,
                     use_color,
-                )
+                );
+
+                (base, head, remote)
             } else {
-                format_remote_status(info.remote_ahead, info.remote_behind, use_color)
+                (
+                    format_ahead_behind(info.ahead, info.behind, use_color),
+                    format_head_status(info.staged, info.unstaged, info.untracked, use_color),
+                    format_remote_status(info.remote_ahead, info.remote_behind, use_color),
+                )
             };
 
             let branch_age = format_shorthand_age(info.branch_creation_timestamp, now, use_color);
 
-            // Combine last commit age + subject into one column, with age right-padded for alignment
+            // Combine last commit age + subject, with age right-padded for alignment
             let commit_age = format_shorthand_age(info.last_commit_timestamp, now, use_color);
-            let commit_age_visible_len = info
-                .last_commit_timestamp
-                .map(|ts| shorthand_from_seconds(now - ts).len())
-                .unwrap_or(0);
-            let last_commit = if commit_age.is_empty() {
-                info.last_commit_subject.clone()
-            } else if info.last_commit_subject.is_empty() {
+            let last_commit = if vals.last_commit_age.is_empty() {
+                vals.last_commit_subject.clone()
+            } else if vals.last_commit_subject.is_empty() {
                 commit_age
             } else {
-                let pad = " ".repeat(max_commit_age_width - commit_age_visible_len);
-                format!("{commit_age}{pad} {}", info.last_commit_subject)
+                let pad = " ".repeat(max_commit_age_width - vals.last_commit_age.len());
+                format!("{commit_age}{pad} {}", vals.last_commit_subject)
             };
 
             let is_non_worktree = info.kind != EntryKind::Worktree;
             if use_color && is_non_worktree {
                 TableRow {
                     annotation,
-                    name: styles::dim(&name),
-                    path: styles::dim(&rel_path),
+                    name: styles::dim(&vals.branch),
+                    path: styles::dim(&vals.path),
                     base: if base.is_empty() {
                         base
                     } else {
@@ -439,8 +440,8 @@ fn print_table(
             } else {
                 TableRow {
                     annotation,
-                    name,
-                    path: rel_path,
+                    name: vals.branch.clone(),
+                    path: vals.path.clone(),
                     base,
                     head,
                     remote,
