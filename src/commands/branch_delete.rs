@@ -32,8 +32,9 @@ branch that:
   - has not been merged (or squash-merged) into the default branch
   - is out of sync with its remote tracking branch
 
-Use -D (--force) to override these safety checks. The command always refuses
-to delete the repository's default branch (e.g. main), even with --force.
+Use -D (--force) to override these safety checks. For the default branch
+(e.g. main), --force removes its worktree only — the local branch ref and
+remote branch are always preserved.
 
 All targeted branches are validated before any deletions begin. If any branch
 fails validation without --force, the entire command aborts and no branches

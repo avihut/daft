@@ -116,11 +116,14 @@ test_branch_delete_refuses_default() {
     git-worktree-clone "$remote_repo" || return 1
     cd "test-repo-bd-default"
 
-    # Should fail even with --force
-    if git-worktree-branch-delete -D main 2>/dev/null; then
-        log_error "Should have refused to delete default branch"
+    # Should fail WITHOUT --force
+    if git-worktree-branch-delete main 2>/dev/null; then
+        log_error "Should have refused to delete default branch without force"
         return 1
     fi
+
+    # Verify main worktree still exists
+    assert_directory_exists "main" || return 1
 
     return 0
 }
@@ -662,6 +665,159 @@ test_branch_delete_deprecated_warning() {
     return 0
 }
 
+# Test force-delete default branch removes worktree only
+test_branch_delete_default_force_worktree_only() {
+    local remote_repo=$(create_test_remote "test-repo-bd-default-force" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-bd-default-force"
+    local project_root=$(pwd)
+
+    # Verify main worktree exists
+    assert_directory_exists "main" || return 1
+
+    # Create another branch so we can check from it
+    git-worktree-checkout -b feature/other || return 1
+    cd "feature/other"
+
+    # Force-delete the default branch — should remove worktree only
+    git-worktree-branch-delete -D main || return 1
+
+    # Verify worktree was removed
+    if [[ -d "$project_root/main" ]]; then
+        log_error "Default branch worktree should have been removed"
+        return 1
+    fi
+
+    # Verify local branch ref still exists
+    if ! git branch | grep -q " main$"; then
+        log_error "Default branch local ref should have been preserved"
+        return 1
+    fi
+
+    # Verify remote branch still exists
+    if ! git ls-remote --heads origin main 2>/dev/null | grep -q main; then
+        log_error "Default branch remote should have been preserved"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test force-delete default branch fails when no worktree exists
+test_branch_delete_default_no_worktree_force_fails() {
+    local remote_repo=$(create_test_remote "test-repo-bd-default-nowt" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-bd-default-nowt"
+    local project_root=$(pwd)
+
+    # Create another branch so we can work from it
+    git-worktree-checkout -b feature/other || return 1
+    cd "feature/other"
+
+    # Remove worktree manually first
+    git worktree remove "$project_root/main" >/dev/null 2>&1
+
+    # Force-delete should fail — no worktree to remove
+    if git-worktree-branch-delete -D main 2>/dev/null; then
+        log_error "Should have failed when default branch has no worktree"
+        return 1
+    fi
+
+    # Verify local branch ref still exists
+    if ! git branch | grep -q " main$"; then
+        log_error "Default branch local ref should still exist"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test force-delete default branch from inside its worktree
+test_branch_delete_default_from_current_worktree() {
+    local remote_repo=$(create_test_remote "test-repo-bd-default-current" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-bd-default-current"
+    local project_root=$(pwd)
+
+    # Create another branch so cd target has somewhere to go
+    git-worktree-checkout -b feature/other || return 1
+
+    # cd into default branch worktree
+    cd "main"
+
+    # Force-delete with DAFT_CD_FILE set
+    local cd_file
+    cd_file=$(mktemp)
+    DAFT_CD_FILE="$cd_file" git-worktree-branch-delete -D main || return 1
+
+    # Verify worktree was removed
+    if [[ -d "$project_root/main" ]]; then
+        log_error "Default branch worktree should have been removed"
+        return 1
+    fi
+
+    # Verify cd file was written
+    if [[ ! -s "$cd_file" ]]; then
+        log_error "DAFT_CD_FILE should have been written"
+        rm -f "$cd_file"
+        return 1
+    fi
+
+    # cd to the target written by the command
+    cd "$(cat "$cd_file")" 2>/dev/null || cd "$project_root"
+
+    # Verify local branch ref still exists
+    if ! git branch | grep -q " main$"; then
+        log_error "Default branch local ref should have been preserved"
+        rm -f "$cd_file"
+        return 1
+    fi
+
+    rm -f "$cd_file"
+    return 0
+}
+
+# Test daft remove -f on default branch (tests the daft-remove entry point)
+test_daft_remove_default_force_worktree_only() {
+    local remote_repo=$(create_test_remote "test-repo-bd-daft-remove" "main")
+
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-bd-daft-remove"
+    local project_root=$(pwd)
+
+    assert_directory_exists "main" || return 1
+
+    # Create another branch so we can check from it
+    git-worktree-checkout -b feature/other || return 1
+    cd "feature/other"
+
+    # Force-delete via daft remove -f
+    daft-remove -f main || return 1
+
+    # Verify worktree was removed
+    if [[ -d "$project_root/main" ]]; then
+        log_error "Default branch worktree should have been removed"
+        return 1
+    fi
+
+    # Verify local branch ref still exists
+    if ! git branch | grep -q " main$"; then
+        log_error "Default branch local ref should have been preserved"
+        return 1
+    fi
+
+    # Verify remote branch still exists
+    if ! git ls-remote --heads origin main 2>/dev/null | grep -q main; then
+        log_error "Default branch remote should have been preserved"
+        return 1
+    fi
+
+    return 0
+}
+
 run_branch_delete_tests() {
     log "Running git-worktree-branch-delete integration tests..."
 
@@ -669,6 +825,10 @@ run_branch_delete_tests() {
     run_test "branch_delete_refuses_unmerged" "test_branch_delete_refuses_unmerged"
     run_test "branch_delete_force_unmerged" "test_branch_delete_force_unmerged"
     run_test "branch_delete_refuses_default" "test_branch_delete_refuses_default"
+    run_test "branch_delete_default_force_worktree_only" "test_branch_delete_default_force_worktree_only"
+    run_test "branch_delete_default_no_worktree_force_fails" "test_branch_delete_default_no_worktree_force_fails"
+    run_test "branch_delete_default_from_current_worktree" "test_branch_delete_default_from_current_worktree"
+    run_test "daft_remove_default_force_worktree_only" "test_daft_remove_default_force_worktree_only"
     run_test "branch_delete_refuses_dirty" "test_branch_delete_refuses_dirty"
     run_test "branch_delete_multiple" "test_branch_delete_multiple"
     run_test "branch_delete_no_worktree" "test_branch_delete_no_worktree"

@@ -24,6 +24,8 @@ remote tracking branches in a single operation. Arguments can be branch names
 or worktree paths.
 
 Safety checks prevent accidental data loss. Use `-f` (`--force`) to override.
+For the default branch (e.g. main), `-f` removes its worktree only -- the
+local branch ref and remote branch are always preserved.
 
 ## See Also
 

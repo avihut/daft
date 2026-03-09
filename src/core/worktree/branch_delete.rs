@@ -107,6 +107,9 @@ struct ValidatedBranch {
     remote_name: Option<String>,
     remote_branch_name: Option<String>,
     is_current_worktree: bool,
+    /// When true, only the worktree is removed — local branch ref and remote
+    /// branch are preserved. Used for the default branch.
+    worktree_only: bool,
 }
 
 enum ResolveResult {
@@ -316,7 +319,8 @@ fn try_resolve_relative_to_root(
 ///
 /// Each branch goes through up to 5 checks:
 ///   1. Branch exists locally
-///   2. Not the default branch (even with --force)
+///   2. Default branch protection: without --force, always refused; with
+///      --force, allowed as worktree-only removal (skips checks 3-5)
 ///   3. No uncommitted changes in worktree (skip with --force)
 ///   4. Merged into default branch (skip with --force)
 ///   5. Local/remote in sync (skip with --force)
@@ -355,19 +359,57 @@ fn validate_branches(
             }
         }
 
-        // Check 2: Not the default branch (never allowed, even with --force)
-        if branch == &ctx.default_branch {
-            errors.push(ValidationError {
-                branch: branch.clone(),
-                message: format!(
-                    "refusing to delete the default branch '{}'",
-                    ctx.default_branch
-                ),
-            });
-            continue;
-        }
-
         let wt_path = worktree_map.get(branch.as_str()).cloned();
+
+        // Check 2: Default branch protection
+        if branch == &ctx.default_branch {
+            if !force {
+                errors.push(ValidationError {
+                    branch: branch.clone(),
+                    message: format!(
+                        "refusing to delete the default branch '{}' (use --force to remove the worktree only)",
+                        ctx.default_branch
+                    ),
+                });
+                continue;
+            } else if wt_path.is_none() {
+                errors.push(ValidationError {
+                    branch: branch.clone(),
+                    message: format!(
+                        "the default branch '{}' has no worktree to remove",
+                        ctx.default_branch
+                    ),
+                });
+                continue;
+            } else {
+                // Force + worktree exists: allow worktree-only removal.
+                // Skip checks 3-5 since we are not deleting the branch ref.
+                let is_current = match (&wt_path, current_wt_path) {
+                    (Some(wt), Some(current)) => {
+                        wt == current
+                            || std::fs::canonicalize(wt).ok() == std::fs::canonicalize(current).ok()
+                    }
+                    _ => false,
+                } || (wt_path.is_some()
+                    && current_branch.is_some()
+                    && current_branch == Some(branch.as_str()));
+
+                sink.on_step(&format!(
+                    "Default branch '{}' — will remove worktree only",
+                    branch
+                ));
+
+                validated.push(ValidatedBranch {
+                    name: branch.clone(),
+                    worktree_path: wt_path,
+                    remote_name: None,
+                    remote_branch_name: None,
+                    is_current_worktree: is_current,
+                    worktree_only: true,
+                });
+                continue;
+            }
+        }
 
         // Check 3: No uncommitted changes (skip with --force)
         if !force {
@@ -477,6 +519,7 @@ fn validate_branches(
             remote_name,
             remote_branch_name,
             is_current_worktree: is_current,
+            worktree_only: false,
         });
     }
 
@@ -681,25 +724,28 @@ fn delete_single_branch(
     }
 
     // Step 2: Delete remote branch (hardest to recreate, do first)
-    if let (Some(ref remote), Some(ref remote_branch)) =
-        (&branch.remote_name, &branch.remote_branch_name)
-    {
-        sink.on_step(&format!(
-            "Deleting remote branch {}/{}...",
-            remote, remote_branch
-        ));
-        match ctx.git.push_delete(remote, remote_branch) {
-            Ok(()) => {
-                result.remote_deleted = true;
-                sink.on_step(&format!(
-                    "Remote branch {}/{} deleted",
-                    remote, remote_branch
-                ));
-            }
-            Err(e) => {
-                result.errors.push(format!(
-                    "Failed to delete remote branch {remote}/{remote_branch}: {e}"
-                ));
+    // Skipped for worktree-only removal (default branch).
+    if !branch.worktree_only {
+        if let (Some(ref remote), Some(ref remote_branch)) =
+            (&branch.remote_name, &branch.remote_branch_name)
+        {
+            sink.on_step(&format!(
+                "Deleting remote branch {}/{}...",
+                remote, remote_branch
+            ));
+            match ctx.git.push_delete(remote, remote_branch) {
+                Ok(()) => {
+                    result.remote_deleted = true;
+                    sink.on_step(&format!(
+                        "Remote branch {}/{} deleted",
+                        remote, remote_branch
+                    ));
+                }
+                Err(e) => {
+                    result.errors.push(format!(
+                        "Failed to delete remote branch {remote}/{remote_branch}: {e}"
+                    ));
+                }
             }
         }
     }
@@ -747,18 +793,21 @@ fn delete_single_branch(
     }
 
     // Step 4: Delete local branch
-    // Always use force-delete (-D) here because our validation has already passed.
-    sink.on_step(&format!("Deleting local branch {}...", branch.name));
-    match ctx.git.branch_delete(&branch.name, true) {
-        Ok(()) => {
-            result.branch_deleted = true;
-            sink.on_step(&format!("Branch {} deleted", branch.name));
-        }
-        Err(e) => {
-            result.errors.push(format!(
-                "Failed to delete local branch {}: {e}",
-                branch.name
-            ));
+    // Skipped for worktree-only removal (default branch).
+    if !branch.worktree_only {
+        // Always use force-delete (-D) here because our validation has already passed.
+        sink.on_step(&format!("Deleting local branch {}...", branch.name));
+        match ctx.git.branch_delete(&branch.name, true) {
+            Ok(()) => {
+                result.branch_deleted = true;
+                sink.on_step(&format!("Branch {} deleted", branch.name));
+            }
+            Err(e) => {
+                result.errors.push(format!(
+                    "Failed to delete local branch {}: {e}",
+                    branch.name
+                ));
+            }
         }
     }
 
@@ -941,10 +990,12 @@ mod tests {
             remote_name: Some("origin".to_string()),
             remote_branch_name: Some("feature/test".to_string()),
             is_current_worktree: false,
+            worktree_only: false,
         };
         assert_eq!(vb.name, "feature/test");
         assert!(vb.worktree_path.is_some());
         assert!(!vb.is_current_worktree);
+        assert!(!vb.worktree_only);
     }
 
     #[test]
@@ -955,10 +1006,40 @@ mod tests {
             remote_name: None,
             remote_branch_name: None,
             is_current_worktree: false,
+            worktree_only: false,
         };
         assert!(vb.worktree_path.is_none());
         assert!(vb.remote_name.is_none());
         assert!(vb.remote_branch_name.is_none());
+    }
+
+    #[test]
+    fn test_validated_branch_worktree_only() {
+        let vb = ValidatedBranch {
+            name: "main".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/project/main")),
+            remote_name: None,
+            remote_branch_name: None,
+            is_current_worktree: false,
+            worktree_only: true,
+        };
+        assert!(vb.worktree_only);
+        assert!(vb.worktree_path.is_some());
+        assert!(vb.remote_name.is_none());
+        assert!(vb.remote_branch_name.is_none());
+    }
+
+    #[test]
+    fn test_deletion_result_worktree_only() {
+        let result = DeletionResult {
+            branch: "main".to_string(),
+            remote_deleted: false,
+            worktree_removed: true,
+            branch_deleted: false,
+            errors: Vec::new(),
+        };
+        assert!(!result.has_errors());
+        assert_eq!(result.deleted_parts(), "worktree");
     }
 
     #[test]
