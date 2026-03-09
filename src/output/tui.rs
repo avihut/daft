@@ -9,7 +9,7 @@ use crate::output::format;
 use crate::styles;
 
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Cell, Paragraph, Row, Table},
@@ -590,7 +590,9 @@ impl TuiRenderer {
                         let is_done = matches!(event, DagEvent::AllDone);
                         self.state.apply_event(&event);
                         if is_done {
-                            // Final render.
+                            // Final render — position cursor past all content so
+                            // the shell prompt won't overwrite the table.
+                            let worktree_rows = self.state.worktrees.len() as u16;
                             terminal.draw(|frame| {
                                 let area = frame.area();
                                 let chunks = Layout::vertical([
@@ -600,21 +602,39 @@ impl TuiRenderer {
                                 .split(area);
                                 self.state.render_header(frame, chunks[0]);
                                 self.state.render_table(frame, chunks[1]);
+
+                                // table header (1 row) + data rows
+                                let content_bottom = area.y + header_height + 1 + worktree_rows;
+                                frame.set_cursor_position(Position {
+                                    x: 0,
+                                    y: content_bottom,
+                                });
                             })?;
 
-                            // Ensure cursor is past the viewport before dropping
-                            // the terminal. Without this, the shell prompt may
-                            // overwrite the bottom rows.
                             drop(terminal);
-                            eprintln!();
-
                             return Ok(self.state);
                         }
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
+                        let worktree_rows = self.state.worktrees.len() as u16;
+                        terminal.draw(|frame| {
+                            let area = frame.area();
+                            let chunks = Layout::vertical([
+                                Constraint::Length(header_height),
+                                Constraint::Fill(1),
+                            ])
+                            .split(area);
+                            self.state.render_header(frame, chunks[0]);
+                            self.state.render_table(frame, chunks[1]);
+
+                            let content_bottom = area.y + header_height + 1 + worktree_rows;
+                            frame.set_cursor_position(Position {
+                                x: 0,
+                                y: content_bottom,
+                            });
+                        })?;
                         drop(terminal);
-                        eprintln!();
                         return Ok(self.state);
                     }
                 }
