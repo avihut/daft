@@ -18,6 +18,7 @@ pub mod previous;
 pub mod prune;
 pub mod rebase;
 pub mod rename;
+pub mod sync_dag;
 
 /// Configuration for worktree operations.
 #[derive(Debug, Clone)]
