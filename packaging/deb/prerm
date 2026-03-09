@@ -4,9 +4,10 @@ set -e
 case "$1" in
     remove|upgrade|deconfigure)
         for cmd in git-worktree-clone git-worktree-init git-worktree-checkout \
-                   git-worktree-checkout-branch git-worktree-prune git-worktree-carry \
-                   git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
-                   git-sync git-daft daft-remove daft-rename; do
+                   git-worktree-branch git-worktree-branch-delete \
+                   git-worktree-prune git-worktree-carry git-worktree-fetch \
+                   git-worktree-flow-adopt git-worktree-flow-eject \
+                   git-worktree-list git-sync git-daft daft-remove daft-rename; do
             rm -f "/usr/bin/$cmd"
         done
         ;;

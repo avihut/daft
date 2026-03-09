@@ -55,10 +55,11 @@ jobs:
           # Verify all commands are available in PATH
           echo ""
           echo "Command locations:"
-          for cmd in daft git-worktree-clone git-worktree-checkout git-worktree-init \
+          for cmd in daft git-worktree-clone git-worktree-init git-worktree-checkout \
                      git-worktree-branch git-worktree-branch-delete \
                      git-worktree-prune git-worktree-carry git-worktree-fetch \
-                     git-worktree-flow-adopt git-worktree-flow-eject git-sync git-daft \
+                     git-worktree-flow-adopt git-worktree-flow-eject \
+                     git-worktree-list git-sync git-daft \
                      daft-remove daft-rename; do
             echo "  $cmd: $(which $cmd)"
           done
@@ -66,10 +67,11 @@ jobs:
           # Verify help commands work
           echo ""
           echo "Testing --help for all commands..."
-          for cmd in daft git-worktree-clone git-worktree-checkout git-worktree-init \
+          for cmd in daft git-worktree-clone git-worktree-init git-worktree-checkout \
                      git-worktree-branch git-worktree-branch-delete \
                      git-worktree-prune git-worktree-carry git-worktree-fetch \
-                     git-worktree-flow-adopt git-worktree-flow-eject git-sync git-daft \
+                     git-worktree-flow-adopt git-worktree-flow-eject \
+                     git-worktree-list git-sync git-daft \
                      daft-remove daft-rename; do
             echo "  $cmd --help..."
             $cmd --help > /dev/null || { echo "FAILED: $cmd --help"; exit 1; }
@@ -83,11 +85,11 @@ jobs:
           echo "=== Verifying man pages ==="
 
           # Man pages are generated for git-worktree-* commands and daft-release-notes
-          for page in git-worktree-clone git-worktree-checkout \
-                      git-worktree-init git-worktree-branch git-worktree-branch-delete \
+          for page in git-worktree-clone git-worktree-init git-worktree-checkout \
+                      git-worktree-branch git-worktree-branch-delete \
                       git-worktree-prune git-worktree-carry git-worktree-fetch \
                       git-worktree-flow-adopt git-worktree-flow-eject \
-                      git-sync daft-release-notes; do
+                      git-worktree-list git-sync daft-release-notes; do
             echo "  Checking man $page..."
             man -w $page > /dev/null 2>&1 || { echo "FAILED: man page not found for $page"; exit 1; }
           done
