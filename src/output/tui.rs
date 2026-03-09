@@ -7,10 +7,10 @@ use crate::core::worktree::list::WorktreeInfo;
 use crate::core::worktree::sync_dag::{DagEvent, OperationPhase, SyncDag, SyncTask, TaskStatus};
 
 use ratatui::{
-    layout::Rect,
+    layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Cell, Paragraph, Row, Table},
     Frame,
 };
 
@@ -19,6 +19,9 @@ const SPINNER_FRAMES: &[&str] = &[
     "\u{2807}", "\u{280f}",
 ];
 const CHECKMARK: &str = "\u{2713}";
+const CROSS: &str = "\u{2717}";
+const SKIP: &str = "\u{2298}";
+const DASH: &str = "\u{2014}";
 
 /// Status of a high-level operation phase in the header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +231,252 @@ impl TuiState {
 
         let header = Paragraph::new(lines);
         frame.render_widget(header, area);
+    }
+
+    /// Render the worktree status table.
+    pub fn render_table(&self, frame: &mut Frame, area: Rect) {
+        let columns = select_columns(area.width);
+
+        let header_cells: Vec<Cell> = columns
+            .iter()
+            .map(|col| {
+                Cell::from(Span::styled(
+                    col.label(),
+                    Style::default().add_modifier(Modifier::DIM),
+                ))
+            })
+            .collect();
+        let header_row = Row::new(header_cells);
+
+        let rows: Vec<Row> = self
+            .worktrees
+            .iter()
+            .map(|wt| {
+                let cells: Vec<Cell> = columns
+                    .iter()
+                    .map(|col| render_cell(col, wt, self.tick))
+                    .collect();
+                Row::new(cells)
+            })
+            .collect();
+
+        let constraints: Vec<Constraint> = columns.iter().map(|col| col.constraint()).collect();
+
+        let table = Table::new(rows, &constraints).header(header_row);
+
+        frame.render_widget(table, area);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Column priority system
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Columns available in the worktree table, ordered by display priority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Column {
+    /// Sync/prune status indicator. Priority 0 (always shown).
+    Status,
+    /// Current/default branch annotation. Priority 1 (always shown).
+    Annotation,
+    /// Branch name. Priority 2 (always shown).
+    Branch,
+    /// Worktree path. Priority 3.
+    Path,
+    /// Commits ahead/behind base branch. Priority 4.
+    Base,
+    /// Commits ahead/behind remote. Priority 5.
+    Remote,
+    /// Local changes (staged/unstaged/untracked). Priority 6.
+    Changes,
+    /// Branch age. Priority 7.
+    Age,
+    /// Last commit subject. Priority 8.
+    LastCommit,
+}
+
+impl Column {
+    /// Display priority (lower = higher priority, always shown first).
+    fn priority(self) -> u8 {
+        match self {
+            Self::Status => 0,
+            Self::Annotation => 1,
+            Self::Branch => 2,
+            Self::Path => 3,
+            Self::Base => 4,
+            Self::Remote => 5,
+            Self::Changes => 6,
+            Self::Age => 7,
+            Self::LastCommit => 8,
+        }
+    }
+
+    /// Column header label.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Status => "Status",
+            Self::Annotation => "",
+            Self::Branch => "Branch",
+            Self::Path => "Path",
+            Self::Base => "Base",
+            Self::Remote => "Remote",
+            Self::Changes => "Changes",
+            Self::Age => "Age",
+            Self::LastCommit => "Last Commit",
+        }
+    }
+
+    /// Layout constraint for this column.
+    fn constraint(self) -> Constraint {
+        match self {
+            Self::Status => Constraint::Length(14),
+            Self::Annotation => Constraint::Length(3),
+            Self::Branch => Constraint::Fill(2),
+            Self::Path => Constraint::Fill(2),
+            Self::Base => Constraint::Length(8),
+            Self::Remote => Constraint::Length(8),
+            Self::Changes => Constraint::Length(8),
+            Self::Age => Constraint::Length(4),
+            Self::LastCommit => Constraint::Fill(3),
+        }
+    }
+
+    /// Minimum width this column needs to be useful.
+    fn min_width(self) -> u16 {
+        match self {
+            Self::Status => 14,
+            Self::Annotation => 3,
+            Self::Branch => 8,
+            Self::Path => 8,
+            Self::Base => 8,
+            Self::Remote => 8,
+            Self::Changes => 8,
+            Self::Age => 4,
+            Self::LastCommit => 10,
+        }
+    }
+}
+
+/// All columns in display order.
+const ALL_COLUMNS: &[Column] = &[
+    Column::Status,
+    Column::Annotation,
+    Column::Branch,
+    Column::Path,
+    Column::Base,
+    Column::Remote,
+    Column::Changes,
+    Column::Age,
+    Column::LastCommit,
+];
+
+/// Select which columns fit in the given terminal width.
+///
+/// Always keeps columns with priority <= 2 (Status, Annotation, Branch).
+/// Drops lowest-priority columns first when the terminal is too narrow.
+pub fn select_columns(width: u16) -> Vec<Column> {
+    // Start with all columns, then drop from the end (lowest priority) until they fit.
+    let mut cols: Vec<Column> = ALL_COLUMNS.to_vec();
+
+    loop {
+        let total_min: u16 = cols.iter().map(|c| c.min_width()).sum();
+        if total_min <= width {
+            break;
+        }
+        // Drop the lowest-priority column (highest priority number) that isn't essential.
+        if let Some(pos) = cols.iter().rposition(|c| c.priority() > 2) {
+            cols.remove(pos);
+        } else {
+            // Only essential columns left, can't drop any more.
+            break;
+        }
+    }
+
+    cols
+}
+
+/// Render a single cell for the given column and worktree row.
+fn render_cell(col: &Column, wt: &WorktreeRow, tick: usize) -> Cell<'static> {
+    match col {
+        Column::Status => render_status_cell(&wt.status, tick),
+        Column::Annotation => render_annotation_cell(&wt.info),
+        Column::Branch => Cell::from(wt.info.name.clone()),
+        Column::Path => {
+            let text = wt
+                .info
+                .path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            Cell::from(text)
+        }
+        // Placeholder columns -- will be wired to real formatters in Task 16.
+        Column::Base => Cell::from(""),
+        Column::Remote => Cell::from(""),
+        Column::Changes => Cell::from(""),
+        Column::Age => Cell::from(""),
+        Column::LastCommit => Cell::from(""),
+    }
+}
+
+/// Render the status cell with appropriate icon and color.
+fn render_status_cell(status: &WorktreeStatus, tick: usize) -> Cell<'static> {
+    match status {
+        WorktreeStatus::Idle => Cell::from(""),
+        WorktreeStatus::Active(label) => {
+            let spinner = SPINNER_FRAMES[tick % SPINNER_FRAMES.len()];
+            Cell::from(Line::from(Span::styled(
+                format!("{spinner} {label}"),
+                Style::default().fg(Color::Yellow),
+            )))
+        }
+        WorktreeStatus::Done(final_status) => match final_status {
+            FinalStatus::Updated => Cell::from(Line::from(Span::styled(
+                format!("{CHECKMARK} updated"),
+                Style::default().fg(Color::Green),
+            ))),
+            FinalStatus::UpToDate => Cell::from(Line::from(Span::styled(
+                format!("{CHECKMARK} up to date"),
+                Style::default().add_modifier(Modifier::DIM),
+            ))),
+            FinalStatus::Rebased => Cell::from(Line::from(Span::styled(
+                format!("{CHECKMARK} rebased"),
+                Style::default().fg(Color::Green),
+            ))),
+            FinalStatus::Conflict => Cell::from(Line::from(Span::styled(
+                format!("{CROSS} conflict"),
+                Style::default().fg(Color::Red),
+            ))),
+            FinalStatus::Skipped => Cell::from(Line::from(Span::styled(
+                format!("{SKIP} skipped"),
+                Style::default().fg(Color::Yellow),
+            ))),
+            FinalStatus::Pruned => Cell::from(Line::from(Span::styled(
+                format!("{DASH} pruned"),
+                Style::default().fg(Color::Red),
+            ))),
+            FinalStatus::Failed => Cell::from(Line::from(Span::styled(
+                format!("{CROSS} failed"),
+                Style::default().fg(Color::Red),
+            ))),
+        },
+    }
+}
+
+/// Render the annotation cell (current worktree indicator and default branch marker).
+fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
+    if info.is_current {
+        Cell::from(Line::from(Span::styled(
+            ">",
+            Style::default().fg(Color::Cyan),
+        )))
+    } else if info.is_default_branch {
+        Cell::from(Line::from(Span::styled(
+            "\u{25c9}",
+            Style::default().fg(Color::Blue),
+        )))
+    } else {
+        Cell::from("")
     }
 }
 
@@ -520,5 +769,28 @@ mod tests {
             .find(|w| w.info.name == "master")
             .unwrap();
         assert_eq!(row.status, WorktreeStatus::Done(FinalStatus::Updated));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Column selection tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn column_selection_wide_terminal() {
+        let cols = select_columns(120);
+        assert_eq!(cols.len(), 9);
+    }
+
+    #[test]
+    fn column_selection_narrow_drops_last_commit() {
+        let cols = select_columns(60);
+        assert!(!cols.iter().any(|c| matches!(c, Column::LastCommit)));
+    }
+
+    #[test]
+    fn column_selection_very_narrow_keeps_essentials() {
+        let cols = select_columns(30);
+        assert!(cols.iter().any(|c| matches!(c, Column::Status)));
+        assert!(cols.iter().any(|c| matches!(c, Column::Branch)));
     }
 }
