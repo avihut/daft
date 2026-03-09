@@ -6,6 +6,7 @@
 use crate::core::worktree::list::WorktreeInfo;
 use crate::core::worktree::sync_dag::{DagEvent, OperationPhase, TaskStatus};
 use crate::output::format;
+use crate::styles;
 
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -498,7 +499,10 @@ fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
 
     // Sub-position 1: current worktree marker
     if info.is_current {
-        spans.push(Span::styled(">", Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled(
+            styles::CURRENT_WORKTREE_SYMBOL,
+            Style::default().fg(Color::Cyan),
+        ));
     } else {
         spans.push(Span::raw(" "));
     }
@@ -509,7 +513,7 @@ fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
     // Sub-position 2: default branch marker (dark gray, matching `list`)
     if info.is_default_branch {
         spans.push(Span::styled(
-            "\u{25c9}",
+            styles::DEFAULT_BRANCH_SYMBOL,
             Style::default().fg(Color::DarkGray),
         ));
     } else {

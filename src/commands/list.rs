@@ -305,9 +305,9 @@ fn print_table(
             if has_any_current {
                 if info.is_current {
                     if use_color {
-                        annotation.push_str(&styles::cyan(">"));
+                        annotation.push_str(&styles::cyan(styles::CURRENT_WORKTREE_SYMBOL));
                     } else {
-                        annotation.push('>');
+                        annotation.push_str(styles::CURRENT_WORKTREE_SYMBOL);
                     }
                 } else {
                     annotation.push(' ');
@@ -319,9 +319,9 @@ fn print_table(
             if has_any_default {
                 if info.is_default_branch {
                     if use_color {
-                        annotation.push_str(&styles::dark_gray("\u{25C9}"));
+                        annotation.push_str(&styles::dark_gray(styles::DEFAULT_BRANCH_SYMBOL));
                     } else {
-                        annotation.push('\u{25C9}');
+                        annotation.push_str(styles::DEFAULT_BRANCH_SYMBOL);
                     }
                 } else {
                     annotation.push(' ');
