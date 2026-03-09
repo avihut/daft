@@ -478,8 +478,8 @@ fn render_pruned_branch(detail: &prune::PrunedBranchDetail, output: &mut dyn Out
 
 fn tag_pruned() -> String {
     if styles::colors_enabled() {
-        format!("{}[pruned]{}", styles::RED, styles::RESET)
+        format!("{}\u{2014} pruned{}", styles::RED, styles::RESET)
     } else {
-        "[pruned]".to_string()
+        "\u{2014} pruned".to_string()
     }
 }

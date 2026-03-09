@@ -947,56 +947,56 @@ fn print_rebase_summary(result: &rebase::RebaseResult, output: &mut dyn Output) 
 
 fn tag_pruned() -> String {
     if styles::colors_enabled() {
-        format!("{}[pruned]{}", styles::RED, styles::RESET)
+        format!("{}\u{2014} pruned{}", styles::RED, styles::RESET)
     } else {
-        "[pruned]".to_string()
+        "\u{2014} pruned".to_string()
     }
 }
 
 fn tag_updated() -> String {
     if styles::colors_enabled() {
-        format!("{}[updated]{}", styles::GREEN, styles::RESET)
+        format!("{}\u{2713} updated{}", styles::GREEN, styles::RESET)
     } else {
-        "[updated]".to_string()
+        "\u{2713} updated".to_string()
     }
 }
 
 fn tag_up_to_date() -> String {
     if styles::colors_enabled() {
-        format!("{}[up to date]{}", styles::DIM, styles::RESET)
+        format!("{}\u{2713} up to date{}", styles::DIM, styles::RESET)
     } else {
-        "[up to date]".to_string()
+        "\u{2713} up to date".to_string()
     }
 }
 
 fn tag_skipped() -> String {
     if styles::colors_enabled() {
-        format!("{}[skipped]{}", styles::YELLOW, styles::RESET)
+        format!("{}\u{2298} skipped{}", styles::YELLOW, styles::RESET)
     } else {
-        "[skipped]".to_string()
+        "\u{2298} skipped".to_string()
     }
 }
 
 fn tag_rebased() -> String {
     if styles::colors_enabled() {
-        format!("{}[rebased]{}", styles::GREEN, styles::RESET)
+        format!("{}\u{2713} rebased{}", styles::GREEN, styles::RESET)
     } else {
-        "[rebased]".to_string()
+        "\u{2713} rebased".to_string()
     }
 }
 
 fn tag_conflict() -> String {
     if styles::colors_enabled() {
-        format!("{}[conflict]{}", styles::RED, styles::RESET)
+        format!("{}\u{2717} conflict{}", styles::RED, styles::RESET)
     } else {
-        "[conflict]".to_string()
+        "\u{2717} conflict".to_string()
     }
 }
 
 fn tag_failed() -> String {
     if styles::colors_enabled() {
-        format!("{}[failed]{}", styles::RED, styles::RESET)
+        format!("{}\u{2717} failed{}", styles::RED, styles::RESET)
     } else {
-        "[failed]".to_string()
+        "\u{2717} failed".to_string()
     }
 }
