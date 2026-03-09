@@ -3,7 +3,7 @@
 //! Uses ratatui with Viewport::Inline to render an operation header
 //! and worktree status table that update in-place as tasks execute.
 
-use crate::core::worktree::list::WorktreeInfo;
+use crate::core::worktree::list::{Stat, WorktreeInfo};
 use crate::core::worktree::sync_dag::{DagEvent, OperationPhase, TaskStatus};
 use crate::output::format::{self, ColumnContext, ColumnValues};
 use crate::styles;
@@ -71,6 +71,7 @@ pub struct TuiState {
     pub tick: usize,
     pub project_root: PathBuf,
     pub cwd: PathBuf,
+    pub stat: Stat,
 }
 
 /// A single row in the worktree table.
@@ -85,6 +86,7 @@ impl TuiState {
         worktree_infos: Vec<WorktreeInfo>,
         project_root: PathBuf,
         cwd: PathBuf,
+        stat: Stat,
     ) -> Self {
         Self {
             phases: phases
@@ -105,6 +107,7 @@ impl TuiState {
             tick: 0,
             project_root,
             cwd,
+            stat,
         }
     }
 
@@ -274,6 +277,7 @@ impl TuiState {
             project_root: &self.project_root,
             cwd: &self.cwd,
             now,
+            stat: self.stat,
         };
 
         let rows: Vec<Row> = self
@@ -698,6 +702,7 @@ mod tests {
             worktree_infos,
             PathBuf::from("/tmp/test"),
             PathBuf::from("/tmp/test"),
+            Stat::Summary,
         )
     }
 

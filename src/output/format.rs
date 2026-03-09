@@ -3,7 +3,7 @@
 //! These formatters produce plain or ANSI-colored strings used by both the
 //! `tabled`-based CLI table (`list.rs`) and the ratatui TUI table (`tui.rs`).
 
-use crate::core::worktree::list::WorktreeInfo;
+use crate::core::worktree::list::{Stat, WorktreeInfo};
 use crate::styles;
 use pathdiff::diff_paths;
 use std::path::Path;
@@ -203,12 +203,31 @@ pub struct ColumnContext<'a> {
     pub project_root: &'a Path,
     pub cwd: &'a Path,
     pub now: i64,
+    pub stat: Stat,
+}
+
+/// Format head status using line-level counts: combined staged+unstaged
+/// insertions/deletions plus untracked file count.
+pub fn format_head_status_lines(info: &WorktreeInfo) -> String {
+    let ins = info.staged_lines_inserted.unwrap_or(0) + info.unstaged_lines_inserted.unwrap_or(0);
+    let del = info.staged_lines_deleted.unwrap_or(0) + info.unstaged_lines_deleted.unwrap_or(0);
+    let mut parts = Vec::new();
+    if ins > 0 {
+        parts.push(format!("+{ins}"));
+    }
+    if del > 0 {
+        parts.push(format!("-{del}"));
+    }
+    if info.untracked > 0 {
+        parts.push(format!("?{}", info.untracked));
+    }
+    parts.join(" ")
 }
 
 /// Compute plain-text column values for a single `WorktreeInfo`.
 ///
-/// Returns Summary-mode values only. For `Stat::Lines` mode, callers can
-/// override the `base`, `changes`, and `remote` fields after this call.
+/// Respects `ctx.stat`: Summary mode uses commit/file counts, Lines mode
+/// uses line-level insertion/deletion counts for Base, Changes, and Remote.
 pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> ColumnValues {
     let branch = info.name.clone();
 
@@ -218,9 +237,19 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
         .map(|p| relative_display_path(p, ctx.project_root, ctx.cwd))
         .unwrap_or_default();
 
-    let base = format_ahead_behind(info.ahead, info.behind, false);
-    let changes = format_head_status(info.staged, info.unstaged, info.untracked, false);
-    let remote = format_remote_status(info.remote_ahead, info.remote_behind, false);
+    let (base, changes, remote) = if ctx.stat == Stat::Lines {
+        (
+            format_ahead_behind(info.base_lines_inserted, info.base_lines_deleted, false),
+            format_head_status_lines(info),
+            format_ahead_behind(info.remote_lines_inserted, info.remote_lines_deleted, false),
+        )
+    } else {
+        (
+            format_ahead_behind(info.ahead, info.behind, false),
+            format_head_status(info.staged, info.unstaged, info.untracked, false),
+            format_remote_status(info.remote_ahead, info.remote_behind, false),
+        )
+    };
 
     let branch_age_secs = info.branch_creation_timestamp.map(|ts| ctx.now - ts);
     let branch_age = info

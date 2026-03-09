@@ -291,6 +291,7 @@ fn print_table(
         project_root,
         cwd,
         now,
+        stat,
     };
 
     // Pre-compute plain column values for alignment and reuse

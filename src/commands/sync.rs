@@ -75,6 +75,13 @@ pub struct Args {
         help = "Rebase all branches onto BRANCH after updating"
     )]
     rebase: Option<String>,
+
+    #[arg(
+        long,
+        value_enum,
+        help = "Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary)"
+    )]
+    stat: Option<Stat>,
 }
 
 pub fn run() -> Result<()> {
@@ -134,6 +141,7 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
 fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
+    let stat = args.stat.unwrap_or(settings.sync_stat);
 
     // ── Pre-TUI: collect worktree info (no fetch needed) ───────────────
     let base_branch = get_default_branch_local(
@@ -147,8 +155,16 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         .ok()
         .and_then(|p| p.canonicalize().ok());
 
-    let worktree_infos =
-        list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), Stat::Summary)?;
+    let worktree_infos = if stat == Stat::Lines {
+        let mut output = CliOutput::new(OutputConfig::new(false, false));
+        output.start_spinner("Computing line statistics...");
+        let result =
+            list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat)?;
+        output.finish_spinner();
+        result
+    } else {
+        list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat)?
+    };
 
     // Get worktree list for DAG (branch name + path pairs)
     let all_worktrees = fetch::get_all_worktrees_with_branches(&git)?;
@@ -174,7 +190,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         phases.push(sync_dag::OperationPhase::Rebase(base.clone()));
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
-    let state = TuiState::new(phases, worktree_infos, project_root.clone(), cwd);
+    let state = TuiState::new(phases, worktree_infos, project_root.clone(), cwd, stat);
 
     // ── Create channel and spawn orchestrator ──────────────────────────
     let (tx, rx) = std::sync::mpsc::channel();

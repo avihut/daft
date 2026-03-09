@@ -4,7 +4,7 @@
 .SH NAME
 git\-sync \- Synchronize worktrees with remote (prune + update all)
 .SH SYNOPSIS
-\fBgit\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-rebase\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBgit\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-rebase\fR] [\fB\-\-stat\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Synchronizes all worktrees with the remote in a single command.
@@ -33,6 +33,19 @@ Force removal of worktrees with uncommitted changes
 .TP
 \fB\-\-rebase\fR \fI<BRANCH>\fR
 Rebase all branches onto BRANCH after updating
+.TP
+\fB\-\-stat\fR \fI<STAT>\fR
+Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary)
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+summary: Summary counts: commits for base/remote, files for changes (default)
+.IP \(bu 2
+lines: Line\-level counts: insertions/deletions for all columns
+.RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

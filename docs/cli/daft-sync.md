@@ -40,6 +40,7 @@ separately.
 | `-v, --verbose` | Be verbose; show detailed progress | |
 | `-f, --force` | Force removal of worktrees with uncommitted changes | |
 | `--rebase <BRANCH>` | Rebase all branches onto BRANCH after updating | |
+| `--stat <STAT>` | Statistics mode: `summary` or `lines` (default: from git config `daft.sync.stat`, or `summary`) | |
 
 ## Global Options
 

@@ -118,6 +118,9 @@ pub mod defaults {
 
     /// Default value for list.stat setting.
     pub const LIST_STAT: Stat = Stat::Summary;
+
+    /// Default value for sync.stat setting.
+    pub const SYNC_STAT: Stat = Stat::Summary;
 }
 
 /// Git config keys for daft settings.
@@ -166,6 +169,9 @@ pub mod keys {
 
     /// Config key for list.stat setting.
     pub const LIST_STAT: &str = "daft.list.stat";
+
+    /// Config key for sync.stat setting.
+    pub const SYNC_STAT: &str = "daft.sync.stat";
 
     /// Experimental config keys.
     pub mod experimental {
@@ -255,6 +261,9 @@ pub struct DaftSettings {
 
     /// Default statistics mode for list command.
     pub list_stat: Stat,
+
+    /// Default statistics mode for sync command.
+    pub sync_stat: Stat,
 }
 
 impl Default for DaftSettings {
@@ -273,6 +282,7 @@ impl Default for DaftSettings {
             use_gitoxide: defaults::USE_GITOXIDE,
             go_auto_start: defaults::GO_AUTO_START,
             list_stat: defaults::LIST_STAT,
+            sync_stat: defaults::SYNC_STAT,
         }
     }
 }
@@ -353,6 +363,12 @@ impl DaftSettings {
             }
         }
 
+        if let Some(value) = git.config_get(keys::SYNC_STAT)? {
+            if let Some(stat) = Stat::parse(&value) {
+                settings.sync_stat = stat;
+            }
+        }
+
         Ok(settings)
     }
 
@@ -427,6 +443,12 @@ impl DaftSettings {
         if let Some(value) = git.config_get_global(keys::LIST_STAT)? {
             if let Some(stat) = Stat::parse(&value) {
                 settings.list_stat = stat;
+            }
+        }
+
+        if let Some(value) = git.config_get_global(keys::SYNC_STAT)? {
+            if let Some(stat) = Stat::parse(&value) {
+                settings.sync_stat = stat;
             }
         }
 
