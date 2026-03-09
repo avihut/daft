@@ -490,20 +490,33 @@ fn render_status_cell(status: &WorktreeStatus, tick: usize) -> Cell<'static> {
 }
 
 /// Render the annotation cell (current worktree indicator and default branch marker).
+///
+/// Matches `list` column layout: two fixed sub-positions `[> ][◉]` so that
+/// the `>` and `◉` markers stay in separate visual columns.
 fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+
+    // Sub-position 1: current worktree marker
     if info.is_current {
-        Cell::from(Line::from(Span::styled(
-            ">",
-            Style::default().fg(Color::Cyan),
-        )))
-    } else if info.is_default_branch {
-        Cell::from(Line::from(Span::styled(
-            "\u{25c9}",
-            Style::default().fg(Color::Blue),
-        )))
+        spans.push(Span::styled(">", Style::default().fg(Color::Cyan)));
     } else {
-        Cell::from("")
+        spans.push(Span::raw(" "));
     }
+
+    // Spacer between the two sub-positions
+    spans.push(Span::raw(" "));
+
+    // Sub-position 2: default branch marker (dark gray, matching `list`)
+    if info.is_default_branch {
+        spans.push(Span::styled(
+            "\u{25c9}",
+            Style::default().fg(Color::DarkGray),
+        ));
+    } else {
+        spans.push(Span::raw(" "));
+    }
+
+    Cell::from(Line::from(spans))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
