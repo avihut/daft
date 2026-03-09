@@ -18,6 +18,7 @@
 //! ```
 
 mod cli;
+pub mod format;
 pub mod hook_progress;
 mod test;
 pub mod tui;

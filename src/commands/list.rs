@@ -6,7 +6,13 @@ use crate::{
     git::GitCommand,
     is_git_repository,
     logging::init_logging,
-    output::{CliOutput, Output, OutputConfig},
+    output::{
+        format::{
+            format_ahead_behind, format_head_status, format_remote_status, format_shorthand_age,
+            relative_display_path, shorthand_from_seconds,
+        },
+        CliOutput, Output, OutputConfig,
+    },
     remote::get_default_branch_local,
     settings::DaftSettings,
     styles,
@@ -14,7 +20,6 @@ use crate::{
 use anyhow::Result;
 use chrono::Utc;
 use clap::Parser;
-use pathdiff::diff_paths;
 use std::collections::HashSet;
 use tabled::{
     builder::Builder,
@@ -515,28 +520,6 @@ fn print_table(
     println!("{table}");
 }
 
-/// Compute a display path relative to cwd, falling back to project-root-relative.
-fn relative_display_path(
-    abs_path: &std::path::Path,
-    project_root: &std::path::Path,
-    cwd: &std::path::Path,
-) -> String {
-    // Try relative to cwd first
-    if let Some(rel) = diff_paths(abs_path, cwd) {
-        let s = rel.display().to_string();
-        if s.is_empty() {
-            return ".".to_string();
-        }
-        return s;
-    }
-    // Fallback: relative to project root
-    abs_path
-        .strip_prefix(project_root)
-        .unwrap_or(abs_path)
-        .display()
-        .to_string()
-}
-
 /// Strip ANSI escape codes from a string so it can be re-wrapped with a single style.
 fn strip_ansi(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
@@ -553,214 +536,4 @@ fn strip_ansi(s: &str) -> String {
         }
     }
     result
-}
-
-fn format_ahead_behind(ahead: Option<usize>, behind: Option<usize>, use_color: bool) -> String {
-    let mut parts = Vec::new();
-
-    if let Some(a) = ahead {
-        if a > 0 {
-            let text = format!("+{a}");
-            if use_color {
-                parts.push(styles::green(&text));
-            } else {
-                parts.push(text);
-            }
-        }
-    }
-
-    if let Some(b) = behind {
-        if b > 0 {
-            let text = format!("-{b}");
-            if use_color {
-                parts.push(styles::red(&text));
-            } else {
-                parts.push(text);
-            }
-        }
-    }
-
-    parts.join(" ")
-}
-
-/// Format head status using worktrunk-style indicators: `+` staged, `-` unstaged, `?` untracked.
-fn format_head_status(staged: usize, unstaged: usize, untracked: usize, use_color: bool) -> String {
-    let mut parts = Vec::new();
-
-    if staged > 0 {
-        let text = format!("+{staged}");
-        if use_color {
-            parts.push(styles::green(&text));
-        } else {
-            parts.push(text);
-        }
-    }
-
-    if unstaged > 0 {
-        let text = format!("-{unstaged}");
-        if use_color {
-            parts.push(styles::red(&text));
-        } else {
-            parts.push(text);
-        }
-    }
-
-    if untracked > 0 {
-        let text = format!("?{untracked}");
-        if use_color {
-            parts.push(styles::dim(&text));
-        } else {
-            parts.push(text);
-        }
-    }
-
-    parts.join(" ")
-}
-
-/// Format remote status using ⇡/⇣ arrows for upstream ahead/behind.
-fn format_remote_status(ahead: Option<usize>, behind: Option<usize>, use_color: bool) -> String {
-    let mut parts = Vec::new();
-
-    if let Some(a) = ahead {
-        if a > 0 {
-            let text = format!("\u{21E1}{a}");
-            if use_color {
-                parts.push(styles::green(&text));
-            } else {
-                parts.push(text);
-            }
-        }
-    }
-
-    if let Some(b) = behind {
-        if b > 0 {
-            let text = format!("\u{21E3}{b}");
-            if use_color {
-                parts.push(styles::red(&text));
-            } else {
-                parts.push(text);
-            }
-        }
-    }
-
-    parts.join(" ")
-}
-
-/// Convert seconds elapsed into a compact shorthand string.
-///
-/// Examples: `<1m`, `5m`, `3h`, `2d`, `3w`, `5mo`, `2y`.
-fn shorthand_from_seconds(secs: i64) -> String {
-    if secs < 0 {
-        return "<1m".to_string();
-    }
-    let minutes = secs / 60;
-    let hours = secs / 3600;
-    let days = secs / 86400;
-    let weeks = days / 7;
-    let months = days / 30;
-    let years = days / 365;
-
-    if minutes < 1 {
-        "<1m".to_string()
-    } else if hours < 1 {
-        format!("{minutes}m")
-    } else if days < 1 {
-        format!("{hours}h")
-    } else if days < 7 {
-        format!("{days}d")
-    } else if days < 30 {
-        format!("{weeks}w")
-    } else if years < 1 {
-        format!("{months}mo")
-    } else {
-        format!("{years}y")
-    }
-}
-
-/// Format a Unix timestamp as a shorthand age string, with optional dim styling.
-fn format_shorthand_age(timestamp: Option<i64>, now: i64, use_color: bool) -> String {
-    match timestamp {
-        Some(ts) => {
-            let secs = now - ts;
-            let text = shorthand_from_seconds(secs);
-            if use_color && is_old_seconds(secs) {
-                styles::dim(&text)
-            } else {
-                text
-            }
-        }
-        None => String::new(),
-    }
-}
-
-/// Check if an age in seconds represents more than 7 days.
-fn is_old_seconds(secs: i64) -> bool {
-    secs > 7 * 86400
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_shorthand_from_seconds_sub_minute() {
-        assert_eq!(shorthand_from_seconds(0), "<1m");
-        assert_eq!(shorthand_from_seconds(30), "<1m");
-        assert_eq!(shorthand_from_seconds(59), "<1m");
-    }
-
-    #[test]
-    fn test_shorthand_from_seconds_minutes() {
-        assert_eq!(shorthand_from_seconds(60), "1m");
-        assert_eq!(shorthand_from_seconds(300), "5m");
-        assert_eq!(shorthand_from_seconds(3599), "59m");
-    }
-
-    #[test]
-    fn test_shorthand_from_seconds_hours() {
-        assert_eq!(shorthand_from_seconds(3600), "1h");
-        assert_eq!(shorthand_from_seconds(7200), "2h");
-        assert_eq!(shorthand_from_seconds(86399), "23h");
-    }
-
-    #[test]
-    fn test_shorthand_from_seconds_days() {
-        assert_eq!(shorthand_from_seconds(86400), "1d");
-        assert_eq!(shorthand_from_seconds(3 * 86400), "3d");
-        assert_eq!(shorthand_from_seconds(6 * 86400), "6d");
-    }
-
-    #[test]
-    fn test_shorthand_from_seconds_weeks() {
-        assert_eq!(shorthand_from_seconds(7 * 86400), "1w");
-        assert_eq!(shorthand_from_seconds(14 * 86400), "2w");
-        assert_eq!(shorthand_from_seconds(28 * 86400), "4w");
-        assert_eq!(shorthand_from_seconds(29 * 86400), "4w");
-    }
-
-    #[test]
-    fn test_shorthand_from_seconds_months() {
-        assert_eq!(shorthand_from_seconds(30 * 86400), "1mo");
-        assert_eq!(shorthand_from_seconds(90 * 86400), "3mo");
-        assert_eq!(shorthand_from_seconds(364 * 86400), "12mo");
-    }
-
-    #[test]
-    fn test_shorthand_from_seconds_years() {
-        assert_eq!(shorthand_from_seconds(365 * 86400), "1y");
-        assert_eq!(shorthand_from_seconds(730 * 86400), "2y");
-    }
-
-    #[test]
-    fn test_shorthand_from_seconds_negative() {
-        assert_eq!(shorthand_from_seconds(-100), "<1m");
-    }
-
-    #[test]
-    fn test_is_old_seconds() {
-        assert!(!is_old_seconds(0));
-        assert!(!is_old_seconds(7 * 86400));
-        assert!(is_old_seconds(7 * 86400 + 1));
-        assert!(is_old_seconds(30 * 86400));
-    }
 }

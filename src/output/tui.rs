@@ -5,6 +5,7 @@
 
 use crate::core::worktree::list::WorktreeInfo;
 use crate::core::worktree::sync_dag::{DagEvent, OperationPhase, SyncDag, SyncTask, TaskStatus};
+use crate::output::format;
 
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -413,12 +414,28 @@ fn render_cell(col: &Column, wt: &WorktreeRow, tick: usize) -> Cell<'static> {
                 .unwrap_or_default();
             Cell::from(text)
         }
-        // Placeholder columns -- will be wired to real formatters in Task 16.
-        Column::Base => Cell::from(""),
-        Column::Remote => Cell::from(""),
-        Column::Changes => Cell::from(""),
-        Column::Age => Cell::from(""),
-        Column::LastCommit => Cell::from(""),
+        Column::Base => Cell::from(format::format_ahead_behind(
+            wt.info.ahead,
+            wt.info.behind,
+            false,
+        )),
+        Column::Remote => Cell::from(format::format_remote_status(
+            wt.info.remote_ahead,
+            wt.info.remote_behind,
+            false,
+        )),
+        Column::Changes => Cell::from(format::format_head_status(
+            wt.info.staged,
+            wt.info.unstaged,
+            wt.info.untracked,
+            false,
+        )),
+        Column::Age => Cell::from(format::format_shorthand_age(
+            wt.info.branch_creation_timestamp,
+            chrono::Utc::now().timestamp(),
+            false,
+        )),
+        Column::LastCommit => Cell::from(wt.info.last_commit_subject.clone()),
     }
 }
 
