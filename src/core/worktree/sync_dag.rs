@@ -4,6 +4,8 @@
 //! the sync and prune TUI renderers.
 
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::sync::{Arc, Condvar, Mutex};
 
 /// Identifies a single executable task in the sync DAG.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -240,6 +242,206 @@ impl SyncDag {
     }
 }
 
+/// Message sent from worker threads to the renderer.
+#[derive(Debug, Clone)]
+pub enum DagEvent {
+    /// A task started running.
+    TaskStarted { task_idx: usize },
+    /// A task completed.
+    TaskCompleted {
+        task_idx: usize,
+        status: TaskStatus,
+        /// Human-readable result message.
+        message: String,
+    },
+    /// All tasks are done.
+    AllDone,
+}
+
+/// Shared mutable state for the worker pool.
+struct DagState {
+    ready: Vec<usize>,
+    status: Vec<TaskStatus>,
+    in_degree: Vec<usize>,
+    active: usize,
+    done: usize,
+    total: usize,
+}
+
+/// Executes a DAG of sync tasks in parallel.
+pub struct DagExecutor {
+    dag: SyncDag,
+    sender: mpsc::Sender<DagEvent>,
+}
+
+impl DagExecutor {
+    /// Create a new executor for the given DAG, sending events through `sender`.
+    pub fn new(dag: SyncDag, sender: mpsc::Sender<DagEvent>) -> Self {
+        Self { dag, sender }
+    }
+
+    /// Execute all tasks in the DAG, calling `task_fn` for each task.
+    ///
+    /// Tasks are executed in parallel (respecting dependencies) using a thread pool.
+    /// The closure receives a reference to the `SyncTask` and must return a
+    /// `(TaskStatus, String)` pair indicating the result status and a message.
+    ///
+    /// Consumes `self` so that the sender is dropped after `AllDone` is sent,
+    /// allowing the receiver to detect channel closure.
+    pub fn run<F>(self, task_fn: F)
+    where
+        F: Fn(&SyncTask) -> (TaskStatus, String) + Send + Sync,
+    {
+        let n = self.dag.tasks.len();
+
+        // Compute initial in-degrees from the DAG's dependencies.
+        let mut in_degree = vec![0usize; n];
+        for (i, deps) in self.dag.dependencies.iter().enumerate() {
+            in_degree[i] = deps.len();
+        }
+
+        // Find initially ready tasks (in-degree == 0).
+        let ready: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
+
+        let state = Arc::new((
+            Mutex::new(DagState {
+                ready,
+                status: vec![TaskStatus::Pending; n],
+                in_degree,
+                active: 0,
+                done: 0,
+                total: n,
+            }),
+            Condvar::new(),
+        ));
+
+        let max_workers = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(4);
+
+        let task_fn = &task_fn;
+        let dag = &self.dag;
+        let sender = &self.sender;
+
+        std::thread::scope(|scope| {
+            for _ in 0..max_workers {
+                let state = Arc::clone(&state);
+
+                scope.spawn(move || {
+                    loop {
+                        let task_idx;
+                        {
+                            let (lock, cvar) = &*state;
+                            let mut s = lock.lock().unwrap();
+
+                            loop {
+                                // Try to pop a ready task.
+                                if let Some(idx) = s.ready.pop() {
+                                    task_idx = idx;
+                                    s.status[task_idx] = TaskStatus::Running;
+                                    s.active += 1;
+                                    break;
+                                }
+
+                                // No ready tasks: check if we're done.
+                                if s.done == s.total {
+                                    return;
+                                }
+
+                                // Nothing ready but work still in flight — wait.
+                                if s.active == 0 && s.ready.is_empty() {
+                                    // All tasks are either done or dep-failed; no more work.
+                                    return;
+                                }
+
+                                s = cvar.wait(s).unwrap();
+                            }
+                        }
+
+                        // Send TaskStarted event.
+                        let _ = sender.send(DagEvent::TaskStarted { task_idx });
+
+                        // Execute the task outside the lock.
+                        let task = &dag.tasks[task_idx];
+                        let (result_status, message) = task_fn(task);
+
+                        // Update DAG state.
+                        {
+                            let (lock, cvar) = &*state;
+                            let mut s = lock.lock().unwrap();
+                            s.status[task_idx] = result_status;
+                            s.active -= 1;
+                            s.done += 1;
+
+                            if result_status == TaskStatus::Succeeded
+                                || result_status == TaskStatus::Skipped
+                            {
+                                // Decrement in-degrees of dependents.
+                                for &dep_idx in &dag.dependents[task_idx] {
+                                    if s.status[dep_idx] == TaskStatus::Pending {
+                                        s.in_degree[dep_idx] -= 1;
+                                        if s.in_degree[dep_idx] == 0 {
+                                            s.ready.push(dep_idx);
+                                        }
+                                    }
+                                }
+                            } else if result_status == TaskStatus::Failed {
+                                // Cascade DepFailed to all transitive dependents.
+                                let mut stack = vec![task_idx];
+                                while let Some(idx) = stack.pop() {
+                                    for &dep_idx in &dag.dependents[idx] {
+                                        if s.status[dep_idx] == TaskStatus::Pending {
+                                            s.status[dep_idx] = TaskStatus::DepFailed;
+                                            s.done += 1;
+                                            stack.push(dep_idx);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Send TaskCompleted event.
+                            let _ = sender.send(DagEvent::TaskCompleted {
+                                task_idx,
+                                status: result_status,
+                                message: message.clone(),
+                            });
+
+                            // Also send TaskCompleted for any dep-failed dependents.
+                            if result_status == TaskStatus::Failed {
+                                let mut stack = vec![task_idx];
+                                let mut visited = std::collections::HashSet::new();
+                                while let Some(idx) = stack.pop() {
+                                    for &dep_idx in &dag.dependents[idx] {
+                                        if s.status[dep_idx] == TaskStatus::DepFailed
+                                            && visited.insert(dep_idx)
+                                        {
+                                            let _ = sender.send(DagEvent::TaskCompleted {
+                                                task_idx: dep_idx,
+                                                status: TaskStatus::DepFailed,
+                                                message: format!(
+                                                    "dependency {:?} failed",
+                                                    dag.tasks[task_idx].id
+                                                ),
+                                            });
+                                            stack.push(dep_idx);
+                                        }
+                                    }
+                                }
+                            }
+
+                            cvar.notify_all();
+                        }
+                    }
+                });
+            }
+        });
+
+        // All workers are done. Send AllDone and drop sender.
+        let _ = self.sender.send(DagEvent::AllDone);
+        // self.sender is dropped here when self goes out of scope.
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,5 +549,93 @@ mod tests {
         let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()));
         let phases = dag.phases();
         assert_eq!(phases.len(), 4); // Fetch, Prune, Update, Rebase
+    }
+
+    #[test]
+    fn executor_runs_all_tasks() {
+        let dag = SyncDag::build_prune(vec!["feat/a".into()]);
+        let (tx, rx) = mpsc::channel();
+
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(|_task| (TaskStatus::Succeeded, "ok".into()));
+
+        let events: Vec<DagEvent> = rx.iter().collect();
+        let starts = events
+            .iter()
+            .filter(|e| matches!(e, DagEvent::TaskStarted { .. }))
+            .count();
+        let completes = events
+            .iter()
+            .filter(|e| matches!(e, DagEvent::TaskCompleted { .. }))
+            .count();
+        let dones = events
+            .iter()
+            .filter(|e| matches!(e, DagEvent::AllDone))
+            .count();
+        assert_eq!(starts, 2);
+        assert_eq!(completes, 2);
+        assert_eq!(dones, 1);
+    }
+
+    #[test]
+    fn executor_respects_dependencies() {
+        let worktrees = vec![
+            ("master".into(), PathBuf::from("/p/master")),
+            ("feat/a".into(), PathBuf::from("/p/feat-a")),
+        ];
+        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()));
+        let (tx, rx) = mpsc::channel();
+
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let order_clone = Arc::clone(&order);
+
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(move |task| {
+            order_clone.lock().unwrap().push(task.id.clone());
+            (TaskStatus::Succeeded, "ok".into())
+        });
+
+        let _events: Vec<DagEvent> = rx.iter().collect();
+        let execution_order = order.lock().unwrap();
+        // Fetch must come first
+        assert_eq!(execution_order[0], TaskId::Fetch);
+        // Rebase(feat/a) must come after Update(master)
+        let master_pos = execution_order
+            .iter()
+            .position(|t| *t == TaskId::Update("master".into()))
+            .unwrap();
+        let rebase_pos = execution_order
+            .iter()
+            .position(|t| *t == TaskId::Rebase("feat/a".into()))
+            .unwrap();
+        assert!(master_pos < rebase_pos);
+    }
+
+    #[test]
+    fn executor_cascades_failure() {
+        let worktrees = vec![
+            ("master".into(), PathBuf::from("/p/master")),
+            ("feat/a".into(), PathBuf::from("/p/feat-a")),
+        ];
+        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()));
+        let (tx, rx) = mpsc::channel();
+
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(|task| match &task.id {
+            TaskId::Update(name) if name == "master" => (TaskStatus::Failed, "pull failed".into()),
+            _ => (TaskStatus::Succeeded, "ok".into()),
+        });
+
+        let events: Vec<DagEvent> = rx.iter().collect();
+        let rebase_event = events.iter().find(|e| {
+            matches!(
+                e,
+                DagEvent::TaskCompleted {
+                    status: TaskStatus::DepFailed,
+                    ..
+                }
+            )
+        });
+        assert!(rebase_event.is_some());
     }
 }
