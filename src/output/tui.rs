@@ -259,7 +259,34 @@ impl TuiState {
 
     /// Render the worktree status table.
     pub fn render_table(&self, frame: &mut Frame, area: Rect) {
-        let columns = select_columns(area.width);
+        let now = chrono::Utc::now().timestamp();
+        let ctx = ColumnContext {
+            project_root: &self.project_root,
+            cwd: &self.cwd,
+            now,
+            stat: self.stat,
+        };
+
+        // Pre-compute all column values for sizing and reuse.
+        let row_vals: Vec<ColumnValues> = self
+            .worktrees
+            .iter()
+            .map(|wt| format::compute_column_values(&wt.info, &ctx))
+            .collect();
+
+        // Select columns and compute dynamic constraints from content widths.
+        let columns = select_columns(area.width, &self.worktrees, &row_vals);
+
+        let constraints: Vec<Constraint> = columns
+            .iter()
+            .map(|col| {
+                if matches!(col, Column::LastCommit) {
+                    Constraint::Fill(1)
+                } else {
+                    Constraint::Length(column_content_width(*col, &self.worktrees, &row_vals))
+                }
+            })
+            .collect();
 
         let header_cells: Vec<Cell> = columns
             .iter()
@@ -272,28 +299,18 @@ impl TuiState {
             .collect();
         let header_row = Row::new(header_cells);
 
-        let now = chrono::Utc::now().timestamp();
-        let ctx = ColumnContext {
-            project_root: &self.project_root,
-            cwd: &self.cwd,
-            now,
-            stat: self.stat,
-        };
-
         let rows: Vec<Row> = self
             .worktrees
             .iter()
-            .map(|wt| {
-                let vals = format::compute_column_values(&wt.info, &ctx);
+            .zip(row_vals.iter())
+            .map(|(wt, vals)| {
                 let cells: Vec<Cell> = columns
                     .iter()
-                    .map(|col| render_cell(col, wt, &vals, self.tick))
+                    .map(|col| render_cell(col, wt, vals, self.tick, self.stat))
                     .collect();
                 Row::new(cells)
             })
             .collect();
-
-        let constraints: Vec<Constraint> = columns.iter().map(|col| col.constraint()).collect();
 
         let table = Table::new(rows, &constraints).header(header_row);
 
@@ -337,8 +354,8 @@ impl Column {
             Self::Branch => 2,
             Self::Path => 3,
             Self::Base => 4,
-            Self::Remote => 5,
-            Self::Changes => 6,
+            Self::Changes => 5,
+            Self::Remote => 6,
             Self::Age => 7,
             Self::LastCommit => 8,
         }
@@ -352,40 +369,10 @@ impl Column {
             Self::Branch => "Branch",
             Self::Path => "Path",
             Self::Base => "Base",
-            Self::Remote => "Remote",
             Self::Changes => "Changes",
+            Self::Remote => "Remote",
             Self::Age => "Age",
             Self::LastCommit => "Last Commit",
-        }
-    }
-
-    /// Layout constraint for this column.
-    fn constraint(self) -> Constraint {
-        match self {
-            Self::Status => Constraint::Length(14),
-            Self::Annotation => Constraint::Length(4),
-            Self::Branch => Constraint::Fill(2),
-            Self::Path => Constraint::Fill(2),
-            Self::Base => Constraint::Length(8),
-            Self::Remote => Constraint::Length(8),
-            Self::Changes => Constraint::Length(8),
-            Self::Age => Constraint::Length(4),
-            Self::LastCommit => Constraint::Fill(3),
-        }
-    }
-
-    /// Minimum width this column needs to be useful.
-    fn min_width(self) -> u16 {
-        match self {
-            Self::Status => 14,
-            Self::Annotation => 4,
-            Self::Branch => 8,
-            Self::Path => 8,
-            Self::Base => 8,
-            Self::Remote => 8,
-            Self::Changes => 8,
-            Self::Age => 4,
-            Self::LastCommit => 10,
         }
     }
 }
@@ -397,30 +384,89 @@ const ALL_COLUMNS: &[Column] = &[
     Column::Branch,
     Column::Path,
     Column::Base,
-    Column::Remote,
     Column::Changes,
+    Column::Remote,
     Column::Age,
     Column::LastCommit,
 ];
 
-/// Select which columns fit in the given terminal width.
+// ─────────────────────────────────────────────────────────────────────────────
+// Dynamic column sizing
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Widest possible status text: "✓ up to date" = 12 visible chars.
+/// Used to prevent layout jumps as statuses change during the TUI loop.
+const STATUS_MAX_WIDTH: u16 = 12;
+
+/// Minimum width reserved for the LastCommit column before it switches to Fill.
+const LAST_COMMIT_MIN: u16 = 10;
+
+/// Compute the visible display width of a status cell.
+fn status_display_width(status: &WorktreeStatus) -> u16 {
+    match status {
+        WorktreeStatus::Idle => 0,
+        WorktreeStatus::Active(label) => (2 + label.len()) as u16,
+        WorktreeStatus::Done(fs) => match fs {
+            FinalStatus::Updated => 9,   // "✓ updated"
+            FinalStatus::UpToDate => 12, // "✓ up to date"
+            FinalStatus::Rebased => 9,   // "✓ rebased"
+            FinalStatus::Conflict => 10, // "✗ conflict"
+            FinalStatus::Skipped => 9,   // "⊘ skipped"
+            FinalStatus::Pruned => 8,    // "— pruned"
+            FinalStatus::Failed => 8,    // "✗ failed"
+        },
+    }
+}
+
+/// Compute the maximum content width a column needs across all rows.
+fn column_content_width(col: Column, worktrees: &[WorktreeRow], vals: &[ColumnValues]) -> u16 {
+    let header_width = col.label().len() as u16;
+    if worktrees.is_empty() {
+        return match col {
+            Column::Status => header_width.max(STATUS_MAX_WIDTH),
+            _ => header_width,
+        };
+    }
+    let max_data = worktrees
+        .iter()
+        .zip(vals.iter())
+        .map(|(wt, v)| match col {
+            // Pre-allocate for the longest possible status to avoid layout jumps.
+            Column::Status => status_display_width(&wt.status).max(STATUS_MAX_WIDTH),
+            Column::Annotation => 4,
+            Column::Branch => v.branch.len() as u16,
+            Column::Path => v.path.len() as u16,
+            Column::Base => v.base.len() as u16,
+            Column::Changes => v.changes.len() as u16,
+            Column::Remote => v.remote.len() as u16,
+            Column::Age => v.branch_age.len() as u16,
+            Column::LastCommit => LAST_COMMIT_MIN,
+        })
+        .max()
+        .unwrap_or(0);
+    header_width.max(max_data)
+}
+
+/// Select which columns fit in the given terminal width using content-based widths.
 ///
 /// Always keeps columns with priority <= 2 (Status, Annotation, Branch).
 /// Drops lowest-priority columns first when the terminal is too narrow.
-pub fn select_columns(width: u16) -> Vec<Column> {
-    // Start with all columns, then drop from the end (lowest priority) until they fit.
+pub fn select_columns(width: u16, worktrees: &[WorktreeRow], vals: &[ColumnValues]) -> Vec<Column> {
     let mut cols: Vec<Column> = ALL_COLUMNS.to_vec();
 
     loop {
-        let total_min: u16 = cols.iter().map(|c| c.min_width()).sum();
-        if total_min <= width {
+        // Total = sum of content widths + inter-column spacing (1 char each gap).
+        let content: u16 = cols
+            .iter()
+            .map(|c| column_content_width(*c, worktrees, vals))
+            .sum();
+        let spacing = cols.len().saturating_sub(1) as u16;
+        if content + spacing <= width {
             break;
         }
-        // Drop the lowest-priority column (highest priority number) that isn't essential.
         if let Some(pos) = cols.iter().rposition(|c| c.priority() > 2) {
             cols.remove(pos);
         } else {
-            // Only essential columns left, can't drop any more.
             break;
         }
     }
@@ -428,16 +474,146 @@ pub fn select_columns(width: u16) -> Vec<Column> {
     cols
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Colored cell rendering
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Render ahead/behind counts as colored spans: green for `+N`, red for `-N`.
+fn render_ahead_behind_spans(ahead: Option<usize>, behind: Option<usize>) -> Line<'static> {
+    let mut spans = Vec::new();
+    if let Some(a) = ahead {
+        if a > 0 {
+            spans.push(Span::styled(
+                format!("+{a}"),
+                Style::default().fg(Color::Green),
+            ));
+        }
+    }
+    if let Some(b) = behind {
+        if b > 0 {
+            if !spans.is_empty() {
+                spans.push(Span::raw(" "));
+            }
+            spans.push(Span::styled(
+                format!("-{b}"),
+                Style::default().fg(Color::Red),
+            ));
+        }
+    }
+    Line::from(spans)
+}
+
+/// Render the Base column cell with green/red coloring.
+fn render_base_cell(info: &WorktreeInfo, stat: Stat) -> Cell<'static> {
+    if stat == Stat::Lines {
+        Cell::from(render_ahead_behind_spans(
+            info.base_lines_inserted,
+            info.base_lines_deleted,
+        ))
+    } else {
+        Cell::from(render_ahead_behind_spans(info.ahead, info.behind))
+    }
+}
+
+/// Render the Changes column cell with colored indicators.
+fn render_changes_cell(info: &WorktreeInfo, stat: Stat) -> Cell<'static> {
+    let mut spans = Vec::new();
+    if stat == Stat::Lines {
+        let ins =
+            info.staged_lines_inserted.unwrap_or(0) + info.unstaged_lines_inserted.unwrap_or(0);
+        let del = info.staged_lines_deleted.unwrap_or(0) + info.unstaged_lines_deleted.unwrap_or(0);
+        if ins > 0 {
+            spans.push(Span::styled(
+                format!("+{ins}"),
+                Style::default().fg(Color::Green),
+            ));
+        }
+        if del > 0 {
+            if !spans.is_empty() {
+                spans.push(Span::raw(" "));
+            }
+            spans.push(Span::styled(
+                format!("-{del}"),
+                Style::default().fg(Color::Red),
+            ));
+        }
+    } else {
+        if info.staged > 0 {
+            spans.push(Span::styled(
+                format!("+{}", info.staged),
+                Style::default().fg(Color::Green),
+            ));
+        }
+        if info.unstaged > 0 {
+            if !spans.is_empty() {
+                spans.push(Span::raw(" "));
+            }
+            spans.push(Span::styled(
+                format!("-{}", info.unstaged),
+                Style::default().fg(Color::Red),
+            ));
+        }
+    }
+    if info.untracked > 0 {
+        if !spans.is_empty() {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled(
+            format!("?{}", info.untracked),
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+    }
+    Cell::from(Line::from(spans))
+}
+
+/// Render the Remote column cell with colored indicators.
+fn render_remote_cell(info: &WorktreeInfo, stat: Stat) -> Cell<'static> {
+    if stat == Stat::Lines {
+        Cell::from(render_ahead_behind_spans(
+            info.remote_lines_inserted,
+            info.remote_lines_deleted,
+        ))
+    } else {
+        let mut spans = Vec::new();
+        if let Some(a) = info.remote_ahead {
+            if a > 0 {
+                spans.push(Span::styled(
+                    format!("\u{21E1}{a}"),
+                    Style::default().fg(Color::Green),
+                ));
+            }
+        }
+        if let Some(b) = info.remote_behind {
+            if b > 0 {
+                if !spans.is_empty() {
+                    spans.push(Span::raw(" "));
+                }
+                spans.push(Span::styled(
+                    format!("\u{21E3}{b}"),
+                    Style::default().fg(Color::Red),
+                ));
+            }
+        }
+        Cell::from(Line::from(spans))
+    }
+}
+
 /// Render a single cell for the given column and worktree row.
-fn render_cell(col: &Column, wt: &WorktreeRow, vals: &ColumnValues, tick: usize) -> Cell<'static> {
+fn render_cell(
+    col: &Column,
+    wt: &WorktreeRow,
+    vals: &ColumnValues,
+    tick: usize,
+    stat: Stat,
+) -> Cell<'static> {
     match col {
         Column::Status => render_status_cell(&wt.status, tick),
         Column::Annotation => render_annotation_cell(&wt.info),
         Column::Branch => Cell::from(vals.branch.clone()),
         Column::Path => Cell::from(vals.path.clone()),
-        Column::Base => Cell::from(vals.base.clone()),
-        Column::Remote => Cell::from(vals.remote.clone()),
-        Column::Changes => Cell::from(vals.changes.clone()),
+        Column::Base => render_base_cell(&wt.info, stat),
+        Column::Changes => render_changes_cell(&wt.info, stat),
+        Column::Remote => render_remote_cell(&wt.info, stat),
         Column::Age => {
             let cell = Cell::from(vals.branch_age.clone());
             if vals.is_old_branch {
@@ -931,19 +1107,19 @@ mod tests {
 
     #[test]
     fn column_selection_wide_terminal() {
-        let cols = select_columns(120);
+        let cols = select_columns(120, &[], &[]);
         assert_eq!(cols.len(), 9);
     }
 
     #[test]
     fn column_selection_narrow_drops_last_commit() {
-        let cols = select_columns(60);
+        let cols = select_columns(60, &[], &[]);
         assert!(!cols.iter().any(|c| matches!(c, Column::LastCommit)));
     }
 
     #[test]
     fn column_selection_very_narrow_keeps_essentials() {
-        let cols = select_columns(30);
+        let cols = select_columns(30, &[], &[]);
         assert!(cols.iter().any(|c| matches!(c, Column::Status)));
         assert!(cols.iter().any(|c| matches!(c, Column::Branch)));
     }
