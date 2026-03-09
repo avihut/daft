@@ -316,6 +316,35 @@ pub fn prune_single_branch(
     })
 }
 
+/// Handle a deferred branch (the user's current worktree) after the TUI finishes.
+///
+/// In parallel/TUI mode, `prune_single_branch` defers the current worktree
+/// (returns `deferred: true` without removing it). This function performs the
+/// actual removal after all other tasks complete.
+///
+/// Returns the cd target path if the worktree was successfully removed.
+#[allow(clippy::too_many_arguments)]
+pub fn handle_deferred_prune(
+    ctx: &PruneContext,
+    branch_name: &str,
+    worktree_map: &HashMap<String, (PathBuf, bool)>,
+    params: &PruneParams,
+    sink: &mut (impl ProgressSink + HookRunner),
+) -> Option<PathBuf> {
+    let deferred_branch = Some(branch_name.to_string());
+    let mut branches_deleted = 0u32;
+    let mut worktrees_removed = 0u32;
+    process_deferred_branch(
+        ctx,
+        &deferred_branch,
+        worktree_map,
+        params,
+        sink,
+        &mut branches_deleted,
+        &mut worktrees_removed,
+    )
+}
+
 // ── Branch identification ──────────────────────────────────────────────────
 
 /// Identify local branches whose upstream has been deleted.

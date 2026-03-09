@@ -225,6 +225,12 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         )?
     };
 
+    // Nothing to prune — skip the TUI entirely.
+    if gone_branches.is_empty() {
+        output.info("Nothing to prune.");
+        return Ok(());
+    }
+
     // ── Build the DAG (twice: one for executor, one for renderer) ──────
     let dag_for_renderer = SyncDag::build_prune(gone_branches.clone());
     let dag_for_executor = SyncDag::build_prune(gone_branches.clone());
@@ -293,9 +299,16 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let shared_is_bare_layout = is_bare_layout;
 
     // Pre-compute prune context values
-    let shared_git_dir = Arc::new(get_git_common_dir()?);
+    let git_dir = get_git_common_dir()?;
+    let shared_git_dir = Arc::new(git_dir.clone());
     let shared_remote_name = Arc::new(settings.remote.clone());
-    let shared_source_worktree = Arc::new(std::env::current_dir()?);
+    let source_worktree = std::env::current_dir()?;
+    let shared_source_worktree = Arc::new(source_worktree.clone());
+
+    // Track which branch was deferred (current worktree) for post-TUI handling.
+    let deferred_branch: Arc<std::sync::Mutex<Option<String>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let deferred_branch_writer = Arc::clone(&deferred_branch);
 
     // ── Spawn executor in a background thread ──────────────────────────
     let executor = DagExecutor::new(dag_for_executor, tx);
@@ -307,19 +320,25 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                     // Already done pre-TUI
                     (TaskStatus::Succeeded, "fetched".into())
                 }
-                TaskId::Prune(branch_name) => execute_prune_task(
-                    branch_name,
-                    &shared_settings,
-                    &shared_project_root,
-                    &shared_git_dir,
-                    &shared_remote_name,
-                    &shared_source_worktree,
-                    &shared_worktree_map,
-                    shared_is_bare_layout,
-                    &shared_current_wt_path,
-                    &shared_current_branch,
-                    shared_force,
-                ),
+                TaskId::Prune(branch_name) => {
+                    let result = execute_prune_task(
+                        branch_name,
+                        &shared_settings,
+                        &shared_project_root,
+                        &shared_git_dir,
+                        &shared_remote_name,
+                        &shared_source_worktree,
+                        &shared_worktree_map,
+                        shared_is_bare_layout,
+                        &shared_current_wt_path,
+                        &shared_current_branch,
+                        shared_force,
+                    );
+                    if result.1 == "deferred" {
+                        *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
+                    }
+                    result
+                }
                 TaskId::Update(_) | TaskId::Rebase(_) => {
                     // Should never happen in a prune-only DAG
                     (TaskStatus::Skipped, "not applicable".into())
@@ -330,34 +349,48 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     // ── Run TUI renderer on main thread ────────────────────────────────
     let renderer = TuiRenderer::new(state, Arc::clone(&dag_arc), rx);
-    let final_state = renderer.run()?;
+    let _final_state = renderer.run()?;
 
     // Wait for executor thread to finish
     executor_handle
         .join()
         .map_err(|_| anyhow::anyhow!("DAG executor thread panicked"))?;
 
-    // ── Post-TUI: handle cd_target ─────────────────────────────────────
-    // Check if the current worktree was pruned
-    let current_was_pruned = final_state.worktrees.iter().any(|w| {
-        w.info.is_current
-            && matches!(
-                &w.status,
-                crate::output::tui::WorktreeStatus::Done(crate::output::tui::FinalStatus::Pruned)
-            )
-    });
+    // ── Post-TUI: handle deferred branch (current worktree) ────────────
+    // If the user was inside a worktree that needs pruning, prune_single_branch
+    // deferred it. Now that the TUI is done, perform the actual removal.
+    let deferred = deferred_branch.lock().unwrap().clone();
+    if let Some(ref branch_name) = deferred {
+        let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+        let ctx = prune::PruneContext {
+            git: &git,
+            project_root: project_root.clone(),
+            git_dir,
+            remote_name: settings.remote.clone(),
+            source_worktree,
+        };
+        let params = prune::PruneParams {
+            force: args.force,
+            use_gitoxide: settings.use_gitoxide,
+            is_quiet: true,
+            remote_name: settings.remote.clone(),
+            prune_cd_target: settings.prune_cd_target,
+        };
+        let mut sink = NullBridge;
+        let cd_target =
+            prune::handle_deferred_prune(&ctx, branch_name, &worktree_map, &params, &mut sink);
 
-    if current_was_pruned {
-        let cd_target = project_root.clone();
-        let config = OutputConfig::with_autocd(false, false, settings.autocd);
-        let mut output = CliOutput::new(config);
-        if std::env::var(CD_FILE_ENV).is_ok() {
-            output.cd_path(&cd_target);
-        } else {
-            output.result(&format!(
-                "Run `cd {}` (your previous working directory was removed)",
-                cd_target.display()
-            ));
+        if let Some(ref cd_path) = cd_target {
+            let config = OutputConfig::with_autocd(false, false, settings.autocd);
+            let mut output = CliOutput::new(config);
+            if std::env::var(CD_FILE_ENV).is_ok() {
+                output.cd_path(cd_path);
+            } else {
+                output.result(&format!(
+                    "Run `cd {}` (your previous working directory was removed)",
+                    cd_path.display()
+                ));
+            }
         }
     }
 
