@@ -49,19 +49,27 @@ pub struct PruneResult {
 }
 
 /// Parsed worktree entry from `git worktree list --porcelain`.
-struct WorktreeEntry {
-    path: PathBuf,
-    branch: Option<String>,
-    is_bare: bool,
+pub struct WorktreeEntry {
+    pub path: PathBuf,
+    pub branch: Option<String>,
+    pub is_bare: bool,
 }
 
 /// Bundles common state used throughout the prune operation.
-struct PruneContext<'a> {
-    git: &'a GitCommand,
-    project_root: PathBuf,
-    git_dir: PathBuf,
-    remote_name: String,
-    source_worktree: PathBuf,
+pub struct PruneContext<'a> {
+    pub git: &'a GitCommand,
+    pub project_root: PathBuf,
+    pub git_dir: PathBuf,
+    pub remote_name: String,
+    pub source_worktree: PathBuf,
+}
+
+/// Result of pruning a single branch.
+pub struct SingleBranchPruneResult {
+    pub detail: PrunedBranchDetail,
+    pub branches_deleted: u32,
+    pub worktrees_removed: u32,
+    pub deferred: bool,
 }
 
 /// Result of removing a single worktree + deleting its branch.
@@ -145,75 +153,24 @@ pub fn execute(
     let mut pruned_branches: Vec<PrunedBranchDetail> = Vec::new();
 
     for branch_name in &gone_branches {
-        sink.on_step(&format!("Processing branch: {branch_name}"));
+        let result = prune_single_branch(
+            &ctx,
+            branch_name,
+            &worktree_map,
+            is_bare_layout,
+            &current_wt_path,
+            &current_branch,
+            params,
+            sink,
+        )?;
 
-        let prev_branches = branches_deleted;
-        let prev_worktrees = worktrees_removed;
+        branches_deleted += result.branches_deleted;
+        worktrees_removed += result.worktrees_removed;
 
-        let wt_info = worktree_map.get(branch_name.as_str()).cloned();
-
-        match wt_info {
-            Some((ref wt_path, true)) if !is_bare_layout => {
-                // Branch is checked out in the main worktree of a regular repo
-                process_main_worktree_branch(
-                    &ctx,
-                    wt_path,
-                    branch_name,
-                    &current_branch,
-                    params,
-                    sink,
-                    &mut branches_deleted,
-                    &mut worktrees_removed,
-                )?;
-            }
-            Some((ref wt_path, _)) if !is_bare_layout => {
-                // Linked worktree in a non-bare repo
-                process_linked_worktree_branch(
-                    &ctx,
-                    wt_path,
-                    branch_name,
-                    &current_wt_path,
-                    params.force,
-                    sink,
-                    &mut branches_deleted,
-                    &mut worktrees_removed,
-                    &mut deferred_branch,
-                );
-            }
-            Some((ref wt_path, is_main)) => {
-                // Bare layout
-                process_bare_layout_branch(
-                    &ctx,
-                    wt_path,
-                    branch_name,
-                    is_main,
-                    &current_wt_path,
-                    params.force,
-                    sink,
-                    &mut branches_deleted,
-                    &mut worktrees_removed,
-                    &mut deferred_branch,
-                );
-            }
-            None => {
-                // No worktree for this branch
-                sink.on_step(&format!("No associated worktree found for {branch_name}"));
-                if delete_branch(&git, branch_name, sink) {
-                    branches_deleted += 1;
-                    sink.on_step(&format!(" * [pruned] {}/{branch_name}", ctx.remote_name));
-                }
-            }
-        }
-
-        // Record per-branch detail (skip deferred — it's tracked below)
-        let was_branch_deleted = branches_deleted > prev_branches;
-        let was_worktree_removed = worktrees_removed > prev_worktrees;
-        if was_branch_deleted || was_worktree_removed {
-            pruned_branches.push(PrunedBranchDetail {
-                branch_name: branch_name.clone(),
-                worktree_removed: was_worktree_removed,
-                branch_deleted: was_branch_deleted,
-            });
+        if result.deferred {
+            deferred_branch = Some(branch_name.clone());
+        } else if result.detail.branch_deleted || result.detail.worktree_removed {
+            pruned_branches.push(result.detail);
         }
     }
 
@@ -257,10 +214,112 @@ pub fn execute(
     })
 }
 
+// ── Per-branch prune (public for DAG workers) ─────────────────────────────
+
+/// Prune a single branch. Called by the DAG executor for parallel pruning.
+///
+/// Returns the result of pruning the branch, including per-branch detail and
+/// counters. When the branch corresponds to the user's current worktree, the
+/// result has `deferred = true` and no work is done — the caller must handle
+/// that branch separately (see `process_deferred_branch`).
+#[allow(clippy::too_many_arguments)]
+pub fn prune_single_branch(
+    ctx: &PruneContext,
+    branch_name: &str,
+    worktree_map: &HashMap<String, (PathBuf, bool)>,
+    is_bare_layout: bool,
+    current_wt_path: &Option<PathBuf>,
+    current_branch: &Option<String>,
+    params: &PruneParams,
+    sink: &mut (impl ProgressSink + HookRunner),
+) -> Result<SingleBranchPruneResult> {
+    sink.on_step(&format!("Processing branch: {branch_name}"));
+
+    let mut branches_deleted: u32 = 0;
+    let mut worktrees_removed: u32 = 0;
+    let mut deferred = false;
+
+    let wt_info = worktree_map.get(branch_name).cloned();
+
+    match wt_info {
+        Some((ref wt_path, true)) if !is_bare_layout => {
+            // Branch is checked out in the main worktree of a regular repo
+            process_main_worktree_branch(
+                ctx,
+                wt_path,
+                branch_name,
+                current_branch,
+                params,
+                sink,
+                &mut branches_deleted,
+                &mut worktrees_removed,
+            )?;
+        }
+        Some((ref wt_path, _)) if !is_bare_layout => {
+            // Linked worktree in a non-bare repo
+            let mut deferred_branch: Option<String> = None;
+            process_linked_worktree_branch(
+                ctx,
+                wt_path,
+                branch_name,
+                current_wt_path,
+                params.force,
+                sink,
+                &mut branches_deleted,
+                &mut worktrees_removed,
+                &mut deferred_branch,
+            );
+            if deferred_branch.is_some() {
+                deferred = true;
+            }
+        }
+        Some((ref wt_path, is_main)) => {
+            // Bare layout
+            let mut deferred_branch: Option<String> = None;
+            process_bare_layout_branch(
+                ctx,
+                wt_path,
+                branch_name,
+                is_main,
+                current_wt_path,
+                params.force,
+                sink,
+                &mut branches_deleted,
+                &mut worktrees_removed,
+                &mut deferred_branch,
+            );
+            if deferred_branch.is_some() {
+                deferred = true;
+            }
+        }
+        None => {
+            // No worktree for this branch
+            sink.on_step(&format!("No associated worktree found for {branch_name}"));
+            if delete_branch(ctx.git, branch_name, sink) {
+                branches_deleted += 1;
+                sink.on_step(&format!(" * [pruned] {}/{branch_name}", ctx.remote_name));
+            }
+        }
+    }
+
+    let detail = PrunedBranchDetail {
+        branch_name: branch_name.to_string(),
+        worktree_removed: worktrees_removed > 0,
+        branch_deleted: branches_deleted > 0,
+    };
+
+    Ok(SingleBranchPruneResult {
+        detail,
+        branches_deleted,
+        worktrees_removed,
+        deferred,
+    })
+}
+
 // ── Branch identification ──────────────────────────────────────────────────
 
 /// Identify local branches whose upstream has been deleted.
-fn identify_gone_branches(
+pub fn identify_gone_branches(
     git: &GitCommand,
     worktree_map: &HashMap<String, (PathBuf, bool)>,
     remote_name: &str,
@@ -686,7 +745,7 @@ fn delete_branch(git: &GitCommand, branch_name: &str, sink: &mut dyn ProgressSin
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /// Parse `git worktree list --porcelain` into structured entries.
-fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeEntry>> {
+pub fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeEntry>> {
     let porcelain_output = git.worktree_list_porcelain()?;
     let mut entries = Vec::new();
     let mut current_path: Option<PathBuf> = None;
