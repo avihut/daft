@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+#MISE description="Verify version format: dev builds show git info, release builds show clean version"
+set -euo pipefail
+
+# This test verifies the version display logic in build.rs by simulating
+# the same conditions as a cargo-dist release build:
+# - Detached HEAD (actions/checkout checks out a tag ref)
+# - A version tag pointing at HEAD matching Cargo.toml version
+#
+# It tests both the release path (clean version) and the dev path (with
+# branch and commit hash).
+
+CARGO_VERSION=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name == "daft") | .version')
+TAG="v${CARGO_VERSION}"
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+PASS=0
+FAIL=0
+
+pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
+fail() { echo "  FAIL: $1 — expected: $2, got: $3"; FAIL=$((FAIL + 1)); }
+
+check_version() {
+    local label="$1" expected_pattern="$2"
+    local actual
+    actual=$(./target/debug/daft --version)
+    if echo "$actual" | grep -qE "$expected_pattern"; then
+        pass "$label: $actual"
+    else
+        fail "$label" "$expected_pattern" "$actual"
+    fi
+}
+
+cleanup() {
+    # Restore branch (if we detached)
+    if [ "$(git rev-parse --abbrev-ref HEAD)" = "HEAD" ]; then
+        git checkout "$BRANCH" -q 2>/dev/null || true
+    fi
+    # Restore original tag if we moved it
+    if [ -n "${ORIGINAL_TAG_SHA:-}" ]; then
+        git tag -f "$TAG" "$ORIGINAL_TAG_SHA" &>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+
+echo "Testing version format (Cargo.toml version: ${CARGO_VERSION})"
+echo ""
+
+# ── Test 1: Dev build (current branch, no matching tag at HEAD) ──
+echo "1. Dev build (branch, no version tag at HEAD)"
+cargo build --quiet 2>&1
+check_version "dev format" "^daft ${CARGO_VERSION//./\\.} \\(dev .+ [0-9a-f]+\\)$"
+
+echo ""
+
+# ── Test 2: Simulated release build (detached HEAD + version tag) ──
+# This mirrors what cargo-dist / release-plz does:
+#   actions/checkout checks out the tag → detached HEAD with tag at HEAD
+echo "2. Simulated release build (detached HEAD + version tag at HEAD)"
+
+# Save current tag state — if the tag already exists at a different commit,
+# we need to force-move it and restore it after.
+ORIGINAL_TAG_SHA=""
+if git tag -l "$TAG" | grep -q "$TAG"; then
+    ORIGINAL_TAG_SHA=$(git rev-list -n1 "$TAG")
+fi
+
+# Create/move tag to HEAD and detach (same state as CI)
+git tag -f "$TAG" HEAD &>/dev/null
+git checkout --detach -q &>/dev/null
+
+cargo build --quiet 2>&1
+check_version "release format" "^daft ${CARGO_VERSION//./\\.}$"
+
+# Restore
+git checkout "$BRANCH" -q &>/dev/null
+
+# Restore original tag if we moved it
+if [ -n "$ORIGINAL_TAG_SHA" ]; then
+    git tag -f "$TAG" "$ORIGINAL_TAG_SHA" &>/dev/null
+else
+    git tag -d "$TAG" &>/dev/null
+fi
+
+echo ""
+
+# ── Test 3: DAFT_BUILD_RELEASE env var override ──
+echo "3. DAFT_BUILD_RELEASE env var override"
+DAFT_BUILD_RELEASE=1 cargo build --quiet 2>&1
+check_version "env var override" "^daft ${CARGO_VERSION//./\\.}$"
+
+# Rebuild without env var to restore dev state
+cargo build --quiet 2>&1
+
+echo ""
+
+# ── Summary ──
+echo "─────────────────────────"
+echo "Results: ${PASS} passed, ${FAIL} failed"
+if [ "$FAIL" -gt 0 ]; then
+    exit 1
+fi
