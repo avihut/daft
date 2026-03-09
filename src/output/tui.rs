@@ -7,12 +7,15 @@ use crate::core::worktree::list::WorktreeInfo;
 use crate::core::worktree::sync_dag::{DagEvent, OperationPhase, SyncDag, SyncTask, TaskStatus};
 
 use ratatui::{
-    layout::{Constraint, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Cell, Paragraph, Row, Table},
-    Frame,
+    Frame, Terminal, TerminalOptions, Viewport,
 };
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const SPINNER_FRAMES: &[&str] = &[
     "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
@@ -477,6 +480,96 @@ fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
         )))
     } else {
         Cell::from("")
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TUI Renderer (main loop)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Drives the inline TUI render loop, consuming `DagEvent`s and updating the
+/// ratatui terminal until all tasks complete.
+pub struct TuiRenderer {
+    state: TuiState,
+    dag: Arc<SyncDag>,
+    receiver: mpsc::Receiver<DagEvent>,
+}
+
+impl TuiRenderer {
+    pub fn new(state: TuiState, dag: Arc<SyncDag>, receiver: mpsc::Receiver<DagEvent>) -> Self {
+        Self {
+            state,
+            dag,
+            receiver,
+        }
+    }
+
+    /// Run the render loop until all tasks complete.
+    /// Returns the final `TuiState` for post-render summary.
+    pub fn run(mut self) -> anyhow::Result<TuiState> {
+        let header_height = self.state.phases.len() as u16 + 1;
+        let table_height = self.state.worktrees.len() as u16 + 2;
+        let viewport_height = header_height + table_height;
+
+        let backend = ratatui::backend::CrosstermBackend::new(std::io::stderr());
+        let mut terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(viewport_height),
+            },
+        )?;
+
+        let tick_rate = Duration::from_millis(80);
+        let mut last_tick = Instant::now();
+
+        loop {
+            // Render current state.
+            terminal.draw(|frame| {
+                let area = frame.area();
+                let chunks =
+                    Layout::vertical([Constraint::Length(header_height), Constraint::Fill(1)])
+                        .split(area);
+
+                self.state.render_header(frame, chunks[0]);
+                self.state.render_table(frame, chunks[1]);
+            })?;
+
+            // Process all pending events.
+            loop {
+                match self.receiver.try_recv() {
+                    Ok(event) => {
+                        let is_done = matches!(event, DagEvent::AllDone);
+                        self.state.apply_event(&event, &self.dag);
+                        if is_done {
+                            // Final render.
+                            terminal.draw(|frame| {
+                                let area = frame.area();
+                                let chunks = Layout::vertical([
+                                    Constraint::Length(header_height),
+                                    Constraint::Fill(1),
+                                ])
+                                .split(area);
+                                self.state.render_header(frame, chunks[0]);
+                                self.state.render_table(frame, chunks[1]);
+                            })?;
+                            return Ok(self.state);
+                        }
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        return Ok(self.state);
+                    }
+                }
+            }
+
+            // Tick spinner animation.
+            if last_tick.elapsed() >= tick_rate {
+                self.state.tick();
+                last_tick = Instant::now();
+            }
+
+            std::thread::sleep(Duration::from_millis(16));
+        }
     }
 }
 
