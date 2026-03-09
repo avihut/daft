@@ -6,6 +6,20 @@
 use crate::core::worktree::list::WorktreeInfo;
 use crate::core::worktree::sync_dag::{DagEvent, OperationPhase, SyncDag, SyncTask, TaskStatus};
 
+use ratatui::{
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::Paragraph,
+    Frame,
+};
+
+const SPINNER_FRAMES: &[&str] = &[
+    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
+    "\u{2807}", "\u{280f}",
+];
+const CHECKMARK: &str = "\u{2713}";
+
 /// Status of a high-level operation phase in the header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PhaseStatus {
@@ -179,6 +193,41 @@ impl TuiState {
             },
             TaskStatus::Pending | TaskStatus::Running => FinalStatus::Failed,
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Rendering
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Render the operation header showing phase progress.
+    pub fn render_header(&self, frame: &mut Frame, area: Rect) {
+        let lines: Vec<Line> = self
+            .phases
+            .iter()
+            .map(|ps| match ps.status {
+                PhaseStatus::Pending => Line::from(Span::styled(
+                    format!("  {}", ps.phase.label()),
+                    Style::default().add_modifier(Modifier::DIM),
+                )),
+                PhaseStatus::Active => {
+                    let spinner = SPINNER_FRAMES[self.tick % SPINNER_FRAMES.len()];
+                    Line::from(vec![
+                        Span::styled(format!("{spinner} "), Style::default().fg(Color::Yellow)),
+                        Span::styled(ps.phase.label(), Style::default().fg(Color::Yellow)),
+                    ])
+                }
+                PhaseStatus::Completed => Line::from(vec![
+                    Span::styled(format!("{CHECKMARK} "), Style::default().fg(Color::Green)),
+                    Span::styled(
+                        ps.phase.label(),
+                        Style::default().add_modifier(Modifier::DIM),
+                    ),
+                ]),
+            })
+            .collect();
+
+        let header = Paragraph::new(lines);
+        frame.render_widget(header, area);
     }
 }
 
