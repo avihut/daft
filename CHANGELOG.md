@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.35](https://github.com/avihut/daft/compare/v1.0.34...v1.0.35) - 2026-03-09
+
+### Bug Fixes
+
+- dev version format leaking to release builds ([#282](https://github.com/avihut/daft/pull/282))
+
+### Miscellaneous
+
+- replace custom commit-msg regex with cocogitto
+
 ## [1.0.34](https://github.com/avihut/daft/compare/v1.0.33...v1.0.34) - 2026-03-08
 
 ### Bug Fixes
