@@ -353,7 +353,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     // ── Run TUI renderer on main thread ────────────────────────────────
     let renderer = TuiRenderer::new(state, Arc::clone(&dag_arc), rx);
-    let _final_state = renderer.run()?;
+    let final_state = renderer.run()?;
 
     // Wait for executor thread to finish
     executor_handle
@@ -396,6 +396,22 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                 ));
             }
         }
+    }
+
+    // ── Check for failures ────────────────────────────────────────────────
+    let failed_count = final_state
+        .worktrees
+        .iter()
+        .filter(|w| {
+            matches!(
+                &w.status,
+                crate::output::tui::WorktreeStatus::Done(crate::output::tui::FinalStatus::Failed)
+            )
+        })
+        .count();
+
+    if failed_count > 0 {
+        anyhow::bail!("{failed_count} task(s) failed");
     }
 
     Ok(())

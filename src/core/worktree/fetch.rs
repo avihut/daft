@@ -309,6 +309,11 @@ pub fn build_pull_args(params: &FetchParams) -> Vec<String> {
 /// that already know the target path and worktree name. It creates a
 /// same-branch refspec (source == destination) and delegates to the internal
 /// processing pipeline.
+/// Update a single worktree using `git pull` with an explicit working directory.
+///
+/// Unlike `process_worktree`, this does NOT call `change_directory` — instead
+/// it passes the worktree path directly to `git pull -C <dir>`. This is safe
+/// for parallel DAG workers where `set_current_dir` would race.
 pub fn update_single_worktree(
     git: &GitCommand,
     target_path: &Path,
@@ -317,19 +322,85 @@ pub fn update_single_worktree(
     params: &FetchParams,
     progress: &mut dyn ProgressSink,
 ) -> WorktreeFetchResult {
-    let refspec = UpdateRefSpec {
-        source: worktree_name.to_string(),
-        destination: worktree_name.to_string(),
-    };
-    process_worktree(
-        git,
-        target_path,
-        worktree_name,
-        pull_args,
-        params,
-        &refspec,
-        progress,
-    )
+    progress.on_step(&format!("Processing '{worktree_name}'..."));
+
+    // Verify directory exists
+    if !target_path.is_dir() {
+        return WorktreeFetchResult {
+            worktree_name: worktree_name.to_string(),
+            message: format!("Directory not found: {}", target_path.display()),
+            ..Default::default()
+        };
+    }
+
+    // Check for uncommitted changes
+    match git.has_uncommitted_changes_in(target_path) {
+        Ok(has_changes) => {
+            if has_changes && !params.force {
+                progress.on_warning(&format!(
+                    "Skipping '{worktree_name}': has uncommitted changes (use --force to update anyway)"
+                ));
+                return WorktreeFetchResult {
+                    worktree_name: worktree_name.to_string(),
+                    success: true,
+                    message: "Skipped: uncommitted changes".to_string(),
+                    skipped: true,
+                    ..Default::default()
+                };
+            }
+        }
+        Err(e) => {
+            return WorktreeFetchResult {
+                worktree_name: worktree_name.to_string(),
+                message: format!("Failed to check status: {e}"),
+                ..Default::default()
+            };
+        }
+    }
+
+    // Dry run mode
+    if params.dry_run {
+        return WorktreeFetchResult {
+            worktree_name: worktree_name.to_string(),
+            success: true,
+            message: format!("Dry run: would pull with: git pull {}", pull_args.join(" ")),
+            skipped: true,
+            ..Default::default()
+        };
+    }
+
+    // Run git pull with explicit working directory (thread-safe)
+    let pull_args_refs: Vec<&str> = pull_args.iter().map(|s| s.as_str()).collect();
+
+    match git.pull_in(&pull_args_refs, Some(target_path)) {
+        Ok(output) => {
+            let trimmed = output.trim();
+            let up_to_date =
+                trimmed.contains("Already up to date") || trimmed.contains("is up to date");
+            let pull_output = if up_to_date || trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+            WorktreeFetchResult {
+                worktree_name: worktree_name.to_string(),
+                success: true,
+                message: if up_to_date {
+                    "Already up to date".to_string()
+                } else {
+                    "Updated successfully".to_string()
+                },
+                skipped: false,
+                up_to_date,
+                pull_output,
+            }
+        }
+        Err(e) => WorktreeFetchResult {
+            worktree_name: worktree_name.to_string(),
+            message: format!("Failed: {e}"),
+            ..Default::default()
+        },
+    }
 }
 
 /// Process a single worktree, choosing between same-branch and cross-branch mode.

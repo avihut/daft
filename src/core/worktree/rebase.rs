@@ -113,6 +113,11 @@ pub fn execute(
 /// Changes to the worktree directory, checks for uncommitted changes, runs
 /// `git rebase`, and aborts on conflict. Called by the DAG executor for
 /// parallel rebasing.
+/// Rebase a single worktree onto `base_branch` using an explicit working directory.
+///
+/// Unlike the sequential path, this does NOT call `change_directory` — instead
+/// it passes the worktree path directly to `git rebase -C <dir>`. This is safe
+/// for parallel DAG workers where `set_current_dir` would race.
 pub fn rebase_single_worktree(
     git: &GitCommand,
     worktree_path: &Path,
@@ -121,11 +126,11 @@ pub fn rebase_single_worktree(
     force: bool,
     progress: &mut dyn ProgressSink,
 ) -> WorktreeRebaseResult {
-    // Change to worktree directory
-    if let Err(e) = change_directory(worktree_path) {
+    // Verify directory exists
+    if !worktree_path.is_dir() {
         return WorktreeRebaseResult {
             worktree_name: worktree_name.to_string(),
-            message: format!("Failed to change to directory: {e}"),
+            message: format!("Directory not found: {}", worktree_path.display()),
             ..Default::default()
         };
     }
@@ -154,8 +159,8 @@ pub fn rebase_single_worktree(
         _ => {}
     }
 
-    // Run git rebase
-    match git.rebase(base_branch) {
+    // Run git rebase with explicit working directory (thread-safe)
+    match git.rebase_in(base_branch, Some(worktree_path)) {
         Ok(output) => {
             let already_up_to_date =
                 output.contains("is up to date") || output.contains("up to date");
@@ -173,7 +178,7 @@ pub fn rebase_single_worktree(
         }
         Err(_) => {
             // Abort the failed rebase to leave the worktree clean
-            if let Err(abort_err) = git.rebase_abort() {
+            if let Err(abort_err) = git.rebase_abort_in(Some(worktree_path)) {
                 progress.on_warning(&format!(
                     "Failed to abort rebase in '{worktree_name}': {abort_err}"
                 ));

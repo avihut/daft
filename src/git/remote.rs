@@ -2,6 +2,7 @@ use super::oxide;
 use super::GitCommand;
 use crate::styles;
 use anyhow::{Context, Result};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 impl GitCommand {
@@ -118,7 +119,20 @@ impl GitCommand {
 
     /// Pull from remote with specified arguments
     pub fn pull(&self, args: &[&str]) -> Result<String> {
+        self.pull_in(args, None)
+    }
+
+    /// Pull with an explicit working directory.
+    ///
+    /// When `dir` is `Some`, the git command runs in that directory instead
+    /// of inheriting the process CWD. This is required for parallel workers
+    /// where `set_current_dir` would race.
+    pub fn pull_in(&self, args: &[&str], dir: Option<&Path>) -> Result<String> {
         let mut cmd = Command::new("git");
+
+        if let Some(d) = dir {
+            cmd.current_dir(d);
+        }
 
         // Force colored diff stats even when stdout is captured,
         // so the output renders correctly when printed to the terminal.
@@ -322,8 +336,21 @@ impl GitCommand {
     /// Returns the combined stdout+stderr on success. On failure (e.g., conflicts),
     /// returns an error with the combined output.
     pub fn rebase(&self, base: &str) -> Result<String> {
-        let output = Command::new("git")
-            .args(["rebase", base])
+        self.rebase_in(base, None)
+    }
+
+    /// Rebase with an explicit working directory.
+    ///
+    /// When `dir` is `Some`, the git command runs in that directory instead
+    /// of inheriting the process CWD. Required for parallel workers.
+    pub fn rebase_in(&self, base: &str, dir: Option<&Path>) -> Result<String> {
+        let mut cmd = Command::new("git");
+        if let Some(d) = dir {
+            cmd.current_dir(d);
+        }
+        cmd.args(["rebase", base]);
+
+        let output = cmd
             .output()
             .context("Failed to execute git rebase command")?;
 
@@ -342,8 +369,18 @@ impl GitCommand {
 
     /// Abort an in-progress rebase.
     pub fn rebase_abort(&self) -> Result<()> {
-        let output = Command::new("git")
-            .args(["rebase", "--abort"])
+        self.rebase_abort_in(None)
+    }
+
+    /// Abort rebase with an explicit working directory.
+    pub fn rebase_abort_in(&self, dir: Option<&Path>) -> Result<()> {
+        let mut cmd = Command::new("git");
+        if let Some(d) = dir {
+            cmd.current_dir(d);
+        }
+        cmd.args(["rebase", "--abort"]);
+
+        let output = cmd
             .output()
             .context("Failed to execute git rebase --abort command")?;
 
