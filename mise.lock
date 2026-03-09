@@ -49,54 +49,6 @@ checksum = "sha256:715709c69b176e20994533d3292bd0b7c32de9c0c5575b916746ec6b2aa38
 url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.10/bun-windows-x64-baseline.zip"
 
 [[tools.cocogitto]]
-version = "6.5.0"
-backend = "aqua:cocogitto/cocogitto"
-
-[tools.cocogitto."platforms.linux-arm64"]
-checksum = "sha256:8f05394d82cfbba1e393cef4b822cddb6e903817478c29a03200815daed7d9f1"
-url = "https://github.com/cocogitto/cocogitto/releases/download/6.5.0/cocogitto-6.5.0-aarch64-unknown-linux-gnu.tar.gz"
-
-[tools.cocogitto."platforms.linux-arm64-musl"]
-checksum = "sha256:8f05394d82cfbba1e393cef4b822cddb6e903817478c29a03200815daed7d9f1"
-url = "https://github.com/cocogitto/cocogitto/releases/download/6.5.0/cocogitto-6.5.0-aarch64-unknown-linux-gnu.tar.gz"
-
-[tools.cocogitto."platforms.linux-x64"]
-checksum = "sha256:9de1086c8b6521a8a01abbd62c562d6d355990f542e3082b49ec4a597f925646"
-url = "https://github.com/cocogitto/cocogitto/releases/download/6.5.0/cocogitto-6.5.0-x86_64-unknown-linux-musl.tar.gz"
-
-[tools.cocogitto."platforms.linux-x64-baseline"]
-checksum = "sha256:9de1086c8b6521a8a01abbd62c562d6d355990f542e3082b49ec4a597f925646"
-url = "https://github.com/cocogitto/cocogitto/releases/download/6.5.0/cocogitto-6.5.0-x86_64-unknown-linux-musl.tar.gz"
-
-[tools.cocogitto."platforms.linux-x64-musl"]
-checksum = "sha256:9de1086c8b6521a8a01abbd62c562d6d355990f542e3082b49ec4a597f925646"
-url = "https://github.com/cocogitto/cocogitto/releases/download/6.5.0/cocogitto-6.5.0-x86_64-unknown-linux-musl.tar.gz"
-
-[tools.cocogitto."platforms.linux-x64-musl-baseline"]
-checksum = "sha256:9de1086c8b6521a8a01abbd62c562d6d355990f542e3082b49ec4a597f925646"
-url = "https://github.com/cocogitto/cocogitto/releases/download/6.5.0/cocogitto-6.5.0-x86_64-unknown-linux-musl.tar.gz"
-
-[tools.cocogitto."platforms.macos-arm64"]
-checksum = "sha256:ddad1e62028e328db6e373232ff9166f21dfeadfe2c8784f327e88f46081fab4"
-url = "https://github.com/cocogitto/cocogitto/releases/download/6.5.0/cocogitto-6.5.0-x86_64-apple-darwin.tar.gz"
-
-[tools.cocogitto."platforms.macos-x64"]
-checksum = "sha256:ddad1e62028e328db6e373232ff9166f21dfeadfe2c8784f327e88f46081fab4"
-url = "https://github.com/cocogitto/cocogitto/releases/download/6.5.0/cocogitto-6.5.0-x86_64-apple-darwin.tar.gz"
-
-[tools.cocogitto."platforms.macos-x64-baseline"]
-checksum = "sha256:ddad1e62028e328db6e373232ff9166f21dfeadfe2c8784f327e88f46081fab4"
-url = "https://github.com/cocogitto/cocogitto/releases/download/6.5.0/cocogitto-6.5.0-x86_64-apple-darwin.tar.gz"
-
-[tools.cocogitto."platforms.windows-x64"]
-checksum = "sha256:ee4570d25e31393b88518af570f54e97f89e07346d545809e0c7404e8d076245"
-url = "https://github.com/cocogitto/cocogitto/releases/download/6.5.0/cocogitto-6.5.0-x86_64-pc-windows-msvc.tar.gz"
-
-[tools.cocogitto."platforms.windows-x64-baseline"]
-checksum = "sha256:ee4570d25e31393b88518af570f54e97f89e07346d545809e0c7404e8d076245"
-url = "https://github.com/cocogitto/cocogitto/releases/download/6.5.0/cocogitto-6.5.0-x86_64-pc-windows-msvc.tar.gz"
-
-[[tools.cocogitto]]
 version = "7.0.0"
 backend = "aqua:cocogitto/cocogitto"
 
