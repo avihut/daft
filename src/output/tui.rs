@@ -151,6 +151,14 @@ impl TuiState {
                         phase.status = PhaseStatus::Completed;
                     }
                 }
+                // Mark any worktrees that were never touched as up-to-date.
+                // This covers prune (where only gone branches get events) and
+                // any other scenario where some rows stay idle.
+                for wt in &mut self.worktrees {
+                    if wt.status == WorktreeStatus::Idle {
+                        wt.status = WorktreeStatus::Done(FinalStatus::UpToDate);
+                    }
+                }
                 self.done = true;
             }
         }
@@ -312,7 +320,9 @@ impl TuiState {
             })
             .collect();
 
-        let table = Table::new(rows, &constraints).header(header_row);
+        let table = Table::new(rows, &constraints)
+            .header(header_row)
+            .column_spacing(2);
 
         frame.render_widget(table, area);
     }
@@ -460,7 +470,7 @@ pub fn select_columns(width: u16, worktrees: &[WorktreeRow], vals: &[ColumnValue
             .iter()
             .map(|c| column_content_width(*c, worktrees, vals))
             .sum();
-        let spacing = cols.len().saturating_sub(1) as u16;
+        let spacing = cols.len().saturating_sub(1) as u16 * 2;
         if content + spacing <= width {
             break;
         }
@@ -1099,6 +1109,48 @@ mod tests {
             .find(|w| w.info.name == "feat/discovered")
             .unwrap();
         assert_eq!(row.status, WorktreeStatus::Active("pruning".into()));
+    }
+
+    #[test]
+    fn all_done_marks_idle_rows_as_up_to_date() {
+        let mut state = make_test_state();
+
+        // Only one branch gets a prune event; the others stay Idle.
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Prune,
+            branch_name: "feat/old".into(),
+        });
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Prune,
+            branch_name: "feat/old".into(),
+            status: TaskStatus::Succeeded,
+            message: "removed".into(),
+        });
+
+        state.apply_event(&DagEvent::AllDone);
+
+        // feat/old was pruned
+        let pruned = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "feat/old")
+            .unwrap();
+        assert_eq!(pruned.status, WorktreeStatus::Done(FinalStatus::Pruned));
+
+        // The remaining idle rows should now be up-to-date
+        let master = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "master")
+            .unwrap();
+        assert_eq!(master.status, WorktreeStatus::Done(FinalStatus::UpToDate));
+
+        let feat_a = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(feat_a.status, WorktreeStatus::Done(FinalStatus::UpToDate));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
