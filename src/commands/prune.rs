@@ -176,16 +176,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
 
-    // ── Phase 0: Pre-TUI work ──────────────────────────────────────────
-    // Fetch + identify gone branches before building the DAG.
-    let config = OutputConfig::with_autocd(false, false, settings.autocd);
-    let mut output = CliOutput::new(config);
-
-    output.start_spinner("Fetching remote branches...");
-    git.fetch(&settings.remote, true)?;
-    output.finish_spinner();
-
-    // Determine base branch for worktree info
+    // ── Pre-TUI: collect worktree info (no fetch needed) ───────────────
     let base_branch = get_default_branch_local(
         &get_git_common_dir()?,
         &settings.remote,
@@ -197,11 +188,10 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         .ok()
         .and_then(|p| p.canonicalize().ok());
 
-    // Collect worktree info for the TUI table
     let worktree_infos =
         list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), Stat::Summary)?;
 
-    // Parse worktree list and identify gone branches
+    // Parse worktree list for prune context
     let worktree_entries = prune::parse_worktree_list(&git)?;
     let is_bare_layout = worktree_entries.first().map(|e| e.is_bare).unwrap_or(false);
 
@@ -212,84 +202,13 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         }
     }
 
-    let hooks_config = HooksConfig::default();
-    let executor = HookExecutor::new(hooks_config)?;
-    let gone_branches = {
-        let mut bridge = CommandBridge::new(&mut output, executor);
-        prune::identify_gone_branches(
-            &git,
-            &worktree_map,
-            &settings.remote,
-            settings.use_gitoxide,
-            &mut bridge,
-        )?
-    };
-
-    // Nothing to prune — skip the TUI entirely.
-    if gone_branches.is_empty() {
-        output.info("Nothing to prune.");
-        return Ok(());
-    }
-
-    // ── Build the DAG (twice: one for executor, one for renderer) ──────
-    let dag_for_renderer = SyncDag::build_prune(gone_branches.clone());
-    let dag_for_executor = SyncDag::build_prune(gone_branches.clone());
-
-    // Add gone branches to worktree_infos for the TUI table (they may not
-    // have existing worktrees but should still appear as rows).
-    let mut all_infos = worktree_infos;
-    for branch in &gone_branches {
-        if !all_infos.iter().any(|info| info.name == *branch) {
-            all_infos.push(list::WorktreeInfo {
-                kind: list::EntryKind::Worktree,
-                name: branch.clone(),
-                path: worktree_map.get(branch).map(|(p, _)| p.clone()),
-                is_current: false,
-                is_default_branch: false,
-                ahead: None,
-                behind: None,
-                staged: 0,
-                unstaged: 0,
-                untracked: 0,
-                remote_ahead: None,
-                remote_behind: None,
-                last_commit_timestamp: None,
-                last_commit_subject: String::new(),
-                branch_creation_timestamp: None,
-                base_lines_inserted: None,
-                base_lines_deleted: None,
-                staged_lines_inserted: None,
-                staged_lines_deleted: None,
-                unstaged_lines_inserted: None,
-                unstaged_lines_deleted: None,
-                remote_lines_inserted: None,
-                remote_lines_deleted: None,
-            });
-        }
-    }
-
-    // ── Create TUI state ───────────────────────────────────────────────
-    // Only show Fetch and Prune phases (not Update) for the prune command.
+    // ── Create TUI state with known phases and worktrees ───────────────
     let phases = vec![OperationPhase::Fetch, OperationPhase::Prune];
-    let mut state = TuiState::new(phases, all_infos);
+    let state = TuiState::new(phases, worktree_infos);
 
-    // Mark fetch phase as already completed (we did it pre-TUI).
-    // Synthesize events for the fetch task.
-    state.apply_event(&DagEvent::TaskStarted { task_idx: 0 }, &dag_for_renderer);
-    state.apply_event(
-        &DagEvent::TaskCompleted {
-            task_idx: 0,
-            status: TaskStatus::Succeeded,
-            message: "fetched".into(),
-        },
-        &dag_for_renderer,
-    );
-
-    // ── Create channel and executor ────────────────────────────────────
+    // ── Create channel and spawn orchestrator ──────────────────────────
     let (tx, rx) = std::sync::mpsc::channel();
-    let dag_arc = Arc::new(dag_for_renderer);
 
-    // Shared context for workers (must be Send + Sync + 'static)
     let shared_settings = Arc::new(settings.clone());
     let shared_project_root = Arc::new(project_root.clone());
     let shared_worktree_map = Arc::new(worktree_map.clone());
@@ -298,28 +217,72 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let shared_force = args.force;
     let shared_is_bare_layout = is_bare_layout;
 
-    // Pre-compute prune context values
     let git_dir = get_git_common_dir()?;
     let shared_git_dir = Arc::new(git_dir.clone());
     let shared_remote_name = Arc::new(settings.remote.clone());
     let source_worktree = std::env::current_dir()?;
     let shared_source_worktree = Arc::new(source_worktree.clone());
 
-    // Track which branch was deferred (current worktree) for post-TUI handling.
     let deferred_branch: Arc<std::sync::Mutex<Option<String>>> =
         Arc::new(std::sync::Mutex::new(None));
     let deferred_branch_writer = Arc::clone(&deferred_branch);
 
-    // ── Spawn executor in a background thread ──────────────────────────
-    let executor = DagExecutor::new(dag_for_executor, tx);
+    let orch_settings = Arc::clone(&shared_settings);
 
-    let executor_handle = std::thread::spawn(move || {
+    let orchestrator_handle = std::thread::spawn(move || {
+        // ── Phase 1: Fetch ─────────────────────────────────────────────
+        let _ = tx.send(DagEvent::TaskStarted {
+            phase: OperationPhase::Fetch,
+            branch_name: String::new(),
+        });
+
+        let fetch_git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
+        let fetch_result = fetch_git.fetch(&orch_settings.remote, true);
+
+        if let Err(e) = fetch_result {
+            let _ = tx.send(DagEvent::TaskCompleted {
+                phase: OperationPhase::Fetch,
+                branch_name: String::new(),
+                status: TaskStatus::Failed,
+                message: format!("fetch failed: {e}"),
+            });
+            let _ = tx.send(DagEvent::AllDone);
+            return;
+        }
+
+        let _ = tx.send(DagEvent::TaskCompleted {
+            phase: OperationPhase::Fetch,
+            branch_name: String::new(),
+            status: TaskStatus::Succeeded,
+            message: "fetched".into(),
+        });
+
+        // ── Phase 2: Identify gone branches + build DAG ────────────────
+        let gone_branches = {
+            let mut sink = NullBridge;
+            prune::identify_gone_branches(
+                &fetch_git,
+                &shared_worktree_map,
+                &orch_settings.remote,
+                orch_settings.use_gitoxide,
+                &mut sink,
+            )
+            .unwrap_or_default()
+        };
+
+        if gone_branches.is_empty() {
+            // Nothing to prune — complete immediately
+            let _ = tx.send(DagEvent::AllDone);
+            return;
+        }
+
+        let dag = SyncDag::build_prune(gone_branches);
+
+        // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
+        let executor = DagExecutor::new(dag, tx);
         executor.run(move |task: &SyncTask| -> (TaskStatus, String) {
             match &task.id {
-                TaskId::Fetch => {
-                    // Already done pre-TUI
-                    (TaskStatus::Succeeded, "fetched".into())
-                }
+                TaskId::Fetch => (TaskStatus::Succeeded, "fetched".into()),
                 TaskId::Prune(branch_name) => {
                     let result = execute_prune_task(
                         branch_name,
@@ -340,7 +303,6 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                     result
                 }
                 TaskId::Update(_) | TaskId::Rebase(_) => {
-                    // Should never happen in a prune-only DAG
                     (TaskStatus::Skipped, "not applicable".into())
                 }
             }
@@ -348,17 +310,15 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     });
 
     // ── Run TUI renderer on main thread ────────────────────────────────
-    let renderer = TuiRenderer::new(state, Arc::clone(&dag_arc), rx);
+    let renderer = TuiRenderer::new(state, rx).with_extra_rows(5);
     let final_state = renderer.run()?;
 
-    // Wait for executor thread to finish
-    executor_handle
+    // Wait for orchestrator thread to finish
+    orchestrator_handle
         .join()
-        .map_err(|_| anyhow::anyhow!("DAG executor thread panicked"))?;
+        .map_err(|_| anyhow::anyhow!("DAG orchestrator thread panicked"))?;
 
     // ── Post-TUI: handle deferred branch (current worktree) ────────────
-    // If the user was inside a worktree that needs pruning, prune_single_branch
-    // deferred it. Now that the TUI is done, perform the actual removal.
     let deferred = deferred_branch.lock().unwrap().clone();
     if let Some(ref branch_name) = deferred {
         let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);

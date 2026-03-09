@@ -4,7 +4,7 @@
 //! and worktree status table that update in-place as tasks execute.
 
 use crate::core::worktree::list::WorktreeInfo;
-use crate::core::worktree::sync_dag::{DagEvent, OperationPhase, SyncDag, SyncTask, TaskStatus};
+use crate::core::worktree::sync_dag::{DagEvent, OperationPhase, TaskStatus};
 use crate::output::format;
 
 use ratatui::{
@@ -15,7 +15,6 @@ use ratatui::{
     Frame, Terminal, TerminalOptions, Viewport,
 };
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const SPINNER_FRAMES: &[&str] = &[
@@ -98,32 +97,39 @@ impl TuiState {
         }
     }
 
-    pub fn apply_event(&mut self, event: &DagEvent, dag: &SyncDag) {
+    pub fn apply_event(&mut self, event: &DagEvent) {
         match event {
-            DagEvent::TaskStarted { task_idx } => {
-                let task = &dag.tasks[*task_idx];
-                self.activate_phase(&task.phase);
-                let active_label = match &task.phase {
+            DagEvent::TaskStarted { phase, branch_name } => {
+                self.activate_phase(phase);
+                let active_label = match phase {
                     OperationPhase::Fetch => "fetching",
                     OperationPhase::Prune => "pruning",
                     OperationPhase::Update => "updating",
                     OperationPhase::Rebase(_) => "rebasing",
                 };
-                if let Some(row) = self.find_row_mut(&task.branch_name) {
+                // Auto-create row for newly discovered branches (e.g., gone branches
+                // found after fetch completes while TUI is already running).
+                if !branch_name.is_empty() && self.find_row_mut(branch_name).is_none() {
+                    self.worktrees.push(WorktreeRow {
+                        info: WorktreeInfo::empty(branch_name),
+                        status: WorktreeStatus::Idle,
+                    });
+                }
+                if let Some(row) = self.find_row_mut(branch_name) {
                     row.status = WorktreeStatus::Active(active_label.into());
                 }
             }
             DagEvent::TaskCompleted {
-                task_idx,
+                phase,
+                branch_name,
                 status,
                 message,
             } => {
-                let task = &dag.tasks[*task_idx];
-                let final_status = Self::map_final_status(task, *status, message);
-                if let Some(row) = self.find_row_mut(&task.branch_name) {
+                let final_status = Self::map_final_status(phase, *status, message);
+                if let Some(row) = self.find_row_mut(branch_name) {
                     row.status = WorktreeStatus::Done(final_status);
                 }
-                self.check_phase_completion(&task.phase);
+                self.check_phase_completion(phase);
             }
             DagEvent::AllDone => {
                 for phase in &mut self.phases {
@@ -175,12 +181,12 @@ impl TuiState {
             .find(|w| w.info.name == branch_name)
     }
 
-    fn map_final_status(task: &SyncTask, status: TaskStatus, message: &str) -> FinalStatus {
+    fn map_final_status(phase: &OperationPhase, status: TaskStatus, message: &str) -> FinalStatus {
         match status {
             TaskStatus::Failed => FinalStatus::Failed,
             TaskStatus::DepFailed => FinalStatus::Skipped,
             TaskStatus::Skipped => FinalStatus::Skipped,
-            TaskStatus::Succeeded => match &task.phase {
+            TaskStatus::Succeeded => match phase {
                 OperationPhase::Prune => FinalStatus::Pruned,
                 OperationPhase::Update => {
                     if message.contains("up to date") || message.contains("Already up to date") {
@@ -508,24 +514,33 @@ fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
 /// ratatui terminal until all tasks complete.
 pub struct TuiRenderer {
     state: TuiState,
-    dag: Arc<SyncDag>,
     receiver: mpsc::Receiver<DagEvent>,
+    /// Extra rows to reserve in the viewport for dynamically discovered branches
+    /// (e.g., gone branches found after fetch).
+    extra_rows: u16,
 }
 
 impl TuiRenderer {
-    pub fn new(state: TuiState, dag: Arc<SyncDag>, receiver: mpsc::Receiver<DagEvent>) -> Self {
+    pub fn new(state: TuiState, receiver: mpsc::Receiver<DagEvent>) -> Self {
         Self {
             state,
-            dag,
             receiver,
+            extra_rows: 0,
         }
+    }
+
+    /// Reserve extra rows in the viewport for branches that may be discovered
+    /// after the TUI starts (e.g., gone branches found after fetch completes).
+    pub fn with_extra_rows(mut self, rows: u16) -> Self {
+        self.extra_rows = rows;
+        self
     }
 
     /// Run the render loop until all tasks complete.
     /// Returns the final `TuiState` for post-render summary.
     pub fn run(mut self) -> anyhow::Result<TuiState> {
         let header_height = self.state.phases.len() as u16 + 1;
-        let table_height = self.state.worktrees.len() as u16 + 2;
+        let table_height = self.state.worktrees.len() as u16 + 2 + self.extra_rows;
         let viewport_height = header_height + table_height;
 
         let backend = ratatui::backend::CrosstermBackend::new(std::io::stderr());
@@ -556,7 +571,7 @@ impl TuiRenderer {
                 match self.receiver.try_recv() {
                     Ok(event) => {
                         let is_done = matches!(event, DagEvent::AllDone);
-                        self.state.apply_event(&event, &self.dag);
+                        self.state.apply_event(&event);
                         if is_done {
                             // Final render.
                             terminal.draw(|frame| {
@@ -569,11 +584,20 @@ impl TuiRenderer {
                                 self.state.render_header(frame, chunks[0]);
                                 self.state.render_table(frame, chunks[1]);
                             })?;
+
+                            // Ensure cursor is past the viewport before dropping
+                            // the terminal. Without this, the shell prompt may
+                            // overwrite the bottom rows.
+                            drop(terminal);
+                            eprintln!();
+
                             return Ok(self.state);
                         }
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
+                        drop(terminal);
+                        eprintln!();
                         return Ok(self.state);
                     }
                 }
@@ -593,59 +617,27 @@ impl TuiRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::worktree::list::EntryKind;
     use crate::core::worktree::sync_dag::*;
-    use std::path::PathBuf;
 
-    fn make_worktree_info(name: &str) -> WorktreeInfo {
-        WorktreeInfo {
-            kind: EntryKind::Worktree,
-            name: name.to_string(),
-            path: Some(PathBuf::from(format!("/p/{name}"))),
-            is_current: false,
-            is_default_branch: false,
-            ahead: None,
-            behind: None,
-            staged: 0,
-            unstaged: 0,
-            untracked: 0,
-            remote_ahead: None,
-            remote_behind: None,
-            last_commit_timestamp: None,
-            last_commit_subject: String::new(),
-            branch_creation_timestamp: None,
-            base_lines_inserted: None,
-            base_lines_deleted: None,
-            staged_lines_inserted: None,
-            staged_lines_deleted: None,
-            unstaged_lines_inserted: None,
-            unstaged_lines_deleted: None,
-            remote_lines_inserted: None,
-            remote_lines_deleted: None,
-        }
-    }
-
-    fn make_test_state() -> (TuiState, SyncDag) {
-        let worktrees = vec![
-            ("master".into(), PathBuf::from("/p/master")),
-            ("feat/a".into(), PathBuf::from("/p/feat-a")),
+    fn make_test_state() -> TuiState {
+        let phases = vec![
+            OperationPhase::Fetch,
+            OperationPhase::Prune,
+            OperationPhase::Update,
         ];
-        let dag = SyncDag::build_sync(worktrees, vec!["feat/old".into()], None);
-        let phases = dag.phases();
 
         let worktree_infos = vec![
-            make_worktree_info("master"),
-            make_worktree_info("feat/a"),
-            make_worktree_info("feat/old"),
+            WorktreeInfo::empty("master"),
+            WorktreeInfo::empty("feat/a"),
+            WorktreeInfo::empty("feat/old"),
         ];
 
-        let state = TuiState::new(phases, worktree_infos);
-        (state, dag)
+        TuiState::new(phases, worktree_infos)
     }
 
     #[test]
     fn initial_state_all_pending() {
-        let (state, _) = make_test_state();
+        let state = make_test_state();
         assert!(state
             .phases
             .iter()
@@ -659,34 +651,28 @@ mod tests {
 
     #[test]
     fn task_started_activates_phase_and_row() {
-        let (mut state, dag) = make_test_state();
-        state.apply_event(&DagEvent::TaskStarted { task_idx: 0 }, &dag);
+        let mut state = make_test_state();
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Fetch,
+            branch_name: String::new(),
+        });
         assert_eq!(state.phases[0].status, PhaseStatus::Active);
     }
 
     #[test]
     fn task_completed_updates_row_status() {
-        let (mut state, dag) = make_test_state();
-        let master_idx = dag
-            .tasks
-            .iter()
-            .position(|t| t.id == TaskId::Update("master".into()))
-            .unwrap();
+        let mut state = make_test_state();
 
-        state.apply_event(
-            &DagEvent::TaskStarted {
-                task_idx: master_idx,
-            },
-            &dag,
-        );
-        state.apply_event(
-            &DagEvent::TaskCompleted {
-                task_idx: master_idx,
-                status: TaskStatus::Succeeded,
-                message: "Already up to date".into(),
-            },
-            &dag,
-        );
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Update,
+            branch_name: "master".into(),
+        });
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Update,
+            branch_name: "master".into(),
+            status: TaskStatus::Succeeded,
+            message: "Already up to date".into(),
+        });
 
         let row = state
             .worktrees
@@ -698,26 +684,19 @@ mod tests {
 
     #[test]
     fn all_done_sets_done_flag() {
-        let (mut state, dag) = make_test_state();
-        state.apply_event(&DagEvent::AllDone, &dag);
+        let mut state = make_test_state();
+        state.apply_event(&DagEvent::AllDone);
         assert!(state.done);
     }
 
     #[test]
     fn prune_task_sets_pruned_status() {
-        let (mut state, dag) = make_test_state();
-        let prune_idx = dag
-            .tasks
-            .iter()
-            .position(|t| t.id == TaskId::Prune("feat/old".into()))
-            .unwrap();
+        let mut state = make_test_state();
 
-        state.apply_event(
-            &DagEvent::TaskStarted {
-                task_idx: prune_idx,
-            },
-            &dag,
-        );
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Prune,
+            branch_name: "feat/old".into(),
+        });
         let row = state
             .worktrees
             .iter()
@@ -725,14 +704,12 @@ mod tests {
             .unwrap();
         assert_eq!(row.status, WorktreeStatus::Active("pruning".into()));
 
-        state.apply_event(
-            &DagEvent::TaskCompleted {
-                task_idx: prune_idx,
-                status: TaskStatus::Succeeded,
-                message: "removed".into(),
-            },
-            &dag,
-        );
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Prune,
+            branch_name: "feat/old".into(),
+            status: TaskStatus::Succeeded,
+            message: "removed".into(),
+        });
 
         let row = state
             .worktrees
@@ -744,27 +721,18 @@ mod tests {
 
     #[test]
     fn failed_task_sets_failed_status() {
-        let (mut state, dag) = make_test_state();
-        let master_idx = dag
-            .tasks
-            .iter()
-            .position(|t| t.id == TaskId::Update("master".into()))
-            .unwrap();
+        let mut state = make_test_state();
 
-        state.apply_event(
-            &DagEvent::TaskStarted {
-                task_idx: master_idx,
-            },
-            &dag,
-        );
-        state.apply_event(
-            &DagEvent::TaskCompleted {
-                task_idx: master_idx,
-                status: TaskStatus::Failed,
-                message: "pull failed".into(),
-            },
-            &dag,
-        );
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Update,
+            branch_name: "master".into(),
+        });
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Update,
+            branch_name: "master".into(),
+            status: TaskStatus::Failed,
+            message: "pull failed".into(),
+        });
 
         let row = state
             .worktrees
@@ -776,21 +744,14 @@ mod tests {
 
     #[test]
     fn dep_failed_sets_skipped_status() {
-        let (mut state, dag) = make_test_state();
-        let master_idx = dag
-            .tasks
-            .iter()
-            .position(|t| t.id == TaskId::Update("master".into()))
-            .unwrap();
+        let mut state = make_test_state();
 
-        state.apply_event(
-            &DagEvent::TaskCompleted {
-                task_idx: master_idx,
-                status: TaskStatus::DepFailed,
-                message: "dependency failed".into(),
-            },
-            &dag,
-        );
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Update,
+            branch_name: "master".into(),
+            status: TaskStatus::DepFailed,
+            message: "dependency failed".into(),
+        });
 
         let row = state
             .worktrees
@@ -802,7 +763,7 @@ mod tests {
 
     #[test]
     fn tick_increments_counter() {
-        let (mut state, _) = make_test_state();
+        let mut state = make_test_state();
         assert_eq!(state.tick, 0);
         state.tick();
         assert_eq!(state.tick, 1);
@@ -812,19 +773,20 @@ mod tests {
 
     #[test]
     fn phase_completes_when_no_active_rows() {
-        let (mut state, dag) = make_test_state();
-        // Start and complete the fetch task (task 0)
-        state.apply_event(&DagEvent::TaskStarted { task_idx: 0 }, &dag);
+        let mut state = make_test_state();
+        // Start and complete the fetch task
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Fetch,
+            branch_name: String::new(),
+        });
         assert_eq!(state.phases[0].status, PhaseStatus::Active);
 
-        state.apply_event(
-            &DagEvent::TaskCompleted {
-                task_idx: 0,
-                status: TaskStatus::Succeeded,
-                message: "fetched".into(),
-            },
-            &dag,
-        );
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Fetch,
+            branch_name: String::new(),
+            status: TaskStatus::Succeeded,
+            message: "fetched".into(),
+        });
         // Fetch phase should now be completed (fetch task has empty branch_name,
         // so no row was Active for it -- but the phase was Active and now no
         // rows show "fetching")
@@ -833,14 +795,14 @@ mod tests {
 
     #[test]
     fn all_done_completes_remaining_phases() {
-        let (mut state, dag) = make_test_state();
+        let mut state = make_test_state();
         // All phases start as Pending
         assert!(state
             .phases
             .iter()
             .all(|p| p.status == PhaseStatus::Pending));
 
-        state.apply_event(&DagEvent::AllDone, &dag);
+        state.apply_event(&DagEvent::AllDone);
 
         // AllDone should mark all phases as Completed
         assert!(state
@@ -851,27 +813,18 @@ mod tests {
 
     #[test]
     fn update_with_changes_sets_updated_status() {
-        let (mut state, dag) = make_test_state();
-        let master_idx = dag
-            .tasks
-            .iter()
-            .position(|t| t.id == TaskId::Update("master".into()))
-            .unwrap();
+        let mut state = make_test_state();
 
-        state.apply_event(
-            &DagEvent::TaskStarted {
-                task_idx: master_idx,
-            },
-            &dag,
-        );
-        state.apply_event(
-            &DagEvent::TaskCompleted {
-                task_idx: master_idx,
-                status: TaskStatus::Succeeded,
-                message: "Fast-forward".into(),
-            },
-            &dag,
-        );
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Update,
+            branch_name: "master".into(),
+        });
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Update,
+            branch_name: "master".into(),
+            status: TaskStatus::Succeeded,
+            message: "Fast-forward".into(),
+        });
 
         let row = state
             .worktrees
@@ -879,6 +832,26 @@ mod tests {
             .find(|w| w.info.name == "master")
             .unwrap();
         assert_eq!(row.status, WorktreeStatus::Done(FinalStatus::Updated));
+    }
+
+    #[test]
+    fn auto_creates_row_for_unknown_branch() {
+        let mut state = make_test_state();
+        assert_eq!(state.worktrees.len(), 3);
+
+        // A TaskStarted for an unknown branch should auto-create a row
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Prune,
+            branch_name: "feat/discovered".into(),
+        });
+
+        assert_eq!(state.worktrees.len(), 4);
+        let row = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "feat/discovered")
+            .unwrap();
+        assert_eq!(row.status, WorktreeStatus::Active("pruning".into()));
     }
 
     // ─────────────────────────────────────────────────────────────────────────

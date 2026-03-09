@@ -91,6 +91,38 @@ pub struct WorktreeInfo {
     pub remote_lines_deleted: Option<usize>,
 }
 
+impl WorktreeInfo {
+    /// Create a minimal `WorktreeInfo` with just a branch name and default values.
+    /// Used by the TUI to create placeholder rows for dynamically discovered branches.
+    pub fn empty(name: &str) -> Self {
+        Self {
+            kind: EntryKind::Worktree,
+            name: name.to_string(),
+            path: None,
+            is_current: false,
+            is_default_branch: false,
+            ahead: None,
+            behind: None,
+            staged: 0,
+            unstaged: 0,
+            untracked: 0,
+            remote_ahead: None,
+            remote_behind: None,
+            last_commit_timestamp: None,
+            last_commit_subject: String::new(),
+            branch_creation_timestamp: None,
+            base_lines_inserted: None,
+            base_lines_deleted: None,
+            staged_lines_inserted: None,
+            staged_lines_deleted: None,
+            unstaged_lines_inserted: None,
+            unstaged_lines_deleted: None,
+            remote_lines_inserted: None,
+            remote_lines_deleted: None,
+        }
+    }
+}
+
 /// Raw entry parsed from `git worktree list --porcelain`.
 struct PorcelainEntry {
     path: PathBuf,

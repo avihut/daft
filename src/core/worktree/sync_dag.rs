@@ -246,10 +246,14 @@ impl SyncDag {
 #[derive(Debug, Clone)]
 pub enum DagEvent {
     /// A task started running.
-    TaskStarted { task_idx: usize },
+    TaskStarted {
+        phase: OperationPhase,
+        branch_name: String,
+    },
     /// A task completed.
     TaskCompleted {
-        task_idx: usize,
+        phase: OperationPhase,
+        branch_name: String,
         status: TaskStatus,
         /// Human-readable result message.
         message: String,
@@ -359,7 +363,10 @@ impl DagExecutor {
                         }
 
                         // Send TaskStarted event.
-                        let _ = sender.send(DagEvent::TaskStarted { task_idx });
+                        let _ = sender.send(DagEvent::TaskStarted {
+                            phase: dag.tasks[task_idx].phase.clone(),
+                            branch_name: dag.tasks[task_idx].branch_name.clone(),
+                        });
 
                         // Execute the task outside the lock.
                         let task = &dag.tasks[task_idx];
@@ -401,7 +408,8 @@ impl DagExecutor {
 
                             // Send TaskCompleted event.
                             let _ = sender.send(DagEvent::TaskCompleted {
-                                task_idx,
+                                phase: dag.tasks[task_idx].phase.clone(),
+                                branch_name: dag.tasks[task_idx].branch_name.clone(),
                                 status: result_status,
                                 message: message.clone(),
                             });
@@ -416,7 +424,8 @@ impl DagExecutor {
                                             && visited.insert(dep_idx)
                                         {
                                             let _ = sender.send(DagEvent::TaskCompleted {
-                                                task_idx: dep_idx,
+                                                phase: dag.tasks[dep_idx].phase.clone(),
+                                                branch_name: dag.tasks[dep_idx].branch_name.clone(),
                                                 status: TaskStatus::DepFailed,
                                                 message: format!(
                                                     "dependency {:?} failed",
