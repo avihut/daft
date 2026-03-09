@@ -63,6 +63,13 @@ pub struct Args {
         help = "Force removal of worktrees with uncommitted changes or untracked files"
     )]
     force: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        help = "Statistics mode: summary or lines (default: from git config daft.prune.stat, or summary)"
+    )]
+    stat: Option<Stat>,
 }
 
 pub fn run() -> Result<()> {
@@ -175,6 +182,7 @@ fn run_prune_inner(output: &mut dyn Output, settings: &DaftSettings, force: bool
 fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
+    let stat = args.stat.unwrap_or(settings.prune_stat);
 
     // ── Pre-TUI: collect worktree info (no fetch needed) ───────────────
     let base_branch = get_default_branch_local(
@@ -188,8 +196,16 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         .ok()
         .and_then(|p| p.canonicalize().ok());
 
-    let worktree_infos =
-        list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), Stat::Summary)?;
+    let worktree_infos = if stat == Stat::Lines {
+        let mut output = CliOutput::new(OutputConfig::new(false, false));
+        output.start_spinner("Computing line statistics...");
+        let result =
+            list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat)?;
+        output.finish_spinner();
+        result
+    } else {
+        list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat)?
+    };
 
     // Parse worktree list for prune context
     let worktree_entries = prune::parse_worktree_list(&git)?;
@@ -205,13 +221,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     // ── Create TUI state with known phases and worktrees ───────────────
     let phases = vec![OperationPhase::Fetch, OperationPhase::Prune];
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
-    let state = TuiState::new(
-        phases,
-        worktree_infos,
-        project_root.clone(),
-        cwd,
-        Stat::Summary,
-    );
+    let state = TuiState::new(phases, worktree_infos, project_root.clone(), cwd, stat);
 
     // ── Create channel and spawn orchestrator ──────────────────────────
     let (tx, rx) = std::sync::mpsc::channel();

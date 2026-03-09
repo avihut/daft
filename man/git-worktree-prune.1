@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-prune \- Remove worktrees and branches for deleted remote branches
 .SH SYNOPSIS
-\fBgit\-worktree\-prune\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBgit\-worktree\-prune\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-stat\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Removes local branches whose corresponding remote tracking branches have been
@@ -32,6 +32,19 @@ Be verbose; show detailed progress
 .TP
 \fB\-f\fR, \fB\-\-force\fR
 Force removal of worktrees with uncommitted changes or untracked files
+.TP
+\fB\-\-stat\fR \fI<STAT>\fR
+Statistics mode: summary or lines (default: from git config daft.prune.stat, or summary)
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+summary: Summary counts: commits for base/remote, files for changes (default)
+.IP \(bu 2
+lines: Line\-level counts: insertions/deletions for all columns
+.RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

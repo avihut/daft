@@ -121,6 +121,9 @@ pub mod defaults {
 
     /// Default value for sync.stat setting.
     pub const SYNC_STAT: Stat = Stat::Summary;
+
+    /// Default value for prune.stat setting.
+    pub const PRUNE_STAT: Stat = Stat::Summary;
 }
 
 /// Git config keys for daft settings.
@@ -172,6 +175,9 @@ pub mod keys {
 
     /// Config key for sync.stat setting.
     pub const SYNC_STAT: &str = "daft.sync.stat";
+
+    /// Config key for prune.stat setting.
+    pub const PRUNE_STAT: &str = "daft.prune.stat";
 
     /// Experimental config keys.
     pub mod experimental {
@@ -264,6 +270,9 @@ pub struct DaftSettings {
 
     /// Default statistics mode for sync command.
     pub sync_stat: Stat,
+
+    /// Default statistics mode for prune command.
+    pub prune_stat: Stat,
 }
 
 impl Default for DaftSettings {
@@ -283,6 +292,7 @@ impl Default for DaftSettings {
             go_auto_start: defaults::GO_AUTO_START,
             list_stat: defaults::LIST_STAT,
             sync_stat: defaults::SYNC_STAT,
+            prune_stat: defaults::PRUNE_STAT,
         }
     }
 }
@@ -369,6 +379,12 @@ impl DaftSettings {
             }
         }
 
+        if let Some(value) = git.config_get(keys::PRUNE_STAT)? {
+            if let Some(stat) = Stat::parse(&value) {
+                settings.prune_stat = stat;
+            }
+        }
+
         Ok(settings)
     }
 
@@ -449,6 +465,12 @@ impl DaftSettings {
         if let Some(value) = git.config_get_global(keys::SYNC_STAT)? {
             if let Some(stat) = Stat::parse(&value) {
                 settings.sync_stat = stat;
+            }
+        }
+
+        if let Some(value) = git.config_get_global(keys::PRUNE_STAT)? {
+            if let Some(stat) = Stat::parse(&value) {
+                settings.prune_stat = stat;
             }
         }
 
