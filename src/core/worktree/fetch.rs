@@ -281,7 +281,7 @@ pub fn get_all_worktrees_with_branches(git: &GitCommand) -> Result<Vec<(PathBuf,
 }
 
 /// Build pull arguments from params and settings (used for same-branch mode).
-fn build_pull_args(params: &FetchParams) -> Vec<String> {
+pub fn build_pull_args(params: &FetchParams) -> Vec<String> {
     let mut pull_args: Vec<String> = Vec::new();
 
     if params.rebase {
@@ -303,8 +303,37 @@ fn build_pull_args(params: &FetchParams) -> Vec<String> {
     pull_args
 }
 
+/// Update a single worktree by pulling from its tracking branch.
+///
+/// This is a convenience wrapper around [`process_worktree`] for DAG workers
+/// that already know the target path and worktree name. It creates a
+/// same-branch refspec (source == destination) and delegates to the internal
+/// processing pipeline.
+pub fn update_single_worktree(
+    git: &GitCommand,
+    target_path: &Path,
+    worktree_name: &str,
+    pull_args: &[String],
+    params: &FetchParams,
+    progress: &mut dyn ProgressSink,
+) -> WorktreeFetchResult {
+    let refspec = UpdateRefSpec {
+        source: worktree_name.to_string(),
+        destination: worktree_name.to_string(),
+    };
+    process_worktree(
+        git,
+        target_path,
+        worktree_name,
+        pull_args,
+        params,
+        &refspec,
+        progress,
+    )
+}
+
 /// Process a single worktree, choosing between same-branch and cross-branch mode.
-fn process_worktree(
+pub fn process_worktree(
     git: &GitCommand,
     target_path: &Path,
     worktree_name: &str,
