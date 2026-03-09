@@ -17,7 +17,15 @@ fn main() {
     println!("cargo:rustc-env=DAFT_VERSION={pkg_version}");
 
     // DAFT_VERSION_DISPLAY: includes branch/hash for dev builds, used by `daft --version`.
-    let display_version = if std::env::var("DAFT_BUILD_RELEASE").is_ok() {
+    // Auto-detect release builds by checking if HEAD is tagged with this version.
+    let is_release = git_output(&["tag", "--points-at", "HEAD"])
+        .map(|tags| {
+            tags.lines()
+                .any(|tag| tag.trim().trim_start_matches('v') == pkg_version)
+        })
+        .unwrap_or(false);
+
+    let display_version = if is_release || std::env::var("DAFT_BUILD_RELEASE").is_ok() {
         pkg_version
     } else {
         let hash = git_output(&["rev-parse", "--short", "HEAD"]);
@@ -32,7 +40,8 @@ fn main() {
 
     println!("cargo:rustc-env=DAFT_VERSION_DISPLAY={display_version}");
 
-    // Only re-run when HEAD changes (branch switch, new commit)
+    // Only re-run when HEAD changes (branch switch, new commit) or tags change
     println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/refs/tags");
     println!("cargo:rerun-if-env-changed=DAFT_BUILD_RELEASE");
 }
