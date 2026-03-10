@@ -414,7 +414,7 @@ const LAST_COMMIT_MIN: u16 = 10;
 /// Compute the visible display width of a status cell.
 fn status_display_width(status: &WorktreeStatus) -> u16 {
     match status {
-        WorktreeStatus::Idle => 0,
+        WorktreeStatus::Idle => 7, // "waiting"
         WorktreeStatus::Active(label) => (2 + label.len()) as u16,
         WorktreeStatus::Done(fs) => match fs {
             FinalStatus::Updated => 9,   // "✓ updated"
@@ -660,7 +660,10 @@ fn render_cell(
 /// Render the status cell with appropriate icon and color.
 fn render_status_cell(status: &WorktreeStatus, tick: usize) -> Cell<'static> {
     match status {
-        WorktreeStatus::Idle => Cell::from(""),
+        WorktreeStatus::Idle => Cell::from(Line::from(Span::styled(
+            "waiting",
+            Style::default().add_modifier(Modifier::DIM),
+        ))),
         WorktreeStatus::Active(label) => {
             let spinner = SPINNER_FRAMES[tick % SPINNER_FRAMES.len()];
             Cell::from(Line::from(Span::styled(
