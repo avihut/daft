@@ -295,8 +295,15 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             .unwrap_or_default()
         };
 
+        // Filter out gone branches so they don't get Update/Rebase tasks
+        // (their worktree paths will be removed by the Prune tasks).
+        let live_worktrees: Vec<(String, PathBuf)> = orch_all_worktrees
+            .into_iter()
+            .filter(|(branch, _)| !gone_branches.contains(branch))
+            .collect();
+
         let dag = SyncDag::build_sync(
-            orch_all_worktrees,
+            live_worktrees,
             gone_branches,
             shared_rebase_branch.as_ref().clone(),
         );
