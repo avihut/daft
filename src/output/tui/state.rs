@@ -139,6 +139,7 @@ impl TuiState {
                 }
                 self.done = true;
             }
+            DagEvent::HookStarted { .. } | DagEvent::HookCompleted { .. } => {}
         }
     }
 

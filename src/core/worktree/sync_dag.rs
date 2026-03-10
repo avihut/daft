@@ -4,9 +4,11 @@
 //! the sync and prune TUI renderers.
 
 use super::list::WorktreeInfo;
+use crate::hooks::HookType;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 /// Identifies a single executable task in the sync DAG.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -282,6 +284,22 @@ pub enum DagEvent {
     },
     /// All tasks are done.
     AllDone,
+    /// A hook started running for a branch.
+    HookStarted {
+        branch_name: String,
+        hook_type: HookType,
+    },
+    /// A hook completed for a branch.
+    HookCompleted {
+        branch_name: String,
+        hook_type: HookType,
+        success: bool,
+        /// Non-zero exit with FailMode::Warn.
+        warned: bool,
+        duration: Duration,
+        /// Captured stdout+stderr, only stored on failure/warning.
+        output: Option<String>,
+    },
 }
 
 /// Shared mutable state for the worker pool.
