@@ -80,7 +80,7 @@ pub fn execute_prune_task(
 }
 
 /// Render a single pruned branch detail line.
-pub fn render_pruned_branch(detail: &prune::PrunedBranchDetail, output: &mut dyn Output) {
+fn render_pruned_branch(detail: &prune::PrunedBranchDetail, output: &mut dyn Output) {
     // Build a description of what was removed: the branch is one entity
     // with up to three manifestations (worktree, local branch, remote tracking branch).
     let mut removed = Vec::new();
@@ -102,7 +102,7 @@ pub fn render_pruned_branch(detail: &prune::PrunedBranchDetail, output: &mut dyn
 }
 
 /// Colored "pruned" status tag.
-pub fn tag_pruned() -> String {
+fn tag_pruned() -> String {
     if styles::colors_enabled() {
         format!("{}\u{2014} pruned{}", styles::RED, styles::RESET)
     } else {
