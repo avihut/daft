@@ -232,12 +232,25 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         Arc::new(std::sync::Mutex::new(None));
     let deferred_branch_writer = Arc::clone(&deferred_branch);
 
+    // Shared worktree info map for live refresh after tasks complete
+    let shared_info_map: Arc<HashMap<String, list::WorktreeInfo>> = Arc::new(
+        state
+            .worktrees
+            .iter()
+            .map(|wt| (wt.info.name.clone(), wt.info.clone()))
+            .collect(),
+    );
+    let shared_base_branch = Arc::new(base_branch.clone());
+
     // Clone values needed by orchestrator
     let orch_settings = Arc::clone(&shared_settings);
     let orch_all_worktrees: Vec<(String, PathBuf)> = all_worktrees
         .iter()
         .map(|(p, b)| (b.clone(), p.clone()))
         .collect();
+    let orch_info_map = Arc::clone(&shared_info_map);
+    let orch_base_branch = Arc::clone(&shared_base_branch);
+    let orch_stat = stat;
 
     let orchestrator_handle = std::thread::spawn(move || {
         // ── Phase 1: Fetch ─────────────────────────────────────────────
@@ -255,6 +268,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                 branch_name: String::new(),
                 status: TaskStatus::Failed,
                 message: format!("fetch failed: {e}"),
+                updated_info: None,
             });
             let _ = tx.send(DagEvent::AllDone);
             return;
@@ -265,6 +279,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             branch_name: String::new(),
             status: TaskStatus::Succeeded,
             message: "fetched".into(),
+            updated_info: None,
         });
 
         // ── Phase 2: Identify gone branches + build DAG ────────────────
@@ -288,52 +303,76 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
         // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
         let executor = DagExecutor::new(dag, tx);
-        executor.run(move |task: &SyncTask| -> (TaskStatus, String) {
-            match &task.id {
-                TaskId::Fetch => {
-                    // Already done above
-                    (TaskStatus::Succeeded, "fetched".into())
-                }
-                TaskId::Prune(branch_name) => {
-                    let result = execute_prune_task(
-                        branch_name,
-                        &shared_settings,
-                        &shared_project_root,
-                        &shared_git_dir,
-                        &shared_remote_name,
-                        &shared_source_worktree,
-                        &shared_worktree_map,
-                        shared_is_bare_layout,
-                        &shared_current_wt_path,
-                        &shared_current_branch,
-                        shared_force,
-                    );
-                    if result.1 == "deferred" {
-                        *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
+        executor.run(
+            move |task: &SyncTask| -> (TaskStatus, String, Option<Box<list::WorktreeInfo>>) {
+                match &task.id {
+                    TaskId::Fetch => {
+                        // Already done above
+                        (TaskStatus::Succeeded, "fetched".into(), None)
                     }
-                    result
+                    TaskId::Prune(branch_name) => {
+                        let (status, message) = execute_prune_task(
+                            branch_name,
+                            &shared_settings,
+                            &shared_project_root,
+                            &shared_git_dir,
+                            &shared_remote_name,
+                            &shared_source_worktree,
+                            &shared_worktree_map,
+                            shared_is_bare_layout,
+                            &shared_current_wt_path,
+                            &shared_current_branch,
+                            shared_force,
+                        );
+                        if message == "deferred" {
+                            *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
+                        }
+                        (status, message, None)
+                    }
+                    TaskId::Update(branch_name) => {
+                        let (status, message) = execute_update_task(
+                            branch_name,
+                            task.worktree_path.as_ref(),
+                            &shared_settings,
+                            &shared_project_root,
+                            &shared_pull_args,
+                            shared_force,
+                        );
+                        let updated = if status == TaskStatus::Succeeded {
+                            orch_info_map.get(branch_name.as_str()).map(|info| {
+                                let mut refreshed = info.clone();
+                                refreshed.refresh_dynamic_fields(&orch_base_branch, orch_stat);
+                                Box::new(refreshed)
+                            })
+                        } else {
+                            None
+                        };
+                        (status, message, updated)
+                    }
+                    TaskId::Rebase(branch_name) => {
+                        let base = shared_rebase_branch.as_deref().unwrap_or("master");
+                        let (status, message) = execute_rebase_task(
+                            branch_name,
+                            task.worktree_path.as_ref(),
+                            base,
+                            &shared_project_root,
+                            &shared_settings,
+                            shared_force,
+                        );
+                        let updated = if status == TaskStatus::Succeeded && message != "conflict" {
+                            orch_info_map.get(branch_name.as_str()).map(|info| {
+                                let mut refreshed = info.clone();
+                                refreshed.refresh_dynamic_fields(&orch_base_branch, orch_stat);
+                                Box::new(refreshed)
+                            })
+                        } else {
+                            None
+                        };
+                        (status, message, updated)
+                    }
                 }
-                TaskId::Update(branch_name) => execute_update_task(
-                    branch_name,
-                    task.worktree_path.as_ref(),
-                    &shared_settings,
-                    &shared_project_root,
-                    &shared_pull_args,
-                    shared_force,
-                ),
-                TaskId::Rebase(branch_name) => {
-                    let base = shared_rebase_branch.as_deref().unwrap_or("master");
-                    execute_rebase_task(
-                        branch_name,
-                        task.worktree_path.as_ref(),
-                        base,
-                        &shared_project_root,
-                        &shared_settings,
-                        shared_force,
-                    )
-                }
-            }
-        });
+            },
+        );
     });
 
     // ── Run TUI renderer on main thread ────────────────────────────────

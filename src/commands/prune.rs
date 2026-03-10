@@ -262,6 +262,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                 branch_name: String::new(),
                 status: TaskStatus::Failed,
                 message: format!("fetch failed: {e}"),
+                updated_info: None,
             });
             let _ = tx.send(DagEvent::AllDone);
             return;
@@ -272,6 +273,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             branch_name: String::new(),
             status: TaskStatus::Succeeded,
             message: "fetched".into(),
+            updated_info: None,
         });
 
         // ── Phase 2: Identify gone branches + build DAG ────────────────
@@ -297,33 +299,35 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
         // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
         let executor = DagExecutor::new(dag, tx);
-        executor.run(move |task: &SyncTask| -> (TaskStatus, String) {
-            match &task.id {
-                TaskId::Fetch => (TaskStatus::Succeeded, "fetched".into()),
-                TaskId::Prune(branch_name) => {
-                    let result = execute_prune_task(
-                        branch_name,
-                        &shared_settings,
-                        &shared_project_root,
-                        &shared_git_dir,
-                        &shared_remote_name,
-                        &shared_source_worktree,
-                        &shared_worktree_map,
-                        shared_is_bare_layout,
-                        &shared_current_wt_path,
-                        &shared_current_branch,
-                        shared_force,
-                    );
-                    if result.1 == "deferred" {
-                        *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
+        executor.run(
+            move |task: &SyncTask| -> (TaskStatus, String, Option<Box<list::WorktreeInfo>>) {
+                match &task.id {
+                    TaskId::Fetch => (TaskStatus::Succeeded, "fetched".into(), None),
+                    TaskId::Prune(branch_name) => {
+                        let (status, message) = execute_prune_task(
+                            branch_name,
+                            &shared_settings,
+                            &shared_project_root,
+                            &shared_git_dir,
+                            &shared_remote_name,
+                            &shared_source_worktree,
+                            &shared_worktree_map,
+                            shared_is_bare_layout,
+                            &shared_current_wt_path,
+                            &shared_current_branch,
+                            shared_force,
+                        );
+                        if message == "deferred" {
+                            *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
+                        }
+                        (status, message, None)
                     }
-                    result
+                    TaskId::Update(_) | TaskId::Rebase(_) => {
+                        (TaskStatus::Skipped, "not applicable".into(), None)
+                    }
                 }
-                TaskId::Update(_) | TaskId::Rebase(_) => {
-                    (TaskStatus::Skipped, "not applicable".into())
-                }
-            }
-        });
+            },
+        );
     });
 
     // ── Run TUI renderer on main thread ────────────────────────────────

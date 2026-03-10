@@ -138,10 +138,14 @@ impl TuiState {
                 branch_name,
                 status,
                 message,
+                updated_info,
             } => {
                 let final_status = Self::map_final_status(phase, *status, message);
                 if let Some(row) = self.find_row_mut(branch_name) {
                     row.status = WorktreeStatus::Done(final_status);
+                    if let Some(new_info) = updated_info {
+                        row.info = *new_info.clone();
+                    }
                 }
                 self.check_phase_completion(phase);
             }
@@ -929,6 +933,7 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::Succeeded,
             message: "Already up to date".into(),
+            updated_info: None,
         });
 
         let row = state
@@ -966,6 +971,7 @@ mod tests {
             branch_name: "feat/old".into(),
             status: TaskStatus::Succeeded,
             message: "removed".into(),
+            updated_info: None,
         });
 
         let row = state
@@ -989,6 +995,7 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::Failed,
             message: "pull failed".into(),
+            updated_info: None,
         });
 
         let row = state
@@ -1008,6 +1015,7 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::DepFailed,
             message: "dependency failed".into(),
+            updated_info: None,
         });
 
         let row = state
@@ -1043,6 +1051,7 @@ mod tests {
             branch_name: String::new(),
             status: TaskStatus::Succeeded,
             message: "fetched".into(),
+            updated_info: None,
         });
         // Fetch phase should now be completed (fetch task has empty branch_name,
         // so no row was Active for it -- but the phase was Active and now no
@@ -1081,6 +1090,7 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::Succeeded,
             message: "Fast-forward".into(),
+            updated_info: None,
         });
 
         let row = state
@@ -1125,6 +1135,7 @@ mod tests {
             branch_name: "feat/old".into(),
             status: TaskStatus::Succeeded,
             message: "removed".into(),
+            updated_info: None,
         });
 
         state.apply_event(&DagEvent::AllDone);
@@ -1151,6 +1162,39 @@ mod tests {
             .find(|w| w.info.name == "feat/a")
             .unwrap();
         assert_eq!(feat_a.status, WorktreeStatus::Done(FinalStatus::UpToDate));
+    }
+
+    #[test]
+    fn task_completed_with_updated_info_merges_into_row() {
+        let mut state = make_test_state();
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Update,
+            branch_name: "master".into(),
+        });
+
+        let mut new_info = WorktreeInfo::empty("master");
+        new_info.remote_ahead = Some(0);
+        new_info.remote_behind = Some(0);
+        new_info.ahead = Some(0);
+        new_info.behind = Some(0);
+
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Update,
+            branch_name: "master".into(),
+            status: TaskStatus::Succeeded,
+            message: "Fast-forward".into(),
+            updated_info: Some(Box::new(new_info)),
+        });
+
+        let row = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "master")
+            .unwrap();
+        assert_eq!(row.info.remote_ahead, Some(0));
+        assert_eq!(row.info.remote_behind, Some(0));
+        assert_eq!(row.info.ahead, Some(0));
+        assert_eq!(row.info.behind, Some(0));
     }
 
     // ─────────────────────────────────────────────────────────────────────────

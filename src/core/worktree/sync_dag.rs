@@ -3,6 +3,7 @@
 //! Defines task types, status tracking, and operation phases used by
 //! the sync and prune TUI renderers.
 
+use super::list::WorktreeInfo;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
@@ -257,6 +258,8 @@ pub enum DagEvent {
         status: TaskStatus,
         /// Human-readable result message.
         message: String,
+        /// Refreshed worktree info after the operation (if applicable).
+        updated_info: Option<Box<WorktreeInfo>>,
     },
     /// All tasks are done.
     AllDone,
@@ -294,7 +297,7 @@ impl DagExecutor {
     /// allowing the receiver to detect channel closure.
     pub fn run<F>(self, task_fn: F)
     where
-        F: Fn(&SyncTask) -> (TaskStatus, String) + Send + Sync,
+        F: Fn(&SyncTask) -> (TaskStatus, String, Option<Box<WorktreeInfo>>) + Send + Sync,
     {
         let n = self.dag.tasks.len();
 
@@ -370,7 +373,7 @@ impl DagExecutor {
 
                         // Execute the task outside the lock.
                         let task = &dag.tasks[task_idx];
-                        let (result_status, message) = task_fn(task);
+                        let (result_status, message, updated_info) = task_fn(task);
 
                         // Update DAG state.
                         {
@@ -412,6 +415,7 @@ impl DagExecutor {
                                 branch_name: dag.tasks[task_idx].branch_name.clone(),
                                 status: result_status,
                                 message: message.clone(),
+                                updated_info,
                             });
 
                             // Also send TaskCompleted for any dep-failed dependents.
@@ -431,6 +435,7 @@ impl DagExecutor {
                                                     "dependency {:?} failed",
                                                     dag.tasks[task_idx].id
                                                 ),
+                                                updated_info: None,
                                             });
                                             stack.push(dep_idx);
                                         }
@@ -566,7 +571,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
 
         let executor = DagExecutor::new(dag, tx);
-        executor.run(|_task| (TaskStatus::Succeeded, "ok".into()));
+        executor.run(|_task| (TaskStatus::Succeeded, "ok".into(), None));
 
         let events: Vec<DagEvent> = rx.iter().collect();
         let starts = events
@@ -601,7 +606,7 @@ mod tests {
         let executor = DagExecutor::new(dag, tx);
         executor.run(move |task| {
             order_clone.lock().unwrap().push(task.id.clone());
-            (TaskStatus::Succeeded, "ok".into())
+            (TaskStatus::Succeeded, "ok".into(), None)
         });
 
         let _events: Vec<DagEvent> = rx.iter().collect();
@@ -631,8 +636,10 @@ mod tests {
 
         let executor = DagExecutor::new(dag, tx);
         executor.run(|task| match &task.id {
-            TaskId::Update(name) if name == "master" => (TaskStatus::Failed, "pull failed".into()),
-            _ => (TaskStatus::Succeeded, "ok".into()),
+            TaskId::Update(name) if name == "master" => {
+                (TaskStatus::Failed, "pull failed".into(), None)
+            }
+            _ => (TaskStatus::Succeeded, "ok".into(), None),
         });
 
         let events: Vec<DagEvent> = rx.iter().collect();
