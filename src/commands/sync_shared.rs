@@ -129,6 +129,7 @@ fn tag_pruned() -> String {
 ///
 /// If a branch was deferred (because it is the current worktree), this function
 /// performs the actual removal and writes the cd target for the shell wrapper.
+#[allow(clippy::too_many_arguments)]
 pub fn handle_post_tui_deferred(
     deferred_branch: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
     settings: &DaftSettings,
