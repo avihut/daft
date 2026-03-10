@@ -88,74 +88,15 @@ pub fn execute(
             params.base_branch
         ));
 
-        // Change to worktree directory
-        if let Err(e) = change_directory(path) {
-            results.push(WorktreeRebaseResult {
-                worktree_name,
-                message: format!("Failed to change to directory: {e}"),
-                ..Default::default()
-            });
-            continue;
-        }
-
-        // Check for uncommitted changes
-        match git.has_uncommitted_changes_in(path) {
-            Ok(true) if !params.force => {
-                progress.on_warning(&format!(
-                    "Skipping '{worktree_name}': has uncommitted changes (use --force to rebase anyway)"
-                ));
-                results.push(WorktreeRebaseResult {
-                    worktree_name,
-                    success: true,
-                    skipped: true,
-                    message: "Skipped: uncommitted changes".to_string(),
-                    ..Default::default()
-                });
-                continue;
-            }
-            Err(e) => {
-                results.push(WorktreeRebaseResult {
-                    worktree_name,
-                    message: format!("Failed to check status: {e}"),
-                    ..Default::default()
-                });
-                continue;
-            }
-            _ => {}
-        }
-
-        // Run git rebase
-        match git.rebase(&params.base_branch) {
-            Ok(output) => {
-                let already_up_to_date =
-                    output.contains("is up to date") || output.contains("up to date");
-                results.push(WorktreeRebaseResult {
-                    worktree_name,
-                    success: true,
-                    already_rebased: already_up_to_date,
-                    message: if already_up_to_date {
-                        "Already up to date".to_string()
-                    } else {
-                        "Rebased successfully".to_string()
-                    },
-                    ..Default::default()
-                });
-            }
-            Err(_) => {
-                // Abort the failed rebase to leave the worktree clean
-                if let Err(abort_err) = git.rebase_abort() {
-                    progress.on_warning(&format!(
-                        "Failed to abort rebase in '{worktree_name}': {abort_err}"
-                    ));
-                }
-                results.push(WorktreeRebaseResult {
-                    worktree_name,
-                    conflict: true,
-                    message: "Rebase conflict — aborted".to_string(),
-                    ..Default::default()
-                });
-            }
-        }
+        let result = rebase_single_worktree(
+            git,
+            path,
+            &worktree_name,
+            &params.base_branch,
+            params.force,
+            progress,
+        );
+        results.push(result);
     }
 
     // Return to original directory
@@ -165,4 +106,89 @@ pub fn execute(
         results,
         base_branch: params.base_branch.clone(),
     })
+}
+
+/// Rebase a single worktree onto the base branch.
+///
+/// Changes to the worktree directory, checks for uncommitted changes, runs
+/// `git rebase`, and aborts on conflict. Called by the DAG executor for
+/// parallel rebasing.
+/// Rebase a single worktree onto `base_branch` using an explicit working directory.
+///
+/// Unlike the sequential path, this does NOT call `change_directory` — instead
+/// it passes the worktree path directly to `git rebase -C <dir>`. This is safe
+/// for parallel DAG workers where `set_current_dir` would race.
+pub fn rebase_single_worktree(
+    git: &GitCommand,
+    worktree_path: &Path,
+    worktree_name: &str,
+    base_branch: &str,
+    force: bool,
+    progress: &mut dyn ProgressSink,
+) -> WorktreeRebaseResult {
+    // Verify directory exists
+    if !worktree_path.is_dir() {
+        return WorktreeRebaseResult {
+            worktree_name: worktree_name.to_string(),
+            message: format!("Directory not found: {}", worktree_path.display()),
+            ..Default::default()
+        };
+    }
+
+    // Check for uncommitted changes
+    match git.has_uncommitted_changes_in(worktree_path) {
+        Ok(true) if !force => {
+            progress.on_warning(&format!(
+                "Skipping '{worktree_name}': has uncommitted changes (use --force to rebase anyway)"
+            ));
+            return WorktreeRebaseResult {
+                worktree_name: worktree_name.to_string(),
+                success: true,
+                skipped: true,
+                message: "Skipped: uncommitted changes".to_string(),
+                ..Default::default()
+            };
+        }
+        Err(e) => {
+            return WorktreeRebaseResult {
+                worktree_name: worktree_name.to_string(),
+                message: format!("Failed to check status: {e}"),
+                ..Default::default()
+            };
+        }
+        _ => {}
+    }
+
+    // Run git rebase with explicit working directory (thread-safe)
+    match git.rebase_in(base_branch, Some(worktree_path)) {
+        Ok(output) => {
+            let already_up_to_date =
+                output.contains("is up to date") || output.contains("up to date");
+            WorktreeRebaseResult {
+                worktree_name: worktree_name.to_string(),
+                success: true,
+                already_rebased: already_up_to_date,
+                message: if already_up_to_date {
+                    "Already up to date".to_string()
+                } else {
+                    "Rebased successfully".to_string()
+                },
+                ..Default::default()
+            }
+        }
+        Err(_) => {
+            // Abort the failed rebase to leave the worktree clean
+            if let Err(abort_err) = git.rebase_abort_in(Some(worktree_path)) {
+                progress.on_warning(&format!(
+                    "Failed to abort rebase in '{worktree_name}': {abort_err}"
+                ));
+            }
+            WorktreeRebaseResult {
+                worktree_name: worktree_name.to_string(),
+                conflict: true,
+                message: "Rebase conflict — aborted".to_string(),
+                ..Default::default()
+            }
+        }
+    }
 }

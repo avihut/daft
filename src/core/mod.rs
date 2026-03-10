@@ -90,3 +90,26 @@ impl HookRunner for NoopHookRunner {
         })
     }
 }
+
+/// A combined no-op sink that implements both `ProgressSink` and `HookRunner`.
+///
+/// Discards all progress messages and reports all hooks as successful/skipped.
+/// Useful for DAG worker threads where the TUI handles all display and hooks
+/// are not needed (or will be handled separately).
+pub struct NullBridge;
+
+impl ProgressSink for NullBridge {
+    fn on_step(&mut self, _msg: &str) {}
+    fn on_warning(&mut self, _msg: &str) {}
+    fn on_debug(&mut self, _msg: &str) {}
+}
+
+impl HookRunner for NullBridge {
+    fn run_hook(&mut self, _ctx: &HookContext) -> Result<HookOutcome> {
+        Ok(HookOutcome {
+            success: true,
+            skipped: true,
+            skip_reason: Some("hooks disabled in TUI mode".to_string()),
+        })
+    }
+}

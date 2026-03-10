@@ -1,15 +1,35 @@
+use super::sync_shared;
 use crate::{
-    core::{worktree::prune, CommandBridge},
-    git::should_show_gitoxide_notice,
+    core::{
+        worktree::{
+            list,
+            list::Stat,
+            prune,
+            sync_dag::{
+                DagEvent, DagExecutor, OperationPhase, SyncDag, SyncTask, TaskId, TaskMessage,
+                TaskStatus,
+            },
+        },
+        CommandBridge, NullBridge,
+    },
+    get_git_common_dir, get_project_root,
+    git::{should_show_gitoxide_notice, GitCommand},
     hooks::{HookExecutor, HooksConfig},
     is_git_repository,
     logging::init_logging,
-    output::{CliOutput, Output, OutputConfig},
+    output::{
+        tui::{TuiRenderer, TuiState},
+        CliOutput, Output, OutputConfig,
+    },
+    remote::get_default_branch_local,
     settings::DaftSettings,
-    styles, CD_FILE_ENV,
+    CD_FILE_ENV,
 };
 use anyhow::Result;
 use clap::Parser;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-prune")]
@@ -45,6 +65,13 @@ pub struct Args {
         help = "Force removal of worktrees with uncommitted changes or untracked files"
     )]
     force: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        help = "Statistics mode: summary or lines (default: from git config daft.prune.stat, or summary)"
+    )]
+    stat: Option<Stat>,
 }
 
 pub fn run() -> Result<()> {
@@ -57,14 +84,24 @@ pub fn run() -> Result<()> {
     }
 
     let settings = DaftSettings::load()?;
+
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) && !args.verbose {
+        run_tui(args, settings)
+    } else {
+        run_prune(args, settings)
+    }
+}
+
+/// Sequential (non-TTY) execution path — the original prune flow.
+fn run_prune(args: Args, settings: DaftSettings) -> Result<()> {
     let config = OutputConfig::with_autocd(false, args.verbose, settings.autocd);
     let mut output = CliOutput::new(config);
 
-    run_prune(&mut output, &settings, args.force)?;
+    run_prune_inner(&mut output, &settings, args.force)?;
     Ok(())
 }
 
-fn run_prune(output: &mut dyn Output, settings: &DaftSettings, force: bool) -> Result<()> {
+fn run_prune_inner(output: &mut dyn Output, settings: &DaftSettings, force: bool) -> Result<()> {
     let params = prune::PruneParams {
         force,
         use_gitoxide: settings.use_gitoxide,
@@ -92,41 +129,7 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings, force: bool) -> R
         return Ok(());
     }
 
-    // Print header
-    output.result(&format!("Pruning {}", result.remote_name));
-    if let Some(ref url) = result.remote_url {
-        output.info(&format!("URL: {url}"));
-    }
-
-    // Per-branch detail lines
-    for detail in &result.pruned_branches {
-        render_pruned_branch(detail, output);
-    }
-
-    // Pluralized summary
-    if result.branches_deleted > 0 || result.worktrees_removed > 0 {
-        let branch_word = if result.branches_deleted == 1 {
-            "branch"
-        } else {
-            "branches"
-        };
-        let mut summary = format!("Pruned {} {branch_word}", result.branches_deleted);
-        if result.worktrees_removed > 0 {
-            let wt_word = if result.worktrees_removed == 1 {
-                "worktree"
-            } else {
-                "worktrees"
-            };
-            summary.push_str(&format!(", removed {} {wt_word}", result.worktrees_removed));
-        }
-        output.success(&summary);
-    }
-
-    if result.has_prunable {
-        output.warning(
-            "Some prunable worktree data may exist. Run 'git worktree prune' to clean up.",
-        );
-    }
+    sync_shared::render_prune_result(&result, output);
 
     // Write the cd target for the shell wrapper
     if let Some(ref cd_target) = result.cd_target {
@@ -143,29 +146,161 @@ fn run_prune(output: &mut dyn Output, settings: &DaftSettings, force: bool) -> R
     Ok(())
 }
 
-fn render_pruned_branch(detail: &prune::PrunedBranchDetail, output: &mut dyn Output) {
-    let mut removed = Vec::new();
-    if detail.worktree_removed {
-        removed.push("worktree");
-    }
-    if detail.branch_deleted {
-        removed.push("local branch");
-    }
-    // The remote tracking branch is always removed (git fetch --prune did it)
-    removed.push("remote tracking branch");
+/// Interactive TUI execution path — parallel DAG executor with inline ratatui display.
+fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
+    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let project_root = get_project_root()?;
+    let stat = args.stat.unwrap_or(settings.prune_stat);
 
-    output.info(&format!(
-        " * {} {} — removed {}",
-        tag_pruned(),
-        detail.branch_name,
-        removed.join(", ")
-    ));
-}
+    // ── Pre-TUI: collect worktree info (no fetch needed) ───────────────
+    let base_branch = get_default_branch_local(
+        &get_git_common_dir()?,
+        &settings.remote,
+        settings.use_gitoxide,
+    )
+    .unwrap_or_else(|_| "master".to_string());
 
-fn tag_pruned() -> String {
-    if styles::colors_enabled() {
-        format!("{}[pruned]{}", styles::RED, styles::RESET)
+    let current_path = crate::core::repo::get_current_worktree_path()
+        .ok()
+        .and_then(|p| p.canonicalize().ok());
+
+    let worktree_infos = if stat == Stat::Lines {
+        let mut output = CliOutput::new(OutputConfig::new(false, false));
+        output.start_spinner("Computing line statistics...");
+        let result =
+            list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat)?;
+        output.finish_spinner();
+        result
     } else {
-        "[pruned]".to_string()
+        list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat)?
+    };
+
+    // Parse worktree list for prune context
+    let worktree_entries = prune::parse_worktree_list(&git)?;
+    let is_bare_layout = worktree_entries.first().map(|e| e.is_bare).unwrap_or(false);
+
+    let mut worktree_map: HashMap<String, (PathBuf, bool)> = HashMap::new();
+    for (i, entry) in worktree_entries.iter().enumerate() {
+        if let Some(ref branch) = entry.branch {
+            worktree_map.insert(branch.clone(), (entry.path.clone(), i == 0));
+        }
     }
+
+    // ── Create TUI state with known phases and worktrees ───────────────
+    let phases = vec![OperationPhase::Fetch, OperationPhase::Prune];
+    let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
+    let state = TuiState::new(phases, worktree_infos, project_root.clone(), cwd, stat);
+
+    // ── Create channel and spawn orchestrator ──────────────────────────
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    let shared_settings = Arc::new(settings.clone());
+    let shared_project_root = Arc::new(project_root.clone());
+    let shared_worktree_map = Arc::new(worktree_map.clone());
+    let shared_current_wt_path = Arc::new(git.get_current_worktree_path().ok());
+    let shared_current_branch = Arc::new(git.symbolic_ref_short_head().ok());
+    let shared_force = args.force;
+    let shared_is_bare_layout = is_bare_layout;
+
+    let git_dir = get_git_common_dir()?;
+    let shared_git_dir = Arc::new(git_dir.clone());
+    let shared_remote_name = Arc::new(settings.remote.clone());
+    let source_worktree = std::env::current_dir()?;
+    let shared_source_worktree = Arc::new(source_worktree.clone());
+
+    let deferred_branch: Arc<std::sync::Mutex<Option<String>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let deferred_branch_writer = Arc::clone(&deferred_branch);
+
+    let orch_settings = Arc::clone(&shared_settings);
+
+    let orchestrator_handle =
+        std::thread::spawn(move || {
+            // ── Phase 1: Fetch ─────────────────────────────────────────────
+            if !sync_shared::run_fetch_phase(&tx, orch_settings.use_gitoxide, &orch_settings.remote)
+            {
+                return;
+            }
+
+            // ── Phase 2: Identify gone branches + build DAG ────────────────
+            let gone_branches = {
+                let git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
+                let mut sink = NullBridge;
+                prune::identify_gone_branches(
+                    &git,
+                    &shared_worktree_map,
+                    &orch_settings.remote,
+                    orch_settings.use_gitoxide,
+                    &mut sink,
+                )
+                .unwrap_or_default()
+            };
+
+            if gone_branches.is_empty() {
+                // Nothing to prune — complete immediately
+                let _ = tx.send(DagEvent::AllDone);
+                return;
+            }
+
+            let dag = SyncDag::build_prune(gone_branches);
+
+            // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
+            let executor = DagExecutor::new(dag, tx);
+            executor.run(
+            move |task: &SyncTask| -> (TaskStatus, TaskMessage, Option<Box<list::WorktreeInfo>>) {
+                match &task.id {
+                    TaskId::Fetch => {
+                        (TaskStatus::Succeeded, TaskMessage::Ok("fetched".into()), None)
+                    }
+                    TaskId::Prune(branch_name) => {
+                        let (status, message) = sync_shared::execute_prune_task(
+                            branch_name,
+                            &shared_settings,
+                            &shared_project_root,
+                            &shared_git_dir,
+                            &shared_remote_name,
+                            &shared_source_worktree,
+                            &shared_worktree_map,
+                            shared_is_bare_layout,
+                            &shared_current_wt_path,
+                            &shared_current_branch,
+                            shared_force,
+                        );
+                        if matches!(message, TaskMessage::Deferred) {
+                            *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
+                        }
+                        (status, message, None)
+                    }
+                    TaskId::Update(_) | TaskId::Rebase(_) => {
+                        (TaskStatus::Skipped, TaskMessage::Ok("not applicable".into()), None)
+                    }
+                }
+            },
+        );
+        });
+
+    // ── Run TUI renderer on main thread ────────────────────────────────
+    let renderer = TuiRenderer::new(state, rx).with_extra_rows(5);
+    let final_state = renderer.run()?;
+
+    // Wait for orchestrator thread to finish
+    orchestrator_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("DAG orchestrator thread panicked"))?;
+
+    // ── Post-TUI: handle deferred branch (current worktree) ────────────
+    sync_shared::handle_post_tui_deferred(
+        &deferred_branch,
+        &settings,
+        &project_root,
+        git_dir,
+        source_worktree,
+        &worktree_map,
+        args.force,
+    );
+
+    // ── Check for failures ────────────────────────────────────────────────
+    sync_shared::check_tui_failures(&final_state)?;
+
+    Ok(())
 }

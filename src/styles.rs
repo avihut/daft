@@ -75,6 +75,12 @@ pub const ORANGE: &str = "\x1b[38;5;208m";
 /// ANSI escape code for dark gray text (bright black).
 pub const DARK_GRAY: &str = "\x1b[90m";
 
+/// Symbol for the current worktree indicator.
+pub const CURRENT_WORKTREE_SYMBOL: &str = ">";
+
+/// Symbol for the default branch indicator.
+pub const DEFAULT_BRANCH_SYMBOL: &str = "\u{25c9}";
+
 /// Wraps text in bold styling.
 pub fn bold(text: &str) -> String {
     format!("{BOLD}{text}{RESET}")

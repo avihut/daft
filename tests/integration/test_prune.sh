@@ -864,14 +864,14 @@ test_prune_shell_wrapper() {
     local bash_output
     bash_output=$(daft shell-init bash)
 
-    if echo "$bash_output" | grep -q "^git-worktree-prune()"; then
+    if grep -q "^git-worktree-prune()" <<< "$bash_output"; then
         log_success "Bash wrapper contains git-worktree-prune function"
     else
         log_error "Bash wrapper missing git-worktree-prune function"
         return 1
     fi
 
-    if echo "$bash_output" | grep -q "worktree-prune)"; then
+    if grep -q "worktree-prune)" <<< "$bash_output"; then
         log_success "Bash git() wrapper handles worktree-prune"
     else
         log_error "Bash git() wrapper missing worktree-prune case"
@@ -882,14 +882,14 @@ test_prune_shell_wrapper() {
     local fish_output
     fish_output=$(daft shell-init fish)
 
-    if echo "$fish_output" | grep -q "function git-worktree-prune"; then
+    if grep -q "function git-worktree-prune" <<< "$fish_output"; then
         log_success "Fish wrapper contains git-worktree-prune function"
     else
         log_error "Fish wrapper missing git-worktree-prune function"
         return 1
     fi
 
-    if echo "$fish_output" | grep -q "case worktree-prune"; then
+    if grep -q "case worktree-prune" <<< "$fish_output"; then
         log_success "Fish git wrapper handles worktree-prune"
     else
         log_error "Fish git wrapper missing worktree-prune case"

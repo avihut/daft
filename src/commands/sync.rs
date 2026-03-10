@@ -2,23 +2,40 @@
 //!
 //! Orchestrates pruning stale branches/worktrees and updating all remaining
 //! worktrees in a single command.
+//!
+//! When running in an interactive terminal, uses a DAG-based parallel executor
+//! with an inline TUI (ratatui). Falls back to sequential execution when
+//! stderr is not a TTY or verbose mode is enabled.
 
+use super::sync_shared;
 use crate::{
     core::{
-        worktree::{fetch, prune, rebase},
-        CommandBridge, OutputSink,
+        worktree::{
+            fetch, list,
+            list::Stat,
+            prune, rebase,
+            sync_dag::{self, DagExecutor, SyncDag, SyncTask, TaskId, TaskMessage, TaskStatus},
+        },
+        CommandBridge, NullBridge, NullSink, OutputSink,
     },
-    get_project_root,
+    get_git_common_dir, get_project_root,
     git::{should_show_gitoxide_notice, GitCommand},
     hooks::{HookExecutor, HooksConfig},
     is_git_repository,
     logging::init_logging,
-    output::{CliOutput, Output, OutputConfig},
+    output::{
+        tui::{TuiRenderer, TuiState},
+        CliOutput, Output, OutputConfig,
+    },
+    remote::get_default_branch_local,
     settings::DaftSettings,
     styles, WorktreeConfig, CD_FILE_ENV,
 };
 use anyhow::Result;
 use clap::Parser;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "git-sync")]
@@ -59,6 +76,13 @@ pub struct Args {
         help = "Rebase all branches onto BRANCH after updating"
     )]
     rebase: Option<String>,
+
+    #[arg(
+        long,
+        value_enum,
+        help = "Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary)"
+    )]
+    stat: Option<Stat>,
 }
 
 pub fn run() -> Result<()> {
@@ -71,6 +95,16 @@ pub fn run() -> Result<()> {
     }
 
     let settings = DaftSettings::load()?;
+
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) && !args.verbose {
+        run_tui(args, settings)
+    } else {
+        run_sequential(args, settings)
+    }
+}
+
+/// Sequential (non-TTY) execution path — the original sync flow.
+fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
     let config = OutputConfig::with_autocd(false, args.verbose, settings.autocd);
     let mut output = CliOutput::new(config);
 
@@ -104,6 +138,366 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// Interactive TUI execution path — parallel DAG executor with inline ratatui display.
+fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
+    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let project_root = get_project_root()?;
+    let stat = args.stat.unwrap_or(settings.sync_stat);
+
+    // ── Pre-TUI: collect worktree info (no fetch needed) ───────────────
+    let base_branch = get_default_branch_local(
+        &get_git_common_dir()?,
+        &settings.remote,
+        settings.use_gitoxide,
+    )
+    .unwrap_or_else(|_| "master".to_string());
+
+    let current_path = crate::core::repo::get_current_worktree_path()
+        .ok()
+        .and_then(|p| p.canonicalize().ok());
+
+    let worktree_infos = if stat == Stat::Lines {
+        let mut output = CliOutput::new(OutputConfig::new(false, false));
+        output.start_spinner("Computing line statistics...");
+        let result =
+            list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat)?;
+        output.finish_spinner();
+        result
+    } else {
+        list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat)?
+    };
+
+    // Get worktree list for DAG (branch name + path pairs)
+    let all_worktrees = fetch::get_all_worktrees_with_branches(&git)?;
+
+    // Parse worktree list for prune context
+    let worktree_entries = prune::parse_worktree_list(&git)?;
+    let is_bare_layout = worktree_entries.first().map(|e| e.is_bare).unwrap_or(false);
+
+    let mut worktree_map: HashMap<String, (PathBuf, bool)> = HashMap::new();
+    for (i, entry) in worktree_entries.iter().enumerate() {
+        if let Some(ref branch) = entry.branch {
+            worktree_map.insert(branch.clone(), (entry.path.clone(), i == 0));
+        }
+    }
+
+    // ── Create TUI state with known phases and worktrees ───────────────
+    let mut phases = vec![
+        sync_dag::OperationPhase::Fetch,
+        sync_dag::OperationPhase::Prune,
+        sync_dag::OperationPhase::Update,
+    ];
+    if let Some(ref base) = args.rebase {
+        phases.push(sync_dag::OperationPhase::Rebase(base.clone()));
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
+    let state = TuiState::new(phases, worktree_infos, project_root.clone(), cwd, stat);
+
+    // ── Create channel and spawn orchestrator ──────────────────────────
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    // Shared context for workers
+    let shared_settings = Arc::new(settings.clone());
+    let shared_project_root = Arc::new(project_root.clone());
+    let shared_worktree_map = Arc::new(worktree_map.clone());
+    let shared_current_wt_path = Arc::new(git.get_current_worktree_path().ok());
+    let shared_current_branch = Arc::new(git.symbolic_ref_short_head().ok());
+
+    let config_args: Vec<&str> = settings.update_args.split_whitespace().collect();
+    let config_has_rebase = config_args.contains(&"--rebase");
+    let config_has_autostash = config_args.contains(&"--autostash");
+    let shared_pull_args = Arc::new(fetch::build_pull_args(&fetch::FetchParams {
+        targets: vec![],
+        all: true,
+        force: args.force,
+        dry_run: false,
+        rebase: config_has_rebase,
+        autostash: config_has_autostash,
+        ff_only: false,
+        no_ff_only: false,
+        pull_args: vec![],
+        quiet: false,
+        remote_name: settings.remote.clone(),
+    }));
+    let shared_force = args.force;
+    let shared_is_bare_layout = is_bare_layout;
+
+    let git_dir = get_git_common_dir()?;
+    let shared_git_dir = Arc::new(git_dir.clone());
+    let shared_remote_name = Arc::new(settings.remote.clone());
+    let source_worktree = std::env::current_dir()?;
+    let shared_source_worktree = Arc::new(source_worktree.clone());
+    let shared_rebase_branch: Arc<Option<String>> = Arc::new(args.rebase.clone());
+
+    let deferred_branch: Arc<std::sync::Mutex<Option<String>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let deferred_branch_writer = Arc::clone(&deferred_branch);
+
+    // Shared worktree info map for live refresh after tasks complete
+    let shared_info_map: Arc<HashMap<String, list::WorktreeInfo>> = Arc::new(
+        state
+            .worktrees
+            .iter()
+            .map(|wt| (wt.info.name.clone(), wt.info.clone()))
+            .collect(),
+    );
+    let shared_base_branch = Arc::new(base_branch.clone());
+
+    // Clone values needed by orchestrator
+    let orch_settings = Arc::clone(&shared_settings);
+    let orch_all_worktrees: Vec<(String, PathBuf)> = all_worktrees
+        .iter()
+        .map(|(p, b)| (b.clone(), p.clone()))
+        .collect();
+    let orch_info_map = Arc::clone(&shared_info_map);
+    let orch_base_branch = Arc::clone(&shared_base_branch);
+    let orch_stat = stat;
+
+    let orchestrator_handle =
+        std::thread::spawn(move || {
+            // ── Phase 1: Fetch ─────────────────────────────────────────────
+            if !sync_shared::run_fetch_phase(&tx, orch_settings.use_gitoxide, &orch_settings.remote)
+            {
+                return;
+            }
+
+            // ── Phase 2: Identify gone branches + build DAG ────────────────
+            let gone_branches = {
+                let git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
+                let mut sink = NullBridge;
+                prune::identify_gone_branches(
+                    &git,
+                    &shared_worktree_map,
+                    &orch_settings.remote,
+                    orch_settings.use_gitoxide,
+                    &mut sink,
+                )
+                .unwrap_or_default()
+            };
+
+            // Filter out gone branches so they don't get Update/Rebase tasks
+            // (their worktree paths will be removed by the Prune tasks).
+            let live_worktrees: Vec<(String, PathBuf)> = orch_all_worktrees
+                .into_iter()
+                .filter(|(branch, _)| !gone_branches.contains(branch))
+                .collect();
+
+            let dag = SyncDag::build_sync(
+                live_worktrees,
+                gone_branches,
+                shared_rebase_branch.as_ref().clone(),
+            );
+
+            // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
+            let executor = DagExecutor::new(dag, tx);
+            executor.run(
+            move |task: &SyncTask| -> (TaskStatus, TaskMessage, Option<Box<list::WorktreeInfo>>) {
+                match &task.id {
+                    TaskId::Fetch => {
+                        // Already done above
+                        (TaskStatus::Succeeded, TaskMessage::Ok("fetched".into()), None)
+                    }
+                    TaskId::Prune(branch_name) => {
+                        let (status, message) = sync_shared::execute_prune_task(
+                            branch_name,
+                            &shared_settings,
+                            &shared_project_root,
+                            &shared_git_dir,
+                            &shared_remote_name,
+                            &shared_source_worktree,
+                            &shared_worktree_map,
+                            shared_is_bare_layout,
+                            &shared_current_wt_path,
+                            &shared_current_branch,
+                            shared_force,
+                        );
+                        if matches!(message, TaskMessage::Deferred) {
+                            *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
+                        }
+                        (status, message, None)
+                    }
+                    TaskId::Update(branch_name) => {
+                        let (status, message) = execute_update_task(
+                            branch_name,
+                            task.worktree_path.as_ref(),
+                            &shared_settings,
+                            &shared_project_root,
+                            &shared_pull_args,
+                            shared_force,
+                        );
+                        let updated = if status == TaskStatus::Succeeded {
+                            orch_info_map.get(branch_name.as_str()).map(|info| {
+                                let mut refreshed = info.clone();
+                                refreshed.refresh_dynamic_fields(&orch_base_branch, orch_stat);
+                                Box::new(refreshed)
+                            })
+                        } else {
+                            None
+                        };
+                        (status, message, updated)
+                    }
+                    TaskId::Rebase(branch_name) => {
+                        let base = shared_rebase_branch.as_deref().unwrap_or("master");
+                        let (status, message) = execute_rebase_task(
+                            branch_name,
+                            task.worktree_path.as_ref(),
+                            base,
+                            &shared_project_root,
+                            &shared_settings,
+                            shared_force,
+                        );
+                        let updated = if status == TaskStatus::Succeeded
+                            && !matches!(message, TaskMessage::Conflict)
+                        {
+                            orch_info_map.get(branch_name.as_str()).map(|info| {
+                                let mut refreshed = info.clone();
+                                refreshed.refresh_dynamic_fields(&orch_base_branch, orch_stat);
+                                Box::new(refreshed)
+                            })
+                        } else {
+                            None
+                        };
+                        (status, message, updated)
+                    }
+                }
+            },
+        );
+        });
+
+    // ── Run TUI renderer on main thread ────────────────────────────────
+    let renderer = TuiRenderer::new(state, rx).with_extra_rows(5);
+    let final_state = renderer.run()?;
+
+    // Wait for orchestrator thread to finish
+    orchestrator_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("DAG orchestrator thread panicked"))?;
+
+    // ── Post-TUI: handle deferred branch (current worktree) ────────────
+    sync_shared::handle_post_tui_deferred(
+        &deferred_branch,
+        &settings,
+        &project_root,
+        git_dir,
+        source_worktree,
+        &worktree_map,
+        args.force,
+    );
+
+    // ── Check for failures ────────────────────────────────────────────────
+    sync_shared::check_tui_failures(&final_state)?;
+
+    Ok(())
+}
+
+// ── DAG task execution functions ───────────────────────────────────────────
+
+/// Execute a single update task for a DAG worker.
+fn execute_update_task(
+    branch_name: &str,
+    worktree_path: Option<&PathBuf>,
+    settings: &DaftSettings,
+    project_root: &std::path::Path,
+    pull_args: &[String],
+    force: bool,
+) -> (TaskStatus, TaskMessage) {
+    let Some(target_path) = worktree_path else {
+        return (
+            TaskStatus::Failed,
+            TaskMessage::Failed("no worktree path".into()),
+        );
+    };
+
+    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+
+    let worktree_name = target_path
+        .strip_prefix(project_root)
+        .ok()
+        .and_then(|p| p.to_str())
+        .unwrap_or(branch_name)
+        .to_string();
+
+    let params = fetch::FetchParams {
+        targets: vec![],
+        all: false,
+        force,
+        dry_run: false,
+        rebase: pull_args.contains(&"--rebase".to_string()),
+        autostash: pull_args.contains(&"--autostash".to_string()),
+        ff_only: false,
+        no_ff_only: false,
+        pull_args: vec![],
+        quiet: true,
+        remote_name: settings.remote.clone(),
+    };
+
+    let mut sink = NullSink;
+    let result = fetch::update_single_worktree(
+        &git,
+        target_path,
+        &worktree_name,
+        pull_args,
+        &params,
+        &mut sink,
+    );
+
+    if result.skipped {
+        (TaskStatus::Skipped, TaskMessage::Ok(result.message))
+    } else if result.success && result.up_to_date {
+        (TaskStatus::Succeeded, TaskMessage::UpToDate)
+    } else if result.success {
+        (TaskStatus::Succeeded, TaskMessage::Ok(result.message))
+    } else {
+        (TaskStatus::Failed, TaskMessage::Failed(result.message))
+    }
+}
+
+/// Execute a single rebase task for a DAG worker.
+fn execute_rebase_task(
+    branch_name: &str,
+    worktree_path: Option<&PathBuf>,
+    base_branch: &str,
+    project_root: &std::path::Path,
+    settings: &DaftSettings,
+    force: bool,
+) -> (TaskStatus, TaskMessage) {
+    let Some(target_path) = worktree_path else {
+        return (
+            TaskStatus::Failed,
+            TaskMessage::Failed("no worktree path".into()),
+        );
+    };
+
+    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+
+    let worktree_name = target_path
+        .strip_prefix(project_root)
+        .ok()
+        .and_then(|p| p.to_str())
+        .unwrap_or(branch_name)
+        .to_string();
+
+    let mut sink = NullSink;
+    let result = rebase::rebase_single_worktree(
+        &git,
+        target_path,
+        &worktree_name,
+        base_branch,
+        force,
+        &mut sink,
+    );
+
+    if result.skipped {
+        (TaskStatus::Skipped, TaskMessage::Ok(result.message))
+    } else if result.conflict {
+        (TaskStatus::Succeeded, TaskMessage::Conflict)
+    } else if result.success {
+        (TaskStatus::Succeeded, TaskMessage::Ok(result.message))
+    } else {
+        (TaskStatus::Failed, TaskMessage::Failed(result.message))
+    }
+}
+
 fn run_prune_phase(
     output: &mut dyn Output,
     settings: &DaftSettings,
@@ -132,41 +526,7 @@ fn run_prune_phase(
         return Ok(result);
     }
 
-    // Print header
-    output.result(&format!("Pruning {}", result.remote_name));
-    if let Some(ref url) = result.remote_url {
-        output.info(&format!("URL: {url}"));
-    }
-
-    // Per-branch detail lines
-    for detail in &result.pruned_branches {
-        render_pruned_branch(detail, output);
-    }
-
-    // Summary
-    if result.branches_deleted > 0 || result.worktrees_removed > 0 {
-        let branch_word = if result.branches_deleted == 1 {
-            "branch"
-        } else {
-            "branches"
-        };
-        let mut summary = format!("Pruned {} {branch_word}", result.branches_deleted);
-        if result.worktrees_removed > 0 {
-            let wt_word = if result.worktrees_removed == 1 {
-                "worktree"
-            } else {
-                "worktrees"
-            };
-            summary.push_str(&format!(", removed {} {wt_word}", result.worktrees_removed));
-        }
-        output.success(&summary);
-    }
-
-    if result.has_prunable {
-        output.warning(
-            "Some prunable worktree data may exist. Run 'git worktree prune' to clean up.",
-        );
-    }
+    sync_shared::render_prune_result(&result, output);
 
     Ok(result)
 }
@@ -328,27 +688,6 @@ fn print_summary(result: &fetch::FetchResult, output: &mut dyn Output) {
     }
 }
 
-fn render_pruned_branch(detail: &prune::PrunedBranchDetail, output: &mut dyn Output) {
-    // Build a description of what was removed: the branch is one entity
-    // with up to three manifestations (worktree, local branch, remote tracking branch).
-    let mut removed = Vec::new();
-    if detail.worktree_removed {
-        removed.push("worktree");
-    }
-    if detail.branch_deleted {
-        removed.push("local branch");
-    }
-    // The remote tracking branch is always removed (git fetch --prune did it)
-    removed.push("remote tracking branch");
-
-    output.info(&format!(
-        " * {} {} — removed {}",
-        tag_pruned(),
-        detail.branch_name,
-        removed.join(", ")
-    ));
-}
-
 fn run_rebase_phase(
     output: &mut dyn Output,
     settings: &DaftSettings,
@@ -490,58 +829,50 @@ fn print_rebase_summary(result: &rebase::RebaseResult, output: &mut dyn Output) 
 
 // -- Colored status tags --
 
-fn tag_pruned() -> String {
-    if styles::colors_enabled() {
-        format!("{}[pruned]{}", styles::RED, styles::RESET)
-    } else {
-        "[pruned]".to_string()
-    }
-}
-
 fn tag_updated() -> String {
     if styles::colors_enabled() {
-        format!("{}[updated]{}", styles::GREEN, styles::RESET)
+        format!("{}\u{2713} updated{}", styles::GREEN, styles::RESET)
     } else {
-        "[updated]".to_string()
+        "\u{2713} updated".to_string()
     }
 }
 
 fn tag_up_to_date() -> String {
     if styles::colors_enabled() {
-        format!("{}[up to date]{}", styles::DIM, styles::RESET)
+        format!("{}\u{2713} up to date{}", styles::DIM, styles::RESET)
     } else {
-        "[up to date]".to_string()
+        "\u{2713} up to date".to_string()
     }
 }
 
 fn tag_skipped() -> String {
     if styles::colors_enabled() {
-        format!("{}[skipped]{}", styles::YELLOW, styles::RESET)
+        format!("{}\u{2298} skipped{}", styles::YELLOW, styles::RESET)
     } else {
-        "[skipped]".to_string()
+        "\u{2298} skipped".to_string()
     }
 }
 
 fn tag_rebased() -> String {
     if styles::colors_enabled() {
-        format!("{}[rebased]{}", styles::GREEN, styles::RESET)
+        format!("{}\u{2713} rebased{}", styles::GREEN, styles::RESET)
     } else {
-        "[rebased]".to_string()
+        "\u{2713} rebased".to_string()
     }
 }
 
 fn tag_conflict() -> String {
     if styles::colors_enabled() {
-        format!("{}[conflict]{}", styles::RED, styles::RESET)
+        format!("{}\u{2717} conflict{}", styles::RED, styles::RESET)
     } else {
-        "[conflict]".to_string()
+        "\u{2717} conflict".to_string()
     }
 }
 
 fn tag_failed() -> String {
     if styles::colors_enabled() {
-        format!("{}[failed]{}", styles::RED, styles::RESET)
+        format!("{}\u{2717} failed{}", styles::RED, styles::RESET)
     } else {
-        "[failed]".to_string()
+        "\u{2717} failed".to_string()
     }
 }

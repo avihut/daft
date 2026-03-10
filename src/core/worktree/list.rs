@@ -42,6 +42,7 @@ pub enum EntryKind {
 }
 
 /// Enriched information about a single worktree or branch.
+#[derive(Clone, Debug)]
 pub struct WorktreeInfo {
     /// The kind of entry.
     pub kind: EntryKind,
@@ -89,6 +90,88 @@ pub struct WorktreeInfo {
     pub remote_lines_inserted: Option<usize>,
     /// Lines deleted vs remote tracking branch (None if not computed or no upstream).
     pub remote_lines_deleted: Option<usize>,
+}
+
+impl WorktreeInfo {
+    /// Create a minimal `WorktreeInfo` with just a branch name and default values.
+    /// Used by the TUI to create placeholder rows for dynamically discovered branches.
+    pub fn empty(name: &str) -> Self {
+        Self {
+            kind: EntryKind::Worktree,
+            name: name.to_string(),
+            path: None,
+            is_current: false,
+            is_default_branch: false,
+            ahead: None,
+            behind: None,
+            staged: 0,
+            unstaged: 0,
+            untracked: 0,
+            remote_ahead: None,
+            remote_behind: None,
+            last_commit_timestamp: None,
+            last_commit_subject: String::new(),
+            branch_creation_timestamp: None,
+            base_lines_inserted: None,
+            base_lines_deleted: None,
+            staged_lines_inserted: None,
+            staged_lines_deleted: None,
+            unstaged_lines_inserted: None,
+            unstaged_lines_deleted: None,
+            remote_lines_inserted: None,
+            remote_lines_deleted: None,
+        }
+    }
+
+    /// Re-compute the dynamic fields (ahead/behind, staged/unstaged, remote,
+    /// last-commit) from the working tree on disk.  Static fields (kind, name,
+    /// path, is_current, is_default_branch, branch_creation_timestamp) are
+    /// left untouched.
+    pub fn refresh_dynamic_fields(&mut self, base_branch: &str, stat: Stat) {
+        let Some(path) = self.path.as_deref() else {
+            return;
+        };
+
+        // Base ahead/behind
+        if self.name != "(detached)" {
+            let ab = get_ahead_behind(base_branch, &self.name, path);
+            self.ahead = ab.map(|(a, _)| a);
+            self.behind = ab.map(|(_, b)| b);
+        }
+
+        // Working tree status
+        let (staged, unstaged, untracked) = count_changed_files(path);
+        self.staged = staged;
+        self.unstaged = unstaged;
+        self.untracked = untracked;
+
+        // Remote ahead/behind
+        let rab = get_upstream_ahead_behind(&self.name, path);
+        self.remote_ahead = rab.map(|(a, _)| a);
+        self.remote_behind = rab.map(|(_, b)| b);
+
+        // Last commit
+        let (ts, subj) = get_last_commit_info(path);
+        self.last_commit_timestamp = ts;
+        self.last_commit_subject = subj;
+
+        // Line-level stats (only when Stat::Lines mode)
+        if stat == Stat::Lines {
+            let base_lines = get_base_line_counts(base_branch, &self.name, path);
+            self.base_lines_inserted = base_lines.map(|(i, _)| i);
+            self.base_lines_deleted = base_lines.map(|(_, d)| d);
+
+            let ((si, sd), (ui, ud)) = count_changed_lines(path);
+            self.staged_lines_inserted = Some(si);
+            self.staged_lines_deleted = Some(sd);
+            self.unstaged_lines_inserted = Some(ui);
+            self.unstaged_lines_deleted = Some(ud);
+
+            let remote_lines = get_remote_line_counts(&self.name, path);
+            self.remote_lines_inserted = remote_lines.map(|(i, _)| i);
+            self.remote_lines_deleted = remote_lines.map(|(_, d)| d);
+        }
+    }
 }
 
 /// Raw entry parsed from `git worktree list --porcelain`.

@@ -18,7 +18,7 @@ test_shell_init_bash_output() {
     output=$(daft shell-init bash)
 
     # Check that it contains the wrapper function
-    if echo "$output" | grep -q "__daft_wrapper()"; then
+    if grep -q "__daft_wrapper()" <<< "$output"; then
         log_success "Output contains __daft_wrapper function"
     else
         log_error "Output missing __daft_wrapper function"
@@ -28,7 +28,7 @@ test_shell_init_bash_output() {
     # Check that it contains wrapper functions for each command
     local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-carry")
     for cmd in "${commands[@]}"; do
-        if echo "$output" | grep -q "^${cmd}()"; then
+        if grep -q "^${cmd}()" <<< "$output"; then
             log_success "Output contains ${cmd} function"
         else
             log_error "Output missing ${cmd} function"
@@ -46,7 +46,7 @@ test_shell_init_bash_syntax() {
     output=$(daft shell-init bash)
 
     # Validate bash syntax using bash -n
-    if echo "$output" | bash -n 2>&1; then
+    if bash -n <<< "$output" 2>&1; then
         log_success "Generated bash code has valid syntax"
         return 0
     else
@@ -68,7 +68,7 @@ test_shell_init_zsh_syntax() {
     output=$(daft shell-init zsh)
 
     # Validate zsh syntax using zsh -n
-    if echo "$output" | zsh -n 2>&1; then
+    if zsh -n <<< "$output" 2>&1; then
         log_success "Generated zsh code has valid syntax"
         return 0
     else
@@ -84,7 +84,7 @@ test_shell_init_fish_output() {
     output=$(daft shell-init fish)
 
     # Check that it contains the wrapper function
-    if echo "$output" | grep -q "function __daft_wrapper"; then
+    if grep -q "function __daft_wrapper" <<< "$output"; then
         log_success "Output contains __daft_wrapper function"
     else
         log_error "Output missing __daft_wrapper function"
@@ -94,7 +94,7 @@ test_shell_init_fish_output() {
     # Check that it contains wrapper functions for each command
     local commands=("git-worktree-clone" "git-worktree-init" "git-worktree-checkout" "git-worktree-carry")
     for cmd in "${commands[@]}"; do
-        if echo "$output" | grep -q "function ${cmd}"; then
+        if grep -q "function ${cmd}" <<< "$output"; then
             log_success "Output contains ${cmd} function"
         else
             log_error "Output missing ${cmd} function"
@@ -118,7 +118,7 @@ test_shell_init_fish_syntax() {
     output=$(daft shell-init fish)
 
     # Validate fish syntax using fish -n
-    if echo "$output" | fish -n 2>&1; then
+    if fish -n <<< "$output" 2>&1; then
         log_success "Generated fish code has valid syntax"
         return 0
     else
@@ -136,7 +136,7 @@ test_shell_init_bash_aliases() {
     # Check for short aliases
     local aliases=("gwclone" "gwinit" "gwco" "gwcob" "gwcarry" "gwprune")
     for alias_name in "${aliases[@]}"; do
-        if echo "$output" | grep -q "alias ${alias_name}="; then
+        if grep -q "alias ${alias_name}=" <<< "$output"; then
             log_success "Output contains ${alias_name} alias"
         else
             log_error "Output missing ${alias_name} alias"
@@ -156,7 +156,7 @@ test_shell_init_fish_aliases() {
     # Check for short aliases
     local aliases=("gwclone" "gwinit" "gwco" "gwcob" "gwcarry" "gwprune")
     for alias_name in "${aliases[@]}"; do
-        if echo "$output" | grep -q "alias ${alias_name}="; then
+        if grep -q "alias ${alias_name}=" <<< "$output"; then
             log_success "Output contains ${alias_name} alias"
         else
             log_error "Output missing ${alias_name} alias"
@@ -173,14 +173,14 @@ test_shell_init_help() {
     local output
     output=$(daft shell-init --help 2>&1)
 
-    if echo "$output" | grep -qi "shell wrapper"; then
+    if grep -qi "shell wrapper" <<< "$output"; then
         log_success "Help text mentions shell wrapper"
     else
         log_error "Help text missing shell wrapper description"
         return 1
     fi
 
-    if echo "$output" | grep -q "bash"; then
+    if grep -q "bash" <<< "$output"; then
         log_success "Help text mentions bash"
     else
         log_error "Help text missing bash"
@@ -284,7 +284,7 @@ test_git_wrapper_function_exists() {
     output=$(daft shell-init bash)
 
     # Check that it contains the git wrapper function
-    if echo "$output" | grep -q "^git()"; then
+    if grep -q "^git()" <<< "$output"; then
         log_success "Output contains git() wrapper function"
     else
         log_error "Output missing git() wrapper function"
@@ -292,7 +292,7 @@ test_git_wrapper_function_exists() {
     fi
 
     # Check that it intercepts worktree-checkout
-    if echo "$output" | grep -q "worktree-checkout)"; then
+    if grep -q "worktree-checkout)" <<< "$output"; then
         log_success "git() wrapper intercepts worktree-checkout"
     else
         log_error "git() wrapper missing worktree-checkout interception"
@@ -300,7 +300,7 @@ test_git_wrapper_function_exists() {
     fi
 
     # Check that it has passthrough for other commands
-    if echo "$output" | grep -q 'command git "\$@"'; then
+    if grep -q 'command git "\$@"' <<< "$output"; then
         log_success "git() wrapper passes through other commands"
     else
         log_error "git() wrapper missing passthrough"
@@ -320,7 +320,7 @@ test_git_wrapper_passthrough() {
         git --version
     ' 2>&1)
 
-    if echo "$version_output" | grep -q "git version"; then
+    if grep -q "git version" <<< "$version_output"; then
         log_success "git --version works through wrapper"
     else
         log_error "git --version failed through wrapper"
@@ -341,7 +341,7 @@ test_git_wrapper_intercepts_subcommand() {
         type git | head -1
     ' 2>&1)
 
-    if echo "$type_output" | grep -q "function"; then
+    if grep -q "function" <<< "$type_output"; then
         log_success "git is defined as a function after sourcing wrappers"
     else
         log_error "git is not a function after sourcing wrappers"
@@ -359,7 +359,7 @@ test_daft_wrapper_function_exists() {
     output=$(daft shell-init bash)
 
     # Check that it contains the daft wrapper function
-    if echo "$output" | grep -q "^daft()"; then
+    if grep -q "^daft()" <<< "$output"; then
         log_success "Output contains daft() wrapper function"
     else
         log_error "Output missing daft() wrapper function"
@@ -367,7 +367,7 @@ test_daft_wrapper_function_exists() {
     fi
 
     # Check that it intercepts worktree-checkout
-    if echo "$output" | grep -q "worktree-checkout)"; then
+    if grep -q "worktree-checkout)" <<< "$output"; then
         log_success "daft() wrapper intercepts worktree-checkout"
     else
         log_error "daft() wrapper missing worktree-checkout interception"
@@ -375,7 +375,7 @@ test_daft_wrapper_function_exists() {
     fi
 
     # Check that it has passthrough for other commands
-    if echo "$output" | grep -q 'command daft "\$@"'; then
+    if grep -q 'command daft "\$@"' <<< "$output"; then
         log_success "daft() wrapper passes through other commands"
     else
         log_error "daft() wrapper missing passthrough"
@@ -395,7 +395,7 @@ test_daft_wrapper_passthrough() {
         daft --version
     ' 2>&1)
 
-    if echo "$version_output" | grep -q "daft"; then
+    if grep -q "daft" <<< "$version_output"; then
         log_success "daft --version works through wrapper"
     else
         log_error "daft --version failed through wrapper"
@@ -416,7 +416,7 @@ test_daft_wrapper_intercepts_subcommand() {
         type daft | head -1
     ' 2>&1)
 
-    if echo "$type_output" | grep -q "function"; then
+    if grep -q "function" <<< "$type_output"; then
         log_success "daft is defined as a function after sourcing wrappers"
     else
         log_error "daft is not a function after sourcing wrappers"

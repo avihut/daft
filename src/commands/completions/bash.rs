@@ -232,6 +232,12 @@ _daft() {
                 _git_worktree_list
                 return 0
                 ;;
+            prune)
+                COMP_WORDS=("git-worktree-prune" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _git_worktree_prune
+                return 0
+                ;;
         esac
     fi
 
