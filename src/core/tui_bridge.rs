@@ -65,6 +65,10 @@ impl HookRunner for TuiBridge {
         match self.executor.execute(ctx, &mut self.output) {
             Ok(result) => {
                 if result.skipped {
+                    // TODO: When hooks are skipped due to TrustLevel::Prompt, surface a
+                    // post-TUI notice suggesting `git daft hooks trust`. Currently the
+                    // skip_reason is captured in HookOutcome but not surfaced to the user
+                    // in TUI mode. See spec: "Prompt Callbacks" section.
                     // Skipped hooks (disabled, not trusted, etc.) produce no events.
                     return Ok(HookOutcome {
                         success: result.success,
@@ -101,12 +105,19 @@ impl HookRunner for TuiBridge {
                     None
                 };
 
+                // When executor.execute() returns Ok, a non-success result means
+                // FailMode::Warn (the hook ran but had a non-zero exit). FailMode::Abort
+                // always causes Err(), so it's handled in the Err branch below.
+                let warned = !result.success;
+                let exit_code = result.exit_code;
+
                 let _ = self.sender.send(DagEvent::HookCompleted {
                     branch_name: self.branch_name.clone(),
                     hook_type,
                     success: result.success,
-                    warned: !result.success,
+                    warned,
                     duration,
+                    exit_code,
                     output: output_text,
                 });
 
@@ -132,6 +143,7 @@ impl HookRunner for TuiBridge {
                     success: false,
                     warned: false,
                     duration,
+                    exit_code: None,
                     output: Some(format!("{e:#}")),
                 });
 

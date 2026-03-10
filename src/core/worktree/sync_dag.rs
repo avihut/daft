@@ -297,6 +297,8 @@ pub enum DagEvent {
         /// Non-zero exit with FailMode::Warn.
         warned: bool,
         duration: Duration,
+        /// Exit code from the hook process, if available.
+        exit_code: Option<i32>,
         /// Captured stdout+stderr, only stored on failure/warning.
         output: Option<String>,
     },

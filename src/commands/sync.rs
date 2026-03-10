@@ -413,22 +413,25 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         eprintln!("Hooks:");
         for entry in &final_state.hook_summaries {
             let status_word = if entry.warned { "warned" } else { "failed" };
+            let exit_str = entry
+                .exit_code
+                .map(|c| format!("exit {c}"))
+                .unwrap_or_else(|| "error".to_string());
             eprintln!(
                 "  {}: {} {} ({}, {}ms)",
                 entry.branch_name,
                 entry.hook_type.filename(),
                 status_word,
-                if entry.warned {
-                    "continuing"
-                } else {
-                    "aborted"
-                },
+                exit_str,
                 entry.duration.as_millis(),
             );
             if let Some(ref output) = entry.output {
                 for line in output.lines() {
                     eprintln!("    {line}");
                 }
+            }
+            if !entry.success && !entry.warned {
+                eprintln!("    Prune was aborted for this branch.");
             }
         }
     }

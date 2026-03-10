@@ -63,6 +63,7 @@ pub struct HookSummaryEntry {
     pub success: bool,
     pub warned: bool,
     pub duration: Duration,
+    pub exit_code: Option<i32>,
     pub output: Option<String>,
 }
 
@@ -205,6 +206,7 @@ impl TuiState {
                 success,
                 warned,
                 duration,
+                exit_code,
                 output,
             } => {
                 let show_sub_rows = self.show_hook_sub_rows;
@@ -240,6 +242,7 @@ impl TuiState {
                         success: *success,
                         warned: *warned,
                         duration: *duration,
+                        exit_code: *exit_code,
                         output: output.clone(),
                     });
                 }
@@ -695,6 +698,7 @@ mod tests {
             success: false,
             warned: true,
             duration: Duration::from_millis(100),
+            exit_code: Some(1),
             output: Some("warning output".into()),
         });
         let row = state
@@ -718,6 +722,7 @@ mod tests {
             success: true,
             warned: false,
             duration: Duration::from_millis(50),
+            exit_code: Some(0),
             output: None,
         });
         let row = state
@@ -758,6 +763,7 @@ mod tests {
             success: true,
             warned: false,
             duration: dur,
+            exit_code: Some(0),
             output: None,
         });
 
