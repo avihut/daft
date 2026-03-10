@@ -7,13 +7,14 @@
 //! with an inline TUI (ratatui). Falls back to sequential execution when
 //! stderr is not a TTY or verbose mode is enabled.
 
+use super::sync_shared;
 use crate::{
     core::{
         worktree::{
             fetch, list,
             list::Stat,
             prune, rebase,
-            sync_dag::{self, DagEvent, DagExecutor, SyncDag, SyncTask, TaskId, TaskStatus},
+            sync_dag::{self, DagExecutor, SyncDag, SyncTask, TaskId, TaskStatus},
         },
         CommandBridge, NullBridge, NullSink, OutputSink,
     },
@@ -254,39 +255,16 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     let orchestrator_handle = std::thread::spawn(move || {
         // ── Phase 1: Fetch ─────────────────────────────────────────────
-        let _ = tx.send(DagEvent::TaskStarted {
-            phase: sync_dag::OperationPhase::Fetch,
-            branch_name: String::new(),
-        });
-
-        let fetch_git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
-        let fetch_result = fetch_git.fetch(&orch_settings.remote, true);
-
-        if let Err(e) = fetch_result {
-            let _ = tx.send(DagEvent::TaskCompleted {
-                phase: sync_dag::OperationPhase::Fetch,
-                branch_name: String::new(),
-                status: TaskStatus::Failed,
-                message: format!("fetch failed: {e}"),
-                updated_info: None,
-            });
-            let _ = tx.send(DagEvent::AllDone);
+        if !sync_shared::run_fetch_phase(&tx, orch_settings.use_gitoxide, &orch_settings.remote) {
             return;
         }
 
-        let _ = tx.send(DagEvent::TaskCompleted {
-            phase: sync_dag::OperationPhase::Fetch,
-            branch_name: String::new(),
-            status: TaskStatus::Succeeded,
-            message: "fetched".into(),
-            updated_info: None,
-        });
-
         // ── Phase 2: Identify gone branches + build DAG ────────────────
         let gone_branches = {
+            let git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
             let mut sink = NullBridge;
             prune::identify_gone_branches(
-                &fetch_git,
+                &git,
                 &shared_worktree_map,
                 &orch_settings.remote,
                 orch_settings.use_gitoxide,
@@ -318,7 +296,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         (TaskStatus::Succeeded, "fetched".into(), None)
                     }
                     TaskId::Prune(branch_name) => {
-                        let (status, message) = execute_prune_task(
+                        let (status, message) = sync_shared::execute_prune_task(
                             branch_name,
                             &shared_settings,
                             &shared_project_root,
@@ -392,119 +370,23 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("DAG orchestrator thread panicked"))?;
 
     // ── Post-TUI: handle deferred branch (current worktree) ────────────
-    let deferred = deferred_branch.lock().unwrap().clone();
-    if let Some(ref branch_name) = deferred {
-        let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
-        let ctx = prune::PruneContext {
-            git: &git,
-            project_root: project_root.clone(),
-            git_dir,
-            remote_name: settings.remote.clone(),
-            source_worktree,
-        };
-        let params = prune::PruneParams {
-            force: args.force,
-            use_gitoxide: settings.use_gitoxide,
-            is_quiet: true,
-            remote_name: settings.remote.clone(),
-            prune_cd_target: settings.prune_cd_target,
-        };
-        let mut sink = NullBridge;
-        let cd_target =
-            prune::handle_deferred_prune(&ctx, branch_name, &worktree_map, &params, &mut sink);
-
-        if let Some(ref cd_path) = cd_target {
-            let config = OutputConfig::with_autocd(false, false, settings.autocd);
-            let mut output = CliOutput::new(config);
-            if std::env::var(CD_FILE_ENV).is_ok() {
-                output.cd_path(cd_path);
-            } else {
-                output.result(&format!(
-                    "Run `cd {}` (your previous working directory was removed)",
-                    cd_path.display()
-                ));
-            }
-        }
-    }
+    sync_shared::handle_post_tui_deferred(
+        &deferred_branch,
+        &settings,
+        &project_root,
+        git_dir,
+        source_worktree,
+        &worktree_map,
+        args.force,
+    );
 
     // ── Check for failures ────────────────────────────────────────────────
-    let failed_count = final_state
-        .worktrees
-        .iter()
-        .filter(|w| {
-            matches!(
-                &w.status,
-                crate::output::tui::WorktreeStatus::Done(crate::output::tui::FinalStatus::Failed)
-            )
-        })
-        .count();
-
-    if failed_count > 0 {
-        anyhow::bail!("{failed_count} task(s) failed");
-    }
+    sync_shared::check_tui_failures(&final_state)?;
 
     Ok(())
 }
 
 // ── DAG task execution functions ───────────────────────────────────────────
-
-/// Execute a single prune task for a DAG worker.
-#[allow(clippy::too_many_arguments)]
-fn execute_prune_task(
-    branch_name: &str,
-    settings: &DaftSettings,
-    project_root: &std::path::Path,
-    git_dir: &std::path::Path,
-    remote_name: &str,
-    source_worktree: &std::path::Path,
-    worktree_map: &HashMap<String, (PathBuf, bool)>,
-    is_bare_layout: bool,
-    current_wt_path: &Option<PathBuf>,
-    current_branch: &Option<String>,
-    force: bool,
-) -> (TaskStatus, String) {
-    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
-    let ctx = prune::PruneContext {
-        git: &git,
-        project_root: project_root.to_path_buf(),
-        git_dir: git_dir.to_path_buf(),
-        remote_name: remote_name.to_string(),
-        source_worktree: source_worktree.to_path_buf(),
-    };
-
-    let params = prune::PruneParams {
-        force,
-        use_gitoxide: settings.use_gitoxide,
-        is_quiet: true,
-        remote_name: remote_name.to_string(),
-        prune_cd_target: settings.prune_cd_target,
-    };
-
-    let mut sink = NullBridge;
-    match prune::prune_single_branch(
-        &ctx,
-        branch_name,
-        worktree_map,
-        is_bare_layout,
-        current_wt_path,
-        current_branch,
-        &params,
-        &mut sink,
-    ) {
-        Ok(result) => {
-            if result.detail.worktree_removed || result.detail.branch_deleted {
-                (TaskStatus::Succeeded, "removed".into())
-            } else if result.deferred {
-                // Deferred branches (current worktree) are still considered successful
-                // but the actual removal happens after the TUI finishes.
-                (TaskStatus::Succeeded, "deferred".into())
-            } else {
-                (TaskStatus::Succeeded, "no action needed".into())
-            }
-        }
-        Err(e) => (TaskStatus::Failed, format!("prune failed: {e}")),
-    }
-}
 
 /// Execute a single update task for a DAG worker.
 fn execute_update_task(
@@ -632,41 +514,7 @@ fn run_prune_phase(
         return Ok(result);
     }
 
-    // Print header
-    output.result(&format!("Pruning {}", result.remote_name));
-    if let Some(ref url) = result.remote_url {
-        output.info(&format!("URL: {url}"));
-    }
-
-    // Per-branch detail lines
-    for detail in &result.pruned_branches {
-        render_pruned_branch(detail, output);
-    }
-
-    // Summary
-    if result.branches_deleted > 0 || result.worktrees_removed > 0 {
-        let branch_word = if result.branches_deleted == 1 {
-            "branch"
-        } else {
-            "branches"
-        };
-        let mut summary = format!("Pruned {} {branch_word}", result.branches_deleted);
-        if result.worktrees_removed > 0 {
-            let wt_word = if result.worktrees_removed == 1 {
-                "worktree"
-            } else {
-                "worktrees"
-            };
-            summary.push_str(&format!(", removed {} {wt_word}", result.worktrees_removed));
-        }
-        output.success(&summary);
-    }
-
-    if result.has_prunable {
-        output.warning(
-            "Some prunable worktree data may exist. Run 'git worktree prune' to clean up.",
-        );
-    }
+    sync_shared::render_prune_result(&result, output);
 
     Ok(result)
 }
@@ -828,27 +676,6 @@ fn print_summary(result: &fetch::FetchResult, output: &mut dyn Output) {
     }
 }
 
-fn render_pruned_branch(detail: &prune::PrunedBranchDetail, output: &mut dyn Output) {
-    // Build a description of what was removed: the branch is one entity
-    // with up to three manifestations (worktree, local branch, remote tracking branch).
-    let mut removed = Vec::new();
-    if detail.worktree_removed {
-        removed.push("worktree");
-    }
-    if detail.branch_deleted {
-        removed.push("local branch");
-    }
-    // The remote tracking branch is always removed (git fetch --prune did it)
-    removed.push("remote tracking branch");
-
-    output.info(&format!(
-        " * {} {} — removed {}",
-        tag_pruned(),
-        detail.branch_name,
-        removed.join(", ")
-    ));
-}
-
 fn run_rebase_phase(
     output: &mut dyn Output,
     settings: &DaftSettings,
@@ -989,14 +816,6 @@ fn print_rebase_summary(result: &rebase::RebaseResult, output: &mut dyn Output) 
 }
 
 // -- Colored status tags --
-
-fn tag_pruned() -> String {
-    if styles::colors_enabled() {
-        format!("{}\u{2014} pruned{}", styles::RED, styles::RESET)
-    } else {
-        "\u{2014} pruned".to_string()
-    }
-}
 
 fn tag_updated() -> String {
     if styles::colors_enabled() {

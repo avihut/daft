@@ -23,4 +23,5 @@ pub mod setup;
 pub mod shell_init;
 pub mod shortcuts;
 pub mod sync;
+pub mod sync_shared;
 pub mod worktree_branch;
