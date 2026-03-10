@@ -6,7 +6,7 @@ use crate::{
     core::{
         worktree::{
             prune,
-            sync_dag::{DagEvent, OperationPhase, TaskStatus},
+            sync_dag::{DagEvent, OperationPhase, TaskMessage, TaskStatus},
         },
         NullBridge,
     },
@@ -35,7 +35,7 @@ pub fn execute_prune_task(
     current_wt_path: &Option<PathBuf>,
     current_branch: &Option<String>,
     force: bool,
-) -> (TaskStatus, String) {
+) -> (TaskStatus, TaskMessage) {
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let ctx = prune::PruneContext {
         git: &git,
@@ -66,16 +66,19 @@ pub fn execute_prune_task(
     ) {
         Ok(result) => {
             if result.detail.worktree_removed || result.detail.branch_deleted {
-                (TaskStatus::Succeeded, "removed".into())
+                (TaskStatus::Succeeded, TaskMessage::Removed)
             } else if result.deferred {
                 // Deferred branches (current worktree) are still considered successful
                 // but the actual removal happens after the TUI finishes.
-                (TaskStatus::Succeeded, "deferred".into())
+                (TaskStatus::Succeeded, TaskMessage::Deferred)
             } else {
-                (TaskStatus::Succeeded, "no action needed".into())
+                (TaskStatus::Succeeded, TaskMessage::NoActionNeeded)
             }
         }
-        Err(e) => (TaskStatus::Failed, format!("prune failed: {e}")),
+        Err(e) => (
+            TaskStatus::Failed,
+            TaskMessage::Failed(format!("prune failed: {e}")),
+        ),
     }
 }
 
@@ -197,7 +200,7 @@ pub fn run_fetch_phase(
             phase: OperationPhase::Fetch,
             branch_name: String::new(),
             status: TaskStatus::Failed,
-            message: format!("fetch failed: {e}"),
+            message: TaskMessage::Failed(format!("fetch failed: {e}")),
             updated_info: None,
         });
         let _ = tx.send(DagEvent::AllDone);
@@ -208,7 +211,7 @@ pub fn run_fetch_phase(
         phase: OperationPhase::Fetch,
         branch_name: String::new(),
         status: TaskStatus::Succeeded,
-        message: "fetched".into(),
+        message: TaskMessage::Ok("fetched".into()),
         updated_info: None,
     });
 

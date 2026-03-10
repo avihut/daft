@@ -4,7 +4,7 @@
 //! and worktree status table that update in-place as tasks execute.
 
 use crate::core::worktree::list::{Stat, WorktreeInfo};
-use crate::core::worktree::sync_dag::{DagEvent, OperationPhase, TaskStatus};
+use crate::core::worktree::sync_dag::{DagEvent, OperationPhase, TaskMessage, TaskStatus};
 use crate::output::format::{self, ColumnContext, ColumnValues};
 use crate::styles;
 
@@ -207,27 +207,25 @@ impl TuiState {
             .find(|w| w.info.name == branch_name)
     }
 
-    fn map_final_status(phase: &OperationPhase, status: TaskStatus, message: &str) -> FinalStatus {
+    fn map_final_status(
+        phase: &OperationPhase,
+        status: TaskStatus,
+        message: &TaskMessage,
+    ) -> FinalStatus {
         match status {
             TaskStatus::Failed => FinalStatus::Failed,
             TaskStatus::DepFailed => FinalStatus::Skipped,
             TaskStatus::Skipped => FinalStatus::Skipped,
             TaskStatus::Succeeded => match phase {
                 OperationPhase::Prune => FinalStatus::Pruned,
-                OperationPhase::Update => {
-                    if message.contains("up to date") || message.contains("Already up to date") {
-                        FinalStatus::UpToDate
-                    } else {
-                        FinalStatus::Updated
-                    }
-                }
-                OperationPhase::Rebase(_) => {
-                    if message.contains("conflict") {
-                        FinalStatus::Conflict
-                    } else {
-                        FinalStatus::Rebased
-                    }
-                }
+                OperationPhase::Update => match message {
+                    TaskMessage::UpToDate => FinalStatus::UpToDate,
+                    _ => FinalStatus::Updated,
+                },
+                OperationPhase::Rebase(_) => match message {
+                    TaskMessage::Conflict => FinalStatus::Conflict,
+                    _ => FinalStatus::Rebased,
+                },
                 OperationPhase::Fetch => FinalStatus::Updated,
             },
             TaskStatus::Pending | TaskStatus::Running => FinalStatus::Failed,
@@ -932,7 +930,7 @@ mod tests {
             phase: OperationPhase::Update,
             branch_name: "master".into(),
             status: TaskStatus::Succeeded,
-            message: "Already up to date".into(),
+            message: TaskMessage::UpToDate,
             updated_info: None,
         });
 
@@ -970,7 +968,7 @@ mod tests {
             phase: OperationPhase::Prune,
             branch_name: "feat/old".into(),
             status: TaskStatus::Succeeded,
-            message: "removed".into(),
+            message: TaskMessage::Removed,
             updated_info: None,
         });
 
@@ -994,7 +992,7 @@ mod tests {
             phase: OperationPhase::Update,
             branch_name: "master".into(),
             status: TaskStatus::Failed,
-            message: "pull failed".into(),
+            message: TaskMessage::Failed("pull failed".into()),
             updated_info: None,
         });
 
@@ -1014,7 +1012,7 @@ mod tests {
             phase: OperationPhase::Update,
             branch_name: "master".into(),
             status: TaskStatus::DepFailed,
-            message: "dependency failed".into(),
+            message: TaskMessage::Failed("dependency failed".into()),
             updated_info: None,
         });
 
@@ -1050,7 +1048,7 @@ mod tests {
             phase: OperationPhase::Fetch,
             branch_name: String::new(),
             status: TaskStatus::Succeeded,
-            message: "fetched".into(),
+            message: TaskMessage::Ok("fetched".into()),
             updated_info: None,
         });
         // Fetch phase should now be completed (fetch task has empty branch_name,
@@ -1089,7 +1087,7 @@ mod tests {
             phase: OperationPhase::Update,
             branch_name: "master".into(),
             status: TaskStatus::Succeeded,
-            message: "Fast-forward".into(),
+            message: TaskMessage::Ok("Fast-forward".into()),
             updated_info: None,
         });
 
@@ -1134,7 +1132,7 @@ mod tests {
             phase: OperationPhase::Prune,
             branch_name: "feat/old".into(),
             status: TaskStatus::Succeeded,
-            message: "removed".into(),
+            message: TaskMessage::Removed,
             updated_info: None,
         });
 
@@ -1182,7 +1180,7 @@ mod tests {
             phase: OperationPhase::Update,
             branch_name: "master".into(),
             status: TaskStatus::Succeeded,
-            message: "Fast-forward".into(),
+            message: TaskMessage::Ok("Fast-forward".into()),
             updated_info: Some(Box::new(new_info)),
         });
 

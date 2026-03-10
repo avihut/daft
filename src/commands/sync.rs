@@ -14,7 +14,7 @@ use crate::{
             fetch, list,
             list::Stat,
             prune, rebase,
-            sync_dag::{self, DagExecutor, SyncDag, SyncTask, TaskId, TaskStatus},
+            sync_dag::{self, DagExecutor, SyncDag, SyncTask, TaskId, TaskMessage, TaskStatus},
         },
         CommandBridge, NullBridge, NullSink, OutputSink,
     },
@@ -253,47 +253,49 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let orch_base_branch = Arc::clone(&shared_base_branch);
     let orch_stat = stat;
 
-    let orchestrator_handle = std::thread::spawn(move || {
-        // ── Phase 1: Fetch ─────────────────────────────────────────────
-        if !sync_shared::run_fetch_phase(&tx, orch_settings.use_gitoxide, &orch_settings.remote) {
-            return;
-        }
+    let orchestrator_handle =
+        std::thread::spawn(move || {
+            // ── Phase 1: Fetch ─────────────────────────────────────────────
+            if !sync_shared::run_fetch_phase(&tx, orch_settings.use_gitoxide, &orch_settings.remote)
+            {
+                return;
+            }
 
-        // ── Phase 2: Identify gone branches + build DAG ────────────────
-        let gone_branches = {
-            let git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
-            let mut sink = NullBridge;
-            prune::identify_gone_branches(
-                &git,
-                &shared_worktree_map,
-                &orch_settings.remote,
-                orch_settings.use_gitoxide,
-                &mut sink,
-            )
-            .unwrap_or_default()
-        };
+            // ── Phase 2: Identify gone branches + build DAG ────────────────
+            let gone_branches = {
+                let git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
+                let mut sink = NullBridge;
+                prune::identify_gone_branches(
+                    &git,
+                    &shared_worktree_map,
+                    &orch_settings.remote,
+                    orch_settings.use_gitoxide,
+                    &mut sink,
+                )
+                .unwrap_or_default()
+            };
 
-        // Filter out gone branches so they don't get Update/Rebase tasks
-        // (their worktree paths will be removed by the Prune tasks).
-        let live_worktrees: Vec<(String, PathBuf)> = orch_all_worktrees
-            .into_iter()
-            .filter(|(branch, _)| !gone_branches.contains(branch))
-            .collect();
+            // Filter out gone branches so they don't get Update/Rebase tasks
+            // (their worktree paths will be removed by the Prune tasks).
+            let live_worktrees: Vec<(String, PathBuf)> = orch_all_worktrees
+                .into_iter()
+                .filter(|(branch, _)| !gone_branches.contains(branch))
+                .collect();
 
-        let dag = SyncDag::build_sync(
-            live_worktrees,
-            gone_branches,
-            shared_rebase_branch.as_ref().clone(),
-        );
+            let dag = SyncDag::build_sync(
+                live_worktrees,
+                gone_branches,
+                shared_rebase_branch.as_ref().clone(),
+            );
 
-        // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
-        let executor = DagExecutor::new(dag, tx);
-        executor.run(
-            move |task: &SyncTask| -> (TaskStatus, String, Option<Box<list::WorktreeInfo>>) {
+            // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
+            let executor = DagExecutor::new(dag, tx);
+            executor.run(
+            move |task: &SyncTask| -> (TaskStatus, TaskMessage, Option<Box<list::WorktreeInfo>>) {
                 match &task.id {
                     TaskId::Fetch => {
                         // Already done above
-                        (TaskStatus::Succeeded, "fetched".into(), None)
+                        (TaskStatus::Succeeded, TaskMessage::Ok("fetched".into()), None)
                     }
                     TaskId::Prune(branch_name) => {
                         let (status, message) = sync_shared::execute_prune_task(
@@ -309,7 +311,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             &shared_current_branch,
                             shared_force,
                         );
-                        if message == "deferred" {
+                        if matches!(message, TaskMessage::Deferred) {
                             *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
                         }
                         (status, message, None)
@@ -344,7 +346,9 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             &shared_settings,
                             shared_force,
                         );
-                        let updated = if status == TaskStatus::Succeeded && message != "conflict" {
+                        let updated = if status == TaskStatus::Succeeded
+                            && !matches!(message, TaskMessage::Conflict)
+                        {
                             orch_info_map.get(branch_name.as_str()).map(|info| {
                                 let mut refreshed = info.clone();
                                 refreshed.refresh_dynamic_fields(&orch_base_branch, orch_stat);
@@ -358,7 +362,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                 }
             },
         );
-    });
+        });
 
     // ── Run TUI renderer on main thread ────────────────────────────────
     let renderer = TuiRenderer::new(state, rx).with_extra_rows(5);
@@ -396,9 +400,12 @@ fn execute_update_task(
     project_root: &std::path::Path,
     pull_args: &[String],
     force: bool,
-) -> (TaskStatus, String) {
+) -> (TaskStatus, TaskMessage) {
     let Some(target_path) = worktree_path else {
-        return (TaskStatus::Failed, "no worktree path".into());
+        return (
+            TaskStatus::Failed,
+            TaskMessage::Failed("no worktree path".into()),
+        );
     };
 
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
@@ -435,11 +442,13 @@ fn execute_update_task(
     );
 
     if result.skipped {
-        (TaskStatus::Skipped, result.message)
+        (TaskStatus::Skipped, TaskMessage::Ok(result.message))
+    } else if result.success && result.up_to_date {
+        (TaskStatus::Succeeded, TaskMessage::UpToDate)
     } else if result.success {
-        (TaskStatus::Succeeded, result.message)
+        (TaskStatus::Succeeded, TaskMessage::Ok(result.message))
     } else {
-        (TaskStatus::Failed, result.message)
+        (TaskStatus::Failed, TaskMessage::Failed(result.message))
     }
 }
 
@@ -451,9 +460,12 @@ fn execute_rebase_task(
     project_root: &std::path::Path,
     settings: &DaftSettings,
     force: bool,
-) -> (TaskStatus, String) {
+) -> (TaskStatus, TaskMessage) {
     let Some(target_path) = worktree_path else {
-        return (TaskStatus::Failed, "no worktree path".into());
+        return (
+            TaskStatus::Failed,
+            TaskMessage::Failed("no worktree path".into()),
+        );
     };
 
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
@@ -476,13 +488,13 @@ fn execute_rebase_task(
     );
 
     if result.skipped {
-        (TaskStatus::Skipped, result.message)
+        (TaskStatus::Skipped, TaskMessage::Ok(result.message))
     } else if result.conflict {
-        (TaskStatus::Succeeded, "conflict".into())
+        (TaskStatus::Succeeded, TaskMessage::Conflict)
     } else if result.success {
-        (TaskStatus::Succeeded, result.message)
+        (TaskStatus::Succeeded, TaskMessage::Ok(result.message))
     } else {
-        (TaskStatus::Failed, result.message)
+        (TaskStatus::Failed, TaskMessage::Failed(result.message))
     }
 }
 

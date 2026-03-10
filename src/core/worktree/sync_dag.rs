@@ -43,6 +43,25 @@ impl TaskStatus {
     }
 }
 
+/// Typed task completion message, replacing string sentinels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskMessage {
+    /// Generic success with displayable git output.
+    Ok(String),
+    /// Git pull/rebase reported "Already up to date".
+    UpToDate,
+    /// Rebase had conflicts and was aborted.
+    Conflict,
+    /// Worktree/branch was removed by prune.
+    Removed,
+    /// Prune deferred (current worktree — handled post-TUI).
+    Deferred,
+    /// Prune found nothing to remove.
+    NoActionNeeded,
+    /// Task failed with error message.
+    Failed(String),
+}
+
 /// A high-level operation phase shown in the operation header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationPhase {
@@ -256,8 +275,8 @@ pub enum DagEvent {
         phase: OperationPhase,
         branch_name: String,
         status: TaskStatus,
-        /// Human-readable result message.
-        message: String,
+        /// Typed result message.
+        message: TaskMessage,
         /// Refreshed worktree info after the operation (if applicable).
         updated_info: Option<Box<WorktreeInfo>>,
     },
@@ -297,7 +316,7 @@ impl DagExecutor {
     /// allowing the receiver to detect channel closure.
     pub fn run<F>(self, task_fn: F)
     where
-        F: Fn(&SyncTask) -> (TaskStatus, String, Option<Box<WorktreeInfo>>) + Send + Sync,
+        F: Fn(&SyncTask) -> (TaskStatus, TaskMessage, Option<Box<WorktreeInfo>>) + Send + Sync,
     {
         let n = self.dag.tasks.len();
 
@@ -431,10 +450,10 @@ impl DagExecutor {
                                                 phase: dag.tasks[dep_idx].phase.clone(),
                                                 branch_name: dag.tasks[dep_idx].branch_name.clone(),
                                                 status: TaskStatus::DepFailed,
-                                                message: format!(
+                                                message: TaskMessage::Failed(format!(
                                                     "dependency {:?} failed",
                                                     dag.tasks[task_idx].id
-                                                ),
+                                                )),
                                                 updated_info: None,
                                             });
                                             stack.push(dep_idx);
@@ -571,7 +590,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
 
         let executor = DagExecutor::new(dag, tx);
-        executor.run(|_task| (TaskStatus::Succeeded, "ok".into(), None));
+        executor.run(|_task| (TaskStatus::Succeeded, TaskMessage::Ok("ok".into()), None));
 
         let events: Vec<DagEvent> = rx.iter().collect();
         let starts = events
@@ -606,7 +625,7 @@ mod tests {
         let executor = DagExecutor::new(dag, tx);
         executor.run(move |task| {
             order_clone.lock().unwrap().push(task.id.clone());
-            (TaskStatus::Succeeded, "ok".into(), None)
+            (TaskStatus::Succeeded, TaskMessage::Ok("ok".into()), None)
         });
 
         let _events: Vec<DagEvent> = rx.iter().collect();
@@ -636,10 +655,12 @@ mod tests {
 
         let executor = DagExecutor::new(dag, tx);
         executor.run(|task| match &task.id {
-            TaskId::Update(name) if name == "master" => {
-                (TaskStatus::Failed, "pull failed".into(), None)
-            }
-            _ => (TaskStatus::Succeeded, "ok".into(), None),
+            TaskId::Update(name) if name == "master" => (
+                TaskStatus::Failed,
+                TaskMessage::Failed("pull failed".into()),
+                None,
+            ),
+            _ => (TaskStatus::Succeeded, TaskMessage::Ok("ok".into()), None),
         });
 
         let events: Vec<DagEvent> = rx.iter().collect();
