@@ -8,9 +8,10 @@ use crate::{
             prune,
             sync_dag::{DagEvent, OperationPhase, TaskMessage, TaskStatus},
         },
-        NullBridge,
+        CommandBridge, TuiBridge,
     },
     git::GitCommand,
+    hooks::{HookExecutor, HooksConfig},
     output::{
         tui::{FinalStatus, TuiState, WorktreeStatus},
         CliOutput, Output, OutputConfig,
@@ -35,6 +36,8 @@ pub fn execute_prune_task(
     current_wt_path: &Option<PathBuf>,
     current_branch: &Option<String>,
     force: bool,
+    hooks_config: &HooksConfig,
+    tx: &std::sync::mpsc::Sender<DagEvent>,
 ) -> (TaskStatus, TaskMessage) {
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let ctx = prune::PruneContext {
@@ -53,7 +56,16 @@ pub fn execute_prune_task(
         prune_cd_target: settings.prune_cd_target,
     };
 
-    let mut sink = NullBridge;
+    let executor = match HookExecutor::new(hooks_config.clone()) {
+        Ok(e) => e,
+        Err(e) => {
+            return (
+                TaskStatus::Failed,
+                TaskMessage::Failed(format!("failed to initialize hooks: {e}")),
+            );
+        }
+    };
+    let mut sink = TuiBridge::new(executor, tx.clone(), branch_name.to_string());
     match prune::prune_single_branch(
         &ctx,
         branch_name,
@@ -125,6 +137,7 @@ pub fn handle_post_tui_deferred(
     source_worktree: std::path::PathBuf,
     worktree_map: &HashMap<String, (PathBuf, bool)>,
     force: bool,
+    hooks_config: &HooksConfig,
 ) {
     let deferred = deferred_branch.lock().unwrap().clone();
     if let Some(ref branch_name) = deferred {
@@ -143,17 +156,28 @@ pub fn handle_post_tui_deferred(
             remote_name: settings.remote.clone(),
             prune_cd_target: settings.prune_cd_target,
         };
-        let mut sink = NullBridge;
-        let cd_target =
-            prune::handle_deferred_prune(&ctx, branch_name, worktree_map, &params, &mut sink);
+        // After TUI exits, we can use the full CLI output again
+        let config = OutputConfig::with_autocd(false, false, settings.autocd);
+        let mut cli_output = CliOutput::new(config);
+        let executor = match HookExecutor::new(hooks_config.clone()) {
+            Ok(e) => e,
+            Err(_) => HookExecutor::new(HooksConfig {
+                enabled: false,
+                ..Default::default()
+            })
+            .unwrap(),
+        };
+        let cd_target = {
+            let mut sink = CommandBridge::new(&mut cli_output, executor);
+            prune::handle_deferred_prune(&ctx, branch_name, worktree_map, &params, &mut sink)
+        };
+        // sink dropped — cli_output is available again
 
         if let Some(ref cd_path) = cd_target {
-            let config = OutputConfig::with_autocd(false, false, settings.autocd);
-            let mut output = CliOutput::new(config);
             if std::env::var(CD_FILE_ENV).is_ok() {
-                output.cd_path(cd_path);
+                cli_output.cd_path(cd_path);
             } else {
-                output.result(&format!(
+                cli_output.result(&format!(
                     "Run `cd {}` (your previous working directory was removed)",
                     cd_path.display()
                 ));
