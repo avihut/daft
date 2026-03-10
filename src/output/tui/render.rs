@@ -97,12 +97,24 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         .worktrees
         .iter()
         .zip(row_vals.iter())
-        .map(|(wt, vals)| {
-            let cells: Vec<Cell> = columns
+        .flat_map(|(wt, vals)| {
+            let main_cells: Vec<Cell> = columns
                 .iter()
                 .map(|col| render_cell(col, wt, vals, state.tick, state.stat))
                 .collect();
-            Row::new(cells)
+            let mut result = vec![Row::new(main_cells)];
+
+            // Add hook sub-rows if present
+            if state.show_hook_sub_rows && !wt.hook_sub_rows.is_empty() {
+                for (i, sub) in wt.hook_sub_rows.iter().enumerate() {
+                    let is_last = i == wt.hook_sub_rows.len() - 1;
+                    let prefix = if is_last { "\u{2514}" } else { "\u{251C}" };
+                    let sub_row = render_hook_sub_row(sub, prefix, state.tick);
+                    result.push(sub_row);
+                }
+            }
+
+            result
         })
         .collect();
 
@@ -246,7 +258,7 @@ fn render_cell(
     stat: Stat,
 ) -> Cell<'static> {
     match col {
-        Column::Status => render_status_cell(&wt.status, tick),
+        Column::Status => render_status_cell(wt, tick),
         Column::Annotation => render_annotation_cell(&wt.info),
         Column::Branch => Cell::from(vals.branch.clone()),
         Column::Path => Cell::from(vals.path.clone()),
@@ -287,8 +299,8 @@ fn render_cell(
 }
 
 /// Render the status cell with appropriate icon and color.
-fn render_status_cell(status: &WorktreeStatus, tick: usize) -> Cell<'static> {
-    match status {
+fn render_status_cell(wt: &super::state::WorktreeRow, tick: usize) -> Cell<'static> {
+    match &wt.status {
         WorktreeStatus::Idle => Cell::from(Line::from(Span::styled(
             "waiting",
             Style::default().add_modifier(Modifier::DIM),
@@ -321,16 +333,70 @@ fn render_status_cell(status: &WorktreeStatus, tick: usize) -> Cell<'static> {
                 format!("{SKIP} skipped"),
                 Style::default().fg(Color::Yellow),
             ))),
-            FinalStatus::Pruned => Cell::from(Line::from(Span::styled(
-                format!("{DASH} pruned"),
-                Style::default().fg(Color::Red),
-            ))),
+            FinalStatus::Pruned => {
+                if wt.hook_failed {
+                    Cell::from(Line::from(Span::styled(
+                        format!("{CROSS} hook failed"),
+                        Style::default().fg(Color::Red),
+                    )))
+                } else if wt.hook_warned {
+                    Cell::from(Line::from(vec![
+                        Span::styled(format!("{DASH} pruned "), Style::default().fg(Color::Red)),
+                        Span::styled("\u{26A0}", Style::default().fg(Color::Yellow)),
+                    ]))
+                } else {
+                    Cell::from(Line::from(Span::styled(
+                        format!("{DASH} pruned"),
+                        Style::default().fg(Color::Red),
+                    )))
+                }
+            }
             FinalStatus::Failed => Cell::from(Line::from(Span::styled(
                 format!("{CROSS} failed"),
                 Style::default().fg(Color::Red),
             ))),
         },
     }
+}
+
+/// Render a hook sub-row showing individual hook status and timing.
+fn render_hook_sub_row(sub: &super::state::HookSubRow, prefix: &str, tick: usize) -> Row<'static> {
+    use super::state::HookSubStatus;
+
+    let name = sub.hook_type.filename();
+    let status_span = match &sub.status {
+        HookSubStatus::Running => {
+            let spinner = SPINNER_FRAMES[tick % SPINNER_FRAMES.len()];
+            Span::styled(spinner.to_string(), Style::default().fg(Color::Yellow))
+        }
+        HookSubStatus::Succeeded(d) => Span::styled(
+            format!("{CHECKMARK} {}ms", d.as_millis()),
+            Style::default().fg(Color::Green),
+        ),
+        HookSubStatus::Warned(d) => Span::styled(
+            format!("\u{26A0} {}ms", d.as_millis()),
+            Style::default().fg(Color::Yellow),
+        ),
+        HookSubStatus::Failed(d) => Span::styled(
+            format!("{CROSS} {}ms", d.as_millis()),
+            Style::default().fg(Color::Red),
+        ),
+    };
+
+    let line = Line::from(vec![
+        Span::styled(
+            format!("  {prefix} "),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+        Span::styled(
+            format!("{name} "),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+        status_span,
+    ]);
+
+    // Sub-rows span the status column; other columns are empty
+    Row::new(vec![Cell::from(line)])
 }
 
 /// Render the annotation cell (current worktree indicator and default branch marker).
