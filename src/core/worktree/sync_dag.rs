@@ -310,7 +310,8 @@ impl DagExecutor {
     ///
     /// Tasks are executed in parallel (respecting dependencies) using a thread pool.
     /// The closure receives a reference to the `SyncTask` and must return a
-    /// `(TaskStatus, String)` pair indicating the result status and a message.
+    /// `(TaskStatus, TaskMessage, Option<Box<WorktreeInfo>>)` triple indicating
+    /// the result status, a typed message, and optionally refreshed worktree info.
     ///
     /// Consumes `self` so that the sender is dropped after `AllDone` is sent,
     /// allowing the receiver to detect channel closure.

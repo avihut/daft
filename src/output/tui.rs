@@ -217,7 +217,11 @@ impl TuiState {
             TaskStatus::DepFailed => FinalStatus::Skipped,
             TaskStatus::Skipped => FinalStatus::Skipped,
             TaskStatus::Succeeded => match phase {
-                OperationPhase::Prune => FinalStatus::Pruned,
+                OperationPhase::Prune => match message {
+                    TaskMessage::Removed | TaskMessage::Deferred => FinalStatus::Pruned,
+                    TaskMessage::NoActionNeeded => FinalStatus::UpToDate,
+                    _ => FinalStatus::Pruned,
+                },
                 OperationPhase::Update => match message {
                     TaskMessage::UpToDate => FinalStatus::UpToDate,
                     _ => FinalStatus::Updated,
