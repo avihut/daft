@@ -42,7 +42,7 @@ git worktree-prune [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|----------|
-| `-v, --verbose` | Be verbose; show detailed progress |  |
+| `-v, --verbose` | Increase verbosity (-v for hook details, -vv for full sequential output) |  |
 | `-f, --force` | Force removal of worktrees with uncommitted changes or untracked files |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.prune.stat, or summary) |  |
 

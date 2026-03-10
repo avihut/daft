@@ -17,12 +17,14 @@
 //! }
 //! ```
 
+mod buffering;
 mod cli;
 pub mod format;
 pub mod hook_progress;
 mod test;
 pub mod tui;
 
+pub use buffering::BufferingOutput;
 pub use cli::CliOutput;
 pub use test::{OutputEntry, TestOutput};
 

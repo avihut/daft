@@ -56,8 +56,9 @@ Pre-remove and post-remove lifecycle hooks are executed for each worktree
 removal if the repository is trusted. See git-daft(1) for hook management.
 "#)]
 pub struct Args {
-    #[arg(short, long, help = "Be verbose; show detailed progress")]
-    verbose: bool,
+    #[arg(short, long, action = clap::ArgAction::Count,
+          help = "Increase verbosity (-v for hook details, -vv for full sequential output)")]
+    verbose: u8,
 
     #[arg(
         short,
@@ -77,7 +78,7 @@ pub struct Args {
 pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-prune"));
 
-    init_logging(args.verbose);
+    init_logging(args.verbose >= 2);
 
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
@@ -85,16 +86,16 @@ pub fn run() -> Result<()> {
 
     let settings = DaftSettings::load()?;
 
-    if std::io::IsTerminal::is_terminal(&std::io::stderr()) && !args.verbose {
-        run_tui(args, settings)
-    } else {
+    if !std::io::IsTerminal::is_terminal(&std::io::stderr()) || args.verbose >= 2 {
         run_prune(args, settings)
+    } else {
+        run_tui(args, settings)
     }
 }
 
 /// Sequential (non-TTY) execution path — the original prune flow.
 fn run_prune(args: Args, settings: DaftSettings) -> Result<()> {
-    let config = OutputConfig::with_autocd(false, args.verbose, settings.autocd);
+    let config = OutputConfig::with_autocd(false, args.verbose >= 2, settings.autocd);
     let mut output = CliOutput::new(config);
 
     run_prune_inner(&mut output, &settings, args.force)?;
