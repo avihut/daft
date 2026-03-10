@@ -37,7 +37,7 @@ separately.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-v, --verbose` | Be verbose; show detailed progress | |
+| `-v, --verbose` | Increase verbosity (`-v` for hook details, `-vv` for full sequential output) | |
 | `-f, --force` | Force removal of worktrees with uncommitted changes | |
 | `--rebase <BRANCH>` | Rebase all branches onto BRANCH after updating | |
 | `--stat <STAT>` | Statistics mode: `summary` or `lines` (default: from git config `daft.sync.stat`, or `summary`) | |
@@ -55,8 +55,11 @@ separately.
 # Prune stale worktrees and update all remaining ones
 daft sync
 
-# Sync with verbose output to see what happens in each phase
-daft sync --verbose
+# Sync with hook details shown in the TUI
+daft sync -v
+
+# Sync with full sequential output (no TUI)
+daft sync -vv
 
 # Sync and rebase all worktrees onto main
 daft sync --rebase main
