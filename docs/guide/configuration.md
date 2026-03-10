@@ -44,11 +44,24 @@ git config --global daft.autocd false
 | ------------------ | ------------- | ------------------------------------------------------------------------------ |
 | `daft.update.args` | `"--ff-only"` | Default arguments passed to `git pull` in update operations (same-branch mode) |
 
+## List Settings
+
+| Key              | Default     | Description                                                     |
+| ---------------- | ----------- | --------------------------------------------------------------- |
+| `daft.list.stat` | `"summary"` | Default statistics mode for list command (`summary` or `lines`) |
+
 ## Prune Settings
 
-| Key                   | Default  | Description                                                                                                                 |
-| --------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `daft.prune.cdTarget` | `"root"` | Where to cd after pruning the current worktree. Values: `root` (project root) or `default-branch` (default branch worktree) |
+| Key                   | Default     | Description                                                                                                                 |
+| --------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `daft.prune.cdTarget` | `"root"`    | Where to cd after pruning the current worktree. Values: `root` (project root) or `default-branch` (default branch worktree) |
+| `daft.prune.stat`     | `"summary"` | Default statistics mode for prune command (`summary` or `lines`)                                                            |
+
+## Sync Settings
+
+| Key              | Default     | Description                                                     |
+| ---------------- | ----------- | --------------------------------------------------------------- |
+| `daft.sync.stat` | `"summary"` | Default statistics mode for sync command (`summary` or `lines`) |
 
 ## Multi-Remote Settings
 

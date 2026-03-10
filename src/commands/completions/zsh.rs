@@ -245,6 +245,12 @@ _daft() {
                 __git_worktree_list_impl
                 return
                 ;;
+            prune)
+                words=("git-worktree-prune" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __git_worktree_prune_impl
+                return
+                ;;
         esac
     fi
 

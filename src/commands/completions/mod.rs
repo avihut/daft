@@ -33,6 +33,7 @@ pub(super) const VERB_ALIAS_GROUPS: &[(&[&str], &str)] = &[
     (&["rename"], "daft-rename"),
     (&["sync"], "git-sync"),
     (&["list"], "git-worktree-list"),
+    (&["prune"], "git-worktree-prune"),
 ];
 
 /// Available daft commands that need completion scripts
