@@ -443,7 +443,7 @@ fn column_content_width(col: Column, worktrees: &[WorktreeRow], vals: &[ColumnVa
         .map(|(wt, v)| match col {
             // Pre-allocate for the longest possible status to avoid layout jumps.
             Column::Status => status_display_width(&wt.status).max(STATUS_MAX_WIDTH),
-            Column::Annotation => 4,
+            Column::Annotation => 3,
             Column::Branch => v.branch.len() as u16,
             Column::Path => v.path.len() as u16,
             Column::Base => v.base.len() as u16,
@@ -730,9 +730,6 @@ fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
     } else {
         spans.push(Span::raw(" "));
     }
-
-    // Trailing space to match `list` column padding
-    spans.push(Span::raw(" "));
 
     Cell::from(Line::from(spans))
 }
