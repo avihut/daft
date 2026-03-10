@@ -379,7 +379,15 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         });
 
     // ── Run TUI renderer on main thread ────────────────────────────────
-    let renderer = TuiRenderer::new(state, rx).with_extra_rows(5);
+    // Budget 2 hook sub-rows per worktree (pre-remove + post-remove).
+    // Not all worktrees will have hooks, but the ratatui inline viewport
+    // cannot grow after creation, so over-allocate.
+    let hook_extra_rows = if args.verbose >= 1 {
+        (state.worktrees.len() as u16) * 2
+    } else {
+        0
+    };
+    let renderer = TuiRenderer::new(state, rx).with_extra_rows(5 + hook_extra_rows);
     let final_state = renderer.run()?;
 
     // Wait for orchestrator thread to finish
