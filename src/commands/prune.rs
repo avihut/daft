@@ -190,7 +190,16 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     // ── Create TUI state with known phases and worktrees ───────────────
     let phases = vec![OperationPhase::Fetch, OperationPhase::Prune];
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
-    let state = TuiState::new(phases, worktree_infos, project_root.clone(), cwd, stat, 0);
+    let state = TuiState::new(
+        phases,
+        worktree_infos,
+        project_root.clone(),
+        cwd,
+        stat,
+        args.verbose,
+    );
+
+    let hooks_config = HooksConfig::default();
 
     // ── Create channel and spawn orchestrator ──────────────────────────
     let (tx, rx) = std::sync::mpsc::channel();
@@ -214,6 +223,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let deferred_branch_writer = Arc::clone(&deferred_branch);
 
     let orch_settings = Arc::clone(&shared_settings);
+    let shared_hooks_config = Arc::new(hooks_config.clone());
 
     let orchestrator_handle =
         std::thread::spawn(move || {
@@ -246,6 +256,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             let dag = SyncDag::build_prune(gone_branches);
 
             // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
+            let tx_for_tasks = tx.clone();
             let executor = DagExecutor::new(dag, tx);
             executor.run(
             move |task: &SyncTask| -> (TaskStatus, TaskMessage, Option<Box<list::WorktreeInfo>>) {
@@ -266,6 +277,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             &shared_current_wt_path,
                             &shared_current_branch,
                             shared_force,
+                            &shared_hooks_config,
+                            &tx_for_tasks,
                         );
                         if matches!(message, TaskMessage::Deferred) {
                             *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
@@ -298,7 +311,34 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         source_worktree,
         &worktree_map,
         args.force,
+        &hooks_config,
     );
+
+    // ── Print hook summaries (warnings/failures) ──────────────────────────
+    if !final_state.hook_summaries.is_empty() {
+        eprintln!();
+        eprintln!("Hooks:");
+        for entry in &final_state.hook_summaries {
+            let status_word = if entry.warned { "warned" } else { "failed" };
+            eprintln!(
+                "  {}: {} {} ({}, {}ms)",
+                entry.branch_name,
+                entry.hook_type.filename(),
+                status_word,
+                if entry.warned {
+                    "continuing"
+                } else {
+                    "aborted"
+                },
+                entry.duration.as_millis(),
+            );
+            if let Some(ref output) = entry.output {
+                for line in output.lines() {
+                    eprintln!("    {line}");
+                }
+            }
+        }
+    }
 
     // ── Check for failures ────────────────────────────────────────────────
     sync_shared::check_tui_failures(&final_state)?;
