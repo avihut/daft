@@ -1,5 +1,7 @@
-// Schema structs are public API for incremental development; suppress
+// These modules are public API for incremental development; suppress
 // dead-code warnings until the rest of the runner consumes them.
+#[allow(dead_code)]
+pub mod env;
 #[allow(dead_code)]
 pub mod schema;
 
