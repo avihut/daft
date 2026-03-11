@@ -60,17 +60,26 @@ impl Default for JobSpec {
 }
 
 /// How to schedule a set of jobs.
+///
+/// DAG mode is implicit: when any job has non-empty `needs`, the runner
+/// builds a dependency graph automatically. The hooks-specific `Follow`
+/// mode (attach to an existing session) is handled in the hooks layer,
+/// not here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMode {
     /// Run jobs one at a time, continue on failure.
     Sequential,
     /// Run jobs one at a time, stop on first failure.
     Piped,
-    /// Run all jobs concurrently.
+    /// Run all jobs concurrently (bounded by available CPUs).
     Parallel,
 }
 
 /// Status of a job node during execution.
+///
+/// Mirrors `core::worktree::sync_dag::TaskStatus`. Once the sync DAG is
+/// migrated to use the generic executor, `TaskStatus` should be replaced
+/// by this type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeStatus {
     /// Not yet started.

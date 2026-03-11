@@ -56,47 +56,47 @@ impl CliPresenter {
 
 impl JobPresenter for CliPresenter {
     fn on_phase_start(&self, phase_name: &str) {
-        let r = self.renderer.lock().unwrap();
+        let r = self.renderer.lock().expect("CliPresenter mutex poisoned");
         r.print_header(phase_name);
     }
 
     fn on_job_start(&self, name: &str, description: Option<&str>) {
-        let mut r = self.renderer.lock().unwrap();
+        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
         r.start_job_with_description(name, description);
     }
 
     fn on_job_output(&self, name: &str, line: &str) {
-        let mut r = self.renderer.lock().unwrap();
+        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
         r.update_job_output(name, line);
     }
 
     fn on_job_success(&self, name: &str, duration: Duration) {
-        let mut r = self.renderer.lock().unwrap();
+        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
         r.finish_job_success(name, duration);
     }
 
     fn on_job_failure(&self, name: &str, duration: Duration) {
-        let mut r = self.renderer.lock().unwrap();
+        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
         r.finish_job_failure(name, duration);
     }
 
     fn on_job_skipped(&self, name: &str, reason: &str, duration: Duration, show_duration: bool) {
-        let mut r = self.renderer.lock().unwrap();
+        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
         r.finish_job_skipped(name, reason, duration, show_duration);
     }
 
     fn on_message(&self, msg: &str) {
-        let r = self.renderer.lock().unwrap();
+        let r = self.renderer.lock().expect("CliPresenter mutex poisoned");
         r.println(msg);
     }
 
     fn on_phase_complete(&self, total_duration: Duration) {
-        let r = self.renderer.lock().unwrap();
+        let r = self.renderer.lock().expect("CliPresenter mutex poisoned");
         r.print_summary(total_duration);
     }
 
     fn take_results(&self) -> Vec<JobResult> {
-        let mut r = self.renderer.lock().unwrap();
+        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
         r.take_finished_jobs()
             .into_iter()
             .map(Self::entry_to_job_result)
