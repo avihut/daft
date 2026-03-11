@@ -10,7 +10,10 @@ mod progress;
 pub mod remote;
 pub mod repo;
 pub mod settings;
+mod tui_bridge;
 pub mod worktree;
+
+pub use tui_bridge::TuiBridge;
 
 pub use progress::{CommandBridge, OutputSink};
 

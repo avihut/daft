@@ -1,4 +1,5 @@
 use super::{styled_trust_level, HooksRunArgs};
+use crate::executor::cli_presenter::CliPresenter;
 use crate::hooks::yaml_executor::JobFilter;
 use crate::hooks::{
     yaml_config, yaml_config_loader, HookExecutor, HookType, HooksConfig, TrustDatabase, TrustLevel,
@@ -216,11 +217,13 @@ pub(super) fn cmd_run(args: &HooksRunArgs, output: &mut dyn Output) -> Result<()
     if args.verbose {
         hooks_config.output.verbose = true;
     }
+    let output_config = hooks_config.output.clone();
     let executor = HookExecutor::new(hooks_config)?
         .with_bypass_trust(true)
         .with_job_filter(filter);
 
-    let result = executor.execute(&ctx, output)?;
+    let presenter = CliPresenter::auto(&output_config);
+    let result = executor.execute(&ctx, output, presenter)?;
 
     if result.skipped {
         if let Some(reason) = result.skip_reason {

@@ -69,7 +69,11 @@ pub const RED: &str = "\x1b[31m";
 /// ANSI escape code for cyan text.
 pub const CYAN: &str = "\x1b[36m";
 
-/// ANSI escape code for orange text (256-color).
+/// Accent/brand color index for the 256-color palette.
+/// Use with ratatui: `Color::Indexed(ACCENT_COLOR_INDEX)`.
+pub const ACCENT_COLOR_INDEX: u8 = 208;
+
+/// ANSI escape code for orange text (256-color, matches [`ACCENT_COLOR_INDEX`]).
 pub const ORANGE: &str = "\x1b[38;5;208m";
 
 /// ANSI escape code for dark gray text (bright black).

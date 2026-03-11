@@ -1,8 +1,12 @@
 //! Adapters bridging core traits to the command layer.
 
 use super::{HookOutcome, HookRunner, ProgressSink};
+use crate::executor::cli_presenter::CliPresenter;
+use crate::executor::presenter::JobPresenter;
 use crate::hooks::HookExecutor;
 use crate::output::Output;
+use crate::settings::HookOutputConfig;
+use std::sync::Arc;
 
 /// Adapter that forwards `ProgressSink` calls to an `Output` implementation.
 ///
@@ -51,11 +55,29 @@ impl ProgressSink for OutputSink<'_> {
 pub struct CommandBridge<'a> {
     output: &'a mut dyn Output,
     executor: HookExecutor,
+    output_config: HookOutputConfig,
 }
 
 impl<'a> CommandBridge<'a> {
     pub fn new(output: &'a mut dyn Output, executor: HookExecutor) -> Self {
-        Self { output, executor }
+        Self {
+            output,
+            executor,
+            output_config: HookOutputConfig::default(),
+        }
+    }
+
+    /// Create a bridge with a custom hook output configuration.
+    pub fn with_output_config(
+        output: &'a mut dyn Output,
+        executor: HookExecutor,
+        output_config: HookOutputConfig,
+    ) -> Self {
+        Self {
+            output,
+            executor,
+            output_config,
+        }
     }
 
     /// Consume the bridge and return the hook executor.
@@ -80,7 +102,8 @@ impl ProgressSink for CommandBridge<'_> {
 
 impl HookRunner for CommandBridge<'_> {
     fn run_hook(&mut self, ctx: &crate::hooks::HookContext) -> anyhow::Result<HookOutcome> {
-        let result = self.executor.execute(ctx, self.output)?;
+        let presenter: Arc<dyn JobPresenter> = CliPresenter::auto(&self.output_config);
+        let result = self.executor.execute(ctx, self.output, presenter)?;
         Ok(HookOutcome {
             success: result.success,
             skipped: result.skipped,

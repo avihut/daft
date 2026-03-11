@@ -34,6 +34,32 @@ impl TuiRenderer {
         self
     }
 
+    /// Compute total rendered worktree rows including hook sub-rows.
+    ///
+    /// When `show_hook_sub_rows` is true (verbose >= 1), each hook sub-row and
+    /// its nested job sub-rows add extra rendered rows beneath the parent worktree row.
+    fn total_rendered_rows(&self) -> u16 {
+        let base = self.state.worktrees.len() as u16;
+        if self.state.show_hook_sub_rows {
+            base + self
+                .state
+                .worktrees
+                .iter()
+                .map(|wt| {
+                    let hooks = wt.hook_sub_rows.len() as u16;
+                    let jobs: u16 = wt
+                        .hook_sub_rows
+                        .iter()
+                        .map(|h| h.job_sub_rows.len() as u16)
+                        .sum();
+                    hooks + jobs
+                })
+                .sum::<u16>()
+        } else {
+            base
+        }
+    }
+
     /// Run the render loop until all tasks complete.
     /// Returns the final `TuiState` for post-render summary.
     pub fn run(mut self) -> anyhow::Result<TuiState> {
@@ -73,7 +99,7 @@ impl TuiRenderer {
                         if is_done {
                             // Final render — position cursor past all content so
                             // the shell prompt won't overwrite the table.
-                            let worktree_rows = self.state.worktrees.len() as u16;
+                            let total_rows = self.total_rendered_rows();
                             terminal.draw(|frame| {
                                 let area = frame.area();
                                 let chunks = Layout::vertical([
@@ -84,8 +110,8 @@ impl TuiRenderer {
                                 render::render_header(&self.state, frame, chunks[0]);
                                 render::render_table(&self.state, frame, chunks[1]);
 
-                                // table header (1 row) + data rows
-                                let content_bottom = area.y + header_height + 1 + worktree_rows;
+                                // table header (1 row) + data rows (including hook sub-rows)
+                                let content_bottom = area.y + header_height + 1 + total_rows;
                                 frame.set_cursor_position(Position {
                                     x: 0,
                                     y: content_bottom,
@@ -98,7 +124,7 @@ impl TuiRenderer {
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
-                        let worktree_rows = self.state.worktrees.len() as u16;
+                        let total_rows = self.total_rendered_rows();
                         terminal.draw(|frame| {
                             let area = frame.area();
                             let chunks = Layout::vertical([
@@ -109,7 +135,8 @@ impl TuiRenderer {
                             render::render_header(&self.state, frame, chunks[0]);
                             render::render_table(&self.state, frame, chunks[1]);
 
-                            let content_bottom = area.y + header_height + 1 + worktree_rows;
+                            // table header (1 row) + data rows (including hook sub-rows)
+                            let content_bottom = area.y + header_height + 1 + total_rows;
                             frame.set_cursor_position(Position {
                                 x: 0,
                                 y: content_bottom,

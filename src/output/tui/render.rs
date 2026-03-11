@@ -82,6 +82,18 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         })
         .collect();
 
+    // X offset where the first data column (Branch) starts — used for
+    // positioning pruned-row overlays with continuous strikethrough.
+    let pruned_x_offset: u16 = columns
+        .iter()
+        .zip(constraints.iter())
+        .take_while(|(col, _)| matches!(col, Column::Status | Column::Annotation))
+        .map(|(_, c)| match c {
+            Constraint::Length(w) => w + 2, // column width + column spacing
+            _ => 2,
+        })
+        .sum();
+
     let header_cells: Vec<Cell> = columns
         .iter()
         .map(|col| {
@@ -93,24 +105,101 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         .collect();
     let header_row = Row::new(header_cells);
 
-    let rows: Vec<Row> = state
-        .worktrees
-        .iter()
-        .zip(row_vals.iter())
-        .map(|(wt, vals)| {
-            let cells: Vec<Cell> = columns
+    // Build table rows, inserting empty placeholders for hook sub-rows.
+    // Hook lines are rendered as full-width overlays after the table so they
+    // aren't constrained by column widths.
+    let mut all_rows: Vec<Row> = Vec::new();
+    let mut hook_overlays: Vec<(u16, Line)> = Vec::new();
+    let mut pruned_overlays: Vec<(u16, Line)> = Vec::new();
+    let mut row_count: u16 = 0;
+    let num_columns = columns.len();
+
+    for (wt, vals) in state.worktrees.iter().zip(row_vals.iter()) {
+        let is_pruned = matches!(wt.status, WorktreeStatus::Done(FinalStatus::Pruned));
+        let main_cells: Vec<Cell> = if is_pruned {
+            // Status and Annotation keep their normal cells; other columns are
+            // left empty because their content is overlaid with a single
+            // continuous strikethrough line.
+            columns
+                .iter()
+                .map(|col| {
+                    if matches!(col, Column::Status | Column::Annotation) {
+                        render_cell(col, wt, vals, state.tick, state.stat)
+                    } else {
+                        Cell::from("")
+                    }
+                })
+                .collect()
+        } else {
+            columns
                 .iter()
                 .map(|col| render_cell(col, wt, vals, state.tick, state.stat))
-                .collect();
-            Row::new(cells)
-        })
-        .collect();
+                .collect()
+        };
+        all_rows.push(Row::new(main_cells));
+        if is_pruned {
+            pruned_overlays.push((
+                row_count,
+                format_pruned_overlay(vals, &columns, &constraints),
+            ));
+        }
+        row_count += 1;
 
-    let table = Table::new(rows, &constraints)
+        if state.show_hook_sub_rows && !wt.hook_sub_rows.is_empty() {
+            let hook_count = wt.hook_sub_rows.len();
+            for (i, sub) in wt.hook_sub_rows.iter().enumerate() {
+                let is_last_hook = i == hook_count - 1;
+                let hook_prefix = if is_last_hook { "\u{2514}" } else { "\u{251C}" };
+
+                // Hook placeholder row.
+                let empty_cells: Vec<Cell> = (0..num_columns).map(|_| Cell::from("")).collect();
+                all_rows.push(Row::new(empty_cells));
+                hook_overlays.push((row_count, format_hook_line(sub, hook_prefix, state.tick)));
+                row_count += 1;
+
+                // Job sub-rows within this hook.
+                let job_count = sub.job_sub_rows.len();
+                for (j, job) in sub.job_sub_rows.iter().enumerate() {
+                    let is_last_job = j == job_count - 1;
+                    let empty_cells: Vec<Cell> = (0..num_columns).map(|_| Cell::from("")).collect();
+                    all_rows.push(Row::new(empty_cells));
+                    hook_overlays.push((
+                        row_count,
+                        format_job_line(job, is_last_hook, is_last_job, state.tick),
+                    ));
+                    row_count += 1;
+                }
+            }
+        }
+    }
+
+    let table = Table::new(all_rows, &constraints)
         .header(header_row)
         .column_spacing(2);
 
     frame.render_widget(table, area);
+
+    // Overlay hook lines on placeholder rows (full terminal width, no column constraints).
+    // The header row occupies 1 line, so data rows start at area.y + 1.
+    let data_start_y = area.y + 1;
+    for (row_offset, line) in hook_overlays {
+        let y = data_start_y + row_offset;
+        if y < area.y + area.height {
+            let hook_area = Rect::new(area.x, y, area.width, 1);
+            frame.render_widget(Paragraph::new(line), hook_area);
+        }
+    }
+
+    // Overlay pruned row content with continuous strikethrough from the Branch
+    // column onwards, bridging column separator gaps.
+    for (row_offset, line) in pruned_overlays {
+        let y = data_start_y + row_offset;
+        if y < area.y + area.height {
+            let remaining = area.width.saturating_sub(pruned_x_offset);
+            let pruned_area = Rect::new(area.x + pruned_x_offset, y, remaining, 1);
+            frame.render_widget(Paragraph::new(line), pruned_area);
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -246,7 +335,7 @@ fn render_cell(
     stat: Stat,
 ) -> Cell<'static> {
     match col {
-        Column::Status => render_status_cell(&wt.status, tick),
+        Column::Status => render_status_cell(wt, tick),
         Column::Annotation => render_annotation_cell(&wt.info),
         Column::Branch => Cell::from(vals.branch.clone()),
         Column::Path => Cell::from(vals.path.clone()),
@@ -287,8 +376,8 @@ fn render_cell(
 }
 
 /// Render the status cell with appropriate icon and color.
-fn render_status_cell(status: &WorktreeStatus, tick: usize) -> Cell<'static> {
-    match status {
+fn render_status_cell(wt: &super::state::WorktreeRow, tick: usize) -> Cell<'static> {
+    match &wt.status {
         WorktreeStatus::Idle => Cell::from(Line::from(Span::styled(
             "waiting",
             Style::default().add_modifier(Modifier::DIM),
@@ -321,16 +410,209 @@ fn render_status_cell(status: &WorktreeStatus, tick: usize) -> Cell<'static> {
                 format!("{SKIP} skipped"),
                 Style::default().fg(Color::Yellow),
             ))),
-            FinalStatus::Pruned => Cell::from(Line::from(Span::styled(
-                format!("{DASH} pruned"),
-                Style::default().fg(Color::Red),
-            ))),
+            FinalStatus::Pruned => {
+                if wt.hook_failed {
+                    Cell::from(Line::from(Span::styled(
+                        format!("{CROSS} hook failed"),
+                        Style::default().fg(Color::Red),
+                    )))
+                } else if wt.hook_warned {
+                    Cell::from(Line::from(vec![
+                        Span::styled(format!("{DASH} pruned "), Style::default().fg(Color::Red)),
+                        Span::styled("\u{26A0}", Style::default().fg(Color::Yellow)),
+                    ]))
+                } else {
+                    Cell::from(Line::from(Span::styled(
+                        format!("{DASH} pruned"),
+                        Style::default().fg(Color::Red),
+                    )))
+                }
+            }
             FinalStatus::Failed => Cell::from(Line::from(Span::styled(
                 format!("{CROSS} failed"),
                 Style::default().fg(Color::Red),
             ))),
         },
     }
+}
+
+/// Format a hook sub-row as a full-width line (not constrained by table columns).
+///
+/// Rendered as a `Paragraph` overlay on top of an empty placeholder row in the table.
+fn format_hook_line(sub: &super::state::HookSubRow, prefix: &str, tick: usize) -> Line<'static> {
+    use super::state::HookSubStatus;
+
+    let name = sub.hook_type.filename();
+    let status_span = match &sub.status {
+        HookSubStatus::Running => {
+            let spinner = SPINNER_FRAMES[tick % SPINNER_FRAMES.len()];
+            Span::styled(spinner.to_string(), Style::default().fg(Color::Yellow))
+        }
+        HookSubStatus::Succeeded(d) => Span::styled(
+            format!("{CHECKMARK} {}ms", d.as_millis()),
+            Style::default().fg(Color::Green),
+        ),
+        HookSubStatus::Warned(d) => Span::styled(
+            format!("\u{26A0} {}ms", d.as_millis()),
+            Style::default().fg(Color::Yellow),
+        ),
+        HookSubStatus::Failed(d) => Span::styled(
+            format!("{CROSS} {}ms", d.as_millis()),
+            Style::default().fg(Color::Red),
+        ),
+    };
+
+    Line::from(vec![
+        Span::styled(
+            format!("  {prefix} "),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+        Span::styled(
+            format!("{name} "),
+            Style::default().fg(Color::Indexed(styles::ACCENT_COLOR_INDEX)),
+        ),
+        status_span,
+    ])
+}
+
+/// Format a job sub-row as a full-width line with nested tree indentation.
+///
+/// Job lines are indented one level deeper than their parent hook line.
+/// The tree prefix depends on whether the parent hook is last and whether
+/// this job is last within its hook.
+fn format_job_line(
+    job: &super::state::JobSubRow,
+    parent_hook_is_last: bool,
+    job_is_last: bool,
+    tick: usize,
+) -> Line<'static> {
+    use super::state::JobSubStatus;
+
+    let prefix = match (parent_hook_is_last, job_is_last) {
+        (false, false) => "  \u{2502} \u{251C} ", // "  │ ├ "
+        (false, true) => "  \u{2502} \u{2514} ",  // "  │ └ "
+        (true, false) => "    \u{251C} ",         // "    ├ "
+        (true, true) => "    \u{2514} ",          // "    └ "
+    };
+
+    let (status_span, name_color) = match &job.status {
+        JobSubStatus::Running => {
+            let spinner = SPINNER_FRAMES[tick % SPINNER_FRAMES.len()];
+            (
+                Span::styled(spinner.to_string(), Style::default().fg(Color::Yellow)),
+                Color::Yellow,
+            )
+        }
+        JobSubStatus::Succeeded(d) => (
+            Span::styled(
+                format!("{CHECKMARK} {}ms", d.as_millis()),
+                Style::default().fg(Color::Green),
+            ),
+            Color::Green,
+        ),
+        JobSubStatus::Failed(d) => (
+            Span::styled(
+                format!("{CROSS} {}ms", d.as_millis()),
+                Style::default().fg(Color::Red),
+            ),
+            Color::Red,
+        ),
+        JobSubStatus::Skipped { reason, .. } => {
+            let text = if reason.is_empty() {
+                format!("{SKIP} skipped")
+            } else {
+                format!("{SKIP} {reason}")
+            };
+            (
+                Span::styled(text, Style::default().add_modifier(Modifier::DIM)),
+                Color::Reset,
+            )
+        }
+    };
+
+    let name_style = if matches!(job.status, JobSubStatus::Skipped { .. }) {
+        Style::default().add_modifier(Modifier::DIM)
+    } else {
+        Style::default().fg(name_color)
+    };
+
+    Line::from(vec![
+        Span::styled(prefix, Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(format!("{} ", job.name), name_style),
+        status_span,
+    ])
+}
+
+/// Extract the plain-text content for a column from pre-computed values.
+fn column_plain_text(col: &Column, vals: &ColumnValues) -> String {
+    match col {
+        Column::Branch => vals.branch.clone(),
+        Column::Path => vals.path.clone(),
+        Column::Base => vals.base.clone(),
+        Column::Changes => vals.changes.clone(),
+        Column::Remote => vals.remote.clone(),
+        Column::Age => vals.branch_age.clone(),
+        Column::LastCommit => {
+            if vals.last_commit_age.is_empty() {
+                vals.last_commit_subject.clone()
+            } else if vals.last_commit_subject.is_empty() {
+                vals.last_commit_age.clone()
+            } else {
+                format!("{} {}", vals.last_commit_age, vals.last_commit_subject)
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// Build an overlay line for a pruned worktree row with continuous strikethrough.
+///
+/// Unlike per-cell styling (which leaves gaps at column separators), this
+/// produces a single `Line` that spans all columns from Branch onwards so the
+/// `CROSSED_OUT` modifier runs unbroken through the separator gaps, ending at
+/// the last column's text boundary.
+fn format_pruned_overlay(
+    vals: &ColumnValues,
+    columns: &[Column],
+    constraints: &[Constraint],
+) -> Line<'static> {
+    let style = Style::default()
+        .add_modifier(Modifier::CROSSED_OUT)
+        .add_modifier(Modifier::DIM);
+
+    let pruned_cols: Vec<_> = columns
+        .iter()
+        .zip(constraints.iter())
+        .filter(|(col, _)| !matches!(col, Column::Status | Column::Annotation))
+        .collect();
+
+    if pruned_cols.is_empty() {
+        return Line::from("");
+    }
+
+    let mut text = String::new();
+    let last_idx = pruned_cols.len() - 1;
+
+    for (i, (col, constraint)) in pruned_cols.iter().enumerate() {
+        if i > 0 {
+            text.push_str("  "); // matches column_spacing(2)
+        }
+        let col_text = column_plain_text(col, vals);
+        if i < last_idx {
+            // Pad intermediate columns to their resolved width so the
+            // strikethrough spans the full column area.
+            let width = match constraint {
+                Constraint::Length(w) => *w as usize,
+                _ => col_text.len(),
+            };
+            text.push_str(&format!("{col_text:<width$}"));
+        } else {
+            // Last column: end at the text boundary (no trailing padding).
+            text.push_str(&col_text);
+        }
+    }
+
+    Line::from(Span::styled(text, style))
 }
 
 /// Render the annotation cell (current worktree indicator and default branch marker).

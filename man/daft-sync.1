@@ -4,7 +4,7 @@
 .SH NAME
 daft\-sync \- Synchronize worktrees with remote (prune + update all)
 .SH SYNOPSIS
-\fBdaft\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-rebase\fR] [\fB\-\-stat\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBdaft\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-rebase\fR] [\fB\-\-stat\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Synchronizes all worktrees with the remote in a single command.
@@ -26,7 +26,7 @@ separately.
 .SH OPTIONS
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
-Be verbose; show detailed progress
+Increase verbosity (\-v for hook details, \-vv for full sequential output)
 .TP
 \fB\-f\fR, \fB\-\-force\fR
 Force removal of worktrees with uncommitted changes

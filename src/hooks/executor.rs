@@ -9,13 +9,11 @@ use super::{
     find_hooks, list_hooks, FailMode, HookConfig, HookContext, HookEnvironment, HookType,
     HooksConfig, TrustDatabase, TrustLevel, DEPRECATED_HOOK_REMOVAL_VERSION,
 };
-use crate::output::hook_progress::HookRenderer;
+use crate::executor::presenter::JobPresenter;
 use crate::output::Output;
-use anyhow::{Context, Result};
-use std::io::{BufRead, BufReader};
+use anyhow::Result;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::sync::Arc;
 
 /// Result of a hook execution.
 #[derive(Debug, Clone)]
@@ -178,7 +176,12 @@ impl HookExecutor {
     /// 3. Falling back to legacy script execution
     /// 4. Checking trust level for the repository
     /// 5. Handling success/failure based on fail mode
-    pub fn execute(&self, ctx: &HookContext, output: &mut dyn Output) -> Result<HookResult> {
+    pub fn execute(
+        &self,
+        ctx: &HookContext,
+        output: &mut dyn Output,
+        presenter: Arc<dyn JobPresenter>,
+    ) -> Result<HookResult> {
         // Check if hooks are globally enabled
         if !self.config.enabled {
             return Ok(HookResult::skipped("Hooks are globally disabled"));
@@ -197,7 +200,7 @@ impl HookExecutor {
         let hook_source_worktree = self.get_hook_source_worktree(ctx);
 
         // Try YAML config first
-        match self.try_yaml_hook(ctx, &hook_source_worktree, hook_config, output) {
+        match self.try_yaml_hook(ctx, &hook_source_worktree, hook_config, output, &presenter) {
             Ok(Some(result)) => return Ok(result),
             Ok(None) => {} // No YAML config or no definition for this hook — fall through to legacy
             Err(e) => {
@@ -208,7 +211,7 @@ impl HookExecutor {
         }
 
         // Fallback: legacy script execution
-        self.execute_legacy(ctx, hook_config, &hook_source_worktree, output)
+        self.execute_legacy(ctx, hook_config, &hook_source_worktree, output, presenter)
     }
 
     /// Try to execute a hook via YAML configuration.
@@ -221,6 +224,7 @@ impl HookExecutor {
         hook_source_worktree: &Path,
         hook_config: &HookConfig,
         output: &mut dyn Output,
+        presenter: &Arc<dyn JobPresenter>,
     ) -> Result<Option<HookResult>> {
         let yaml_config = match yaml_config_loader::load_merged_config(hook_source_worktree)? {
             Some(config) => config,
@@ -282,6 +286,7 @@ impl HookExecutor {
             rc,
             &self.config.output,
             &self.job_filter,
+            presenter,
         )?;
 
         if !result.success && !result.skipped {
@@ -303,6 +308,7 @@ impl HookExecutor {
         hook_config: &HookConfig,
         hook_source_worktree: &Path,
         output: &mut dyn Output,
+        presenter: Arc<dyn JobPresenter>,
     ) -> Result<HookResult> {
         // Discover hooks (handles deprecated filename resolution)
         let discovery = find_hooks(ctx.hook_type, hook_source_worktree, &self.config);
@@ -370,47 +376,47 @@ impl HookExecutor {
             }
         }
 
-        // Execute all hooks in order using the renderer for output
-        // Clear any active spinner — the hook renderer writes directly to stderr.
+        // Clear any active spinner — the presenter writes directly to stderr.
         output.finish_spinner();
 
-        let mut renderer = HookRenderer::auto(&self.config.output);
         let env = HookEnvironment::from_context(ctx);
         let working_dir = env.working_directory(ctx);
 
-        // Print header and track total time
+        // Convert legacy hook paths to generic JobSpecs
+        let specs =
+            crate::hooks::job_adapter::scripts_to_specs(&discovery.hooks, &env, working_dir);
+
+        // Use presenter for header and execution
         let hook_type_name = ctx.hook_type.yaml_name();
-        renderer.print_header(hook_type_name);
+        presenter.on_phase_start(hook_type_name);
         let hook_start = std::time::Instant::now();
 
-        for hook_path in &discovery.hooks {
-            let hook_name = hook_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("(unnamed)");
+        // Execute via the generic runner (Piped mode = stop on first failure)
+        let results = crate::executor::runner::run_jobs(
+            &specs,
+            crate::executor::ExecutionMode::Piped,
+            &presenter,
+        )?;
 
-            renderer.start_job(hook_name);
-            let start = std::time::Instant::now();
+        presenter.on_phase_complete(hook_start.elapsed());
 
-            let result = self.execute_hook_file_with_renderer(
-                hook_path,
-                &env,
-                working_dir,
-                &mut renderer,
-                hook_name,
-            )?;
-            let elapsed = start.elapsed();
-
-            if result.success {
-                renderer.finish_job_success(hook_name, elapsed);
-            } else {
-                renderer.finish_job_failure(hook_name, elapsed);
-                renderer.print_summary(hook_start.elapsed());
-                return self.handle_hook_failure(ctx.hook_type, hook_config, result, output);
-            }
+        // Check results for failure
+        let any_failed = results
+            .iter()
+            .any(|r| r.status == crate::executor::NodeStatus::Failed);
+        if any_failed {
+            let failed = results
+                .iter()
+                .find(|r| r.status == crate::executor::NodeStatus::Failed)
+                .unwrap();
+            let hook_result = HookResult::failed(
+                failed.exit_code.unwrap_or(-1),
+                failed.stdout.clone(),
+                failed.stderr.clone(),
+            );
+            return self.handle_hook_failure(ctx.hook_type, hook_config, hook_result, output);
         }
 
-        renderer.print_summary(hook_start.elapsed());
         Ok(HookResult::success())
     }
 
@@ -457,100 +463,6 @@ impl HookExecutor {
                 ctx.hook_type
             ));
             false
-        }
-    }
-
-    /// Execute a single hook file, feeding output lines to the renderer.
-    ///
-    /// Stdout and stderr are read in separate threads so neither blocks the
-    /// timeout.  After the process completes the captured lines are fed to
-    /// the renderer for display.
-    fn execute_hook_file_with_renderer(
-        &self,
-        hook_path: &Path,
-        env: &HookEnvironment,
-        working_dir: &Path,
-        renderer: &mut HookRenderer,
-        job_name: &str,
-    ) -> Result<HookResult> {
-        let mut cmd = Command::new(hook_path);
-        cmd.current_dir(working_dir);
-        cmd.envs(env.vars());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("Failed to spawn hook: {}", hook_path.display()))?;
-
-        let stdout_handle = child.stdout.take();
-        let stderr_handle = child.stderr.take();
-
-        // Read stdout and stderr in separate threads so they don't block the
-        // timeout.  Lines are collected and fed to the renderer after the
-        // process exits.
-        let stdout_thread = std::thread::spawn(move || {
-            let mut content = String::new();
-            let mut lines = Vec::new();
-            if let Some(stdout) = stdout_handle {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines().map_while(Result::ok) {
-                    lines.push(line.clone());
-                    content.push_str(&line);
-                    content.push('\n');
-                }
-            }
-            (content, lines)
-        });
-
-        let stderr_thread = std::thread::spawn(move || {
-            let mut content = String::new();
-            let mut lines = Vec::new();
-            if let Some(stderr) = stderr_handle {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines().map_while(Result::ok) {
-                    lines.push(line.clone());
-                    content.push_str(&line);
-                    content.push('\n');
-                }
-            }
-            (content, lines)
-        });
-
-        let timeout = Duration::from_secs(self.config.timeout_seconds as u64);
-        let status = wait_with_timeout(&mut child, timeout)
-            .with_context(|| format!("Hook execution failed: {}", hook_path.display()))?;
-
-        let (stdout_content, stdout_lines) = stdout_thread.join().unwrap_or_default();
-        let (stderr_content, stderr_lines) = stderr_thread.join().unwrap_or_default();
-
-        // Feed captured lines to the renderer
-        for line in &stdout_lines {
-            renderer.update_job_output(job_name, line);
-        }
-        for line in &stderr_lines {
-            renderer.update_job_output(job_name, line);
-        }
-
-        let exit_code = status.code().unwrap_or(-1);
-
-        if status.success() {
-            Ok(HookResult {
-                success: true,
-                exit_code: Some(exit_code),
-                stdout: stdout_content,
-                stderr: stderr_content,
-                skipped: false,
-                skip_reason: None,
-                skip_ran_command: false,
-                platform_skip: false,
-            })
-        } else {
-            Ok(HookResult::failed(
-                exit_code,
-                stdout_content,
-                stderr_content,
-            ))
         }
     }
 
@@ -694,35 +606,10 @@ impl HookExecutor {
     }
 }
 
-/// Wait for a child process with a timeout.
-fn wait_with_timeout(
-    child: &mut std::process::Child,
-    timeout: Duration,
-) -> Result<std::process::ExitStatus> {
-    use std::thread;
-    use std::time::Instant;
-
-    let start = Instant::now();
-    let poll_interval = Duration::from_millis(100);
-
-    loop {
-        match child.try_wait()? {
-            Some(status) => return Ok(status),
-            None => {
-                if start.elapsed() >= timeout {
-                    // Kill the process
-                    child.kill().ok();
-                    anyhow::bail!("Hook execution timed out after {:?}", timeout);
-                }
-                thread::sleep(poll_interval);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::executor::presenter::NullPresenter;
     use crate::hooks::PROJECT_HOOKS_DIR;
     use crate::output::TestOutput;
     use std::fs;
@@ -799,7 +686,8 @@ mod tests {
             "main",
         );
 
-        let result = executor.execute(&ctx, &mut output).unwrap();
+        let presenter = NullPresenter::arc();
+        let result = executor.execute(&ctx, &mut output, presenter).unwrap();
         assert!(result.skipped);
         assert_eq!(
             result.skip_reason,
@@ -828,7 +716,8 @@ mod tests {
             "main",
         );
 
-        let result = executor.execute(&ctx, &mut output).unwrap();
+        let presenter = NullPresenter::arc();
+        let result = executor.execute(&ctx, &mut output, presenter).unwrap();
         assert!(result.skipped);
         assert_eq!(result.skip_reason, Some("No hook files found".to_string()));
     }
@@ -856,7 +745,8 @@ mod tests {
             "main",
         );
 
-        let result = executor.execute(&ctx, &mut output).unwrap();
+        let presenter = NullPresenter::arc();
+        let result = executor.execute(&ctx, &mut output, presenter).unwrap();
         assert!(result.skipped);
         assert_eq!(
             result.skip_reason,
@@ -894,7 +784,8 @@ mod tests {
             "main",
         );
 
-        let result = executor.execute(&ctx, &mut output).unwrap();
+        let presenter = NullPresenter::arc();
+        let result = executor.execute(&ctx, &mut output, presenter).unwrap();
         assert!(result.success);
         assert!(!result.skipped);
     }

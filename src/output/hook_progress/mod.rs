@@ -8,7 +8,6 @@ pub use interactive::HookProgressRenderer;
 pub use plain::PlainHookRenderer;
 
 use crate::settings::HookOutputConfig;
-use crate::styles;
 use std::time::Duration;
 
 /// Outcome of a completed job.
@@ -138,38 +137,6 @@ impl HookRenderer {
             HookRenderer::Progress(r) => r.println(msg),
             HookRenderer::Plain(r) => r.println(msg),
         }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// Standalone functions (for YAML executor path)
-// ─────────────────────────────────────────────────────────────────────────
-
-/// Print the hook execution header to stderr.
-///
-/// Displays a dark-grey framed box with the hook name, version, and hook type.
-/// Suppressed when `DAFT_TESTING` env var is set (keeps test output clean).
-pub fn print_hook_header(hook_name: &str) {
-    if formatting::output_suppressed() {
-        return;
-    }
-    for line in formatting::format_header_lines(hook_name, styles::colors_enabled_stderr()) {
-        eprintln!("{line}");
-    }
-}
-
-/// Print the summary section after all hook jobs have completed.
-/// Suppressed when `DAFT_TESTING` env var is set (keeps test output clean).
-pub fn print_hook_summary(job_results: &[JobResultEntry], total_duration: Duration) {
-    if formatting::output_suppressed() {
-        return;
-    }
-    for line in formatting::format_summary_lines(
-        job_results,
-        total_duration,
-        styles::colors_enabled_stderr(),
-    ) {
-        eprintln!("{line}");
     }
 }
 

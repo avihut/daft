@@ -42,6 +42,7 @@
 pub mod conditions;
 mod environment;
 mod executor;
+pub mod job_adapter;
 pub mod template;
 mod trust;
 mod trust_dto;

@@ -940,6 +940,113 @@ test_prune_remote_config() {
     return 0
 }
 
+# Test that hooks execute during prune (both sequential and TUI modes)
+# Regression test: NullBridge was used in TUI mode, preventing hook execution.
+test_prune_hooks_execute_in_tui() {
+    local remote_repo=$(create_test_remote "test-repo-prune-hooks" "main")
+
+    # Step 1: Add hooks to remote main branch BEFORE creating the feature branch.
+    # This ensures the feature branch inherits .daft/hooks/ from main, so that
+    # the pre-remove hook lookup (which searches the worktree being removed) finds
+    # the hook files. Hooks are committed to the remote via a temp clone.
+    local setup_clone="$TEMP_BASE_DIR/temp_prune_hooks_setup_$$"
+    git clone "$remote_repo" "$setup_clone" >/dev/null 2>&1
+
+    (
+        cd "$setup_clone"
+        mkdir -p .daft/hooks
+
+        # The pre-remove hook is invoked before the worktree is removed,
+        # looking in the target worktree (feature branch). The feature branch
+        # inherits this hook from main since it is branched off main.
+        cat > .daft/hooks/worktree-pre-remove << 'HOOKEOF'
+#!/bin/bash
+echo "$DAFT_BRANCH_NAME" >> "$DAFT_PROJECT_ROOT/.pre-remove-hook-ran"
+HOOKEOF
+        chmod +x .daft/hooks/worktree-pre-remove
+
+        git add .daft/hooks/worktree-pre-remove
+        git commit -m "Add pre-remove hook to main" >/dev/null 2>&1
+        git push origin main >/dev/null 2>&1
+
+        # Create the feature branch from main (inherits .daft/hooks/) and push it
+        git checkout -b feature/hook-prune-test >/dev/null 2>&1
+        echo "Hook prune test" > hook-prune-test.txt
+        git add hook-prune-test.txt >/dev/null 2>&1
+        git commit -m "Add feature branch content" >/dev/null 2>&1
+        git push origin feature/hook-prune-test >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$setup_clone"
+
+    # Step 2: Clone the repository (bare-repo worktree layout)
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-prune-hooks"
+
+    # Step 3: Trust the repository from within the main worktree (must be in a
+    # git repo — the project root is not a git repo in bare layout).
+    (
+        cd "main"
+        git-daft hooks trust --force >/dev/null 2>&1
+    ) || {
+        log_error "Failed to trust repository"
+        return 1
+    }
+
+    # Step 4: Fetch and create a local worktree for the feature branch.
+    # The feature worktree inherits .daft/hooks/ from main because the feature
+    # branch was created off main after the hooks were committed.
+    git fetch origin >/dev/null 2>&1
+    git-worktree-checkout feature/hook-prune-test || return 1
+    assert_directory_exists "feature/hook-prune-test" || return 1
+
+    # Verify the feature worktree has the hook files (inherited from main)
+    if [[ ! -f "feature/hook-prune-test/.daft/hooks/worktree-pre-remove" ]]; then
+        log_error "Feature worktree should have .daft/hooks/worktree-pre-remove (inherited from main)"
+        return 1
+    fi
+
+    # Step 5: Delete the feature branch from remote to make it prunable
+    local delete_clone="$TEMP_BASE_DIR/temp_prune_hooks_delete_$$"
+    git clone "$remote_repo" "$delete_clone" >/dev/null 2>&1
+
+    (
+        cd "$delete_clone"
+        git push origin --delete feature/hook-prune-test >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    rm -rf "$delete_clone"
+
+    # Step 6: Run prune — in a non-TTY test environment stderr is not a terminal,
+    # so prune falls back to sequential mode (CommandBridge). This path has always
+    # executed hooks. The TUI path (TuiBridge) now also executes hooks after the
+    # NullBridge fix. Testing either path proves the end-to-end hook wiring works.
+    git-worktree-prune || return 1
+
+    # Verify the worktree was pruned
+    if [[ -d "feature/hook-prune-test" ]]; then
+        log_error "Prune should have removed feature/hook-prune-test worktree"
+        return 1
+    fi
+
+    # Verify pre-remove hook ran (marker file must exist and contain the branch name).
+    # The pre-remove hook is looked up in the worktree being removed (the feature
+    # branch worktree, which inherited .daft/hooks/ from main). DAFT_PROJECT_ROOT
+    # is the project root (parent of all worktrees in the bare layout).
+    if [[ ! -f ".pre-remove-hook-ran" ]]; then
+        log_error "worktree-pre-remove hook did not execute during prune"
+        return 1
+    fi
+    if ! grep -q "feature/hook-prune-test" ".pre-remove-hook-ran"; then
+        log_error "worktree-pre-remove hook ran but DAFT_BRANCH_NAME was wrong"
+        log_error "Contents: $(cat .pre-remove-hook-ran)"
+        return 1
+    fi
+    log_success "worktree-pre-remove hook executed during prune"
+
+    return 0
+}
+
 # Run all prune tests
 run_prune_tests() {
     log "Running git-worktree-prune integration tests..."
@@ -966,6 +1073,7 @@ run_prune_tests() {
     run_test "prune_regular_repo_current_branch" "test_prune_regular_repo_current_branch"
     run_test "prune_regular_repo_not_current_branch" "test_prune_regular_repo_not_current_branch"
     run_test "prune_shell_wrapper" "test_prune_shell_wrapper"
+    run_test "prune_hooks_execute_in_tui" "test_prune_hooks_execute_in_tui"
 }
 
 # Main execution

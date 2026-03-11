@@ -4,9 +4,11 @@
 //! the sync and prune TUI renderers.
 
 use super::list::WorktreeInfo;
+use crate::hooks::HookType;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 /// Identifies a single executable task in the sync DAG.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -282,6 +284,47 @@ pub enum DagEvent {
     },
     /// All tasks are done.
     AllDone,
+    /// A hook started running for a branch.
+    HookStarted {
+        branch_name: String,
+        hook_type: HookType,
+    },
+    /// A hook completed for a branch.
+    HookCompleted {
+        branch_name: String,
+        hook_type: HookType,
+        success: bool,
+        /// Non-zero exit with FailMode::Warn.
+        warned: bool,
+        duration: Duration,
+        /// Exit code from the hook process, if available.
+        exit_code: Option<i32>,
+        /// Captured stdout+stderr, only stored on failure/warning.
+        output: Option<String>,
+    },
+    /// A job started running within a hook.
+    JobStarted {
+        branch_name: String,
+        hook_type: HookType,
+        job_name: String,
+    },
+    /// A job completed within a hook.
+    JobCompleted {
+        branch_name: String,
+        hook_type: HookType,
+        job_name: String,
+        status: JobCompletionStatus,
+        duration: Duration,
+        skip_reason: Option<String>,
+    },
+}
+
+/// Terminal status for a job within a hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobCompletionStatus {
+    Succeeded,
+    Failed,
+    Skipped,
 }
 
 /// Shared mutable state for the worker pool.

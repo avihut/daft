@@ -60,8 +60,9 @@ For fine-grained control over either phase, use `daft prune` and `daft update`
 separately.
 "#)]
 pub struct Args {
-    #[arg(short, long, help = "Be verbose; show detailed progress")]
-    verbose: bool,
+    #[arg(short, long, action = clap::ArgAction::Count,
+          help = "Increase verbosity (-v for hook details, -vv for full sequential output)")]
+    verbose: u8,
 
     #[arg(
         short,
@@ -88,7 +89,7 @@ pub struct Args {
 pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-sync"));
 
-    init_logging(args.verbose);
+    init_logging(args.verbose >= 2);
 
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
@@ -96,16 +97,16 @@ pub fn run() -> Result<()> {
 
     let settings = DaftSettings::load()?;
 
-    if std::io::IsTerminal::is_terminal(&std::io::stderr()) && !args.verbose {
-        run_tui(args, settings)
-    } else {
+    if !std::io::IsTerminal::is_terminal(&std::io::stderr()) || args.verbose >= 2 {
         run_sequential(args, settings)
+    } else {
+        run_tui(args, settings)
     }
 }
 
 /// Sequential (non-TTY) execution path — the original sync flow.
 fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
-    let config = OutputConfig::with_autocd(false, args.verbose, settings.autocd);
+    let config = OutputConfig::with_autocd(false, args.verbose >= 2, settings.autocd);
     let mut output = CliOutput::new(config);
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {
@@ -190,8 +191,18 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     if let Some(ref base) = args.rebase {
         phases.push(sync_dag::OperationPhase::Rebase(base.clone()));
     }
+    let hooks_config = HooksConfig::default();
+    let shared_hooks_config = Arc::new(hooks_config.clone());
+
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
-    let state = TuiState::new(phases, worktree_infos, project_root.clone(), cwd, stat);
+    let state = TuiState::new(
+        phases,
+        worktree_infos,
+        project_root.clone(),
+        cwd,
+        stat,
+        args.verbose,
+    );
 
     // ── Create channel and spawn orchestrator ──────────────────────────
     let (tx, rx) = std::sync::mpsc::channel();
@@ -289,6 +300,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             );
 
             // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
+            let tx_for_tasks = tx.clone();
             let executor = DagExecutor::new(dag, tx);
             executor.run(
             move |task: &SyncTask| -> (TaskStatus, TaskMessage, Option<Box<list::WorktreeInfo>>) {
@@ -310,6 +322,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             &shared_current_wt_path,
                             &shared_current_branch,
                             shared_force,
+                            &shared_hooks_config,
+                            &tx_for_tasks,
                         );
                         if matches!(message, TaskMessage::Deferred) {
                             *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
@@ -365,7 +379,15 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         });
 
     // ── Run TUI renderer on main thread ────────────────────────────────
-    let renderer = TuiRenderer::new(state, rx).with_extra_rows(5);
+    // Budget hook + job sub-rows per worktree (2 hooks × ~3 jobs each).
+    // Not all worktrees will have hooks, but the ratatui inline viewport
+    // cannot grow after creation, so over-allocate.
+    let hook_extra_rows = if args.verbose >= 1 {
+        (state.worktrees.len() as u16) * 8
+    } else {
+        0
+    };
+    let renderer = TuiRenderer::new(state, rx).with_extra_rows(5 + hook_extra_rows);
     let final_state = renderer.run()?;
 
     // Wait for orchestrator thread to finish
@@ -382,7 +404,37 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         source_worktree,
         &worktree_map,
         args.force,
+        &hooks_config,
     );
+
+    // ── Post-TUI: print hook summary ────────────────────────────────────
+    if !final_state.hook_summaries.is_empty() {
+        eprintln!();
+        eprintln!("Hooks:");
+        for entry in &final_state.hook_summaries {
+            let status_word = if entry.warned { "warned" } else { "failed" };
+            let exit_str = entry
+                .exit_code
+                .map(|c| format!("exit {c}"))
+                .unwrap_or_else(|| "error".to_string());
+            eprintln!(
+                "  {}: {} {} ({}, {}ms)",
+                entry.branch_name,
+                entry.hook_type.filename(),
+                status_word,
+                exit_str,
+                entry.duration.as_millis(),
+            );
+            if let Some(ref output) = entry.output {
+                for line in output.lines() {
+                    eprintln!("    {line}");
+                }
+            }
+            if !entry.success && !entry.warned {
+                eprintln!("    Prune was aborted for this branch.");
+            }
+        }
+    }
 
     // ── Check for failures ────────────────────────────────────────────────
     sync_shared::check_tui_failures(&final_state)?;

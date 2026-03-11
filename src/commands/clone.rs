@@ -1,6 +1,7 @@
 use crate::{
     check_dependencies,
     core::{worktree::clone, OutputSink},
+    executor::cli_presenter::CliPresenter,
     git::should_show_gitoxide_notice,
     hints::maybe_show_shell_hint,
     hooks::{
@@ -9,7 +10,7 @@ use crate::{
     },
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
-    settings::DaftSettings,
+    settings::{DaftSettings, HookOutputConfig},
     utils::*,
 };
 use anyhow::Result;
@@ -261,7 +262,8 @@ fn run_post_clone_hook(
     .with_default_branch(&result.default_branch)
     .with_new_branch(false);
 
-    let hook_result = executor.execute(&ctx, output)?;
+    let presenter = CliPresenter::auto(&HookOutputConfig::default());
+    let hook_result = executor.execute(&ctx, output, presenter)?;
 
     if hook_result.skipped {
         if let Some(reason) = &hook_result.skip_reason {
@@ -308,7 +310,8 @@ fn run_post_create_hook(
     )
     .with_new_branch(false);
 
-    executor.execute(&ctx, output)?;
+    let presenter = CliPresenter::auto(&HookOutputConfig::default());
+    executor.execute(&ctx, output, presenter)?;
 
     Ok(())
 }
