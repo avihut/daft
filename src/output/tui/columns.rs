@@ -73,9 +73,9 @@ pub(super) const ALL_COLUMNS: &[Column] = &[
 // Dynamic column sizing
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Widest possible status text: "✓ up to date" = 12 visible chars.
+/// Widest possible status text: "⠧ post-remove" = 13 visible chars.
 /// Used to prevent layout jumps as statuses change during the TUI loop.
-pub(super) const STATUS_MAX_WIDTH: u16 = 12;
+pub(super) const STATUS_MAX_WIDTH: u16 = 13;
 
 /// Minimum width reserved for the LastCommit column before it switches to Fill.
 pub(super) const LAST_COMMIT_MIN: u16 = 10;

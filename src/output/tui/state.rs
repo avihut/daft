@@ -189,8 +189,17 @@ impl TuiState {
             } => {
                 let show_sub_rows = self.show_hook_sub_rows;
                 if let Some(row) = self.find_row_mut(branch_name) {
-                    // Update status label to show current hook phase
-                    row.status = WorktreeStatus::Active(hook_type.filename().to_string());
+                    // Update status label to show current hook phase.
+                    // Use short labels to stay within STATUS_MAX_WIDTH and avoid
+                    // column width jumps in the table layout.
+                    let label = match hook_type {
+                        HookType::PreRemove => "pre-remove",
+                        HookType::PostRemove => "post-remove",
+                        HookType::PreCreate => "pre-create",
+                        HookType::PostCreate => "post-create",
+                        HookType::PostClone => "post-clone",
+                    };
+                    row.status = WorktreeStatus::Active(label.to_string());
                     // Add sub-row if in verbose TUI mode
                     if show_sub_rows {
                         row.hook_sub_rows.push(HookSubRow {
@@ -683,10 +692,7 @@ mod tests {
             .iter()
             .find(|w| w.info.name == "feat/old")
             .unwrap();
-        assert_eq!(
-            row.status,
-            WorktreeStatus::Active("worktree-pre-remove".into())
-        );
+        assert_eq!(row.status, WorktreeStatus::Active("pre-remove".into()));
     }
 
     #[test]

@@ -109,7 +109,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                 for (i, sub) in wt.hook_sub_rows.iter().enumerate() {
                     let is_last = i == wt.hook_sub_rows.len() - 1;
                     let prefix = if is_last { "\u{2514}" } else { "\u{251C}" };
-                    let sub_row = render_hook_sub_row(sub, prefix, state.tick);
+                    let sub_row = render_hook_sub_row(sub, prefix, state.tick, columns.len());
                     result.push(sub_row);
                 }
             }
@@ -360,7 +360,16 @@ fn render_status_cell(wt: &super::state::WorktreeRow, tick: usize) -> Cell<'stat
 }
 
 /// Render a hook sub-row showing individual hook status and timing.
-fn render_hook_sub_row(sub: &super::state::HookSubRow, prefix: &str, tick: usize) -> Row<'static> {
+///
+/// Sub-rows must have the same number of cells as regular rows (one per column)
+/// so the table layout doesn't break. The hook content goes in the Status column
+/// and all other columns are empty.
+fn render_hook_sub_row(
+    sub: &super::state::HookSubRow,
+    prefix: &str,
+    tick: usize,
+    num_columns: usize,
+) -> Row<'static> {
     use super::state::HookSubStatus;
 
     let name = sub.hook_type.filename();
@@ -395,8 +404,14 @@ fn render_hook_sub_row(sub: &super::state::HookSubRow, prefix: &str, tick: usize
         status_span,
     ]);
 
-    // Sub-rows span the status column; other columns are empty
-    Row::new(vec![Cell::from(line)])
+    // Build a row with the correct number of cells: hook content in the first
+    // cell (Status column), empty cells for all remaining columns.
+    let mut cells = Vec::with_capacity(num_columns);
+    cells.push(Cell::from(line));
+    for _ in 1..num_columns {
+        cells.push(Cell::from(""));
+    }
+    Row::new(cells)
 }
 
 /// Render the annotation cell (current worktree indicator and default branch marker).
