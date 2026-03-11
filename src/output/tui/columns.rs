@@ -91,6 +91,7 @@ pub(super) fn status_display_width(status: &WorktreeStatus) -> u16 {
             FinalStatus::UpToDate => 12, // "✓ up to date"
             FinalStatus::Rebased => 9,   // "✓ rebased"
             FinalStatus::Conflict => 10, // "✗ conflict"
+            FinalStatus::Diverged => 10, // "⊘ diverged"
             FinalStatus::Skipped => 9,   // "⊘ skipped"
             FinalStatus::Pruned => 8,    // "— pruned"
             FinalStatus::Failed => 8,    // "✗ failed"

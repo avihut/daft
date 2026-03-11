@@ -36,6 +36,7 @@ pub enum FinalStatus {
     UpToDate,
     Rebased,
     Conflict,
+    Diverged,
     Skipped,
     Pruned,
     Failed,
@@ -390,6 +391,7 @@ impl TuiState {
                 },
                 OperationPhase::Update => match message {
                     TaskMessage::UpToDate => FinalStatus::UpToDate,
+                    TaskMessage::Diverged => FinalStatus::Diverged,
                     _ => FinalStatus::Updated,
                 },
                 OperationPhase::Rebase(_) => match message {

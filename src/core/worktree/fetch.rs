@@ -78,6 +78,8 @@ pub struct WorktreeFetchResult {
     pub skipped: bool,
     /// True when the pull succeeded but there were no new changes.
     pub up_to_date: bool,
+    /// True when `--ff-only` pull failed because the branch has diverged from upstream.
+    pub diverged: bool,
     /// Captured git pull stdout (diff stats, fast-forward info). None when up-to-date or on error.
     pub pull_output: Option<String>,
 }
@@ -98,7 +100,7 @@ impl FetchResult {
     pub fn updated_count(&self) -> usize {
         self.results
             .iter()
-            .filter(|r| r.success && !r.skipped && !r.up_to_date)
+            .filter(|r| r.success && !r.skipped && !r.up_to_date && !r.diverged)
             .count()
     }
 
@@ -118,6 +120,10 @@ impl FetchResult {
             .iter()
             .filter(|r| !r.success && !r.skipped)
             .count()
+    }
+
+    pub fn diverged_count(&self) -> usize {
+        self.results.iter().filter(|r| r.diverged).count()
     }
 }
 
@@ -391,15 +397,29 @@ pub fn update_single_worktree(
                     "Updated successfully".to_string()
                 },
                 skipped: false,
+                diverged: false,
                 up_to_date,
                 pull_output,
             }
         }
-        Err(e) => WorktreeFetchResult {
-            worktree_name: worktree_name.to_string(),
-            message: format!("Failed: {e}"),
-            ..Default::default()
-        },
+        Err(e) => {
+            let err_msg = format!("{e}");
+            if is_ff_only_failure(&err_msg) {
+                WorktreeFetchResult {
+                    worktree_name: worktree_name.to_string(),
+                    success: true,
+                    diverged: true,
+                    message: "Diverged from upstream (not fast-forwardable)".to_string(),
+                    ..Default::default()
+                }
+            } else {
+                WorktreeFetchResult {
+                    worktree_name: worktree_name.to_string(),
+                    message: format!("Failed: {e}"),
+                    ..Default::default()
+                }
+            }
+        }
     }
 }
 
@@ -518,15 +538,29 @@ fn process_same_branch(
                     "Updated successfully".to_string()
                 },
                 skipped: false,
+                diverged: false,
                 up_to_date,
                 pull_output,
             }
         }
-        Err(e) => WorktreeFetchResult {
-            worktree_name: worktree_name.to_string(),
-            message: format!("Failed: {e}"),
-            ..Default::default()
-        },
+        Err(e) => {
+            let err_msg = format!("{e}");
+            if is_ff_only_failure(&err_msg) {
+                WorktreeFetchResult {
+                    worktree_name: worktree_name.to_string(),
+                    success: true,
+                    diverged: true,
+                    message: "Diverged from upstream (not fast-forwardable)".to_string(),
+                    ..Default::default()
+                }
+            } else {
+                WorktreeFetchResult {
+                    worktree_name: worktree_name.to_string(),
+                    message: format!("Failed: {e}"),
+                    ..Default::default()
+                }
+            }
+        }
     }
 }
 
@@ -594,6 +628,11 @@ fn check_has_upstream(git: &GitCommand) -> Result<()> {
         anyhow::bail!("No upstream configured for branch '{}'", branch);
     }
     Ok(())
+}
+
+/// Check if a git pull error is a fast-forward-only failure (diverged branches).
+fn is_ff_only_failure(error_msg: &str) -> bool {
+    error_msg.contains("Not possible to fast-forward")
 }
 
 #[cfg(test)]

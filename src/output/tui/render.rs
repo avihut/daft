@@ -406,6 +406,10 @@ fn render_status_cell(wt: &super::state::WorktreeRow, tick: usize) -> Cell<'stat
                 format!("{CROSS} conflict"),
                 Style::default().fg(Color::Red),
             ))),
+            FinalStatus::Diverged => Cell::from(Line::from(Span::styled(
+                format!("{SKIP} diverged"),
+                Style::default().fg(Color::Yellow),
+            ))),
             FinalStatus::Skipped => Cell::from(Line::from(Span::styled(
                 format!("{SKIP} skipped"),
                 Style::default().fg(Color::Yellow),

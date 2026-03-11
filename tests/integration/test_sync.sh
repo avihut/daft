@@ -230,6 +230,81 @@ test_sync_outside_repo() {
     return 0
 }
 
+# Test sync with diverged branch and --rebase continues successfully
+test_sync_diverged_branch_with_rebase() {
+    local remote_repo=$(create_test_remote "test-repo-sync-diverged-rebase" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-sync-diverged-rebase"
+
+    # Create a feature worktree
+    git-worktree-checkout develop || return 1
+
+    # Make the local develop branch diverge from upstream by amending
+    (
+        cd develop
+        echo "Local diverged change" >> README.md
+        git add README.md >/dev/null 2>&1
+        git commit --amend -m "Amended: diverged from upstream" >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    # Run sync with --rebase (use --verbose --verbose for sequential mode)
+    git-sync --rebase main --verbose --verbose || {
+        log_error "Sync --rebase should not fail when a branch has diverged"
+        return 1
+    }
+
+    # Verify develop was rebased onto main (check that main's commit is in develop's history)
+    local main_commit=$(cd main && git rev-parse HEAD)
+    if ! (cd develop && git log --format=%H | grep -q "$main_commit"); then
+        log_error "Develop branch should have been rebased onto main"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test sync with diverged branch without --rebase succeeds (warning, not failure)
+test_sync_diverged_branch_no_rebase() {
+    local remote_repo=$(create_test_remote "test-repo-sync-diverged-norebase" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-sync-diverged-norebase"
+
+    # Create a feature worktree
+    git-worktree-checkout develop || return 1
+
+    # Record the develop commit before diverging
+    local original_commit=$(cd develop && git rev-parse HEAD)
+
+    # Make the local develop branch diverge from upstream by amending
+    (
+        cd develop
+        echo "Local diverged change" >> README.md
+        git add README.md >/dev/null 2>&1
+        git commit --amend -m "Amended: diverged from upstream" >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    local diverged_commit=$(cd develop && git rev-parse HEAD)
+
+    # Run sync without --rebase (use --verbose --verbose for sequential mode)
+    git-sync --verbose --verbose || {
+        log_error "Sync should not fail when a branch has diverged (should warn instead)"
+        return 1
+    }
+
+    # Verify develop is still at its diverged commit (not changed)
+    local current_commit=$(cd develop && git rev-parse HEAD)
+    if [[ "$current_commit" != "$diverged_commit" ]]; then
+        log_error "Develop branch should remain at its diverged commit when no --rebase is used"
+        return 1
+    fi
+
+    return 0
+}
+
 # Run all sync tests
 run_sync_tests() {
     log "Running git-sync integration tests..."
@@ -241,6 +316,8 @@ run_sync_tests() {
     run_test "sync_cd_target" "test_sync_cd_target"
     run_test "sync_help" "test_sync_help"
     run_test "sync_outside_repo" "test_sync_outside_repo"
+    run_test "sync_diverged_branch_with_rebase" "test_sync_diverged_branch_with_rebase"
+    run_test "sync_diverged_branch_no_rebase" "test_sync_diverged_branch_no_rebase"
 }
 
 # Main execution

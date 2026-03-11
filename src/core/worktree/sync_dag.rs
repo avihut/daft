@@ -60,6 +60,8 @@ pub enum TaskMessage {
     Deferred,
     /// Prune found nothing to remove.
     NoActionNeeded,
+    /// Update couldn't fast-forward (branch diverged from upstream).
+    Diverged,
     /// Task failed with error message.
     Failed(String),
 }
