@@ -6,6 +6,7 @@
 
 pub mod cli_presenter;
 pub mod command;
+pub mod dag;
 pub mod presenter;
 
 use std::collections::HashMap;
