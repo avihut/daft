@@ -15,21 +15,28 @@ pub const CD_FILE_ENV: &str = "DAFT_CD_FILE";
 ///
 /// When set, all daft state files (trust database, hints, update cache, etc.)
 /// are stored in this directory instead of `~/.config/daft/`.
+///
+/// Only honored in dev builds (local builds from a git checkout). Release
+/// builds (tagged commits, `DAFT_BUILD_RELEASE=1`, crates.io installs) ignore
+/// this variable to prevent trust database hijacking via env injection.
 pub const CONFIG_DIR_ENV: &str = "DAFT_CONFIG_DIR";
 
 /// Returns the daft config directory path.
 ///
-/// When `DAFT_CONFIG_DIR` is set to a non-empty value, uses that path directly
-/// (no `daft/` suffix appended). Otherwise falls back to `dirs::config_dir()/daft`.
+/// In dev builds, when `DAFT_CONFIG_DIR` is set to a non-empty absolute path,
+/// uses that path directly (no `daft/` suffix appended). In release builds the
+/// env var is ignored. Always falls back to `dirs::config_dir()/daft`.
 pub fn daft_config_dir() -> anyhow::Result<std::path::PathBuf> {
     use std::path::PathBuf;
-    if let Ok(dir) = env::var(CONFIG_DIR_ENV) {
-        if !dir.is_empty() {
-            let path = PathBuf::from(&dir);
-            if path.is_relative() {
-                anyhow::bail!("DAFT_CONFIG_DIR must be an absolute path, got: {dir}");
+    if cfg!(daft_dev_build) {
+        if let Ok(dir) = env::var(CONFIG_DIR_ENV) {
+            if !dir.is_empty() {
+                let path = PathBuf::from(&dir);
+                if path.is_relative() {
+                    anyhow::bail!("DAFT_CONFIG_DIR must be an absolute path, got: {dir}");
+                }
+                return Ok(path);
             }
-            return Ok(path);
         }
     }
     let config_dir = dirs::config_dir()
