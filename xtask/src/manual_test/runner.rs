@@ -29,6 +29,7 @@ pub struct AssertionResult {
 /// Outcome of executing a single step.
 pub struct StepResult {
     /// Process exit code (`-1` if the process was killed by a signal).
+    #[allow(dead_code)]
     pub exit_code: i32,
     /// All assertion results for this step.
     pub assertions: Vec<AssertionResult>,
