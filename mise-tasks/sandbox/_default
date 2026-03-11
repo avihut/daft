@@ -45,6 +45,9 @@ export GIT_AUTHOR_NAME="${DAFT_SANDBOX_GIT_NAME}"
 export GIT_AUTHOR_EMAIL="${DAFT_SANDBOX_GIT_EMAIL}"
 export GIT_COMMITTER_NAME="${DAFT_SANDBOX_GIT_NAME}"
 export GIT_COMMITTER_EMAIL="${DAFT_SANDBOX_GIT_EMAIL}"
+
+# Completions: direnv exports this env var, source enable-completions to load them
+export DAFT_SANDBOX_COMPLETIONS_DIR="${sandbox_dir}/completions"
 ENVRC
 
 # --- Write helper scripts ---
@@ -55,6 +58,14 @@ set -euo pipefail
 SCRIPT
 chmod +x "${sandbox_dir}/rebuild-daft"
 
+cat > "${sandbox_dir}/go-to-worktree" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$DAFT_WORKTREE"
+exec "$SHELL"
+SCRIPT
+chmod +x "${sandbox_dir}/go-to-worktree"
+
 cat > "${sandbox_dir}/manual-test" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -62,12 +73,76 @@ set -euo pipefail
 SCRIPT
 chmod +x "${sandbox_dir}/manual-test"
 
+# --- Completions for helper scripts ---
+mkdir -p "${sandbox_dir}/completions"
+
+cat > "${sandbox_dir}/completions/_manual-test" <<'ZSH_COMP'
+#compdef manual-test
+
+_manual-test() {
+    local -a scenarios
+    local scenarios_dir="${DAFT_WORKTREE}/tests/manual/scenarios"
+
+    if [[ -d "$scenarios_dir" ]]; then
+        local f
+        for f in "$scenarios_dir"/*.yml "$scenarios_dir"/*.yaml(N); do
+            scenarios+=("${f:t:r}")
+        done
+    fi
+
+    _arguments -s \
+        '--ci[Run in non-interactive mode]' \
+        '--no-interactive[Run in non-interactive mode]' \
+        '--step[Jump to a specific step number]:step number:' \
+        '--loop-count[Re-run a specific step N times]:count:' \
+        '--keep[Keep test environment after completion]' \
+        '--list[List available scenarios and exit]' \
+        '*:scenario:($scenarios)'
+}
+ZSH_COMP
+
+cat > "${sandbox_dir}/completions/manual-test.bash" <<'BASH_COMP'
+_manual_test() {
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=($(compgen -W "--ci --no-interactive --step --loop-count --keep --list" -- "$cur"))
+        return
+    fi
+    local scenarios_dir="${DAFT_WORKTREE}/tests/manual/scenarios"
+    if [[ -d "$scenarios_dir" ]]; then
+        local scenarios="" f name
+        for f in "$scenarios_dir"/*.yml "$scenarios_dir"/*.yaml; do
+            [[ -f "$f" ]] || continue
+            name="$(basename "$f")"
+            name="${name%.yml}"
+            name="${name%.yaml}"
+            scenarios="$scenarios $name"
+        done
+        COMPREPLY=($(compgen -W "$scenarios" -- "$cur"))
+    fi
+}
+complete -F _manual_test manual-test
+BASH_COMP
+
+# --- Sourceable completion loader ---
+cat > "${sandbox_dir}/enable-completions" <<'LOADER'
+# Source this file to enable tab completions for sandbox helpers.
+# Usage: source enable-completions
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+    source "${DAFT_SANDBOX_COMPLETIONS_DIR}/_manual-test"
+    compdef _manual-test manual-test
+elif [[ -n "${BASH_VERSION:-}" ]]; then
+    source "${DAFT_SANDBOX_COMPLETIONS_DIR}/manual-test.bash"
+fi
+LOADER
+
 # Allow direnv if available
 if command -v direnv &>/dev/null; then
     direnv allow "$sandbox_dir"
 fi
 
 echo "${sandbox_verb} sandbox at ${sandbox_dir}"
+echo "  Tab completions: run 'source enable-completions' once per shell session"
 
 # --- CD via DAFT_CD_FILE (same mechanism as daft commands) ---
 if [ -n "${DAFT_CD_FILE:-}" ]; then
