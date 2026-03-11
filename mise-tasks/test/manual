@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Run manual test scenarios"
+#MISE depends=["dev"]
+set -euo pipefail
+
+cargo run --package xtask -- manual-test "$@"

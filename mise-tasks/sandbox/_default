@@ -55,6 +55,13 @@ set -euo pipefail
 SCRIPT
 chmod +x "${sandbox_dir}/daft-rebuild"
 
+cat > "${sandbox_dir}/daft-manual-test" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+(cd "$DAFT_WORKTREE" && cargo run --package xtask -- manual-test "$@")
+SCRIPT
+chmod +x "${sandbox_dir}/daft-manual-test"
+
 # Allow direnv if available
 if command -v direnv &>/dev/null; then
     direnv allow "$sandbox_dir"
