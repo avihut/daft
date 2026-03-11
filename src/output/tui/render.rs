@@ -82,6 +82,18 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         })
         .collect();
 
+    // X offset where the first data column (Branch) starts — used for
+    // positioning pruned-row overlays with continuous strikethrough.
+    let pruned_x_offset: u16 = columns
+        .iter()
+        .zip(constraints.iter())
+        .take_while(|(col, _)| matches!(col, Column::Status | Column::Annotation))
+        .map(|(_, c)| match c {
+            Constraint::Length(w) => w + 2, // column width + column spacing
+            _ => 2,
+        })
+        .sum();
+
     let header_cells: Vec<Cell> = columns
         .iter()
         .map(|col| {
@@ -98,15 +110,39 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     // aren't constrained by column widths.
     let mut all_rows: Vec<Row> = Vec::new();
     let mut hook_overlays: Vec<(u16, Line)> = Vec::new();
+    let mut pruned_overlays: Vec<(u16, Line)> = Vec::new();
     let mut row_count: u16 = 0;
     let num_columns = columns.len();
 
     for (wt, vals) in state.worktrees.iter().zip(row_vals.iter()) {
-        let main_cells: Vec<Cell> = columns
-            .iter()
-            .map(|col| render_cell(col, wt, vals, state.tick, state.stat))
-            .collect();
+        let is_pruned = matches!(wt.status, WorktreeStatus::Done(FinalStatus::Pruned));
+        let main_cells: Vec<Cell> = if is_pruned {
+            // Status and Annotation keep their normal cells; other columns are
+            // left empty because their content is overlaid with a single
+            // continuous strikethrough line.
+            columns
+                .iter()
+                .map(|col| {
+                    if matches!(col, Column::Status | Column::Annotation) {
+                        render_cell(col, wt, vals, state.tick, state.stat)
+                    } else {
+                        Cell::from("")
+                    }
+                })
+                .collect()
+        } else {
+            columns
+                .iter()
+                .map(|col| render_cell(col, wt, vals, state.tick, state.stat))
+                .collect()
+        };
         all_rows.push(Row::new(main_cells));
+        if is_pruned {
+            pruned_overlays.push((
+                row_count,
+                format_pruned_overlay(vals, &columns, &constraints),
+            ));
+        }
         row_count += 1;
 
         if state.show_hook_sub_rows && !wt.hook_sub_rows.is_empty() {
@@ -151,6 +187,17 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         if y < area.y + area.height {
             let hook_area = Rect::new(area.x, y, area.width, 1);
             frame.render_widget(Paragraph::new(line), hook_area);
+        }
+    }
+
+    // Overlay pruned row content with continuous strikethrough from the Branch
+    // column onwards, bridging column separator gaps.
+    for (row_offset, line) in pruned_overlays {
+        let y = data_start_y + row_offset;
+        if y < area.y + area.height {
+            let remaining = area.width.saturating_sub(pruned_x_offset);
+            let pruned_area = Rect::new(area.x + pruned_x_offset, y, remaining, 1);
+            frame.render_widget(Paragraph::new(line), pruned_area);
         }
     }
 }
@@ -287,9 +334,7 @@ fn render_cell(
     tick: usize,
     stat: Stat,
 ) -> Cell<'static> {
-    let is_pruned = matches!(wt.status, WorktreeStatus::Done(FinalStatus::Pruned));
-
-    let cell = match col {
+    match col {
         Column::Status => render_status_cell(wt, tick),
         Column::Annotation => render_annotation_cell(&wt.info),
         Column::Branch => Cell::from(vals.branch.clone()),
@@ -327,17 +372,6 @@ fn render_cell(
                 ]))
             }
         }
-    };
-
-    // Apply strikethrough to pruned rows (from Branch column onwards).
-    if is_pruned && !matches!(col, Column::Status | Column::Annotation) {
-        cell.style(
-            Style::default()
-                .add_modifier(Modifier::CROSSED_OUT)
-                .add_modifier(Modifier::DIM),
-        )
-    } else {
-        cell
     }
 }
 
@@ -507,6 +541,78 @@ fn format_job_line(
         Span::styled(format!("{} ", job.name), name_style),
         status_span,
     ])
+}
+
+/// Extract the plain-text content for a column from pre-computed values.
+fn column_plain_text(col: &Column, vals: &ColumnValues) -> String {
+    match col {
+        Column::Branch => vals.branch.clone(),
+        Column::Path => vals.path.clone(),
+        Column::Base => vals.base.clone(),
+        Column::Changes => vals.changes.clone(),
+        Column::Remote => vals.remote.clone(),
+        Column::Age => vals.branch_age.clone(),
+        Column::LastCommit => {
+            if vals.last_commit_age.is_empty() {
+                vals.last_commit_subject.clone()
+            } else if vals.last_commit_subject.is_empty() {
+                vals.last_commit_age.clone()
+            } else {
+                format!("{} {}", vals.last_commit_age, vals.last_commit_subject)
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// Build an overlay line for a pruned worktree row with continuous strikethrough.
+///
+/// Unlike per-cell styling (which leaves gaps at column separators), this
+/// produces a single `Line` that spans all columns from Branch onwards so the
+/// `CROSSED_OUT` modifier runs unbroken through the separator gaps, ending at
+/// the last column's text boundary.
+fn format_pruned_overlay(
+    vals: &ColumnValues,
+    columns: &[Column],
+    constraints: &[Constraint],
+) -> Line<'static> {
+    let style = Style::default()
+        .add_modifier(Modifier::CROSSED_OUT)
+        .add_modifier(Modifier::DIM);
+
+    let pruned_cols: Vec<_> = columns
+        .iter()
+        .zip(constraints.iter())
+        .filter(|(col, _)| !matches!(col, Column::Status | Column::Annotation))
+        .collect();
+
+    if pruned_cols.is_empty() {
+        return Line::from("");
+    }
+
+    let mut text = String::new();
+    let last_idx = pruned_cols.len() - 1;
+
+    for (i, (col, constraint)) in pruned_cols.iter().enumerate() {
+        if i > 0 {
+            text.push_str("  "); // matches column_spacing(2)
+        }
+        let col_text = column_plain_text(col, vals);
+        if i < last_idx {
+            // Pad intermediate columns to their resolved width so the
+            // strikethrough spans the full column area.
+            let width = match constraint {
+                Constraint::Length(w) => *w as usize,
+                _ => col_text.len(),
+            };
+            text.push_str(&format!("{col_text:<width$}"));
+        } else {
+            // Last column: end at the text boundary (no trailing padding).
+            text.push_str(&col_text);
+        }
+    }
+
+    Line::from(Span::styled(text, style))
 }
 
 /// Render the annotation cell (current worktree indicator and default branch marker).
