@@ -5,6 +5,8 @@ pub mod env;
 #[allow(dead_code)]
 pub mod repo_gen;
 #[allow(dead_code)]
+pub mod runner;
+#[allow(dead_code)]
 pub mod schema;
 
 use anyhow::Result;
