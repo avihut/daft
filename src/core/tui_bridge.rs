@@ -6,13 +6,11 @@
 
 use crate::core::worktree::sync_dag::DagEvent;
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
-use crate::executor::presenter::{JobPresenter, NullPresenter};
 use crate::hooks::{HookContext, HookExecutor};
+use crate::output::tui::TuiPresenter;
 use crate::output::BufferingOutput;
 use anyhow::Result;
 use std::sync::mpsc;
-use std::sync::Arc;
-use std::time::Instant;
 
 /// A combined `ProgressSink` + `HookRunner` for TUI mode.
 ///
@@ -62,9 +60,8 @@ impl ProgressSink for TuiBridge {
 impl HookRunner for TuiBridge {
     fn run_hook(&mut self, ctx: &HookContext) -> Result<HookOutcome> {
         let hook_type = ctx.hook_type;
-        let start = Instant::now();
 
-        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let presenter = TuiPresenter::new(self.sender.clone(), self.branch_name.clone(), hook_type);
         match self.executor.execute(ctx, &mut self.output, presenter) {
             Ok(result) => {
                 if result.skipped {
@@ -72,7 +69,8 @@ impl HookRunner for TuiBridge {
                     // post-TUI notice suggesting `git daft hooks trust`. Currently the
                     // skip_reason is captured in HookOutcome but not surfaced to the user
                     // in TUI mode. See spec: "Prompt Callbacks" section.
-                    // Skipped hooks (disabled, not trusted, etc.) produce no events.
+                    // Skipped hooks (disabled, not trusted, etc.) produce no events —
+                    // the executor returns early before calling any presenter methods.
                     return Ok(HookOutcome {
                         success: result.success,
                         skipped: true,
@@ -80,50 +78,8 @@ impl HookRunner for TuiBridge {
                     });
                 }
 
-                let duration = start.elapsed();
-
-                // Send events retroactively: HookStarted then HookCompleted.
-                let _ = self.sender.send(DagEvent::HookStarted {
-                    branch_name: self.branch_name.clone(),
-                    hook_type,
-                });
-
-                let output_text = if !result.success {
-                    let mut combined = String::new();
-                    if !result.stdout.is_empty() {
-                        combined.push_str(&result.stdout);
-                    }
-                    if !result.stderr.is_empty() {
-                        if !combined.is_empty() {
-                            combined.push('\n');
-                        }
-                        combined.push_str(&result.stderr);
-                    }
-                    if combined.is_empty() {
-                        None
-                    } else {
-                        Some(combined)
-                    }
-                } else {
-                    None
-                };
-
-                // When executor.execute() returns Ok, a non-success result means
-                // FailMode::Warn (the hook ran but had a non-zero exit). FailMode::Abort
-                // always causes Err(), so it's handled in the Err branch below.
-                let warned = !result.success;
-                let exit_code = result.exit_code;
-
-                let _ = self.sender.send(DagEvent::HookCompleted {
-                    branch_name: self.branch_name.clone(),
-                    hook_type,
-                    success: result.success,
-                    warned,
-                    duration,
-                    exit_code,
-                    output: output_text,
-                });
-
+                // Events (HookStarted + HookCompleted) were already sent by the
+                // presenter's on_phase_start and on_phase_complete callbacks.
                 Ok(HookOutcome {
                     success: result.success,
                     skipped: false,
@@ -131,21 +87,16 @@ impl HookRunner for TuiBridge {
                 })
             }
             Err(e) => {
-                // An Err from execute() means FailMode::Abort triggered bail!.
-                // Send events so the TUI can show the failure.
-                let duration = start.elapsed();
-
-                let _ = self.sender.send(DagEvent::HookStarted {
-                    branch_name: self.branch_name.clone(),
-                    hook_type,
-                });
-
+                // An Err from execute() means FailMode::Abort triggered bail!().
+                // The presenter's on_phase_start already sent HookStarted, but
+                // on_phase_complete was NOT called (executor bailed before reaching
+                // it). Manually send HookCompleted so the TUI can show the failure.
                 let _ = self.sender.send(DagEvent::HookCompleted {
                     branch_name: self.branch_name.clone(),
                     hook_type,
                     success: false,
                     warned: false,
-                    duration,
+                    duration: std::time::Duration::ZERO,
                     exit_code: None,
                     output: Some(format!("{e:#}")),
                 });
