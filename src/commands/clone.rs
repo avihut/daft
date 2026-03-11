@@ -3,7 +3,10 @@ use crate::{
     core::{worktree::clone, OutputSink},
     git::should_show_gitoxide_notice,
     hints::maybe_show_shell_hint,
-    hooks::{HookContext, HookExecutor, HookType, HooksConfig, TrustDatabase, TrustLevel},
+    hooks::{
+        get_remote_url_for_git_dir, HookContext, HookExecutor, HookType, HooksConfig,
+        TrustDatabase, TrustLevel,
+    },
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
@@ -235,11 +238,11 @@ fn run_post_clone_hook(
 
     if args.trust_hooks {
         output.step("Trusting repository for hooks (--trust-hooks flag)");
-        executor.trust_repository_with_fingerprint(
-            &result.git_dir,
-            TrustLevel::Allow,
-            result.repository_url.clone(),
-        )?;
+        if let Some(fp) = get_remote_url_for_git_dir(&result.git_dir) {
+            executor.trust_repository_with_fingerprint(&result.git_dir, TrustLevel::Allow, fp)?;
+        } else {
+            executor.trust_repository(&result.git_dir, TrustLevel::Allow)?;
+        }
     }
 
     let worktree_path = result.worktree_dir.as_ref().unwrap();
@@ -284,11 +287,11 @@ fn run_post_create_hook(
     let mut executor = HookExecutor::new(hooks_config)?;
 
     if args.trust_hooks {
-        executor.trust_repository_with_fingerprint(
-            &result.git_dir,
-            TrustLevel::Allow,
-            result.repository_url.clone(),
-        )?;
+        if let Some(fp) = get_remote_url_for_git_dir(&result.git_dir) {
+            executor.trust_repository_with_fingerprint(&result.git_dir, TrustLevel::Allow, fp)?;
+        } else {
+            executor.trust_repository(&result.git_dir, TrustLevel::Allow)?;
+        }
     }
 
     let worktree_path = result.worktree_dir.as_ref().unwrap();
