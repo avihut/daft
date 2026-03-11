@@ -47,21 +47,13 @@ pub(super) fn cmd_set_trust(
             hook_names.join(", ")
         };
 
-        // Show current status
-        output.info(&bold("Current:"));
-        output.info(&format!(
-            "{} {}",
-            project_root.display(),
-            dim("(repository)")
-        ));
-        output.info(&format!(
-            "{hooks_str} ({})",
-            styled_trust_level(current_level)
-        ));
+        output.info(&format!("{}", project_root.display()));
+        output.info(&format!("  Hooks: {hooks_str}"));
 
         if !force {
             print!(
-                "\nChange trust level to {}? [y/N] ",
+                "  Trust: {} -> {}? [y/N] ",
+                styled_trust_level(current_level),
                 styled_trust_level(new_level)
             );
             io::stdout().flush()?;
@@ -85,13 +77,15 @@ pub(super) fn cmd_set_trust(
         }
         db.save().context("Failed to save trust database")?;
 
-        // Show new status
-        output.info(&format!(
-            "{} {}",
-            project_root.display(),
-            dim("(repository)")
-        ));
-        output.info(&format!("{hooks_str} ({})", styled_trust_level(new_level)));
+        if force {
+            output.info(&format!(
+                "  Trust: {} -> {}",
+                styled_trust_level(current_level),
+                styled_trust_level(new_level)
+            ));
+        } else {
+            output.result("Done.");
+        }
 
         Ok(())
     })();
@@ -121,12 +115,8 @@ pub(super) fn cmd_deny(path: &Path, force: bool, output: &mut dyn Output) -> Res
         let project_root = git_dir.parent().context("Invalid git directory")?;
 
         if !db.has_explicit_trust(&git_dir) {
-            output.info(&format!(
-                "{} {}",
-                project_root.display(),
-                dim("(repository)")
-            ));
-            output.info(&dim("Not explicitly trusted"));
+            output.info(&format!("{}", project_root.display()));
+            output.info(&dim("  Not explicitly trusted"));
             return Ok(());
         }
 
@@ -142,21 +132,13 @@ pub(super) fn cmd_deny(path: &Path, force: bool, output: &mut dyn Output) -> Res
             hook_names.join(", ")
         };
 
-        // Show current status
-        output.info(&bold("Current:"));
-        output.info(&format!(
-            "{} {}",
-            project_root.display(),
-            dim("(repository)")
-        ));
-        output.info(&format!(
-            "{hooks_str} ({})",
-            styled_trust_level(current_level)
-        ));
+        output.info(&format!("{}", project_root.display()));
+        output.info(&format!("  Hooks: {hooks_str}"));
 
         if !force {
             print!(
-                "\nChange trust level to {}? [y/N] ",
+                "  Trust: {} -> {}? [y/N] ",
+                styled_trust_level(current_level),
                 styled_trust_level(TrustLevel::Deny)
             );
             io::stdout().flush()?;
@@ -175,16 +157,15 @@ pub(super) fn cmd_deny(path: &Path, force: bool, output: &mut dyn Output) -> Res
         db.remove_trust(&git_dir);
         db.save().context("Failed to save trust database")?;
 
-        // Show new status
-        output.info(&format!(
-            "{} {}",
-            project_root.display(),
-            dim("(repository)")
-        ));
-        output.info(&format!(
-            "{hooks_str} ({})",
-            styled_trust_level(TrustLevel::Deny)
-        ));
+        if force {
+            output.info(&format!(
+                "  Trust: {} -> {}",
+                styled_trust_level(current_level),
+                styled_trust_level(TrustLevel::Deny)
+            ));
+        } else {
+            output.result("Done.");
+        }
 
         Ok(())
     })();
@@ -357,16 +338,14 @@ pub(super) fn cmd_reset_trust(force: bool, output: &mut dyn Output) -> Result<()
         return Ok(());
     }
 
-    // Show current status
-    output.info(&bold("Current:"));
     output.info(&format!(
-        "{} repositories, {} patterns",
+        "Trust database: {} repositories, {} patterns",
         yellow(&repo_count.to_string()),
         yellow(&pattern_count.to_string())
     ));
 
     if !force {
-        print!("\n{} all trust settings? [y/N] ", red("Clear"));
+        print!("{} all trust settings? [y/N] ", red("Clear"));
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -383,11 +362,11 @@ pub(super) fn cmd_reset_trust(force: bool, output: &mut dyn Output) -> Result<()
     db.clear();
     db.save().context("Failed to save trust database")?;
 
-    output.result(&format!(
-        "{} repositories, {} patterns",
-        green("0"),
-        green("0")
-    ));
+    if force {
+        output.result("Trust database cleared.");
+    } else {
+        output.result("Done.");
+    }
 
     Ok(())
 }
@@ -416,32 +395,17 @@ pub(super) fn cmd_reset_trust_path(
         let project_root = git_dir.parent().context("Invalid git directory")?;
 
         if !db.has_explicit_trust(&git_dir) {
-            output.info(&format!(
-                "{} {}",
-                project_root.display(),
-                dim("(repository)")
-            ));
-            output.info(&dim("No explicit trust entry to remove."));
+            output.info(&format!("{}", project_root.display()));
+            output.info(&dim("  No explicit trust entry to remove."));
             return Ok(());
         }
 
         let current_level = db.get_trust_level(&git_dir);
-        output.info(&bold("Current:"));
-        output.info(&format!(
-            "{} {}",
-            project_root.display(),
-            dim("(repository)")
-        ));
-        output.info(&format!(
-            "Trust level: {}",
-            styled_trust_level(current_level)
-        ));
+        output.info(&format!("{}", project_root.display()));
+        output.info(&format!("  Trust: {}", styled_trust_level(current_level)));
 
         if !force {
-            print!(
-                "\n{} trust entry for this repository? [y/N] ",
-                red("Remove")
-            );
+            print!("  {} trust entry? [y/N] ", red("Remove"));
             io::stdout().flush()?;
 
             let mut input = String::new();
@@ -458,12 +422,11 @@ pub(super) fn cmd_reset_trust_path(
         db.remove_trust(&git_dir);
         db.save().context("Failed to save trust database")?;
 
-        output.info(&format!(
-            "{} {}",
-            project_root.display(),
-            dim("(repository)")
-        ));
-        output.result(&dim("Trust entry removed."));
+        if force {
+            output.result(&dim("  Trust entry removed."));
+        } else {
+            output.result("Done.");
+        }
 
         Ok(())
     })();
