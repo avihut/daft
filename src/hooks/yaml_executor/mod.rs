@@ -2,24 +2,21 @@
 //!
 //! This module executes jobs defined in YAML hook configurations.
 //! It supports sequential, parallel, piped, and follow execution modes.
-
-mod command;
-mod dependency;
-mod parallel;
-mod sequential;
+//!
+//! Job execution is delegated to the generic executor (`crate::executor::runner`)
+//! via the job adapter (`crate::hooks::job_adapter`).
 
 use super::environment::HookContext;
 use super::executor::HookResult;
 use super::template;
 use super::yaml_config::{GroupDef, HookDef, JobDef};
 use super::yaml_config_loader::get_effective_jobs;
-use crate::output::hook_progress::JobResultEntry;
+use crate::executor::presenter::JobPresenter;
 use crate::output::Output;
 use crate::settings::HookOutputConfig;
 use anyhow::Result;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::sync::Arc;
 
 /// Execution mode for a set of jobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,31 +68,6 @@ pub struct JobFilter {
     pub only_tags: Vec<String>,
 }
 
-/// Shared execution context passed through the job execution pipeline.
-///
-/// Groups together the many parameters that would otherwise be separate function arguments.
-pub(crate) struct ExecContext<'a> {
-    pub(crate) hook_ctx: &'a HookContext,
-    pub(crate) hook_env: &'a HashMap<String, String>,
-    pub(crate) source_dir: &'a str,
-    pub(crate) working_dir: &'a Path,
-    /// Shell RC file to source before commands (from config `rc` field).
-    pub(crate) rc: Option<&'a str>,
-    /// Output display configuration for progress rendering.
-    pub(crate) output_config: &'a HookOutputConfig,
-    /// Shared collector for finished job results (used for summary).
-    pub(crate) job_results: Arc<Mutex<Vec<JobResultEntry>>>,
-}
-
-/// Data needed to run a single job in a thread.
-#[derive(Clone)]
-pub(crate) struct ParallelJobData {
-    pub(crate) name: String,
-    pub(crate) cmd: String,
-    pub(crate) env: HashMap<String, String>,
-    pub(crate) working_dir: PathBuf,
-}
-
 /// Execute a YAML-defined hook.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_yaml_hook(
@@ -107,6 +79,8 @@ pub fn execute_yaml_hook(
     working_dir: &Path,
     output_config: &HookOutputConfig,
 ) -> Result<HookResult> {
+    let presenter: Arc<dyn JobPresenter> =
+        crate::executor::cli_presenter::CliPresenter::auto(output_config);
     execute_yaml_hook_with_rc(
         hook_name,
         hook_def,
@@ -117,6 +91,7 @@ pub fn execute_yaml_hook(
         None,
         output_config,
         &JobFilter::default(),
+        &presenter,
     )
 }
 
@@ -130,8 +105,9 @@ pub fn execute_yaml_hook_with_rc(
     source_dir: &str,
     working_dir: &Path,
     rc: Option<&str>,
-    output_config: &HookOutputConfig,
+    _output_config: &HookOutputConfig,
     filter: &JobFilter,
+    presenter: &Arc<dyn JobPresenter>,
 ) -> Result<HookResult> {
     // Check hook-level skip/only conditions
     if let Some(ref skip) = hook_def.skip {
@@ -199,58 +175,68 @@ pub fn execute_yaml_hook_with_rc(
     // Sort by priority if set
     jobs.sort_by_key(|j| j.priority.unwrap_or(0));
 
-    let mode = ExecutionMode::from_hook_def(hook_def);
+    // Map YAML execution mode to generic executor mode
+    let yaml_mode = ExecutionMode::from_hook_def(hook_def);
+    let exec_mode = match yaml_mode {
+        ExecutionMode::Sequential | ExecutionMode::Follow => {
+            crate::executor::ExecutionMode::Sequential
+        }
+        ExecutionMode::Piped => crate::executor::ExecutionMode::Piped,
+        ExecutionMode::Parallel => crate::executor::ExecutionMode::Parallel,
+    };
 
-    let job_results: Arc<Mutex<Vec<JobResultEntry>>> = Arc::new(Mutex::new(Vec::new()));
+    // Build hook environment
+    let hook_env_obj = super::environment::HookEnvironment::from_context(ctx);
+    let hook_env = hook_env_obj.vars().clone();
 
-    let exec = ExecContext {
-        hook_ctx: ctx,
-        hook_env: &HashMap::new(),
+    // Convert filtered JobDefs to generic JobSpecs
+    let specs = crate::hooks::job_adapter::yaml_jobs_to_specs(
+        &jobs,
+        ctx,
+        &hook_env,
         source_dir,
         working_dir,
         rc,
-        output_config,
-        job_results: Arc::clone(&job_results),
-    };
+    );
 
-    // Clear any active spinner — the hook renderer writes directly to stderr.
-    output.finish_spinner();
-
-    // Print header and track total time
-    crate::output::hook_progress::print_hook_header(hook_name);
-    let hook_start = std::time::Instant::now();
-
-    let result = execute_jobs(&jobs, mode, &exec, output)?;
-
-    // Print summary with collected job results
-    let collected = job_results.lock().unwrap();
-    crate::output::hook_progress::print_hook_summary(&collected, hook_start.elapsed());
-
-    Ok(result)
-}
-
-/// Execute a list of jobs in the specified mode.
-pub(crate) fn execute_jobs(
-    jobs: &[JobDef],
-    mode: ExecutionMode,
-    exec: &ExecContext<'_>,
-    output: &mut dyn Output,
-) -> Result<HookResult> {
-    // If any job has `needs`, use the dependency-aware executor
-    let has_deps = jobs
-        .iter()
-        .any(|j| j.needs.as_ref().is_some_and(|n| !n.is_empty()));
-
-    if has_deps {
-        return dependency::execute_with_dependencies(jobs, mode, exec, output);
+    if specs.is_empty() {
+        return Ok(HookResult::skipped("All jobs skipped"));
     }
 
-    match mode {
-        ExecutionMode::Sequential | ExecutionMode::Piped => {
-            sequential::execute_sequential(jobs, exec, output, true)
-        }
-        ExecutionMode::Follow => sequential::execute_sequential(jobs, exec, output, false),
-        ExecutionMode::Parallel => parallel::execute_parallel(jobs, exec, output),
+    // Clear any active spinner — the presenter writes directly to stderr.
+    output.finish_spinner();
+
+    // Use presenter for header and execution
+    presenter.on_phase_start(hook_name);
+    let hook_start = std::time::Instant::now();
+
+    // Execute via the generic runner
+    let results = crate::executor::runner::run_jobs(&specs, exec_mode, presenter)?;
+
+    presenter.on_phase_complete(hook_start.elapsed());
+
+    // Convert Vec<JobResult> to HookResult
+    job_results_to_hook_result(&results)
+}
+
+/// Convert generic executor results into a `HookResult`.
+fn job_results_to_hook_result(results: &[crate::executor::JobResult]) -> Result<HookResult> {
+    if results.is_empty() {
+        return Ok(HookResult::success());
+    }
+
+    // Find the first failure
+    let first_failure = results
+        .iter()
+        .find(|r| r.status == crate::executor::NodeStatus::Failed);
+
+    match first_failure {
+        Some(failed) => Ok(HookResult::failed(
+            failed.exit_code.unwrap_or(-1),
+            failed.stdout.clone(),
+            failed.stderr.clone(),
+        )),
+        None => Ok(HookResult::success()),
     }
 }
 
@@ -305,130 +291,13 @@ pub(crate) fn resolve_command(
     }
 }
 
-/// Check skip/only conditions for a job without executing it.
-pub(crate) fn check_skip_conditions(
-    job: &JobDef,
-    working_dir: &Path,
-) -> Option<super::conditions::SkipInfo> {
-    if let Some(reason) = super::conditions::check_arch_constraint(job) {
-        return Some(super::conditions::SkipInfo {
-            reason,
-            ran_command: false,
-        });
-    }
-    if let Some(ref skip) = job.skip {
-        if let Some(info) = super::conditions::should_skip(skip, working_dir) {
-            return Some(info);
-        }
-    }
-    if let Some(ref only) = job.only {
-        if let Some(info) = super::conditions::should_only_skip(only, working_dir) {
-            return Some(info);
-        }
-    }
-    None
-}
-
-/// Execute a single job.
-///
-/// If `line_sender` is provided, output lines from non-interactive commands
-/// are streamed through the channel for progress rendering.
-pub(crate) fn execute_single_job(
-    job: &JobDef,
-    exec: &ExecContext<'_>,
-    output: &mut dyn Output,
-    line_sender: Option<std::sync::mpsc::Sender<String>>,
-) -> Result<HookResult> {
-    let job_name = job.name.as_deref().unwrap_or("(unnamed)");
-
-    // Platform skip (OS-keyed run with no matching variant) — silent, invisible
-    if is_platform_skip(job) {
-        output.debug(&format!(
-            "Platform skip job '{job_name}': no variant for current OS"
-        ));
-        return Ok(HookResult::platform_skipped());
-    }
-
-    // Arch constraint
-    if let Some(reason) = super::conditions::check_arch_constraint(job) {
-        output.debug(&format!("Skipping job '{job_name}': {reason}"));
-        return Ok(HookResult::skipped(reason));
-    }
-
-    // Job-level skip/only conditions
-    if let Some(ref skip) = job.skip {
-        if let Some(info) = super::conditions::should_skip(skip, exec.working_dir) {
-            output.debug(&format!("Skipping job '{job_name}': {}", info.reason));
-            return Ok(if info.ran_command {
-                HookResult::skipped_after_command(info.reason)
-            } else {
-                HookResult::skipped(info.reason)
-            });
-        }
-    }
-    if let Some(ref only) = job.only {
-        if let Some(info) = super::conditions::should_only_skip(only, exec.working_dir) {
-            output.debug(&format!("Skipping job '{job_name}': {}", info.reason));
-            return Ok(if info.ran_command {
-                HookResult::skipped_after_command(info.reason)
-            } else {
-                HookResult::skipped(info.reason)
-            });
-        }
-    }
-
-    let cmd = resolve_command(job, exec.hook_ctx, Some(job_name), exec.source_dir);
-
-    if cmd.is_empty() {
-        return Ok(HookResult::skipped("Empty command"));
-    }
-
-    output.debug(&format!("Executing job '{job_name}': {cmd}"));
-
-    // Build environment
-    let mut env = exec.hook_env.clone();
-    if let Some(ref job_env) = job.env {
-        env.extend(job_env.clone());
-    }
-
-    // Resolve working directory
-    let wd = if let Some(ref root) = job.root {
-        exec.working_dir.join(root)
-    } else {
-        exec.working_dir.to_path_buf()
-    };
-
-    // Wrap command with RC file if configured
-    let cmd = if let Some(rc) = exec.rc {
-        format!("source {rc} && {cmd}")
-    } else {
-        cmd
-    };
-
-    let is_interactive = job.interactive == Some(true);
-
-    let result = if is_interactive {
-        command::run_interactive_command(&cmd, &env, &wd, exec.hook_ctx)
-    } else {
-        command::run_shell_command_with_callback(
-            &cmd,
-            &env,
-            &wd,
-            exec.hook_ctx,
-            std::time::Duration::from_secs(300),
-            line_sender,
-        )
-    }?;
-
-    Ok(result)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hooks::yaml_config::RunCommand;
     use crate::hooks::HookType;
     use crate::output::TestOutput;
+    use std::collections::HashMap;
 
     fn make_ctx() -> HookContext {
         HookContext::new(
@@ -1086,28 +955,5 @@ mod tests {
         .unwrap();
 
         assert!(result.success);
-    }
-
-    #[test]
-    fn test_run_shell_command_streams_output() {
-        let ctx = make_ctx();
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
-
-        let result = command::run_shell_command_with_callback(
-            "echo hello && echo world",
-            &HashMap::new(),
-            Path::new("/tmp"),
-            &ctx,
-            std::time::Duration::from_secs(10),
-            Some(tx),
-        )
-        .unwrap();
-
-        assert!(result.success);
-        assert!(result.stdout.contains("hello"));
-
-        let lines: Vec<String> = rx.try_iter().collect();
-        assert!(lines.iter().any(|l| l.contains("hello")));
-        assert!(lines.iter().any(|l| l.contains("world")));
     }
 }

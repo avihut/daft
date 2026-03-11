@@ -224,7 +224,7 @@ impl HookExecutor {
         hook_source_worktree: &Path,
         hook_config: &HookConfig,
         output: &mut dyn Output,
-        _presenter: &Arc<dyn JobPresenter>,
+        presenter: &Arc<dyn JobPresenter>,
     ) -> Result<Option<HookResult>> {
         let yaml_config = match yaml_config_loader::load_merged_config(hook_source_worktree)? {
             Some(config) => config,
@@ -286,6 +286,7 @@ impl HookExecutor {
             rc,
             &self.config.output,
             &self.job_filter,
+            presenter,
         )?;
 
         if !result.success && !result.skipped {
