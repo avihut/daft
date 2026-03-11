@@ -1,0 +1,82 @@
+name: "Basic clone workflow"
+description: "Clone a repo, verify structure, create worktree, list"
+
+repos:
+  - name: my-project
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# My Project\nA test project for manual testing."
+          - path: src/main.py
+            content: |
+              def main():
+                  print("hello")
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+        files:
+          - path: src/dev.py
+            content: |
+              def dev():
+                  print("dev mode")
+        commits:
+          - message: "Add dev module"
+      - name: feature/login
+        from: main
+        files:
+          - path: src/login.py
+            content: |
+              def login():
+                  pass
+        commits:
+          - message: "Add login stub"
+
+steps:
+  - name: "Clone the repository"
+    run: "git-worktree-clone $REMOTE_MY_PROJECT"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "my-project/.git"
+        - "my-project/main"
+      files_exist:
+        - "my-project/main/README.md"
+        - "my-project/main/src/main.py"
+
+  - name: "Verify we're on main branch"
+    run: "git rev-parse --abbrev-ref HEAD"
+    cwd: "$WORK_DIR/my-project/main"
+    expect:
+      exit_code: 0
+      is_git_worktree:
+        - dir: "$WORK_DIR/my-project/main"
+          branch: main
+
+  - name: "Checkout develop branch"
+    run: "git-worktree-checkout develop"
+    cwd: "$WORK_DIR/my-project/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/my-project/develop"
+      is_git_worktree:
+        - dir: "$WORK_DIR/my-project/develop"
+          branch: develop
+
+  - name: "List all worktrees"
+    run: "git-worktree-list"
+    cwd: "$WORK_DIR/my-project/main"
+    expect:
+      exit_code: 0
+
+  - name: "Verify develop has correct files"
+    run: "ls src/"
+    cwd: "$WORK_DIR/my-project/develop"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/my-project/develop/src/dev.py"
+        - "$WORK_DIR/my-project/develop/src/main.py"
