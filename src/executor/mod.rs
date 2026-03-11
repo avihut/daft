@@ -5,6 +5,7 @@
 //! and the sync/prune DAG executor.
 
 pub mod cli_presenter;
+pub mod command;
 pub mod presenter;
 
 use std::collections::HashMap;
