@@ -6,10 +6,12 @@
 
 use crate::core::worktree::sync_dag::DagEvent;
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
+use crate::executor::presenter::{JobPresenter, NullPresenter};
 use crate::hooks::{HookContext, HookExecutor};
 use crate::output::BufferingOutput;
 use anyhow::Result;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Instant;
 
 /// A combined `ProgressSink` + `HookRunner` for TUI mode.
@@ -62,7 +64,8 @@ impl HookRunner for TuiBridge {
         let hook_type = ctx.hook_type;
         let start = Instant::now();
 
-        match self.executor.execute(ctx, &mut self.output) {
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        match self.executor.execute(ctx, &mut self.output, presenter) {
             Ok(result) => {
                 if result.skipped {
                     // TODO: When hooks are skipped due to TrustLevel::Prompt, surface a

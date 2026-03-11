@@ -1,12 +1,13 @@
 use crate::{
     core::{worktree::flow_adopt, OutputSink},
+    executor::cli_presenter::CliPresenter,
     git::should_show_gitoxide_notice,
     hooks::{
         get_remote_url_for_git_dir, HookContext, HookExecutor, HookType, HooksConfig, TrustLevel,
     },
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
-    settings::DaftSettings,
+    settings::{DaftSettings, HookOutputConfig},
     utils::*,
 };
 use anyhow::Result;
@@ -212,7 +213,8 @@ fn run_post_adopt_hook(
     )
     .with_new_branch(false);
 
-    let hook_result = executor.execute(&ctx, output)?;
+    let presenter = CliPresenter::auto(&HookOutputConfig::default());
+    let hook_result = executor.execute(&ctx, output, presenter)?;
 
     if hook_result.skipped {
         if let Some(reason) = &hook_result.skip_reason {
