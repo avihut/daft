@@ -33,7 +33,7 @@ pub fn run(
     let scenario_files = if scenarios.is_empty() {
         discover_scenarios(&scenarios_dir)?
     } else {
-        scenarios
+        resolve_scenario_paths(&scenarios, &scenarios_dir)?
     };
 
     if scenario_files.is_empty() {
@@ -78,6 +78,39 @@ pub fn run(
     }
 
     Ok(())
+}
+
+/// Resolve scenario arguments to full paths.
+///
+/// Each argument can be:
+/// - A full/relative file path (used as-is if it exists)
+/// - A bare name like `clone-basic` (resolved to `<scenarios_dir>/clone-basic.yml` or `.yaml`)
+fn resolve_scenario_paths(args: &[PathBuf], scenarios_dir: &PathBuf) -> Result<Vec<PathBuf>> {
+    let mut resolved = Vec::new();
+    for arg in args {
+        if arg.exists() {
+            resolved.push(arg.clone());
+            continue;
+        }
+        // Try resolving as a name within scenarios_dir.
+        let stem = arg.file_stem().unwrap_or(arg.as_os_str());
+        let yml = scenarios_dir.join(format!("{}.yml", stem.to_string_lossy()));
+        let yaml = scenarios_dir.join(format!("{}.yaml", stem.to_string_lossy()));
+        if yml.exists() {
+            resolved.push(yml);
+        } else if yaml.exists() {
+            resolved.push(yaml);
+        } else {
+            anyhow::bail!(
+                "Scenario not found: '{}'\n  Looked for:\n    {}\n    {}\n    {}",
+                arg.display(),
+                arg.display(),
+                yml.display(),
+                yaml.display()
+            );
+        }
+    }
+    Ok(resolved)
 }
 
 /// Discover all `.yml` and `.yaml` files in the scenarios directory.

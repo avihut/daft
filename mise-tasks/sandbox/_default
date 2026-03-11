@@ -48,19 +48,19 @@ export GIT_COMMITTER_EMAIL="${DAFT_SANDBOX_GIT_EMAIL}"
 ENVRC
 
 # --- Write helper scripts ---
-cat > "${sandbox_dir}/daft-rebuild" <<'SCRIPT'
+cat > "${sandbox_dir}/rebuild-daft" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 (cd "$DAFT_WORKTREE" && mise run dev)
 SCRIPT
-chmod +x "${sandbox_dir}/daft-rebuild"
+chmod +x "${sandbox_dir}/rebuild-daft"
 
-cat > "${sandbox_dir}/daft-manual-test" <<'SCRIPT'
+cat > "${sandbox_dir}/manual-test" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 (cd "$DAFT_WORKTREE" && cargo run --package xtask -- manual-test "$@")
 SCRIPT
-chmod +x "${sandbox_dir}/daft-manual-test"
+chmod +x "${sandbox_dir}/manual-test"
 
 # Allow direnv if available
 if command -v direnv &>/dev/null; then
