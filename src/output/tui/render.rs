@@ -93,36 +93,53 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         .collect();
     let header_row = Row::new(header_cells);
 
-    let rows: Vec<Row> = state
-        .worktrees
-        .iter()
-        .zip(row_vals.iter())
-        .flat_map(|(wt, vals)| {
-            let main_cells: Vec<Cell> = columns
-                .iter()
-                .map(|col| render_cell(col, wt, vals, state.tick, state.stat))
-                .collect();
-            let mut result = vec![Row::new(main_cells)];
+    // Build table rows, inserting empty placeholders for hook sub-rows.
+    // Hook lines are rendered as full-width overlays after the table so they
+    // aren't constrained by column widths.
+    let mut all_rows: Vec<Row> = Vec::new();
+    let mut hook_overlays: Vec<(u16, Line)> = Vec::new();
+    let mut row_count: u16 = 0;
+    let num_columns = columns.len();
 
-            // Add hook sub-rows if present
-            if state.show_hook_sub_rows && !wt.hook_sub_rows.is_empty() {
-                for (i, sub) in wt.hook_sub_rows.iter().enumerate() {
-                    let is_last = i == wt.hook_sub_rows.len() - 1;
-                    let prefix = if is_last { "\u{2514}" } else { "\u{251C}" };
-                    let sub_row = render_hook_sub_row(sub, prefix, state.tick, columns.len());
-                    result.push(sub_row);
-                }
+    for (wt, vals) in state.worktrees.iter().zip(row_vals.iter()) {
+        let main_cells: Vec<Cell> = columns
+            .iter()
+            .map(|col| render_cell(col, wt, vals, state.tick, state.stat))
+            .collect();
+        all_rows.push(Row::new(main_cells));
+        row_count += 1;
+
+        if state.show_hook_sub_rows && !wt.hook_sub_rows.is_empty() {
+            for (i, sub) in wt.hook_sub_rows.iter().enumerate() {
+                let is_last = i == wt.hook_sub_rows.len() - 1;
+                let prefix = if is_last { "\u{2514}" } else { "\u{251C}" };
+
+                // Empty placeholder row so the table reserves vertical space.
+                let empty_cells: Vec<Cell> = (0..num_columns).map(|_| Cell::from("")).collect();
+                all_rows.push(Row::new(empty_cells));
+
+                hook_overlays.push((row_count, format_hook_line(sub, prefix, state.tick)));
+                row_count += 1;
             }
+        }
+    }
 
-            result
-        })
-        .collect();
-
-    let table = Table::new(rows, &constraints)
+    let table = Table::new(all_rows, &constraints)
         .header(header_row)
         .column_spacing(2);
 
     frame.render_widget(table, area);
+
+    // Overlay hook lines on placeholder rows (full terminal width, no column constraints).
+    // The header row occupies 1 line, so data rows start at area.y + 1.
+    let data_start_y = area.y + 1;
+    for (row_offset, line) in hook_overlays {
+        let y = data_start_y + row_offset;
+        if y < area.y + area.height {
+            let hook_area = Rect::new(area.x, y, area.width, 1);
+            frame.render_widget(Paragraph::new(line), hook_area);
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -359,17 +376,10 @@ fn render_status_cell(wt: &super::state::WorktreeRow, tick: usize) -> Cell<'stat
     }
 }
 
-/// Render a hook sub-row showing individual hook status and timing.
+/// Format a hook sub-row as a full-width line (not constrained by table columns).
 ///
-/// Sub-rows must have the same number of cells as regular rows (one per column)
-/// so the table layout doesn't break. The hook content goes in the Status column
-/// and all other columns are empty.
-fn render_hook_sub_row(
-    sub: &super::state::HookSubRow,
-    prefix: &str,
-    tick: usize,
-    num_columns: usize,
-) -> Row<'static> {
+/// Rendered as a `Paragraph` overlay on top of an empty placeholder row in the table.
+fn format_hook_line(sub: &super::state::HookSubRow, prefix: &str, tick: usize) -> Line<'static> {
     use super::state::HookSubStatus;
 
     let name = sub.hook_type.filename();
@@ -392,7 +402,7 @@ fn render_hook_sub_row(
         ),
     };
 
-    let line = Line::from(vec![
+    Line::from(vec![
         Span::styled(
             format!("  {prefix} "),
             Style::default().add_modifier(Modifier::DIM),
@@ -402,16 +412,7 @@ fn render_hook_sub_row(
             Style::default().add_modifier(Modifier::DIM),
         ),
         status_span,
-    ]);
-
-    // Build a row with the correct number of cells: hook content in the first
-    // cell (Status column), empty cells for all remaining columns.
-    let mut cells = Vec::with_capacity(num_columns);
-    cells.push(Cell::from(line));
-    for _ in 1..num_columns {
-        cells.push(Cell::from(""));
-    }
-    Row::new(cells)
+    ])
 }
 
 /// Render the annotation cell (current worktree indicator and default branch marker).
