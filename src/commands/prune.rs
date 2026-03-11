@@ -294,11 +294,11 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         });
 
     // ── Run TUI renderer on main thread ────────────────────────────────
-    // Budget 2 hook sub-rows per worktree (pre-remove + post-remove).
+    // Budget hook + job sub-rows per worktree (2 hooks × ~3 jobs each).
     // Not all worktrees will have hooks, but the ratatui inline viewport
     // cannot grow after creation, so over-allocate.
     let hook_extra_rows = if args.verbose >= 1 {
-        (state.worktrees.len() as u16) * 2
+        (state.worktrees.len() as u16) * 8
     } else {
         0
     };

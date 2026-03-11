@@ -36,8 +36,8 @@ impl TuiRenderer {
 
     /// Compute total rendered worktree rows including hook sub-rows.
     ///
-    /// When `show_hook_sub_rows` is true (verbose >= 1), each hook sub-row adds
-    /// an extra rendered row beneath its parent worktree row.
+    /// When `show_hook_sub_rows` is true (verbose >= 1), each hook sub-row and
+    /// its nested job sub-rows add extra rendered rows beneath the parent worktree row.
     fn total_rendered_rows(&self) -> u16 {
         let base = self.state.worktrees.len() as u16;
         if self.state.show_hook_sub_rows {
@@ -45,7 +45,15 @@ impl TuiRenderer {
                 .state
                 .worktrees
                 .iter()
-                .map(|wt| wt.hook_sub_rows.len() as u16)
+                .map(|wt| {
+                    let hooks = wt.hook_sub_rows.len() as u16;
+                    let jobs: u16 = wt
+                        .hook_sub_rows
+                        .iter()
+                        .map(|h| h.job_sub_rows.len() as u16)
+                        .sum();
+                    hooks + jobs
+                })
                 .sum::<u16>()
         } else {
             base

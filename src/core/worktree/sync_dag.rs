@@ -302,6 +302,29 @@ pub enum DagEvent {
         /// Captured stdout+stderr, only stored on failure/warning.
         output: Option<String>,
     },
+    /// A job started running within a hook.
+    JobStarted {
+        branch_name: String,
+        hook_type: HookType,
+        job_name: String,
+    },
+    /// A job completed within a hook.
+    JobCompleted {
+        branch_name: String,
+        hook_type: HookType,
+        job_name: String,
+        status: JobCompletionStatus,
+        duration: Duration,
+        skip_reason: Option<String>,
+    },
+}
+
+/// Terminal status for a job within a hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobCompletionStatus {
+    Succeeded,
+    Failed,
+    Skipped,
 }
 
 /// Shared mutable state for the worker pool.

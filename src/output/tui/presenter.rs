@@ -9,7 +9,7 @@
 //!
 //! [`CliPresenter`]: crate::executor::cli_presenter::CliPresenter
 
-use crate::core::worktree::sync_dag::DagEvent;
+use crate::core::worktree::sync_dag::{DagEvent, JobCompletionStatus};
 use crate::executor::presenter::JobPresenter;
 use crate::executor::JobResult;
 use crate::hooks::HookType;
@@ -81,8 +81,12 @@ impl JobPresenter for TuiPresenter {
         });
     }
 
-    fn on_job_start(&self, _name: &str, _description: Option<&str>) {
-        // No-op: TUI shows phase-level status only.
+    fn on_job_start(&self, name: &str, _description: Option<&str>) {
+        let _ = self.sender.send(DagEvent::JobStarted {
+            branch_name: self.branch_name.clone(),
+            hook_type: self.hook_type,
+            job_name: name.to_string(),
+        });
     }
 
     fn on_job_output(&self, _name: &str, line: &str) {
@@ -94,25 +98,42 @@ impl JobPresenter for TuiPresenter {
         output.push_str(line);
     }
 
-    fn on_job_success(&self, _name: &str, _duration: Duration) {
-        // No-op: TUI shows phase-level status only.
+    fn on_job_success(&self, name: &str, duration: Duration) {
+        let _ = self.sender.send(DagEvent::JobCompleted {
+            branch_name: self.branch_name.clone(),
+            hook_type: self.hook_type,
+            job_name: name.to_string(),
+            status: JobCompletionStatus::Succeeded,
+            duration,
+            skip_reason: None,
+        });
     }
 
-    fn on_job_failure(&self, _name: &str, _duration: Duration) {
+    fn on_job_failure(&self, name: &str, duration: Duration) {
         *self
             .has_failure
             .lock()
             .expect("TuiPresenter has_failure poisoned") = true;
+
+        let _ = self.sender.send(DagEvent::JobCompleted {
+            branch_name: self.branch_name.clone(),
+            hook_type: self.hook_type,
+            job_name: name.to_string(),
+            status: JobCompletionStatus::Failed,
+            duration,
+            skip_reason: None,
+        });
     }
 
-    fn on_job_skipped(
-        &self,
-        _name: &str,
-        _reason: &str,
-        _duration: Duration,
-        _show_duration: bool,
-    ) {
-        // No-op: TUI shows phase-level status only.
+    fn on_job_skipped(&self, name: &str, reason: &str, duration: Duration, _show_duration: bool) {
+        let _ = self.sender.send(DagEvent::JobCompleted {
+            branch_name: self.branch_name.clone(),
+            hook_type: self.hook_type,
+            job_name: name.to_string(),
+            status: JobCompletionStatus::Skipped,
+            duration,
+            skip_reason: Some(reason.to_string()),
+        });
     }
 
     fn on_message(&self, _msg: &str) {
@@ -238,7 +259,6 @@ mod tests {
         let presenter = TuiPresenter::new(tx, "feat/broken", HookType::PreCreate);
 
         presenter.on_phase_start("worktree-pre-create");
-        let _ = rx.recv().unwrap(); // Drain HookStarted.
 
         // Simulate a job failure.
         presenter.on_job_start("build", Some("Build project"));
@@ -247,8 +267,14 @@ mod tests {
 
         presenter.on_phase_complete(Duration::from_secs(1));
 
-        let event = rx.recv().expect("should receive HookCompleted");
-        match event {
+        // Drain all events and find the HookCompleted.
+        drop(presenter);
+        let events: Vec<DagEvent> = rx.try_iter().collect();
+        let hook_completed = events
+            .iter()
+            .find(|e| matches!(e, DagEvent::HookCompleted { .. }))
+            .expect("should receive HookCompleted");
+        match hook_completed {
             DagEvent::HookCompleted {
                 success,
                 warned,
@@ -269,7 +295,6 @@ mod tests {
         let presenter = TuiPresenter::new(tx, "feat/x", HookType::PostCreate);
 
         presenter.on_phase_start("worktree-post-create");
-        let _ = rx.recv().unwrap(); // Drain HookStarted.
 
         presenter.on_job_start("install", None);
         presenter.on_job_output("install", "fetching packages...");
@@ -278,10 +303,16 @@ mod tests {
 
         presenter.on_phase_complete(Duration::from_secs(5));
 
-        let event = rx.recv().expect("should receive HookCompleted");
-        match event {
+        // Drain all events and find the HookCompleted.
+        drop(presenter);
+        let events: Vec<DagEvent> = rx.try_iter().collect();
+        let hook_completed = events
+            .iter()
+            .find(|e| matches!(e, DagEvent::HookCompleted { .. }))
+            .expect("should receive HookCompleted");
+        match hook_completed {
             DagEvent::HookCompleted { output, .. } => {
-                let text = output.expect("should have output on failure");
+                let text = output.as_ref().expect("should have output on failure");
                 assert!(text.contains("fetching packages..."));
                 assert!(text.contains("error: network timeout"));
             }
@@ -299,17 +330,94 @@ mod tests {
     }
 
     #[test]
-    fn job_level_events_are_noop() {
+    fn on_job_start_sends_job_started() {
         let (tx, rx) = mpsc::channel();
         let presenter = TuiPresenter::new(tx, "main", HookType::PostCreate);
 
-        // These should not send any events.
         presenter.on_job_start("build", Some("Build project"));
-        presenter.on_job_success("build", Duration::from_secs(1));
-        presenter.on_job_skipped("lint", "no files", Duration::ZERO, false);
-        presenter.on_message("hello world");
 
-        // Channel should be empty.
+        let event = rx.try_recv().expect("should receive JobStarted");
+        match event {
+            DagEvent::JobStarted {
+                branch_name,
+                hook_type,
+                job_name,
+            } => {
+                assert_eq!(branch_name, "main");
+                assert_eq!(hook_type, HookType::PostCreate);
+                assert_eq!(job_name, "build");
+            }
+            other => panic!("expected JobStarted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn on_job_success_sends_job_completed() {
+        let (tx, rx) = mpsc::channel();
+        let presenter = TuiPresenter::new(tx, "main", HookType::PostCreate);
+
+        presenter.on_job_success("build", Duration::from_secs(1));
+
+        let event = rx.try_recv().expect("should receive JobCompleted");
+        match event {
+            DagEvent::JobCompleted {
+                job_name, status, ..
+            } => {
+                assert_eq!(job_name, "build");
+                assert_eq!(status, JobCompletionStatus::Succeeded);
+            }
+            other => panic!("expected JobCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn on_job_failure_sends_event_and_sets_flag() {
+        let (tx, rx) = mpsc::channel();
+        let presenter = TuiPresenter::new(tx, "feat/x", HookType::PreRemove);
+
+        presenter.on_job_failure("deploy", Duration::from_secs(2));
+
+        let event = rx.try_recv().expect("should receive JobCompleted");
+        match event {
+            DagEvent::JobCompleted {
+                job_name, status, ..
+            } => {
+                assert_eq!(job_name, "deploy");
+                assert_eq!(status, JobCompletionStatus::Failed);
+            }
+            other => panic!("expected JobCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn on_job_skipped_sends_job_completed_with_reason() {
+        let (tx, rx) = mpsc::channel();
+        let presenter = TuiPresenter::new(tx, "main", HookType::PostCreate);
+
+        presenter.on_job_skipped("lint", "no files", Duration::ZERO, false);
+
+        let event = rx.try_recv().expect("should receive JobCompleted");
+        match event {
+            DagEvent::JobCompleted {
+                job_name,
+                status,
+                skip_reason,
+                ..
+            } => {
+                assert_eq!(job_name, "lint");
+                assert_eq!(status, JobCompletionStatus::Skipped);
+                assert_eq!(skip_reason.as_deref(), Some("no files"));
+            }
+            other => panic!("expected JobCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn on_message_is_noop() {
+        let (tx, rx) = mpsc::channel();
+        let presenter = TuiPresenter::new(tx, "main", HookType::PostCreate);
+
+        presenter.on_message("hello world");
         assert!(rx.try_recv().is_err());
     }
 
@@ -319,7 +427,6 @@ mod tests {
         let presenter = TuiPresenter::new(tx, "main", HookType::PostCreate);
 
         presenter.on_phase_start("worktree-post-create");
-        let _ = rx.recv().unwrap(); // Drain HookStarted.
 
         // Job produces output but succeeds.
         presenter.on_job_start("build", None);
@@ -328,8 +435,14 @@ mod tests {
 
         presenter.on_phase_complete(Duration::from_secs(1));
 
-        let event = rx.recv().expect("should receive HookCompleted");
-        match event {
+        // Drain all events and find the HookCompleted.
+        drop(presenter);
+        let events: Vec<DagEvent> = rx.try_iter().collect();
+        let hook_completed = events
+            .iter()
+            .find(|e| matches!(e, DagEvent::HookCompleted { .. }))
+            .expect("should receive HookCompleted");
+        match hook_completed {
             DagEvent::HookCompleted {
                 success, output, ..
             } => {

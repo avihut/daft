@@ -1,5 +1,7 @@
 use crate::core::worktree::list::{Stat, WorktreeInfo};
-use crate::core::worktree::sync_dag::{DagEvent, OperationPhase, TaskMessage, TaskStatus};
+use crate::core::worktree::sync_dag::{
+    DagEvent, JobCompletionStatus, OperationPhase, TaskMessage, TaskStatus,
+};
 use crate::hooks::HookType;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -53,6 +55,23 @@ pub enum HookSubStatus {
 pub struct HookSubRow {
     pub hook_type: HookType,
     pub status: HookSubStatus,
+    pub job_sub_rows: Vec<JobSubRow>,
+}
+
+/// Status of a single job sub-row within a hook (for -v mode).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobSubStatus {
+    Running,
+    Succeeded(Duration),
+    Failed(Duration),
+    Skipped { duration: Duration, reason: String },
+}
+
+/// A job sub-row displayed beneath a hook sub-row in -v mode.
+#[derive(Debug, Clone)]
+pub struct JobSubRow {
+    pub name: String,
+    pub status: JobSubStatus,
 }
 
 /// Entry for the post-TUI hook summary (printed after TUI exits on warning/failure).
@@ -205,6 +224,7 @@ impl TuiState {
                         row.hook_sub_rows.push(HookSubRow {
                             hook_type: *hook_type,
                             status: HookSubStatus::Running,
+                            job_sub_rows: Vec::new(),
                         });
                     }
                 }
@@ -254,6 +274,61 @@ impl TuiState {
                         exit_code: *exit_code,
                         output: output.clone(),
                     });
+                }
+            }
+            DagEvent::JobStarted {
+                branch_name,
+                hook_type,
+                job_name,
+            } => {
+                if self.show_hook_sub_rows {
+                    if let Some(row) = self.find_row_mut(branch_name) {
+                        if let Some(hook_sub) = row
+                            .hook_sub_rows
+                            .iter_mut()
+                            .rfind(|s| s.hook_type == *hook_type)
+                        {
+                            hook_sub.job_sub_rows.push(JobSubRow {
+                                name: job_name.clone(),
+                                status: JobSubStatus::Running,
+                            });
+                        }
+                    }
+                }
+            }
+            DagEvent::JobCompleted {
+                branch_name,
+                hook_type,
+                job_name,
+                status,
+                duration,
+                skip_reason,
+            } => {
+                if self.show_hook_sub_rows {
+                    if let Some(row) = self.find_row_mut(branch_name) {
+                        if let Some(hook_sub) = row
+                            .hook_sub_rows
+                            .iter_mut()
+                            .rfind(|s| s.hook_type == *hook_type)
+                        {
+                            if let Some(job_sub) = hook_sub
+                                .job_sub_rows
+                                .iter_mut()
+                                .rfind(|j| j.name == *job_name)
+                            {
+                                job_sub.status = match status {
+                                    JobCompletionStatus::Succeeded => {
+                                        JobSubStatus::Succeeded(*duration)
+                                    }
+                                    JobCompletionStatus::Failed => JobSubStatus::Failed(*duration),
+                                    JobCompletionStatus::Skipped => JobSubStatus::Skipped {
+                                        duration: *duration,
+                                        reason: skip_reason.clone().unwrap_or_default(),
+                                    },
+                                };
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -783,5 +858,141 @@ mod tests {
             row.hook_sub_rows[0].status,
             HookSubStatus::Succeeded(Duration::from_millis(200))
         );
+    }
+
+    #[test]
+    fn job_started_creates_sub_row() {
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate,
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate,
+            job_name: "build".into(),
+        });
+
+        let row = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(row.hook_sub_rows.len(), 1);
+        assert_eq!(row.hook_sub_rows[0].job_sub_rows.len(), 1);
+        assert_eq!(row.hook_sub_rows[0].job_sub_rows[0].name, "build");
+        assert_eq!(
+            row.hook_sub_rows[0].job_sub_rows[0].status,
+            JobSubStatus::Running
+        );
+    }
+
+    #[test]
+    fn job_completed_updates_status() {
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate,
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate,
+            job_name: "build".into(),
+        });
+        state.apply_event(&DagEvent::JobCompleted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate,
+            job_name: "build".into(),
+            status: JobCompletionStatus::Succeeded,
+            duration: Duration::from_millis(150),
+            skip_reason: None,
+        });
+
+        let row = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(
+            row.hook_sub_rows[0].job_sub_rows[0].status,
+            JobSubStatus::Succeeded(Duration::from_millis(150))
+        );
+    }
+
+    #[test]
+    fn multiple_jobs_within_hook() {
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PreRemove,
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PreRemove,
+            job_name: "cleanup".into(),
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PreRemove,
+            job_name: "notify".into(),
+        });
+        state.apply_event(&DagEvent::JobCompleted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PreRemove,
+            job_name: "cleanup".into(),
+            status: JobCompletionStatus::Succeeded,
+            duration: Duration::from_millis(100),
+            skip_reason: None,
+        });
+        state.apply_event(&DagEvent::JobCompleted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PreRemove,
+            job_name: "notify".into(),
+            status: JobCompletionStatus::Failed,
+            duration: Duration::from_millis(200),
+            skip_reason: None,
+        });
+
+        let row = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        let jobs = &row.hook_sub_rows[0].job_sub_rows;
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(
+            jobs[0].status,
+            JobSubStatus::Succeeded(Duration::from_millis(100))
+        );
+        assert_eq!(
+            jobs[1].status,
+            JobSubStatus::Failed(Duration::from_millis(200))
+        );
+    }
+
+    #[test]
+    fn job_events_ignored_when_not_verbose() {
+        let mut state = make_test_state();
+        assert!(!state.show_hook_sub_rows);
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate,
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate,
+            job_name: "build".into(),
+        });
+
+        let row = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert!(row.hook_sub_rows.is_empty());
     }
 }

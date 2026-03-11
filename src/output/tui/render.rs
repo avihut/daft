@@ -110,16 +110,29 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         row_count += 1;
 
         if state.show_hook_sub_rows && !wt.hook_sub_rows.is_empty() {
+            let hook_count = wt.hook_sub_rows.len();
             for (i, sub) in wt.hook_sub_rows.iter().enumerate() {
-                let is_last = i == wt.hook_sub_rows.len() - 1;
-                let prefix = if is_last { "\u{2514}" } else { "\u{251C}" };
+                let is_last_hook = i == hook_count - 1;
+                let hook_prefix = if is_last_hook { "\u{2514}" } else { "\u{251C}" };
 
-                // Empty placeholder row so the table reserves vertical space.
+                // Hook placeholder row.
                 let empty_cells: Vec<Cell> = (0..num_columns).map(|_| Cell::from("")).collect();
                 all_rows.push(Row::new(empty_cells));
-
-                hook_overlays.push((row_count, format_hook_line(sub, prefix, state.tick)));
+                hook_overlays.push((row_count, format_hook_line(sub, hook_prefix, state.tick)));
                 row_count += 1;
+
+                // Job sub-rows within this hook.
+                let job_count = sub.job_sub_rows.len();
+                for (j, job) in sub.job_sub_rows.iter().enumerate() {
+                    let is_last_job = j == job_count - 1;
+                    let empty_cells: Vec<Cell> = (0..num_columns).map(|_| Cell::from("")).collect();
+                    all_rows.push(Row::new(empty_cells));
+                    hook_overlays.push((
+                        row_count,
+                        format_job_line(job, is_last_hook, is_last_job, state.tick),
+                    ));
+                    row_count += 1;
+                }
             }
         }
     }
@@ -274,7 +287,9 @@ fn render_cell(
     tick: usize,
     stat: Stat,
 ) -> Cell<'static> {
-    match col {
+    let is_pruned = matches!(wt.status, WorktreeStatus::Done(FinalStatus::Pruned));
+
+    let cell = match col {
         Column::Status => render_status_cell(wt, tick),
         Column::Annotation => render_annotation_cell(&wt.info),
         Column::Branch => Cell::from(vals.branch.clone()),
@@ -312,6 +327,17 @@ fn render_cell(
                 ]))
             }
         }
+    };
+
+    // Apply strikethrough to pruned rows (from Branch column onwards).
+    if is_pruned && !matches!(col, Column::Status | Column::Annotation) {
+        cell.style(
+            Style::default()
+                .add_modifier(Modifier::CROSSED_OUT)
+                .add_modifier(Modifier::DIM),
+        )
+    } else {
+        cell
     }
 }
 
@@ -409,8 +435,76 @@ fn format_hook_line(sub: &super::state::HookSubRow, prefix: &str, tick: usize) -
         ),
         Span::styled(
             format!("{name} "),
-            Style::default().add_modifier(Modifier::DIM),
+            Style::default().fg(Color::Indexed(styles::ACCENT_COLOR_INDEX)),
         ),
+        status_span,
+    ])
+}
+
+/// Format a job sub-row as a full-width line with nested tree indentation.
+///
+/// Job lines are indented one level deeper than their parent hook line.
+/// The tree prefix depends on whether the parent hook is last and whether
+/// this job is last within its hook.
+fn format_job_line(
+    job: &super::state::JobSubRow,
+    parent_hook_is_last: bool,
+    job_is_last: bool,
+    tick: usize,
+) -> Line<'static> {
+    use super::state::JobSubStatus;
+
+    let prefix = match (parent_hook_is_last, job_is_last) {
+        (false, false) => "  \u{2502} \u{251C} ", // "  │ ├ "
+        (false, true) => "  \u{2502} \u{2514} ",  // "  │ └ "
+        (true, false) => "    \u{251C} ",         // "    ├ "
+        (true, true) => "    \u{2514} ",          // "    └ "
+    };
+
+    let (status_span, name_color) = match &job.status {
+        JobSubStatus::Running => {
+            let spinner = SPINNER_FRAMES[tick % SPINNER_FRAMES.len()];
+            (
+                Span::styled(spinner.to_string(), Style::default().fg(Color::Yellow)),
+                Color::Yellow,
+            )
+        }
+        JobSubStatus::Succeeded(d) => (
+            Span::styled(
+                format!("{CHECKMARK} {}ms", d.as_millis()),
+                Style::default().fg(Color::Green),
+            ),
+            Color::Green,
+        ),
+        JobSubStatus::Failed(d) => (
+            Span::styled(
+                format!("{CROSS} {}ms", d.as_millis()),
+                Style::default().fg(Color::Red),
+            ),
+            Color::Red,
+        ),
+        JobSubStatus::Skipped { reason, .. } => {
+            let text = if reason.is_empty() {
+                format!("{SKIP} skipped")
+            } else {
+                format!("{SKIP} {reason}")
+            };
+            (
+                Span::styled(text, Style::default().add_modifier(Modifier::DIM)),
+                Color::Reset,
+            )
+        }
+    };
+
+    let name_style = if matches!(job.status, JobSubStatus::Skipped { .. }) {
+        Style::default().add_modifier(Modifier::DIM)
+    } else {
+        Style::default().fg(name_color)
+    };
+
+    Line::from(vec![
+        Span::styled(prefix, Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(format!("{} ", job.name), name_style),
         status_span,
     ])
 }
