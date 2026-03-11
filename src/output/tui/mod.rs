@@ -5,7 +5,7 @@
 
 mod columns;
 mod driver;
-pub mod presenter;
+mod presenter;
 mod render;
 mod state;
 

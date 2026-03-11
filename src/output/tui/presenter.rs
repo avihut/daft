@@ -33,12 +33,11 @@ pub struct TuiPresenter {
     start: Mutex<Option<Instant>>,
     /// Whether any job has failed during this phase.
     has_failure: Mutex<bool>,
-    /// Last exit code from a failed job.
-    last_exit_code: Mutex<Option<i32>>,
-    /// Accumulated stdout from jobs (for failure reporting).
-    stdout: Mutex<String>,
-    /// Accumulated stderr from jobs (for failure reporting).
-    stderr: Mutex<String>,
+    /// Accumulated output from jobs (merged stdout+stderr via `on_job_output`).
+    ///
+    /// The generic runner streams both stdout and stderr lines through the same
+    /// `on_job_output` callback, so this contains the merged output stream.
+    output: Mutex<String>,
 }
 
 impl TuiPresenter {
@@ -57,34 +56,18 @@ impl TuiPresenter {
             hook_type,
             start: Mutex::new(None),
             has_failure: Mutex::new(false),
-            last_exit_code: Mutex::new(None),
-            stdout: Mutex::new(String::new()),
-            stderr: Mutex::new(String::new()),
+            output: Mutex::new(String::new()),
         })
     }
 
-    /// Build the combined output string for failure/warning reporting.
-    ///
-    /// Returns `None` if both stdout and stderr are empty.
-    fn combined_output(&self) -> Option<String> {
-        let stdout = self.stdout.lock().expect("TuiPresenter stdout poisoned");
-        let stderr = self.stderr.lock().expect("TuiPresenter stderr poisoned");
-
-        if stdout.is_empty() && stderr.is_empty() {
-            return None;
+    /// Return the accumulated output, or `None` if empty.
+    fn take_output(&self) -> Option<String> {
+        let output = self.output.lock().expect("TuiPresenter output poisoned");
+        if output.is_empty() {
+            None
+        } else {
+            Some(output.clone())
         }
-
-        let mut output = String::new();
-        if !stdout.is_empty() {
-            output.push_str(&stdout);
-        }
-        if !stderr.is_empty() {
-            if !output.is_empty() {
-                output.push('\n');
-            }
-            output.push_str(&stderr);
-        }
-        Some(output)
     }
 }
 
@@ -104,11 +87,11 @@ impl JobPresenter for TuiPresenter {
 
     fn on_job_output(&self, _name: &str, line: &str) {
         // Accumulate output for failure reporting.
-        let mut stdout = self.stdout.lock().expect("TuiPresenter stdout poisoned");
-        if !stdout.is_empty() {
-            stdout.push('\n');
+        let mut output = self.output.lock().expect("TuiPresenter output poisoned");
+        if !output.is_empty() {
+            output.push('\n');
         }
-        stdout.push_str(line);
+        output.push_str(line);
     }
 
     fn on_job_success(&self, _name: &str, _duration: Duration) {
@@ -144,24 +127,24 @@ impl JobPresenter for TuiPresenter {
             .has_failure
             .lock()
             .expect("TuiPresenter has_failure poisoned");
-        let exit_code = *self
-            .last_exit_code
-            .lock()
-            .expect("TuiPresenter last_exit_code poisoned");
 
         let output = if has_failure {
-            self.combined_output()
+            self.take_output()
         } else {
             None
         };
 
+        // The presenter only observes warn-mode failures (FailMode::Warn) because
+        // abort-mode failures cause executor.execute() to bail!() before calling
+        // on_phase_complete. The TuiBridge Err path handles abort-mode events
+        // separately. Therefore warned == has_failure is correct here.
         let _ = self.sender.send(DagEvent::HookCompleted {
             branch_name: self.branch_name.clone(),
             hook_type: self.hook_type,
             success: !has_failure,
             warned: has_failure,
             duration,
-            exit_code,
+            exit_code: None,
             output,
         });
     }
