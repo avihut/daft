@@ -33,7 +33,7 @@ steps:
         - "hooks-project/main/daft.yml"
 
   - name: "Trust the hooks config"
-    run: "daft setup --trust"
+    run: "daft hooks trust --force"
     cwd: "$WORK_DIR/hooks-project/main"
     expect:
       exit_code: 0

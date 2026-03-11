@@ -26,6 +26,10 @@ pub fn run(
         return list_scenarios(&scenarios_dir);
     }
 
+    if loop_count.is_some() && step.is_none() {
+        anyhow::bail!("--loop-count requires --step");
+    }
+
     let scenario_files = if scenarios.is_empty() {
         discover_scenarios(&scenarios_dir)?
     } else {
@@ -65,7 +69,9 @@ pub fn run(
                 test_env.base_dir.display()
             );
         } else {
-            test_env.cleanup()?;
+            if let Err(e) = test_env.cleanup() {
+                eprintln!("  Warning: cleanup failed: {e}");
+            }
         }
 
         result?;

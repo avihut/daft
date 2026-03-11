@@ -259,7 +259,14 @@ pub fn execute_step(step: &Step, env: &TestEnv) -> Result<StepResult> {
     let cwd = step
         .cwd
         .as_deref()
-        .map(|c| PathBuf::from(env.expand_vars(c)))
+        .map(|c| {
+            let expanded = PathBuf::from(env.expand_vars(c));
+            if expanded.is_absolute() {
+                expanded
+            } else {
+                env.work_dir.join(expanded)
+            }
+        })
         .unwrap_or_else(|| env.work_dir.clone());
 
     // Run with inherited stdio so output passes through to the terminal.

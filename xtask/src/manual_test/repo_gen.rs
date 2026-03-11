@@ -100,15 +100,14 @@ pub fn generate_repo(spec: &RepoSpec, remotes_dir: &Path) -> Result<PathBuf> {
     if let Some(parent) = tmp_clone_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    run_git(
-        remotes_dir,
-        &[
-            "clone",
-            bare_path.to_str().unwrap(),
-            tmp_clone_path.to_str().unwrap(),
-        ],
-    )
-    .context("cloning bare repo into temp dir")?;
+    let bare_str = bare_path
+        .to_str()
+        .context("bare repo path is not valid UTF-8")?;
+    let clone_str = tmp_clone_path
+        .to_str()
+        .context("temp clone path is not valid UTF-8")?;
+    run_git(remotes_dir, &["clone", bare_str, clone_str])
+        .context("cloning bare repo into temp dir")?;
 
     // 3. Process default branch.
     let default_branch = &spec.default_branch;
@@ -155,8 +154,8 @@ pub fn generate_repo(spec: &RepoSpec, remotes_dir: &Path) -> Result<PathBuf> {
     // 6. Hook scripts.
     if !spec.hook_scripts.is_empty() {
         run_git(&tmp_clone_path, &["checkout", default_branch])?;
-        let hooks_dir = tmp_clone_path.join(".daft");
-        std::fs::create_dir_all(&hooks_dir).context("creating .daft dir")?;
+        let hooks_dir = tmp_clone_path.join(".daft/hooks");
+        std::fs::create_dir_all(&hooks_dir).context("creating .daft/hooks dir")?;
 
         for script in &spec.hook_scripts {
             let script_path = hooks_dir.join(&script.name);

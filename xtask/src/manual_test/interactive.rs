@@ -18,27 +18,41 @@ use super::schema::Scenario;
 // Key handling
 // ---------------------------------------------------------------------------
 
+/// RAII guard that enables terminal raw mode on creation and disables it on
+/// drop — including during panics.
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> Result<Self> {
+        terminal::enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
 /// Wait for a single keypress and return the key code.
 ///
 /// Enables raw mode for the duration of the wait and guarantees it is disabled
-/// before returning, even when an error occurs.
+/// before returning, even on panic (via the [`RawModeGuard`] RAII guard).
 fn wait_for_key() -> Result<KeyCode> {
-    terminal::enable_raw_mode()?;
-    let result = (|| -> Result<KeyCode> {
-        loop {
-            if let Event::Key(KeyEvent {
-                code, modifiers, ..
-            }) = event::read()?
-            {
-                if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
-                    return Ok(KeyCode::Char('q'));
-                }
-                return Ok(code);
+    let _guard = RawModeGuard::enable()?;
+    loop {
+        if let Event::Key(KeyEvent {
+            code, modifiers, ..
+        }) = event::read()?
+        {
+            if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
+                return Ok(KeyCode::Char('q'));
             }
+            return Ok(code);
         }
-    })();
-    terminal::disable_raw_mode()?;
-    result
+    }
+    // _guard dropped here, disabling raw mode
 }
 
 // ---------------------------------------------------------------------------

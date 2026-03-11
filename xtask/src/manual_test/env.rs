@@ -204,6 +204,12 @@ impl TestEnv {
     pub fn command_env(&self) -> HashMap<String, String> {
         let mut env = HashMap::new();
 
+        // Scenario vars first — these can be overridden by safety vars below.
+        for (k, v) in &self.vars {
+            env.insert(k.clone(), v.clone());
+        }
+
+        // Safety vars LAST — cannot be overridden by scenario definitions.
         // Git identity — local to test, never touches global config.
         env.insert("GIT_AUTHOR_NAME".into(), "Manual Test".into());
         env.insert("GIT_AUTHOR_EMAIL".into(), "test@daft.test".into());
@@ -225,11 +231,6 @@ impl TestEnv {
             "PATH".into(),
             format!("{}:{existing_path}", self.binary_dir.display()),
         );
-
-        // Include user-defined scenario vars.
-        for (k, v) in &self.vars {
-            env.insert(k.clone(), v.clone());
-        }
 
         env
     }
