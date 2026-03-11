@@ -86,6 +86,7 @@ pub mod commands;
 pub mod core;
 pub mod doctor;
 pub mod exec;
+pub mod executor;
 pub mod git;
 pub mod hints;
 pub mod hooks;
