@@ -495,6 +495,8 @@ fn execute_update_task(
 
     if result.skipped {
         (TaskStatus::Skipped, TaskMessage::Ok(result.message))
+    } else if result.diverged {
+        (TaskStatus::Succeeded, TaskMessage::Diverged)
     } else if result.success && result.up_to_date {
         (TaskStatus::Succeeded, TaskMessage::UpToDate)
     } else if result.success {
@@ -651,6 +653,8 @@ fn render_fetch_result(result: &fetch::FetchResult, output: &mut dyn Output) {
 fn render_worktree_status(r: &fetch::WorktreeFetchResult, output: &mut dyn Output) {
     if r.skipped {
         output.info(&format!(" * {} {}", tag_skipped(), r.worktree_name));
+    } else if r.diverged {
+        output.warning(&format!(" * {} {}", tag_diverged(), r.worktree_name));
     } else if r.success {
         if r.up_to_date {
             output.info(&format!(" * {} {}", tag_up_to_date(), r.worktree_name));
@@ -676,6 +680,7 @@ fn print_summary(result: &fetch::FetchResult, output: &mut dyn Output) {
     let updated = result.updated_count();
     let up_to_date = result.up_to_date_count();
     let skipped = result.skipped_count();
+    let diverged = result.diverged_count();
     let failed = result.failed_count();
 
     if failed == 0 {
@@ -695,6 +700,18 @@ fn print_summary(result: &fetch::FetchResult, output: &mut dyn Output) {
                 &format!("{up_to_date} already up to date")
             };
             parts.push(phrase.to_string());
+        }
+        if diverged > 0 {
+            let word = if diverged == 1 {
+                "worktree"
+            } else {
+                "worktrees"
+            };
+            if parts.is_empty() {
+                parts.push(format!("{diverged} {word} diverged"));
+            } else {
+                parts.push(format!("{diverged} diverged"));
+            }
         }
         if skipped > 0 {
             let word = if skipped == 1 {
@@ -725,6 +742,9 @@ fn print_summary(result: &fetch::FetchResult, output: &mut dyn Output) {
         }
         if up_to_date > 0 {
             parts.push(format!("{up_to_date} already up to date"));
+        }
+        if diverged > 0 {
+            parts.push(format!("{diverged} diverged"));
         }
         if skipped > 0 {
             let word = if skipped == 1 {
@@ -894,6 +914,14 @@ fn tag_up_to_date() -> String {
         format!("{}\u{2713} up to date{}", styles::DIM, styles::RESET)
     } else {
         "\u{2713} up to date".to_string()
+    }
+}
+
+fn tag_diverged() -> String {
+    if styles::colors_enabled() {
+        format!("{}\u{2298} diverged{}", styles::YELLOW, styles::RESET)
+    } else {
+        "\u{2298} diverged".to_string()
     }
 }
 
