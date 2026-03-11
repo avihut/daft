@@ -58,8 +58,8 @@ fn trust_long_about() -> String {
         ),
         "each hook execution.",
         "",
-        "Trust settings are stored in ~/.config/daft/trust.json and persist",
-        "across sessions.",
+        "Trust settings are stored in the daft config directory (trust.json)",
+        "and persist across sessions.",
     ]
     .join("\n")
 }
@@ -79,8 +79,8 @@ fn prompt_long_about() -> String {
         ),
         "automatically without prompting.",
         "",
-        "Trust settings are stored in ~/.config/daft/trust.json and persist",
-        "across sessions.",
+        "Trust settings are stored in the daft config directory (trust.json)",
+        "and persist across sessions.",
     ]
     .join("\n")
 }

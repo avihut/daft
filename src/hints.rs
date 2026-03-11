@@ -85,8 +85,7 @@ impl HintsState {
 
     /// Get the default path for the hints state file.
     pub fn default_path() -> Result<PathBuf> {
-        let config_dir = dirs::config_dir().context("Could not determine config directory")?;
-        Ok(config_dir.join("daft").join("hints.json"))
+        Ok(crate::daft_config_dir()?.join("hints.json"))
     }
 
     /// Check if a hint has been shown.

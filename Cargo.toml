@@ -15,6 +15,10 @@ readme = "README.md"
 keywords = ["git", "worktree", "workflow", "cli", "developer-tools"]
 categories = ["command-line-utilities", "development-tools"]
 
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ["cfg(daft_dev_build)"]
+
 [package.metadata.wix]
 upgrade-guid = "9249F38F-28C0-4EDA-AA9F-DF597369AB67"
 path-guid = "0D7614BC-BA63-41C9-9CA3-F3469DC02EBB"

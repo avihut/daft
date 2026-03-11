@@ -11,6 +11,39 @@ pub const VERSION_DISPLAY: &str = env!("DAFT_VERSION_DISPLAY");
 /// wrapper expects the cd target to be written.
 pub const CD_FILE_ENV: &str = "DAFT_CD_FILE";
 
+/// Environment variable to override the config directory path.
+///
+/// When set, all daft state files (trust database, hints, update cache, etc.)
+/// are stored in this directory instead of `~/.config/daft/`.
+///
+/// Only honored in dev builds (local builds from a git checkout). Release
+/// builds (tagged commits, `DAFT_BUILD_RELEASE=1`, crates.io installs) ignore
+/// this variable to prevent trust database hijacking via env injection.
+pub const CONFIG_DIR_ENV: &str = "DAFT_CONFIG_DIR";
+
+/// Returns the daft config directory path.
+///
+/// In dev builds, when `DAFT_CONFIG_DIR` is set to a non-empty absolute path,
+/// uses that path directly (no `daft/` suffix appended). In release builds the
+/// env var is ignored. Always falls back to `dirs::config_dir()/daft`.
+pub fn daft_config_dir() -> anyhow::Result<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if cfg!(daft_dev_build) {
+        if let Ok(dir) = env::var(CONFIG_DIR_ENV) {
+            if !dir.is_empty() {
+                let path = PathBuf::from(&dir);
+                if path.is_relative() {
+                    anyhow::bail!("DAFT_CONFIG_DIR must be an absolute path, got: {dir}");
+                }
+                return Ok(path);
+            }
+        }
+    }
+    let config_dir = dirs::config_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
+    Ok(config_dir.join("daft"))
+}
+
 /// Daft verb aliases that route through to worktree commands.
 const DAFT_VERBS: &[&str] = &[
     "adopt", "carry", "clone", "eject", "go", "init", "list", "prune", "remove", "rename", "start",
@@ -76,3 +109,59 @@ pub use self::core::repo::{
 pub use self::core::settings;
 pub use self::core::settings::{DaftSettings, PruneCdTarget};
 pub use self::core::worktree::WorktreeConfig;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::path::PathBuf;
+
+    #[test]
+    #[serial]
+    fn test_daft_config_dir_default() {
+        env::remove_var(CONFIG_DIR_ENV);
+        let dir = daft_config_dir().unwrap();
+        assert!(dir.ends_with("daft"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_daft_config_dir_override() {
+        env::set_var(CONFIG_DIR_ENV, "/tmp/test-daft-config");
+        let dir = daft_config_dir().unwrap();
+        assert_eq!(dir, PathBuf::from("/tmp/test-daft-config"));
+        env::remove_var(CONFIG_DIR_ENV);
+    }
+
+    #[test]
+    #[serial]
+    fn test_daft_config_dir_override_no_suffix() {
+        env::set_var(CONFIG_DIR_ENV, "/tmp/my-custom-dir");
+        let dir = daft_config_dir().unwrap();
+        assert_eq!(dir, PathBuf::from("/tmp/my-custom-dir"));
+        assert!(!dir.ends_with("daft"));
+        env::remove_var(CONFIG_DIR_ENV);
+    }
+
+    #[test]
+    #[serial]
+    fn test_daft_config_dir_empty_falls_back() {
+        env::set_var(CONFIG_DIR_ENV, "");
+        let dir = daft_config_dir().unwrap();
+        assert!(dir.ends_with("daft"));
+        env::remove_var(CONFIG_DIR_ENV);
+    }
+
+    #[test]
+    #[serial]
+    fn test_daft_config_dir_rejects_relative_path() {
+        env::set_var(CONFIG_DIR_ENV, "relative/path");
+        let result = daft_config_dir();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must be an absolute path"));
+        env::remove_var(CONFIG_DIR_ENV);
+    }
+}

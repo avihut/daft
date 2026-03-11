@@ -318,9 +318,8 @@ impl HooksConfig {
 
 /// Returns the default path for user-global hooks directory.
 fn default_user_hooks_dir() -> std::path::PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-        .join("daft")
+    crate::daft_config_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("~/.config").join("daft"))
         .join("hooks")
 }
 

@@ -40,6 +40,13 @@ fn main() {
 
     println!("cargo:rustc-env=DAFT_VERSION_DISPLAY={display_version}");
 
+    // Emit cfg flag for dev builds so DAFT_CONFIG_DIR is only honored in dev.
+    // A build is "dev" when it's not a release AND has a git repo (rules out crates.io installs).
+    let has_git_repo = git_output(&["rev-parse", "--git-dir"]).is_some();
+    if !is_release && has_git_repo {
+        println!("cargo:rustc-cfg=daft_dev_build");
+    }
+
     // Only re-run when HEAD changes (branch switch, new commit) or tags change
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/tags");

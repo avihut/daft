@@ -103,8 +103,7 @@ fn maybe_prune_trust_inner() {
 
 /// Returns the path to the prune cache file.
 fn cache_path() -> Result<PathBuf> {
-    let config_dir = dirs::config_dir().context("Could not determine config directory")?;
-    Ok(config_dir.join("daft").join("trust-prune.json"))
+    Ok(crate::daft_config_dir()?.join("trust-prune.json"))
 }
 
 /// Load the cache from disk. Returns `None` on any error.
