@@ -256,8 +256,7 @@ impl TrustDatabase {
 
     /// Get the default path for the trust database.
     pub fn default_path() -> Result<PathBuf> {
-        let config_dir = dirs::config_dir().context("Could not determine config directory")?;
-        Ok(config_dir.join("daft").join("trust.json"))
+        Ok(crate::daft_config_dir()?.join("trust.json"))
     }
 
     /// Get the trust level for a repository.

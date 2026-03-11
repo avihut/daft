@@ -190,8 +190,7 @@ fn maybe_check_for_update_inner() -> Option<UpdateNotification> {
 
 /// Returns the path to the update check cache file.
 fn cache_path() -> Result<PathBuf> {
-    let config_dir = dirs::config_dir().context("Could not determine config directory")?;
-    Ok(config_dir.join("daft").join("update-check.json"))
+    Ok(crate::daft_config_dir()?.join("update-check.json"))
 }
 
 /// Load the cache from disk. Returns `None` on any error.
@@ -222,8 +221,7 @@ fn save_cache_to(cache: &UpdateCheckCache, path: &PathBuf) -> Result<()> {
 
 /// Returns the path to the notification state file.
 fn notification_state_path() -> Result<PathBuf> {
-    let config_dir = dirs::config_dir().context("Could not determine config directory")?;
-    Ok(config_dir.join("daft").join("update-notification.json"))
+    Ok(crate::daft_config_dir()?.join("update-notification.json"))
 }
 
 /// Load the notification state from disk. Returns `None` on any error.

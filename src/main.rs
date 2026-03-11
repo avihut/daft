@@ -29,6 +29,17 @@ fn main() -> Result<()> {
         }
     }
 
+    // Warn if config directory is overridden (security measure against trust DB hijacking)
+    if let Ok(dir) = std::env::var(daft::CONFIG_DIR_ENV) {
+        if !dir.is_empty() {
+            let is_background = std::env::args().nth(1).is_some_and(|a| a.starts_with("__"));
+            if !is_background {
+                eprintln!("warning: config directory overridden via DAFT_CONFIG_DIR");
+                eprintln!("  -> {dir}");
+            }
+        }
+    }
+
     // Check for updates (reads cache, spawns background check if stale)
     let update_notification = daft::update_check::maybe_check_for_update();
 
