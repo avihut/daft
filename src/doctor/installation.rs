@@ -39,39 +39,117 @@ pub fn check_binary_in_path() -> CheckResult {
     }
 }
 
+/// Check if a symlink in the brew prefix bin resolves into the Cellar.
+///
+/// Homebrew-created symlinks resolve through the Cellar chain:
+///   /opt/homebrew/bin/git-worktree-clone -> ../Cellar/daft/1.0.36/bin/git-worktree-clone
+/// User-created symlinks use a relative target:
+///   /opt/homebrew/bin/git-worktree-clone -> daft
+///
+/// This predicate distinguishes between the two. It is only used for
+/// command symlinks in `check_command_symlinks_in()`, NOT for shortcut
+/// symlinks which legitimately use `-> daft` relative targets.
+fn is_homebrew_managed_symlink(path: &Path, brew_prefix: &Path) -> bool {
+    if !path.is_symlink() {
+        return false;
+    }
+    // Resolve the symlink target and check if it passes through the Cellar
+    if let Ok(target) = std::fs::read_link(path) {
+        let resolved = if target.is_relative() {
+            if let Some(parent) = path.parent() {
+                parent.join(&target)
+            } else {
+                return false;
+            }
+        } else {
+            target
+        };
+        // Check if resolved path contains the Cellar directory
+        let cellar = brew_prefix.join("Cellar");
+        resolved.starts_with(&cellar)
+    } else {
+        false
+    }
+}
+
 /// Check that all expected command symlinks are present and point to daft.
 pub fn check_command_symlinks() -> CheckResult {
-    let install_dir = match crate::commands::shortcuts::detect_install_dir() {
-        Ok(dir) => dir,
-        Err(_) => {
-            return CheckResult::warning(
-                "Command symlinks",
-                "could not detect installation directory",
-            );
+    let homebrew = crate::homebrew::detect();
+    let install_dir = if let Some(ref info) = homebrew {
+        info.bin_dir()
+    } else {
+        match crate::commands::shortcuts::detect_install_dir() {
+            Ok(dir) => dir,
+            Err(_) => {
+                return CheckResult::warning(
+                    "Command symlinks",
+                    "could not detect installation directory",
+                );
+            }
         }
     };
 
+    check_command_symlinks_in(&install_dir, homebrew.map(|h| h.prefix))
+}
+
+/// Inner implementation that accepts an optional brew prefix for testing.
+fn check_command_symlinks_in(install_dir: &Path, homebrew_prefix: Option<PathBuf>) -> CheckResult {
     let mut present = Vec::new();
     let mut missing = Vec::new();
+    let mut stale = Vec::new();
 
     for &name in EXPECTED_SYMLINKS {
         let path = install_dir.join(name);
-        if is_valid_symlink(&path, &install_dir) {
-            present.push(name);
+        if let Some(ref prefix) = homebrew_prefix {
+            // On Homebrew: check if symlink exists AND resolves into Cellar
+            if path.is_symlink() || path.exists() {
+                if is_homebrew_managed_symlink(&path, prefix) {
+                    present.push(name);
+                } else {
+                    stale.push(name);
+                }
+            } else {
+                missing.push(name);
+            }
         } else {
-            missing.push(name);
+            // Non-Homebrew: use existing is_valid_symlink check
+            if is_valid_symlink(&path, install_dir) {
+                present.push(name);
+            } else {
+                missing.push(name);
+            }
         }
     }
 
     let total = EXPECTED_SYMLINKS.len();
     let found = present.len();
+    let has_issues = !missing.is_empty() || !stale.is_empty();
 
-    if missing.is_empty() {
+    if !has_issues {
         CheckResult::pass("Command symlinks", &format!("{found}/{total} installed"))
+    } else if homebrew_prefix.is_some() {
+        // Homebrew manages command symlinks — don't offer --fix
+        let mut details: Vec<String> = Vec::new();
+        for name in &missing {
+            details.push(format!("Missing: {name}"));
+        }
+        for name in &stale {
+            details.push(format!("Stale: {name} (not managed by Homebrew)"));
+        }
+        let issue_count = missing.len() + stale.len();
+        CheckResult::warning(
+            "Command symlinks",
+            &format!("{found}/{total} installed, {issue_count} need attention"),
+        )
+        .with_suggestion(
+            "Command symlinks are managed by Homebrew. \
+             Run 'brew reinstall daft' or 'brew link --overwrite daft' to fix.",
+        )
+        .with_details(details)
     } else {
         let details: Vec<String> = missing.iter().map(|n| format!("Missing: {n}")).collect();
         let missing_owned: Vec<String> = missing.iter().map(|s| s.to_string()).collect();
-        let dry_dir = install_dir.clone();
+        let dry_dir = install_dir.to_path_buf();
         CheckResult::warning(
             "Command symlinks",
             &format!("{found}/{total} installed, {} missing", missing.len()),
@@ -86,7 +164,16 @@ pub fn check_command_symlinks() -> CheckResult {
 }
 
 /// Fix missing command symlinks by creating them.
+///
+/// Returns an error on Homebrew installations, where command symlinks
+/// are managed by the formula.
 pub fn fix_command_symlinks() -> Result<(), String> {
+    if crate::homebrew::detect().is_some() {
+        return Err("Command symlinks are managed by Homebrew. \
+             Run 'brew reinstall daft' or 'brew link --overwrite daft' to fix."
+            .to_string());
+    }
+
     let install_dir = crate::commands::shortcuts::detect_install_dir()
         .map_err(|e| format!("Could not detect installation directory: {e}"))?;
 
@@ -575,5 +662,91 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("not a symlink"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_check_command_symlinks_homebrew_missing_not_fixable() {
+        let temp = tempfile::tempdir().unwrap();
+        let brew_prefix_bin = temp.path().join("bin");
+        std::fs::create_dir_all(&brew_prefix_bin).unwrap();
+        std::fs::write(brew_prefix_bin.join("daft"), "fake").unwrap();
+
+        // No command symlinks exist — all 15 missing
+        let result = check_command_symlinks_in(&brew_prefix_bin, Some(temp.path().to_path_buf()));
+        assert_eq!(result.status, crate::doctor::CheckStatus::Warning);
+        assert!(
+            !result.fixable(),
+            "Command symlinks should not be fixable on Homebrew"
+        );
+        assert!(
+            result.suggestion.as_ref().unwrap().contains("brew"),
+            "Should suggest brew command"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_check_command_symlinks_homebrew_stale_detected() {
+        let temp = tempfile::tempdir().unwrap();
+        let brew_prefix_bin = temp.path().join("bin");
+        std::fs::create_dir_all(&brew_prefix_bin).unwrap();
+        std::fs::write(brew_prefix_bin.join("daft"), "fake").unwrap();
+
+        // Create a stale command symlink (relative -> daft, not via Cellar)
+        std::os::unix::fs::symlink("daft", brew_prefix_bin.join("git-worktree-clone")).unwrap();
+
+        let result = check_command_symlinks_in(&brew_prefix_bin, Some(temp.path().to_path_buf()));
+        assert_eq!(result.status, crate::doctor::CheckStatus::Warning);
+        assert!(!result.fixable());
+        assert!(
+            result
+                .details
+                .iter()
+                .any(|d| d.contains("not managed by Homebrew")),
+            "Should flag stale symlinks"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_is_homebrew_managed_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let cellar_bin = temp
+            .path()
+            .join("Cellar")
+            .join("daft")
+            .join("1.0.36")
+            .join("bin");
+        std::fs::create_dir_all(&cellar_bin).unwrap();
+        std::fs::write(cellar_bin.join("daft"), "fake").unwrap();
+        std::os::unix::fs::symlink("daft", cellar_bin.join("git-worktree-clone")).unwrap();
+
+        let brew_prefix_bin = temp.path().join("bin");
+        std::fs::create_dir_all(&brew_prefix_bin).unwrap();
+
+        // Homebrew-style: symlink in brew prefix bin -> Cellar file
+        std::os::unix::fs::symlink(
+            cellar_bin.join("git-worktree-clone"),
+            brew_prefix_bin.join("git-worktree-clone"),
+        )
+        .unwrap();
+        assert!(is_homebrew_managed_symlink(
+            &brew_prefix_bin.join("git-worktree-clone"),
+            temp.path(),
+        ));
+
+        // User-created: symlink in brew prefix bin -> "daft" (relative)
+        std::os::unix::fs::symlink("daft", brew_prefix_bin.join("git-sync")).unwrap();
+        assert!(!is_homebrew_managed_symlink(
+            &brew_prefix_bin.join("git-sync"),
+            temp.path(),
+        ));
+
+        // Non-existent path
+        assert!(!is_homebrew_managed_symlink(
+            &brew_prefix_bin.join("nonexistent"),
+            temp.path(),
+        ));
     }
 }
