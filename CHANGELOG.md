@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0](https://github.com/avihut/daft/compare/v1.0.35...v1.1.0) - 2026-03-12
+
+### Bug Fixes
+
+- *(sync)* treat non-fast-forwardable branches as warnings ([#291](https://github.com/avihut/daft/pull/291))
+- simplify hooks trust level change output ([#289](https://github.com/avihut/daft/pull/289))
+- use resolved remote URL for trust fingerprint during clone ([#286](https://github.com/avihut/daft/pull/286))
+- sync symlink lists across all packaging configs
+
+### Features
+
+- *(sync)* add --push and --force-with-lease flags ([#293](https://github.com/avihut/daft/pull/293))
+- *(sync)* add --autostash flag for rebase phase ([#292](https://github.com/avihut/daft/pull/292))
+- *(sync,prune)* hook lifecycle in TUI with verbose job sub-rows ([#290](https://github.com/avihut/daft/pull/290))
+- *(sync,prune)* parallel DAG executor with inline ratatui TUI ([#285](https://github.com/avihut/daft/pull/285))
+- allow force-removal of default branch worktree ([#284](https://github.com/avihut/daft/pull/284))
+
+### Miscellaneous
+
+- compartmentalized sandbox config directory ([#288](https://github.com/avihut/daft/pull/288))
+
 ## [1.0.35](https://github.com/avihut/daft/compare/v1.0.34...v1.0.35) - 2026-03-09
 
 ### Bug Fixes
