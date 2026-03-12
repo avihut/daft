@@ -245,7 +245,7 @@ fn check_write_permission(dir: &Path) -> Result<()> {
 
 /// Show status of installed shortcuts.
 fn cmd_status(output: &mut dyn Output) -> Result<()> {
-    let install_dir = detect_install_dir()?;
+    let install_dir = effective_install_dir()?;
     let installed = get_installed_shortcuts(&install_dir);
 
     output.info(&format!(
@@ -312,7 +312,7 @@ fn cmd_enable(
         .parse()
         .map_err(|_| anyhow!("Unknown style: {}. Use: git, shell, or legacy", style_name))?;
 
-    let install_dir = install_dir.map(Ok).unwrap_or_else(detect_install_dir)?;
+    let install_dir = install_dir.map(Ok).unwrap_or_else(effective_install_dir)?;
 
     enable_style(style, &install_dir, dry_run, output)
 }
@@ -363,7 +363,7 @@ fn cmd_disable(
         .parse()
         .map_err(|_| anyhow!("Unknown style: {}. Use: git, shell, or legacy", style_name))?;
 
-    let install_dir = install_dir.map(Ok).unwrap_or_else(detect_install_dir)?;
+    let install_dir = install_dir.map(Ok).unwrap_or_else(effective_install_dir)?;
 
     if !dry_run {
         check_write_permission(&install_dir)?;
@@ -404,7 +404,7 @@ fn cmd_only(
         .parse()
         .map_err(|_| anyhow!("Unknown style: {}. Use: git, shell, or legacy", style_name))?;
 
-    let install_dir = install_dir.map(Ok).unwrap_or_else(detect_install_dir)?;
+    let install_dir = install_dir.map(Ok).unwrap_or_else(effective_install_dir)?;
 
     if !dry_run {
         check_write_permission(&install_dir)?;
