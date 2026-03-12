@@ -324,7 +324,7 @@ pub fn check_shell_wrappers() -> CheckResult {
 /// partially-installed style, reports missing shortcuts. If no styles
 /// are installed at all, suggests enabling them.
 pub fn check_shortcut_symlinks() -> Vec<CheckResult> {
-    let install_dir = match crate::commands::shortcuts::detect_install_dir() {
+    let install_dir = match crate::commands::shortcuts::effective_install_dir() {
         Ok(dir) => dir,
         Err(_) => return vec![],
     };
