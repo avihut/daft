@@ -89,6 +89,7 @@ pub mod exec;
 pub mod executor;
 pub mod git;
 pub mod hints;
+pub mod homebrew;
 pub mod hooks;
 pub mod logging;
 pub mod output;
