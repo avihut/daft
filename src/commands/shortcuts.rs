@@ -115,6 +115,28 @@ pub fn detect_install_dir() -> Result<PathBuf> {
     Ok(install_dir.to_path_buf())
 }
 
+/// Returns the effective installation directory, accounting for Homebrew.
+///
+/// On Homebrew installations, `detect_install_dir()` returns the Cellar path
+/// (e.g., `/opt/homebrew/Cellar/daft/1.0.36/bin/`), which is version-specific
+/// and not in PATH. This function returns the brew prefix bin instead
+/// (e.g., `/opt/homebrew/bin/`), where user-managed symlinks should live.
+///
+/// On non-Homebrew installations, returns `detect_install_dir()` unchanged.
+pub fn effective_install_dir() -> Result<PathBuf> {
+    let dir = detect_install_dir()?;
+    Ok(effective_install_dir_with(&dir))
+}
+
+/// Inner implementation for testing with arbitrary paths.
+fn effective_install_dir_with(install_dir: &Path) -> PathBuf {
+    if let Some(info) = crate::homebrew::detect_from_path(install_dir) {
+        info.bin_dir()
+    } else {
+        install_dir.to_path_buf()
+    }
+}
+
 /// Get the path to the daft binary in the given directory.
 fn get_daft_binary(install_dir: &Path) -> PathBuf {
     install_dir.join("daft")
@@ -426,4 +448,30 @@ fn cmd_only(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_effective_install_dir_non_homebrew() {
+        let dir = PathBuf::from("/Users/me/.cargo/bin");
+        let result = effective_install_dir_with(&dir);
+        assert_eq!(result, dir);
+    }
+
+    #[test]
+    fn test_effective_install_dir_homebrew_apple_silicon() {
+        let dir = PathBuf::from("/opt/homebrew/Cellar/daft/1.0.36/bin");
+        let result = effective_install_dir_with(&dir);
+        assert_eq!(result, PathBuf::from("/opt/homebrew/bin"));
+    }
+
+    #[test]
+    fn test_effective_install_dir_homebrew_intel() {
+        let dir = PathBuf::from("/usr/local/Cellar/daft/1.0.36/bin");
+        let result = effective_install_dir_with(&dir);
+        assert_eq!(result, PathBuf::from("/usr/local/bin"));
+    }
 }
