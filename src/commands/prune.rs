@@ -285,7 +285,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         }
                         (status, message, None)
                     }
-                    TaskId::Update(_) | TaskId::Rebase(_) => {
+                    TaskId::Update(_) | TaskId::Rebase(_) | TaskId::Push(_) => {
                         (TaskStatus::Skipped, TaskMessage::Ok("not applicable".into()), None)
                     }
                 }

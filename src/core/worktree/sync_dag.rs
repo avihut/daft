@@ -21,6 +21,8 @@ pub enum TaskId {
     Update(String),
     /// Rebase a worktree onto a base branch.
     Rebase(String),
+    /// Push a worktree branch to its remote.
+    Push(String),
 }
 
 /// Execution status of a single task.
@@ -62,6 +64,10 @@ pub enum TaskMessage {
     NoActionNeeded,
     /// Update couldn't fast-forward (branch diverged from upstream).
     Diverged,
+    /// Push completed successfully.
+    Pushed,
+    /// Branch has no upstream tracking branch (push skipped).
+    NoPushUpstream,
     /// Task failed with error message.
     Failed(String),
 }
@@ -73,6 +79,7 @@ pub enum OperationPhase {
     Prune,
     Update,
     Rebase(String),
+    Push,
 }
 
 impl OperationPhase {
@@ -83,6 +90,7 @@ impl OperationPhase {
             Self::Prune => "Pruning stale branches".into(),
             Self::Update => "Updating worktrees".into(),
             Self::Rebase(branch) => format!("Rebasing onto {branch}"),
+            Self::Push => "Pushing to remote".into(),
         }
     }
 }
@@ -111,14 +119,17 @@ pub struct SyncDag {
     pub(crate) dependents: Vec<Vec<usize>>,
     /// The rebase base branch, if rebase was requested.
     rebase_branch: Option<String>,
+    /// Whether push tasks are included.
+    push: bool,
 }
 
 impl SyncDag {
-    /// Build a DAG for `daft sync` (with optional rebase).
+    /// Build a DAG for `daft sync` (with optional rebase and push).
     pub fn build_sync(
         worktrees: Vec<(String, PathBuf)>,
         gone_branches: Vec<String>,
         rebase_branch: Option<String>,
+        push: bool,
     ) -> Self {
         let stored_rebase_branch = rebase_branch.clone();
         let mut tasks = Vec::new();
@@ -169,7 +180,7 @@ impl SyncDag {
             );
         }
 
-        // 3. Update tasks (each depends on fetch). Track indices for rebase deps.
+        // 3. Update tasks (each depends on fetch). Track indices for rebase/push deps.
         let mut update_indices: Vec<(String, usize)> = Vec::new();
         for (branch, path) in &worktrees {
             let idx = push_task(
@@ -185,6 +196,19 @@ impl SyncDag {
         }
 
         // 4. Rebase tasks if rebase_branch is specified.
+        // Track the last task index per branch for push dependencies.
+        let mut last_task_indices: Vec<(String, PathBuf, usize)> = update_indices
+            .iter()
+            .map(|(branch, idx)| {
+                let path = worktrees
+                    .iter()
+                    .find(|(b, _)| b == branch)
+                    .map(|(_, p)| p.clone())
+                    .unwrap_or_default();
+                (branch.clone(), path, *idx)
+            })
+            .collect();
+
         if let Some(ref base_branch) = rebase_branch {
             // Find the update task for the base branch.
             let base_update_idx = update_indices
@@ -212,7 +236,7 @@ impl SyncDag {
                     deps.push(idx);
                 }
 
-                push_task(
+                let rebase_idx = push_task(
                     SyncTask {
                         id: TaskId::Rebase(branch.clone()),
                         phase: OperationPhase::Rebase(base_branch.clone()),
@@ -220,6 +244,26 @@ impl SyncDag {
                         branch_name: branch.clone(),
                     },
                     deps,
+                );
+
+                // Update last task index for this branch to the rebase task.
+                if let Some(entry) = last_task_indices.iter_mut().find(|(b, _, _)| b == branch) {
+                    entry.2 = rebase_idx;
+                }
+            }
+        }
+
+        // 5. Push tasks if push is enabled.
+        if push {
+            for (branch, path, last_idx) in &last_task_indices {
+                push_task(
+                    SyncTask {
+                        id: TaskId::Push(branch.clone()),
+                        phase: OperationPhase::Push,
+                        worktree_path: Some(path.clone()),
+                        branch_name: branch.clone(),
+                    },
+                    vec![*last_idx],
                 );
             }
         }
@@ -229,12 +273,13 @@ impl SyncDag {
             dependencies,
             dependents,
             rebase_branch: stored_rebase_branch,
+            push,
         }
     }
 
     /// Build a DAG for `daft prune`.
     pub fn build_prune(gone_branches: Vec<String>) -> Self {
-        Self::build_sync(vec![], gone_branches, None)
+        Self::build_sync(vec![], gone_branches, None, false)
     }
 
     /// Get the dependency indices for a task.
@@ -260,6 +305,10 @@ impl SyncDag {
 
         if let Some(ref branch) = self.rebase_branch {
             phases.push(OperationPhase::Rebase(branch.clone()));
+        }
+
+        if self.push {
+            phases.push(OperationPhase::Push);
         }
 
         phases
@@ -561,7 +610,7 @@ mod tests {
         ];
         let gone: Vec<String> = vec!["feat/old".into()];
 
-        let dag = SyncDag::build_sync(worktrees, gone, None);
+        let dag = SyncDag::build_sync(worktrees, gone, None, false);
 
         // 1 fetch + 1 prune + 2 updates = 4 tasks
         assert_eq!(dag.tasks.len(), 4);
@@ -582,7 +631,7 @@ mod tests {
         ];
         let gone: Vec<String> = vec![];
 
-        let dag = SyncDag::build_sync(worktrees, gone, Some("master".into()));
+        let dag = SyncDag::build_sync(worktrees, gone, Some("master".into()), false);
 
         // 1 fetch + 3 updates + 2 rebases = 6 tasks
         assert_eq!(dag.tasks.len(), 6);
@@ -617,7 +666,7 @@ mod tests {
     #[test]
     fn dag_phases_sync() {
         let worktrees = vec![("master".into(), PathBuf::from("/p/master"))];
-        let dag = SyncDag::build_sync(worktrees, vec![], None);
+        let dag = SyncDag::build_sync(worktrees, vec![], None, false);
         let phases = dag.phases();
         assert_eq!(phases.len(), 3); // Fetch, Prune, Update
     }
@@ -625,7 +674,7 @@ mod tests {
     #[test]
     fn dag_phases_sync_with_rebase() {
         let worktrees = vec![("master".into(), PathBuf::from("/p/master"))];
-        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()));
+        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()), false);
         let phases = dag.phases();
         assert_eq!(phases.len(), 4); // Fetch, Prune, Update, Rebase
     }
@@ -662,7 +711,7 @@ mod tests {
             ("master".into(), PathBuf::from("/p/master")),
             ("feat/a".into(), PathBuf::from("/p/feat-a")),
         ];
-        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()));
+        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()), false);
         let (tx, rx) = mpsc::channel();
 
         let order = Arc::new(Mutex::new(Vec::new()));
@@ -691,12 +740,97 @@ mod tests {
     }
 
     #[test]
+    fn build_sync_dag_with_push_no_rebase() {
+        let worktrees = vec![
+            ("master".into(), PathBuf::from("/p/master")),
+            ("feat/a".into(), PathBuf::from("/p/feat-a")),
+        ];
+        let gone: Vec<String> = vec![];
+
+        let dag = SyncDag::build_sync(worktrees, gone, None, true);
+
+        // 1 fetch + 2 updates + 2 pushes = 5 tasks
+        assert_eq!(dag.tasks.len(), 5);
+
+        // Push tasks should depend on their corresponding Update tasks
+        for (i, task) in dag.tasks.iter().enumerate() {
+            if let TaskId::Push(ref branch) = task.id {
+                let update_idx = dag
+                    .tasks
+                    .iter()
+                    .position(|t| t.id == TaskId::Update(branch.clone()))
+                    .unwrap();
+                assert!(
+                    dag.dependencies_of(i).contains(&update_idx),
+                    "Push({branch}) should depend on Update({branch})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn build_sync_dag_with_push_and_rebase() {
+        let worktrees = vec![
+            ("master".into(), PathBuf::from("/p/master")),
+            ("feat/a".into(), PathBuf::from("/p/feat-a")),
+            ("feat/b".into(), PathBuf::from("/p/feat-b")),
+        ];
+        let gone: Vec<String> = vec![];
+
+        let dag = SyncDag::build_sync(worktrees, gone, Some("master".into()), true);
+
+        // 1 fetch + 3 updates + 2 rebases + 3 pushes = 9 tasks
+        assert_eq!(dag.tasks.len(), 9);
+
+        // Push(master) depends on Update(master), not Rebase (master is the base branch)
+        let push_master_idx = dag
+            .tasks
+            .iter()
+            .position(|t| t.id == TaskId::Push("master".into()))
+            .unwrap();
+        let update_master_idx = dag
+            .tasks
+            .iter()
+            .position(|t| t.id == TaskId::Update("master".into()))
+            .unwrap();
+        assert!(dag
+            .dependencies_of(push_master_idx)
+            .contains(&update_master_idx));
+
+        // Push(feat/a) depends on Rebase(feat/a)
+        let push_feat_a_idx = dag
+            .tasks
+            .iter()
+            .position(|t| t.id == TaskId::Push("feat/a".into()))
+            .unwrap();
+        let rebase_feat_a_idx = dag
+            .tasks
+            .iter()
+            .position(|t| t.id == TaskId::Rebase("feat/a".into()))
+            .unwrap();
+        assert!(
+            dag.dependencies_of(push_feat_a_idx)
+                .contains(&rebase_feat_a_idx),
+            "Push(feat/a) should depend on Rebase(feat/a)"
+        );
+    }
+
+    #[test]
+    fn dag_phases_sync_with_push() {
+        let worktrees = vec![("master".into(), PathBuf::from("/p/master"))];
+        let dag = SyncDag::build_sync(worktrees, vec![], None, true);
+        let phases = dag.phases();
+        assert_eq!(phases.len(), 4); // Fetch, Prune, Update, Push
+        assert!(phases.contains(&OperationPhase::Push));
+    }
+
+    #[test]
     fn executor_cascades_failure() {
         let worktrees = vec![
             ("master".into(), PathBuf::from("/p/master")),
             ("feat/a".into(), PathBuf::from("/p/feat-a")),
         ];
-        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()));
+        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()), false);
         let (tx, rx) = mpsc::channel();
 
         let executor = DagExecutor::new(dag, tx);

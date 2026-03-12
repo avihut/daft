@@ -40,6 +40,8 @@ pub enum FinalStatus {
     Skipped,
     Pruned,
     Failed,
+    Pushed,
+    NoPushUpstream,
 }
 
 /// Status of a single hook sub-row (for -v mode).
@@ -155,6 +157,7 @@ impl TuiState {
                     OperationPhase::Prune => "pruning",
                     OperationPhase::Update => "updating",
                     OperationPhase::Rebase(_) => "rebasing",
+                    OperationPhase::Push => "pushing",
                 };
                 // Auto-create row for newly discovered branches (e.g., gone branches
                 // found after fetch completes while TUI is already running).
@@ -355,6 +358,7 @@ impl TuiState {
             OperationPhase::Prune => "pruning",
             OperationPhase::Update => "updating",
             OperationPhase::Rebase(_) => "rebasing",
+            OperationPhase::Push => "pushing",
         };
         let any_active = self.worktrees.iter().any(
             |w| matches!(&w.status, WorktreeStatus::Active(label) if label == phase_active_label),
@@ -397,6 +401,12 @@ impl TuiState {
                 OperationPhase::Rebase(_) => match message {
                     TaskMessage::Conflict => FinalStatus::Conflict,
                     _ => FinalStatus::Rebased,
+                },
+                OperationPhase::Push => match message {
+                    TaskMessage::UpToDate => FinalStatus::UpToDate,
+                    TaskMessage::NoPushUpstream => FinalStatus::NoPushUpstream,
+                    TaskMessage::Pushed | TaskMessage::Ok(_) => FinalStatus::Pushed,
+                    _ => FinalStatus::Diverged,
                 },
                 OperationPhase::Fetch => FinalStatus::Updated,
             },
@@ -973,6 +983,129 @@ mod tests {
             jobs[1].status,
             JobSubStatus::Failed(Duration::from_millis(200))
         );
+    }
+
+    #[test]
+    fn push_phase_maps_pushed_status() {
+        let phases = vec![
+            OperationPhase::Fetch,
+            OperationPhase::Prune,
+            OperationPhase::Update,
+            OperationPhase::Push,
+        ];
+        let worktree_infos = vec![WorktreeInfo::empty("master"), WorktreeInfo::empty("feat/a")];
+        let mut state = TuiState::new(
+            phases,
+            worktree_infos,
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test"),
+            Stat::Summary,
+            0,
+        );
+
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Push,
+            branch_name: "master".into(),
+        });
+        let row = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "master")
+            .unwrap();
+        assert_eq!(row.status, WorktreeStatus::Active("pushing".into()));
+
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Push,
+            branch_name: "master".into(),
+            status: TaskStatus::Succeeded,
+            message: TaskMessage::Pushed,
+            updated_info: None,
+        });
+        let row = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "master")
+            .unwrap();
+        assert_eq!(row.status, WorktreeStatus::Done(FinalStatus::Pushed));
+    }
+
+    #[test]
+    fn push_phase_maps_no_upstream_status() {
+        let phases = vec![
+            OperationPhase::Fetch,
+            OperationPhase::Prune,
+            OperationPhase::Update,
+            OperationPhase::Push,
+        ];
+        let worktree_infos = vec![WorktreeInfo::empty("feat/a")];
+        let mut state = TuiState::new(
+            phases,
+            worktree_infos,
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test"),
+            Stat::Summary,
+            0,
+        );
+
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+        });
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+            status: TaskStatus::Succeeded,
+            message: TaskMessage::NoPushUpstream,
+            updated_info: None,
+        });
+
+        let row = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(
+            row.status,
+            WorktreeStatus::Done(FinalStatus::NoPushUpstream)
+        );
+    }
+
+    #[test]
+    fn push_phase_maps_up_to_date_status() {
+        let phases = vec![
+            OperationPhase::Fetch,
+            OperationPhase::Prune,
+            OperationPhase::Update,
+            OperationPhase::Push,
+        ];
+        let worktree_infos = vec![WorktreeInfo::empty("master")];
+        let mut state = TuiState::new(
+            phases,
+            worktree_infos,
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test"),
+            Stat::Summary,
+            0,
+        );
+
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Push,
+            branch_name: "master".into(),
+        });
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Push,
+            branch_name: "master".into(),
+            status: TaskStatus::Succeeded,
+            message: TaskMessage::UpToDate,
+            updated_info: None,
+        });
+
+        let row = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "master")
+            .unwrap();
+        assert_eq!(row.status, WorktreeStatus::Done(FinalStatus::UpToDate));
     }
 
     #[test]

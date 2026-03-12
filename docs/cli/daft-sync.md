@@ -1,6 +1,6 @@
 ---
 title: daft sync
-description: Synchronize worktrees with remote (prune + update all)
+description: Synchronize worktrees with remote (prune + update + push)
 ---
 
 # daft sync
@@ -25,6 +25,10 @@ This is equivalent to running `daft prune` followed by `daft update --all`:
      branches.
   3. **Rebase** (`--rebase BRANCH`): rebases all remaining worktrees onto
      BRANCH. Best-effort: conflicts are immediately aborted and reported.
+  4. **Push** (`--push`): pushes all branches to their remote tracking branches.
+     Branches without an upstream are skipped. Push failures are reported as
+     warnings; they do not cause sync to fail. Use `--force-with-lease` with
+     `--push` to force-push rebased branches.
 
 If you are currently inside a worktree that gets pruned, the shell is redirected
 to a safe location (project root by default, or as configured via
@@ -38,10 +42,17 @@ separately.
 | Option | Description | Default |
 |--------|-------------|---------|
 | `-v, --verbose` | Increase verbosity (`-v` for hook details, `-vv` for full sequential output) | |
-| `-f, --force` | Force removal of worktrees with uncommitted changes | |
+| `-f, --prune-dirty` | Force removal of worktrees with uncommitted changes | |
 | `--rebase <BRANCH>` | Rebase all branches onto BRANCH after updating | |
 | `--autostash` | Automatically stash/unstash uncommitted changes during rebase (requires `--rebase`) | |
+| `--push` | Push all branches to their remotes after syncing | |
+| `--force-with-lease` | Use `--force-with-lease` when pushing (requires `--push`) | |
 | `--stat <STAT>` | Statistics mode: `summary` or `lines` (default: from git config `daft.sync.stat`, or `summary`) | |
+
+::: info
+The `--force` flag is a deprecated alias for `--prune-dirty` and will be removed
+in a future release.
+:::
 
 ## Global Options
 
@@ -68,8 +79,14 @@ daft sync --rebase main
 # Sync, rebase onto main, and autostash uncommitted changes
 daft sync --rebase main --autostash
 
+# Sync and push all branches to their remotes
+daft sync --push
+
+# Full workflow: sync, rebase onto main, and push (force-with-lease for rebased branches)
+daft sync --rebase main --push --force-with-lease
+
 # Force sync even if worktrees have uncommitted changes
-daft sync --force
+daft sync --prune-dirty
 ```
 
 ## See Also
