@@ -13,7 +13,7 @@ use crate::{
         worktree::{
             fetch, list,
             list::Stat,
-            prune, rebase,
+            prune, push, rebase,
             sync_dag::{self, DagExecutor, SyncDag, SyncTask, TaskId, TaskMessage, TaskStatus},
         },
         CommandBridge, NullBridge, NullSink, OutputSink,
@@ -51,6 +51,10 @@ This is equivalent to running `daft prune` followed by `daft update --all`:
   2. Update: pulls all remaining worktrees from their remote tracking branches.
   3. Rebase (--rebase BRANCH): rebases all remaining worktrees onto BRANCH.
      Best-effort: conflicts are immediately aborted and reported.
+  4. Push (--push): pushes all branches to their remote tracking branches.
+     Branches without an upstream are skipped. Push failures are reported as
+     warnings; they do not cause sync to fail. Use --force-with-lease with
+     --push to force-push rebased branches.
 
 If you are currently inside a worktree that gets pruned, the shell is redirected
 to a safe location (project root by default, or as configured via
@@ -65,11 +69,15 @@ pub struct Args {
     verbose: u8,
 
     #[arg(
-        short,
-        long,
+        short = 'f',
+        long = "prune-dirty",
         help = "Force removal of worktrees with uncommitted changes"
     )]
-    force: bool,
+    prune_dirty: bool,
+
+    /// Hidden deprecated alias for --prune-dirty.
+    #[arg(long = "force", hide = true)]
+    force_deprecated: bool,
 
     #[arg(
         long,
@@ -85,12 +93,28 @@ pub struct Args {
     )]
     autostash: bool,
 
+    #[arg(long, help = "Push all branches to their remotes after syncing")]
+    push: bool,
+
+    #[arg(
+        long,
+        requires = "push",
+        help = "Use --force-with-lease when pushing (requires --push)"
+    )]
+    force_with_lease: bool,
+
     #[arg(
         long,
         value_enum,
         help = "Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary)"
     )]
     stat: Option<Stat>,
+}
+
+impl Args {
+    fn force(&self) -> bool {
+        self.prune_dirty || self.force_deprecated
+    }
 }
 
 pub fn run() -> Result<()> {
@@ -116,25 +140,30 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
     let config = OutputConfig::with_autocd(false, args.verbose >= 2, settings.autocd);
     let mut output = CliOutput::new(config);
 
+    if args.force_deprecated {
+        output.warning("--force is deprecated, use --prune-dirty (or -f) instead");
+    }
+
     if should_show_gitoxide_notice(settings.use_gitoxide) {
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
+    let force = args.force();
+
     // Phase 1: Prune stale branches and worktrees
-    let prune_result = run_prune_phase(&mut output, &settings, args.force)?;
+    let prune_result = run_prune_phase(&mut output, &settings, force)?;
 
     // Phase 2: Update all remaining worktrees
-    run_update_phase(&mut output, &settings, args.force)?;
+    run_update_phase(&mut output, &settings, force)?;
 
     // Phase 3: Rebase all worktrees onto base branch (if requested)
     if let Some(ref base_branch) = args.rebase {
-        run_rebase_phase(
-            &mut output,
-            &settings,
-            base_branch,
-            args.force,
-            args.autostash,
-        )?;
+        run_rebase_phase(&mut output, &settings, base_branch, force, args.autostash)?;
+    }
+
+    // Phase 4: Push all branches to their remotes (if requested)
+    if args.push {
+        run_push_phase(&mut output, &settings, args.force_with_lease)?;
     }
 
     // Write the cd target for the shell wrapper (from prune phase)
@@ -196,6 +225,12 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     }
 
     // ── Create TUI state with known phases and worktrees ───────────────
+    if args.force_deprecated {
+        eprintln!("warning: --force is deprecated, use --prune-dirty (or -f) instead");
+    }
+
+    let force = args.force();
+
     let mut phases = vec![
         sync_dag::OperationPhase::Fetch,
         sync_dag::OperationPhase::Prune,
@@ -203,6 +238,9 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     ];
     if let Some(ref base) = args.rebase {
         phases.push(sync_dag::OperationPhase::Rebase(base.clone()));
+    }
+    if args.push {
+        phases.push(sync_dag::OperationPhase::Push);
     }
     let hooks_config = HooksConfig::default();
     let shared_hooks_config = Arc::new(hooks_config.clone());
@@ -233,7 +271,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let shared_pull_args = Arc::new(fetch::build_pull_args(&fetch::FetchParams {
         targets: vec![],
         all: true,
-        force: args.force,
+        force,
         dry_run: false,
         rebase: config_has_rebase,
         autostash: config_has_autostash,
@@ -243,7 +281,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         quiet: false,
         remote_name: settings.remote.clone(),
     }));
-    let shared_force = args.force;
+    let shared_force = force;
     let shared_autostash = args.autostash;
     let shared_is_bare_layout = is_bare_layout;
 
@@ -253,6 +291,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let source_worktree = std::env::current_dir()?;
     let shared_source_worktree = Arc::new(source_worktree.clone());
     let shared_rebase_branch: Arc<Option<String>> = Arc::new(args.rebase.clone());
+    let shared_push = args.push;
+    let shared_force_with_lease = args.force_with_lease;
 
     let deferred_branch: Arc<std::sync::Mutex<Option<String>>> =
         Arc::new(std::sync::Mutex::new(None));
@@ -311,6 +351,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                 live_worktrees,
                 gone_branches,
                 shared_rebase_branch.as_ref().clone(),
+                shared_push,
             );
 
             // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
@@ -388,6 +429,16 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         };
                         (status, message, updated)
                     }
+                    TaskId::Push(branch_name) => {
+                        let (status, message) = execute_push_task(
+                            branch_name,
+                            task.worktree_path.as_ref(),
+                            &shared_project_root,
+                            &shared_settings,
+                            shared_force_with_lease,
+                        );
+                        (status, message, None)
+                    }
                 }
             },
         );
@@ -418,7 +469,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         git_dir,
         source_worktree,
         &worktree_map,
-        args.force,
+        force,
         &hooks_config,
     );
 
@@ -566,6 +617,58 @@ fn execute_rebase_task(
         (TaskStatus::Succeeded, TaskMessage::Ok(result.message))
     } else {
         (TaskStatus::Failed, TaskMessage::Failed(result.message))
+    }
+}
+
+/// Execute a single push task for a DAG worker.
+fn execute_push_task(
+    branch_name: &str,
+    worktree_path: Option<&PathBuf>,
+    project_root: &std::path::Path,
+    settings: &DaftSettings,
+    force_with_lease: bool,
+) -> (TaskStatus, TaskMessage) {
+    let Some(target_path) = worktree_path else {
+        return (
+            TaskStatus::Failed,
+            TaskMessage::Failed("no worktree path".into()),
+        );
+    };
+
+    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+
+    let worktree_name = target_path
+        .strip_prefix(project_root)
+        .ok()
+        .and_then(|p| p.to_str())
+        .unwrap_or(branch_name)
+        .to_string();
+
+    let params = push::PushParams {
+        force_with_lease,
+        remote_name: settings.remote.clone(),
+    };
+
+    let mut sink = NullSink;
+    let result = push::push_single_worktree(
+        &git,
+        target_path,
+        &worktree_name,
+        branch_name,
+        &params,
+        &mut sink,
+    );
+
+    if result.no_upstream {
+        (TaskStatus::Succeeded, TaskMessage::NoPushUpstream)
+    } else if result.success && result.up_to_date {
+        (TaskStatus::Succeeded, TaskMessage::UpToDate)
+    } else if result.success {
+        (TaskStatus::Succeeded, TaskMessage::Pushed)
+    } else {
+        // Push failures are warnings, not hard failures — use Succeeded + Diverged
+        // so that check_tui_failures does not count them as Failed.
+        (TaskStatus::Succeeded, TaskMessage::Diverged)
     }
 }
 
@@ -918,6 +1021,120 @@ fn print_rebase_summary(result: &rebase::RebaseResult, output: &mut dyn Output) 
     }
 }
 
+fn run_push_phase(
+    output: &mut dyn Output,
+    settings: &DaftSettings,
+    force_with_lease: bool,
+) -> Result<()> {
+    let wt_config = WorktreeConfig {
+        remote_name: settings.remote.clone(),
+        quiet: output.is_quiet(),
+    };
+    let git = GitCommand::new(wt_config.quiet).with_gitoxide(settings.use_gitoxide);
+    let project_root = get_project_root()?;
+
+    let params = push::PushParams {
+        force_with_lease,
+        remote_name: wt_config.remote_name.clone(),
+    };
+
+    output.start_spinner("Pushing branches...");
+    let exec_result = {
+        let mut sink = OutputSink(output);
+        push::execute(&params, &git, &project_root, &mut sink)
+    };
+    output.finish_spinner();
+    let result = exec_result?;
+
+    render_push_result(&result, output);
+
+    if result.failed_count() > 0 {
+        output.warning(&format!(
+            "{} branch(es) failed to push",
+            result.failed_count()
+        ));
+    }
+
+    Ok(())
+}
+
+fn render_push_result(result: &push::PushResult, output: &mut dyn Output) {
+    if result.results.is_empty() {
+        output.info("No branches to push.");
+        return;
+    }
+
+    // Header
+    output.result(&format!("Pushing to {}", result.remote_name));
+
+    // Per-worktree status
+    for r in &result.results {
+        render_push_worktree_status(r, output);
+    }
+
+    // Summary
+    print_push_summary(result, output);
+}
+
+fn render_push_worktree_status(r: &push::WorktreePushResult, output: &mut dyn Output) {
+    if r.no_upstream {
+        output.info(&format!(" * {} {}", tag_no_upstream(), r.worktree_name));
+    } else if r.success {
+        if r.up_to_date {
+            output.info(&format!(" * {} {}", tag_up_to_date(), r.worktree_name));
+        } else {
+            output.info(&format!(" * {} {}", tag_pushed(), r.worktree_name));
+        }
+    } else {
+        output.warning(&format!(" * {} {}", tag_diverged(), r.worktree_name));
+    }
+}
+
+fn print_push_summary(result: &push::PushResult, output: &mut dyn Output) {
+    let pushed = result.pushed_count();
+    let up_to_date = result.up_to_date_count();
+    let no_upstream = result.no_upstream_count();
+    let failed = result.failed_count();
+
+    let mut parts: Vec<String> = Vec::new();
+
+    if pushed > 0 {
+        let word = if pushed == 1 { "branch" } else { "branches" };
+        parts.push(format!("Pushed {pushed} {word}"));
+    }
+
+    if up_to_date > 0 {
+        let phrase = if up_to_date == 1 {
+            "1 already up to date".to_string()
+        } else {
+            format!("{up_to_date} already up to date")
+        };
+        parts.push(phrase);
+    }
+
+    if no_upstream > 0 {
+        let word = if no_upstream == 1 {
+            "branch"
+        } else {
+            "branches"
+        };
+        parts.push(format!("{no_upstream} {word} skipped (no remote)"));
+    }
+
+    if failed > 0 {
+        let word = if failed == 1 { "branch" } else { "branches" };
+        parts.push(format!("{failed} {word} failed to push"));
+    }
+
+    if parts.is_empty() {
+        output.info("Nothing to push");
+    } else if failed > 0 {
+        output.warning(&parts.join(", "));
+    } else {
+        output.success(&parts.join(", "));
+    }
+}
+
 // -- Colored status tags --
 
 fn tag_updated() -> String {
@@ -973,5 +1190,21 @@ fn tag_failed() -> String {
         format!("{}\u{2717} failed{}", styles::RED, styles::RESET)
     } else {
         "\u{2717} failed".to_string()
+    }
+}
+
+fn tag_pushed() -> String {
+    if styles::colors_enabled() {
+        format!("{}\u{2713} pushed{}", styles::GREEN, styles::RESET)
+    } else {
+        "\u{2713} pushed".to_string()
+    }
+}
+
+fn tag_no_upstream() -> String {
+    if styles::colors_enabled() {
+        format!("{}\u{2298} no remote{}", styles::YELLOW, styles::RESET)
+    } else {
+        "\u{2298} no remote".to_string()
     }
 }

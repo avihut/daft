@@ -96,6 +96,36 @@ impl GitCommand {
         Ok(())
     }
 
+    /// Push a branch from a specific directory, optionally with --force-with-lease.
+    ///
+    /// Required for parallel workers where `set_current_dir` would race.
+    /// Returns the combined stderr on success (for detecting "Everything up-to-date").
+    pub fn push_from(
+        &self,
+        remote: &str,
+        branch: &str,
+        cwd: &std::path::Path,
+        force_with_lease: bool,
+    ) -> Result<String> {
+        let mut cmd = Command::new("git");
+        cmd.args(["push", "--no-verify", remote, branch]);
+        cmd.current_dir(cwd);
+
+        if force_with_lease {
+            cmd.arg("--force-with-lease");
+        }
+
+        let output = cmd.output().context("Failed to execute git push command")?;
+
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if !output.status.success() {
+            anyhow::bail!("Git push failed: {}", stderr);
+        }
+
+        Ok(stderr)
+    }
+
     /// Delete a remote branch via `git push <remote> --delete <branch>`.
     pub fn push_delete(&self, remote: &str, branch: &str) -> Result<()> {
         let mut cmd = Command::new("git");

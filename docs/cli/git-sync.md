@@ -22,6 +22,10 @@ This is equivalent to running `daft prune` followed by `daft update --all`:
   2. Update: pulls all remaining worktrees from their remote tracking branches.
   3. Rebase (--rebase BRANCH): rebases all remaining worktrees onto BRANCH.
      Best-effort: conflicts are immediately aborted and reported.
+  4. Push (--push): pushes all branches to their remote tracking branches.
+     Branches without an upstream are skipped. Push failures are reported as
+     warnings; they do not cause sync to fail. Use --force-with-lease with
+     --push to force-push rebased branches.
 
 If you are currently inside a worktree that gets pruned, the shell is redirected
 to a safe location (project root by default, or as configured via
@@ -41,9 +45,12 @@ git sync [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|----------|
 | `-v, --verbose` | Increase verbosity (-v for hook details, -vv for full sequential output) |  |
-| `-f, --force` | Force removal of worktrees with uncommitted changes |  |
+| `-f, --prune-dirty` | Force removal of worktrees with uncommitted changes |  |
+| `--force` | Hidden deprecated alias for --prune-dirty |  |
 | `--rebase <BRANCH>` | Rebase all branches onto BRANCH after updating |  |
 | `--autostash` | Automatically stash and unstash uncommitted changes before/after rebase |  |
+| `--push` | Push all branches to their remotes after syncing |  |
+| `--force-with-lease` | Use --force-with-lease when pushing (requires --push) |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary) |  |
 
 ## Global Options

@@ -432,6 +432,14 @@ fn render_status_cell(wt: &super::state::WorktreeRow, tick: usize) -> Cell<'stat
                     )))
                 }
             }
+            FinalStatus::Pushed => Cell::from(Line::from(Span::styled(
+                format!("{CHECKMARK} pushed"),
+                Style::default().fg(Color::Green),
+            ))),
+            FinalStatus::NoPushUpstream => Cell::from(Line::from(Span::styled(
+                format!("{SKIP} no remote"),
+                Style::default().fg(Color::Yellow),
+            ))),
             FinalStatus::Failed => Cell::from(Line::from(Span::styled(
                 format!("{CROSS} failed"),
                 Style::default().fg(Color::Red),

@@ -83,4 +83,30 @@ impl GitCommand {
         let key = format!("branch.{branch}.remote");
         self.config_get(&key)
     }
+
+    /// Get the tracking remote for a branch, using an explicit working directory.
+    ///
+    /// Required for parallel workers where `set_current_dir` would race.
+    pub fn get_branch_tracking_remote_from(
+        &self,
+        branch: &str,
+        cwd: &std::path::Path,
+    ) -> Result<Option<String>> {
+        let key = format!("branch.{branch}.remote");
+        let output = Command::new("git")
+            .args(["config", "--get", &key])
+            .current_dir(cwd)
+            .output()
+            .context("Failed to execute git config command")?;
+
+        if output.status.success() {
+            let value = String::from_utf8(output.stdout)
+                .context("Failed to parse git config output")?
+                .trim()
+                .to_string();
+            Ok(Some(value))
+        } else {
+            Ok(None)
+        }
+    }
 }

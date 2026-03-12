@@ -16,6 +16,7 @@ pub mod init;
 pub mod list;
 pub mod previous;
 pub mod prune;
+pub mod push;
 pub mod rebase;
 pub mod rename;
 pub mod sync_dag;
