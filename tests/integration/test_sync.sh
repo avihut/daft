@@ -305,6 +305,87 @@ test_sync_diverged_branch_no_rebase() {
     return 0
 }
 
+# Test sync --rebase --autostash stashes dirty worktree, rebases, and restores
+test_sync_rebase_autostash() {
+    local remote_repo=$(create_test_remote "test-repo-sync-autostash" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-sync-autostash"
+
+    # Create a feature worktree
+    git-worktree-checkout develop || return 1
+
+    # Make a local commit on develop so rebase has work to do
+    (
+        cd develop
+        echo "develop-only content" > develop-feature.txt
+        git add develop-feature.txt >/dev/null 2>&1
+        git commit -m "Add develop feature" >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    # Push a new commit to main via remote (develop will rebase onto this)
+    # Use main.py (not README.md) to avoid conflicting with develop's README.md changes
+    local temp_clone="$TEMP_BASE_DIR/temp_sync_autostash_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+    (
+        cd "$temp_clone"
+        echo "Remote main change" >> main.py
+        git add main.py >/dev/null 2>&1
+        git commit -m "Update main for autostash test" >/dev/null 2>&1
+        git push origin main >/dev/null 2>&1
+    ) >/dev/null 2>&1
+    rm -rf "$temp_clone"
+
+    # Make uncommitted changes in develop in a non-conflicting file
+    echo "Uncommitted local work" > develop/local-wip.txt
+
+    # Run sync with --rebase --autostash (use -vv for sequential mode)
+    git-sync --rebase main --autostash --verbose --verbose || {
+        log_error "Sync --rebase --autostash should succeed with dirty worktree"
+        return 1
+    }
+
+    # Verify develop was rebased onto main (main's latest commit is in develop's history)
+    local main_commit=$(cd main && git rev-parse HEAD)
+    if ! (cd develop && git log --format=%H | grep -q "$main_commit"); then
+        log_error "Develop branch should have been rebased onto main"
+        return 1
+    fi
+
+    # Verify uncommitted changes are still present
+    if ! grep -q "Uncommitted local work" develop/local-wip.txt; then
+        log_error "Uncommitted changes should have been restored after autostash rebase"
+        return 1
+    fi
+
+    return 0
+}
+
+# Test sync --autostash without --rebase fails with validation error
+test_sync_autostash_without_rebase() {
+    local remote_repo=$(create_test_remote "test-repo-sync-autostash-norebase" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-sync-autostash-norebase"
+
+    # Run sync with --autostash but without --rebase — should fail
+    local output
+    output=$(git-sync --autostash 2>&1) && {
+        log_error "Sync --autostash without --rebase should fail"
+        return 1
+    }
+
+    # Verify the error mentions the requirement
+    if ! echo "$output" | grep -qi "rebase"; then
+        log_error "Error message should mention --rebase requirement, got: $output"
+        return 1
+    fi
+
+    return 0
+}
+
 # Run all sync tests
 run_sync_tests() {
     log "Running git-sync integration tests..."
@@ -318,6 +399,8 @@ run_sync_tests() {
     run_test "sync_outside_repo" "test_sync_outside_repo"
     run_test "sync_diverged_branch_with_rebase" "test_sync_diverged_branch_with_rebase"
     run_test "sync_diverged_branch_no_rebase" "test_sync_diverged_branch_no_rebase"
+    run_test "sync_rebase_autostash" "test_sync_rebase_autostash"
+    run_test "sync_autostash_without_rebase" "test_sync_autostash_without_rebase"
 }
 
 # Main execution
