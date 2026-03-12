@@ -43,6 +43,7 @@ git sync [OPTIONS]
 | `-v, --verbose` | Increase verbosity (-v for hook details, -vv for full sequential output) |  |
 | `-f, --force` | Force removal of worktrees with uncommitted changes |  |
 | `--rebase <BRANCH>` | Rebase all branches onto BRANCH after updating |  |
+| `--autostash` | Automatically stash and unstash uncommitted changes before/after rebase |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary) |  |
 
 ## Global Options

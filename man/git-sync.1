@@ -4,7 +4,7 @@
 .SH NAME
 git\-sync \- Synchronize worktrees with remote (prune + update all)
 .SH SYNOPSIS
-\fBgit\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-rebase\fR] [\fB\-\-stat\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBgit\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-rebase\fR] [\fB\-\-autostash\fR] [\fB\-\-stat\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Synchronizes all worktrees with the remote in a single command.
@@ -33,6 +33,9 @@ Force removal of worktrees with uncommitted changes
 .TP
 \fB\-\-rebase\fR \fI<BRANCH>\fR
 Rebase all branches onto BRANCH after updating
+.TP
+\fB\-\-autostash\fR
+Automatically stash and unstash uncommitted changes before/after rebase
 .TP
 \fB\-\-stat\fR \fI<STAT>\fR
 Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary)

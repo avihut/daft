@@ -40,6 +40,7 @@ separately.
 | `-v, --verbose` | Increase verbosity (`-v` for hook details, `-vv` for full sequential output) | |
 | `-f, --force` | Force removal of worktrees with uncommitted changes | |
 | `--rebase <BRANCH>` | Rebase all branches onto BRANCH after updating | |
+| `--autostash` | Automatically stash/unstash uncommitted changes during rebase (requires `--rebase`) | |
 | `--stat <STAT>` | Statistics mode: `summary` or `lines` (default: from git config `daft.sync.stat`, or `summary`) | |
 
 ## Global Options
@@ -63,6 +64,9 @@ daft sync -vv
 
 # Sync and rebase all worktrees onto main
 daft sync --rebase main
+
+# Sync, rebase onto main, and autostash uncommitted changes
+daft sync --rebase main --autostash
 
 # Force sync even if worktrees have uncommitted changes
 daft sync --force

@@ -18,6 +18,8 @@ pub struct RebaseParams {
     pub force: bool,
     /// Suppress verbose output.
     pub quiet: bool,
+    /// Automatically stash and unstash uncommitted changes before/after rebase.
+    pub autostash: bool,
 }
 
 /// Result of rebasing a single worktree.
@@ -94,6 +96,7 @@ pub fn execute(
             &worktree_name,
             &params.base_branch,
             params.force,
+            params.autostash,
             progress,
         );
         results.push(result);
@@ -124,6 +127,7 @@ pub fn rebase_single_worktree(
     worktree_name: &str,
     base_branch: &str,
     force: bool,
+    autostash: bool,
     progress: &mut dyn ProgressSink,
 ) -> WorktreeRebaseResult {
     // Verify directory exists
@@ -137,7 +141,7 @@ pub fn rebase_single_worktree(
 
     // Check for uncommitted changes
     match git.has_uncommitted_changes_in(worktree_path) {
-        Ok(true) if !force => {
+        Ok(true) if !force && !autostash => {
             progress.on_warning(&format!(
                 "Skipping '{worktree_name}': has uncommitted changes (use --force to rebase anyway)"
             ));
@@ -160,7 +164,7 @@ pub fn rebase_single_worktree(
     }
 
     // Run git rebase with explicit working directory (thread-safe)
-    match git.rebase_in(base_branch, Some(worktree_path)) {
+    match git.rebase_in(base_branch, Some(worktree_path), autostash) {
         Ok(output) => {
             let already_up_to_date =
                 output.contains("is up to date") || output.contains("up to date");

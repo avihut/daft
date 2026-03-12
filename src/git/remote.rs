@@ -336,19 +336,22 @@ impl GitCommand {
     /// Returns the combined stdout+stderr on success. On failure (e.g., conflicts),
     /// returns an error with the combined output.
     pub fn rebase(&self, base: &str) -> Result<String> {
-        self.rebase_in(base, None)
+        self.rebase_in(base, None, false)
     }
 
     /// Rebase with an explicit working directory.
     ///
     /// When `dir` is `Some`, the git command runs in that directory instead
     /// of inheriting the process CWD. Required for parallel workers.
-    pub fn rebase_in(&self, base: &str, dir: Option<&Path>) -> Result<String> {
+    pub fn rebase_in(&self, base: &str, dir: Option<&Path>, autostash: bool) -> Result<String> {
         let mut cmd = Command::new("git");
         if let Some(d) = dir {
             cmd.current_dir(d);
         }
         cmd.args(["rebase", base]);
+        if autostash {
+            cmd.arg("--autostash");
+        }
 
         let output = cmd
             .output()

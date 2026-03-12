@@ -80,6 +80,13 @@ pub struct Args {
 
     #[arg(
         long,
+        requires = "rebase",
+        help = "Automatically stash and unstash uncommitted changes before/after rebase"
+    )]
+    autostash: bool,
+
+    #[arg(
+        long,
         value_enum,
         help = "Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary)"
     )]
@@ -121,7 +128,13 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
 
     // Phase 3: Rebase all worktrees onto base branch (if requested)
     if let Some(ref base_branch) = args.rebase {
-        run_rebase_phase(&mut output, &settings, base_branch, args.force)?;
+        run_rebase_phase(
+            &mut output,
+            &settings,
+            base_branch,
+            args.force,
+            args.autostash,
+        )?;
     }
 
     // Write the cd target for the shell wrapper (from prune phase)
@@ -231,6 +244,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         remote_name: settings.remote.clone(),
     }));
     let shared_force = args.force;
+    let shared_autostash = args.autostash;
     let shared_is_bare_layout = is_bare_layout;
 
     let git_dir = get_git_common_dir()?;
@@ -359,6 +373,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             &shared_project_root,
                             &shared_settings,
                             shared_force,
+                            shared_autostash,
                         );
                         let updated = if status == TaskStatus::Succeeded
                             && !matches!(message, TaskMessage::Conflict)
@@ -514,6 +529,7 @@ fn execute_rebase_task(
     project_root: &std::path::Path,
     settings: &DaftSettings,
     force: bool,
+    autostash: bool,
 ) -> (TaskStatus, TaskMessage) {
     let Some(target_path) = worktree_path else {
         return (
@@ -538,6 +554,7 @@ fn execute_rebase_task(
         &worktree_name,
         base_branch,
         force,
+        autostash,
         &mut sink,
     );
 
@@ -765,6 +782,7 @@ fn run_rebase_phase(
     settings: &DaftSettings,
     base_branch: &str,
     force: bool,
+    autostash: bool,
 ) -> Result<()> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
@@ -777,6 +795,7 @@ fn run_rebase_phase(
         base_branch: base_branch.to_string(),
         force,
         quiet: output.is_quiet(),
+        autostash,
     };
 
     output.start_spinner("Rebasing worktrees...");
