@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [1.1.0](https://github.com/avihut/daft/compare/v1.0.35...v1.1.0) - 2026-03-12
+## [1.0.36](https://github.com/avihut/daft/compare/v1.0.35...v1.0.36) - 2026-03-12
 
 ### Bug Fixes
 
