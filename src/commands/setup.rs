@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use crate::commands::shortcuts::{detect_install_dir, enable_style};
+use crate::commands::shortcuts::{effective_install_dir, enable_style};
 use crate::output::{CliOutput, Output, OutputConfig};
 use crate::shortcuts::ShortcutStyle;
 
@@ -196,7 +196,7 @@ pub fn run() -> Result<()> {
     writeln!(file, "{init_line}")?;
 
     // Install git-style shortcuts silently
-    let shortcuts_installed = if let Ok(install_dir) = detect_install_dir() {
+    let shortcuts_installed = if let Ok(install_dir) = effective_install_dir() {
         let mut quiet_output = CliOutput::new(OutputConfig::new(true, false));
         enable_style(ShortcutStyle::Git, &install_dir, false, &mut quiet_output).is_ok()
     } else {
