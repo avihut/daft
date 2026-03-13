@@ -83,6 +83,8 @@ pub fn execute_prune_task(
                 // Deferred branches (current worktree) are still considered successful
                 // but the actual removal happens after the TUI finishes.
                 (TaskStatus::Succeeded, TaskMessage::Deferred)
+            } else if result.skipped_dirty {
+                (TaskStatus::Succeeded, TaskMessage::SkippedDirty)
             } else {
                 (TaskStatus::Succeeded, TaskMessage::NoActionNeeded)
             }

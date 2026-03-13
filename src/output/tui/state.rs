@@ -39,6 +39,8 @@ pub enum FinalStatus {
     Diverged,
     Skipped,
     Pruned,
+    /// Prune skipped because the worktree has uncommitted changes.
+    Dirty,
     Failed,
     Pushed,
     NoPushUpstream,
@@ -390,8 +392,9 @@ impl TuiState {
             TaskStatus::Succeeded => match phase {
                 OperationPhase::Prune => match message {
                     TaskMessage::Removed | TaskMessage::Deferred => FinalStatus::Pruned,
+                    TaskMessage::SkippedDirty => FinalStatus::Dirty,
                     TaskMessage::NoActionNeeded => FinalStatus::UpToDate,
-                    _ => FinalStatus::Pruned,
+                    _ => FinalStatus::UpToDate,
                 },
                 OperationPhase::Update => match message {
                     TaskMessage::UpToDate => FinalStatus::UpToDate,
@@ -550,6 +553,30 @@ mod tests {
             .find(|w| w.info.name == "feat/old")
             .unwrap();
         assert_eq!(row.status, WorktreeStatus::Done(FinalStatus::Pruned));
+    }
+
+    #[test]
+    fn prune_skipped_dirty_sets_dirty_status() {
+        let mut state = make_test_state();
+
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Prune,
+            branch_name: "feat/old".into(),
+        });
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Prune,
+            branch_name: "feat/old".into(),
+            status: TaskStatus::Succeeded,
+            message: TaskMessage::SkippedDirty,
+            updated_info: None,
+        });
+
+        let row = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "feat/old")
+            .unwrap();
+        assert_eq!(row.status, WorktreeStatus::Done(FinalStatus::Dirty));
     }
 
     #[test]

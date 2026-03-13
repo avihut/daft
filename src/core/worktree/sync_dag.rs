@@ -62,6 +62,8 @@ pub enum TaskMessage {
     Deferred,
     /// Prune found nothing to remove.
     NoActionNeeded,
+    /// Prune skipped because worktree has uncommitted changes.
+    SkippedDirty,
     /// Update couldn't fast-forward (branch diverged from upstream).
     Diverged,
     /// Push completed successfully.
