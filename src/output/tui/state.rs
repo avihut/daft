@@ -413,6 +413,7 @@ impl TuiState {
                 },
                 OperationPhase::Fetch => FinalStatus::Updated,
             },
+            TaskStatus::PreconditionFailed => FinalStatus::Skipped,
             TaskStatus::Pending | TaskStatus::Running => FinalStatus::Failed,
         }
     }

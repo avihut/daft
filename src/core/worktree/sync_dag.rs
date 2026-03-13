@@ -10,6 +10,14 @@ use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
+/// Semantic outcomes that a task can produce. Downstream tasks may
+/// inspect these as preconditions for whether to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TaskOutcome {
+    /// Rebase had conflicts and was aborted.
+    Conflict,
+}
+
 /// Identifies a single executable task in the sync DAG.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TaskId {
@@ -35,6 +43,8 @@ pub enum TaskStatus {
     Skipped,
     /// Skipped because a dependency failed.
     DepFailed,
+    /// Task checked preconditions and chose not to run.
+    PreconditionFailed,
 }
 
 impl TaskStatus {
@@ -42,7 +52,11 @@ impl TaskStatus {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Succeeded | Self::Failed | Self::Skipped | Self::DepFailed
+            Self::Succeeded
+                | Self::Failed
+                | Self::Skipped
+                | Self::DepFailed
+                | Self::PreconditionFailed
         )
     }
 }
@@ -856,5 +870,10 @@ mod tests {
             )
         });
         assert!(rebase_event.is_some());
+    }
+
+    #[test]
+    fn precondition_failed_is_terminal() {
+        assert!(TaskStatus::PreconditionFailed.is_terminal());
     }
 }
