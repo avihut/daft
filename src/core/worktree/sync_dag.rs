@@ -992,4 +992,66 @@ mod tests {
             "Push(feat/a) should receive Conflict outcome from Rebase(feat/a)"
         );
     }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn outcomes_do_not_leak_across_branches() {
+        use std::collections::HashSet;
+        let worktrees = vec![
+            ("master".into(), PathBuf::from("/p/master")),
+            ("feat/a".into(), PathBuf::from("/p/feat-a")),
+            ("feat/b".into(), PathBuf::from("/p/feat-b")),
+        ];
+        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()), true);
+        let (tx, rx) = mpsc::channel();
+
+        let received_outcomes: Arc<Mutex<Vec<(TaskId, HashSet<TaskOutcome>)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let outcomes_clone = Arc::clone(&received_outcomes);
+
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(move |task, outcomes| {
+            outcomes_clone
+                .lock()
+                .unwrap()
+                .push((task.id.clone(), outcomes.clone()));
+            match &task.id {
+                TaskId::Rebase(name) if name == "feat/a" => {
+                    let mut out = outcomes.clone();
+                    out.insert(TaskOutcome::Conflict);
+                    (TaskStatus::Succeeded, TaskMessage::Conflict, out, None)
+                }
+                TaskId::Rebase(name) if name == "feat/b" => (
+                    TaskStatus::Succeeded,
+                    TaskMessage::Ok("rebased".into()),
+                    outcomes.clone(),
+                    None,
+                ),
+                _ => (
+                    TaskStatus::Succeeded,
+                    TaskMessage::Ok("ok".into()),
+                    outcomes.clone(),
+                    None,
+                ),
+            }
+        });
+
+        let _events: Vec<DagEvent> = rx.iter().collect();
+        let recorded = received_outcomes.lock().unwrap();
+
+        let push_a = recorded
+            .iter()
+            .find(|(id, _)| *id == TaskId::Push("feat/a".into()))
+            .unwrap();
+        assert!(push_a.1.contains(&TaskOutcome::Conflict));
+
+        let push_b = recorded
+            .iter()
+            .find(|(id, _)| *id == TaskId::Push("feat/b".into()))
+            .unwrap();
+        assert!(
+            !push_b.1.contains(&TaskOutcome::Conflict),
+            "feat/b's push should not see feat/a's Conflict outcome"
+        );
+    }
 }
