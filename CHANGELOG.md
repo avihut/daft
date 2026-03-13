@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.37](https://github.com/avihut/daft/compare/v1.0.36...v1.0.37) - 2026-03-13
+
+### Bug Fixes
+
+- *(sync)* show dirty status instead of pruned for unremovable worktrees ([#298](https://github.com/avihut/daft/pull/298))
+- *(sync)* refresh remote tracking info after push in TUI output ([#297](https://github.com/avihut/daft/pull/297))
+- prevent brew link failures with Homebrew-aware symlink management ([#294](https://github.com/avihut/daft/pull/294))
+
 ## [1.0.36](https://github.com/avihut/daft/compare/v1.0.35...v1.0.36) - 2026-03-12
 
 ### Bug Fixes
