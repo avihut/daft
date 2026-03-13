@@ -96,6 +96,7 @@ pub(super) fn status_display_width(status: &WorktreeStatus) -> u16 {
             FinalStatus::Pushed => 8,          // "✓ pushed"
             FinalStatus::NoPushUpstream => 11, // "⊘ no remote"
             FinalStatus::Pruned => 8,          // "— pruned"
+            FinalStatus::Dirty => 7,           // "⊘ dirty"
             FinalStatus::Failed => 8,          // "✗ failed"
         },
     }

@@ -70,12 +70,25 @@ pub struct SingleBranchPruneResult {
     pub branches_deleted: u32,
     pub worktrees_removed: u32,
     pub deferred: bool,
+    /// True when pruning was skipped because the worktree has uncommitted changes.
+    pub skipped_dirty: bool,
 }
 
 /// Result of removing a single worktree + deleting its branch.
 struct SinglePruneResult {
     worktree_removed: bool,
     branch_deleted: bool,
+    skipped_dirty: bool,
+}
+
+/// Outcome of attempting to remove a worktree.
+enum RemoveOutcome {
+    /// Worktree was successfully removed.
+    Removed,
+    /// Skipped because worktree has uncommitted changes.
+    SkippedDirty,
+    /// Skipped due to an error (not dirty-related).
+    Failed,
 }
 
 /// Execute the prune operation.
@@ -238,6 +251,7 @@ pub fn prune_single_branch(
     let mut branches_deleted: u32 = 0;
     let mut worktrees_removed: u32 = 0;
     let mut deferred = false;
+    let mut skipped_dirty = false;
 
     let wt_info = worktree_map.get(branch_name).cloned();
 
@@ -253,6 +267,7 @@ pub fn prune_single_branch(
                 sink,
                 &mut branches_deleted,
                 &mut worktrees_removed,
+                &mut skipped_dirty,
             )?;
         }
         Some((ref wt_path, _)) if !is_bare_layout => {
@@ -268,6 +283,7 @@ pub fn prune_single_branch(
                 &mut branches_deleted,
                 &mut worktrees_removed,
                 &mut deferred_branch,
+                &mut skipped_dirty,
             );
             if deferred_branch.is_some() {
                 deferred = true;
@@ -287,6 +303,7 @@ pub fn prune_single_branch(
                 &mut branches_deleted,
                 &mut worktrees_removed,
                 &mut deferred_branch,
+                &mut skipped_dirty,
             );
             if deferred_branch.is_some() {
                 deferred = true;
@@ -313,6 +330,7 @@ pub fn prune_single_branch(
         branches_deleted,
         worktrees_removed,
         deferred,
+        skipped_dirty,
     })
 }
 
@@ -412,6 +430,7 @@ fn process_main_worktree_branch(
     sink: &mut (impl ProgressSink + HookRunner),
     branches_deleted: &mut u32,
     worktrees_removed: &mut u32,
+    skipped_dirty: &mut bool,
 ) -> Result<()> {
     sink.on_step(&format!(
         "Branch {branch_name} is checked out in the main worktree"
@@ -447,7 +466,11 @@ fn process_main_worktree_branch(
             "Branch {branch_name} has worktree at {} but is not checked out there; removing worktree",
             wt_path.display()
         ));
-        if !remove_worktree(ctx, wt_path, branch_name, params.force, sink) {
+        let outcome = remove_worktree(ctx, wt_path, branch_name, params.force, sink);
+        if !matches!(outcome, RemoveOutcome::Removed) {
+            if matches!(outcome, RemoveOutcome::SkippedDirty) {
+                *skipped_dirty = true;
+            }
             return Ok(());
         }
         wt_removed = true;
@@ -482,6 +505,7 @@ fn process_linked_worktree_branch(
     branches_deleted: &mut u32,
     worktrees_removed: &mut u32,
     deferred_branch: &mut Option<String>,
+    skipped_dirty: &mut bool,
 ) {
     let is_current = current_wt_path
         .as_ref()
@@ -497,6 +521,9 @@ fn process_linked_worktree_branch(
     }
 
     let result = remove_worktree_and_delete_branch(ctx, wt_path, branch_name, force, sink);
+    if result.skipped_dirty {
+        *skipped_dirty = true;
+    }
     if result.worktree_removed {
         *worktrees_removed += 1;
     }
@@ -527,6 +554,7 @@ fn process_bare_layout_branch(
     branches_deleted: &mut u32,
     worktrees_removed: &mut u32,
     deferred_branch: &mut Option<String>,
+    skipped_dirty: &mut bool,
 ) {
     if is_main {
         // The first entry in a bare repo is the bare dir, not a real worktree
@@ -552,6 +580,9 @@ fn process_bare_layout_branch(
     }
 
     let result = remove_worktree_and_delete_branch(ctx, wt_path, branch_name, force, sink);
+    if result.skipped_dirty {
+        *skipped_dirty = true;
+    }
     if result.worktree_removed {
         *worktrees_removed += 1;
     }
@@ -633,14 +664,14 @@ fn process_deferred_branch(
 
 // ── Worktree operations ────────────────────────────────────────────────────
 
-/// Remove a worktree (with hooks and dirty checks). Returns true on success.
+/// Remove a worktree (with hooks and dirty checks).
 fn remove_worktree(
     ctx: &PruneContext,
     wt_path: &Path,
     branch_name: &str,
     force: bool,
     sink: &mut (impl ProgressSink + HookRunner),
-) -> bool {
+) -> RemoveOutcome {
     // Check for uncommitted changes
     if wt_path.exists() && !force {
         match ctx.git.has_uncommitted_changes_in(wt_path) {
@@ -648,14 +679,14 @@ fn remove_worktree(
                 sink.on_warning(&format!(
                     "Skipping {branch_name}: worktree has uncommitted changes or untracked files (use --force to override)"
                 ));
-                return false;
+                return RemoveOutcome::SkippedDirty;
             }
             Ok(false) => {}
             Err(e) => {
                 sink.on_warning(&format!(
                     "Skipping {branch_name}: failed to check for uncommitted changes: {e} (use --force to override)"
                 ));
-                return false;
+                return RemoveOutcome::Failed;
             }
         }
     }
@@ -670,7 +701,7 @@ fn remove_worktree(
                 "Failed to remove worktree {}: {e}. Skipping deletion of branch {branch_name}.",
                 wt_path.display()
             ));
-            return false;
+            return RemoveOutcome::Failed;
         }
         sink.on_step(&format!("Removed worktree '{branch_name}'"));
     } else {
@@ -683,7 +714,7 @@ fn remove_worktree(
                 "Failed to remove orphaned worktree record {}: {e}. Skipping deletion of branch {branch_name}.",
                 wt_path.display()
             ));
-            return false;
+            return RemoveOutcome::Failed;
         }
         sink.on_step(&format!("Removed worktree '{branch_name}'"));
     }
@@ -694,7 +725,7 @@ fn remove_worktree(
     // Clean up empty parent directories
     cleanup_empty_parent_dirs(&ctx.project_root, wt_path, sink);
 
-    true
+    RemoveOutcome::Removed
 }
 
 /// Remove a worktree and delete its branch.
@@ -710,10 +741,12 @@ fn remove_worktree_and_delete_branch(
         wt_path.display()
     ));
 
-    if !remove_worktree(ctx, wt_path, branch_name, force, sink) {
+    let outcome = remove_worktree(ctx, wt_path, branch_name, force, sink);
+    if !matches!(outcome, RemoveOutcome::Removed) {
         return SinglePruneResult {
             worktree_removed: false,
             branch_deleted: false,
+            skipped_dirty: matches!(outcome, RemoveOutcome::SkippedDirty),
         };
     }
 
@@ -722,6 +755,7 @@ fn remove_worktree_and_delete_branch(
     SinglePruneResult {
         worktree_removed: true,
         branch_deleted,
+        skipped_dirty: false,
     }
 }
 

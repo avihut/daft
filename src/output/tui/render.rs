@@ -414,6 +414,10 @@ fn render_status_cell(wt: &super::state::WorktreeRow, tick: usize) -> Cell<'stat
                 format!("{SKIP} skipped"),
                 Style::default().fg(Color::Yellow),
             ))),
+            FinalStatus::Dirty => Cell::from(Line::from(Span::styled(
+                format!("{SKIP} dirty"),
+                Style::default().fg(Color::Yellow),
+            ))),
             FinalStatus::Pruned => {
                 if wt.hook_failed {
                     Cell::from(Line::from(Span::styled(
