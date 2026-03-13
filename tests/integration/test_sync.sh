@@ -386,6 +386,64 @@ test_sync_autostash_without_rebase() {
     return 0
 }
 
+# Test sync --rebase --push skips push when rebase conflicts
+test_sync_rebase_conflict_skips_push() {
+    local remote_repo=$(create_test_remote "test-repo-sync-conflict-push" "main")
+
+    # Clone the repository
+    git-worktree-clone "$remote_repo" || return 1
+    cd "test-repo-sync-conflict-push"
+
+    # Create a feature worktree
+    git-worktree-checkout develop || return 1
+
+    # Make a local commit on develop that will conflict with main
+    (
+        cd develop
+        echo "develop conflicting content" > README.md
+        git add README.md >/dev/null 2>&1
+        git commit -m "Conflicting change on develop" >/dev/null 2>&1
+    ) >/dev/null 2>&1
+
+    # Push a conflicting change to main via remote
+    local temp_clone="$TEMP_BASE_DIR/temp_sync_conflict_push_clone"
+    git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
+    (
+        cd "$temp_clone"
+        echo "main conflicting content" > README.md
+        git add README.md >/dev/null 2>&1
+        git commit -m "Conflicting change on main" >/dev/null 2>&1
+        git push origin main >/dev/null 2>&1
+    ) >/dev/null 2>&1
+    rm -rf "$temp_clone"
+
+    # Record develop's commit before sync
+    local develop_commit_before=$(cd develop && git rev-parse HEAD)
+
+    # Record remote develop ref before sync
+    local remote_develop_before=$(git ls-remote "$remote_repo" develop 2>/dev/null | awk '{print $1}')
+
+    # Run sync with --rebase --push (use -vv for sequential mode)
+    # This should NOT fail -- conflicts are warnings, not errors
+    git-sync --rebase main --push --force-with-lease --verbose --verbose 2>&1 || true
+
+    # Verify develop branch was NOT changed (rebase aborted)
+    local develop_commit_after=$(cd develop && git rev-parse HEAD)
+    if [[ "$develop_commit_after" != "$develop_commit_before" ]]; then
+        log_error "Develop branch should not have changed after aborted rebase"
+        return 1
+    fi
+
+    # Verify push was NOT attempted (remote develop should be unchanged)
+    local remote_develop_after=$(git ls-remote "$remote_repo" develop 2>/dev/null | awk '{print $1}')
+    if [[ "$remote_develop_after" != "$remote_develop_before" ]]; then
+        log_error "Push should have been skipped for branch with rebase conflict"
+        return 1
+    fi
+
+    return 0
+}
+
 # Run all sync tests
 run_sync_tests() {
     log "Running git-sync integration tests..."
@@ -401,6 +459,7 @@ run_sync_tests() {
     run_test "sync_diverged_branch_no_rebase" "test_sync_diverged_branch_no_rebase"
     run_test "sync_rebase_autostash" "test_sync_rebase_autostash"
     run_test "sync_autostash_without_rebase" "test_sync_autostash_without_rebase"
+    run_test "sync_rebase_conflict_skips_push" "test_sync_rebase_conflict_skips_push"
 }
 
 # Main execution
