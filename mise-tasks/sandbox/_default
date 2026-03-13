@@ -66,6 +66,16 @@ exec "$SHELL"
 SCRIPT
 chmod +x "${sandbox_dir}/go-to-worktree"
 
+cat > "${sandbox_dir}/clean-sandbox" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+worktree="$DAFT_WORKTREE"
+(cd "$worktree" && mise run sandbox:clean)
+cd "$worktree"
+exec "$SHELL"
+SCRIPT
+chmod +x "${sandbox_dir}/clean-sandbox"
+
 cat > "${sandbox_dir}/manual-test" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -135,6 +145,33 @@ elif [[ -n "${BASH_VERSION:-}" ]]; then
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/manual-test.bash"
 fi
 LOADER
+
+# --- README ---
+cat > "${sandbox_dir}/README.md" <<'README'
+# Daft Dev Sandbox
+
+## First things first
+
+Load completions for sandbox helpers and the daft dev binary:
+
+    source enable-completions
+    eval "$(daft shell-init $(basename "$SHELL"))"
+
+## Available commands
+
+    manual-test <scenario>   Run a manual test scenario interactively
+    manual-test --list       List available scenarios
+    rebuild-daft             Rebuild daft and update symlinks
+    go-to-worktree           Open a shell in the worktree directory
+    clean-sandbox            Remove this sandbox and return to the worktree
+
+## Tips
+
+- Tab-complete scenario names and flags after running `source enable-completions`
+- Run `rebuild-daft` after making code changes to pick them up
+- Run `manual-test --keep <scenario>` to keep the test environment for inspection
+- The sandbox has an isolated git identity and config directory
+README
 
 # Allow direnv if available
 if command -v direnv &>/dev/null; then
