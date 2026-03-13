@@ -14,7 +14,9 @@ use crate::{
             fetch, list,
             list::Stat,
             prune, push, rebase,
-            sync_dag::{self, DagExecutor, SyncDag, SyncTask, TaskId, TaskMessage, TaskStatus},
+            sync_dag::{
+                self, DagExecutor, SyncDag, SyncTask, TaskId, TaskMessage, TaskOutcome, TaskStatus,
+            },
         },
         CommandBridge, NullBridge, NullSink, OutputSink,
     },
@@ -33,7 +35,7 @@ use crate::{
 };
 use anyhow::Result;
 use clap::Parser;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -419,7 +421,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                     }
                     TaskId::Rebase(branch_name) => {
                         let base = shared_rebase_branch.as_deref().unwrap_or("master");
-                        let (status, message) = execute_rebase_task(
+                        let (status, message, new_outcomes) = execute_rebase_task(
                             branch_name,
                             task.worktree_path.as_ref(),
                             base,
@@ -427,6 +429,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             &shared_settings,
                             shared_force,
                             shared_autostash,
+                            outcomes,
                         );
                         let updated = if status == TaskStatus::Succeeded
                             && !matches!(message, TaskMessage::Conflict)
@@ -439,15 +442,16 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         } else {
                             None
                         };
-                        (status, message, outcomes.clone(), updated)
+                        (status, message, new_outcomes, updated)
                     }
                     TaskId::Push(branch_name) => {
-                        let (status, message) = execute_push_task(
+                        let (status, message, new_outcomes) = execute_push_task(
                             branch_name,
                             task.worktree_path.as_ref(),
                             &shared_project_root,
                             &shared_settings,
                             shared_force_with_lease,
+                            outcomes,
                         );
                         let updated = if status == TaskStatus::Succeeded {
                             orch_info_map.get(branch_name.as_str()).map(|info| {
@@ -458,7 +462,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         } else {
                             None
                         };
-                        (status, message, outcomes.clone(), updated)
+                        (status, message, new_outcomes, updated)
                     }
                 }
             },
@@ -594,6 +598,7 @@ fn execute_update_task(
 }
 
 /// Execute a single rebase task for a DAG worker.
+#[allow(clippy::too_many_arguments)]
 fn execute_rebase_task(
     branch_name: &str,
     worktree_path: Option<&PathBuf>,
@@ -602,11 +607,13 @@ fn execute_rebase_task(
     settings: &DaftSettings,
     force: bool,
     autostash: bool,
-) -> (TaskStatus, TaskMessage) {
+    branch_outcomes: &HashSet<TaskOutcome>,
+) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
     let Some(target_path) = worktree_path else {
         return (
             TaskStatus::Failed,
             TaskMessage::Failed("no worktree path".into()),
+            branch_outcomes.clone(),
         );
     };
 
@@ -631,13 +638,27 @@ fn execute_rebase_task(
     );
 
     if result.skipped {
-        (TaskStatus::Skipped, TaskMessage::Ok(result.message))
+        (
+            TaskStatus::Skipped,
+            TaskMessage::Ok(result.message),
+            branch_outcomes.clone(),
+        )
     } else if result.conflict {
-        (TaskStatus::Succeeded, TaskMessage::Conflict)
+        let mut out = branch_outcomes.clone();
+        out.insert(TaskOutcome::Conflict);
+        (TaskStatus::Succeeded, TaskMessage::Conflict, out)
     } else if result.success {
-        (TaskStatus::Succeeded, TaskMessage::Ok(result.message))
+        (
+            TaskStatus::Succeeded,
+            TaskMessage::Ok(result.message),
+            branch_outcomes.clone(),
+        )
     } else {
-        (TaskStatus::Failed, TaskMessage::Failed(result.message))
+        (
+            TaskStatus::Failed,
+            TaskMessage::Failed(result.message),
+            branch_outcomes.clone(),
+        )
     }
 }
 
@@ -648,13 +669,23 @@ fn execute_push_task(
     project_root: &std::path::Path,
     settings: &DaftSettings,
     force_with_lease: bool,
-) -> (TaskStatus, TaskMessage) {
+    branch_outcomes: &HashSet<TaskOutcome>,
+) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
     let Some(target_path) = worktree_path else {
         return (
             TaskStatus::Failed,
             TaskMessage::Failed("no worktree path".into()),
+            branch_outcomes.clone(),
         );
     };
+
+    if branch_outcomes.contains(&TaskOutcome::Conflict) {
+        return (
+            TaskStatus::PreconditionFailed,
+            TaskMessage::Failed("rebase conflict".into()),
+            branch_outcomes.clone(),
+        );
+    }
 
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
 
@@ -681,15 +712,31 @@ fn execute_push_task(
     );
 
     if result.no_upstream {
-        (TaskStatus::Succeeded, TaskMessage::NoPushUpstream)
+        (
+            TaskStatus::Succeeded,
+            TaskMessage::NoPushUpstream,
+            branch_outcomes.clone(),
+        )
     } else if result.success && result.up_to_date {
-        (TaskStatus::Succeeded, TaskMessage::UpToDate)
+        (
+            TaskStatus::Succeeded,
+            TaskMessage::UpToDate,
+            branch_outcomes.clone(),
+        )
     } else if result.success {
-        (TaskStatus::Succeeded, TaskMessage::Pushed)
+        (
+            TaskStatus::Succeeded,
+            TaskMessage::Pushed,
+            branch_outcomes.clone(),
+        )
     } else {
         // Push failures are warnings, not hard failures — use Succeeded + Diverged
         // so that check_tui_failures does not count them as Failed.
-        (TaskStatus::Succeeded, TaskMessage::Diverged)
+        (
+            TaskStatus::Succeeded,
+            TaskMessage::Diverged,
+            branch_outcomes.clone(),
+        )
     }
 }
 
