@@ -108,6 +108,10 @@ pub struct TuiState {
 pub struct WorktreeRow {
     pub info: WorktreeInfo,
     pub status: WorktreeStatus,
+    /// Saved terminal status. When `TaskStarted` overwrites a `Done(...)`
+    /// status with `Active(...)`, the previous Done value is saved here.
+    /// `PreconditionFailed` restores it.
+    pub prev_terminal_status: Option<WorktreeStatus>,
     pub hook_warned: bool,
     pub hook_failed: bool,
     pub hook_sub_rows: Vec<HookSubRow>,
@@ -135,6 +139,7 @@ impl TuiState {
                 .map(|info| WorktreeRow {
                     info,
                     status: WorktreeStatus::Idle,
+                    prev_terminal_status: None,
                     hook_warned: false,
                     hook_failed: false,
                     hook_sub_rows: Vec::new(),
@@ -167,12 +172,17 @@ impl TuiState {
                     self.worktrees.push(WorktreeRow {
                         info: WorktreeInfo::empty(branch_name),
                         status: WorktreeStatus::Idle,
+                        prev_terminal_status: None,
                         hook_warned: false,
                         hook_failed: false,
                         hook_sub_rows: Vec::new(),
                     });
                 }
                 if let Some(row) = self.find_row_mut(branch_name) {
+                    // Save terminal status so PreconditionFailed can restore it.
+                    if matches!(row.status, WorktreeStatus::Done(_)) {
+                        row.prev_terminal_status = Some(row.status.clone());
+                    }
                     row.status = WorktreeStatus::Active(active_label.into());
                 }
             }
@@ -183,14 +193,25 @@ impl TuiState {
                 message,
                 updated_info,
             } => {
-                let final_status = Self::map_final_status(phase, *status, message);
-                if let Some(row) = self.find_row_mut(branch_name) {
-                    row.status = WorktreeStatus::Done(final_status);
-                    if let Some(new_info) = updated_info {
-                        row.info = *new_info.clone();
+                if *status == TaskStatus::PreconditionFailed {
+                    // Restore the previous terminal status (saved by TaskStarted).
+                    if let Some(row) = self.find_row_mut(branch_name) {
+                        if let Some(prev) = row.prev_terminal_status.take() {
+                            row.status = prev;
+                        }
                     }
+                    self.check_phase_completion(phase);
+                } else {
+                    let final_status = Self::map_final_status(phase, *status, message);
+                    if let Some(row) = self.find_row_mut(branch_name) {
+                        row.prev_terminal_status = None;
+                        row.status = WorktreeStatus::Done(final_status);
+                        if let Some(new_info) = updated_info {
+                            row.info = *new_info.clone();
+                        }
+                    }
+                    self.check_phase_completion(phase);
                 }
-                self.check_phase_completion(phase);
             }
             DagEvent::AllDone => {
                 for phase in &mut self.phases {
@@ -413,6 +434,7 @@ impl TuiState {
                 },
                 OperationPhase::Fetch => FinalStatus::Updated,
             },
+            TaskStatus::PreconditionFailed => FinalStatus::Skipped,
             TaskStatus::Pending | TaskStatus::Running => FinalStatus::Failed,
         }
     }
@@ -1156,5 +1178,80 @@ mod tests {
             .find(|w| w.info.name == "feat/a")
             .unwrap();
         assert!(row.hook_sub_rows.is_empty());
+    }
+
+    fn make_rebase_push_test_state() -> TuiState {
+        let phases = vec![
+            OperationPhase::Fetch,
+            OperationPhase::Prune,
+            OperationPhase::Update,
+            OperationPhase::Rebase("master".into()),
+            OperationPhase::Push,
+        ];
+        let infos = vec![
+            WorktreeInfo::empty("master"),
+            WorktreeInfo::empty("feat/old"),
+        ];
+        TuiState::new(
+            phases,
+            infos,
+            PathBuf::from("/projects/test"),
+            PathBuf::from("/projects/test/master"),
+            Stat::Summary,
+            0,
+        )
+    }
+
+    #[test]
+    fn precondition_failed_restores_previous_terminal_status() {
+        let mut state = make_rebase_push_test_state();
+
+        // Rebase completes with conflict
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Rebase("master".into()),
+            branch_name: "feat/old".into(),
+        });
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Rebase("master".into()),
+            branch_name: "feat/old".into(),
+            status: TaskStatus::Succeeded,
+            message: TaskMessage::Conflict,
+            updated_info: None,
+        });
+
+        // Verify row shows conflict
+        let row = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "feat/old")
+            .unwrap();
+        assert_eq!(row.status, WorktreeStatus::Done(FinalStatus::Conflict));
+
+        // Push TaskStarted overwrites to Active
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Push,
+            branch_name: "feat/old".into(),
+        });
+
+        // Push completes with PreconditionFailed
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Push,
+            branch_name: "feat/old".into(),
+            status: TaskStatus::PreconditionFailed,
+            message: TaskMessage::Failed("rebase conflict".into()),
+            updated_info: None,
+        });
+
+        // Row should show conflict again (restored from prev_terminal_status)
+        let row = state
+            .worktrees
+            .iter()
+            .find(|w| w.info.name == "feat/old")
+            .unwrap();
+        assert_eq!(
+            row.status,
+            WorktreeStatus::Done(FinalStatus::Conflict),
+            "PreconditionFailed push should restore conflict status"
+        );
     }
 }

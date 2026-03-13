@@ -5,10 +5,19 @@
 
 use super::list::WorktreeInfo;
 use crate::hooks::HookType;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+
+/// Semantic outcomes that a task can produce. Downstream tasks may
+/// inspect these as preconditions for whether to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TaskOutcome {
+    /// Rebase had conflicts and was aborted.
+    Conflict,
+}
 
 /// Identifies a single executable task in the sync DAG.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -35,6 +44,8 @@ pub enum TaskStatus {
     Skipped,
     /// Skipped because a dependency failed.
     DepFailed,
+    /// Task checked preconditions and chose not to run.
+    PreconditionFailed,
 }
 
 impl TaskStatus {
@@ -42,7 +53,11 @@ impl TaskStatus {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Succeeded | Self::Failed | Self::Skipped | Self::DepFailed
+            Self::Succeeded
+                | Self::Failed
+                | Self::Skipped
+                | Self::DepFailed
+                | Self::PreconditionFailed
         )
     }
 }
@@ -388,6 +403,7 @@ struct DagState {
     active: usize,
     done: usize,
     total: usize,
+    branch_outcomes: HashMap<String, HashSet<TaskOutcome>>,
 }
 
 /// Executes a DAG of sync tasks in parallel.
@@ -405,15 +421,26 @@ impl DagExecutor {
     /// Execute all tasks in the DAG, calling `task_fn` for each task.
     ///
     /// Tasks are executed in parallel (respecting dependencies) using a thread pool.
-    /// The closure receives a reference to the `SyncTask` and must return a
-    /// `(TaskStatus, TaskMessage, Option<Box<WorktreeInfo>>)` triple indicating
-    /// the result status, a typed message, and optionally refreshed worktree info.
+    /// The closure receives a reference to the `SyncTask` and the current set of
+    /// outcome tags for that branch, and must return a
+    /// `(TaskStatus, TaskMessage, HashSet<TaskOutcome>, Option<Box<WorktreeInfo>>)`
+    /// tuple indicating the result status, a typed message, updated outcome tags,
+    /// and optionally refreshed worktree info.
     ///
     /// Consumes `self` so that the sender is dropped after `AllDone` is sent,
     /// allowing the receiver to detect channel closure.
     pub fn run<F>(self, task_fn: F)
     where
-        F: Fn(&SyncTask) -> (TaskStatus, TaskMessage, Option<Box<WorktreeInfo>>) + Send + Sync,
+        F: Fn(
+                &SyncTask,
+                &HashSet<TaskOutcome>,
+            ) -> (
+                TaskStatus,
+                TaskMessage,
+                HashSet<TaskOutcome>,
+                Option<Box<WorktreeInfo>>,
+            ) + Send
+            + Sync,
     {
         let n = self.dag.tasks.len();
 
@@ -434,6 +461,7 @@ impl DagExecutor {
                 active: 0,
                 done: 0,
                 total: n,
+                branch_outcomes: HashMap::new(),
             }),
             Condvar::new(),
         ));
@@ -487,9 +515,20 @@ impl DagExecutor {
                             branch_name: dag.tasks[task_idx].branch_name.clone(),
                         });
 
+                        // Snapshot branch outcomes before calling task_fn.
+                        let branch_outcomes = {
+                            let (lock, _) = &*state;
+                            let s = lock.lock().unwrap();
+                            s.branch_outcomes
+                                .get(&dag.tasks[task_idx].branch_name)
+                                .cloned()
+                                .unwrap_or_default()
+                        };
+
                         // Execute the task outside the lock.
                         let task = &dag.tasks[task_idx];
-                        let (result_status, message, updated_info) = task_fn(task);
+                        let (result_status, message, returned_outcomes, updated_info) =
+                            task_fn(task, &branch_outcomes);
 
                         // Update DAG state.
                         {
@@ -499,8 +538,14 @@ impl DagExecutor {
                             s.active -= 1;
                             s.done += 1;
 
+                            let branch = &dag.tasks[task_idx].branch_name;
+                            if !branch.is_empty() {
+                                s.branch_outcomes.insert(branch.clone(), returned_outcomes);
+                            }
+
                             if result_status == TaskStatus::Succeeded
                                 || result_status == TaskStatus::Skipped
+                                || result_status == TaskStatus::PreconditionFailed
                             {
                                 // Decrement in-degrees of dependents.
                                 for &dep_idx in &dag.dependents[task_idx] {
@@ -687,7 +732,14 @@ mod tests {
         let (tx, rx) = mpsc::channel();
 
         let executor = DagExecutor::new(dag, tx);
-        executor.run(|_task| (TaskStatus::Succeeded, TaskMessage::Ok("ok".into()), None));
+        executor.run(|_task, outcomes| {
+            (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+                None,
+            )
+        });
 
         let events: Vec<DagEvent> = rx.iter().collect();
         let starts = events
@@ -720,9 +772,14 @@ mod tests {
         let order_clone = Arc::clone(&order);
 
         let executor = DagExecutor::new(dag, tx);
-        executor.run(move |task| {
+        executor.run(move |task, outcomes| {
             order_clone.lock().unwrap().push(task.id.clone());
-            (TaskStatus::Succeeded, TaskMessage::Ok("ok".into()), None)
+            (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+                None,
+            )
         });
 
         let _events: Vec<DagEvent> = rx.iter().collect();
@@ -836,13 +893,19 @@ mod tests {
         let (tx, rx) = mpsc::channel();
 
         let executor = DagExecutor::new(dag, tx);
-        executor.run(|task| match &task.id {
+        executor.run(|task, outcomes| match &task.id {
             TaskId::Update(name) if name == "master" => (
                 TaskStatus::Failed,
                 TaskMessage::Failed("pull failed".into()),
+                outcomes.clone(),
                 None,
             ),
-            _ => (TaskStatus::Succeeded, TaskMessage::Ok("ok".into()), None),
+            _ => (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+                None,
+            ),
         });
 
         let events: Vec<DagEvent> = rx.iter().collect();
@@ -856,5 +919,139 @@ mod tests {
             )
         });
         assert!(rebase_event.is_some());
+    }
+
+    #[test]
+    fn precondition_failed_is_terminal() {
+        assert!(TaskStatus::PreconditionFailed.is_terminal());
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn executor_propagates_outcomes_to_dependent_tasks() {
+        use std::collections::HashSet;
+        let worktrees = vec![
+            ("master".into(), PathBuf::from("/p/master")),
+            ("feat/a".into(), PathBuf::from("/p/feat-a")),
+        ];
+        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()), true);
+        let (tx, rx) = mpsc::channel();
+
+        let received_outcomes: Arc<Mutex<Vec<(TaskId, HashSet<TaskOutcome>)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let outcomes_clone = Arc::clone(&received_outcomes);
+
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(move |task, outcomes| {
+            outcomes_clone
+                .lock()
+                .unwrap()
+                .push((task.id.clone(), outcomes.clone()));
+            match &task.id {
+                TaskId::Rebase(name) if name == "feat/a" => {
+                    let mut out = outcomes.clone();
+                    out.insert(TaskOutcome::Conflict);
+                    (TaskStatus::Succeeded, TaskMessage::Conflict, out, None)
+                }
+                TaskId::Push(name) if name == "feat/a" => {
+                    if outcomes.contains(&TaskOutcome::Conflict) {
+                        (
+                            TaskStatus::PreconditionFailed,
+                            TaskMessage::Failed("rebase conflict".into()),
+                            outcomes.clone(),
+                            None,
+                        )
+                    } else {
+                        (
+                            TaskStatus::Succeeded,
+                            TaskMessage::Pushed,
+                            outcomes.clone(),
+                            None,
+                        )
+                    }
+                }
+                _ => (
+                    TaskStatus::Succeeded,
+                    TaskMessage::Ok("ok".into()),
+                    outcomes.clone(),
+                    None,
+                ),
+            }
+        });
+
+        let _events: Vec<DagEvent> = rx.iter().collect();
+        let recorded = received_outcomes.lock().unwrap();
+
+        let push_entry = recorded
+            .iter()
+            .find(|(id, _)| *id == TaskId::Push("feat/a".into()));
+        assert!(push_entry.is_some(), "Push(feat/a) should have been called");
+        let (_, push_outcomes) = push_entry.unwrap();
+        assert!(
+            push_outcomes.contains(&TaskOutcome::Conflict),
+            "Push(feat/a) should receive Conflict outcome from Rebase(feat/a)"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn outcomes_do_not_leak_across_branches() {
+        use std::collections::HashSet;
+        let worktrees = vec![
+            ("master".into(), PathBuf::from("/p/master")),
+            ("feat/a".into(), PathBuf::from("/p/feat-a")),
+            ("feat/b".into(), PathBuf::from("/p/feat-b")),
+        ];
+        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()), true);
+        let (tx, rx) = mpsc::channel();
+
+        let received_outcomes: Arc<Mutex<Vec<(TaskId, HashSet<TaskOutcome>)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let outcomes_clone = Arc::clone(&received_outcomes);
+
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(move |task, outcomes| {
+            outcomes_clone
+                .lock()
+                .unwrap()
+                .push((task.id.clone(), outcomes.clone()));
+            match &task.id {
+                TaskId::Rebase(name) if name == "feat/a" => {
+                    let mut out = outcomes.clone();
+                    out.insert(TaskOutcome::Conflict);
+                    (TaskStatus::Succeeded, TaskMessage::Conflict, out, None)
+                }
+                TaskId::Rebase(name) if name == "feat/b" => (
+                    TaskStatus::Succeeded,
+                    TaskMessage::Ok("rebased".into()),
+                    outcomes.clone(),
+                    None,
+                ),
+                _ => (
+                    TaskStatus::Succeeded,
+                    TaskMessage::Ok("ok".into()),
+                    outcomes.clone(),
+                    None,
+                ),
+            }
+        });
+
+        let _events: Vec<DagEvent> = rx.iter().collect();
+        let recorded = received_outcomes.lock().unwrap();
+
+        let push_a = recorded
+            .iter()
+            .find(|(id, _)| *id == TaskId::Push("feat/a".into()))
+            .unwrap();
+        assert!(push_a.1.contains(&TaskOutcome::Conflict));
+
+        let push_b = recorded
+            .iter()
+            .find(|(id, _)| *id == TaskId::Push("feat/b".into()))
+            .unwrap();
+        assert!(
+            !push_b.1.contains(&TaskOutcome::Conflict),
+            "feat/b's push should not see feat/a's Conflict outcome"
+        );
     }
 }
