@@ -437,7 +437,16 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             &shared_settings,
                             shared_force_with_lease,
                         );
-                        (status, message, None)
+                        let updated = if status == TaskStatus::Succeeded {
+                            orch_info_map.get(branch_name.as_str()).map(|info| {
+                                let mut refreshed = info.clone();
+                                refreshed.refresh_dynamic_fields(&orch_base_branch, orch_stat);
+                                Box::new(refreshed)
+                            })
+                        } else {
+                            None
+                        };
+                        (status, message, updated)
                     }
                 }
             },
