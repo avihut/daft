@@ -26,6 +26,7 @@ pub struct RebaseParams {
 #[derive(Debug, Default)]
 pub struct WorktreeRebaseResult {
     pub worktree_name: String,
+    pub branch_name: String,
     pub success: bool,
     pub skipped: bool,
     pub conflict: bool,
@@ -94,6 +95,7 @@ pub fn execute(
             git,
             path,
             &worktree_name,
+            branch,
             &params.base_branch,
             params.force,
             params.autostash,
@@ -121,10 +123,12 @@ pub fn execute(
 /// Unlike the sequential path, this does NOT call `change_directory` — instead
 /// it passes the worktree path directly to `git rebase -C <dir>`. This is safe
 /// for parallel DAG workers where `set_current_dir` would race.
+#[allow(clippy::too_many_arguments)]
 pub fn rebase_single_worktree(
     git: &GitCommand,
     worktree_path: &Path,
     worktree_name: &str,
+    branch_name: &str,
     base_branch: &str,
     force: bool,
     autostash: bool,
@@ -134,6 +138,7 @@ pub fn rebase_single_worktree(
     if !worktree_path.is_dir() {
         return WorktreeRebaseResult {
             worktree_name: worktree_name.to_string(),
+            branch_name: branch_name.to_string(),
             message: format!("Directory not found: {}", worktree_path.display()),
             ..Default::default()
         };
@@ -147,6 +152,7 @@ pub fn rebase_single_worktree(
             ));
             return WorktreeRebaseResult {
                 worktree_name: worktree_name.to_string(),
+                branch_name: branch_name.to_string(),
                 success: true,
                 skipped: true,
                 message: "Skipped: uncommitted changes".to_string(),
@@ -156,6 +162,7 @@ pub fn rebase_single_worktree(
         Err(e) => {
             return WorktreeRebaseResult {
                 worktree_name: worktree_name.to_string(),
+                branch_name: branch_name.to_string(),
                 message: format!("Failed to check status: {e}"),
                 ..Default::default()
             };
@@ -170,6 +177,7 @@ pub fn rebase_single_worktree(
                 output.contains("is up to date") || output.contains("up to date");
             WorktreeRebaseResult {
                 worktree_name: worktree_name.to_string(),
+                branch_name: branch_name.to_string(),
                 success: true,
                 already_rebased: already_up_to_date,
                 message: if already_up_to_date {
@@ -189,6 +197,7 @@ pub fn rebase_single_worktree(
             }
             WorktreeRebaseResult {
                 worktree_name: worktree_name.to_string(),
+                branch_name: branch_name.to_string(),
                 conflict: true,
                 message: "Rebase conflict — aborted".to_string(),
                 ..Default::default()

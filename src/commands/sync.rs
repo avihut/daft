@@ -159,13 +159,26 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
     run_update_phase(&mut output, &settings, force)?;
 
     // Phase 3: Rebase all worktrees onto base branch (if requested)
-    if let Some(ref base_branch) = args.rebase {
-        run_rebase_phase(&mut output, &settings, base_branch, force, args.autostash)?;
-    }
+    let conflicted_branches: HashSet<String> = if let Some(ref base_branch) = args.rebase {
+        let result = run_rebase_phase(&mut output, &settings, base_branch, force, args.autostash)?;
+        result
+            .results
+            .iter()
+            .filter(|r| r.conflict)
+            .map(|r| r.branch_name.clone())
+            .collect()
+    } else {
+        HashSet::new()
+    };
 
     // Phase 4: Push all branches to their remotes (if requested)
     if args.push {
-        run_push_phase(&mut output, &settings, args.force_with_lease)?;
+        run_push_phase(
+            &mut output,
+            &settings,
+            args.force_with_lease,
+            &conflicted_branches,
+        )?;
     }
 
     // Write the cd target for the shell wrapper (from prune phase)
@@ -631,6 +644,7 @@ fn execute_rebase_task(
         &git,
         target_path,
         &worktree_name,
+        branch_name,
         base_branch,
         force,
         autostash,
@@ -954,7 +968,7 @@ fn run_rebase_phase(
     base_branch: &str,
     force: bool,
     autostash: bool,
-) -> Result<()> {
+) -> Result<rebase::RebaseResult> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
@@ -986,7 +1000,7 @@ fn run_rebase_phase(
         ));
     }
 
-    Ok(())
+    Ok(result)
 }
 
 fn render_rebase_result(result: &rebase::RebaseResult, output: &mut dyn Output) {
@@ -1093,6 +1107,7 @@ fn run_push_phase(
     output: &mut dyn Output,
     settings: &DaftSettings,
     force_with_lease: bool,
+    skip_branches: &HashSet<String>,
 ) -> Result<()> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
@@ -1109,7 +1124,7 @@ fn run_push_phase(
     output.start_spinner("Pushing branches...");
     let exec_result = {
         let mut sink = OutputSink(output);
-        push::execute(&params, &git, &project_root, &mut sink)
+        push::execute(&params, &git, &project_root, &mut sink, skip_branches)
     };
     output.finish_spinner();
     let result = exec_result?;

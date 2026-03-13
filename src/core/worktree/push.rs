@@ -8,6 +8,7 @@ use crate::core::ProgressSink;
 use crate::git::GitCommand;
 use crate::utils::*;
 use anyhow::Result;
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Input parameters for the push operation.
@@ -67,6 +68,7 @@ pub fn execute(
     git: &GitCommand,
     project_root: &Path,
     progress: &mut dyn ProgressSink,
+    exclude_branches: &HashSet<String>,
 ) -> Result<PushResult> {
     let original_dir = get_current_directory()?;
     let worktrees = fetch::get_all_worktrees_with_branches(git)?;
@@ -74,6 +76,10 @@ pub fn execute(
     let mut results: Vec<WorktreePushResult> = Vec::new();
 
     for (path, branch) in &worktrees {
+        if exclude_branches.contains(branch) {
+            continue;
+        }
+
         let worktree_name = path
             .strip_prefix(project_root)
             .ok()
