@@ -11,8 +11,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_lib.sh"
 
 sandbox_dir="$(sandbox_dir)"
+bin_dir="${sandbox_dir}/bin"
 # pwd returns the project root because mise always runs tasks from there
 worktree_path="$(pwd)"
+bat_path="$(mise which bat)"
 
 # --- Warn if release binary hasn't been built yet ---
 if [ ! -d "${worktree_path}/target/release" ]; then
@@ -28,6 +30,7 @@ else
 fi
 
 mkdir -p "${sandbox_dir}/config"
+mkdir -p "${bin_dir}/completions"
 
 # --- Always (re)generate .envrc to pick up config changes ---
 cat > "${sandbox_dir}/.envrc" <<ENVRC
@@ -39,7 +42,7 @@ export DAFT_WORKTREE="${worktree_path}"
 export DAFT_CONFIG_DIR="${sandbox_dir}/config"
 export DAFT_NO_UPDATE_CHECK=1
 export DAFT_NO_TRUST_PRUNE=1
-export PATH="${sandbox_dir}:\${DAFT_WORKTREE}/target/release:\$PATH"
+export PATH="${bin_dir}:\${DAFT_WORKTREE}/target/release:\$PATH"
 
 export GIT_AUTHOR_NAME="${DAFT_SANDBOX_GIT_NAME}"
 export GIT_AUTHOR_EMAIL="${DAFT_SANDBOX_GIT_EMAIL}"
@@ -47,26 +50,26 @@ export GIT_COMMITTER_NAME="${DAFT_SANDBOX_GIT_NAME}"
 export GIT_COMMITTER_EMAIL="${DAFT_SANDBOX_GIT_EMAIL}"
 
 # Completions: direnv exports this env var, source enable-completions to load them
-export DAFT_SANDBOX_COMPLETIONS_DIR="${sandbox_dir}/completions"
+export DAFT_SANDBOX_COMPLETIONS_DIR="${bin_dir}/completions"
 ENVRC
 
 # --- Write helper scripts ---
-cat > "${sandbox_dir}/rebuild-daft" <<'SCRIPT'
+cat > "${bin_dir}/rebuild-daft" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 (cd "$DAFT_WORKTREE" && mise run dev)
 SCRIPT
-chmod +x "${sandbox_dir}/rebuild-daft"
+chmod +x "${bin_dir}/rebuild-daft"
 
-cat > "${sandbox_dir}/go-to-worktree" <<'SCRIPT'
+cat > "${bin_dir}/go-to-worktree" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$DAFT_WORKTREE"
 exec "$SHELL"
 SCRIPT
-chmod +x "${sandbox_dir}/go-to-worktree"
+chmod +x "${bin_dir}/go-to-worktree"
 
-cat > "${sandbox_dir}/clean-sandbox" <<'SCRIPT'
+cat > "${bin_dir}/clean-sandbox" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 worktree="$DAFT_WORKTREE"
@@ -74,19 +77,24 @@ worktree="$DAFT_WORKTREE"
 cd "$worktree"
 exec "$SHELL"
 SCRIPT
-chmod +x "${sandbox_dir}/clean-sandbox"
+chmod +x "${bin_dir}/clean-sandbox"
 
-cat > "${sandbox_dir}/manual-test" <<'SCRIPT'
+cat > "${bin_dir}/manual-test" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 (cd "$DAFT_WORKTREE" && cargo run --package xtask -- manual-test "$@")
 SCRIPT
-chmod +x "${sandbox_dir}/manual-test"
+chmod +x "${bin_dir}/manual-test"
+
+cat > "${bin_dir}/help" <<SCRIPT
+#!/usr/bin/env bash
+set -euo pipefail
+${bat_path} "\$(dirname "\$(dirname "\$(realpath "\$0")")")/README.md" -p
+SCRIPT
+chmod +x "${bin_dir}/help"
 
 # --- Completions for helper scripts ---
-mkdir -p "${sandbox_dir}/completions"
-
-cat > "${sandbox_dir}/completions/_manual-test" <<'ZSH_COMP'
+cat > "${bin_dir}/completions/_manual-test" <<'ZSH_COMP'
 #compdef manual-test
 
 _manual-test() {
@@ -111,7 +119,7 @@ _manual-test() {
 }
 ZSH_COMP
 
-cat > "${sandbox_dir}/completions/manual-test.bash" <<'BASH_COMP'
+cat > "${bin_dir}/completions/manual-test.bash" <<'BASH_COMP'
 _manual_test() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     if [[ "$cur" == -* ]]; then
@@ -135,7 +143,7 @@ complete -F _manual_test manual-test
 BASH_COMP
 
 # --- Sourceable completion loader ---
-cat > "${sandbox_dir}/enable-completions" <<'LOADER'
+cat > "${bin_dir}/enable-completions" <<'LOADER'
 # Source this file to enable tab completions for sandbox helpers.
 # Usage: source enable-completions
 if [[ -n "${ZSH_VERSION:-}" ]]; then
@@ -159,6 +167,7 @@ Load completions for sandbox helpers and the daft dev binary:
 
 ## Available commands
 
+    help                     Show this guide
     manual-test <scenario>   Run a manual test scenario interactively
     manual-test --list       List available scenarios
     rebuild-daft             Rebuild daft and update symlinks
@@ -172,6 +181,9 @@ Load completions for sandbox helpers and the daft dev binary:
 - Run `manual-test --keep <scenario>` to keep the test environment for inspection
 - The sandbox has an isolated git identity and config directory
 README
+
+# --- Quick hint file ---
+touch "${sandbox_dir}/run-help"
 
 # Allow direnv if available
 if command -v direnv &>/dev/null; then

@@ -6,6 +6,7 @@ rust = "stable"
 lefthook = "latest"
 cocogitto = "latest"
 bun = "latest"
+bat = "latest"
 
 [env]
 _.path = ["./target/release"]
