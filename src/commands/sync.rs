@@ -318,51 +318,63 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let orch_base_branch = Arc::clone(&shared_base_branch);
     let orch_stat = stat;
 
-    let orchestrator_handle =
-        std::thread::spawn(move || {
-            // ── Phase 1: Fetch ─────────────────────────────────────────────
-            if !sync_shared::run_fetch_phase(&tx, orch_settings.use_gitoxide, &orch_settings.remote)
-            {
-                return;
-            }
+    let orchestrator_handle = std::thread::spawn(move || {
+        // ── Phase 1: Fetch ─────────────────────────────────────────────
+        if !sync_shared::run_fetch_phase(&tx, orch_settings.use_gitoxide, &orch_settings.remote) {
+            return;
+        }
 
-            // ── Phase 2: Identify gone branches + build DAG ────────────────
-            let gone_branches = {
-                let git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
-                let mut sink = NullBridge;
-                prune::identify_gone_branches(
-                    &git,
-                    &shared_worktree_map,
-                    &orch_settings.remote,
-                    orch_settings.use_gitoxide,
-                    &mut sink,
-                )
-                .unwrap_or_default()
-            };
+        // ── Phase 2: Identify gone branches + build DAG ────────────────
+        let gone_branches = {
+            let git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
+            let mut sink = NullBridge;
+            prune::identify_gone_branches(
+                &git,
+                &shared_worktree_map,
+                &orch_settings.remote,
+                orch_settings.use_gitoxide,
+                &mut sink,
+            )
+            .unwrap_or_default()
+        };
 
-            // Filter out gone branches so they don't get Update/Rebase tasks
-            // (their worktree paths will be removed by the Prune tasks).
-            let live_worktrees: Vec<(String, PathBuf)> = orch_all_worktrees
-                .into_iter()
-                .filter(|(branch, _)| !gone_branches.contains(branch))
-                .collect();
+        // Filter out gone branches so they don't get Update/Rebase tasks
+        // (their worktree paths will be removed by the Prune tasks).
+        let live_worktrees: Vec<(String, PathBuf)> = orch_all_worktrees
+            .into_iter()
+            .filter(|(branch, _)| !gone_branches.contains(branch))
+            .collect();
 
-            let dag = SyncDag::build_sync(
-                live_worktrees,
-                gone_branches,
-                shared_rebase_branch.as_ref().clone(),
-                shared_push,
-            );
+        let dag = SyncDag::build_sync(
+            live_worktrees,
+            gone_branches,
+            shared_rebase_branch.as_ref().clone(),
+            shared_push,
+        );
 
-            // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
-            let tx_for_tasks = tx.clone();
-            let executor = DagExecutor::new(dag, tx);
-            executor.run(
-            move |task: &SyncTask| -> (TaskStatus, TaskMessage, Option<Box<list::WorktreeInfo>>) {
+        // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
+        let tx_for_tasks = tx.clone();
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(
+            move |task: &SyncTask,
+                  outcomes: &std::collections::HashSet<
+                crate::core::worktree::sync_dag::TaskOutcome,
+            >|
+                  -> (
+                TaskStatus,
+                TaskMessage,
+                std::collections::HashSet<crate::core::worktree::sync_dag::TaskOutcome>,
+                Option<Box<list::WorktreeInfo>>,
+            ) {
                 match &task.id {
                     TaskId::Fetch => {
                         // Already done above
-                        (TaskStatus::Succeeded, TaskMessage::Ok("fetched".into()), None)
+                        (
+                            TaskStatus::Succeeded,
+                            TaskMessage::Ok("fetched".into()),
+                            outcomes.clone(),
+                            None,
+                        )
                     }
                     TaskId::Prune(branch_name) => {
                         let (status, message) = sync_shared::execute_prune_task(
@@ -383,7 +395,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         if matches!(message, TaskMessage::Deferred) {
                             *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
                         }
-                        (status, message, None)
+                        (status, message, outcomes.clone(), None)
                     }
                     TaskId::Update(branch_name) => {
                         let (status, message) = execute_update_task(
@@ -403,7 +415,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         } else {
                             None
                         };
-                        (status, message, updated)
+                        (status, message, outcomes.clone(), updated)
                     }
                     TaskId::Rebase(branch_name) => {
                         let base = shared_rebase_branch.as_deref().unwrap_or("master");
@@ -427,7 +439,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         } else {
                             None
                         };
-                        (status, message, updated)
+                        (status, message, outcomes.clone(), updated)
                     }
                     TaskId::Push(branch_name) => {
                         let (status, message) = execute_push_task(
@@ -446,12 +458,12 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         } else {
                             None
                         };
-                        (status, message, updated)
+                        (status, message, outcomes.clone(), updated)
                     }
                 }
             },
         );
-        });
+    });
 
     // ── Run TUI renderer on main thread ────────────────────────────────
     // Budget hook + job sub-rows per worktree (2 hooks × ~3 jobs each).

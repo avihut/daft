@@ -225,45 +225,55 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let orch_settings = Arc::clone(&shared_settings);
     let shared_hooks_config = Arc::new(hooks_config.clone());
 
-    let orchestrator_handle =
-        std::thread::spawn(move || {
-            // ── Phase 1: Fetch ─────────────────────────────────────────────
-            if !sync_shared::run_fetch_phase(&tx, orch_settings.use_gitoxide, &orch_settings.remote)
-            {
-                return;
-            }
+    let orchestrator_handle = std::thread::spawn(move || {
+        // ── Phase 1: Fetch ─────────────────────────────────────────────
+        if !sync_shared::run_fetch_phase(&tx, orch_settings.use_gitoxide, &orch_settings.remote) {
+            return;
+        }
 
-            // ── Phase 2: Identify gone branches + build DAG ────────────────
-            let gone_branches = {
-                let git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
-                let mut sink = NullBridge;
-                prune::identify_gone_branches(
-                    &git,
-                    &shared_worktree_map,
-                    &orch_settings.remote,
-                    orch_settings.use_gitoxide,
-                    &mut sink,
-                )
-                .unwrap_or_default()
-            };
+        // ── Phase 2: Identify gone branches + build DAG ────────────────
+        let gone_branches = {
+            let git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
+            let mut sink = NullBridge;
+            prune::identify_gone_branches(
+                &git,
+                &shared_worktree_map,
+                &orch_settings.remote,
+                orch_settings.use_gitoxide,
+                &mut sink,
+            )
+            .unwrap_or_default()
+        };
 
-            if gone_branches.is_empty() {
-                // Nothing to prune — complete immediately
-                let _ = tx.send(DagEvent::AllDone);
-                return;
-            }
+        if gone_branches.is_empty() {
+            // Nothing to prune — complete immediately
+            let _ = tx.send(DagEvent::AllDone);
+            return;
+        }
 
-            let dag = SyncDag::build_prune(gone_branches);
+        let dag = SyncDag::build_prune(gone_branches);
 
-            // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
-            let tx_for_tasks = tx.clone();
-            let executor = DagExecutor::new(dag, tx);
-            executor.run(
-            move |task: &SyncTask| -> (TaskStatus, TaskMessage, Option<Box<list::WorktreeInfo>>) {
+        // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
+        let tx_for_tasks = tx.clone();
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(
+            move |task: &SyncTask,
+                  outcomes: &std::collections::HashSet<
+                crate::core::worktree::sync_dag::TaskOutcome,
+            >|
+                  -> (
+                TaskStatus,
+                TaskMessage,
+                std::collections::HashSet<crate::core::worktree::sync_dag::TaskOutcome>,
+                Option<Box<list::WorktreeInfo>>,
+            ) {
                 match &task.id {
-                    TaskId::Fetch => {
-                        (TaskStatus::Succeeded, TaskMessage::Ok("fetched".into()), None)
-                    }
+                    TaskId::Fetch => (
+                        TaskStatus::Succeeded,
+                        TaskMessage::Ok("fetched".into()),
+                        outcomes.clone(),
+                        None,
+                    ),
                     TaskId::Prune(branch_name) => {
                         let (status, message) = sync_shared::execute_prune_task(
                             branch_name,
@@ -283,15 +293,18 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         if matches!(message, TaskMessage::Deferred) {
                             *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
                         }
-                        (status, message, None)
+                        (status, message, outcomes.clone(), None)
                     }
-                    TaskId::Update(_) | TaskId::Rebase(_) | TaskId::Push(_) => {
-                        (TaskStatus::Skipped, TaskMessage::Ok("not applicable".into()), None)
-                    }
+                    TaskId::Update(_) | TaskId::Rebase(_) | TaskId::Push(_) => (
+                        TaskStatus::Skipped,
+                        TaskMessage::Ok("not applicable".into()),
+                        outcomes.clone(),
+                        None,
+                    ),
                 }
             },
         );
-        });
+    });
 
     // ── Run TUI renderer on main thread ────────────────────────────────
     // Budget hook + job sub-rows per worktree (2 hooks × ~3 jobs each).
