@@ -204,6 +204,7 @@ impl TuiState {
                 } else {
                     let final_status = Self::map_final_status(phase, *status, message);
                     if let Some(row) = self.find_row_mut(branch_name) {
+                        row.prev_terminal_status = None;
                         row.status = WorktreeStatus::Done(final_status);
                         if let Some(new_info) = updated_info {
                             row.info = *new_info.clone();
