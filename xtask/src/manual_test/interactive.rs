@@ -231,14 +231,19 @@ pub fn run_interactive(
         // Execute the command.
         let mut exit_code = runner::run_step_command(step, env)?;
 
-        // Run checks if requested.
+        // Run checks if requested — auto-advance on success.
         if run_checks && has_checks {
             let results = runner::check_step(step, exit_code, env);
+            let all_passed = results.iter().all(|r| r.passed);
             print_assertion_results(&results, verbose);
+            if all_passed {
+                current += 1;
+                continue;
+            }
         }
 
+        // Post-run prompt — shown when checks failed, were skipped, or step has none.
         loop {
-            // Post-run prompt.
             let prompt = if has_checks {
                 "[Enter] next, [c] check, [r] re-run, [R] reset, [q] quit"
             } else {
