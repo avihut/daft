@@ -427,7 +427,7 @@ pub fn run_non_interactive(
     for (i, step) in scenario.steps.iter().enumerate() {
         eprint!(
             "{} {} ... ",
-            styles::dim(&format!("[{}/{}]", i + 1, scenario.steps.len())),
+            styles::blue(&format!("[{}/{}]", i + 1, scenario.steps.len())),
             &step.name
         );
 

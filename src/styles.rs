@@ -66,6 +66,9 @@ pub const YELLOW: &str = "\x1b[33m";
 /// ANSI escape code for red text.
 pub const RED: &str = "\x1b[31m";
 
+/// ANSI escape code for blue text.
+pub const BLUE: &str = "\x1b[34m";
+
 /// ANSI escape code for cyan text.
 pub const CYAN: &str = "\x1b[36m";
 
@@ -108,6 +111,11 @@ pub fn yellow(text: &str) -> String {
 /// Wraps text in red styling.
 pub fn red(text: &str) -> String {
     format!("{RED}{text}{RESET}")
+}
+
+/// Wraps text in blue styling.
+pub fn blue(text: &str) -> String {
+    format!("{BLUE}{text}{RESET}")
 }
 
 /// Wraps text in cyan styling (good for commands/code).

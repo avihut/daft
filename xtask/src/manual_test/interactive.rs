@@ -77,7 +77,7 @@ fn print_step_header(index: usize, total: usize, step: &super::schema::Step, env
     eprintln!();
     eprintln!(
         "{} {}",
-        styles::dim(&format!("[{}/{}]", index + 1, total)),
+        styles::blue(&format!("[{}/{}]", index + 1, total)),
         styles::bold(&step.name)
     );
     eprintln!("{}", styles::cyan(&format!("$ {expanded}")));
