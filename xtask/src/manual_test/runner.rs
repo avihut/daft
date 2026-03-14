@@ -204,6 +204,38 @@ pub fn check_git_worktree(dir: &str, branch: &str) -> AssertionResult {
     }
 }
 
+pub fn check_output_contains(output: &str, expected: &str) -> AssertionResult {
+    let found = output.contains(expected);
+    AssertionResult {
+        passed: found,
+        label: format!("Output contains \"{expected}\""),
+        detail: if !found {
+            Some(format!(
+                "expected: \"{expected}\"\n        actual: \"{}\"",
+                truncate_content(output, 200)
+            ))
+        } else {
+            None
+        },
+    }
+}
+
+pub fn check_output_not_contains(output: &str, unexpected: &str) -> AssertionResult {
+    let found = output.contains(unexpected);
+    AssertionResult {
+        passed: !found,
+        label: format!("Output not contains \"{unexpected}\""),
+        detail: if found {
+            Some(format!(
+                "unexpected: \"{unexpected}\"\n        actual: \"{}\"",
+                truncate_content(output, 200)
+            ))
+        } else {
+            None
+        },
+    }
+}
+
 pub fn check_branch_exists(repo: &str, branch: &str) -> AssertionResult {
     let label = format!("Branch \"{branch}\" exists in {repo}");
 
@@ -251,11 +283,14 @@ pub fn check_branch_exists(repo: &str, branch: &str) -> AssertionResult {
 /// Run all assertions defined in `expectations` and return the results.
 ///
 /// Relative paths (not starting with `/`) are resolved against `cwd`.
+/// The `output` parameter is the combined stdout+stderr from the command,
+/// used for `output_contains` / `output_not_contains` assertions.
 pub fn run_assertions(
     expectations: &Expectations,
     exit_code: i32,
     cwd: &Path,
     env: &TestEnv,
+    output: Option<&str>,
 ) -> Vec<AssertionResult> {
     let mut results = Vec::new();
 
@@ -297,6 +332,17 @@ pub fn run_assertions(
         ));
     }
 
+    let output_str = output.unwrap_or("");
+    for expected in &expectations.output_contains {
+        let expanded = env.expand_vars(expected);
+        results.push(check_output_contains(output_str, &expanded));
+    }
+
+    for unexpected in &expectations.output_not_contains {
+        let expanded = env.expand_vars(unexpected);
+        results.push(check_output_not_contains(output_str, &expanded));
+    }
+
     for wt in &expectations.is_git_worktree {
         let expanded_branch = env.expand_vars(&wt.branch);
         results.push(check_git_worktree(&resolve(&wt.dir), &expanded_branch));
@@ -331,37 +377,37 @@ fn resolve_step_cwd(step: &Step, env: &TestEnv) -> PathBuf {
 
 /// Execute a single test step and verify its expectations.
 ///
-/// When `quiet` is true, stdout/stderr are captured instead of inherited.
-/// The captured output is stored in the result for display on failure.
+/// Output is always captured. When `quiet` is false, captured output is printed
+/// to the terminal after execution so the user can see it.
 pub fn execute_step(step: &Step, env: &TestEnv, quiet: bool) -> Result<StepResult> {
     let expanded_cmd = env.expand_vars(&step.run);
     let cwd = resolve_step_cwd(step, env);
 
-    let (exit_code, stdout, stderr) = if quiet {
-        let output = std::process::Command::new("bash")
-            .args(["-c", &expanded_cmd])
-            .current_dir(&cwd)
-            .envs(env.command_env())
-            .output()
-            .with_context(|| format!("Failed to execute: {expanded_cmd}"))?;
-        let code = output.status.code().unwrap_or(-1);
-        let out = String::from_utf8_lossy(&output.stdout).into_owned();
-        let err = String::from_utf8_lossy(&output.stderr).into_owned();
-        (code, Some(out), Some(err))
-    } else {
-        let status = std::process::Command::new("bash")
-            .args(["-c", &expanded_cmd])
-            .current_dir(&cwd)
-            .envs(env.command_env())
-            .status()
-            .with_context(|| format!("Failed to execute: {expanded_cmd}"))?;
-        (status.code().unwrap_or(-1), None, None)
-    };
+    let output = std::process::Command::new("bash")
+        .args(["-c", &expanded_cmd])
+        .current_dir(&cwd)
+        .envs(env.command_env())
+        .output()
+        .with_context(|| format!("Failed to execute: {expanded_cmd}"))?;
 
+    let exit_code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    if !quiet {
+        if !stdout.is_empty() {
+            eprint!("{stdout}");
+        }
+        if !stderr.is_empty() {
+            eprint!("{stderr}");
+        }
+    }
+
+    let combined = combine_captured(&Some(stdout.clone()), &Some(stderr.clone()));
     let assertions = step
         .expect
         .as_ref()
-        .map(|e| run_assertions(e, exit_code, &cwd, env))
+        .map(|e| run_assertions(e, exit_code, &cwd, env, Some(&combined)))
         .unwrap_or_default();
 
     let all_passed = assertions.iter().all(|a| a.passed);
@@ -370,36 +416,56 @@ pub fn execute_step(step: &Step, env: &TestEnv, quiet: bool) -> Result<StepResul
         exit_code,
         assertions,
         all_passed,
-        stdout,
-        stderr,
+        stdout: Some(stdout),
+        stderr: Some(stderr),
     })
 }
 
 /// Execute only the command part of a step (no assertions).
 ///
-/// Returns the exit code. Used by interactive mode where checks are optional.
-pub fn run_step_command(step: &Step, env: &TestEnv) -> Result<i32> {
+/// Returns `(exit_code, combined_output)`. Output is always captured and printed
+/// to the terminal. Used by interactive mode where checks are optional.
+pub fn run_step_command(step: &Step, env: &TestEnv) -> Result<(i32, String)> {
     let expanded_cmd = env.expand_vars(&step.run);
     let cwd = resolve_step_cwd(step, env);
 
-    let status = std::process::Command::new("bash")
+    let output = std::process::Command::new("bash")
         .args(["-c", &expanded_cmd])
         .current_dir(&cwd)
         .envs(env.command_env())
-        .status()
+        .output()
         .with_context(|| format!("Failed to execute: {expanded_cmd}"))?;
 
-    Ok(status.code().unwrap_or(-1))
+    let exit_code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Print to terminal so user sees what happened.
+    if !stdout.is_empty() {
+        eprint!("{stdout}");
+    }
+    if !stderr.is_empty() {
+        eprint!("{stderr}");
+    }
+
+    let combined = combine_captured(&Some(stdout.into_owned()), &Some(stderr.into_owned()));
+
+    Ok((exit_code, combined))
 }
 
-/// Run only the assertions for a step given an exit code.
+/// Run only the assertions for a step given an exit code and captured output.
 ///
 /// Used by interactive mode where checks are triggered explicitly.
-pub fn check_step(step: &Step, exit_code: i32, env: &TestEnv) -> Vec<AssertionResult> {
+pub fn check_step(
+    step: &Step,
+    exit_code: i32,
+    env: &TestEnv,
+    output: Option<&str>,
+) -> Vec<AssertionResult> {
     let cwd = resolve_step_cwd(step, env);
     step.expect
         .as_ref()
-        .map(|e| run_assertions(e, exit_code, &cwd, env))
+        .map(|e| run_assertions(e, exit_code, &cwd, env, output))
         .unwrap_or_default()
 }
 
@@ -638,13 +704,41 @@ mod tests {
                 path: "subdir/file.txt".into(),
                 content: "missing".into(),
             }],
+            output_contains: vec![],
+            output_not_contains: vec![],
             is_git_worktree: vec![],
             branch_exists: vec![],
         };
 
-        let results = run_assertions(&expectations, 0, dir.path(), &env);
+        let results = run_assertions(&expectations, 0, dir.path(), &env, None);
         for r in &results {
             assert!(r.passed, "assertion failed: {}", r.label);
         }
+    }
+
+    #[test]
+    fn test_check_output_contains_pass() {
+        let r = check_output_contains("hello world", "hello");
+        assert!(r.passed);
+    }
+
+    #[test]
+    fn test_check_output_contains_fail() {
+        let r = check_output_contains("hello world", "goodbye");
+        assert!(!r.passed);
+        assert!(r.detail.is_some());
+    }
+
+    #[test]
+    fn test_check_output_not_contains_pass() {
+        let r = check_output_not_contains("hello world", "goodbye");
+        assert!(r.passed);
+    }
+
+    #[test]
+    fn test_check_output_not_contains_fail() {
+        let r = check_output_not_contains("hello world", "hello");
+        assert!(!r.passed);
+        assert!(r.detail.is_some());
     }
 }

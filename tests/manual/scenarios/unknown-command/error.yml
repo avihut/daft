@@ -1,0 +1,11 @@
+name: Unknown command error
+description: "daft nonexistent prints error and exits with code 1"
+
+steps:
+  - name: Run unknown daft command
+    run: daft nonexistent 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "'nonexistent' is not a daft command"
+        - "See 'daft --help'"

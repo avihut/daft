@@ -174,8 +174,8 @@ pub fn run_interactive(
             // Run target step.
             let step = &scenario.steps[step_index];
             print_step_header(step_index, total, step, env);
-            let exit_code = runner::run_step_command(step, env)?;
-            let results = runner::check_step(step, exit_code, env);
+            let (exit_code, output) = runner::run_step_command(step, env)?;
+            let results = runner::check_step(step, exit_code, env, Some(&output));
             print_assertion_results(&results, verbose);
 
             if iteration < count {
@@ -244,11 +244,11 @@ pub fn run_interactive(
         }
 
         // Execute the command.
-        let mut exit_code = runner::run_step_command(step, env)?;
+        let (mut exit_code, mut captured_output) = runner::run_step_command(step, env)?;
 
         // Run checks if requested — auto-advance on success.
         if run_checks && has_checks {
-            let results = runner::check_step(step, exit_code, env);
+            let results = runner::check_step(step, exit_code, env, Some(&captured_output));
             let all_passed = results.iter().all(|r| r.passed);
             print_assertion_results(&results, verbose);
             if all_passed {
@@ -272,12 +272,14 @@ pub fn run_interactive(
                     break;
                 }
                 KeyCode::Char('c') if has_checks => {
-                    let results = runner::check_step(step, exit_code, env);
+                    let results = runner::check_step(step, exit_code, env, Some(&captured_output));
                     print_assertion_results(&results, verbose);
                 }
                 KeyCode::Char('r') => {
                     eprintln!("{}", styles::dim("(re-running...)"));
-                    exit_code = runner::run_step_command(step, env)?;
+                    let result = runner::run_step_command(step, env)?;
+                    exit_code = result.0;
+                    captured_output = result.1;
                 }
                 KeyCode::Char('R') => {
                     eprintln!("{}", styles::dim("(resetting environment...)"));

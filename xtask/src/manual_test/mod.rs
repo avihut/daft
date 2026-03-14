@@ -62,7 +62,10 @@ pub fn run(
     }
 
     let scenario_files = if scenarios.is_empty() {
-        discover_scenarios(&scenarios_dir)?
+        discover_scenarios_recursive(&scenarios_dir)?
+            .into_iter()
+            .map(|(_, path)| path)
+            .collect()
     } else {
         resolve_scenario_paths(&scenarios, &scenarios_dir)?
     };

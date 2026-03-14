@@ -1,0 +1,10 @@
+name: No suggestions for unrelated input
+description: Completely unrelated input gives error without suggestions
+
+steps:
+  - name: Run completely unrelated command
+    run: daft completely-unrelated-xyzzy 2>&1
+    expect:
+      exit_code: 1
+      output_not_contains:
+        - "The most similar command"

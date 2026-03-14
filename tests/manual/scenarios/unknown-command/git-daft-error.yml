@@ -1,0 +1,10 @@
+name: Unknown git-daft command error
+description: "git-daft nonexistent prints error and exits with code 1"
+
+steps:
+  - name: Run unknown git-daft command
+    run: git-daft nonexistent 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "'nonexistent' is not a git daft command"

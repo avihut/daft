@@ -1,0 +1,13 @@
+name: No args shows help
+description: "daft and git-daft with no args exit 0"
+
+steps:
+  - name: Run daft with no args
+    run: daft 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Run git-daft with no args
+    run: git-daft 2>&1
+    expect:
+      exit_code: 0
