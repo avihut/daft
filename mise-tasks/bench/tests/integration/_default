@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
-#MISE description="Run all integration test benchmarks"
-#MISE depends=["bench:tests:integration:exec", "bench:tests:manual"]
+#MISE description="Run all integration test benchmarks (bash vs YAML)"
+#MISE depends=["bench:tests:integration:exec", "bench:tests:integration:clone", "bench:tests:integration:init", "bench:tests:integration:checkout", "bench:tests:integration:checkout-branch", "bench:tests:integration:prune", "bench:tests:integration:branch-delete", "bench:tests:integration:list"]
 set -euo pipefail

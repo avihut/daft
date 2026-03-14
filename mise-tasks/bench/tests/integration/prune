@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Benchmark: bash prune tests vs YAML manual tests"
+#MISE depends=["dev"]
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/_bench_command" "prune" "test_prune.sh" "prune"
