@@ -35,11 +35,36 @@ pub struct StepResult {
     pub assertions: Vec<AssertionResult>,
     /// `true` when every assertion passed (or there were none).
     pub all_passed: bool,
+    /// Captured stdout (only in quiet mode).
+    pub stdout: Option<String>,
+    /// Captured stderr (only in quiet mode).
+    pub stderr: Option<String>,
+}
+
+/// Outcome of running a full scenario.
+pub struct ScenarioResult {
+    /// Number of steps executed.
+    pub steps: usize,
+    /// Number of steps where all assertions passed.
+    pub passed: usize,
+    /// Number of steps with at least one failed assertion.
+    pub failed: usize,
 }
 
 // ---------------------------------------------------------------------------
 // Individual assertion functions
 // ---------------------------------------------------------------------------
+
+/// Truncate content for display in failure messages.
+/// Escapes newlines and trims to `max_len` characters.
+fn truncate_content(s: &str, max_len: usize) -> String {
+    let escaped = s.replace('\n', "\\n").replace('\r', "\\r");
+    if escaped.len() <= max_len {
+        escaped
+    } else {
+        format!("{}...", &escaped[..max_len])
+    }
+}
 
 pub fn check_exit_code(actual: i32, expected: i32) -> AssertionResult {
     AssertionResult {
@@ -100,7 +125,10 @@ pub fn check_file_contains(path: &str, content: &str) -> AssertionResult {
                 passed: found,
                 label: format!("File contains \"{content}\": {path}"),
                 detail: if !found {
-                    Some(format!("substring \"{content}\" not found in file"))
+                    Some(format!(
+                        "expected: \"{content}\"\n        actual: \"{}\"",
+                        truncate_content(&data, 200)
+                    ))
                 } else {
                     None
                 },
@@ -123,7 +151,8 @@ pub fn check_file_not_contains(path: &str, content: &str) -> AssertionResult {
                 label: format!("File not contains \"{content}\": {path}"),
                 detail: if found {
                     Some(format!(
-                        "substring \"{content}\" unexpectedly found in file"
+                        "unexpected: \"{content}\"\n        actual: \"{}\"",
+                        truncate_content(&data, 200)
                     ))
                 } else {
                     None
@@ -286,7 +315,10 @@ pub fn run_assertions(
 // ---------------------------------------------------------------------------
 
 /// Execute a single test step and verify its expectations.
-pub fn execute_step(step: &Step, env: &TestEnv) -> Result<StepResult> {
+///
+/// When `quiet` is true, stdout/stderr are captured instead of inherited.
+/// The captured output is stored in the result for display on failure.
+pub fn execute_step(step: &Step, env: &TestEnv, quiet: bool) -> Result<StepResult> {
     let expanded_cmd = env.expand_vars(&step.run);
     let cwd = step
         .cwd
@@ -301,15 +333,26 @@ pub fn execute_step(step: &Step, env: &TestEnv) -> Result<StepResult> {
         })
         .unwrap_or_else(|| env.work_dir.clone());
 
-    // Run with inherited stdio so output passes through to the terminal.
-    let status = std::process::Command::new("bash")
-        .args(["-c", &expanded_cmd])
-        .current_dir(&cwd)
-        .envs(env.command_env())
-        .status()
-        .with_context(|| format!("Failed to execute: {expanded_cmd}"))?;
-
-    let exit_code = status.code().unwrap_or(-1);
+    let (exit_code, stdout, stderr) = if quiet {
+        let output = std::process::Command::new("bash")
+            .args(["-c", &expanded_cmd])
+            .current_dir(&cwd)
+            .envs(env.command_env())
+            .output()
+            .with_context(|| format!("Failed to execute: {expanded_cmd}"))?;
+        let code = output.status.code().unwrap_or(-1);
+        let out = String::from_utf8_lossy(&output.stdout).into_owned();
+        let err = String::from_utf8_lossy(&output.stderr).into_owned();
+        (code, Some(out), Some(err))
+    } else {
+        let status = std::process::Command::new("bash")
+            .args(["-c", &expanded_cmd])
+            .current_dir(&cwd)
+            .envs(env.command_env())
+            .status()
+            .with_context(|| format!("Failed to execute: {expanded_cmd}"))?;
+        (status.code().unwrap_or(-1), None, None)
+    };
 
     let assertions = step
         .expect
@@ -323,6 +366,8 @@ pub fn execute_step(step: &Step, env: &TestEnv) -> Result<StepResult> {
         exit_code,
         assertions,
         all_passed,
+        stdout,
+        stderr,
     })
 }
 
@@ -330,33 +375,27 @@ pub fn execute_step(step: &Step, env: &TestEnv) -> Result<StepResult> {
 // Non-interactive runner
 // ---------------------------------------------------------------------------
 
-/// Run all steps in a scenario sequentially, printing a test report to stderr.
+/// Run all steps in a scenario sequentially, printing a concise test report.
 ///
-/// Returns `Ok(())` when all assertions pass, or an error describing how many
-/// assertions failed.
-pub fn run_non_interactive(scenario: &Scenario, env: &TestEnv) -> Result<()> {
+/// Command output is captured (not shown) unless a step fails, in which case
+/// captured output is printed for debugging. Returns a [`ScenarioResult`] with
+/// pass/fail counts.
+pub fn run_non_interactive(scenario: &Scenario, env: &TestEnv) -> Result<ScenarioResult> {
     use daft::styles;
 
-    eprintln!();
-    eprintln!(
-        "  {} ({})",
-        styles::bold(&scenario.name),
-        styles::dim(&format!("{} steps", scenario.steps.len()))
-    );
-    eprintln!("  {}", "\u{2500}".repeat(40));
+    eprintln!("  {}", styles::bold(&scenario.name));
 
-    let mut total = 0;
     let mut passed = 0;
     let mut failed = 0;
 
     for (i, step) in scenario.steps.iter().enumerate() {
         eprint!(
-            "  [{}] {} ... ",
+            "    [{}] {} ... ",
             styles::dim(&format!("{}/{}", i + 1, scenario.steps.len())),
             &step.name
         );
 
-        let result = execute_step(step, env)?;
+        let result = execute_step(step, env, true)?;
 
         if result.all_passed {
             eprintln!("{}", styles::green("ok"));
@@ -365,33 +404,47 @@ pub fn run_non_interactive(scenario: &Scenario, env: &TestEnv) -> Result<()> {
             eprintln!("{}", styles::red("FAIL"));
             for a in &result.assertions {
                 if !a.passed {
-                    eprintln!("    {} {}", styles::red("x"), a.label);
+                    eprintln!("      {} {}", styles::red("x"), a.label);
                     if let Some(detail) = &a.detail {
-                        eprintln!("      {}", styles::dim(detail));
+                        eprintln!("        {}", styles::dim(detail));
                     }
+                }
+            }
+            // Show captured output for debugging.
+            let captured = combine_captured(&result.stdout, &result.stderr);
+            if !captured.is_empty() {
+                eprintln!("      {}", styles::dim("--- captured output ---"));
+                for line in captured.lines().take(20) {
+                    eprintln!("      {}", styles::dim(line));
                 }
             }
             failed += 1;
         }
-        total += 1;
     }
 
-    eprintln!();
-    eprintln!(
-        "  {} total, {} passed, {} failed",
-        total,
-        styles::green(&passed.to_string()),
-        if failed > 0 {
-            styles::red(&failed.to_string())
-        } else {
-            failed.to_string()
+    Ok(ScenarioResult {
+        steps: scenario.steps.len(),
+        passed,
+        failed,
+    })
+}
+
+/// Combine captured stdout/stderr, trimming trailing whitespace.
+fn combine_captured(stdout: &Option<String>, stderr: &Option<String>) -> String {
+    let mut parts = Vec::new();
+    if let Some(out) = stdout {
+        let trimmed = out.trim();
+        if !trimmed.is_empty() {
+            parts.push(trimmed.to_string());
         }
-    );
-
-    if failed > 0 {
-        anyhow::bail!("{failed} assertion(s) failed");
     }
-    Ok(())
+    if let Some(err) = stderr {
+        let trimmed = err.trim();
+        if !trimmed.is_empty() {
+            parts.push(trimmed.to_string());
+        }
+    }
+    parts.join("\n")
 }
 
 // ---------------------------------------------------------------------------

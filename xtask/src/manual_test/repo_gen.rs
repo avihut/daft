@@ -24,6 +24,8 @@ fn git_cmd(work_dir: &Path) -> std::process::Command {
 fn run_git(work_dir: &Path, args: &[&str]) -> Result<()> {
     let status = git_cmd(work_dir)
         .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .with_context(|| format!("git {} failed to execute", args.join(" ")))?;
     anyhow::ensure!(

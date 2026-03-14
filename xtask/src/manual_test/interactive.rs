@@ -143,13 +143,13 @@ pub fn run_interactive(
 
             // Run prerequisite steps silently.
             for i in 0..step_index {
-                runner::execute_step(&scenario.steps[i], env)?;
+                runner::execute_step(&scenario.steps[i], env, false)?;
             }
 
             // Run target step.
             let step = &scenario.steps[step_index];
             print_step_header(step_index, total, step, env);
-            let result = runner::execute_step(step, env)?;
+            let result = runner::execute_step(step, env, false)?;
             print_assertion_results(&result.assertions);
 
             if iteration < count {
@@ -176,7 +176,7 @@ pub fn run_interactive(
             styles::dim(&format!("Skipping to step {}...", start_index + 1))
         );
         for i in 0..start_index.min(total) {
-            runner::execute_step(&scenario.steps[i], env)?;
+            runner::execute_step(&scenario.steps[i], env, false)?;
         }
     }
 
@@ -206,7 +206,7 @@ pub fn run_interactive(
 
         // Execute the step (may loop for re-runs).
         loop {
-            let result = runner::execute_step(step, env)?;
+            let result = runner::execute_step(step, env, false)?;
             print_assertion_results(&result.assertions);
 
             // Post-run prompt.

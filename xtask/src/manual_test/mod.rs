@@ -43,6 +43,14 @@ pub fn run(
 
     let is_interactive = !no_interactive && std::io::stdin().is_terminal();
 
+    let mut total_scenarios = 0usize;
+    let mut total_steps = 0usize;
+    let mut total_passed = 0usize;
+    let mut total_failed = 0usize;
+    let mut failed_scenarios: Vec<String> = Vec::new();
+
+    eprintln!();
+
     for path in &scenario_files {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read scenario: {}", path.display()))?;
@@ -68,23 +76,58 @@ pub fn run(
         test_env.create_template()?;
 
         let result = if is_interactive {
-            interactive::run_interactive(&scenario, &test_env, step, loop_count)
+            interactive::run_interactive(&scenario, &test_env, step, loop_count)?;
+            None
         } else {
-            runner::run_non_interactive(&scenario, &test_env)
+            Some(runner::run_non_interactive(&scenario, &test_env)?)
         };
 
         if keep {
             eprintln!(
-                "\n  Test environment kept at: {}",
+                "  Test environment kept at: {}",
                 test_env.base_dir.display()
             );
-        } else {
-            if let Err(e) = test_env.cleanup() {
-                eprintln!("  Warning: cleanup failed: {e}");
-            }
+        } else if let Err(e) = test_env.cleanup() {
+            eprintln!("  Warning: cleanup failed: {e}");
         }
 
-        result?;
+        if let Some(sr) = result {
+            total_scenarios += 1;
+            total_steps += sr.steps;
+            total_passed += sr.passed;
+            total_failed += sr.failed;
+            if sr.failed > 0 {
+                failed_scenarios.push(scenario.name.clone());
+            }
+        }
+    }
+
+    // Print overall summary for non-interactive runs.
+    if !is_interactive && scenario_files.len() > 0 {
+        use daft::styles;
+
+        eprintln!();
+        eprintln!(
+            "  {} scenarios, {} steps, {} passed, {} failed",
+            total_scenarios,
+            total_steps,
+            styles::green(&total_passed.to_string()),
+            if total_failed > 0 {
+                styles::red(&total_failed.to_string())
+            } else {
+                "0".into()
+            }
+        );
+        if !failed_scenarios.is_empty() {
+            for name in &failed_scenarios {
+                eprintln!("    {} {}", styles::red("x"), name);
+            }
+        }
+        eprintln!();
+
+        if total_failed > 0 {
+            anyhow::bail!("{total_failed} step(s) failed across {total_scenarios} scenarios");
+        }
     }
 
     Ok(())
