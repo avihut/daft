@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 pub fn run(
     scenarios: Vec<PathBuf>,
     no_interactive: bool,
+    verbose: bool,
     step: Option<usize>,
     loop_count: Option<usize>,
     keep: bool,
@@ -76,10 +77,10 @@ pub fn run(
         test_env.create_template()?;
 
         let result = if is_interactive {
-            interactive::run_interactive(&scenario, &test_env, step, loop_count)?;
+            interactive::run_interactive(&scenario, &test_env, step, loop_count, verbose)?;
             None
         } else {
-            Some(runner::run_non_interactive(&scenario, &test_env)?)
+            Some(runner::run_non_interactive(&scenario, &test_env, verbose)?)
         };
 
         if keep {

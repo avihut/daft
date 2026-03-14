@@ -304,6 +304,10 @@ enum Commands {
         #[arg(long, alias = "ci")]
         no_interactive: bool,
 
+        /// Show verbose output (full check details, command output)
+        #[arg(short, long)]
+        verbose: bool,
+
         /// Jump to a specific step number (1-based)
         #[arg(long)]
         step: Option<usize>,
@@ -338,11 +342,20 @@ fn main() -> Result<()> {
         Commands::ManualTest {
             scenarios,
             no_interactive,
+            verbose,
             step,
             loop_count,
             keep,
             list,
-        } => manual_test::run(scenarios, no_interactive, step, loop_count, keep, list),
+        } => manual_test::run(
+            scenarios,
+            no_interactive,
+            verbose,
+            step,
+            loop_count,
+            keep,
+            list,
+        ),
     }
 }
 

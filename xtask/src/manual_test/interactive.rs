@@ -60,18 +60,13 @@ fn wait_for_key() -> Result<KeyCode> {
 // ---------------------------------------------------------------------------
 
 fn print_scenario_header(scenario: &Scenario) {
-    let step_count = scenario.steps.len();
     let desc = scenario.description.as_deref().unwrap_or("");
     eprintln!();
-    eprintln!(
-        "  {} ({})",
-        styles::bold(&scenario.name),
-        styles::dim(&format!("{step_count} steps"))
-    );
+    eprintln!("  {}", styles::cyan(&scenario.name));
     if !desc.is_empty() {
         eprintln!("  {}", styles::dim(desc));
     }
-    eprintln!("  {}", "\u{2500}".repeat(40));
+    eprintln!();
 }
 
 fn print_step_header(index: usize, total: usize, step: &super::schema::Step, env: &TestEnv) {
@@ -82,31 +77,49 @@ fn print_step_header(index: usize, total: usize, step: &super::schema::Step, env
         styles::dim(&format!("[{}/{}]", index + 1, total)),
         styles::bold(&step.name)
     );
-    eprintln!("       {}", styles::dim(&format!("$ {expanded}")));
+    eprintln!("    {}", styles::dim(&format!("$ {expanded}")));
 }
 
-fn print_assertion_results(results: &[AssertionResult]) {
+fn print_assertion_results(results: &[AssertionResult], verbose: bool) {
     if results.is_empty() {
         return;
     }
+
+    let passed = results.iter().filter(|r| r.passed).count();
+    let failed = results.iter().filter(|r| !r.passed).count();
+
     eprintln!();
-    eprintln!("       Checks:");
-    for r in results {
-        let icon = if r.passed {
-            styles::green("PASS")
-        } else {
-            styles::red("FAIL")
-        };
-        eprintln!("         [{}] {}", icon, r.label);
-        if let Some(detail) = &r.detail {
-            eprintln!("              {}", styles::dim(detail));
+    if failed == 0 {
+        eprintln!(
+            "    {} {}",
+            styles::green("✓"),
+            styles::dim(&format!("{passed} checks passed"))
+        );
+        if verbose {
+            for r in results {
+                eprintln!("      {} {}", styles::dim("✓"), styles::dim(&r.label));
+            }
+        }
+    } else {
+        eprintln!(
+            "    {} {}",
+            styles::red("x"),
+            styles::red(&format!("{failed} failed, {passed} passed"))
+        );
+        for r in results {
+            if !r.passed {
+                eprintln!("      {} {}", styles::red("x"), r.label);
+                if let Some(detail) = &r.detail {
+                    eprintln!("        {}", styles::dim(detail));
+                }
+            }
         }
     }
 }
 
 fn print_prompt(msg: &str) {
     eprintln!();
-    eprintln!("       {}", styles::dim(msg));
+    eprintln!("    {}", styles::dim(msg));
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +136,7 @@ pub fn run_interactive(
     env: &TestEnv,
     start_step: Option<usize>,
     loop_count: Option<usize>,
+    verbose: bool,
 ) -> Result<()> {
     let total = scenario.steps.len();
     print_scenario_header(scenario);
@@ -150,7 +164,7 @@ pub fn run_interactive(
             let step = &scenario.steps[step_index];
             print_step_header(step_index, total, step, env);
             let result = runner::execute_step(step, env, false)?;
-            print_assertion_results(&result.assertions);
+            print_assertion_results(&result.assertions, verbose);
 
             if iteration < count {
                 print_prompt("Press [Enter] for next iteration, [q] quit");
@@ -190,7 +204,7 @@ pub fn run_interactive(
         match wait_for_key()? {
             KeyCode::Enter | KeyCode::Char(' ') => { /* proceed to execute */ }
             KeyCode::Char('s') => {
-                eprintln!("       {}", styles::dim("(skipped)"));
+                eprintln!("    {}", styles::dim("(skipped)"));
                 current += 1;
                 continue;
             }
@@ -207,7 +221,7 @@ pub fn run_interactive(
         // Execute the step (may loop for re-runs).
         loop {
             let result = runner::execute_step(step, env, false)?;
-            print_assertion_results(&result.assertions);
+            print_assertion_results(&result.assertions, verbose);
 
             // Post-run prompt.
             print_prompt("Press [Enter] next, [r] re-run, [R] reset all, [q] quit");
@@ -218,11 +232,11 @@ pub fn run_interactive(
                 }
                 KeyCode::Char('r') => {
                     // Re-run same step.
-                    eprintln!("       {}", styles::dim("(re-running...)"));
+                    eprintln!("    {}", styles::dim("(re-running...)"));
                     continue;
                 }
                 KeyCode::Char('R') => {
-                    eprintln!("       {}", styles::dim("(resetting environment...)"));
+                    eprintln!("    {}", styles::dim("(resetting environment...)"));
                     env.reset()?;
                     current = 0;
                     continue 'outer;

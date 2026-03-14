@@ -380,28 +380,51 @@ pub fn execute_step(step: &Step, env: &TestEnv, quiet: bool) -> Result<StepResul
 /// Command output is captured (not shown) unless a step fails, in which case
 /// captured output is printed for debugging. Returns a [`ScenarioResult`] with
 /// pass/fail counts.
-pub fn run_non_interactive(scenario: &Scenario, env: &TestEnv) -> Result<ScenarioResult> {
+pub fn run_non_interactive(
+    scenario: &Scenario,
+    env: &TestEnv,
+    verbose: bool,
+) -> Result<ScenarioResult> {
     use daft::styles;
 
-    eprintln!("  {}", styles::bold(&scenario.name));
+    eprintln!("  {}", styles::cyan(&scenario.name));
 
     let mut passed = 0;
     let mut failed = 0;
 
     for (i, step) in scenario.steps.iter().enumerate() {
         eprint!(
-            "    [{}] {} ... ",
-            styles::dim(&format!("{}/{}", i + 1, scenario.steps.len())),
+            "    {} {} ... ",
+            styles::dim(&format!("[{}/{}]", i + 1, scenario.steps.len())),
             &step.name
         );
 
         let result = execute_step(step, env, true)?;
 
         if result.all_passed {
-            eprintln!("{}", styles::green("ok"));
+            let check_count = result.assertions.len();
+            if check_count > 0 {
+                eprintln!(
+                    "{} {}",
+                    styles::green("ok"),
+                    styles::dim(&format!("({check_count} checks)"))
+                );
+            } else {
+                eprintln!("{}", styles::green("ok"));
+            }
+            if verbose {
+                for a in &result.assertions {
+                    eprintln!("      {} {}", styles::green("✓"), styles::dim(&a.label));
+                }
+            }
             passed += 1;
         } else {
-            eprintln!("{}", styles::red("FAIL"));
+            let fail_count = result.assertions.iter().filter(|a| !a.passed).count();
+            eprintln!(
+                "{} {}",
+                styles::red("FAIL"),
+                styles::dim(&format!("({fail_count} failed)"))
+            );
             for a in &result.assertions {
                 if !a.passed {
                     eprintln!("      {} {}", styles::red("x"), a.label);
