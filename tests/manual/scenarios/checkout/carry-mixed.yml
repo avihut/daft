@@ -1,0 +1,32 @@
+name: Checkout carry mixed changes
+description: --carry carries staged, unstaged, and untracked changes together
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create mixed changes in main
+    run: |
+      cd $WORK_DIR/test-repo/main
+      echo "staged" > staged.txt
+      git add staged.txt
+      echo "unstaged modification" >> README.md
+      echo "untracked" > untracked.txt
+
+  - name: Checkout with --carry
+    run: git-worktree-checkout --carry develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/develop/staged.txt"
+        - "$WORK_DIR/test-repo/develop/untracked.txt"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/develop/README.md"
+          content: "unstaged modification"

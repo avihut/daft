@@ -1,0 +1,70 @@
+name: Checkout complex branches
+description: Checkout nested branch structures (feature/, release/, hotfix/)
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: feature/user-auth
+        from: main
+        files:
+          - path: auth.txt
+            content: "User auth feature"
+        commits:
+          - message: "Add user auth"
+      - name: release/v1.0
+        from: main
+        files:
+          - path: release.txt
+            content: "Release v1.0"
+        commits:
+          - message: "Add release notes"
+      - name: hotfix/critical-bug
+        from: main
+        files:
+          - path: hotfix.txt
+            content: "Critical bug fix"
+        commits:
+          - message: "Fix critical bug"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch
+    run: git-worktree-checkout feature/user-auth
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/user-auth"
+      files_exist:
+        - "$WORK_DIR/test-repo/feature/user-auth/auth.txt"
+
+  - name: Checkout release branch
+    run: git-worktree-checkout release/v1.0
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/release/v1.0"
+      files_exist:
+        - "$WORK_DIR/test-repo/release/v1.0/release.txt"
+
+  - name: Checkout hotfix branch
+    run: git-worktree-checkout hotfix/critical-bug
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/hotfix/critical-bug"
+      files_exist:
+        - "$WORK_DIR/test-repo/hotfix/critical-bug/hotfix.txt"

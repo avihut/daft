@@ -1,0 +1,23 @@
+name: Checkout errors
+description: Checkout fails on nonexistent branch and outside repo
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout nonexistent branch fails
+    run: git-worktree-checkout nonexistent-branch 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+
+  - name: Checkout outside git repository fails
+    run: git-worktree-checkout some-branch 2>&1
+    expect:
+      exit_code: 1
