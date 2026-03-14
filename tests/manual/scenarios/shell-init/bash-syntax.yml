@@ -1,0 +1,9 @@
+name: Bash shell-init generates valid syntax
+description: >
+  daft shell-init bash output passes bash -n syntax validation.
+
+steps:
+  - name: Generated bash code has valid syntax
+    run: daft shell-init bash | bash -n 2>&1
+    expect:
+      exit_code: 0

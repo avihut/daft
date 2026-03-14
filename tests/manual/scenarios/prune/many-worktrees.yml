@@ -1,0 +1,133 @@
+name: Prune many worktrees
+description: Prune correctly handles deleting 5 of 10 worktrees
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: feature/branch1
+        from: main
+        files:
+          - path: branch1.txt
+            content: "Branch 1"
+        commits:
+          - message: "Add branch1"
+      - name: feature/branch2
+        from: main
+        files:
+          - path: branch2.txt
+            content: "Branch 2"
+        commits:
+          - message: "Add branch2"
+      - name: feature/branch3
+        from: main
+        files:
+          - path: branch3.txt
+            content: "Branch 3"
+        commits:
+          - message: "Add branch3"
+      - name: feature/branch4
+        from: main
+        files:
+          - path: branch4.txt
+            content: "Branch 4"
+        commits:
+          - message: "Add branch4"
+      - name: feature/branch5
+        from: main
+        files:
+          - path: branch5.txt
+            content: "Branch 5"
+        commits:
+          - message: "Add branch5"
+      - name: feature/branch6
+        from: main
+        files:
+          - path: branch6.txt
+            content: "Branch 6"
+        commits:
+          - message: "Add branch6"
+      - name: feature/branch7
+        from: main
+        files:
+          - path: branch7.txt
+            content: "Branch 7"
+        commits:
+          - message: "Add branch7"
+      - name: feature/branch8
+        from: main
+        files:
+          - path: branch8.txt
+            content: "Branch 8"
+        commits:
+          - message: "Add branch8"
+      - name: feature/branch9
+        from: main
+        files:
+          - path: branch9.txt
+            content: "Branch 9"
+        commits:
+          - message: "Add branch9"
+      - name: feature/branch10
+        from: main
+        files:
+          - path: branch10.txt
+            content: "Branch 10"
+        commits:
+          - message: "Add branch10"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout all 10 feature branches
+    run: |
+      git fetch origin 2>/dev/null
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+        git-worktree-checkout "feature/branch$i"
+      done
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/branch1"
+        - "$WORK_DIR/test-repo/feature/branch5"
+        - "$WORK_DIR/test-repo/feature/branch10"
+
+  - name: Delete first 5 branches from remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp"
+      for i in 1 2 3 4 5; do
+        git push origin --delete "feature/branch$i" 2>/dev/null
+      done
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Prune removes first 5, keeps last 5
+    run: git-worktree-prune
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/branch1"
+        - "$WORK_DIR/test-repo/feature/branch2"
+        - "$WORK_DIR/test-repo/feature/branch3"
+        - "$WORK_DIR/test-repo/feature/branch4"
+        - "$WORK_DIR/test-repo/feature/branch5"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/branch6"
+        - "$WORK_DIR/test-repo/feature/branch7"
+        - "$WORK_DIR/test-repo/feature/branch8"
+        - "$WORK_DIR/test-repo/feature/branch9"
+        - "$WORK_DIR/test-repo/feature/branch10"

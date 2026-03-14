@@ -1,0 +1,13 @@
+name: Fetch help and version
+description: Help and version flags work for git-worktree-fetch
+
+steps:
+  - name: git-worktree-fetch --help exits successfully
+    run: git-worktree-fetch --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-fetch --version exits successfully
+    run: git-worktree-fetch --version 2>&1
+    expect:
+      exit_code: 0

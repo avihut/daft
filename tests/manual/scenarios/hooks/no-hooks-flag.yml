@@ -1,0 +1,30 @@
+name: Clone with --no-hooks flag
+description:
+  "The --no-hooks flag on clone prevents any hook execution, even if the
+  repository would otherwise be trusted."
+
+repos:
+  - name: test-clone-no-hooks
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# No hooks test"
+        commits:
+          - message: "Initial commit"
+    hook_scripts:
+      - name: post-clone
+        content: |
+          #!/bin/bash
+          touch "$DAFT_WORKTREE_PATH/.hook-executed"
+
+steps:
+  - name: Clone with --no-hooks flag
+    run: git-worktree-clone --no-hooks $REMOTE_TEST_CLONE_NO_HOOKS
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-clone-no-hooks/main"
+      files_not_exist:
+        - "$WORK_DIR/test-clone-no-hooks/main/.hook-executed"

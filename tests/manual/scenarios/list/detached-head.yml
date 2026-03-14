@@ -1,0 +1,38 @@
+name: Detached HEAD
+description: Detached HEAD worktrees show "(detached)" in list output
+
+steps:
+  - name: Init a test repo
+    run: git-worktree-init detached-test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/detached-test/master"
+
+  - name: Create an initial commit
+    run: |
+      cd $WORK_DIR/detached-test/master
+      echo "Initial content" > README.md
+      git add README.md
+      git commit -m "Initial commit"
+    expect:
+      exit_code: 0
+
+  - name: Get commit SHA and create detached worktree
+    run: |
+      cd $WORK_DIR/detached-test/master
+      sha=$(git rev-parse HEAD)
+      cd $WORK_DIR/detached-test
+      git worktree add --detach detached-wt "$sha" 2>/dev/null
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/detached-test/detached-wt"
+
+  - name: List shows "(detached)" for detached HEAD worktree
+    run: NO_COLOR=1 git-worktree-list 2>&1
+    cwd: "$WORK_DIR/detached-test/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "(detached)"

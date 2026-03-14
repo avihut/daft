@@ -1,0 +1,38 @@
+name: Ahead/behind counts
+description: Worktree with local commits shows +N ahead count
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop branch
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Make two commits on develop ahead of main
+    run: |
+      cd $WORK_DIR/test-repo/develop
+      echo "ahead commit 1" > ahead1.txt
+      git add ahead1.txt
+      git commit -m "Ahead commit 1"
+      echo "ahead commit 2" > ahead2.txt
+      git add ahead2.txt
+      git commit -m "Ahead commit 2"
+    expect:
+      exit_code: 0
+
+  - name: List shows ahead count for develop
+    run: NO_COLOR=1 git-worktree-list 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "+"

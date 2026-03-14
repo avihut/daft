@@ -1,0 +1,101 @@
+name: Bash completions
+description: Bash completion generation contains expected content
+
+steps:
+  - name: Bash completion generation for checkout
+    run: daft completions bash --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "_git_worktree_checkout"
+        - "COMPREPLY"
+
+  - name: Bash dynamic branch wiring for checkout
+    run: daft completions bash --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "daft __complete"
+        - "branches="
+
+  - name: Bash git subcommand registration for checkout
+    run: daft completions bash --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "__git_complete"
+        - "git-worktree-checkout"
+
+  - name: Prune completion has no dynamic branch logic
+    run: daft completions bash --command=git-worktree-prune 2>&1
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "daft __complete"
+
+  - name: Carry command has dynamic branch completion
+    run: daft completions bash --command=git-worktree-carry 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "daft __complete"
+        - "branches="
+
+  - name: shell-init bash includes completion functions
+    run: daft shell-init bash 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "complete -F"
+        - "_git_worktree_checkout"
+
+  - name: Shortcut aliases registered for bash completions
+    run: daft completions bash 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "complete -F _git_worktree_checkout gwtco"
+        - "complete -F _git_worktree_checkout gwco"
+        - "complete -F _git_worktree_checkout gcw"
+
+  - name: Bash completion includes verbose flag
+    run: daft completions bash --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "verbose"
+
+  - name: Bash completions for clone command
+    run: daft completions bash --command=git-worktree-clone 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Bash completions for init command
+    run: daft completions bash --command=git-worktree-init 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Bash completions for prune command
+    run: daft completions bash --command=git-worktree-prune 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Bash completions for carry command
+    run: daft completions bash --command=git-worktree-carry 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Bash completions for fetch command
+    run: daft completions bash --command=git-worktree-fetch 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Bash completions for flow-adopt command
+    run: daft completions bash --command=git-worktree-flow-adopt 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Bash completions for flow-eject command
+    run: daft completions bash --command=git-worktree-flow-eject 2>&1
+    expect:
+      exit_code: 0

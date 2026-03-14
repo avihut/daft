@@ -1,0 +1,36 @@
+name: Config custom remote
+description: daft.remote changes default remote name
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Add upstream remote and set config
+    run: |
+      git remote add upstream $REMOTE_TEST_REPO
+      git config daft.remote upstream
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Create a new branch (should push to upstream)
+    run: git-worktree-checkout -b feature/custom-remote 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/custom-remote"
+
+  - name: Verify branch was pushed to upstream remote
+    run: |
+      result=$(git ls-remote --heads upstream feature/custom-remote 2>/dev/null)
+      test -n "$result"
+    cwd: "$WORK_DIR/test-repo/feature/custom-remote"
+    expect:
+      exit_code: 0

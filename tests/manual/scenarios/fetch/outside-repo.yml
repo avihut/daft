@@ -1,0 +1,8 @@
+name: Fetch outside repository
+description: Fails when run outside a git repository
+
+steps:
+  - name: Fetch outside git repository fails
+    run: git-worktree-fetch 2>&1
+    expect:
+      exit_code: 1

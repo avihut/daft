@@ -1,0 +1,40 @@
+name: Hooks not executed on untrusted repos
+description:
+  "When a repository has not been explicitly trusted, hooks in .daft/hooks/ must
+  NOT be executed. This is the default security posture."
+
+repos:
+  - name: test-hooks-untrusted
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Untrusted hooks test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test-hooks
+        from: main
+    hook_scripts:
+      - name: worktree-post-create
+        content: |
+          #!/bin/bash
+          echo "$DAFT_BRANCH_NAME" > "$DAFT_PROJECT_ROOT/.hook-ran"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_HOOKS_UNTRUSTED
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-hooks-untrusted/main"
+
+  - name: Create worktree without trusting (hooks should NOT run)
+    run: git-worktree-checkout feature/test-hooks
+    cwd: "$WORK_DIR/test-hooks-untrusted/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-hooks-untrusted/feature/test-hooks"
+      files_not_exist:
+        - "$WORK_DIR/test-hooks-untrusted/.hook-ran"

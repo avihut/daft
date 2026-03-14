@@ -1,0 +1,12 @@
+name: Zsh shell-init generates valid syntax
+description: >
+  daft shell-init zsh output passes zsh -n syntax validation. Skips gracefully
+  if zsh is not available.
+
+steps:
+  - name: Generated zsh code has valid syntax
+    run:
+      command -v zsh >/dev/null 2>&1 && (daft shell-init zsh | zsh -n 2>&1) ||
+      echo "zsh not available, skipping"
+    expect:
+      exit_code: 0

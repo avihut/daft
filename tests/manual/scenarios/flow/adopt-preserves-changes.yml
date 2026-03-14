@@ -1,0 +1,35 @@
+name: Flow adopt preserves changes
+description: Uncommitted changes are preserved after adopt
+
+steps:
+  - name: Create a traditional git repo with uncommitted changes
+    run: |
+      mkdir changes-repo && cd changes-repo
+      git init
+      echo "# Test Repo" > README.md
+      git add README.md
+      git commit -m "Initial commit"
+      echo "# Modified" >> README.md
+      echo "new file" > new-file.txt
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/changes-repo/.git"
+
+  - name: Adopt the repo
+    run: git-worktree-flow-adopt 2>&1
+    cwd: "$WORK_DIR/changes-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/changes-repo/master"
+
+  - name: Verify modified file content is preserved
+    run: grep -q "Modified" $WORK_DIR/changes-repo/master/README.md
+    expect:
+      exit_code: 0
+
+  - name: Verify new untracked file is preserved
+    run: test -f $WORK_DIR/changes-repo/master/new-file.txt
+    expect:
+      exit_code: 0

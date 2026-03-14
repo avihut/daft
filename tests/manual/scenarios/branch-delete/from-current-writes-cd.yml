@@ -1,0 +1,53 @@
+name: Branch delete from current writes cd
+description: Deleting from inside the worktree writes DAFT_CD_FILE
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create feature branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/test"
+
+  - name: Commit and push feature branch
+    run: |
+      cd $WORK_DIR/test-repo/feature/test
+      echo "feature work" > feature.txt
+      git add feature.txt
+      git commit -m "Add feature"
+      git push origin feature/test
+    expect:
+      exit_code: 0
+
+  - name: Merge into main
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git merge feature/test
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Delete from inside worktree with DAFT_CD_FILE
+    run: |
+      cd $WORK_DIR/test-repo/feature/test
+      cd_file=$(mktemp)
+      DAFT_CD_FILE="$cd_file" git-worktree-branch-delete feature/test 2>&1
+      cat "$cd_file" > $WORK_DIR/cd_target.txt
+      rm -f "$cd_file"
+    expect:
+      file_contains:
+        - path: "$WORK_DIR/cd_target.txt"
+          content: "test-repo"
+
+  - name: Verify worktree was removed
+    run: test ! -d "$WORK_DIR/test-repo/feature/test" && echo "REMOVED"
+    expect:
+      output_contains:
+        - "REMOVED"

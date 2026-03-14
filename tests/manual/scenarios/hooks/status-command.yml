@@ -1,0 +1,53 @@
+name: Hooks status command
+description:
+  "The 'daft hooks status' command displays trust level and available hooks for
+  the current repository."
+
+repos:
+  - name: test-hooks-status
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Status command test"
+        commits:
+          - message: "Initial commit"
+    hook_scripts:
+      - name: worktree-post-create
+        content: |
+          #!/bin/bash
+          echo "hook ran"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_HOOKS_STATUS
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-hooks-status/main"
+
+  - name: Check status of untrusted repository
+    run: daft hooks status 2>&1
+    cwd: "$WORK_DIR/test-hooks-status/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Trust level:"
+        - "deny"
+
+  - name: Trust the repository
+    run: daft hooks trust --force
+    cwd: "$WORK_DIR/test-hooks-status/main"
+    expect:
+      exit_code: 0
+
+  - name: Check status of trusted repository
+    run: daft hooks status 2>&1
+    cwd: "$WORK_DIR/test-hooks-status/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Trust level:"
+        - "allow"
+        - "worktree-post-create"

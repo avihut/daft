@@ -1,0 +1,54 @@
+name: Sync basic
+description:
+  Sync combines prune and fetch (removes deleted branches, updates others)
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop and feature branches
+    run: |
+      git-worktree-checkout develop
+      git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+        - "$WORK_DIR/test-repo/feature/test-feature"
+
+  - name: Delete feature branch and update develop on remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp"
+      git push origin --delete feature/test-feature 2>/dev/null
+      git checkout develop 2>/dev/null
+      echo "Sync update develop" >> README.md
+      git add README.md 2>/dev/null
+      git commit -m "Update develop for sync test" 2>/dev/null
+      git push origin develop 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Run sync
+    run: git-sync 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/test-feature"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Verify develop was updated with remote changes
+    run: grep -q "Sync update develop" $WORK_DIR/test-repo/develop/README.md
+    expect:
+      exit_code: 0

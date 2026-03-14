@@ -1,0 +1,111 @@
+name: Bash shell-init output contains wrapper functions
+description: >
+  daft shell-init bash generates shell wrapper functions for worktree commands,
+  including the __daft_wrapper helper, per-command wrappers, and git/daft
+  wrappers.
+
+steps:
+  - name: Output contains __daft_wrapper function
+    run: daft shell-init bash 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "__daft_wrapper()"
+
+  - name: Output contains git-worktree-clone function
+    run: daft shell-init bash 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "git-worktree-clone()"
+
+  - name: Output contains git-worktree-init function
+    run: daft shell-init bash 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "git-worktree-init()"
+
+  - name: Output contains git-worktree-checkout function
+    run: daft shell-init bash 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "git-worktree-checkout()"
+
+  - name: Output contains git-worktree-carry function
+    run: daft shell-init bash 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "git-worktree-carry()"
+
+  - name: Output contains DAFT_CD_FILE mechanism
+    run: daft shell-init bash 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "DAFT_CD_FILE"
+
+  - name: Output contains git() wrapper function
+    run: daft shell-init bash 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "git()"
+        - "worktree-checkout)"
+        - 'command git "$@"'
+
+  - name: Output contains daft() wrapper function
+    run: daft shell-init bash 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "daft()"
+        - 'command daft "$@"'
+
+  - name: git() wrapper passes through regular commands
+    run: bash -c 'eval "$(daft shell-init bash)" && git --version' 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "git version"
+
+  - name: git is a function after sourcing wrappers
+    run: bash -c 'eval "$(daft shell-init bash)" && type git | head -1' 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "function"
+
+  - name: daft() wrapper passes through regular commands
+    run: bash -c 'eval "$(daft shell-init bash)" && daft --version' 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "daft"
+
+  - name: daft is a function after sourcing wrappers
+    run: bash -c 'eval "$(daft shell-init bash)" && type daft | head -1' 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "function"
+
+  - name: Bash aliases included with --aliases flag
+    run: daft shell-init bash --aliases 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "alias gwclone="
+        - "alias gwinit="
+        - "alias gwco="
+        - "alias gwcarry="
+        - "alias gwprune="
+
+  - name: Help text shows usage
+    run: daft shell-init --help 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "bash"
