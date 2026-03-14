@@ -1,0 +1,19 @@
+name: "Exec clone single"
+description: "Single -x command runs in clone worktree directory"
+
+repos:
+  - name: test-repo-exec-clone
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone repo with single -x command"
+    run:
+      "git-worktree-clone $REMOTE_TEST_REPO_EXEC_CLONE -x 'pwd >
+      exec_output.txt'"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo-exec-clone/main/exec_output.txt"
+      file_contains:
+        - path: "$WORK_DIR/test-repo-exec-clone/main/exec_output.txt"
+          content: "test-repo-exec-clone/main"

@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#MISE description="Benchmark: bash exec tests vs YAML manual tests"
+#MISE depends=["dev"]
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+export PATH="$REPO_ROOT/target/release:$PATH"
+
+# Pre-build xtask in release mode (excluded from timing)
+cargo build --package xtask --release --quiet
+
+ms_now() {
+    perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'
+}
+
+echo
+echo "=== Exec Tests: Bash vs YAML Benchmark ==="
+echo
+
+# --- Bash integration tests ---
+echo "Running bash integration tests..."
+bash_start=$(ms_now)
+bash_result=0
+(cd "$REPO_ROOT/tests/integration" && bash ./test_exec.sh) || bash_result=$?
+bash_end=$(ms_now)
+bash_ms=$((bash_end - bash_start))
+
+if [ $bash_result -eq 0 ]; then
+    bash_status="PASS"
+else
+    bash_status="FAIL"
+fi
+
+echo
+
+# --- YAML manual tests ---
+echo "Running YAML manual tests..."
+yaml_start=$(ms_now)
+yaml_result=0
+"$REPO_ROOT/target/release/xtask" manual-test --ci "$REPO_ROOT/tests/manual/scenarios/exec/" || yaml_result=$?
+yaml_end=$(ms_now)
+yaml_ms=$((yaml_end - yaml_start))
+
+if [ $yaml_result -eq 0 ]; then
+    yaml_status="PASS"
+else
+    yaml_status="FAIL"
+fi
+
+echo
+echo "=== Results ==="
+echo
+printf "  %-20s %-8s %s\n" "Suite" "Status" "Duration"
+printf "  %-20s %-8s %s\n" "----" "------" "--------"
+printf "  %-20s %-8s %s\n" "Bash integration" "$bash_status" "${bash_ms}ms"
+printf "  %-20s %-8s %s\n" "YAML manual tests" "$yaml_status" "${yaml_ms}ms"
+echo
+
+if [ $bash_result -ne 0 ] || [ $yaml_result -ne 0 ]; then
+    echo "  WARNING: One or more suites failed"
+    exit 1
+fi

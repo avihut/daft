@@ -114,11 +114,35 @@ pub fn check_file_contains(path: &str, content: &str) -> AssertionResult {
     }
 }
 
+pub fn check_file_not_contains(path: &str, content: &str) -> AssertionResult {
+    match std::fs::read_to_string(path) {
+        Ok(data) => {
+            let found = data.contains(content);
+            AssertionResult {
+                passed: !found,
+                label: format!("File not contains \"{content}\": {path}"),
+                detail: if found {
+                    Some(format!(
+                        "substring \"{content}\" unexpectedly found in file"
+                    ))
+                } else {
+                    None
+                },
+            }
+        }
+        Err(e) => AssertionResult {
+            passed: false,
+            label: format!("File not contains \"{content}\": {path}"),
+            detail: Some(format!("could not read file: {e}")),
+        },
+    }
+}
+
 pub fn check_git_worktree(dir: &str, branch: &str) -> AssertionResult {
     let label = format!("Git worktree on branch \"{branch}\": {dir}");
 
     let output = std::process::Command::new("git")
-        .args(["-C", dir, "rev-parse", "--abbrev-ref", "HEAD"])
+        .args(["-C", dir, "branch", "--show-current"])
         .output();
 
     match output {
@@ -139,7 +163,7 @@ pub fn check_git_worktree(dir: &str, branch: &str) -> AssertionResult {
             passed: false,
             label,
             detail: Some(format!(
-                "git rev-parse failed: {}",
+                "git branch --show-current failed: {}",
                 String::from_utf8_lossy(&out.stderr).trim()
             )),
         },
@@ -234,6 +258,14 @@ pub fn run_assertions(
     for fc in &expectations.file_contains {
         let expanded_content = env.expand_vars(&fc.content);
         results.push(check_file_contains(&resolve(&fc.path), &expanded_content));
+    }
+
+    for fc in &expectations.file_not_contains {
+        let expanded_content = env.expand_vars(&fc.content);
+        results.push(check_file_not_contains(
+            &resolve(&fc.path),
+            &expanded_content,
+        ));
     }
 
     for wt in &expectations.is_git_worktree {
@@ -445,6 +477,31 @@ mod tests {
     }
 
     #[test]
+    fn test_check_file_not_contains_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "hello world").unwrap();
+        let r = check_file_not_contains(file.to_str().unwrap(), "goodbye");
+        assert!(r.passed);
+    }
+
+    #[test]
+    fn test_check_file_not_contains_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "hello world").unwrap();
+        let r = check_file_not_contains(file.to_str().unwrap(), "hello");
+        assert!(!r.passed);
+    }
+
+    #[test]
+    fn test_check_file_not_contains_missing_file() {
+        let r = check_file_not_contains("/tmp/nonexistent-file-xyzzy-12345", "anything");
+        assert!(!r.passed);
+        assert!(r.detail.unwrap().contains("could not read file"));
+    }
+
+    #[test]
     fn test_check_file_contains_missing_file() {
         let r = check_file_contains("/tmp/nonexistent-file-xyzzy-12345", "anything");
         assert!(!r.passed);
@@ -468,6 +525,10 @@ mod tests {
             file_contains: vec![super::super::schema::FileContains {
                 path: "subdir/file.txt".into(),
                 content: "data".into(),
+            }],
+            file_not_contains: vec![super::super::schema::FileNotContains {
+                path: "subdir/file.txt".into(),
+                content: "missing".into(),
             }],
             is_git_worktree: vec![],
             branch_exists: vec![],

@@ -1,0 +1,13 @@
+name: "Exec no commands"
+description: "Init without -x works normally"
+
+steps:
+  - name: "Init repo without -x commands"
+    run: "git-worktree-init exec-no-cmd-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-no-cmd-repo/master"
+      is_git_worktree:
+        - dir: "$WORK_DIR/exec-no-cmd-repo/master"
+          branch: master

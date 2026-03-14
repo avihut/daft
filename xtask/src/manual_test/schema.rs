@@ -107,6 +107,63 @@ pub struct HookScriptSpec {
     pub content: String,
 }
 
+// ---------------------------------------------------------------------------
+// Fixture support
+// ---------------------------------------------------------------------------
+
+/// Raw scenario as deserialized from YAML (before fixture resolution).
+///
+/// Identical to [`Scenario`] but uses [`RepoEntry`] to support both inline
+/// repo specs and fixture references.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawScenario {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub repos: Vec<RepoEntry>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    pub steps: Vec<Step>,
+}
+
+/// A repo entry: either a full inline spec or a reference to a fixture file.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum RepoEntry {
+    /// Reference to a fixture file (matched first — has exactly `name` + `use_fixture`).
+    Fixture(RepoFixtureRef),
+    /// Full inline repo specification.
+    Inline(RepoSpec),
+}
+
+/// Reference to a shared repo fixture file.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepoFixtureRef {
+    /// Directory name for the repo.
+    pub name: String,
+    /// Fixture name (maps to `tests/manual/fixtures/repos/<name>.yml`).
+    pub use_fixture: String,
+}
+
+/// A repo fixture template — like [`RepoSpec`] but without `name`.
+///
+/// Deserialized from fixture files after `{{NAME}}` placeholder substitution.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepoFixture {
+    #[serde(default = "default_branch_name")]
+    pub default_branch: String,
+    #[serde(default)]
+    pub branches: Vec<BranchSpec>,
+    #[serde(default)]
+    pub daft_yml: Option<String>,
+    #[serde(default)]
+    pub hook_scripts: Vec<HookScriptSpec>,
+}
+
 /// A single step in a test scenario.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -145,6 +202,9 @@ pub struct Expectations {
     /// Files that must contain specific content.
     pub file_contains: Vec<FileContains>,
 
+    /// Files that must NOT contain specific content.
+    pub file_not_contains: Vec<FileNotContains>,
+
     /// Directories that must be valid git worktrees.
     pub is_git_worktree: Vec<WorktreeCheck>,
 
@@ -160,6 +220,17 @@ pub struct FileContains {
     pub path: String,
 
     /// String that must appear in the file.
+    pub content: String,
+}
+
+/// Assert that a file does NOT contain specific content.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileNotContains {
+    /// Path to the file (relative to the sandbox root).
+    pub path: String,
+
+    /// String that must NOT appear in the file.
     pub content: String,
 }
 
@@ -315,6 +386,121 @@ steps:
     }
 
     #[test]
+    fn test_repo_entry_fixture_ref() {
+        let yaml = r#"
+name: my-repo
+use_fixture: standard-remote
+"#;
+        let entry: RepoEntry = serde_yaml::from_str(yaml).unwrap();
+        match entry {
+            RepoEntry::Fixture(r) => {
+                assert_eq!(r.name, "my-repo");
+                assert_eq!(r.use_fixture, "standard-remote");
+            }
+            RepoEntry::Inline(_) => panic!("expected Fixture variant"),
+        }
+    }
+
+    #[test]
+    fn test_repo_entry_inline() {
+        let yaml = r##"
+name: my-repo
+default_branch: main
+branches:
+  - name: main
+    files:
+      - path: README.md
+        content: "# Hello"
+    commits:
+      - message: "init"
+"##;
+        let entry: RepoEntry = serde_yaml::from_str(yaml).unwrap();
+        match entry {
+            RepoEntry::Inline(spec) => {
+                assert_eq!(spec.name, "my-repo");
+                assert_eq!(spec.branches.len(), 1);
+            }
+            RepoEntry::Fixture(_) => panic!("expected Inline variant"),
+        }
+    }
+
+    #[test]
+    fn test_repo_entry_ambiguous_rejected() {
+        let yaml = r#"
+name: my-repo
+use_fixture: standard-remote
+branches:
+  - name: main
+"#;
+        let result = serde_yaml::from_str::<RepoEntry>(yaml);
+        assert!(
+            result.is_err(),
+            "ambiguous entry should fail deserialization"
+        );
+    }
+
+    #[test]
+    fn test_raw_scenario_with_fixture_ref() {
+        let yaml = r#"
+name: test scenario
+repos:
+  - name: my-repo
+    use_fixture: standard-remote
+steps:
+  - name: do something
+    run: echo hello
+"#;
+        let raw: RawScenario = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(raw.repos.len(), 1);
+        assert!(matches!(raw.repos[0], RepoEntry::Fixture(_)));
+    }
+
+    #[test]
+    fn test_raw_scenario_mixed_repos() {
+        let yaml = r##"
+name: mixed
+repos:
+  - name: from-fixture
+    use_fixture: standard-remote
+  - name: inline-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Inline"
+        commits:
+          - message: "init"
+steps:
+  - name: test
+    run: echo hi
+"##;
+        let raw: RawScenario = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(raw.repos.len(), 2);
+        assert!(matches!(raw.repos[0], RepoEntry::Fixture(_)));
+        assert!(matches!(raw.repos[1], RepoEntry::Inline(_)));
+    }
+
+    #[test]
+    fn test_repo_fixture_template() {
+        let yaml = r##"
+default_branch: main
+branches:
+  - name: main
+    files:
+      - path: README.md
+        content: "# my-project"
+    commits:
+      - message: "Initial commit"
+"##;
+        let fixture: RepoFixture = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(fixture.default_branch, "main");
+        assert_eq!(fixture.branches.len(), 1);
+        assert!(fixture.daft_yml.is_none());
+        assert!(fixture.hook_scripts.is_empty());
+    }
+
+    #[test]
     fn test_expectations_default() {
         let expectations = Expectations::default();
         assert!(expectations.exit_code.is_none());
@@ -322,6 +508,7 @@ steps:
         assert!(expectations.files_exist.is_empty());
         assert!(expectations.files_not_exist.is_empty());
         assert!(expectations.file_contains.is_empty());
+        assert!(expectations.file_not_contains.is_empty());
         assert!(expectations.is_git_worktree.is_empty());
         assert!(expectations.branch_exists.is_empty());
     }

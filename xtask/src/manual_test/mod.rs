@@ -6,7 +6,7 @@ pub mod schema;
 
 use anyhow::{Context, Result};
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn run(
     scenarios: Vec<PathBuf>,
@@ -21,6 +21,7 @@ pub fn run(
         .expect("xtask should be inside project root")
         .to_path_buf();
     let scenarios_dir = project_root.join("tests/manual/scenarios");
+    let fixtures_dir = project_root.join("tests/manual/fixtures/repos");
 
     if list {
         return list_scenarios(&scenarios_dir);
@@ -45,8 +46,17 @@ pub fn run(
     for path in &scenario_files {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read scenario: {}", path.display()))?;
-        let scenario: schema::Scenario = serde_yaml::from_str(&content)
+        let raw: schema::RawScenario = serde_yaml::from_str(&content)
             .with_context(|| format!("Failed to parse scenario: {}", path.display()))?;
+        let repos = resolve_repos(raw.repos, &fixtures_dir)
+            .with_context(|| format!("Failed to resolve repos in: {}", path.display()))?;
+        let scenario = schema::Scenario {
+            name: raw.name,
+            description: raw.description,
+            repos,
+            env: raw.env,
+            steps: raw.steps,
+        };
 
         let mut test_env = env::TestEnv::create(&scenario, &project_root)?;
 
@@ -88,6 +98,10 @@ pub fn run(
 fn resolve_scenario_paths(args: &[PathBuf], scenarios_dir: &PathBuf) -> Result<Vec<PathBuf>> {
     let mut resolved = Vec::new();
     for arg in args {
+        if arg.exists() && arg.is_dir() {
+            resolved.extend(discover_scenarios(&arg.to_path_buf())?);
+            continue;
+        }
         if arg.exists() {
             resolved.push(arg.clone());
             continue;
@@ -135,6 +149,47 @@ fn discover_scenarios(dir: &PathBuf) -> Result<Vec<PathBuf>> {
     Ok(scenarios)
 }
 
+/// Resolve repo entries — inline specs pass through, fixture references are
+/// loaded from the fixtures directory with `{{NAME}}` substitution.
+fn resolve_repos(
+    repos: Vec<schema::RepoEntry>,
+    fixtures_dir: &Path,
+) -> Result<Vec<schema::RepoSpec>> {
+    let mut resolved = Vec::new();
+    for entry in repos {
+        match entry {
+            schema::RepoEntry::Inline(spec) => resolved.push(spec),
+            schema::RepoEntry::Fixture(fixture_ref) => {
+                let fixture_path = fixtures_dir
+                    .join(&fixture_ref.use_fixture)
+                    .with_extension("yml");
+                let raw_yaml = std::fs::read_to_string(&fixture_path).with_context(|| {
+                    format!(
+                        "reading fixture '{}' for repo '{}'",
+                        fixture_ref.use_fixture, fixture_ref.name
+                    )
+                })?;
+                let substituted = raw_yaml.replace("{{NAME}}", &fixture_ref.name);
+                let fixture: schema::RepoFixture = serde_yaml::from_str(&substituted)
+                    .with_context(|| {
+                        format!(
+                            "parsing fixture '{}' for repo '{}'",
+                            fixture_ref.use_fixture, fixture_ref.name
+                        )
+                    })?;
+                resolved.push(schema::RepoSpec {
+                    name: fixture_ref.name,
+                    default_branch: fixture.default_branch,
+                    branches: fixture.branches,
+                    daft_yml: fixture.daft_yml,
+                    hook_scripts: fixture.hook_scripts,
+                });
+            }
+        }
+    }
+    Ok(resolved)
+}
+
 /// List available scenarios with their name and description.
 fn list_scenarios(dir: &PathBuf) -> Result<()> {
     use daft::styles;
@@ -151,7 +206,7 @@ fn list_scenarios(dir: &PathBuf) -> Result<()> {
 
     for path in &scenarios {
         let content = std::fs::read_to_string(path).unwrap_or_default();
-        if let Ok(scenario) = serde_yaml::from_str::<schema::Scenario>(&content) {
+        if let Ok(scenario) = serde_yaml::from_str::<schema::RawScenario>(&content) {
             let desc = scenario.description.as_deref().unwrap_or("");
             let filename = path.file_name().unwrap_or_default().to_string_lossy();
             eprintln!(

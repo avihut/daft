@@ -1,0 +1,13 @@
+name: "Exec init single"
+description: "Single -x command runs in init worktree directory"
+
+steps:
+  - name: "Init repo with single -x command"
+    run: "git-worktree-init -x 'pwd > exec_output.txt' exec-init-repo"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-init-repo/master/exec_output.txt"
+      file_contains:
+        - path: "$WORK_DIR/exec-init-repo/master/exec_output.txt"
+          content: "exec-init-repo/master"

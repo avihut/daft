@@ -93,7 +93,11 @@ pub fn generate_repo(spec: &RepoSpec, remotes_dir: &Path) -> Result<PathBuf> {
     // 1. Create bare repo.
     std::fs::create_dir_all(&bare_path)
         .with_context(|| format!("creating bare repo dir: {}", bare_path.display()))?;
-    run_git(&bare_path, &["init", "--bare", "."]).context("initialising bare repo")?;
+    run_git(
+        &bare_path,
+        &["init", "--bare", "-b", &spec.default_branch, "."],
+    )
+    .context("initialising bare repo")?;
 
     // 2. Clone the bare repo into a temp working directory.
     //    We need a parent dir that exists for the clone target.

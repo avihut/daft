@@ -1,0 +1,33 @@
+name: "Exec checkout existing worktree"
+description: "-x runs when checking out an existing worktree"
+
+repos:
+  - name: test-repo-exec-existing
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone the repository"
+    run: "git-worktree-clone $REMOTE_TEST_REPO_EXEC_EXISTING"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-exec-existing/main"
+
+  - name: "Checkout develop (first time)"
+    run: "git-worktree-checkout develop"
+    cwd: "$WORK_DIR/test-repo-exec-existing/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-exec-existing/develop"
+
+  - name: "Checkout existing develop worktree with -x"
+    run: "git-worktree-checkout develop -x 'echo ran > exec_marker.txt'"
+    cwd: "$WORK_DIR/test-repo-exec-existing/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo-exec-existing/develop/exec_marker.txt"
+      file_contains:
+        - path: "$WORK_DIR/test-repo-exec-existing/develop/exec_marker.txt"
+          content: "ran"
