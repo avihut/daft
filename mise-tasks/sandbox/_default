@@ -89,11 +89,28 @@ chmod +x "${bin_dir}/manual-test"
 cat > "${bin_dir}/setup-test" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
+
+# Parse args: setup-test <scenario> [--step N]
+scenario=""
+step_arg=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --step) step_arg="--step $2"; shift 2 ;;
+        *) scenario="$1"; shift ;;
+    esac
+done
+
+if [[ -z "$scenario" ]]; then
+    echo "Usage: setup-test <scenario> [--step N]" >&2
+    exit 1
+fi
+
 sandbox_dir="$(dirname "$(dirname "$(realpath "$0")")")"
 test_base="${sandbox_dir}/test"
 mkdir -p "$test_base"
 export DAFT_MANUAL_TEST_BASE="$test_base"
-(cd "$DAFT_WORKTREE" && cargo run --package xtask -- manual-test --setup-only "$@")
+# shellcheck disable=SC2086
+(cd "$DAFT_WORKTREE" && cargo run --package xtask -- manual-test --setup-only $step_arg "$scenario")
 SCRIPT
 chmod +x "${bin_dir}/setup-test"
 
@@ -230,6 +247,7 @@ _setup-test() {
     fi
 
     _arguments -s \
+        '--step[Run steps up to this number]:step number:' \
         '1:scenario:($scenarios)'
 }
 ZSH_COMP
@@ -237,6 +255,14 @@ ZSH_COMP
 cat > "${bin_dir}/completions/setup-test.bash" <<'BASH_COMP'
 _setup_test() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
+    local prev="${COMP_WORDS[COMP_CWORD-1]}"
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=($(compgen -W "--step" -- "$cur"))
+        return
+    fi
+    if [[ "$prev" == "--step" ]]; then
+        return # let user type the number
+    fi
     local scenarios_dir="${DAFT_WORKTREE}/tests/manual/scenarios"
     if [[ -d "$scenarios_dir" ]]; then
         local scenarios="" f rel name

@@ -112,10 +112,21 @@ pub fn run(
         test_env.create_template()?;
 
         if setup_only {
-            eprintln!("WORK_DIR={}", test_env.work_dir.display());
-            for (k, v) in test_env.exported_vars() {
-                eprintln!("{k}={v}");
+            // Run steps up to --step N (or all steps if not specified).
+            let run_until = step
+                .unwrap_or(scenario.steps.len())
+                .min(scenario.steps.len());
+            for (i, s) in scenario.steps.iter().take(run_until).enumerate() {
+                eprint!(
+                    "{} {} ... ",
+                    daft::styles::blue(&format!("[{}/{}]", i + 1, run_until)),
+                    &s.name
+                );
+                runner::execute_step(s, &test_env, true)?;
+                eprintln!("{}", daft::styles::green("ok"));
             }
+            eprintln!();
+            eprintln!("Test environment ready at: {}", test_env.work_dir.display());
             // Don't clean up — the point is to keep the env for manual use.
             if let Ok(mut guard) = cleanup_path.lock() {
                 *guard = None;
