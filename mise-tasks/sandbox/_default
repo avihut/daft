@@ -102,9 +102,15 @@ _manual-test() {
     local scenarios_dir="${DAFT_WORKTREE}/tests/manual/scenarios"
 
     if [[ -d "$scenarios_dir" ]]; then
-        local f
+        local f rel
         for f in "$scenarios_dir"/**/*.yml "$scenarios_dir"/**/*.yaml(N); do
-            scenarios+=("${f:t:r}")
+            rel="${f#$scenarios_dir/}"
+            if [[ "$rel" == */* ]]; then
+                # Subdirectory: exec/checkout-single.yml → exec:checkout-single
+                scenarios+=("${rel%%/*}:${${rel#*/}:r}")
+            else
+                scenarios+=("${rel:r}")
+            fi
         done
     fi
 
@@ -129,13 +135,17 @@ _manual_test() {
     fi
     local scenarios_dir="${DAFT_WORKTREE}/tests/manual/scenarios"
     if [[ -d "$scenarios_dir" ]]; then
-        local scenarios="" f name
+        local scenarios="" f rel name
         while IFS= read -r -d '' f; do
-            name="$(basename "$f")"
-            name="${name%.yml}"
+            rel="${f#$scenarios_dir/}"
+            name="${rel%.yml}"
             name="${name%.yaml}"
+            if [[ "$name" == */* ]]; then
+                # Subdirectory: exec/checkout-single → exec:checkout-single
+                name="${name%%/*}:${name#*/}"
+            fi
             scenarios="$scenarios $name"
-        done < <(find "$scenarios_dir" -name '*.yml' -o -name '*.yaml' -print0 2>/dev/null)
+        done < <(find "$scenarios_dir" \( -name '*.yml' -o -name '*.yaml' \) -print0 2>/dev/null)
         COMPREPLY=($(compgen -W "$scenarios" -- "$cur"))
     fi
 }

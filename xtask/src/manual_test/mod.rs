@@ -138,7 +138,9 @@ pub fn run(
 ///
 /// Each argument can be:
 /// - A full/relative file path (used as-is if it exists)
-/// - A bare name like `clone-basic` (resolved to `<scenarios_dir>/clone-basic.yml` or `.yaml`)
+/// - A directory path (all scenarios in that directory)
+/// - A namespaced name like `exec:checkout-single` (resolved to `exec/checkout-single.yml`)
+/// - A bare name like `clone-basic` (resolved in top-level, then searched recursively)
 fn resolve_scenario_paths(args: &[PathBuf], scenarios_dir: &PathBuf) -> Result<Vec<PathBuf>> {
     let mut resolved = Vec::new();
     for arg in args {
@@ -150,25 +152,75 @@ fn resolve_scenario_paths(args: &[PathBuf], scenarios_dir: &PathBuf) -> Result<V
             resolved.push(arg.clone());
             continue;
         }
-        // Try resolving as a name within scenarios_dir.
-        let stem = arg.file_stem().unwrap_or(arg.as_os_str());
-        let yml = scenarios_dir.join(format!("{}.yml", stem.to_string_lossy()));
-        let yaml = scenarios_dir.join(format!("{}.yaml", stem.to_string_lossy()));
-        if yml.exists() {
-            resolved.push(yml);
-        } else if yaml.exists() {
-            resolved.push(yaml);
-        } else {
+
+        let arg_str = arg.to_string_lossy();
+
+        // Namespaced: "exec:checkout-single" → "exec/checkout-single.yml"
+        if arg_str.contains(':') {
+            let parts: Vec<&str> = arg_str.splitn(2, ':').collect();
+            let (namespace, name) = (parts[0], parts[1]);
+            let dir = scenarios_dir.join(namespace);
+            if let Some(path) = find_scenario_file(&dir, name) {
+                resolved.push(path);
+                continue;
+            }
             anyhow::bail!(
-                "Scenario not found: '{}'\n  Looked for:\n    {}\n    {}\n    {}",
-                arg.display(),
-                arg.display(),
-                yml.display(),
-                yaml.display()
+                "Scenario not found: '{arg_str}'\n  Looked in: {}",
+                dir.display()
             );
         }
+
+        // Bare name: try top-level first.
+        let stem = arg.file_stem().unwrap_or(arg.as_os_str()).to_string_lossy();
+        if let Some(path) = find_scenario_file(scenarios_dir, &stem) {
+            resolved.push(path);
+            continue;
+        }
+
+        // Fallback: search subdirectories recursively.
+        if let Some(path) = find_scenario_recursive(scenarios_dir, &stem)? {
+            resolved.push(path);
+            continue;
+        }
+
+        anyhow::bail!(
+            "Scenario not found: '{}'\n  Looked in: {} (and subdirectories)",
+            arg.display(),
+            scenarios_dir.display()
+        );
     }
     Ok(resolved)
+}
+
+/// Try to find `<name>.yml` or `<name>.yaml` in the given directory.
+fn find_scenario_file(dir: &Path, name: &str) -> Option<PathBuf> {
+    let yml = dir.join(format!("{name}.yml"));
+    if yml.exists() {
+        return Some(yml);
+    }
+    let yaml = dir.join(format!("{name}.yaml"));
+    if yaml.exists() {
+        return Some(yaml);
+    }
+    None
+}
+
+/// Recursively search subdirectories for a scenario by stem name.
+fn find_scenario_recursive(dir: &Path, name: &str) -> Result<Option<PathBuf>> {
+    if !dir.exists() {
+        return Ok(None);
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_scenario_file(&path, name) {
+                return Ok(Some(found));
+            }
+            // Only one level deep for now.
+        }
+    }
+    Ok(None)
 }
 
 /// Discover all `.yml` and `.yaml` files in the scenarios directory.
@@ -238,7 +290,7 @@ fn resolve_repos(
 fn list_scenarios(dir: &PathBuf) -> Result<()> {
     use daft::styles;
 
-    let scenarios = discover_scenarios(dir)?;
+    let scenarios = discover_scenarios_recursive(dir)?;
     if scenarios.is_empty() {
         eprintln!("No scenarios found in {}", dir.display());
         return Ok(());
@@ -248,14 +300,13 @@ fn list_scenarios(dir: &PathBuf) -> Result<()> {
     eprintln!("  {}", styles::bold("Available scenarios:"));
     eprintln!();
 
-    for path in &scenarios {
+    for (qualified_name, path) in &scenarios {
         let content = std::fs::read_to_string(path).unwrap_or_default();
         if let Ok(scenario) = serde_yaml::from_str::<schema::RawScenario>(&content) {
             let desc = scenario.description.as_deref().unwrap_or("");
-            let filename = path.file_name().unwrap_or_default().to_string_lossy();
             eprintln!(
                 "  {} {}",
-                styles::bold(&filename),
+                styles::bold(qualified_name),
                 styles::dim(&format!("- {}", scenario.name))
             );
             if !desc.is_empty() {
@@ -266,4 +317,47 @@ fn list_scenarios(dir: &PathBuf) -> Result<()> {
     eprintln!();
 
     Ok(())
+}
+
+/// Discover all scenarios recursively, returning `(qualified_name, path)` pairs.
+///
+/// Top-level scenarios get bare names (e.g., `clone-basic`).
+/// Subdirectory scenarios get namespaced names (e.g., `exec:checkout-single`).
+fn discover_scenarios_recursive(dir: &PathBuf) -> Result<Vec<(String, PathBuf)>> {
+    let mut scenarios = Vec::new();
+
+    if !dir.exists() {
+        return Ok(scenarios);
+    }
+
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("reading scenarios dir: {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            // Subdirectory — namespace its scenarios.
+            let namespace = entry.file_name().to_string_lossy().into_owned();
+            let sub_scenarios = discover_scenarios(&path)?;
+            for sub_path in sub_scenarios {
+                let stem = sub_path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                scenarios.push((format!("{namespace}:{stem}"), sub_path));
+            }
+        } else if let Some(ext) = path.extension() {
+            if ext == "yml" || ext == "yaml" {
+                let stem = path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                scenarios.push((stem, path));
+            }
+        }
+    }
+    scenarios.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(scenarios)
 }
