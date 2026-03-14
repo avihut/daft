@@ -1,0 +1,52 @@
+name: Post-create hook executes after trust and checkout
+description: Trusted repo's worktree-post-create hook runs during checkout
+
+repos:
+  - name: test-hooks-exec
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Hook execution test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/hook-test
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: marker
+              run: echo "hook-executed"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_HOOKS_EXEC
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-hooks-exec/main/daft.yml"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-hooks-exec/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify hooks are configured
+    run: daft hooks status 2>&1
+    cwd: "$WORK_DIR/test-hooks-exec/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "allow"
+        - "worktree-post-create"
+
+  - name: Checkout feature branch succeeds with hooks trusted
+    run: git-worktree-checkout feature/hook-test 2>&1
+    cwd: "$WORK_DIR/test-hooks-exec/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-hooks-exec/feature/hook-test"
