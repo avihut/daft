@@ -3,6 +3,7 @@
 //! This binary provides development-time tasks that don't need to be
 //! included in the distributed binary.
 
+mod bench;
 mod manual_test;
 
 use anyhow::{bail, Context, Result};
@@ -294,6 +295,13 @@ enum Commands {
         list: bool,
     },
 
+    /// Run integration test benchmarks with a live TUI table
+    Bench {
+        /// Run bash and YAML tests for each suite in parallel
+        #[arg(long)]
+        parallel: bool,
+    },
+
     /// Run manual test scenarios interactively
     ManualTest {
         /// Scenario file(s) to run (default: all in tests/manual/scenarios/)
@@ -343,6 +351,7 @@ fn main() -> Result<()> {
             command,
         } => generate_cli_docs(&output_dir, command.as_deref()),
         Commands::TestMatrix { entry, list } => run_test_matrix(&entry, list),
+        Commands::Bench { parallel } => bench::run(parallel),
         Commands::ManualTest {
             scenarios,
             no_interactive,
