@@ -326,10 +326,10 @@ _reset_test() {
 complete -F _reset_test reset-test
 BASH_COMP
 
-# --- Sourceable completion loader ---
-cat > "${bin_dir}/enable-completions" <<'LOADER'
-# Source this file to enable tab completions for sandbox helpers.
-# Usage: source enable-completions
+# --- Sourceable init script (completions + shell-init) ---
+cat > "${bin_dir}/init" <<'LOADER'
+# Initialize the sandbox shell: completions + daft shell integration.
+# Usage: source init
 if [[ -n "${ZSH_VERSION:-}" ]]; then
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/_manual-test"
     compdef _manual-test manual-test
@@ -337,10 +337,12 @@ if [[ -n "${ZSH_VERSION:-}" ]]; then
     compdef _setup-test setup-test
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/_reset-test"
     compdef _reset-test reset-test
+    eval "$(daft shell-init zsh)"
 elif [[ -n "${BASH_VERSION:-}" ]]; then
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/manual-test.bash"
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/setup-test.bash"
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/reset-test.bash"
+    eval "$(daft shell-init bash)"
 fi
 LOADER
 
@@ -350,10 +352,9 @@ cat > "${sandbox_dir}/README.md" <<'README'
 
 ## First things first
 
-Load completions for sandbox helpers and the daft dev binary:
+Initialize completions and daft shell integration:
 
-    source enable-completions
-    eval "$(daft shell-init $(basename "$SHELL"))"
+    source init
 
 ## Available commands
 
@@ -368,7 +369,7 @@ Load completions for sandbox helpers and the daft dev binary:
 
 ## Tips
 
-- Tab-complete scenario names and flags after running `source enable-completions`
+- Tab-complete scenario names and flags after running `source init`
 - Run `rebuild-daft` after making code changes to pick them up
 - Run `manual-test --keep <scenario>` to keep the test environment for inspection
 - The sandbox has an isolated git identity and config directory
@@ -383,7 +384,7 @@ if command -v direnv &>/dev/null; then
 fi
 
 echo "${sandbox_verb} sandbox at ${sandbox_dir}"
-echo "  Tab completions: run 'source enable-completions' once per shell session"
+echo "  Run 'source init' to set up completions and shell integration"
 
 # --- CD via DAFT_CD_FILE (same mechanism as daft commands) ---
 if [ -n "${DAFT_CD_FILE:-}" ]; then
