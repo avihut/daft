@@ -213,7 +213,8 @@ jobs:
             target/release/xtask
           retention-days: 1
 
-  # Integration tests (Linux only)
+  # Integration tests (Linux only) — 4 parallel workers:
+  # {default, gitoxide} x {bash, yaml}
   integration-tests:
     runs-on: ubuntu-latest
     needs: build
@@ -221,6 +222,7 @@ jobs:
       fail-fast: false
       matrix:
         entry: [default, gitoxide]
+        suite: [bash, yaml]
 
     steps:
       - uses: actions/checkout@v6
@@ -255,35 +257,37 @@ jobs:
           echo "${{ github.workspace }}/target/release" >> $GITHUB_PATH
 
       - name: Make test scripts executable
+        if: matrix.suite == 'bash'
         run: chmod +x tests/integration/*.sh
 
-      - name: Run Rust integration tests
+      - name: Set up config
+        id: config
         run: |
           CONFIG_FILE=$(mktemp)
           if [ "${{ matrix.entry }}" = "gitoxide" ]; then
             git config --file "$CONFIG_FILE" daft.experimental.gitoxide true
           fi
-          GIT_CONFIG_GLOBAL="$CONFIG_FILE" DAFT_TESTING=1 bash tests/integration/test_all.sh
-          rm -f "$CONFIG_FILE"
+          echo "config_file=$CONFIG_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Run bash integration tests
+        if: matrix.suite == 'bash'
+        run: |
+          GIT_CONFIG_GLOBAL="${{ steps.config.outputs.config_file }}" \
+            DAFT_TESTING=1 bash tests/integration/test_all.sh
 
       - name: Run YAML manual tests
+        if: matrix.suite == 'yaml'
         run: |
-          CONFIG_FILE=$(mktemp)
-          if [ "${{ matrix.entry }}" = "gitoxide" ]; then
-            git config --file "$CONFIG_FILE" daft.experimental.gitoxide true
-          fi
-          GIT_CONFIG_GLOBAL="$CONFIG_FILE" DAFT_TESTING=1 \
-            ./target/release/xtask manual-test --ci
-          rm -f "$CONFIG_FILE"
+          GIT_CONFIG_GLOBAL="${{ steps.config.outputs.config_file }}" \
+            DAFT_TESTING=1 ./target/release/xtask manual-test --ci
 
       - name: Test shell completions
-        run: |
-          echo "Testing completion generation..."
-          ./tests/integration/test_completions.sh
+        if: matrix.suite == 'bash'
+        run: ./tests/integration/test_completions.sh
 
       - name: Test help commands
+        if: matrix.suite == 'bash'
         run: |
-          # Test Rust binary help (via symlinks)
           ./target/release/git-worktree-clone --help
           ./target/release/git-worktree-checkout --help
           ./target/release/git-worktree-init --help
@@ -293,11 +297,8 @@ jobs:
           ./target/release/git-worktree-flow-adopt --help
           ./target/release/git-worktree-flow-eject --help
           ./target/release/git-sync --help
-
           ./target/release/daft-remove --help
           ./target/release/daft-rename --help
-
-          # Test git daft documentation command
           ./target/release/daft | head -20
           ./target/release/git-daft | head -20
 
@@ -305,7 +306,7 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: test-results-${{ matrix.entry }}
+          name: test-results-${{ matrix.entry }}-${{ matrix.suite }}
           path: |
             tests/test-results.log
           retention-days: 7
