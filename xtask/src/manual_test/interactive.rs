@@ -49,6 +49,9 @@ fn wait_for_key() -> Result<KeyCode> {
             if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
                 return Ok(KeyCode::Char('q'));
             }
+            if code == KeyCode::Esc {
+                return Ok(KeyCode::Char('q'));
+            }
             return Ok(code);
         }
     }

@@ -7,6 +7,33 @@ pub mod schema;
 use anyhow::{Context, Result};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+/// Register a Ctrl+C handler that cleans up the active test environment.
+///
+/// Returns a shared handle that the run loop updates with the current sandbox
+/// path. On SIGINT the handler removes that directory and exits.
+fn setup_cleanup_handler(keep: bool) -> Arc<Mutex<Option<PathBuf>>> {
+    let cleanup_path: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+    let handler_path = Arc::clone(&cleanup_path);
+
+    ctrlc::set_handler(move || {
+        if !keep {
+            if let Ok(guard) = handler_path.lock() {
+                if let Some(dir) = guard.as_ref() {
+                    let _ = std::fs::remove_dir_all(dir);
+                }
+            }
+        }
+        // Restore terminal state in case interactive mode left raw mode on.
+        let _ = crossterm::terminal::disable_raw_mode();
+        eprintln!();
+        std::process::exit(130); // 128 + SIGINT(2)
+    })
+    .ok();
+
+    cleanup_path
+}
 
 pub fn run(
     scenarios: Vec<PathBuf>,
@@ -43,6 +70,7 @@ pub fn run(
     }
 
     let is_interactive = !no_interactive && std::io::stdin().is_terminal();
+    let cleanup_path = setup_cleanup_handler(keep);
 
     let mut total_scenarios = 0usize;
     let mut total_steps = 0usize;
@@ -69,6 +97,11 @@ pub fn run(
 
         let mut test_env = env::TestEnv::create(&scenario, &project_root)?;
 
+        // Register for cleanup on Ctrl+C.
+        if let Ok(mut guard) = cleanup_path.lock() {
+            *guard = Some(test_env.base_dir.clone());
+        }
+
         // Generate repos from specs.
         for repo_spec in &scenario.repos {
             repo_gen::generate_repo(repo_spec, &test_env.remotes_dir)?;
@@ -90,6 +123,11 @@ pub fn run(
             );
         } else if let Err(e) = test_env.cleanup() {
             eprintln!("  Warning: cleanup failed: {e}");
+        }
+
+        // Clear cleanup path after successful cleanup.
+        if let Ok(mut guard) = cleanup_path.lock() {
+            *guard = None;
         }
 
         if let Some(sr) = result {
