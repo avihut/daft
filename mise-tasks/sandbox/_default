@@ -103,7 +103,7 @@ _manual-test() {
 
     if [[ -d "$scenarios_dir" ]]; then
         local f
-        for f in "$scenarios_dir"/*.yml "$scenarios_dir"/*.yaml(N); do
+        for f in "$scenarios_dir"/**/*.yml "$scenarios_dir"/**/*.yaml(N); do
             scenarios+=("${f:t:r}")
         done
     fi
@@ -111,6 +111,7 @@ _manual-test() {
     _arguments -s \
         '--ci[Run in non-interactive mode]' \
         '--no-interactive[Run in non-interactive mode]' \
+        {-v,--verbose}'[Show verbose output]' \
         '--step[Jump to a specific step number]:step number:' \
         '--loop-count[Re-run a specific step N times]:count:' \
         '--keep[Keep test environment after completion]' \
@@ -123,19 +124,18 @@ cat > "${bin_dir}/completions/manual-test.bash" <<'BASH_COMP'
 _manual_test() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     if [[ "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "--ci --no-interactive --step --loop-count --keep --list" -- "$cur"))
+        COMPREPLY=($(compgen -W "--ci --no-interactive -v --verbose --step --loop-count --keep --list" -- "$cur"))
         return
     fi
     local scenarios_dir="${DAFT_WORKTREE}/tests/manual/scenarios"
     if [[ -d "$scenarios_dir" ]]; then
         local scenarios="" f name
-        for f in "$scenarios_dir"/*.yml "$scenarios_dir"/*.yaml; do
-            [[ -f "$f" ]] || continue
+        while IFS= read -r -d '' f; do
             name="$(basename "$f")"
             name="${name%.yml}"
             name="${name%.yaml}"
             scenarios="$scenarios $name"
-        done
+        done < <(find "$scenarios_dir" -name '*.yml' -o -name '*.yaml' -print0 2>/dev/null)
         COMPREPLY=($(compgen -W "$scenarios" -- "$cur"))
     fi
 }
