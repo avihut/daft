@@ -28,9 +28,9 @@ SUITES=(
     "sync:test_sync.sh:sync"
     "config:test_config.sh:config"
     "completions:test_completions.sh:completions"
-    "shell-init:test_shell_init.sh:shell-init"
     "rename:test_rename.sh:rename"
-    "setup:test_setup.sh:setup"
+    # shell-init and setup are not in test_all.sh (not run in CI),
+    # so they have stale bash expectations. YAML-only benchmarks below.
 )
 
 # Collect results
@@ -98,6 +98,42 @@ for suite in "${SUITES[@]}"; do
     echo
 done
 
+# YAML-only suites (bash tests not in test_all.sh / not run in CI)
+YAML_ONLY_SUITES=(
+    "shell-init"
+    "setup"
+)
+
+for yaml_dir in "${YAML_ONLY_SUITES[@]}"; do
+    labels+=("$yaml_dir")
+
+    echo "--- $yaml_dir (YAML only) ---"
+    echo
+
+    bash_times+=("0")
+    bash_statuses+=("--")
+
+    echo "  YAML: scenarios/$yaml_dir/"
+    yaml_start=$(ms_now)
+    yaml_result=0
+    "$REPO_ROOT/target/release/xtask" manual-test --ci "$REPO_ROOT/tests/manual/scenarios/$yaml_dir/" > /dev/null 2>&1 || yaml_result=$?
+    yaml_end=$(ms_now)
+    ms=$((yaml_end - yaml_start))
+    yaml_times+=("$ms")
+    total_yaml_ms=$((total_yaml_ms + ms))
+
+    if [ $yaml_result -eq 0 ]; then
+        yaml_statuses+=("PASS")
+        echo "  YAML: PASS (${ms}ms)"
+    else
+        yaml_statuses+=("FAIL")
+        echo "  YAML: FAIL (${ms}ms)"
+        any_failed=1
+    fi
+
+    echo
+done
+
 overall_end=$(ms_now)
 overall_ms=$((overall_end - overall_start))
 
@@ -112,6 +148,9 @@ printf "  %-20s  %-14s  %-14s\n" "-----" "----" "----"
 for i in "${!labels[@]}"; do
     bash_cell="${bash_statuses[$i]}  ${bash_times[$i]}ms"
     yaml_cell="${yaml_statuses[$i]}  ${yaml_times[$i]}ms"
+    if [ "${bash_statuses[$i]}" = "--" ]; then
+        bash_cell="--"
+    fi
     printf "  %-20s  %-14s  %-14s\n" "${labels[$i]}" "$bash_cell" "$yaml_cell"
 done
 
