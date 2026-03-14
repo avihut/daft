@@ -77,7 +77,7 @@ fn print_step_header(index: usize, total: usize, step: &super::schema::Step, env
         styles::dim(&format!("[{}/{}]", index + 1, total)),
         styles::bold(&step.name)
     );
-    eprintln!("{}", styles::dim(&format!("$ {expanded}")));
+    eprintln!("{}", styles::cyan(&format!("$ {expanded}")));
 }
 
 fn print_assertion_results(results: &[AssertionResult], verbose: bool) {
@@ -90,14 +90,10 @@ fn print_assertion_results(results: &[AssertionResult], verbose: bool) {
 
     eprintln!();
     if failed == 0 {
-        eprintln!(
-            "{} {}",
-            styles::green("✓"),
-            styles::dim(&format!("{passed} checks passed"))
-        );
+        eprintln!("{} {passed} checks passed", styles::green("✓"));
         if verbose {
             for r in results {
-                eprintln!("  {} {}", styles::dim("✓"), styles::dim(&r.label));
+                eprintln!("  {} {}", styles::green("✓"), styles::dim(&r.label));
             }
         }
     } else {
@@ -119,7 +115,7 @@ fn print_assertion_results(results: &[AssertionResult], verbose: bool) {
 
 fn print_prompt(msg: &str) {
     eprintln!();
-    eprintln!("{}", styles::dim(msg));
+    eprintln!("{}", styles::yellow(msg));
 }
 
 // ---------------------------------------------------------------------------
