@@ -1,0 +1,85 @@
+name: Prune multiple deletions
+description: Handles pruning when multiple remote branches are deleted
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+        files:
+          - path: dev.txt
+            content: "Development branch"
+        commits:
+          - message: "Add development branch"
+      - name: feature/test-feature
+        from: main
+        files:
+          - path: feature.txt
+            content: "Feature branch"
+        commits:
+          - message: "Add feature branch"
+      - name: feature/branch1
+        from: main
+        files:
+          - path: branch1.txt
+            content: "Branch 1"
+        commits:
+          - message: "Add branch1"
+      - name: feature/branch2
+        from: main
+        files:
+          - path: branch2.txt
+            content: "Branch 2"
+        commits:
+          - message: "Add branch2"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout all branches
+    run: |
+      git fetch origin 2>/dev/null
+      git-worktree-checkout develop
+      git-worktree-checkout feature/test-feature
+      git-worktree-checkout feature/branch1
+      git-worktree-checkout feature/branch2
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+        - "$WORK_DIR/test-repo/feature/test-feature"
+        - "$WORK_DIR/test-repo/feature/branch1"
+        - "$WORK_DIR/test-repo/feature/branch2"
+
+  - name: Delete two branches from remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp" && git push origin --delete feature/branch1 2>/dev/null
+      git push origin --delete feature/branch2 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Run prune
+    run: git-worktree-prune
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/branch1"
+        - "$WORK_DIR/test-repo/feature/branch2"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+        - "$WORK_DIR/test-repo/feature/test-feature"

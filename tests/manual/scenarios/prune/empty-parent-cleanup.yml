@@ -1,0 +1,84 @@
+name: Prune empty parent directory cleanup
+description:
+  "Cleans up empty parent directories for nested branches (regression #135)"
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: feature/old
+        from: main
+        files:
+          - path: old.txt
+            content: "Old feature"
+        commits:
+          - message: "Add old feature"
+      - name: feature/new
+        from: main
+        files:
+          - path: new.txt
+            content: "New feature"
+        commits:
+          - message: "Add new feature"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout both feature branches
+    run: |
+      git fetch origin 2>/dev/null
+      git-worktree-checkout feature/old
+      git-worktree-checkout feature/new
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/old"
+        - "$WORK_DIR/test-repo/feature/new"
+
+  - name: Delete only feature/old from remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp" && git push origin --delete feature/old 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Prune removes feature/old but keeps feature/ parent
+    run: git-worktree-prune
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/old"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/new"
+        - "$WORK_DIR/test-repo/feature"
+
+  - name: Delete feature/new from remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp" && git push origin --delete feature/new 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Prune removes feature/new and empty feature/ parent
+    run: git-worktree-prune
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/new"
+        - "$WORK_DIR/test-repo/feature"

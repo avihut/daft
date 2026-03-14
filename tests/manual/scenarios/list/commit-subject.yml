@@ -1,0 +1,25 @@
+name: Last commit subject
+description: List shows the last commit subject for each worktree
+
+steps:
+  - name: Init a test repo
+    run: git-worktree-init subject-test
+    expect:
+      exit_code: 0
+
+  - name: Create a commit with a specific subject
+    run: |
+      cd $WORK_DIR/subject-test/master &&
+      echo "Content" > test.txt &&
+      git add test.txt &&
+      GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" git commit -m "My specific commit subject"
+    expect:
+      exit_code: 0
+
+  - name: List shows the commit subject
+    run: NO_COLOR=1 git-worktree-list 2>&1
+    cwd: "$WORK_DIR/subject-test/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "My specific commit subject"
