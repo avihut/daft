@@ -314,14 +314,9 @@ pub fn run_assertions(
 // Step executor
 // ---------------------------------------------------------------------------
 
-/// Execute a single test step and verify its expectations.
-///
-/// When `quiet` is true, stdout/stderr are captured instead of inherited.
-/// The captured output is stored in the result for display on failure.
-pub fn execute_step(step: &Step, env: &TestEnv, quiet: bool) -> Result<StepResult> {
-    let expanded_cmd = env.expand_vars(&step.run);
-    let cwd = step
-        .cwd
+/// Resolve the working directory for a step.
+fn resolve_step_cwd(step: &Step, env: &TestEnv) -> PathBuf {
+    step.cwd
         .as_deref()
         .map(|c| {
             let expanded = PathBuf::from(env.expand_vars(c));
@@ -331,7 +326,16 @@ pub fn execute_step(step: &Step, env: &TestEnv, quiet: bool) -> Result<StepResul
                 env.work_dir.join(expanded)
             }
         })
-        .unwrap_or_else(|| env.work_dir.clone());
+        .unwrap_or_else(|| env.work_dir.clone())
+}
+
+/// Execute a single test step and verify its expectations.
+///
+/// When `quiet` is true, stdout/stderr are captured instead of inherited.
+/// The captured output is stored in the result for display on failure.
+pub fn execute_step(step: &Step, env: &TestEnv, quiet: bool) -> Result<StepResult> {
+    let expanded_cmd = env.expand_vars(&step.run);
+    let cwd = resolve_step_cwd(step, env);
 
     let (exit_code, stdout, stderr) = if quiet {
         let output = std::process::Command::new("bash")
@@ -369,6 +373,34 @@ pub fn execute_step(step: &Step, env: &TestEnv, quiet: bool) -> Result<StepResul
         stdout,
         stderr,
     })
+}
+
+/// Execute only the command part of a step (no assertions).
+///
+/// Returns the exit code. Used by interactive mode where checks are optional.
+pub fn run_step_command(step: &Step, env: &TestEnv) -> Result<i32> {
+    let expanded_cmd = env.expand_vars(&step.run);
+    let cwd = resolve_step_cwd(step, env);
+
+    let status = std::process::Command::new("bash")
+        .args(["-c", &expanded_cmd])
+        .current_dir(&cwd)
+        .envs(env.command_env())
+        .status()
+        .with_context(|| format!("Failed to execute: {expanded_cmd}"))?;
+
+    Ok(status.code().unwrap_or(-1))
+}
+
+/// Run only the assertions for a step given an exit code.
+///
+/// Used by interactive mode where checks are triggered explicitly.
+pub fn check_step(step: &Step, exit_code: i32, env: &TestEnv) -> Vec<AssertionResult> {
+    let cwd = resolve_step_cwd(step, env);
+    step.expect
+        .as_ref()
+        .map(|e| run_assertions(e, exit_code, &cwd, env))
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------

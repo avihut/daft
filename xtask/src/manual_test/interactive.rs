@@ -159,11 +159,12 @@ pub fn run_interactive(
             // Run target step.
             let step = &scenario.steps[step_index];
             print_step_header(step_index, total, step, env);
-            let result = runner::execute_step(step, env, false)?;
-            print_assertion_results(&result.assertions, verbose);
+            let exit_code = runner::run_step_command(step, env)?;
+            let results = runner::check_step(step, exit_code, env);
+            print_assertion_results(&results, verbose);
 
             if iteration < count {
-                print_prompt("Press [Enter] for next iteration, [q] quit");
+                print_prompt("[Enter] next iteration, [q] quit");
                 if let KeyCode::Char('q') = wait_for_key()? {
                     eprintln!();
                     eprintln!("Quit.");
@@ -193,12 +194,25 @@ pub fn run_interactive(
     let mut current = start_index;
     'outer: while current < total {
         let step = &scenario.steps[current];
+        let has_checks = step.expect.is_some();
         print_step_header(current, total, step, env);
 
         // Pre-run prompt.
-        print_prompt("Press [Enter] to run, [s] skip, [q] quit");
+        let pre_prompt = if has_checks {
+            "[Enter] run, [x] run without checks, [s] skip, [q] quit"
+        } else {
+            "[Enter] run, [s] skip, [q] quit"
+        };
+        print_prompt(pre_prompt);
+
+        let run_checks;
         match wait_for_key()? {
-            KeyCode::Enter | KeyCode::Char(' ') => { /* proceed to execute */ }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                run_checks = true;
+            }
+            KeyCode::Char('x') if has_checks => {
+                run_checks = false;
+            }
             KeyCode::Char('s') => {
                 eprintln!("{}", styles::dim("(skipped)"));
                 current += 1;
@@ -210,26 +224,40 @@ pub fn run_interactive(
                 return Ok(());
             }
             _ => {
-                // Unrecognised key — treat as "run".
+                run_checks = true;
             }
         }
 
-        // Execute the step (may loop for re-runs).
-        loop {
-            let result = runner::execute_step(step, env, false)?;
-            print_assertion_results(&result.assertions, verbose);
+        // Execute the command.
+        let mut exit_code = runner::run_step_command(step, env)?;
 
+        // Run checks if requested.
+        if run_checks && has_checks {
+            let results = runner::check_step(step, exit_code, env);
+            print_assertion_results(&results, verbose);
+        }
+
+        loop {
             // Post-run prompt.
-            print_prompt("Press [Enter] next, [r] re-run, [R] reset all, [q] quit");
+            let prompt = if has_checks {
+                "[Enter] next, [c] check, [r] re-run, [R] reset, [q] quit"
+            } else {
+                "[Enter] next, [r] re-run, [R] reset, [q] quit"
+            };
+            print_prompt(prompt);
+
             match wait_for_key()? {
                 KeyCode::Enter | KeyCode::Char(' ') => {
                     current += 1;
                     break;
                 }
+                KeyCode::Char('c') if has_checks => {
+                    let results = runner::check_step(step, exit_code, env);
+                    print_assertion_results(&results, verbose);
+                }
                 KeyCode::Char('r') => {
-                    // Re-run same step.
                     eprintln!("{}", styles::dim("(re-running...)"));
-                    continue;
+                    exit_code = runner::run_step_command(step, env)?;
                 }
                 KeyCode::Char('R') => {
                     eprintln!("{}", styles::dim("(resetting environment...)"));
@@ -243,7 +271,6 @@ pub fn run_interactive(
                     return Ok(());
                 }
                 _ => {
-                    // Unrecognised key — treat as "next".
                     current += 1;
                     break;
                 }
