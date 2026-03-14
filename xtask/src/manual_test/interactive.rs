@@ -62,13 +62,25 @@ fn wait_for_key() -> Result<KeyCode> {
 // UI helpers
 // ---------------------------------------------------------------------------
 
-fn print_scenario_header(scenario: &Scenario) {
+fn print_scenario_header(scenario: &Scenario, env: &TestEnv) {
     let desc = scenario.description.as_deref().unwrap_or("");
+    let work_dir = &env.work_dir;
+    let display_path = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| {
+            work_dir
+                .strip_prefix(&cwd)
+                .ok()
+                .map(|p| p.display().to_string())
+        })
+        .unwrap_or_else(|| work_dir.display().to_string());
+
     eprintln!();
     eprintln!("{}", styles::cyan(&scenario.name));
     if !desc.is_empty() {
         eprintln!("{}", styles::dim(desc));
     }
+    eprintln!("{}", styles::dim(&format!("env: {display_path}")));
     eprintln!();
 }
 
@@ -138,7 +150,7 @@ pub fn run_interactive(
     verbose: bool,
 ) -> Result<()> {
     let total = scenario.steps.len();
-    print_scenario_header(scenario);
+    print_scenario_header(scenario, env);
 
     // Convert 1-based start_step to 0-based index.
     let start_index = start_step.map(|s| s.saturating_sub(1)).unwrap_or(0);
