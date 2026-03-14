@@ -1,0 +1,25 @@
+name: "Exec checkout -b single"
+description: "Single -x command runs in checkout -b worktree directory"
+
+repos:
+  - name: test-repo-exec-cb
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone the repository"
+    run: "git-worktree-clone $REMOTE_TEST_REPO_EXEC_CB"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-exec-cb/main"
+
+  - name: "Checkout -b new branch with -x command"
+    run: "git-worktree-checkout -b my-new-branch -x 'pwd > exec_output.txt'"
+    cwd: "$WORK_DIR/test-repo-exec-cb/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo-exec-cb/my-new-branch/exec_output.txt"
+      file_contains:
+        - path: "$WORK_DIR/test-repo-exec-cb/my-new-branch/exec_output.txt"
+          content: "test-repo-exec-cb/my-new-branch"

@@ -1,0 +1,47 @@
+name: "Hooks lifecycle"
+description: "Test hook trust, execution, and progress display"
+
+repos:
+  - name: hooks-project
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Hooks Project"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: slow-setup
+              run: "sleep 2 && echo 'Setup complete'"
+            - name: fast-check
+              run: "echo 'Check done'"
+
+steps:
+  - name: "Clone repo with hooks"
+    run: "git-worktree-clone $REMOTE_HOOKS_PROJECT"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "hooks-project/main"
+      files_exist:
+        - "hooks-project/main/daft.yml"
+
+  - name: "Trust the hooks config"
+    run: "daft hooks trust --force"
+    cwd: "$WORK_DIR/hooks-project/main"
+    expect:
+      exit_code: 0
+
+  - name: "Create worktree (triggers hooks)"
+    run: "git-worktree-checkout feature/test"
+    cwd: "$WORK_DIR/hooks-project/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/hooks-project/feature/test"

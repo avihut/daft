@@ -3,6 +3,8 @@
 //! This binary provides development-time tasks that don't need to be
 //! included in the distributed binary.
 
+mod manual_test;
+
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use clap_mangen::Man;
@@ -291,6 +293,41 @@ enum Commands {
         #[arg(long)]
         list: bool,
     },
+
+    /// Run manual test scenarios interactively
+    ManualTest {
+        /// Scenario file(s) to run (default: all in tests/manual/scenarios/)
+        #[arg(value_name = "SCENARIO")]
+        scenarios: Vec<PathBuf>,
+
+        /// Run in non-interactive mode (auto-detected when not a TTY)
+        #[arg(long, alias = "ci")]
+        no_interactive: bool,
+
+        /// Show verbose output (full check details, command output)
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Jump to a specific step number (1-based)
+        #[arg(long)]
+        step: Option<usize>,
+
+        /// Re-run a specific step N times (use with --step)
+        #[arg(long, value_name = "N")]
+        loop_count: Option<usize>,
+
+        /// Keep test environment after completion (for debugging)
+        #[arg(long)]
+        keep: bool,
+
+        /// Set up test environment only (no step execution)
+        #[arg(long)]
+        setup_only: bool,
+
+        /// List available scenarios and exit
+        #[arg(long)]
+        list: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -306,6 +343,25 @@ fn main() -> Result<()> {
             command,
         } => generate_cli_docs(&output_dir, command.as_deref()),
         Commands::TestMatrix { entry, list } => run_test_matrix(&entry, list),
+        Commands::ManualTest {
+            scenarios,
+            no_interactive,
+            verbose,
+            step,
+            loop_count,
+            keep,
+            setup_only,
+            list,
+        } => manual_test::run(
+            scenarios,
+            no_interactive,
+            verbose,
+            step,
+            loop_count,
+            keep,
+            setup_only,
+            list,
+        ),
     }
 }
 

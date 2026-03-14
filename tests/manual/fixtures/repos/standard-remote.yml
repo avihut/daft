@@ -1,0 +1,33 @@
+# Standard 3-branch test remote matching create_test_remote() from
+# tests/integration/test_framework.sh.
+#
+# Use {{NAME}} as a placeholder for the repo name.
+
+default_branch: main
+branches:
+  - name: main
+    files:
+      - path: README.md
+        content: "# {{NAME}}"
+      - path: main.py
+        content: "print('Hello from {{NAME}}')"
+    commits:
+      - message: "Initial commit"
+  - name: develop
+    from: main
+    files:
+      - path: README.md
+        content: |
+          # {{NAME}}
+          # Development branch
+    commits:
+      - message: "Add development branch"
+  - name: feature/test-feature
+    from: main
+    files:
+      - path: README.md
+        content: |
+          # {{NAME}}
+          # Feature branch
+    commits:
+      - message: "Add feature branch"

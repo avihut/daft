@@ -1,0 +1,17 @@
+name: "Exec init multiple"
+description: "Multiple -x commands run in order"
+
+steps:
+  - name: "Init repo with multiple -x commands"
+    run:
+      "git-worktree-init -x 'echo first > order.txt' -x 'echo second >>
+      order.txt' exec-multi-repo"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-multi-repo/master/order.txt"
+      file_contains:
+        - path: "$WORK_DIR/exec-multi-repo/master/order.txt"
+          content: "first"
+        - path: "$WORK_DIR/exec-multi-repo/master/order.txt"
+          content: "second"

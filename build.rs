@@ -47,8 +47,17 @@ fn main() {
         println!("cargo:rustc-cfg=daft_dev_build");
     }
 
-    // Only re-run when HEAD changes (branch switch, new commit) or tags change
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs/tags");
+    // Only re-run when HEAD changes (branch switch, new commit) or env changes.
+    // Resolve the actual git dir — in worktrees `.git` is a file pointing elsewhere.
+    if let Some(git_dir) = git_output(&["rev-parse", "--git-dir"]) {
+        println!("cargo:rerun-if-changed={git_dir}/HEAD");
+        if let Some(head_ref) = git_output(&["symbolic-ref", "--quiet", "HEAD"]) {
+            // HEAD points to a branch — watch that ref file for new commits.
+            let ref_path = format!("{git_dir}/{head_ref}");
+            if std::path::Path::new(&ref_path).exists() {
+                println!("cargo:rerun-if-changed={ref_path}");
+            }
+        }
+    }
     println!("cargo:rerun-if-env-changed=DAFT_BUILD_RELEASE");
 }

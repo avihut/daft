@@ -1,9 +1,10 @@
 pre-commit:
   parallel: true
   commands:
-    fmt-check:
+    fmt-fix:
       glob: "*.rs"
-      run: mise run fmt:check
+      run: mise run fmt
+      stage_fixed: true
     clippy:
       glob: "*.rs"
       run: mise run clippy

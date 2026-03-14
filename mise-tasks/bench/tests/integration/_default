@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Run all integration test benchmarks"
+#MISE depends=["bench:tests:integration:exec"]
+set -euo pipefail
