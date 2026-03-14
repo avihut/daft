@@ -115,6 +115,7 @@ enum CellState {
     Passed(Duration),
     Failed(Duration),
     Skipped,
+    Cancelled(Duration),
 }
 
 // ---------------------------------------------------------------------------
@@ -146,15 +147,25 @@ fn format_cell(state: &CellState, spinner_frame: usize) -> String {
             format!("{RED}✗ {:.1}s{RESET}", d.as_secs_f64())
         }
         CellState::Skipped => format!("{DIM}--{RESET}"),
+        CellState::Cancelled(d) => {
+            format!("{YELLOW}⊘ {:.1}s{RESET}", d.as_secs_f64())
+        }
     }
 }
 
 fn elapsed_of(state: &CellState) -> Duration {
     match state {
-        CellState::Passed(d) | CellState::Failed(d) => *d,
+        CellState::Passed(d) | CellState::Failed(d) | CellState::Cancelled(d) => *d,
         CellState::Running(start) => start.elapsed(),
         _ => Duration::ZERO,
     }
+}
+
+fn is_terminal(state: &CellState) -> bool {
+    matches!(
+        state,
+        CellState::Passed(_) | CellState::Failed(_) | CellState::Skipped | CellState::Cancelled(_)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +275,7 @@ fn pad_ansi(state: &CellState, col_w: usize) -> String {
             let s = format!("{:.1}s", start.elapsed().as_secs_f64());
             2 + s.len() // "⠋ " + number
         }
-        CellState::Passed(d) | CellState::Failed(d) => {
+        CellState::Passed(d) | CellState::Failed(d) | CellState::Cancelled(d) => {
             let s = format!("{:.1}s", d.as_secs_f64());
             2 + s.len() // "✓ " + number
         }
@@ -365,18 +376,47 @@ pub fn run(parallel: bool) -> Result<()> {
 
     let overall_start = Instant::now();
 
+    // Cancelled flag — set by Ctrl+C handler
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel_flag = Arc::clone(&cancelled);
+    let cancel_state = Arc::clone(&state);
+    ctrlc::set_handler(move || {
+        cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Mark all running cells as cancelled
+        if let Ok(mut s) = cancel_state.lock() {
+            for cell in &mut s.bash_cells {
+                if let CellState::Running(start) = cell {
+                    *cell = CellState::Cancelled(start.elapsed());
+                } else if matches!(cell, CellState::Pending) {
+                    *cell = CellState::Skipped;
+                }
+            }
+            for cell in &mut s.yaml_cells {
+                if let CellState::Running(start) = cell {
+                    *cell = CellState::Cancelled(start.elapsed());
+                } else if matches!(cell, CellState::Pending) {
+                    *cell = CellState::Skipped;
+                }
+            }
+        }
+    })
+    .ok();
+
     // Spinner thread
     let spinner_state = Arc::clone(&state);
+    let spinner_cancelled = Arc::clone(&cancelled);
     let spinner_handle = std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(80));
+        if spinner_cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
         let mut s = spinner_state.lock().unwrap();
         s.spinner_frame += 1;
-        let all_done = s.bash_cells.iter().chain(s.yaml_cells.iter()).all(|c| {
-            matches!(
-                c,
-                CellState::Passed(_) | CellState::Failed(_) | CellState::Skipped
-            )
-        });
+        let all_done = s
+            .bash_cells
+            .iter()
+            .chain(s.yaml_cells.iter())
+            .all(is_terminal);
         drop(s);
         if all_done {
             break;
@@ -384,9 +424,23 @@ pub fn run(parallel: bool) -> Result<()> {
     });
 
     if parallel {
-        run_parallel(&suites, &state, &project_root, &xtask_bin, &mut total_lines)?;
+        run_parallel(
+            &suites,
+            &state,
+            &project_root,
+            &xtask_bin,
+            &mut total_lines,
+            &cancelled,
+        )?;
     } else {
-        run_sequential(&suites, &state, &project_root, &xtask_bin, &mut total_lines)?;
+        run_sequential(
+            &suites,
+            &state,
+            &project_root,
+            &xtask_bin,
+            &mut total_lines,
+            &cancelled,
+        )?;
     }
 
     // Wait for spinner to notice completion
@@ -401,13 +455,19 @@ pub fn run(parallel: bool) -> Result<()> {
         overall_elapsed.as_secs_f64()
     );
 
-    // Check for failures
+    // Check for failures or cancellation
+    let was_cancelled = cancelled.load(std::sync::atomic::Ordering::SeqCst);
     let s = state.lock().unwrap();
     let any_failed = s
         .bash_cells
         .iter()
         .chain(s.yaml_cells.iter())
         .any(|c| matches!(c, CellState::Failed(_)));
+
+    if was_cancelled {
+        eprintln!("  {YELLOW}Cancelled.{RESET}\n");
+        std::process::exit(130);
+    }
 
     if any_failed {
         anyhow::bail!("One or more suites failed");
@@ -422,16 +482,24 @@ fn run_sequential(
     project_root: &std::path::Path,
     xtask_bin: &std::path::Path,
     total_lines: &mut usize,
+    cancelled: &Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
     let suites_for_draw: Vec<&Suite> = SUITES.iter().collect();
 
     for (i, suite) in suites.iter().enumerate() {
+        if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+
         // Bash
         if let Some(bash_file) = suite.bash_test {
             state.lock().unwrap().bash_cells[i] = CellState::Running(Instant::now());
             draw_table(&state.lock().unwrap(), &suites_for_draw, total_lines);
 
             let (success, elapsed) = run_bash_test(project_root, bash_file)?;
+            if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
             state.lock().unwrap().bash_cells[i] = if success {
                 CellState::Passed(elapsed)
             } else {
@@ -440,11 +508,18 @@ fn run_sequential(
             draw_table(&state.lock().unwrap(), &suites_for_draw, total_lines);
         }
 
+        if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+
         // YAML
         state.lock().unwrap().yaml_cells[i] = CellState::Running(Instant::now());
         draw_table(&state.lock().unwrap(), &suites_for_draw, total_lines);
 
         let (success, elapsed) = run_yaml_test(project_root, xtask_bin, suite.yaml_dir)?;
+        if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
         state.lock().unwrap().yaml_cells[i] = if success {
             CellState::Passed(elapsed)
         } else {
@@ -462,10 +537,14 @@ fn run_parallel(
     project_root: &std::path::Path,
     xtask_bin: &std::path::Path,
     total_lines: &mut usize,
+    cancelled: &Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
     let suites_for_draw: Vec<&Suite> = SUITES.iter().collect();
 
     for (i, suite) in suites.iter().enumerate() {
+        if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
         // Start both bash and YAML concurrently
         let bash_file = suite.bash_test.map(|s| s.to_string());
         let yaml_dir = suite.yaml_dir.to_string();
@@ -519,6 +598,9 @@ fn run_parallel(
             }
             draw_table(&state.lock().unwrap(), &suites_for_draw, total_lines);
 
+            if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
             let bash_done = bash_handle.as_ref().map_or(true, |h| h.is_finished());
             let yaml_done = yaml_handle.is_finished();
             if bash_done && yaml_done {
