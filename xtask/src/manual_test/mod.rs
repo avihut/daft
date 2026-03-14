@@ -127,6 +127,8 @@ pub fn run(
             }
             eprintln!();
             eprintln!("Test environment ready at: {}", test_env.work_dir.display());
+            // Print work dir to stdout for shell wrapper to capture for cd.
+            println!("{}", test_env.work_dir.display());
             // Don't clean up — the point is to keep the env for manual use.
             if let Ok(mut guard) = cleanup_path.lock() {
                 *guard = None;

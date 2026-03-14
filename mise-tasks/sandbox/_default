@@ -109,8 +109,14 @@ sandbox_dir="$(dirname "$(dirname "$(realpath "$0")")")"
 test_base="${sandbox_dir}/test"
 mkdir -p "$test_base"
 export DAFT_MANUAL_TEST_BASE="$test_base"
+# xtask prints the work dir path to stdout; stderr has the progress output.
 # shellcheck disable=SC2086
-(cd "$DAFT_WORKTREE" && cargo run --package xtask -- manual-test --setup-only $step_arg "$scenario")
+work_dir=$(cd "$DAFT_WORKTREE" && cargo run --package xtask -- manual-test --setup-only $step_arg "$scenario")
+if [[ -n "$work_dir" && -d "$work_dir" ]]; then
+    cd "$work_dir" || true
+    echo "You are now in: $work_dir"
+    exec "$SHELL"
+fi
 SCRIPT
 chmod +x "${bin_dir}/setup-test"
 
