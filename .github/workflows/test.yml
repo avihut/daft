@@ -206,7 +206,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: daft-binary
-          path: target/release/daft
+          path: |
+            target/release/daft
+            target/release/xtask
           retention-days: 1
 
   # Integration tests (Linux only)
@@ -235,6 +237,7 @@ jobs:
       - name: Set up binary
         run: |
           chmod +x target/release/daft
+          chmod +x target/release/xtask
 
           # Create symlinks for the multicall binary
           cd target/release
@@ -242,7 +245,7 @@ jobs:
                      git-worktree-branch git-worktree-branch-delete \
                      git-worktree-prune git-worktree-carry \
                      git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
-                     git-sync git-daft daft-remove daft-rename; do
+                     git-worktree-list git-sync git-daft daft-remove daft-rename; do
             ln -sf daft "$cmd"
           done
           cd ../..
@@ -259,6 +262,16 @@ jobs:
             git config --file "$CONFIG_FILE" daft.experimental.gitoxide true
           fi
           GIT_CONFIG_GLOBAL="$CONFIG_FILE" DAFT_TESTING=1 bash tests/integration/test_all.sh
+          rm -f "$CONFIG_FILE"
+
+      - name: Run YAML manual tests
+        run: |
+          CONFIG_FILE=$(mktemp)
+          if [ "${{ matrix.entry }}" = "gitoxide" ]; then
+            git config --file "$CONFIG_FILE" daft.experimental.gitoxide true
+          fi
+          GIT_CONFIG_GLOBAL="$CONFIG_FILE" DAFT_TESTING=1 \
+            ./target/release/xtask manual-test --ci
           rm -f "$CONFIG_FILE"
 
       - name: Test shell completions

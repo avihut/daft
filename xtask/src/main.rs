@@ -719,6 +719,8 @@ fn run_test_matrix(entries: &[String], list: bool) -> Result<()> {
     }
 
     let mut results: Vec<EntryResult> = Vec::new();
+    let scenarios_dir = project_root.join("tests/manual/scenarios");
+    let has_yaml_tests = scenarios_dir.exists();
 
     for entry in &selected {
         println!();
@@ -730,7 +732,6 @@ fn run_test_matrix(entries: &[String], list: bool) -> Result<()> {
             }
         }
         println!("=============================================");
-        println!();
 
         // Create a temp file for GIT_CONFIG_GLOBAL
         let config_path =
@@ -751,6 +752,9 @@ fn run_test_matrix(entries: &[String], list: bool) -> Result<()> {
             }
         }
 
+        // --- Bash integration tests ---
+        println!();
+        println!("  [bash] Running test_all.sh ...");
         let start = Instant::now();
 
         let status = Command::new("bash")
@@ -764,10 +768,37 @@ fn run_test_matrix(entries: &[String], list: bool) -> Result<()> {
         let elapsed = start.elapsed();
 
         results.push(EntryResult {
-            name: entry.name.to_string(),
+            name: format!("{} (bash)", entry.name),
             success: status.success(),
             elapsed,
         });
+
+        // --- YAML manual tests ---
+        if has_yaml_tests {
+            println!();
+            println!("  [yaml] Running YAML scenarios ...");
+            let yaml_start = Instant::now();
+
+            let xtask_bin = std::env::current_exe()
+                .unwrap_or_else(|_| PathBuf::from("cargo run --package xtask --"));
+            let yaml_status = Command::new(&xtask_bin)
+                .args(["manual-test", "--ci"])
+                .env("GIT_CONFIG_GLOBAL", &config_path)
+                .env("DAFT_TESTING", "1")
+                .current_dir(&project_root)
+                .status()
+                .with_context(|| {
+                    format!("Failed to invoke YAML tests for entry '{}'", entry.name)
+                })?;
+
+            let yaml_elapsed = yaml_start.elapsed();
+
+            results.push(EntryResult {
+                name: format!("{} (yaml)", entry.name),
+                success: yaml_status.success(),
+                elapsed: yaml_elapsed,
+            });
+        }
 
         // Clean up temp config
         let _ = fs::remove_file(&config_path);
@@ -781,7 +812,7 @@ fn run_test_matrix(entries: &[String], list: bool) -> Result<()> {
     for result in &results {
         let status_str = if result.success { "PASS" } else { "FAIL" };
         println!(
-            "  {:<12} {} ({:.1}s)",
+            "  {:<20} {} ({:.1}s)",
             result.name,
             status_str,
             result.elapsed.as_secs_f64()
