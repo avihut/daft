@@ -140,15 +140,6 @@ impl TestEnv {
 
     /// Register a remote repository, making its path available as
     /// `$REMOTE_<NAME>` (uppercased, hyphens replaced with underscores).
-    /// Return all `REMOTE_*` variables for export (used by `--setup-only`).
-    pub fn exported_vars(&self) -> Vec<(&str, &str)> {
-        self.vars
-            .iter()
-            .filter(|(k, _)| k.starts_with("REMOTE_"))
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect()
-    }
-
     pub fn register_remote(&mut self, repo_name: &str) {
         let var_name = format!("REMOTE_{}", repo_name.to_uppercase().replace('-', "_"));
         let path = self.remotes_dir.join(repo_name);
