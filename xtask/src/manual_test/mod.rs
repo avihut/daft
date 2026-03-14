@@ -18,16 +18,17 @@ fn setup_cleanup_handler(keep: bool) -> Arc<Mutex<Option<PathBuf>>> {
     let handler_path = Arc::clone(&cleanup_path);
 
     ctrlc::set_handler(move || {
+        // Restore terminal state in case interactive mode left raw mode on.
+        let _ = crossterm::terminal::disable_raw_mode();
+        eprintln!();
         if !keep {
             if let Ok(guard) = handler_path.lock() {
                 if let Some(dir) = guard.as_ref() {
                     let _ = std::fs::remove_dir_all(dir);
+                    eprintln!("Cleaned up test environment.");
                 }
             }
         }
-        // Restore terminal state in case interactive mode left raw mode on.
-        let _ = crossterm::terminal::disable_raw_mode();
-        eprintln!();
         std::process::exit(130); // 128 + SIGINT(2)
     })
     .ok();
@@ -121,8 +122,11 @@ pub fn run(
                 "  Test environment kept at: {}",
                 test_env.base_dir.display()
             );
-        } else if let Err(e) = test_env.cleanup() {
-            eprintln!("  Warning: cleanup failed: {e}");
+        } else {
+            match test_env.cleanup() {
+                Ok(()) => eprintln!("Cleaned up test environment."),
+                Err(e) => eprintln!("  Warning: cleanup failed: {e}"),
+            }
         }
 
         // Clear cleanup path after successful cleanup.

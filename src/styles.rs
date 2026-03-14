@@ -66,8 +66,8 @@ pub const YELLOW: &str = "\x1b[33m";
 /// ANSI escape code for red text.
 pub const RED: &str = "\x1b[31m";
 
-/// ANSI escape code for blue text.
-pub const BLUE: &str = "\x1b[34m";
+/// ANSI escape code for bright blue text.
+pub const BLUE: &str = "\x1b[94m";
 
 /// ANSI escape code for cyan text.
 pub const CYAN: &str = "\x1b[36m";
