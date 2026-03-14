@@ -1,0 +1,86 @@
+name: "Sync rebase conflict skips push"
+description: "When rebase conflicts, sync should not attempt to push the branch"
+
+repos:
+  - name: sync-conflict-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone the repository"
+    run: "git-worktree-clone $REMOTE_SYNC_CONFLICT_REPO"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/sync-conflict-repo/main"
+
+  - name: "Checkout develop branch"
+    run: "git-worktree-checkout develop"
+    cwd: "$WORK_DIR/sync-conflict-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/sync-conflict-repo/develop"
+
+  - name: "Make conflicting local commit on develop"
+    run: |
+      cd develop
+      echo "develop conflicting content" > README.md
+      git add README.md
+      git commit -m "Conflicting change on develop"
+    cwd: "$WORK_DIR/sync-conflict-repo"
+    expect:
+      exit_code: 0
+
+  - name: "Push conflicting change to main on remote"
+    run: |
+      tmp=$(mktemp -d)
+      git clone "$REMOTE_SYNC_CONFLICT_REPO" "$tmp" 2>/dev/null
+      cd "$tmp"
+      echo "main conflicting content" > README.md
+      git add README.md
+      git commit -m "Conflicting change on main" 2>/dev/null
+      git push origin main 2>/dev/null
+      rm -rf "$tmp"
+    expect:
+      exit_code: 0
+
+  - name: "Record develop commit before sync"
+    run: "cd develop && git rev-parse HEAD > /tmp/daft-sync-test-develop-before"
+    cwd: "$WORK_DIR/sync-conflict-repo"
+    expect:
+      exit_code: 0
+
+  - name: "Record remote develop ref before sync"
+    run: |
+      git ls-remote "$REMOTE_SYNC_CONFLICT_REPO" develop | awk '{print $1}' > /tmp/daft-sync-test-remote-before
+    cwd: "$WORK_DIR/sync-conflict-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: "Run sync with --rebase --push (should handle conflict gracefully)"
+    run:
+      "git-sync --rebase main --push --force-with-lease --verbose --verbose 2>&1
+      || true"
+    cwd: "$WORK_DIR/sync-conflict-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: "Verify develop was not changed (rebase aborted)"
+    run: |
+      before=$(cat /tmp/daft-sync-test-develop-before)
+      after=$(cd develop && git rev-parse HEAD)
+      echo "before=$before after=$after"
+      [ "$before" = "$after" ]
+    cwd: "$WORK_DIR/sync-conflict-repo"
+    expect:
+      exit_code: 0
+
+  - name: "Verify push was skipped (remote develop unchanged)"
+    run: |
+      before=$(cat /tmp/daft-sync-test-remote-before)
+      after=$(git ls-remote "$REMOTE_SYNC_CONFLICT_REPO" develop | awk '{print $1}')
+      echo "before=$before after=$after"
+      [ "$before" = "$after" ]
+    cwd: "$WORK_DIR/sync-conflict-repo/main"
+    expect:
+      exit_code: 0
