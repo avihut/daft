@@ -109,7 +109,7 @@ pub fn run(
 
         eprintln!();
         eprintln!(
-            "  {} scenarios, {} steps, {} passed, {} failed",
+            "{} scenarios, {} steps, {} passed, {} failed",
             total_scenarios,
             total_steps,
             styles::green(&total_passed.to_string()),
@@ -121,7 +121,7 @@ pub fn run(
         );
         if !failed_scenarios.is_empty() {
             for name in &failed_scenarios {
-                eprintln!("    {} {}", styles::red("x"), name);
+                eprintln!("{} {}", styles::red("x"), name);
             }
         }
         eprintln!();

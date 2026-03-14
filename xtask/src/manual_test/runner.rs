@@ -387,14 +387,14 @@ pub fn run_non_interactive(
 ) -> Result<ScenarioResult> {
     use daft::styles;
 
-    eprintln!("  {}", styles::cyan(&scenario.name));
+    eprintln!("{}", styles::cyan(&scenario.name));
 
     let mut passed = 0;
     let mut failed = 0;
 
     for (i, step) in scenario.steps.iter().enumerate() {
         eprint!(
-            "    {} {} ... ",
+            "{} {} ... ",
             styles::dim(&format!("[{}/{}]", i + 1, scenario.steps.len())),
             &step.name
         );
@@ -414,7 +414,7 @@ pub fn run_non_interactive(
             }
             if verbose {
                 for a in &result.assertions {
-                    eprintln!("      {} {}", styles::green("✓"), styles::dim(&a.label));
+                    eprintln!("  {} {}", styles::green("✓"), styles::dim(&a.label));
                 }
             }
             passed += 1;
@@ -427,18 +427,18 @@ pub fn run_non_interactive(
             );
             for a in &result.assertions {
                 if !a.passed {
-                    eprintln!("      {} {}", styles::red("x"), a.label);
+                    eprintln!("  {} {}", styles::red("x"), a.label);
                     if let Some(detail) = &a.detail {
-                        eprintln!("        {}", styles::dim(detail));
+                        eprintln!("    {}", styles::dim(detail));
                     }
                 }
             }
             // Show captured output for debugging.
             let captured = combine_captured(&result.stdout, &result.stderr);
             if !captured.is_empty() {
-                eprintln!("      {}", styles::dim("--- captured output ---"));
+                eprintln!("  {}", styles::dim("--- captured output ---"));
                 for line in captured.lines().take(20) {
-                    eprintln!("      {}", styles::dim(line));
+                    eprintln!("  {}", styles::dim(line));
                 }
             }
             failed += 1;
