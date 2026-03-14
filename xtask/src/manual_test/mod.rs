@@ -43,6 +43,7 @@ pub fn run(
     step: Option<usize>,
     loop_count: Option<usize>,
     keep: bool,
+    setup_only: bool,
     list: bool,
 ) -> Result<()> {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -109,6 +110,18 @@ pub fn run(
             test_env.register_remote(&repo_spec.name);
         }
         test_env.create_template()?;
+
+        if setup_only {
+            eprintln!("WORK_DIR={}", test_env.work_dir.display());
+            for (k, v) in test_env.exported_vars() {
+                eprintln!("{k}={v}");
+            }
+            // Don't clean up — the point is to keep the env for manual use.
+            if let Ok(mut guard) = cleanup_path.lock() {
+                *guard = None;
+            }
+            continue;
+        }
 
         let result = if is_interactive {
             interactive::run_interactive(&scenario, &test_env, step, loop_count, verbose)?;

@@ -320,6 +320,10 @@ enum Commands {
         #[arg(long)]
         keep: bool,
 
+        /// Set up test environment only (no step execution)
+        #[arg(long)]
+        setup_only: bool,
+
         /// List available scenarios and exit
         #[arg(long)]
         list: bool,
@@ -346,6 +350,7 @@ fn main() -> Result<()> {
             step,
             loop_count,
             keep,
+            setup_only,
             list,
         } => manual_test::run(
             scenarios,
@@ -354,6 +359,7 @@ fn main() -> Result<()> {
             step,
             loop_count,
             keep,
+            setup_only,
             list,
         ),
     }

@@ -36,12 +36,17 @@ impl TestEnv {
     /// variables (`WORK_DIR`, `BASE_DIR`, `BINARY_DIR`) plus any extra vars
     /// from `scenario.env`.
     pub fn create(scenario: &Scenario, project_root: &Path) -> Result<Self> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("system clock before UNIX epoch")?
-            .as_millis();
-
-        let base_dir = PathBuf::from(format!("/tmp/daft-manual-test-{timestamp}"));
+        let base_dir = if let Ok(base) = std::env::var("DAFT_MANUAL_TEST_BASE") {
+            // Deterministic path under a managed directory (e.g., sandbox/test/).
+            let slug = scenario.name.to_lowercase().replace(' ', "-");
+            PathBuf::from(base).join(slug)
+        } else {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .context("system clock before UNIX epoch")?
+                .as_millis();
+            PathBuf::from(format!("/tmp/daft-manual-test-{timestamp}"))
+        };
         let remotes_dir = base_dir.join("remotes");
         let template_dir = base_dir.join("remotes-template");
         let work_dir = base_dir.join("work");
@@ -135,6 +140,15 @@ impl TestEnv {
 
     /// Register a remote repository, making its path available as
     /// `$REMOTE_<NAME>` (uppercased, hyphens replaced with underscores).
+    /// Return all `REMOTE_*` variables for export (used by `--setup-only`).
+    pub fn exported_vars(&self) -> Vec<(&str, &str)> {
+        self.vars
+            .iter()
+            .filter(|(k, _)| k.starts_with("REMOTE_"))
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect()
+    }
+
     pub fn register_remote(&mut self, repo_name: &str) {
         let var_name = format!("REMOTE_{}", repo_name.to_uppercase().replace('-', "_"));
         let path = self.remotes_dir.join(repo_name);

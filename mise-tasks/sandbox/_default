@@ -86,6 +86,63 @@ set -euo pipefail
 SCRIPT
 chmod +x "${bin_dir}/manual-test"
 
+cat > "${bin_dir}/setup-test" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+sandbox_dir="$(dirname "$(dirname "$(realpath "$0")")")"
+test_base="${sandbox_dir}/test"
+mkdir -p "$test_base"
+export DAFT_MANUAL_TEST_BASE="$test_base"
+(cd "$DAFT_WORKTREE" && cargo run --package xtask -- manual-test --setup-only "$@")
+SCRIPT
+chmod +x "${bin_dir}/setup-test"
+
+cat > "${bin_dir}/reset-test" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+sandbox_dir="$(dirname "$(dirname "$(realpath "$0")")")"
+test_base="${sandbox_dir}/test"
+
+# Determine which test to reset.
+if [[ $# -gt 0 ]]; then
+    slug="$(echo "$1" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+    test_dir="${test_base}/${slug}"
+else
+    # Default to the only test, or error if multiple.
+    dirs=("$test_base"/*)
+    dirs=("${dirs[@]/#/}") # expand
+    count=0
+    for d in "$test_base"/*/; do
+        [[ -d "$d" ]] && count=$((count + 1)) && test_dir="${d%/}"
+    done
+    if [[ $count -eq 0 ]]; then
+        echo "No test environments found in ${test_base}/" >&2
+        exit 1
+    elif [[ $count -gt 1 ]]; then
+        echo "Multiple test environments found. Specify one:" >&2
+        for d in "$test_base"/*/; do
+            echo "  $(basename "${d%/}")" >&2
+        done
+        exit 1
+    fi
+fi
+
+if [[ ! -d "$test_dir" ]]; then
+    echo "Test environment not found: $test_dir" >&2
+    exit 1
+fi
+
+# Reset: clear work/, restore remotes from template.
+rm -rf "${test_dir}/work"
+mkdir -p "${test_dir}/work"
+if [[ -d "${test_dir}/remotes-template" ]]; then
+    rm -rf "${test_dir}/remotes"
+    cp -a "${test_dir}/remotes-template" "${test_dir}/remotes"
+fi
+echo "Reset test environment: $(basename "$test_dir")"
+SCRIPT
+chmod +x "${bin_dir}/reset-test"
+
 cat > "${bin_dir}/help" <<SCRIPT
 #!/usr/bin/env bash
 set -euo pipefail
@@ -152,6 +209,91 @@ _manual_test() {
 complete -F _manual_test manual-test
 BASH_COMP
 
+# --- Completions for setup-test (same scenario list as manual-test) ---
+cat > "${bin_dir}/completions/_setup-test" <<'ZSH_COMP'
+#compdef setup-test
+
+_setup-test() {
+    local -a scenarios
+    local scenarios_dir="${DAFT_WORKTREE}/tests/manual/scenarios"
+
+    if [[ -d "$scenarios_dir" ]]; then
+        local f rel
+        for f in "$scenarios_dir"/**/*.yml "$scenarios_dir"/**/*.yaml(N); do
+            rel="${f#$scenarios_dir/}"
+            if [[ "$rel" == */* ]]; then
+                scenarios+=("${rel%%/*}:${${rel#*/}:r}")
+            else
+                scenarios+=("${rel:r}")
+            fi
+        done
+    fi
+
+    _arguments -s \
+        '1:scenario:($scenarios)'
+}
+ZSH_COMP
+
+cat > "${bin_dir}/completions/setup-test.bash" <<'BASH_COMP'
+_setup_test() {
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    local scenarios_dir="${DAFT_WORKTREE}/tests/manual/scenarios"
+    if [[ -d "$scenarios_dir" ]]; then
+        local scenarios="" f rel name
+        while IFS= read -r -d '' f; do
+            rel="${f#$scenarios_dir/}"
+            name="${rel%.yml}"
+            name="${name%.yaml}"
+            if [[ "$name" == */* ]]; then
+                name="${name%%/*}:${name#*/}"
+            fi
+            scenarios="$scenarios $name"
+        done < <(find "$scenarios_dir" \( -name '*.yml' -o -name '*.yaml' \) -print0 2>/dev/null)
+        COMPREPLY=($(compgen -W "$scenarios" -- "$cur"))
+    fi
+}
+complete -F _setup_test setup-test
+BASH_COMP
+
+# --- Completions for reset-test (active test envs) ---
+cat > "${bin_dir}/completions/_reset-test" <<'ZSH_COMP'
+#compdef reset-test
+
+_reset-test() {
+    local -a tests
+    local sandbox_dir="$(dirname "$(dirname "${DAFT_SANDBOX_COMPLETIONS_DIR}")")"
+    local test_base="${sandbox_dir}/test"
+
+    if [[ -d "$test_base" ]]; then
+        local d
+        for d in "$test_base"/*(N/); do
+            tests+=("${d:t}")
+        done
+    fi
+
+    _arguments -s \
+        '1:test environment:($tests)'
+}
+ZSH_COMP
+
+cat > "${bin_dir}/completions/reset-test.bash" <<'BASH_COMP'
+_reset_test() {
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    local sandbox_dir
+    sandbox_dir="$(dirname "$(dirname "$(realpath "$(command -v reset-test)")")")"
+    local test_base="${sandbox_dir}/test"
+    if [[ -d "$test_base" ]]; then
+        local tests="" d
+        for d in "$test_base"/*/; do
+            [[ -d "$d" ]] || continue
+            tests="$tests $(basename "${d%/}")"
+        done
+        COMPREPLY=($(compgen -W "$tests" -- "$cur"))
+    fi
+}
+complete -F _reset_test reset-test
+BASH_COMP
+
 # --- Sourceable completion loader ---
 cat > "${bin_dir}/enable-completions" <<'LOADER'
 # Source this file to enable tab completions for sandbox helpers.
@@ -159,8 +301,14 @@ cat > "${bin_dir}/enable-completions" <<'LOADER'
 if [[ -n "${ZSH_VERSION:-}" ]]; then
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/_manual-test"
     compdef _manual-test manual-test
+    source "${DAFT_SANDBOX_COMPLETIONS_DIR}/_setup-test"
+    compdef _setup-test setup-test
+    source "${DAFT_SANDBOX_COMPLETIONS_DIR}/_reset-test"
+    compdef _reset-test reset-test
 elif [[ -n "${BASH_VERSION:-}" ]]; then
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/manual-test.bash"
+    source "${DAFT_SANDBOX_COMPLETIONS_DIR}/setup-test.bash"
+    source "${DAFT_SANDBOX_COMPLETIONS_DIR}/reset-test.bash"
 fi
 LOADER
 
@@ -180,6 +328,8 @@ Load completions for sandbox helpers and the daft dev binary:
     help                     Show this guide
     manual-test <scenario>   Run a manual test scenario interactively
     manual-test --list       List available scenarios
+    setup-test <scenario>    Set up a test environment for manual exploration
+    reset-test [name]        Reset a test environment to its initial state
     rebuild-daft             Rebuild daft and update symlinks
     go-to-worktree           Open a shell in the worktree directory
     clean-sandbox            Remove this sandbox and return to the worktree
