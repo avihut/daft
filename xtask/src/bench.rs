@@ -149,9 +149,10 @@ fn format_cell(state: &CellState, spinner_frame: usize) -> String {
     }
 }
 
-fn duration_of(state: &CellState) -> Duration {
+fn elapsed_of(state: &CellState) -> Duration {
     match state {
         CellState::Passed(d) | CellState::Failed(d) => *d,
+        CellState::Running(start) => start.elapsed(),
         _ => Duration::ZERO,
     }
 }
@@ -205,9 +206,14 @@ impl TableState {
             ));
         }
 
-        // Totals
-        let bash_total: Duration = self.bash_cells.iter().map(duration_of).sum();
-        let yaml_total: Duration = self.yaml_cells.iter().map(duration_of).sum();
+        // Totals (include running timers)
+        let bash_total: Duration = self.bash_cells.iter().map(elapsed_of).sum();
+        let yaml_total: Duration = self.yaml_cells.iter().map(elapsed_of).sum();
+        let any_running = self
+            .bash_cells
+            .iter()
+            .chain(self.yaml_cells.iter())
+            .any(|c| matches!(c, CellState::Running(_)));
 
         out.push_str(&format!(
             "  {DIM}{:─<name_w$}  {:─<col_w$}  {:─<col_w$}{RESET}\n",
@@ -215,19 +221,35 @@ impl TableState {
         ));
 
         let bash_total_str = if bash_total > Duration::ZERO {
-            format!("{BOLD}{:.1}s{RESET}", bash_total.as_secs_f64())
+            let s = format!("{:.1}s", bash_total.as_secs_f64());
+            if any_running {
+                format!("{CYAN}{s}{RESET}")
+            } else {
+                format!("{BOLD}{s}{RESET}")
+            }
         } else {
             format!("{DIM}--{RESET}")
         };
         let yaml_total_str = if yaml_total > Duration::ZERO {
-            format!("{BOLD}{:.1}s{RESET}", yaml_total.as_secs_f64())
+            let s = format!("{:.1}s", yaml_total.as_secs_f64());
+            if any_running {
+                format!("{CYAN}{s}{RESET}")
+            } else {
+                format!("{BOLD}{s}{RESET}")
+            }
         } else {
             format!("{DIM}--{RESET}")
         };
 
+        // Compute visible length for padding
+        let bash_vis = format!("{:.1}s", bash_total.as_secs_f64());
+        let yaml_vis = format!("{:.1}s", yaml_total.as_secs_f64());
+        let bash_pad = " ".repeat(col_w.saturating_sub(bash_vis.len()));
+        let yaml_pad = " ".repeat(col_w.saturating_sub(yaml_vis.len()));
+
         out.push_str(&format!(
-            "  {BOLD}{:<name_w$}{RESET}  {}  {}\n",
-            "TOTAL", bash_total_str, yaml_total_str
+            "  {BOLD}{:<name_w$}{RESET}  {}{}  {}{}\n",
+            "TOTAL", bash_total_str, bash_pad, yaml_total_str, yaml_pad
         ));
 
         out
