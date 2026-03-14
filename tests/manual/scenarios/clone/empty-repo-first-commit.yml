@@ -1,0 +1,36 @@
+name: Clone empty repo first commit
+description: First commit works in cloned empty repository
+
+steps:
+  - name: Create empty bare repo
+    run: git init --bare $BASE_DIR/remotes/empty-commit-repo
+    expect:
+      exit_code: 0
+
+  - name: Clone the empty repository
+    run: git-worktree-clone $BASE_DIR/remotes/empty-commit-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/empty-commit-repo"
+
+  - name: Create first commit
+    run: |
+      default_branch=$(git config --global init.defaultBranch 2>/dev/null || echo "master")
+      test -z "$default_branch" && default_branch="master"
+      cd $WORK_DIR/empty-commit-repo/$default_branch
+      echo "# My Project" > README.md
+      git add README.md
+      git commit -m "Initial commit"
+    expect:
+      exit_code: 0
+
+  - name: Verify commit was created
+    run: |
+      default_branch=$(git config --global init.defaultBranch 2>/dev/null || echo "master")
+      test -z "$default_branch" && default_branch="master"
+      count=$(cd $WORK_DIR/empty-commit-repo/$default_branch && git rev-list --count HEAD 2>/dev/null)
+      test "$count" = "1" && echo "COMMIT_OK"
+    expect:
+      output_contains:
+        - "COMMIT_OK"

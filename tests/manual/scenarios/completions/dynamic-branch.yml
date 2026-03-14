@@ -1,0 +1,29 @@
+name: Dynamic branch completion
+description: Dynamic branch completion works inside a git repository
+
+steps:
+  - name: Create a test repository with branches
+    run: |
+      mkdir -p $WORK_DIR/completion-repo && cd $WORK_DIR/completion-repo &&
+      git init &&
+      git config user.name "Test" &&
+      git config user.email "test@example.com" &&
+      echo "test" > README.md &&
+      git add README.md &&
+      git commit -m "Initial commit" &&
+      git branch feature/test-1 &&
+      git branch feature/test-2 &&
+      git branch hotfix/urgent
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/completion-repo/.git"
+
+  - name: Complete with "fea" prefix returns matching branches
+    run: daft __complete git-worktree-checkout "fea" 2>&1
+    cwd: "$WORK_DIR/completion-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature/test-1"
+        - "feature/test-2"

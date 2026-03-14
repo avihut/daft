@@ -1,0 +1,38 @@
+name: Config checkout carry true
+description: daft.checkout.carry=true enables carry by default
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Set carry config to true
+    run: git config daft.checkout.carry true
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Create a remote branch to checkout
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git checkout -b feature/test-carry
+      git push origin feature/test-carry
+      git checkout main
+    expect:
+      exit_code: 0
+
+  - name: Create uncommitted changes in main
+    run: echo "changes in main" > $WORK_DIR/test-repo/main/main_changes.txt
+
+  - name: Checkout with carry enabled by config
+    run: git-worktree-checkout feature/test-carry
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/feature/test-carry/main_changes.txt"

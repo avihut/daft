@@ -1,0 +1,52 @@
+name: Many worktrees
+description: List correctly shows 5+ worktrees
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create many branches in remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp"
+      for i in 1 2 3 4 5; do
+        git checkout -b "feature/branch$i" 2>/dev/null
+        echo "Branch $i" > "branch$i.txt"
+        git add "branch$i.txt"
+        git commit -m "Add branch$i" 2>/dev/null
+        git push origin "feature/branch$i" 2>/dev/null
+      done
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout all feature branches
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git fetch origin
+      cd $WORK_DIR/test-repo
+      for i in 1 2 3 4 5; do
+        git-worktree-checkout "feature/branch$i"
+      done
+    expect:
+      exit_code: 0
+
+  - name: List shows all branches
+    run: NO_COLOR=1 git-worktree-list 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"
+        - "feature/branch1"
+        - "feature/branch2"
+        - "feature/branch3"
+        - "feature/branch4"
+        - "feature/branch5"

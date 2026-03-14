@@ -1,0 +1,44 @@
+name: Branch delete cd default branch
+description:
+  cdTarget=default-branch config directs cd to default branch worktree
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create feature branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git config daft.prune.cdTarget default-branch
+      git-worktree-checkout -b feature/test-cd-default
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/test-cd-default"
+
+  - name: Commit, push, and merge into main
+    run: |
+      cd $WORK_DIR/test-repo/feature/test-cd-default
+      echo "feature work" > feature.txt
+      git add feature.txt
+      git commit -m "Add feature"
+      git push origin feature/test-cd-default
+      cd $WORK_DIR/test-repo/main
+      git merge feature/test-cd-default
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Delete from inside worktree with cdTarget=default-branch
+    run: |
+      cd $WORK_DIR/test-repo/feature/test-cd-default
+      cd_file=$(mktemp)
+      DAFT_CD_FILE="$cd_file" git-worktree-branch-delete feature/test-cd-default 2>&1 || true
+      cat "$cd_file" > $WORK_DIR/cd_target.txt
+      rm -f "$cd_file"
+    expect:
+      file_contains:
+        - path: "$WORK_DIR/cd_target.txt"
+          content: "main"

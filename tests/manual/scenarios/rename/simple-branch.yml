@@ -1,0 +1,27 @@
+name: Rename a non-nested branch
+description: Rename a simple (non-nested) branch name
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create simple branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b mybranch
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/mybranch"
+
+  - name: Rename to another simple name
+    run: git-worktree-branch -m mybranch renamed-branch 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/renamed-branch"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/mybranch"

@@ -1,0 +1,8 @@
+name: Sync outside repository
+description: Fails when run outside a git repository
+
+steps:
+  - name: Sync outside git repository fails
+    run: git-sync 2>&1
+    expect:
+      exit_code: 1

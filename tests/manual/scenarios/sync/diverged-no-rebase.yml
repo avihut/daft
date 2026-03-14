@@ -1,0 +1,45 @@
+name: Sync diverged branch without --rebase
+description: Diverged branch without --rebase does not force-update
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop branch
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Make develop diverge from upstream by amending
+    run: |
+      cd $WORK_DIR/test-repo/develop
+      echo "Local diverged change" >> README.md
+      git add README.md
+      git commit --amend -m "Amended: diverged from upstream" 2>/dev/null
+      git rev-parse HEAD > /tmp/daft-sync-diverged-commit
+    expect:
+      exit_code: 0
+
+  - name: Run sync without --rebase
+    run: git-sync --verbose --verbose 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify develop remains at its diverged commit
+    run: |
+      diverged=$(cat /tmp/daft-sync-diverged-commit)
+      current=$(cd $WORK_DIR/test-repo/develop && git rev-parse HEAD)
+      echo "diverged=$diverged current=$current"
+      [ "$diverged" = "$current" ]
+    expect:
+      exit_code: 0

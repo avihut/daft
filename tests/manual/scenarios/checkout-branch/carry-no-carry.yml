@@ -1,0 +1,25 @@
+name: Checkout branch no-carry
+description: "--no-carry explicitly prevents carrying changes to new branch"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create file in main worktree
+    run: echo "no carry content" > $WORK_DIR/test-repo/main/no_carry_file.txt
+
+  - name: Create branch with --no-carry
+    run: git-worktree-checkout -b --no-carry feature/no-carry
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/no-carry/no_carry_file.txt"
+      files_exist:
+        - "$WORK_DIR/test-repo/main/no_carry_file.txt"

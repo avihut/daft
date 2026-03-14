@@ -1,0 +1,31 @@
+name: Remote column
+description: Remote column header shown in list output
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop and make a local commit ahead of remote
+    run: |
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout develop
+      cd $WORK_DIR/test-repo/develop
+      echo "local change" > local.txt
+      git add local.txt
+      git commit -m "Local commit"
+    expect:
+      exit_code: 0
+
+  - name: List output contains Remote header
+    run: NO_COLOR=1 git-worktree-list 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Remote"

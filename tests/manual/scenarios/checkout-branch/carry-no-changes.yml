@@ -1,0 +1,23 @@
+name: Checkout branch carry no changes
+description: "-b works normally when there are no changes to carry"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create branch from clean main worktree
+    run: git-worktree-checkout -b feature/clean-create
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/clean-create"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/feature/clean-create"
+          branch: feature/clean-create

@@ -1,0 +1,13 @@
+name: Checkout help
+description: Help and version commands work for git-worktree-checkout
+
+steps:
+  - name: git-worktree-checkout --help exits successfully
+    run: git-worktree-checkout --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-checkout --version exits successfully
+    run: git-worktree-checkout --version 2>&1
+    expect:
+      exit_code: 0

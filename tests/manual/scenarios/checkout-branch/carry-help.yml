@@ -1,0 +1,12 @@
+name: Checkout branch carry help
+description: "Help output shows --carry, --no-carry, and -c flags"
+
+steps:
+  - name: Help shows --carry flag
+    run: git-worktree-checkout --help 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "--carry"
+        - "--no-carry"
+        - "-c"

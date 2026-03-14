@@ -1,0 +1,29 @@
+name: Fetch skips branch with no tracking
+description: Branch with no tracking is skipped gracefully
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create local branch and worktree without remote tracking
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git branch local-only-branch
+      git worktree add $WORK_DIR/test-repo/local-only local-only-branch
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/local-only"
+
+  - name: Fetch should handle no-tracking branch
+    run: git-worktree-fetch local-only 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      output_contains:
+        - "tracking"

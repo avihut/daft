@@ -1,0 +1,26 @@
+name: Clone empty repo with branch
+description: Empty repo cloned with --branch uses custom branch name
+
+steps:
+  - name: Create empty bare repo
+    run: git init --bare $BASE_DIR/remotes/empty-branch-repo
+    expect:
+      exit_code: 0
+
+  - name: Clone with explicit branch name
+    run: git-worktree-clone --branch develop $BASE_DIR/remotes/empty-branch-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/empty-branch-repo"
+        - "$WORK_DIR/empty-branch-repo/.git"
+        - "$WORK_DIR/empty-branch-repo/develop"
+
+  - name: Verify the branch is develop
+    run: |
+      cd $WORK_DIR/empty-branch-repo/develop
+      branch=$(git branch --show-current 2>/dev/null)
+      test "$branch" = "develop" && echo "BRANCH_OK"
+    expect:
+      output_contains:
+        - "BRANCH_OK"

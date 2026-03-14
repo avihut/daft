@@ -1,0 +1,28 @@
+name: Checkout branch with uncommitted changes
+description: "Uncommitted changes in current worktree don't affect -b"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Make uncommitted changes in main worktree
+    run: echo "Uncommitted changes" > $WORK_DIR/test-repo/main/uncommitted.txt
+
+  - name: Create new branch despite dirty main
+    run: git-worktree-checkout -b feature/new-branch
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/new-branch"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/feature/new-branch"
+          branch: feature/new-branch
+      files_exist:
+        - "$WORK_DIR/test-repo/main/uncommitted.txt"

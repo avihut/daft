@@ -1,0 +1,40 @@
+name: Force-delete default branch fails when no worktree
+description: Force-delete default branch fails when worktree was already removed
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Create another branch to work from
+    run: git-worktree-checkout -b feature/other
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Manually remove main worktree
+    run: git worktree remove "$WORK_DIR/test-repo/main" 2>/dev/null
+    cwd: "$WORK_DIR/test-repo/feature/other"
+    expect:
+      exit_code: 0
+
+  - name: Force-delete should fail with no worktree
+    run: git-worktree-branch-delete -D main 2>&1
+    cwd: "$WORK_DIR/test-repo/feature/other"
+    expect:
+      exit_code: 1
+
+  - name: Verify local branch ref still exists
+    run: |
+      cd $WORK_DIR/test-repo/feature/other
+      git branch | grep " main$" && echo "BRANCH_EXISTS"
+    expect:
+      output_contains:
+        - "BRANCH_EXISTS"

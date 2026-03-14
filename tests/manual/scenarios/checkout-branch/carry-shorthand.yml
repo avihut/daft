@@ -1,0 +1,25 @@
+name: Checkout branch carry shorthand
+description: "-c shorthand for --carry"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create file in main worktree
+    run:
+      echo "shorthand carry content" >
+      $WORK_DIR/test-repo/main/shorthand_file.txt
+
+  - name: Create branch with -c shorthand
+    run: git-worktree-checkout -b -c feature/shorthand-carry
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/feature/shorthand-carry/shorthand_file.txt"

@@ -1,0 +1,163 @@
+name: All commands generate completions
+description: Every command generates completions for all shells without error
+
+steps:
+  - name: Bash completions for git-worktree-clone
+    run: daft completions bash --command=git-worktree-clone 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Zsh completions for git-worktree-clone
+    run: daft completions zsh --command=git-worktree-clone 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fish completions for git-worktree-clone
+    run: daft completions fish --command=git-worktree-clone 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fig completions for git-worktree-clone
+    run: daft completions fig --command=git-worktree-clone 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Bash completions for git-worktree-init
+    run: daft completions bash --command=git-worktree-init 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Zsh completions for git-worktree-init
+    run: daft completions zsh --command=git-worktree-init 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fish completions for git-worktree-init
+    run: daft completions fish --command=git-worktree-init 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fig completions for git-worktree-init
+    run: daft completions fig --command=git-worktree-init 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Bash completions for git-worktree-checkout
+    run: daft completions bash --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Zsh completions for git-worktree-checkout
+    run: daft completions zsh --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fish completions for git-worktree-checkout
+    run: daft completions fish --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fig completions for git-worktree-checkout
+    run: daft completions fig --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Bash completions for git-worktree-prune
+    run: daft completions bash --command=git-worktree-prune 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Zsh completions for git-worktree-prune
+    run: daft completions zsh --command=git-worktree-prune 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fish completions for git-worktree-prune
+    run: daft completions fish --command=git-worktree-prune 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fig completions for git-worktree-prune
+    run: daft completions fig --command=git-worktree-prune 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Bash completions for git-worktree-carry
+    run: daft completions bash --command=git-worktree-carry 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Zsh completions for git-worktree-carry
+    run: daft completions zsh --command=git-worktree-carry 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fish completions for git-worktree-carry
+    run: daft completions fish --command=git-worktree-carry 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fig completions for git-worktree-carry
+    run: daft completions fig --command=git-worktree-carry 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Bash completions for git-worktree-fetch
+    run: daft completions bash --command=git-worktree-fetch 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Zsh completions for git-worktree-fetch
+    run: daft completions zsh --command=git-worktree-fetch 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fish completions for git-worktree-fetch
+    run: daft completions fish --command=git-worktree-fetch 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fig completions for git-worktree-fetch
+    run: daft completions fig --command=git-worktree-fetch 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Bash completions for git-worktree-flow-adopt
+    run: daft completions bash --command=git-worktree-flow-adopt 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Zsh completions for git-worktree-flow-adopt
+    run: daft completions zsh --command=git-worktree-flow-adopt 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fish completions for git-worktree-flow-adopt
+    run: daft completions fish --command=git-worktree-flow-adopt 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fig completions for git-worktree-flow-adopt
+    run: daft completions fig --command=git-worktree-flow-adopt 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Bash completions for git-worktree-flow-eject
+    run: daft completions bash --command=git-worktree-flow-eject 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Zsh completions for git-worktree-flow-eject
+    run: daft completions zsh --command=git-worktree-flow-eject 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fish completions for git-worktree-flow-eject
+    run: daft completions fish --command=git-worktree-flow-eject 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fig completions for git-worktree-flow-eject
+    run: daft completions fig --command=git-worktree-flow-eject 2>&1
+    expect:
+      exit_code: 0

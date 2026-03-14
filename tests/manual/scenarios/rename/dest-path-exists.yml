@@ -1,0 +1,33 @@
+name: Rename fails if destination path exists
+description: Fails if destination worktree path already exists on disk
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create feature branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/path-test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/path-test"
+
+  - name: Create a directory at the destination path
+    run: mkdir -p $WORK_DIR/test-repo/feature/path-blocker
+    expect:
+      exit_code: 0
+
+  - name: Rename should fail because destination path exists
+    run: git-worktree-branch -m feature/path-test feature/path-blocker 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+
+  - name: Verify source worktree is unchanged
+    run: test -d $WORK_DIR/test-repo/feature/path-test
+    expect:
+      exit_code: 0

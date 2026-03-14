@@ -1,0 +1,42 @@
+name: Deprecated hook warning
+description: Deprecated hook names show warning during worktree creation
+
+repos:
+  - name: test-hooks-deprecated
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Deprecated hooks test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/deprecated-test
+        from: main
+    hook_scripts:
+      - name: post-create
+        content: |
+          #!/bin/bash
+          touch "$DAFT_WORKTREE_PATH/.deprecated-hook-ran"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_HOOKS_DEPRECATED
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-hooks-deprecated/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-hooks-deprecated/main"
+    expect:
+      exit_code: 0
+
+  - name: Create worktree triggers deprecation warning
+    run: git-worktree-checkout feature/deprecated-test 2>&1
+    cwd: "$WORK_DIR/test-hooks-deprecated/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "deprecated"

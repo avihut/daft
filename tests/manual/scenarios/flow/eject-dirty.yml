@@ -1,0 +1,51 @@
+name: Flow eject dirty worktrees
+description: Eject fails with dirty non-target worktrees, succeeds with --force
+
+steps:
+  - name: Init a worktree-style repo
+    run: git-worktree-init eject-dirty-test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/eject-dirty-test/master"
+
+  - name: Create initial commit
+    run: |
+      cd $WORK_DIR/eject-dirty-test/master
+      echo "# Test Repo" > README.md
+      git add .
+      git commit -m "Initial commit"
+    expect:
+      exit_code: 0
+
+  - name: Create additional worktree with dirty changes
+    run: |
+      cd $WORK_DIR/eject-dirty-test
+      git worktree add feature-branch -b feature-branch master 2>/dev/null
+      echo "dirty" > feature-branch/dirty.txt
+    expect:
+      exit_code: 0
+
+  - name: Eject without --force fails
+    run: git-worktree-flow-eject 2>&1
+    cwd: "$WORK_DIR/eject-dirty-test"
+    expect:
+      exit_code: 1
+
+  - name: Eject with --force succeeds
+    run: git-worktree-flow-eject --force 2>&1
+    cwd: "$WORK_DIR/eject-dirty-test"
+    expect:
+      exit_code: 0
+
+  - name: Verify traditional structure
+    run: test -f $WORK_DIR/eject-dirty-test/README.md && echo "EJECTED_OK"
+    expect:
+      output_contains:
+        - "EJECTED_OK"
+
+  - name: Verify dirty worktree was removed
+    run: test ! -d "$WORK_DIR/eject-dirty-test/feature-branch" && echo "REMOVED"
+    expect:
+      output_contains:
+        - "REMOVED"

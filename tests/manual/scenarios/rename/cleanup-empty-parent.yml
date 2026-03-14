@@ -1,0 +1,39 @@
+name: Rename cleans up empty parent directories
+description: Renames that empty parent dirs clean up those dirs
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create deeply nested branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/deep/nested
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/deep/nested"
+
+  - name: Rename to a different top-level path
+    run: git-worktree-branch -m feature/deep/nested bugfix/moved 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/bugfix/moved"
+
+  - name: Verify empty parent directories were cleaned up
+    run: |
+      if [ -d "$WORK_DIR/test-repo/feature/deep" ]; then
+        echo "feature/deep still exists"
+        exit 1
+      fi
+      if [ -d "$WORK_DIR/test-repo/feature" ]; then
+        echo "feature still exists"
+        exit 1
+      fi
+      echo "Empty parents cleaned up"
+    expect:
+      exit_code: 0

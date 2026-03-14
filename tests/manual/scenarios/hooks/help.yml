@@ -1,0 +1,15 @@
+name: Hooks help
+description: Help and version commands work for git-daft
+
+steps:
+  - name: git-daft --help exits successfully
+    run: git-daft --help 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "hooks"
+
+  - name: git-daft --version exits successfully
+    run: git-daft --version 2>&1
+    expect:
+      exit_code: 0

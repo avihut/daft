@@ -1,0 +1,8 @@
+name: Checkout outside repo
+description: Checkout fails outside a git repository
+
+steps:
+  - name: Checkout outside git repo fails
+    run: git-worktree-checkout some-branch 2>&1
+    expect:
+      exit_code: 1

@@ -1,0 +1,39 @@
+name: Prune regular repo other branch
+description:
+  Prune in regular repo when on different branch stays on current branch
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone normally (non-bare layout)
+    run: git clone $REMOTE_TEST_REPO $WORK_DIR/test-repo-clone 2>/dev/null
+    expect:
+      exit_code: 0
+
+  - name: Stay on main (not the branch being pruned)
+    run: |
+      cd $WORK_DIR/test-repo-clone
+      git checkout main 2>/dev/null
+    expect:
+      exit_code: 0
+
+  - name: Delete feature branch from remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp" && git push origin --delete feature/test-feature 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Prune stays on current branch
+    run: |
+      cd $WORK_DIR/test-repo-clone
+      git-worktree-prune
+      git branch --show-current
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"

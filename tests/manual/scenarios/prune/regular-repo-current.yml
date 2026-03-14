@@ -1,0 +1,40 @@
+name: Prune regular repo current branch
+description:
+  Prune in regular (non-bare) repo when on pruned branch switches to default
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone normally (non-bare layout)
+    run: git clone $REMOTE_TEST_REPO $WORK_DIR/test-repo-clone 2>/dev/null
+    expect:
+      exit_code: 0
+
+  - name: Set up remote HEAD and checkout feature branch
+    run: |
+      cd $WORK_DIR/test-repo-clone
+      git remote set-head origin --auto 2>/dev/null
+      git checkout feature/test-feature 2>/dev/null
+    expect:
+      exit_code: 0
+
+  - name: Delete feature branch from remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp" && git push origin --delete feature/test-feature 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Prune should switch to default branch
+    run: |
+      cd $WORK_DIR/test-repo-clone
+      git-worktree-prune
+      git branch --show-current
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"

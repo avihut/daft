@@ -1,0 +1,20 @@
+name: Sync --autostash without --rebase fails
+description: --autostash without --rebase produces a validation error
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Sync with --autostash but without --rebase should fail
+    run: git-sync --autostash 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "rebase"

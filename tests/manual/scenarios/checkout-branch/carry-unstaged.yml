@@ -1,0 +1,24 @@
+name: Checkout branch carry unstaged
+description: "--carry carries unstaged modifications to new branch worktree"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Modify existing tracked file in main worktree
+    run: echo "modified content" >> $WORK_DIR/test-repo/main/README.md
+
+  - name: Create branch (default carries unstaged changes)
+    run: git-worktree-checkout -b feature/carry-unstaged
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/feature/carry-unstaged/README.md"
+          content: "modified content"

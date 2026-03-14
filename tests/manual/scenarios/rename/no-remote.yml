@@ -1,0 +1,46 @@
+name: Rename with --no-remote
+description: Rename works locally without touching remote
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create feature branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/no-remote
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/no-remote"
+
+  - name: Commit and push to remote
+    run: |
+      cd $WORK_DIR/test-repo/feature/no-remote
+      echo "work" > work.txt
+      git add work.txt
+      git commit -m "Add work"
+      git push origin feature/no-remote
+    expect:
+      exit_code: 0
+
+  - name: Rename with --no-remote
+    run:
+      git-worktree-branch -m --no-remote feature/no-remote
+      feature/no-remote-renamed 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/no-remote-renamed"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/no-remote"
+
+  - name: Verify old remote branch still exists
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git branch -r | grep -q "origin/feature/no-remote$"
+    expect:
+      exit_code: 0

@@ -1,0 +1,31 @@
+name: Prune shell wrapper
+description: Shell wrappers include git-worktree-prune function
+
+steps:
+  - name: Bash wrapper contains git-worktree-prune function
+    run: daft shell-init bash 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "git-worktree-prune()"
+
+  - name: Bash git() wrapper handles worktree-prune
+    run: daft shell-init bash 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "worktree-prune)"
+
+  - name: Fish wrapper contains git-worktree-prune function
+    run: daft shell-init fish 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "function git-worktree-prune"
+
+  - name: Fish git wrapper handles worktree-prune
+    run: daft shell-init fish 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "case worktree-prune"

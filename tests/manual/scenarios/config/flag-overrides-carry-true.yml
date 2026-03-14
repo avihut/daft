@@ -1,0 +1,31 @@
+name: Flag overrides carry true
+description: --no-carry flag overrides daft.checkoutBranch.carry=true config
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Set carry config to true
+    run: git config daft.checkoutBranch.carry true
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Create uncommitted changes in main
+    run: echo "no-carry content" > $WORK_DIR/test-repo/main/no_carry.txt
+
+  - name: Create new branch with --no-carry flag (overrides config)
+    run: git-worktree-checkout -b --no-carry feature/no-carry-override
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/no-carry-override/no_carry.txt"
+      files_exist:
+        - "$WORK_DIR/test-repo/main/no_carry.txt"
