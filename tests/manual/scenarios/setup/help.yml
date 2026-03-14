@@ -1,0 +1,10 @@
+name: Setup help
+description: Help shows usage information
+
+steps:
+  - name: Show help
+    run: daft setup --help 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "shell-init"

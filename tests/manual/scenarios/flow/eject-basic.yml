@@ -1,0 +1,30 @@
+name: Flow eject basic
+description: Converts worktree layout back to traditional repo
+
+steps:
+  - name: Init a worktree-style repo
+    run: git-worktree-init eject-test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/eject-test/master"
+
+  - name: Create initial commit
+    run: |
+      cd $WORK_DIR/eject-test/master
+      echo "content" > README.md
+      git add README.md
+      git commit -m "Initial commit"
+    expect:
+      exit_code: 0
+
+  - name: Eject the repo
+    run: git-worktree-flow-eject 2>&1
+    cwd: "$WORK_DIR/eject-test"
+    expect:
+      exit_code: 0
+
+  - name: Verify traditional structure
+    run: test -d $WORK_DIR/eject-test/.git
+    expect:
+      exit_code: 0

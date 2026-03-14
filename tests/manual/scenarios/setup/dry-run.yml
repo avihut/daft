@@ -1,0 +1,12 @@
+name: Setup dry-run
+description: --dry-run previews changes without modifying anything
+
+steps:
+  - name: Run setup with --dry-run
+    run: |
+      export HOME=$(mktemp -d)
+      daft setup --dry-run 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "[dry-run]"

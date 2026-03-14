@@ -1,0 +1,31 @@
+name: Branch -d basic
+description: git-worktree-branch -d deletes merged branch
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create feature branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/wb-test
+      cd $WORK_DIR/test-repo/feature/wb-test
+      echo "feature work" > feature.txt
+      git add feature.txt
+      git commit -m "Add feature"
+      git push origin feature/wb-test
+      cd $WORK_DIR/test-repo/main
+      git merge feature/wb-test
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Delete using git-worktree-branch -d
+    run: git-worktree-branch -d feature/wb-test
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/wb-test"
