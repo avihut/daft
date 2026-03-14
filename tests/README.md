@@ -1,141 +1,173 @@
-# Git Worktree Workflow Test Suite
+# Test Suite
 
-This directory contains comprehensive integration tests for the daft toolkit's
-Rust binary implementation.
+Two test systems: **bash integration tests** (legacy) and **YAML manual tests**
+(declarative, preferred for new tests).
 
-## Test Structure
+## Structure
 
 ```
 tests/
-├── integration/         # Rust integration tests
-│   ├── test_all.sh      # Master test runner for integration tests
-│   ├── test_framework.sh # Test framework for integration tests
-│   ├── test_clone.sh    # Integration tests for git-worktree-clone
-│   ├── test_init.sh     # Integration tests for git-worktree-init
-│   ├── test_checkout.sh # Integration tests for git-worktree-checkout
-│   ├── test_checkout_branch.sh # Integration tests for git-worktree-checkout -b
-│   ├── test_prune.sh    # Integration tests for git-worktree-prune
-│   └── test_simple.sh   # Simple validation tests for Rust binaries
-└── README.md           # This file
+├── integration/              # Bash integration tests
+│   ├── test_all.sh           # Master runner (all suites)
+│   ├── test_framework.sh     # Shared assertions and helpers
+│   └── test_*.sh             # Per-command test suites
+├── manual/
+│   ├── scenarios/            # YAML test scenarios
+│   │   ├── checkout/         # One directory per command
+│   │   ├── clone/
+│   │   ├── init/
+│   │   └── ...               # 18 command directories
+│   └── fixtures/
+│       └── repos/            # Shared repo templates
+│           └── standard-remote.yml
+└── README.md
 ```
-
-## Integration Tests
-
-The integration tests validate the Rust binary implementations by:
-
-- Building the Rust binaries with `cargo build --release`
-- Testing the binaries as they would run in real-world scenarios
-- Testing advanced features and edge cases
-- Validating error handling and security
-
-**Environment**: Uses compiled Rust binaries from `target/release/` directory
 
 ## Running Tests
 
-### Using Mise (Recommended)
-
 ```bash
-# Run all tests (unit + integration)
+# All tests (unit + integration matrix)
 mise run test
 
-# Run only unit tests
+# Unit tests only
 mise run test:unit
 
-# Run only integration tests
+# Bash integration tests (full matrix: default + gitoxide)
 mise run test:integration
 
-# Run specific test suites
-mise run test:integration:clone
-mise run test:integration:init
-mise run test:integration:checkout
+# YAML manual tests (all 252 scenarios)
+mise run test:manual -- --ci
 
-# Run with verbose output
-mise run test:verbose
-mise run test:integration:verbose
+# YAML tests for a specific command
+mise run test:manual -- --ci tests/manual/scenarios/checkout/
+
+# YAML tests by namespace
+mise run test:manual -- --ci checkout:basic
+
+# Interactive mode (step through with prompts)
+mise run test:manual -- checkout:basic
+
+# List all available scenarios
+mise run test:manual -- --list
 ```
 
-### Direct Execution
+## Benchmarks
 
 ```bash
-# Integration tests
-cd tests/integration && ./test_all.sh
+# TUI benchmark: bash vs YAML side-by-side (live table with spinners)
+mise run bench:tests:integration
 
-# Individual test files
-cd tests/integration && ./test_clone.sh
-cd tests/integration && ./test_init.sh
+# Parallel mode (bash + YAML for same suite run concurrently)
+mise run bench:tests:integration -- --parallel
+
+# YAML-only benchmark with timing
+mise run bench:tests:manual
 ```
 
-## Test Framework Features
+## YAML Manual Test Framework
 
-The test suite uses a sophisticated test framework with:
+### Scenario format
 
-- **Isolated test environments**: Each test runs in its own temporary directory
-- **Mock remote repositories**: Create realistic Git repositories for testing
-- **Comprehensive assertions**: File existence, directory structure, Git state
-  validation
-- **Cleanup on exit**: Automatic cleanup of test artifacts
-- **Colored output**: Clear success/failure indication
-- **Performance tracking**: Timing for performance-sensitive operations
-- **Error handling**: Proper cleanup on test failures
+Each `.yml` file in `tests/manual/scenarios/` defines a test scenario:
 
-## Test Coverage
+```yaml
+name: Checkout basic
+description: Checkout existing branch from cloned repo
 
-### Integration Tests
+repos:
+  - name: test-repo
+    use_fixture: standard-remote # shared template
 
-- **80+ test scenarios** covering all Rust binary commands
-- **Real-world workflows**: Clone, checkout, branch creation, pruning
-- **Error handling**: Invalid inputs, missing dependencies, cleanup
-- **Security testing**: Path traversal prevention
-- **Performance validation**: Timing and resource usage
-- **Cross-platform compatibility**: Linux, macOS testing
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
 
-## Test Environment
+  - name: Checkout develop branch
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/develop"
+          branch: develop
+```
 
-### Prerequisites
+### Available assertions
 
-- **Git**: Version 2.5+ (for worktree support)
-- **Bash**: Version 4.0+ (for shell script execution)
-- **Rust**: Version 1.70+ (for building test targets)
-- **Standard Unix tools**: `awk`, `basename`, `dirname`, `sed`, `cut`
+| Assertion             | Description                                      |
+| --------------------- | ------------------------------------------------ |
+| `exit_code`           | Expected exit code                               |
+| `dirs_exist`          | Directories that must exist                      |
+| `files_exist`         | Files that must exist                            |
+| `files_not_exist`     | Files that must NOT exist                        |
+| `file_contains`       | File must contain substring                      |
+| `file_not_contains`   | File must NOT contain substring                  |
+| `output_contains`     | Command stdout+stderr must contain substring     |
+| `output_not_contains` | Command stdout+stderr must NOT contain substring |
+| `is_git_worktree`     | Directory is a git worktree on expected branch   |
+| `branch_exists`       | Branch exists in a repo                          |
 
-### Optional Dependencies
+### Variables
 
-- **direnv**: For environment setup testing
-- **shellcheck**: For shell script linting
+| Variable         | Description                                                           |
+| ---------------- | --------------------------------------------------------------------- |
+| `$WORK_DIR`      | Sandbox working directory                                             |
+| `$BASE_DIR`      | Sandbox root (parent of work/ and remotes/)                           |
+| `$BINARY_DIR`    | Path to built daft binaries                                           |
+| `$REMOTE_<NAME>` | Path to generated bare repo (name uppercased, hyphens to underscores) |
 
-### Temporary Directories
+### Shared fixtures
 
-- Integration tests: `/tmp/git-worktree-integration-tests`
+Place reusable repo templates in `tests/manual/fixtures/repos/`. Reference them
+with `use_fixture`:
 
-## CI/CD Integration
+```yaml
+repos:
+  - name: my-repo
+    use_fixture: standard-remote # loads standard-remote.yml with {{NAME}} substitution
+```
 
-The test suite is integrated with GitHub Actions and provides:
+### Path convention
 
-- **Automated testing**: Integration tests run on every PR
-- **Multi-platform support**: Ubuntu and macOS testing
-- **Performance monitoring**: Track test execution times
-- **Artifact collection**: Test results and logs for debugging
-- **Dependency validation**: Ensure all required tools are available
+All assertion paths and `cwd` values must use `$WORK_DIR/` prefix for correct
+resolution:
 
-## Development Workflow
+```yaml
+# Correct
+dirs_exist:
+  - "$WORK_DIR/test-repo/develop"
 
-### Adding New Tests
+# Wrong (resolves relative to cwd, causes double-nesting)
+dirs_exist:
+  - "test-repo/develop"
+```
 
-1. Add to appropriate `tests/integration/test_*.sh` file
-2. Update test runners: Ensure new tests are called in `run_*_tests()` functions
-3. Test isolation: Each test should clean up after itself
+## Adding New Tests
 
-### Test Development Guidelines
+### YAML scenario (preferred)
 
-- **Descriptive names**: Use clear, descriptive test function names
-- **Proper assertions**: Use framework assertion functions
-- **Error handling**: Tests should handle failures gracefully
-- **Documentation**: Document complex test scenarios
-- **Cleanup**: Always clean up test artifacts
+1. Create `tests/manual/scenarios/<command>/<test-name>.yml`
+2. Use `standard-remote` fixture or define inline repos
+3. Run: `mise run test:manual -- --ci <command>:<test-name>`
 
-### Debugging Failed Tests
+### Bash integration test
 
-1. **Run individual tests**: Use specific test targets for faster iteration
-2. **Verbose output**: Use `-verbose` targets for detailed output
-3. **Manual execution**: Run test scripts directly for debugging
-4. **Test isolation**: Check `/tmp` directories for test artifacts
+1. Add test function to `tests/integration/test_<command>.sh`
+2. Register in `run_<command>_tests()` function
+3. Run: `cd tests/integration && bash ./test_<command>.sh`
+
+## CI Integration
+
+The GitHub Actions workflow runs both test systems for each matrix entry
+(default + gitoxide config):
+
+1. Bash: `test_all.sh` with `GIT_CONFIG_GLOBAL`
+2. YAML: `xtask manual-test --ci` with same config
+3. Shell completions: `test_completions.sh`
+4. Help commands: verify all binaries respond to `--help`
