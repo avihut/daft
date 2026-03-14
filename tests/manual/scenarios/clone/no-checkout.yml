@@ -1,0 +1,22 @@
+name: "Clone with --no-checkout"
+description:
+  "The --no-checkout flag clones the repo but does not create a default branch
+  worktree."
+
+repos:
+  - name: test-repo-no-checkout
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone with --no-checkout flag"
+    run: "git-worktree-clone --no-checkout $REMOTE_TEST_REPO_NO_CHECKOUT"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "test-repo-no-checkout"
+        - "test-repo-no-checkout/.git"
+
+  - name: "Verify no worktree directory was created"
+    run: "test ! -d test-repo-no-checkout/main"
+    expect:
+      exit_code: 0

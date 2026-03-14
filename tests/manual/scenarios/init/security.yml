@@ -1,0 +1,13 @@
+name: "Path traversal prevention"
+description: "Init rejects path traversal attempts"
+
+steps:
+  - name: "Reject Unix path traversal"
+    run: "git-worktree-init ../../../etc/passwd 2>&1"
+    expect:
+      exit_code: 1
+
+  - name: "Reject Windows-style path traversal"
+    run: "git-worktree-init '..\\..\\..\\windows\\system32' 2>&1"
+    expect:
+      exit_code: 1

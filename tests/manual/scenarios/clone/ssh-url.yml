@@ -1,0 +1,18 @@
+name: "Clone with file:// URL"
+description: "Cloning via an explicit file:// URL works correctly."
+
+repos:
+  - name: test-repo-ssh
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone using file:// URL"
+    run: "git-worktree-clone file://$REMOTE_TEST_REPO_SSH"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "test-repo-ssh"
+        - "test-repo-ssh/main"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo-ssh/main"
+          branch: main

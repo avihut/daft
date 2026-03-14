@@ -1,0 +1,22 @@
+name: "Clone handles .envrc files"
+description:
+  "After cloning, .envrc files can be created in the worktree without errors."
+
+repos:
+  - name: test-repo-direnv
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone the repository"
+    run: "git-worktree-clone $REMOTE_TEST_REPO_DIRENV"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "test-repo-direnv/main"
+
+  - name: "Add .envrc file to worktree"
+    run: "echo 'export TEST_VAR=test_value' > test-repo-direnv/main/.envrc"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "test-repo-direnv/main/.envrc"

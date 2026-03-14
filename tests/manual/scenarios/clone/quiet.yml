@@ -1,0 +1,17 @@
+name: "Clone with --quiet flag"
+description:
+  "The --quiet flag produces minimal output while still creating the expected
+  structure."
+
+repos:
+  - name: test-repo-quiet
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone with --quiet flag"
+    run: "git-worktree-clone --quiet $REMOTE_TEST_REPO_QUIET 2>&1"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "test-repo-quiet"
+        - "test-repo-quiet/main"

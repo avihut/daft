@@ -1,0 +1,16 @@
+name: "Path handling"
+description: "Relative paths work, absolute paths are rejected"
+
+steps:
+  - name: "Init with relative path"
+    run: "git-worktree-init relative-path-test"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "relative-path-test"
+        - "relative-path-test/master"
+
+  - name: "Reject absolute path"
+    run: "git-worktree-init $WORK_DIR/absolute-path-test 2>&1"
+    expect:
+      exit_code: 1

@@ -1,0 +1,14 @@
+name: "Init with quiet mode"
+description: "The --quiet flag minimizes output"
+
+steps:
+  - name: "Init repo with --quiet"
+    run: "git-worktree-init --quiet quiet-repo 2>&1"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "quiet-repo"
+        - "quiet-repo/master"
+      output_not_contains:
+        - "Cloning"
+        - "Preparing"

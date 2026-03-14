@@ -1,0 +1,24 @@
+name: "Init error handling"
+description: "Init fails gracefully for invalid inputs"
+
+steps:
+  - name: "Fail without repo name"
+    run: "git-worktree-init 2>&1"
+    expect:
+      exit_code: 2
+
+  - name: "Create a directory that already exists"
+    run: "mkdir -p existing-dir"
+    expect:
+      exit_code: 0
+
+  - name: "Fail with existing directory"
+    run: "git-worktree-init existing-dir 2>&1"
+    expect:
+      exit_code: 1
+
+  - name: "Fail with invalid branch name containing spaces"
+    run:
+      "git-worktree-init --initial-branch 'invalid branch name' test-repo 2>&1"
+    expect:
+      exit_code: 1

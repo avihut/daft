@@ -1,0 +1,15 @@
+name: Help commands work
+description: "Help flag works for init and clone commands"
+
+repos: []
+
+steps:
+  - name: git-worktree-init --help exits successfully
+    run: git-worktree-init --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-clone --help exits successfully
+    run: git-worktree-clone --help 2>&1
+    expect:
+      exit_code: 0

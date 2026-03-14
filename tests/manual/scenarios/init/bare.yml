@@ -1,0 +1,18 @@
+name: "Init with bare mode"
+description: "The --bare flag creates a bare repo without a worktree"
+
+steps:
+  - name: "Init a bare repo"
+    run: "git-worktree-init --bare simple-bare-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "simple-bare-repo"
+        - "simple-bare-repo/.git"
+
+  - name: "Verify no worktree was created"
+    run: "test ! -d simple-bare-repo/master && echo 'no worktree' 2>&1"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "no worktree"

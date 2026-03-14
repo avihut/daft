@@ -1,0 +1,53 @@
+name: "Repository name formats"
+description: "Init accepts various valid repository name formats"
+
+steps:
+  - name: "Hyphenated name"
+    run: "git-worktree-init simple-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "simple-repo/master"
+      is_git_worktree:
+        - dir: "simple-repo/master"
+          branch: master
+
+  - name: "Underscored name"
+    run: "git-worktree-init my_repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "my_repo/master"
+      is_git_worktree:
+        - dir: "my_repo/master"
+          branch: master
+
+  - name: "Mixed case name"
+    run: "git-worktree-init MyRepo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "MyRepo/master"
+      is_git_worktree:
+        - dir: "MyRepo/master"
+          branch: master
+
+  - name: "Name with numbers"
+    run: "git-worktree-init repo123"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "repo123/master"
+      is_git_worktree:
+        - dir: "repo123/master"
+          branch: master
+
+  - name: "Multi-hyphenated name"
+    run: "git-worktree-init my-awesome-project"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "my-awesome-project/master"
+      is_git_worktree:
+        - dir: "my-awesome-project/master"
+          branch: master
