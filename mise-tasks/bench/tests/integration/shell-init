@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Benchmark: bash shell-init tests vs YAML manual tests"
+#MISE depends=["dev"]
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/_bench_command" "shell-init" "test_shell_init.sh" "shell-init"

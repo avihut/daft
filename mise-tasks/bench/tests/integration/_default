@@ -23,6 +23,14 @@ SUITES=(
     "prune:test_prune.sh:prune"
     "branch-delete:test_branch_delete.sh:branch-delete"
     "list:test_list.sh:list"
+    "fetch:test_fetch.sh:fetch"
+    "hooks:test_hooks.sh:hooks"
+    "sync:test_sync.sh:sync"
+    "config:test_config.sh:config"
+    "completions:test_completions.sh:completions"
+    "shell-init:test_shell_init.sh:shell-init"
+    "rename:test_rename.sh:rename"
+    "setup:test_setup.sh:setup"
 )
 
 # Collect results

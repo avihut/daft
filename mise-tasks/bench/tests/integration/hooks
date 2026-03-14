@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Benchmark: bash hooks tests vs YAML manual tests"
+#MISE depends=["dev"]
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/_bench_command" "hooks" "test_hooks.sh" "hooks"
