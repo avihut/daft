@@ -48,15 +48,31 @@ fn main() {
     }
 
     // Only re-run when HEAD changes (branch switch, new commit) or env changes.
-    // Resolve the actual git dir — in worktrees `.git` is a file pointing elsewhere.
+    //
+    // In worktrees, `--git-dir` returns a worktree-specific path (e.g.,
+    // `.git/worktrees/<name>/`) while loose refs and tags live in the common
+    // git dir (`.git/`). We must watch both:
+    //   - `{git_dir}/HEAD` — changes when the worktree switches branches
+    //   - `{common_dir}/{head_ref}` — changes when a new commit is made
+    //   - `{common_dir}/packed-refs` — changes when tags are packed/updated
     if let Some(git_dir) = git_output(&["rev-parse", "--git-dir"]) {
         println!("cargo:rerun-if-changed={git_dir}/HEAD");
+
+        let common_dir =
+            git_output(&["rev-parse", "--git-common-dir"]).unwrap_or_else(|| git_dir.clone());
+
         if let Some(head_ref) = git_output(&["symbolic-ref", "--quiet", "HEAD"]) {
-            // HEAD points to a branch — watch that ref file for new commits.
-            let ref_path = format!("{git_dir}/{head_ref}");
+            // Watch the loose ref in the common dir (where refs actually live).
+            let ref_path = format!("{common_dir}/{head_ref}");
             if std::path::Path::new(&ref_path).exists() {
                 println!("cargo:rerun-if-changed={ref_path}");
             }
+        }
+
+        // Watch packed-refs for tag changes (tags are often packed).
+        let packed_refs = format!("{common_dir}/packed-refs");
+        if std::path::Path::new(&packed_refs).exists() {
+            println!("cargo:rerun-if-changed={packed_refs}");
         }
     }
     println!("cargo:rerun-if-env-changed=DAFT_BUILD_RELEASE");
