@@ -131,8 +131,8 @@ impl ListColumn {
             ListColumn::Branch,
             ListColumn::Path,
             ListColumn::Base,
-            ListColumn::Remote,
             ListColumn::Changes,
+            ListColumn::Remote,
             ListColumn::Age,
             ListColumn::LastCommit,
         ]
@@ -156,8 +156,8 @@ impl ListColumn {
             Self::Branch => 2,
             Self::Path => 3,
             Self::Base => 4,
-            Self::Remote => 5,
-            Self::Changes => 6,
+            Self::Changes => 5,
+            Self::Remote => 6,
             Self::Age => 7,
             Self::LastCommit => 8,
         }

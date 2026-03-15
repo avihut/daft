@@ -19,8 +19,8 @@ position, a CLI name, and per-command default membership.
 | 2        | `branch`      | yes            | yes                       |
 | 3        | `path`        | yes            | yes                       |
 | 4        | `base`        | yes            | yes                       |
-| 5        | `remote`      | yes            | yes                       |
-| 6        | `changes`     | yes            | yes                       |
+| 5        | `changes`     | yes            | yes                       |
+| 6        | `remote`      | yes            | yes                       |
 | 7        | `age`         | yes            | yes                       |
 | 8        | `last-commit` | yes            | yes                       |
 
@@ -60,7 +60,7 @@ column set. Result follows canonical column ordering, not input order:
 
 ```bash
 git worktree list --columns -annotation,-last-commit
-# Output: Branch | Path | Base | Remote | Changes | Age
+# Output: Branch | Path | Base | Changes | Remote | Age
 
 git worktree list --columns -annotation,-last-commit,-remote
 # Output: Branch | Path | Base | Changes | Age
@@ -167,7 +167,7 @@ drop non-pinned columns since the user didn't explicitly choose them.
 
 ```
 error: unknown column 'foo'
-  valid columns: annotation, branch, path, base, remote, changes, age, last-commit
+  valid columns: annotation, branch, path, base, changes, remote, age, last-commit
 ```
 
 **Mixed mode:**
@@ -196,5 +196,5 @@ error: 'status' column cannot be controlled on this command
 
 ```
 error: unknown column 'status'
-  valid columns: annotation, branch, path, base, remote, changes, age, last-commit
+  valid columns: annotation, branch, path, base, changes, remote, age, last-commit
 ```
