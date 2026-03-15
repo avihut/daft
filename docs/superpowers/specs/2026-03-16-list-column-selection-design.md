@@ -93,7 +93,7 @@ Per-command config keys using the same syntax as the CLI flag:
 
 ```
 daft.list.columns = branch,path,age            # replace mode
-daft.sync.columns = +size,-annotation           # modifier mode
+daft.sync.columns = -annotation,-remote          # modifier mode
 daft.prune.columns = -last-commit               # modifier mode
 ```
 
@@ -167,7 +167,7 @@ drop non-pinned columns since the user didn't explicitly choose them.
 
 ```
 error: unknown column 'foo'
-  valid columns: annotation, branch, path, base, changes, remote, age, last-commit
+  valid columns: annotation, branch, path, base, remote, changes, age, last-commit
 ```
 
 **Mixed mode:**
@@ -196,5 +196,5 @@ error: 'status' column cannot be controlled on this command
 
 ```
 error: unknown column 'status'
-  valid columns: annotation, branch, path, base, changes, remote, age, last-commit
+  valid columns: annotation, branch, path, base, remote, changes, age, last-commit
 ```
