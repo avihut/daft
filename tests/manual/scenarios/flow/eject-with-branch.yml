@@ -1,0 +1,55 @@
+name: Flow eject with branch
+description: Eject with -b branch option keeps specified branch content
+
+steps:
+  - name: Init a worktree-style repo
+    run: git-worktree-init eject-branch-test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/eject-branch-test/master"
+
+  - name: Create initial commit
+    run: |
+      cd $WORK_DIR/eject-branch-test/master
+      echo "# Test Repo" > README.md
+      mkdir -p src
+      echo "fn main() {}" > src/main.rs
+      git add .
+      git commit -m "Initial commit"
+    expect:
+      exit_code: 0
+
+  - name: Create feature branch worktree
+    run: |
+      cd $WORK_DIR/eject-branch-test
+      git worktree add feature/test -b feature/test master 2>/dev/null
+      cd feature/test
+      echo "feature content" > feature.txt
+      git add .
+      git commit -m "Add feature"
+    expect:
+      exit_code: 0
+
+  - name: Eject keeping feature branch
+    run: git-worktree-flow-eject -b feature/test 2>&1
+    cwd: "$WORK_DIR/eject-branch-test"
+    expect:
+      exit_code: 0
+
+  - name: Verify feature content is at root
+    run:
+      test -f $WORK_DIR/eject-branch-test/feature.txt && echo
+      "FEATURE_CONTENT_OK"
+    expect:
+      output_contains:
+        - "FEATURE_CONTENT_OK"
+
+  - name: Verify on feature branch
+    run: |
+      cd $WORK_DIR/eject-branch-test
+      branch=$(git branch --show-current)
+      test "$branch" = "feature/test" && echo "BRANCH_OK"
+    expect:
+      output_contains:
+        - "BRANCH_OK"

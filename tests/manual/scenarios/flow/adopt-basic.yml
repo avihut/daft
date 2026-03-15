@@ -1,0 +1,26 @@
+name: Flow adopt basic
+description: Converts traditional git repo to worktree layout
+
+steps:
+  - name: Create a traditional git repo
+    run: |
+      mkdir my-project && cd my-project
+      git init
+      echo "# My Project" > README.md
+      git add README.md
+      git commit -m "Initial commit"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/my-project/.git"
+
+  - name: Adopt the repo
+    run: git-worktree-flow-adopt 2>&1
+    cwd: "$WORK_DIR/my-project"
+    expect:
+      exit_code: 0
+
+  - name: Verify bare repo structure
+    run: test -f $WORK_DIR/my-project/.git/HEAD
+    expect:
+      exit_code: 0

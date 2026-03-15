@@ -1,0 +1,46 @@
+name: "Clone with --all-branches"
+description:
+  "The --all-branches flag creates a worktree for every remote branch."
+
+repos:
+  - name: test-repo-all-branches
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone with --all-branches flag"
+    run: "git-worktree-clone --all-branches $REMOTE_TEST_REPO_ALL_BRANCHES"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "test-repo-all-branches"
+        - "test-repo-all-branches/.git"
+        - "test-repo-all-branches/main"
+        - "test-repo-all-branches/develop"
+        - "test-repo-all-branches/feature/test-feature"
+
+  - name: "Verify main worktree"
+    run: "git branch --show-current"
+    cwd: "$WORK_DIR/test-repo-all-branches/main"
+    expect:
+      exit_code: 0
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo-all-branches/main"
+          branch: main
+
+  - name: "Verify develop worktree"
+    run: "git branch --show-current"
+    cwd: "$WORK_DIR/test-repo-all-branches/develop"
+    expect:
+      exit_code: 0
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo-all-branches/develop"
+          branch: develop
+
+  - name: "Verify feature worktree"
+    run: "git branch --show-current"
+    cwd: "$WORK_DIR/test-repo-all-branches/feature/test-feature"
+    expect:
+      exit_code: 0
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo-all-branches/feature/test-feature"
+          branch: feature/test-feature

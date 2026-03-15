@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Benchmark: bash branch-delete tests vs YAML manual tests"
+#MISE depends=["dev"]
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/_bench_command" "branch-delete" "test_branch_delete.sh" "branch-delete"

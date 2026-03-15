@@ -1,0 +1,39 @@
+name: Stat lines JSON
+description: --stat lines with --json includes line count fields
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop and add lines
+    run: |
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout develop
+      cd $WORK_DIR/test-repo/develop
+      printf "line1\nline2\n" > newfile.txt
+      git add newfile.txt
+      git commit -m "Add lines"
+    expect:
+      exit_code: 0
+
+  - name: JSON with --stat lines includes line count fields
+    run: git-worktree-list --stat lines --json 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"base_lines_inserted"'
+        - '"base_lines_deleted"'
+        - '"staged_lines_inserted"'
+        - '"staged_lines_deleted"'
+        - '"unstaged_lines_inserted"'
+        - '"unstaged_lines_deleted"'
+        - '"remote_lines_inserted"'
+        - '"remote_lines_deleted"'
+        - '"ahead"'

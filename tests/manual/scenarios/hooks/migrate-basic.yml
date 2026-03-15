@@ -1,0 +1,60 @@
+name: Migrate renames deprecated hook files
+description:
+  "Running 'daft hooks migrate' renames deprecated hook files (e.g. post-create
+  to worktree-post-create) in the current worktree's .daft/hooks/ directory."
+
+repos:
+  - name: test-migrate-basic
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Migrate basic test"
+        commits:
+          - message: "Initial commit"
+    hook_scripts:
+      - name: post-create
+        content: |
+          #!/bin/bash
+          echo "old post-create"
+      - name: pre-create
+        content: |
+          #!/bin/bash
+          echo "old pre-create"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_MIGRATE_BASIC
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-migrate-basic/main"
+
+  - name: Run migrate
+    run: daft hooks migrate 2>&1
+    cwd: "$WORK_DIR/test-migrate-basic/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "renamed"
+
+  - name: New hook files exist
+    run: |
+      test -f "$WORK_DIR/test-migrate-basic/main/.daft/hooks/worktree-post-create" && \
+      test -f "$WORK_DIR/test-migrate-basic/main/.daft/hooks/worktree-pre-create" && \
+      echo "NEW_FILES_EXIST"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "NEW_FILES_EXIST"
+
+  - name: Old hook files are gone
+    run: |
+      test ! -f "$WORK_DIR/test-migrate-basic/main/.daft/hooks/post-create" && \
+      test ! -f "$WORK_DIR/test-migrate-basic/main/.daft/hooks/pre-create" && \
+      echo "OLD_FILES_GONE"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "OLD_FILES_GONE"

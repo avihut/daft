@@ -1,0 +1,20 @@
+name: "Direnv integration"
+description: "Init handles .envrc files gracefully"
+
+steps:
+  - name: "Init repo"
+    run: "git-worktree-init direnv-test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "direnv-test-repo/master"
+
+  - name: "Add .envrc file to worktree"
+    run: "echo 'export TEST_VAR=test_value' > direnv-test-repo/master/.envrc"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "direnv-test-repo/master/.envrc"
+      file_contains:
+        - path: "direnv-test-repo/master/.envrc"
+          content: "TEST_VAR=test_value"

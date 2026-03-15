@@ -1,0 +1,46 @@
+name: Zsh shell-init output contains wrapper functions
+description: >
+  daft shell-init zsh generates shell wrapper functions for worktree commands.
+
+steps:
+  - name: Output contains __daft_wrapper function
+    run: daft shell-init zsh 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "__daft_wrapper()"
+
+  - name: Output contains git-worktree-clone function
+    run: daft shell-init zsh 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "git-worktree-clone()"
+
+  - name: Output contains git-worktree-init function
+    run: daft shell-init zsh 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "git-worktree-init()"
+
+  - name: Output contains git-worktree-checkout function
+    run: daft shell-init zsh 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "git-worktree-checkout()"
+
+  - name: Output contains git-worktree-carry function
+    run: daft shell-init zsh 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "git-worktree-carry()"
+
+  - name: Output contains DAFT_CD_FILE mechanism
+    run: daft shell-init zsh 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "DAFT_CD_FILE"

@@ -1,0 +1,15 @@
+name: Help and version
+description: Help and version flags work for list command
+
+repos: []
+
+steps:
+  - name: git-worktree-list --help exits successfully
+    run: git-worktree-list --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-list --version exits successfully
+    run: git-worktree-list --version 2>&1
+    expect:
+      exit_code: 0

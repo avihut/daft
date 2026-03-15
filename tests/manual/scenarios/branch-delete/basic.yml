@@ -1,0 +1,46 @@
+name: Branch delete basic
+description: Delete merged branch removes worktree and local branch
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create feature branch with worktree
+    run: git-worktree-checkout -b feature/test
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/test"
+
+  - name: Commit and push feature branch
+    run: |
+      cd $WORK_DIR/test-repo/feature/test
+      echo "feature work" > feature.txt
+      git add feature.txt
+      git commit -m "Add feature"
+      git push origin feature/test
+    expect:
+      exit_code: 0
+
+  - name: Merge into main
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git merge feature/test
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Delete the branch
+    run: git-worktree-branch-delete feature/test
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/test"

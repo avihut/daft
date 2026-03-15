@@ -1,0 +1,53 @@
+name: "Branch naming conventions"
+description: "Init supports various valid branch naming formats"
+
+steps:
+  - name: "Init with branch name 'main'"
+    run: "git-worktree-init --initial-branch main test-repo-0"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "test-repo-0/main"
+      is_git_worktree:
+        - dir: "test-repo-0/main"
+          branch: main
+
+  - name: "Init with branch name 'develop'"
+    run: "git-worktree-init --initial-branch develop test-repo-1"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "test-repo-1/develop"
+      is_git_worktree:
+        - dir: "test-repo-1/develop"
+          branch: develop
+
+  - name: "Init with branch name 'release-1.0'"
+    run: "git-worktree-init --initial-branch release-1.0 test-repo-2"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "test-repo-2/release-1.0"
+      is_git_worktree:
+        - dir: "test-repo-2/release-1.0"
+          branch: release-1.0
+
+  - name: "Init with branch name 'feature/init'"
+    run: "git-worktree-init --initial-branch feature/init test-repo-3"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "test-repo-3/feature/init"
+      is_git_worktree:
+        - dir: "test-repo-3/feature/init"
+          branch: feature/init
+
+  - name: "Init with branch name 'hotfix_urgent'"
+    run: "git-worktree-init --initial-branch hotfix_urgent test-repo-4"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "test-repo-4/hotfix_urgent"
+      is_git_worktree:
+        - dir: "test-repo-4/hotfix_urgent"
+          branch: hotfix_urgent

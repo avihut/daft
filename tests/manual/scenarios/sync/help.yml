@@ -1,0 +1,13 @@
+name: Sync help and version
+description: Help and version flags work for git-sync
+
+steps:
+  - name: git-sync --help exits successfully
+    run: git-sync --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-sync --version exits successfully
+    run: git-sync --version 2>&1
+    expect:
+      exit_code: 0

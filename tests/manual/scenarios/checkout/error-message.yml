@@ -1,0 +1,21 @@
+name: Checkout error message
+description: Nonexistent branch shows not found and suggests daft go --start
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout nonexistent branch shows helpful error
+    run: git-worktree-checkout nonexistent-branch 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not found"
+        - "daft go --start"

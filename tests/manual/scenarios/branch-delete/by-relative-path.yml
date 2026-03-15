@@ -1,0 +1,46 @@
+name: Branch delete by relative path
+description: Delete by worktree path instead of branch name
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create feature branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/by-path
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/by-path"
+
+  - name: Commit, push, and merge
+    run: |
+      cd $WORK_DIR/test-repo/feature/by-path
+      echo "work" > work.txt
+      git add work.txt
+      git commit -m "Add work"
+      git push origin feature/by-path
+      cd $WORK_DIR/test-repo/main
+      git merge feature/by-path
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Delete by relative worktree path
+    run: git-worktree-branch-delete feature/by-path
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/by-path"
+
+  - name: Verify local branch was deleted
+    run:
+      cd $WORK_DIR/test-repo/main && git branch | grep " feature/by-path$" ||
+      echo "BRANCH_GONE"
+    expect:
+      output_contains:
+        - "BRANCH_GONE"

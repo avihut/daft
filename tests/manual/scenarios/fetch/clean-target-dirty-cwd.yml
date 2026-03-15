@@ -1,0 +1,55 @@
+name: Fetch clean target from dirty cwd
+description: Clean target fetched even when current worktree is dirty
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop branch
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Push remote changes to develop
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp"
+      git checkout develop
+      echo "Remote develop change" >> README.md
+      git add README.md
+      git commit -m "Remote develop update"
+      git push origin develop
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Make main worktree dirty
+    run: echo "Local uncommitted change" > $WORK_DIR/test-repo/main/dirty.txt
+    expect:
+      exit_code: 0
+
+  - name: Fetch clean develop from dirty main should succeed
+    run: git-worktree-fetch develop 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify develop was updated
+    run: grep -q "Remote develop change" $WORK_DIR/test-repo/develop/README.md
+    expect:
+      exit_code: 0
+
+  - name: Verify dirty file in main is preserved
+    run: test -f $WORK_DIR/test-repo/main/dirty.txt
+    expect:
+      exit_code: 0

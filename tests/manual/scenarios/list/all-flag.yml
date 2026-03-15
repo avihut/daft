@@ -1,0 +1,41 @@
+name: All flag
+description: -a flag shows both local and remote branches
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Push a new branch after clone (remote-only)
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp"
+      git checkout -b feature/remote-extra 2>/dev/null
+      echo "remote" > remote.txt
+      git add remote.txt
+      git commit -m "Remote extra" 2>/dev/null
+      git push origin feature/remote-extra 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Fetch the new remote branch
+    run: git fetch origin
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: List -a shows remote-only branches and worktrees
+    run: NO_COLOR=1 git-worktree-list -a 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"
+        - "origin/feature/remote-extra"

@@ -1,0 +1,40 @@
+name: Checkout branch carry from base
+description: "--carry works when creating from a specific base branch worktree"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop worktree
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Add uncommitted changes in develop worktree
+    run: echo "develop changes" > $WORK_DIR/test-repo/develop/develop_file.txt
+
+  - name: Add uncommitted changes in main worktree
+    run: echo "main changes" > $WORK_DIR/test-repo/main/main_file.txt
+
+  - name: Create new branch from develop base (from main worktree)
+    run: git-worktree-checkout -b feature/from-develop develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/feature/from-develop/develop_file.txt"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/feature/from-develop/develop_file.txt"
+          content: "develop changes"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/from-develop/main_file.txt"
+      # Main worktree changes should remain untouched

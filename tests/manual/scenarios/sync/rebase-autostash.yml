@@ -1,0 +1,67 @@
+name: Sync --rebase --autostash handles dirty worktree
+description: --rebase --autostash stashes dirty worktree, rebases, and restores
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop branch
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Make a local commit on develop
+    run: |
+      cd $WORK_DIR/test-repo/develop
+      echo "develop-only content" > develop-feature.txt
+      git add develop-feature.txt
+      git commit -m "Add develop feature"
+    expect:
+      exit_code: 0
+
+  - name: Push a new commit to main on remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp"
+      echo "Remote main change" >> main.py
+      git add main.py
+      git commit -m "Update main for autostash test"
+      git push origin main
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Make uncommitted changes in develop
+    run:
+      echo "Uncommitted local work" > $WORK_DIR/test-repo/develop/local-wip.txt
+    expect:
+      exit_code: 0
+
+  - name: Run sync with --rebase --autostash
+    run: git-sync --rebase main --autostash --verbose --verbose 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify develop was rebased onto main
+    run: |
+      main_commit=$(cd $WORK_DIR/test-repo/main && git rev-parse HEAD)
+      cd $WORK_DIR/test-repo/develop && git log --format=%H | grep -q "$main_commit"
+    expect:
+      exit_code: 0
+
+  - name: Verify uncommitted changes were restored
+    run:
+      grep -q "Uncommitted local work" $WORK_DIR/test-repo/develop/local-wip.txt
+    expect:
+      exit_code: 0

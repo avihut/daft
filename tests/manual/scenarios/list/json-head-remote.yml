@@ -1,0 +1,25 @@
+name: JSON head and remote fields
+description: JSON includes staged/unstaged/untracked/remote fields
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: JSON output contains head and remote fields
+    run: git-worktree-list --json 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"staged"'
+        - '"unstaged"'
+        - '"untracked"'
+        - '"remote_ahead"'
+        - '"remote_behind"'
+        - '"is_default_branch"'

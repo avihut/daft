@@ -1,0 +1,39 @@
+name: "Clone empty repository"
+description:
+  "Cloning an empty repo (no commits) and testing --all-branches failure"
+
+steps:
+  - name: "Create empty bare repo in remotes"
+    run: "git init --bare $BASE_DIR/remotes/empty-remote"
+    expect:
+      exit_code: 0
+
+  - name: "Clone the empty repository"
+    run: "git-worktree-clone $BASE_DIR/remotes/empty-remote"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/empty-remote"
+
+  - name: "Create another empty bare repo"
+    run: "git init --bare $BASE_DIR/remotes/empty-remote-all"
+    expect:
+      exit_code: 0
+
+  - name: "Clone empty repo with --all-branches should fail"
+    run:
+      "git-worktree-clone --all-branches $BASE_DIR/remotes/empty-remote-all 2>&1"
+    expect:
+      exit_code: 1
+
+  - name: "Create empty bare repo for commit test"
+    run: "git init --bare $BASE_DIR/remotes/empty-remote-commit"
+    expect:
+      exit_code: 0
+
+  - name: "Clone the empty repo for commit test"
+    run: "git-worktree-clone $BASE_DIR/remotes/empty-remote-commit"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/empty-remote-commit"

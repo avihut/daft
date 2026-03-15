@@ -1,0 +1,30 @@
+name: Clone with --trust-hooks flag
+description:
+  "The --trust-hooks flag on clone trusts the repository and executes hooks
+  during the clone operation."
+
+repos:
+  - name: test-clone-trust-hooks
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Trust hooks test"
+        commits:
+          - message: "Initial commit"
+    hook_scripts:
+      - name: post-clone
+        content: |
+          #!/bin/bash
+          touch "$DAFT_WORKTREE_PATH/.hook-executed"
+
+steps:
+  - name: Clone with --trust-hooks flag
+    run: git-worktree-clone --trust-hooks $REMOTE_TEST_CLONE_TRUST_HOOKS
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-clone-trust-hooks/main"
+      files_exist:
+        - "$WORK_DIR/test-clone-trust-hooks/main/.hook-executed"

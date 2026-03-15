@@ -1,0 +1,24 @@
+name: Clone empty repo no checkout
+description: Empty repo with --no-checkout creates bare structure only
+
+steps:
+  - name: Create empty bare repo
+    run: git init --bare $BASE_DIR/remotes/empty-bare-repo
+    expect:
+      exit_code: 0
+
+  - name: Clone with no-checkout
+    run: git-worktree-clone --no-checkout $BASE_DIR/remotes/empty-bare-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/empty-bare-repo"
+        - "$WORK_DIR/empty-bare-repo/.git"
+
+  - name: Verify no worktree was created
+    run: |
+      count=$(ls -d $WORK_DIR/empty-bare-repo/*/ 2>/dev/null | wc -l | tr -d ' ')
+      test "$count" = "0" && echo "NO_WORKTREES"
+    expect:
+      output_contains:
+        - "NO_WORKTREES"

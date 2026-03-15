@@ -1,0 +1,75 @@
+name: Daft binaries available
+description: "All daft binaries are discoverable via command -v"
+
+repos: []
+
+steps:
+  - name: daft binary exists
+    run: command -v daft
+    expect:
+      exit_code: 0
+
+  - name: git-daft binary exists
+    run: command -v git-daft
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-clone binary exists
+    run: command -v git-worktree-clone
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-init binary exists
+    run: command -v git-worktree-init
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-checkout binary exists
+    run: command -v git-worktree-checkout
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-branch binary exists
+    run: command -v git-worktree-branch
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-branch-delete binary exists
+    run: command -v git-worktree-branch-delete
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-prune binary exists
+    run: command -v git-worktree-prune
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-carry binary exists
+    run: command -v git-worktree-carry
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-fetch binary exists
+    run: command -v git-worktree-fetch
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-flow-adopt binary exists
+    run: command -v git-worktree-flow-adopt
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-flow-eject binary exists
+    run: command -v git-worktree-flow-eject
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-list binary exists
+    run: command -v git-worktree-list
+    expect:
+      exit_code: 0
+
+  - name: git-sync binary exists
+    run: command -v git-sync
+    expect:
+      exit_code: 0

@@ -37,11 +37,15 @@ scratch directories:
 mise run dev                # Build + create symlinks (quick dev setup)
 mise run test               # Run all tests (unit + integration)
 mise run test:unit          # Rust unit tests only
-mise run test:integration   # Integration tests only
+mise run test:integration   # Integration tests (bash + YAML, full matrix)
+mise run test:manual -- --ci           # YAML manual tests only (all scenarios)
+mise run test:manual -- --ci checkout  # YAML tests for one command
+mise run test:manual -- checkout:basic # Interactive mode for one scenario
 mise run clippy             # Lint (must pass with zero warnings)
 mise run fmt                # Auto-format code
 mise run fmt:check          # Verify formatting
 mise run ci                 # Simulate full CI locally
+mise run bench:tests:integration       # Benchmark bash vs YAML (TUI)
 ```
 
 IMPORTANT: Before committing, always run `mise run fmt`, `mise run clippy`, and
@@ -94,7 +98,10 @@ produce patch bumps; edit `Cargo.toml` in the Release PR for minor/major bumps.
 4. Add to `COMMANDS` array and `get_command_for_name()` in `xtask/src/main.rs`
 5. Add to help output in `src/commands/docs.rs` (`get_command_categories()`)
 6. Run `mise run man:gen` and commit the generated man page
-7. Add integration tests in `tests/integration/` following existing patterns
+7. Add YAML test scenarios in `tests/manual/scenarios/<name>/` (see
+   `tests/README.md` for schema reference)
+8. Add bash integration tests in `tests/integration/` following existing
+   patterns
 
 ## Shell Completions
 

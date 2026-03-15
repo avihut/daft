@@ -1,0 +1,66 @@
+name: Config boolean variants
+description: Config accepts yes/no/true/false/1/0 for boolean values
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Test "no" disables push
+    run: |
+      cd $WORK_DIR/test-repo
+      git config daft.checkout.push no
+      cd main
+      git-worktree-checkout -b feature/test-no 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Verify no push with "no" config
+    run: |
+      result=$(git ls-remote --heads origin feature/test-no 2>/dev/null)
+      test -z "$result" && echo "NOT_PUSHED"
+    cwd: "$WORK_DIR/test-repo/feature/test-no"
+    expect:
+      output_contains:
+        - "NOT_PUSHED"
+
+  - name: Test "0" disables push
+    run: |
+      cd $WORK_DIR/test-repo
+      git config daft.checkout.push 0
+      cd feature/test-no
+      git-worktree-checkout -b feature/test-zero 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Verify no push with "0" config
+    run: |
+      result=$(git ls-remote --heads origin feature/test-zero 2>/dev/null)
+      test -z "$result" && echo "NOT_PUSHED"
+    cwd: "$WORK_DIR/test-repo/feature/test-zero"
+    expect:
+      output_contains:
+        - "NOT_PUSHED"
+
+  - name: Test "yes" enables push
+    run: |
+      cd $WORK_DIR/test-repo
+      git config daft.checkout.push yes
+      cd feature/test-zero
+      git-worktree-checkout -b feature/test-yes 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Verify push with "yes" config
+    run: |
+      result=$(git ls-remote --heads origin feature/test-yes 2>/dev/null)
+      test -n "$result" && echo "WAS_PUSHED"
+    cwd: "$WORK_DIR/test-repo/feature/test-yes"
+    expect:
+      output_contains:
+        - "WAS_PUSHED"

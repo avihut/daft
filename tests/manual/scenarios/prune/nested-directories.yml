@@ -1,0 +1,45 @@
+name: Prune nested directories
+description:
+  Prune with --force removes worktrees with deep nested directory structures
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/test-feature"
+
+  - name: Create nested directory structure with files
+    run: |
+      mkdir -p $WORK_DIR/test-repo/feature/test-feature/nested/deep/structure
+      echo "Deep file" > $WORK_DIR/test-repo/feature/test-feature/nested/deep/structure/file.txt
+    expect:
+      exit_code: 0
+
+  - name: Delete feature branch from remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp" && git push origin --delete feature/test-feature 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Prune with --force removes worktree and nested dirs
+    run: git-worktree-prune --force
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/test-feature"

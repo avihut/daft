@@ -1,0 +1,67 @@
+name: Checkout branch naming conventions
+description: "-b supports feature/, bugfix-, hotfix_, release-, chore/ patterns"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create feature/user-auth branch
+    run: git-worktree-checkout -b feature/user-auth
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/user-auth"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/feature/user-auth"
+          branch: feature/user-auth
+
+  - name: Create bugfix-123 branch
+    run: git-worktree-checkout -b bugfix-123
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/bugfix-123"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/bugfix-123"
+          branch: bugfix-123
+
+  - name: Create hotfix_urgent branch
+    run: git-worktree-checkout -b hotfix_urgent
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/hotfix_urgent"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/hotfix_urgent"
+          branch: hotfix_urgent
+
+  - name: Create release-v1.0.0 branch
+    run: git-worktree-checkout -b release-v1.0.0
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/release-v1.0.0"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/release-v1.0.0"
+          branch: release-v1.0.0
+
+  - name: Create chore/update-deps branch
+    run: git-worktree-checkout -b chore/update-deps
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/chore/update-deps"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/chore/update-deps"
+          branch: chore/update-deps

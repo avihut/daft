@@ -1,0 +1,25 @@
+name: Remote branch handling in completions
+description: Remote branch handling in dynamic completions does not crash
+
+steps:
+  - name: Create a test repository with branches
+    run: |
+      mkdir -p $WORK_DIR/remote-repo && cd $WORK_DIR/remote-repo &&
+      git init &&
+      git config user.name "Test" &&
+      git config user.email "test@example.com" &&
+      echo "test" > README.md &&
+      git add README.md &&
+      git commit -m "Initial commit" &&
+      git branch remote-feature &&
+      git branch origin-main
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/remote-repo/.git"
+
+  - name: Completion with "remote" prefix does not crash
+    run: daft __complete git-worktree-checkout "remote" 2>&1
+    cwd: "$WORK_DIR/remote-repo"
+    expect:
+      exit_code: 0

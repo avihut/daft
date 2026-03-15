@@ -1,0 +1,25 @@
+name: Branch delete deprecated warning
+description: Deprecated command shows deprecation warning
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create feature branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/deprec-test
+      cd $WORK_DIR/test-repo/main
+      git merge feature/deprec-test
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Deprecated command shows warning
+    run: git-worktree-branch-delete feature/deprec-test 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      output_contains:
+        - "deprecated"

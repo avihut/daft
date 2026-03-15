@@ -1,0 +1,58 @@
+name: Fish shell-init output contains function definitions
+description: >
+  daft shell-init fish generates fish shell function definitions for worktree
+  commands.
+
+steps:
+  - name: Output contains __daft_wrapper function
+    run: daft shell-init fish 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "function __daft_wrapper"
+
+  - name: Output contains git-worktree-clone function
+    run: daft shell-init fish 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "function git-worktree-clone"
+
+  - name: Output contains git-worktree-init function
+    run: daft shell-init fish 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "function git-worktree-init"
+
+  - name: Output contains git-worktree-checkout function
+    run: daft shell-init fish 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "function git-worktree-checkout"
+
+  - name: Output contains git-worktree-carry function
+    run: daft shell-init fish 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "function git-worktree-carry"
+
+  - name: Output contains DAFT_CD_FILE mechanism
+    run: daft shell-init fish 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "DAFT_CD_FILE"
+
+  - name: Fish aliases included with --aliases flag
+    run: daft shell-init fish --aliases 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "alias gwclone="
+        - "alias gwinit="
+        - "alias gwco="
+        - "alias gwcarry="
+        - "alias gwprune="

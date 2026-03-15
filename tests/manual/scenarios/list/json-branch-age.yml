@@ -1,0 +1,20 @@
+name: JSON branch age
+description: JSON includes branch_age field
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: JSON output contains branch_age field
+    run: git-worktree-list --json 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"branch_age"'

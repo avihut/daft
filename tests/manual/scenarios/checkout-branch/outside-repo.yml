@@ -1,0 +1,8 @@
+name: Checkout branch outside repository
+description: "-b fails when run outside a git repository"
+
+steps:
+  - name: Fail outside git repository
+    run: git-worktree-checkout -b some-branch-outside 2>&1
+    expect:
+      exit_code: 1

@@ -1,0 +1,26 @@
+name: Checkout branch carry untracked
+description: "--carry carries untracked files to new branch worktree"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create untracked file in main worktree
+    run: echo "untracked content" > $WORK_DIR/test-repo/main/untracked_file.txt
+
+  - name: Create branch (default carries untracked files)
+    run: git-worktree-checkout -b feature/carry-untracked
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/feature/carry-untracked/untracked_file.txt"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/feature/carry-untracked/untracked_file.txt"
+          content: "untracked content"

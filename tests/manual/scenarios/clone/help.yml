@@ -1,0 +1,13 @@
+name: "Clone help and version"
+description: "The --help and --version flags work correctly."
+
+steps:
+  - name: "Show help output"
+    run: "git-worktree-clone --help"
+    expect:
+      exit_code: 0
+
+  - name: "Show version output"
+    run: "git-worktree-clone --version"
+    expect:
+      exit_code: 0

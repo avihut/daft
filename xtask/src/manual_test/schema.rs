@@ -205,6 +205,12 @@ pub struct Expectations {
     /// Files that must NOT contain specific content.
     pub file_not_contains: Vec<FileNotContains>,
 
+    /// Strings that must appear in the combined stdout+stderr output.
+    pub output_contains: Vec<String>,
+
+    /// Strings that must NOT appear in the combined stdout+stderr output.
+    pub output_not_contains: Vec<String>,
+
     /// Directories that must be valid git worktrees.
     pub is_git_worktree: Vec<WorktreeCheck>,
 
@@ -509,7 +515,31 @@ branches:
         assert!(expectations.files_not_exist.is_empty());
         assert!(expectations.file_contains.is_empty());
         assert!(expectations.file_not_contains.is_empty());
+        assert!(expectations.output_contains.is_empty());
+        assert!(expectations.output_not_contains.is_empty());
         assert!(expectations.is_git_worktree.is_empty());
         assert!(expectations.branch_exists.is_empty());
+    }
+
+    #[test]
+    fn test_expectations_output_contains() {
+        let yaml = r#"
+name: output test
+steps:
+  - name: check output
+    run: echo hello
+    expect:
+      output_contains:
+        - "hello"
+        - "world"
+      output_not_contains:
+        - "goodbye"
+"#;
+        let scenario: Scenario = serde_yaml::from_str(yaml).unwrap();
+        let expect = scenario.steps[0].expect.as_ref().unwrap();
+        assert_eq!(expect.output_contains.len(), 2);
+        assert_eq!(expect.output_not_contains.len(), 1);
+        assert_eq!(expect.output_contains[0], "hello");
+        assert_eq!(expect.output_not_contains[0], "goodbye");
     }
 }

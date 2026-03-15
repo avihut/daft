@@ -1,0 +1,26 @@
+name: Position-aware completion
+description: Position-aware completion distinguishes argument positions
+
+steps:
+  - name: Create a test repository with branches
+    run: |
+      mkdir -p $WORK_DIR/position-repo && cd $WORK_DIR/position-repo &&
+      git init &&
+      git config user.name "Test" &&
+      git config user.email "test@example.com" &&
+      echo "test" > README.md &&
+      git add README.md &&
+      git commit -m "Initial commit" &&
+      git branch feature-existing
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/position-repo/.git"
+
+  - name: First argument suggests matching branches or patterns
+    run: daft __complete git-worktree-checkout "fea" 2>&1
+    cwd: "$WORK_DIR/position-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature-existing"

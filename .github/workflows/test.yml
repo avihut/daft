@@ -154,7 +154,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build Rust binaries
-        run: cargo build --release
+        run: |
+          cargo build --release
+          cargo build --release --package xtask
 
       - name: Clean old binaries from cache
         run: |
@@ -178,9 +180,9 @@ jobs:
           done
           echo "Found $BINARY_COUNT binary executable(s)"
 
-          # Verify exactly 1 binary exists
-          if [ "$BINARY_COUNT" -ne 1 ]; then
-            echo "ERROR: Expected exactly 1 binary, found $BINARY_COUNT"
+          # Verify exactly 2 binaries exist (daft + xtask)
+          if [ "$BINARY_COUNT" -ne 2 ]; then
+            echo "ERROR: Expected exactly 2 binaries (daft + xtask), found $BINARY_COUNT"
             echo "Binaries found:"
             for file in target/release/*; do
               if [ -f "$file" ] && [ ! -L "$file" ] && [ -x "$file" ]; then
@@ -199,17 +201,20 @@ jobs:
             exit 1
           fi
 
-          echo "Single binary architecture verified: daft binary exists"
-          ls -lh target/release/daft
+          echo "Binary architecture verified: daft + xtask binaries exist"
+          ls -lh target/release/daft target/release/xtask
 
       - name: Upload binary
         uses: actions/upload-artifact@v7
         with:
           name: daft-binary
-          path: target/release/daft
+          path: |
+            target/release/daft
+            target/release/xtask
           retention-days: 1
 
-  # Integration tests (Linux only)
+  # Integration tests (Linux only) — 4 parallel workers:
+  # {default, gitoxide} x {bash, yaml}
   integration-tests:
     runs-on: ubuntu-latest
     needs: build
@@ -217,6 +222,7 @@ jobs:
       fail-fast: false
       matrix:
         entry: [default, gitoxide]
+        suite: [bash, yaml]
 
     steps:
       - uses: actions/checkout@v6
@@ -235,6 +241,7 @@ jobs:
       - name: Set up binary
         run: |
           chmod +x target/release/daft
+          chmod +x target/release/xtask
 
           # Create symlinks for the multicall binary
           cd target/release
@@ -242,7 +249,7 @@ jobs:
                      git-worktree-branch git-worktree-branch-delete \
                      git-worktree-prune git-worktree-carry \
                      git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
-                     git-sync git-daft daft-remove daft-rename; do
+                     git-worktree-list git-sync git-daft daft-remove daft-rename; do
             ln -sf daft "$cmd"
           done
           cd ../..
@@ -250,25 +257,37 @@ jobs:
           echo "${{ github.workspace }}/target/release" >> $GITHUB_PATH
 
       - name: Make test scripts executable
+        if: matrix.suite == 'bash'
         run: chmod +x tests/integration/*.sh
 
-      - name: Run Rust integration tests
+      - name: Set up config
+        id: config
         run: |
           CONFIG_FILE=$(mktemp)
           if [ "${{ matrix.entry }}" = "gitoxide" ]; then
             git config --file "$CONFIG_FILE" daft.experimental.gitoxide true
           fi
-          GIT_CONFIG_GLOBAL="$CONFIG_FILE" DAFT_TESTING=1 bash tests/integration/test_all.sh
-          rm -f "$CONFIG_FILE"
+          echo "config_file=$CONFIG_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Run bash integration tests
+        if: matrix.suite == 'bash'
+        run: |
+          GIT_CONFIG_GLOBAL="${{ steps.config.outputs.config_file }}" \
+            DAFT_TESTING=1 bash tests/integration/test_all.sh
+
+      - name: Run YAML manual tests
+        if: matrix.suite == 'yaml'
+        run: |
+          GIT_CONFIG_GLOBAL="${{ steps.config.outputs.config_file }}" \
+            DAFT_TESTING=1 ./target/release/xtask manual-test --ci
 
       - name: Test shell completions
-        run: |
-          echo "Testing completion generation..."
-          ./tests/integration/test_completions.sh
+        if: matrix.suite == 'bash'
+        run: ./tests/integration/test_completions.sh
 
       - name: Test help commands
+        if: matrix.suite == 'bash'
         run: |
-          # Test Rust binary help (via symlinks)
           ./target/release/git-worktree-clone --help
           ./target/release/git-worktree-checkout --help
           ./target/release/git-worktree-init --help
@@ -278,11 +297,8 @@ jobs:
           ./target/release/git-worktree-flow-adopt --help
           ./target/release/git-worktree-flow-eject --help
           ./target/release/git-sync --help
-
           ./target/release/daft-remove --help
           ./target/release/daft-rename --help
-
-          # Test git daft documentation command
           ./target/release/daft | head -20
           ./target/release/git-daft | head -20
 
@@ -290,7 +306,7 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: test-results-${{ matrix.entry }}
+          name: test-results-${{ matrix.entry }}-${{ matrix.suite }}
           path: |
             tests/test-results.log
           retention-days: 7

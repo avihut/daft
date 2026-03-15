@@ -1,0 +1,94 @@
+name: Fig completions
+description: Fig/Amazon Q completion generation contains expected content
+
+steps:
+  - name: Fig completion generation for checkout
+    run: daft completions fig --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "completionSpec"
+        - "generators"
+        - "__complete"
+
+  - name: Fig prune spec has no generators
+    run: daft completions fig --command=git-worktree-prune 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "completionSpec"
+      output_not_contains:
+        - "generators"
+
+  - name: Fig all commands generation succeeds
+    run: daft completions fig 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "completionSpec"
+        - "daft.js"
+
+  - name: Fig single-command spec uses ESM format
+    run: daft completions fig --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "const completionSpec"
+        - "export default completionSpec"
+      output_not_contains:
+        - "var completionSpec"
+        - "module.exports"
+
+  - name: Fig all-commands output uses ESM format
+    run: daft completions fig 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "const completionSpec"
+        - "export default completionSpec"
+      output_not_contains:
+        - "var completionSpec"
+        - "module.exports"
+
+  - name: Fig shortcut aliases use loadSpec
+    run: daft completions fig 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "gwtco"
+        - "loadSpec"
+
+  - name: Fig completions for clone command
+    run: daft completions fig --command=git-worktree-clone 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fig completions for init command
+    run: daft completions fig --command=git-worktree-init 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fig completions for prune command
+    run: daft completions fig --command=git-worktree-prune 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fig completions for carry command
+    run: daft completions fig --command=git-worktree-carry 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fig completions for fetch command
+    run: daft completions fig --command=git-worktree-fetch 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fig completions for flow-adopt command
+    run: daft completions fig --command=git-worktree-flow-adopt 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Fig completions for flow-eject command
+    run: daft completions fig --command=git-worktree-flow-eject 2>&1
+    expect:
+      exit_code: 0

@@ -1,0 +1,42 @@
+name: Sync diverged branch with --rebase
+description: Diverged branch with --rebase rebases onto target
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop branch
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Make develop diverge from upstream by amending
+    run: |
+      cd $WORK_DIR/test-repo/develop
+      echo "Local diverged change" >> README.md
+      git add README.md
+      git commit --amend -m "Amended: diverged from upstream" 2>/dev/null
+    expect:
+      exit_code: 0
+
+  - name: Run sync with --rebase main
+    run: git-sync --rebase main --verbose --verbose 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify develop was rebased onto main
+    run: |
+      main_commit=$(cd $WORK_DIR/test-repo/main && git rev-parse HEAD)
+      cd $WORK_DIR/test-repo/develop && git log --format=%H | grep -q "$main_commit"
+    expect:
+      exit_code: 0

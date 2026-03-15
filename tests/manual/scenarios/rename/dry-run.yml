@@ -1,0 +1,45 @@
+name: Rename --dry-run
+description: --dry-run previews without changing anything
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create feature branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/dry-run-test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/dry-run-test"
+
+  - name: Dry run rename
+    run:
+      git-worktree-branch -m --dry-run feature/dry-run-test
+      feature/dry-run-renamed 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Verify original worktree still exists
+    run: test -d $WORK_DIR/test-repo/feature/dry-run-test
+    expect:
+      exit_code: 0
+
+  - name: Verify new worktree was not created
+    run: test ! -d $WORK_DIR/test-repo/feature/dry-run-renamed
+    expect:
+      exit_code: 0
+
+  - name: Verify branch was not renamed
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git branch | grep -q " feature/dry-run-test$"
+      test_exists=$?
+      git branch | grep -q " feature/dry-run-renamed$" && renamed=0 || renamed=1
+      [ $test_exists -eq 0 ] && [ $renamed -eq 1 ]
+    expect:
+      exit_code: 0

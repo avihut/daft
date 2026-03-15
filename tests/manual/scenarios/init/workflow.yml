@@ -1,0 +1,29 @@
+name: "Init workflow"
+description: "Init a repo, commit content, then create additional worktrees"
+
+steps:
+  - name: "Init a repo"
+    run: "git-worktree-init workflow-test"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/workflow-test/master"
+
+  - name: "Add and commit a file"
+    run: |
+      echo '# Workflow Test' > README.md &&
+      git add README.md &&
+      git commit -m "Initial commit"
+    cwd: "$WORK_DIR/workflow-test/master"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/workflow-test/master/README.md"
+
+  - name: "Create an additional worktree from master"
+    run: "git worktree add feature-branch -b feature-branch master"
+    cwd: "$WORK_DIR/workflow-test"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/workflow-test/feature-branch"

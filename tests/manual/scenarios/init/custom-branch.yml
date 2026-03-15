@@ -1,0 +1,15 @@
+name: "Init with custom branch"
+description: "The --initial-branch option sets the default branch name"
+
+steps:
+  - name: "Init repo with --initial-branch main"
+    run: "git-worktree-init --initial-branch main simple-main-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "simple-main-repo"
+        - "simple-main-repo/.git"
+        - "simple-main-repo/main"
+      is_git_worktree:
+        - dir: "simple-main-repo/main"
+          branch: main

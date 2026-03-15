@@ -1,0 +1,53 @@
+name: Branch delete by dot
+description: Delete by "." resolves current directory to its branch
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create feature branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/dot-test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/dot-test"
+
+  - name: Commit, push, and merge
+    run: |
+      cd $WORK_DIR/test-repo/feature/dot-test
+      echo "work" > work.txt
+      git add work.txt
+      git commit -m "Add work"
+      git push origin feature/dot-test
+      cd $WORK_DIR/test-repo/main
+      git merge feature/dot-test
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Delete with "." from inside the worktree
+    run: |
+      cd $WORK_DIR/test-repo/feature/dot-test
+      cd_file=$(mktemp)
+      DAFT_CD_FILE="$cd_file" git-worktree-branch-delete . 2>&1
+      rm -f "$cd_file"
+    expect:
+      exit_code: 0
+
+  - name: Verify worktree was removed
+    run: test ! -d "$WORK_DIR/test-repo/feature/dot-test" && echo "REMOVED"
+    expect:
+      output_contains:
+        - "REMOVED"
+
+  - name: Verify local branch was deleted
+    run:
+      cd $WORK_DIR/test-repo/main && git branch | grep " feature/dot-test$" ||
+      echo "BRANCH_GONE"
+    expect:
+      output_contains:
+        - "BRANCH_GONE"

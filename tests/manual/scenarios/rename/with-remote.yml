@@ -1,0 +1,49 @@
+name: Rename with remote push
+description: Rename also renames the remote branch
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create feature branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/remote-test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/remote-test"
+
+  - name: Commit and push to remote
+    run: |
+      cd $WORK_DIR/test-repo/feature/remote-test
+      echo "remote work" > remote.txt
+      git add remote.txt
+      git commit -m "Add remote work"
+      git push origin feature/remote-test
+    expect:
+      exit_code: 0
+
+  - name: Rename the branch (should also rename remote)
+    run: git-worktree-branch -m feature/remote-test feature/remote-renamed 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/remote-renamed"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/remote-test"
+
+  - name: Verify remote branch was renamed
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git fetch origin 2>/dev/null
+      old_exists=1
+      git branch -r | grep -q "origin/feature/remote-test$" && old_exists=0
+      new_exists=0
+      git branch -r | grep -q "origin/feature/remote-renamed$" || new_exists=1
+      [ $old_exists -eq 1 ] && [ $new_exists -eq 0 ]
+    expect:
+      exit_code: 0

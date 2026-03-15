@@ -1,0 +1,24 @@
+name: Flags consistent across shells
+description: Flags from clap introspection are consistent across all shells
+
+steps:
+  - name: Bash checkout completion includes verbose flag
+    run: daft completions bash --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "verbose"
+
+  - name: Zsh checkout completion includes verbose flag
+    run: daft completions zsh --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "verbose"
+
+  - name: Fish checkout completion includes verbose flag
+    run: daft completions fish --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "verbose"

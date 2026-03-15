@@ -1,0 +1,24 @@
+name: Branch delete refuses dirty
+description: Refuses to delete branch with uncommitted changes
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create feature branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/dirty
+    expect:
+      exit_code: 0
+
+  - name: Make uncommitted changes
+    run: echo "dirty" > $WORK_DIR/test-repo/feature/dirty/dirty.txt
+
+  - name: Delete dirty branch should fail
+    run: git-worktree-branch-delete feature/dirty 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1

@@ -1,0 +1,15 @@
+name: "Basic init"
+description: "Init creates a repo with bare .git and master worktree"
+
+steps:
+  - name: "Init a simple repo"
+    run: "git-worktree-init simple-test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "simple-test-repo"
+        - "simple-test-repo/.git"
+        - "simple-test-repo/master"
+      is_git_worktree:
+        - dir: "simple-test-repo/master"
+          branch: master

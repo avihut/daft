@@ -1,0 +1,59 @@
+name: Sync with --force
+description: --force flag prunes dirty worktrees
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Push a feature branch to remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp"
+      git checkout -b feature/dirty-branch 2>/dev/null
+      echo "dirty branch content" >> README.md
+      git add README.md
+      git commit -m "Add dirty branch"
+      git push origin feature/dirty-branch
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout the dirty feature branch
+    run: git-worktree-checkout feature/dirty-branch
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/dirty-branch"
+
+  - name: Make feature worktree dirty
+    run:
+      echo "Uncommitted change" >
+      $WORK_DIR/test-repo/feature/dirty-branch/dirty.txt
+    expect:
+      exit_code: 0
+
+  - name: Delete the branch from remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp"
+      git push origin --delete feature/dirty-branch 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Sync with --force should prune dirty worktree
+    run: git-sync --force 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/dirty-branch"

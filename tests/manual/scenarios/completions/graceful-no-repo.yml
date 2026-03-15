@@ -1,0 +1,16 @@
+name: Graceful handling outside git repository
+description: Dynamic completion does not crash when not in a git repository
+
+steps:
+  - name: Create a non-git directory
+    run: mkdir -p $WORK_DIR/non-git-dir
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/non-git-dir"
+
+  - name: Completion outside git repo does not crash
+    run: daft __complete git-worktree-checkout "feat" 2>&1
+    cwd: "$WORK_DIR/non-git-dir"
+    expect:
+      exit_code: 0

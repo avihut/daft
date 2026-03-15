@@ -1,0 +1,40 @@
+name: Pre-create hook abort prevents worktree creation
+description: Pre-create hook that exits 1 produces error in output
+
+repos:
+  - name: test-hooks-abort
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Hook abort test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/should-fail
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-pre-create:
+          jobs:
+            - name: block
+              run: exit 1
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_HOOKS_ABORT
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-hooks-abort/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout with failing pre-create hook shows error
+    run: git-worktree-checkout feature/should-fail 2>&1
+    cwd: "$WORK_DIR/test-hooks-abort/main"
+    expect:
+      output_contains:
+        - "hook failed"

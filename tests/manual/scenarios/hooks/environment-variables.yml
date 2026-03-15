@@ -1,0 +1,42 @@
+name: Hook environment variables
+description: Hook receives correct DAFT_* env vars during execution
+
+repos:
+  - name: test-hook-env
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Hook env test"
+        commits:
+          - message: "Initial commit"
+    hook_scripts:
+      - name: post-clone
+        content: |
+          #!/bin/bash
+          env | grep ^DAFT_ | sort > "$DAFT_WORKTREE_PATH/.daft-env"
+
+steps:
+  - name: Clone with --trust-hooks to execute hook
+    run: git-worktree-clone --trust-hooks $REMOTE_TEST_HOOK_ENV
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-hook-env/main"
+
+  - name: Verify hook received DAFT_* environment variables
+    run: |
+      if [ -f "$WORK_DIR/test-hook-env/main/.daft-env" ]; then
+        for var in DAFT_HOOK DAFT_COMMAND DAFT_PROJECT_ROOT DAFT_GIT_DIR DAFT_WORKTREE_PATH DAFT_BRANCH_NAME; do
+          if ! grep -q "^$var=" "$WORK_DIR/test-hook-env/main/.daft-env"; then
+            echo "MISSING: $var"
+            exit 1
+          fi
+        done
+        echo "ALL_VARS_PRESENT"
+      else
+        echo "HOOK_NOT_RUN"
+      fi
+    expect:
+      exit_code: 0

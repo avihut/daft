@@ -1,0 +1,27 @@
+name: JSON single worktree
+description: JSON with single worktree from init
+
+steps:
+  - name: Init a test repo
+    run: git-worktree-init json-single-test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/json-single-test/master"
+
+  - name: Create an initial commit
+    run: |
+      cd $WORK_DIR/json-single-test/master
+      echo "Content" > README.md
+      git add README.md
+      git commit -m "Initial commit"
+    expect:
+      exit_code: 0
+
+  - name: JSON returns single entry for master
+    run: git-worktree-list --json 2>&1
+    cwd: "$WORK_DIR/json-single-test/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"name": "master"'

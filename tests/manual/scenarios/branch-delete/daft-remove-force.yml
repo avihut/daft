@@ -1,0 +1,45 @@
+name: Daft remove force on default branch
+description:
+  daft-remove -f on default branch removes worktree only, preserves branch
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Create another branch to work from
+    run: git-worktree-checkout -b feature/other
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Force-delete via daft remove
+    run: daft-remove -f main
+    cwd: "$WORK_DIR/test-repo/feature/other"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Verify local branch ref still exists
+    run: |
+      cd $WORK_DIR/test-repo/feature/other
+      git branch | grep " main$" && echo "BRANCH_EXISTS"
+    expect:
+      output_contains:
+        - "BRANCH_EXISTS"
+
+  - name: Verify remote branch still exists
+    run: |
+      cd $WORK_DIR/test-repo/feature/other
+      git ls-remote --heads origin main 2>/dev/null | grep main && echo "REMOTE_EXISTS"
+    expect:
+      output_contains:
+        - "REMOTE_EXISTS"

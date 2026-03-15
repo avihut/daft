@@ -1,0 +1,76 @@
+name: Zsh completions
+description: Zsh completion generation contains expected content
+
+steps:
+  - name: Zsh completion generation for checkout
+    run: daft completions zsh --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "#compdef git-worktree-checkout"
+        - "_git_worktree_checkout"
+
+  - name: Zsh dynamic branch wiring for checkout
+    run: daft completions zsh --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "daft __complete"
+        - "branches="
+
+  - name: Zsh git subcommand registration for checkout
+    run: daft completions zsh --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "_git-worktree-checkout"
+
+  - name: shell-init zsh includes completion functions
+    run: daft shell-init zsh 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "compdef"
+        - "_git_worktree_checkout"
+
+  - name: Zsh completion includes verbose flag
+    run: daft completions zsh --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "verbose"
+
+  - name: Zsh completions for clone command
+    run: daft completions zsh --command=git-worktree-clone 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Zsh completions for init command
+    run: daft completions zsh --command=git-worktree-init 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Zsh completions for prune command
+    run: daft completions zsh --command=git-worktree-prune 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Zsh completions for carry command
+    run: daft completions zsh --command=git-worktree-carry 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Zsh completions for fetch command
+    run: daft completions zsh --command=git-worktree-fetch 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Zsh completions for flow-adopt command
+    run: daft completions zsh --command=git-worktree-flow-adopt 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Zsh completions for flow-eject command
+    run: daft completions zsh --command=git-worktree-flow-eject 2>&1
+    expect:
+      exit_code: 0

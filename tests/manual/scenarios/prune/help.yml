@@ -1,0 +1,15 @@
+name: Prune help
+description: Help and version flags work for git-worktree-prune
+
+repos: []
+
+steps:
+  - name: git-worktree-prune --help exits successfully
+    run: git-worktree-prune --help 2>&1
+    expect:
+      exit_code: 0
+
+  - name: git-worktree-prune --version exits successfully
+    run: git-worktree-prune --version 2>&1
+    expect:
+      exit_code: 0

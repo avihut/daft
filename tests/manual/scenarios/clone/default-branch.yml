@@ -1,0 +1,54 @@
+name: "Clone respects non-main default branch"
+description:
+  "When a remote has a non-main default branch (e.g. develop), clone creates the
+  worktree for that branch."
+
+repos:
+  - name: test-repo-develop
+    default_branch: develop
+    branches:
+      - name: develop
+        files:
+          - path: README.md
+            content: "# test-repo-develop"
+          - path: main.py
+            content: "print('Hello from test-repo-develop')"
+        commits:
+          - message: "Initial commit"
+      - name: main
+        from: develop
+        files:
+          - path: README.md
+            content: |
+              # test-repo-develop
+              # Main branch
+        commits:
+          - message: "Add main branch"
+      - name: feature/test-feature
+        from: develop
+        files:
+          - path: README.md
+            content: |
+              # test-repo-develop
+              # Feature branch
+        commits:
+          - message: "Add feature branch"
+
+steps:
+  - name: "Clone repo with develop as default branch"
+    run: "git-worktree-clone $REMOTE_TEST_REPO_DEVELOP"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "test-repo-develop"
+        - "test-repo-develop/.git"
+        - "test-repo-develop/develop"
+
+  - name: "Verify worktree is on develop branch"
+    run: "git branch --show-current"
+    cwd: "$WORK_DIR/test-repo-develop/develop"
+    expect:
+      exit_code: 0
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo-develop/develop"
+          branch: develop

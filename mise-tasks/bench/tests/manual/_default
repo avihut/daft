@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+#MISE description="Benchmark all YAML manual tests (or filtered subset)"
+#MISE depends=["dev"]
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+export PATH="$REPO_ROOT/target/release:$PATH"
+
+# Pre-build xtask in release mode (excluded from timing)
+cargo build --package xtask --release --quiet
+
+ms_now() {
+    perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'
+}
+
+# Accept optional namespace filter: mise run bench:tests:manual -- checkout
+filter="${1:-}"
+
+echo
+echo "=== YAML Manual Tests Benchmark ==="
+
+if [ -n "$filter" ]; then
+    echo "  Filter: $filter"
+    # Resolve filter to path: "checkout" → scenarios/checkout/, "checkout:carry-flag" → namespace
+    scenario_arg="$filter"
+else
+    echo "  Running all scenarios"
+    scenario_arg=""
+fi
+
+echo
+
+start=$(ms_now)
+result=0
+if [ -n "$scenario_arg" ]; then
+    "$REPO_ROOT/target/release/xtask" manual-test --ci "$scenario_arg" || result=$?
+else
+    "$REPO_ROOT/target/release/xtask" manual-test --ci || result=$?
+fi
+end=$(ms_now)
+duration=$((end - start))
+
+echo
+echo "=== Results ==="
+echo
+if [ $result -eq 0 ]; then
+    printf "  Status: PASS\n"
+else
+    printf "  Status: FAIL\n"
+fi
+printf "  Duration: %dms (%.1fs)\n" "$duration" "$(echo "scale=1; $duration/1000" | bc)"
+echo
+
+if [ $result -ne 0 ]; then
+    exit 1
+fi

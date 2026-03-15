@@ -1,0 +1,26 @@
+name: Checkout carry flag
+description: --carry flag copies files to new worktree
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create file in main
+    run: echo "carry me" > $WORK_DIR/test-repo/main/carry_file.txt
+
+  - name: Checkout with --carry
+    run: git-worktree-checkout --carry develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/develop/carry_file.txt"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/develop/carry_file.txt"
+          content: "carry me"

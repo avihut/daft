@@ -1,0 +1,88 @@
+name: Hook executes during prune
+description:
+  "Regression test: worktree-pre-remove hook runs during prune. Hooks committed
+  to the feature branch (inherited from main) are found and executed when the
+  worktree is pruned after its remote branch is deleted."
+
+repos:
+  - name: test-prune-hooks
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Prune hooks test"
+        commits:
+          - message: "Initial commit"
+    hook_scripts:
+      - name: worktree-pre-remove
+        content: |
+          #!/bin/bash
+          echo "$DAFT_BRANCH_NAME" >> "$DAFT_PROJECT_ROOT/.pre-remove-hook-ran"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_PRUNE_HOOKS
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-prune-hooks/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-prune-hooks/main"
+    expect:
+      exit_code: 0
+
+  - name: Create feature branch and push to remote
+    run: |
+      cd $WORK_DIR/test-prune-hooks/main
+      git checkout -b feature/hook-prune-test 2>/dev/null
+      echo "hook prune test" > hook-prune-test.txt
+      git add hook-prune-test.txt
+      git commit -m "Add feature branch content" 2>/dev/null
+      git push origin feature/hook-prune-test 2>/dev/null
+      git checkout main 2>/dev/null
+    expect:
+      exit_code: 0
+
+  - name: Checkout the feature branch as a worktree
+    run: git-worktree-checkout feature/hook-prune-test
+    cwd: "$WORK_DIR/test-prune-hooks/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-prune-hooks/feature/hook-prune-test"
+
+  - name: Verify feature worktree has the hook file
+    run: |
+      test -f "$WORK_DIR/test-prune-hooks/feature/hook-prune-test/.daft/hooks/worktree-pre-remove" && \
+      echo "HOOK_PRESENT"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "HOOK_PRESENT"
+
+  - name: Delete feature branch from remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_PRUNE_HOOKS "$temp" 2>/dev/null
+      cd "$temp" && git push origin --delete feature/hook-prune-test 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Run prune
+    run: git-worktree-prune
+    cwd: "$WORK_DIR/test-prune-hooks"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-prune-hooks/feature/hook-prune-test"
+
+  - name: Verify pre-remove hook ran with correct branch name
+    run: cat "$WORK_DIR/test-prune-hooks/.pre-remove-hook-ran"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature/hook-prune-test"

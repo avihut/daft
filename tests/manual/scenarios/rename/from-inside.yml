@@ -1,0 +1,45 @@
+name: Rename from inside worktree
+description: Rename from inside the worktree writes DAFT_CD_FILE
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create feature branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/inside-test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/inside-test"
+
+  - name: Rename from inside the worktree with DAFT_CD_FILE
+    run: |
+      cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
+      DAFT_CD_FILE="$cd_file" git-worktree-branch -m feature/inside-test feature/renamed 2>&1
+      exit_code=$?
+      if [ -s "$cd_file" ]; then
+        cd_path=$(cat "$cd_file")
+        echo "cd_path=$cd_path"
+        echo "$cd_path" | grep -q "feature/renamed"
+        path_ok=$?
+      else
+        echo "DAFT_CD_FILE was not written"
+        path_ok=1
+      fi
+      rm -f "$cd_file"
+      [ $exit_code -eq 0 ] && [ $path_ok -eq 0 ]
+    cwd: "$WORK_DIR/test-repo/feature/inside-test"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature/renamed"
+
+  - name: Verify new worktree exists and old is gone
+    run: |
+      test -d $WORK_DIR/test-repo/feature/renamed && ! test -d $WORK_DIR/test-repo/feature/inside-test
+    expect:
+      exit_code: 0

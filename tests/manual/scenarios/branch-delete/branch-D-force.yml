@@ -1,0 +1,28 @@
+name: Branch -D force
+description: git-worktree-branch -D forces deletion of unmerged branch
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create unmerged feature branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/wb-force
+      cd $WORK_DIR/test-repo/feature/wb-force
+      echo "unmerged work" > work.txt
+      git add work.txt
+      git commit -m "Some work"
+      git push origin feature/wb-force
+    expect:
+      exit_code: 0
+
+  - name: Force delete with -D
+    run: git-worktree-branch -D feature/wb-force
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/wb-force"

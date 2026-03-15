@@ -1,0 +1,52 @@
+name: Prune plus marker branch
+description:
+  "Correctly handles branches with + marker in git branch -vv (regression #97)"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create new branch worktree (shows + marker in linked worktrees)
+    run: git-worktree-checkout -b feature/plus-test
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/plus-test"
+
+  - name: Push the new branch so it has a remote tracking branch
+    run: |
+      cd $WORK_DIR/test-repo/feature/plus-test
+      git push -u origin feature/plus-test 2>/dev/null
+    expect:
+      exit_code: 0
+
+  - name: Verify branch shows + marker in git branch -vv
+    run:
+      cd $WORK_DIR/test-repo/main && git branch -vv | grep
+      '^+.*feature/plus-test'
+    expect:
+      exit_code: 0
+
+  - name: Delete the branch from remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp" && git push origin --delete feature/plus-test 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Prune does not confuse + marker with branch name
+    run: git-worktree-prune 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/plus-test"

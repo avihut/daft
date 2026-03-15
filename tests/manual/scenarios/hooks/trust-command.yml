@@ -1,0 +1,42 @@
+name: Hooks trust command
+description: daft hooks trust --force grants allow-level trust
+
+repos:
+  - name: test-hooks-trust
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Trust command test"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: setup
+              run: echo done
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_HOOKS_TRUST
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-hooks-trust/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-hooks-trust/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify trust via status
+    run: daft hooks status 2>&1
+    cwd: "$WORK_DIR/test-hooks-trust/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "allow"
+        - "worktree-post-create"

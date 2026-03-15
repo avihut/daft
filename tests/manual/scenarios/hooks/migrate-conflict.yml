@@ -1,0 +1,51 @@
+name: Migrate detects conflicts
+description:
+  "When both old-style and new-style hook files exist (e.g. post-create and
+  worktree-post-create), 'daft hooks migrate' reports a conflict and preserves
+  both files."
+
+repos:
+  - name: test-migrate-conflict
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Migrate conflict test"
+        commits:
+          - message: "Initial commit"
+    hook_scripts:
+      - name: post-create
+        content: |
+          #!/bin/bash
+          echo "old"
+      - name: worktree-post-create
+        content: |
+          #!/bin/bash
+          echo "new"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_MIGRATE_CONFLICT
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-migrate-conflict/main"
+
+  - name: Run migrate detects conflict
+    run: daft hooks migrate 2>&1
+    cwd: "$WORK_DIR/test-migrate-conflict/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "conflict"
+
+  - name: Both files still exist (conflict preserved)
+    run: |
+      test -f "$WORK_DIR/test-migrate-conflict/main/.daft/hooks/post-create" && \
+      test -f "$WORK_DIR/test-migrate-conflict/main/.daft/hooks/worktree-post-create" && \
+      echo "BOTH_EXIST"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "BOTH_EXIST"

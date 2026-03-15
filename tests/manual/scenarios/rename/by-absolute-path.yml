@@ -1,0 +1,29 @@
+name: Rename by absolute worktree path
+description: Rename using absolute worktree path as source
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create feature branch
+    run: |
+      git-worktree-clone $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/abs-path
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/abs-path"
+
+  - name: Rename using absolute path as source
+    run:
+      git-worktree-branch -m "$WORK_DIR/test-repo/feature/abs-path"
+      feature/abs-renamed 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/abs-renamed"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/abs-path"

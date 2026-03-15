@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Benchmark: bash config tests vs YAML manual tests"
+#MISE depends=["dev"]
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/_bench_command" "config" "test_config.sh" "config"

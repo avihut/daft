@@ -1,0 +1,60 @@
+name: Migrate dry-run previews renames
+description:
+  "Running 'daft hooks migrate --dry-run' shows what would be renamed without
+  actually modifying any files. Old-style hook files remain unchanged."
+
+repos:
+  - name: test-migrate-dry
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Migrate dry-run test"
+        commits:
+          - message: "Initial commit"
+    hook_scripts:
+      - name: post-create
+        content: |
+          #!/bin/bash
+          echo "old post-create"
+      - name: pre-remove
+        content: |
+          #!/bin/bash
+          echo "old pre-remove"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_MIGRATE_DRY
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-migrate-dry/main"
+
+  - name: Migrate --dry-run shows planned renames
+    run: daft hooks migrate --dry-run 2>&1
+    cwd: "$WORK_DIR/test-migrate-dry/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "would rename"
+
+  - name: Old hook files still exist (not modified)
+    run: |
+      test -f "$WORK_DIR/test-migrate-dry/main/.daft/hooks/post-create" && \
+      test -f "$WORK_DIR/test-migrate-dry/main/.daft/hooks/pre-remove" && \
+      echo "OLD_FILES_INTACT"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "OLD_FILES_INTACT"
+
+  - name: New hook files do not exist yet
+    run: |
+      test ! -f "$WORK_DIR/test-migrate-dry/main/.daft/hooks/worktree-post-create" && \
+      test ! -f "$WORK_DIR/test-migrate-dry/main/.daft/hooks/worktree-pre-remove" && \
+      echo "NO_NEW_FILES"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "NO_NEW_FILES"

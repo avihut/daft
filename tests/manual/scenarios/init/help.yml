@@ -1,0 +1,13 @@
+name: "Help and version"
+description: "Help and version flags produce output and exit successfully"
+
+steps:
+  - name: "Show help"
+    run: "git-worktree-init --help 2>&1"
+    expect:
+      exit_code: 0
+
+  - name: "Show version"
+    run: "git-worktree-init --version 2>&1"
+    expect:
+      exit_code: 0
