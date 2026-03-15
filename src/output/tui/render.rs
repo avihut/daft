@@ -655,7 +655,7 @@ fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
     if info.is_default_branch {
         spans.push(Span::styled(
             styles::DEFAULT_BRANCH_SYMBOL,
-            Style::default().fg(Color::Magenta),
+            Style::default().fg(Color::LightMagenta),
         ));
     } else {
         spans.push(Span::raw(" "));

@@ -311,7 +311,7 @@ fn print_table(
         .iter()
         .zip(col_vals.iter())
         .map(|(info, vals)| {
-            // Build annotation: ">" first (cyan), then "✦" (dark gray)
+            // Build annotation: ">" first (cyan), then "✦" (bright purple)
             let mut annotation = String::new();
             if has_any_current {
                 if info.is_current {
