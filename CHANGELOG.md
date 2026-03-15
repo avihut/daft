@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0](https://github.com/avihut/daft/compare/v1.0.37...v1.1.0) - 2026-03-15
+
+### Bug Fixes
+
+- *(sync)* prevent push after rebase conflict ([#299](https://github.com/avihut/daft/pull/299))
+
+### Features
+
+- manual testing framework ([#301](https://github.com/avihut/daft/pull/301))
+
+### Miscellaneous
+
+- convert integration tests to YAML manual test framework ([#302](https://github.com/avihut/daft/pull/302))
+
 ## [1.0.37](https://github.com/avihut/daft/compare/v1.0.36...v1.0.37) - 2026-03-13
 
 ### Bug Fixes
