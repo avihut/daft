@@ -1,4 +1,4 @@
-//! git-sync - Synchronize worktrees with remote
+//! git-worktree-sync - Synchronize worktrees with remote
 //!
 //! Orchestrates pruning stale branches/worktrees and updating all remaining
 //! worktrees in a single command.
@@ -40,7 +40,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "git-sync")]
+#[command(name = "git-worktree-sync")]
 #[command(version = crate::VERSION)]
 #[command(about = "Synchronize worktrees with remote (prune + update all)")]
 #[command(long_about = r#"
@@ -120,7 +120,7 @@ impl Args {
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(crate::get_clap_args("git-sync"));
+    let args = Args::parse_from(crate::get_clap_args("git-worktree-sync"));
 
     init_logging(args.verbose >= 2);
 

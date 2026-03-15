@@ -62,7 +62,7 @@ jobs:
                       git-worktree-branch git-worktree-branch-delete \
                       git-worktree-prune git-worktree-carry \
                       git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
-                      git-sync daft-release-notes; do
+                      git-worktree-sync daft-release-notes; do
             if [ ! -f "/tmp/man-test/${page}.1" ]; then
               echo "FAILED: Missing man page: ${page}.1"
               exit 1
@@ -103,7 +103,7 @@ jobs:
                       git-worktree-branch git-worktree-branch-delete \
                       git-worktree-prune git-worktree-carry \
                       git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
-                      git-sync daft-doctor daft-release-notes; do
+                      git-worktree-sync daft-doctor daft-release-notes; do
             if [ ! -f "/tmp/cli-docs-test/${page}.md" ]; then
               echo "FAILED: Missing CLI doc: ${page}.md"
               exit 1
@@ -249,7 +249,7 @@ jobs:
                      git-worktree-branch git-worktree-branch-delete \
                      git-worktree-prune git-worktree-carry \
                      git-worktree-fetch git-worktree-flow-adopt git-worktree-flow-eject \
-                     git-worktree-list git-sync git-daft daft-remove daft-rename; do
+                     git-worktree-list git-worktree-sync git-daft daft-remove daft-rename; do
             ln -sf daft "$cmd"
           done
           cd ../..
@@ -296,7 +296,7 @@ jobs:
           ./target/release/git-worktree-fetch --help
           ./target/release/git-worktree-flow-adopt --help
           ./target/release/git-worktree-flow-eject --help
-          ./target/release/git-sync --help
+          ./target/release/git-worktree-sync --help
           ./target/release/daft-remove --help
           ./target/release/daft-rename --help
           ./target/release/daft | head -20
@@ -341,7 +341,7 @@ jobs:
           for cmd in git-worktree-clone git-worktree-checkout \
                      git-worktree-init git-worktree-branch git-worktree-branch-delete \
                      git-worktree-prune git-worktree-carry git-worktree-fetch \
-                     git-worktree-flow-adopt git-worktree-flow-eject git-sync git-daft \
+                     git-worktree-flow-adopt git-worktree-flow-eject git-worktree-sync git-daft \
                      daft-remove daft-rename; do
             ln -sf daft "$PREFIX/bin/$cmd"
           done
@@ -365,7 +365,7 @@ jobs:
           for cmd in git-worktree-clone git-worktree-checkout \
                      git-worktree-init git-worktree-branch git-worktree-branch-delete \
                      git-worktree-prune git-worktree-carry git-worktree-fetch \
-                     git-worktree-flow-adopt git-worktree-flow-eject git-sync git-daft \
+                     git-worktree-flow-adopt git-worktree-flow-eject git-worktree-sync git-daft \
                      daft-remove daft-rename; do
             echo "  Testing $cmd..."
             "$PREFIX/bin/$cmd" --help > /dev/null || { echo "FAILED: $cmd --help"; exit 1; }
@@ -383,7 +383,7 @@ jobs:
                       git-worktree-init git-worktree-branch git-worktree-branch-delete \
                       git-worktree-prune git-worktree-carry git-worktree-fetch \
                       git-worktree-flow-adopt git-worktree-flow-eject \
-                      git-sync; do
+                      git-worktree-sync; do
             MANFILE="$PREFIX/share/man/man1/${page}.1"
             if [ ! -f "$MANFILE" ]; then
               echo "FAILED: Missing man page: $page"

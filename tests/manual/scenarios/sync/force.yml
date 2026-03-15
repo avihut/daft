@@ -51,7 +51,7 @@ steps:
       exit_code: 0
 
   - name: Sync with --force should prune dirty worktree
-    run: git-sync --force 2>&1
+    run: git-worktree-sync --force 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

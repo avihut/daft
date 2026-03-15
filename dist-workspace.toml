@@ -41,7 +41,7 @@ daft = [
     "git-worktree-flow-adopt",
     "git-worktree-flow-eject",
     "git-worktree-list",
-    "git-sync",
+    "git-worktree-sync",
     "git-daft",
     "daft-remove",
     "daft-rename",

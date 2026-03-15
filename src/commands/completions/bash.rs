@@ -215,9 +215,9 @@ _daft() {
                 return 0
                 ;;
             sync)
-                COMP_WORDS=("git-sync" "${COMP_WORDS[@]:2}")
+                COMP_WORDS=("git-worktree-sync" "${COMP_WORDS[@]:2}")
                 COMP_CWORD=$((COMP_CWORD - 1))
-                _git_sync
+                _git_worktree_sync
                 return 0
                 ;;
             remove)

@@ -228,9 +228,9 @@ _daft() {
                 return
                 ;;
             sync)
-                words=("git-sync" "${(@)words[3,-1]}")
+                words=("git-worktree-sync" "${(@)words[3,-1]}")
                 CURRENT=$((CURRENT - 1))
-                __git_sync_impl
+                __git_worktree_sync_impl
                 return
                 ;;
             remove)

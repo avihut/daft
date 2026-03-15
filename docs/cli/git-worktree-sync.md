@@ -1,9 +1,9 @@
 ---
-title: git-sync
+title: git-worktree-sync
 description: Synchronize worktrees with remote (prune + update all)
 ---
 
-# git sync
+# git worktree-sync
 
 Synchronize worktrees with remote (prune + update all)
 
@@ -37,7 +37,7 @@ separately.
 ## Usage
 
 ```
-git sync [OPTIONS]
+git worktree-sync [OPTIONS]
 ```
 
 ## Options

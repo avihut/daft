@@ -39,7 +39,7 @@ steps:
       exit_code: 0
 
   - name: Run sync
-    run: git-sync 2>&1
+    run: git-worktree-sync 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

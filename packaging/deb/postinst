@@ -7,7 +7,7 @@ case "$1" in
                    git-worktree-branch git-worktree-branch-delete \
                    git-worktree-prune git-worktree-carry git-worktree-fetch \
                    git-worktree-flow-adopt git-worktree-flow-eject \
-                   git-worktree-list git-sync git-daft daft-remove daft-rename; do
+                   git-worktree-list git-worktree-sync git-daft daft-remove daft-rename; do
             ln -sf daft "/usr/bin/$cmd"
         done
         ;;

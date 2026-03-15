@@ -12,7 +12,7 @@ steps:
       exit_code: 0
 
   - name: Sync with --autostash but without --rebase should fail
-    run: git-sync --autostash 2>&1
+    run: git-worktree-sync --autostash 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 2

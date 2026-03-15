@@ -91,6 +91,6 @@ daft sync --prune-dirty
 
 ## See Also
 
-- [git sync](./git-sync.md) for the underlying git-native command
+- [git worktree-sync](./git-worktree-sync.md) for the underlying git-native command
 - [daft prune](./daft-prune.md) to prune stale worktrees only
 - [daft update](./daft-update.md) to update branches only

@@ -326,7 +326,7 @@ export default defineConfig({
           {
             text: "Maintenance",
             items: [
-              { text: "sync", link: "/cli/git-sync" },
+              { text: "worktree-sync", link: "/cli/git-worktree-sync" },
               { text: "worktree-list", link: "/cli/git-worktree-list" },
               { text: "worktree-prune", link: "/cli/git-worktree-prune" },
               { text: "worktree-fetch", link: "/cli/git-worktree-fetch" },

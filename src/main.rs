@@ -64,7 +64,7 @@ fn main() -> Result<()> {
         "git-worktree-flow-adopt" => commands::flow_adopt::run(),
         "git-worktree-flow-eject" => commands::flow_eject::run(),
         "git-worktree-list" => commands::list::run(),
-        "git-sync" => commands::sync::run(),
+        "git-worktree-sync" => commands::sync::run(),
 
         // Daft-style commands (via symlinks)
         "daft-go" => commands::checkout::run_go(),
@@ -134,6 +134,7 @@ fn main() -> Result<()> {
                     "worktree-branch-delete" => commands::branch_delete::run(),
                     "worktree-flow-eject" => commands::flow_eject::run(),
                     "worktree-list" => commands::list::run(),
+                    "worktree-sync" => commands::sync::run(),
                     _ => daft::suggest::handle_unknown_subcommand(
                         label,
                         args[1].as_str(),

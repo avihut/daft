@@ -56,7 +56,7 @@ git worktree-prune [OPTIONS]
 ## See Also
 
 - [git-worktree-fetch](./git-worktree-fetch.md)
-- [git-sync](./git-sync.md)
+- [git-worktree-sync](./git-worktree-sync.md)
 - [git-worktree-flow-eject](./git-worktree-flow-eject.md)
 - [git-worktree-branch](./git-worktree-branch.md)
 
