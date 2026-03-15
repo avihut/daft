@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.1](https://github.com/avihut/daft/compare/v1.1.0...v1.1.1) - 2026-03-15
+
+### Bug Fixes
+
+- rename git-sync to git-worktree-sync to avoid Homebrew conflicts ([#305](https://github.com/avihut/daft/pull/305))
+- build.rs rerun-if-changed watches wrong paths in worktrees ([#303](https://github.com/avihut/daft/pull/303))
+
 ## [1.1.0](https://github.com/avihut/daft/compare/v1.0.37...v1.1.0) - 2026-03-15
 
 ### Bug Fixes
