@@ -330,7 +330,7 @@ fn print_table(
             if has_any_default {
                 if info.is_default_branch {
                     if use_color {
-                        annotation.push_str(&styles::dark_gray(styles::DEFAULT_BRANCH_SYMBOL));
+                        annotation.push_str(&styles::bright_purple(styles::DEFAULT_BRANCH_SYMBOL));
                     } else {
                         annotation.push_str(styles::DEFAULT_BRANCH_SYMBOL);
                     }

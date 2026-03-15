@@ -79,6 +79,9 @@ pub const ACCENT_COLOR_INDEX: u8 = 208;
 /// ANSI escape code for orange text (256-color, matches [`ACCENT_COLOR_INDEX`]).
 pub const ORANGE: &str = "\x1b[38;5;208m";
 
+/// ANSI escape code for bright purple text.
+pub const BRIGHT_PURPLE: &str = "\x1b[95m";
+
 /// ANSI escape code for dark gray text (bright black).
 pub const DARK_GRAY: &str = "\x1b[90m";
 
@@ -126,6 +129,11 @@ pub fn cyan(text: &str) -> String {
 /// Wraps text in orange styling (brand color).
 pub fn orange(text: &str) -> String {
     format!("{ORANGE}{text}{RESET}")
+}
+
+/// Wraps text in bright purple styling.
+pub fn bright_purple(text: &str) -> String {
+    format!("{BRIGHT_PURPLE}{text}{RESET}")
 }
 
 /// Wraps text in dark gray styling (bright black).
