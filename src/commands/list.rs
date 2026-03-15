@@ -38,7 +38,7 @@ and the remote tracking branch, branch age, and last commit details.
 
 Each worktree is shown with:
   - A `>` marker for the current worktree
-  - Branch name, with `◉` for the default branch
+  - Branch name, with `✦` for the default branch
   - Relative path from the current directory
   - Ahead/behind counts vs. the base branch (e.g. +3 -1)
   - File status: +N staged, -N unstaged, ?N untracked
@@ -98,7 +98,7 @@ pub struct Args {
 
 /// A row in the worktree list table.
 struct TableRow {
-    /// Annotation column: current marker (">") and/or default branch indicator ("◉").
+    /// Annotation column: current marker (">") and/or default branch indicator ("✦").
     annotation: String,
     /// Branch name.
     name: String,
@@ -311,7 +311,7 @@ fn print_table(
         .iter()
         .zip(col_vals.iter())
         .map(|(info, vals)| {
-            // Build annotation: ">" first (cyan), then "◉" (dark gray)
+            // Build annotation: ">" first (cyan), then "✦" (dark gray)
             let mut annotation = String::new();
             if has_any_current {
                 if info.is_current {
@@ -330,7 +330,7 @@ fn print_table(
             if has_any_default {
                 if info.is_default_branch {
                     if use_color {
-                        annotation.push_str(&styles::dark_gray(styles::DEFAULT_BRANCH_SYMBOL));
+                        annotation.push_str(&styles::bright_purple(styles::DEFAULT_BRANCH_SYMBOL));
                     } else {
                         annotation.push_str(styles::DEFAULT_BRANCH_SYMBOL);
                     }
