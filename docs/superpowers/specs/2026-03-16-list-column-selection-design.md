@@ -19,13 +19,14 @@ position, a CLI name, and per-command default membership.
 | 2        | `branch`      | yes            | yes                       |
 | 3        | `path`        | yes            | yes                       |
 | 4        | `base`        | yes            | yes                       |
-| 5        | `changes`     | yes            | yes                       |
-| 6        | `remote`      | yes            | yes                       |
+| 5        | `remote`      | yes            | yes                       |
+| 6        | `changes`     | yes            | yes                       |
 | 7        | `age`         | yes            | yes                       |
 | 8        | `last-commit` | yes            | yes                       |
-| 9        | `size`        | no             | no                        |
 
-Future columns register here with their natural position and `default: no`.
+Future columns (e.g. `size`) register here with their natural position and
+`default: no`. They become available via `+` modifier but are not part of the
+default set until explicitly promoted.
 
 ### Pinned Columns
 
@@ -39,6 +40,9 @@ registry at all.
 ```
 --columns <COLUMNS>    Columns to display (comma-separated)
 ```
+
+Long flag only (no short flag) to avoid conflicts with existing short flags on
+these commands.
 
 Available on `git-worktree-list`, `git-worktree-sync`, and `git-worktree-prune`.
 
@@ -55,8 +59,8 @@ git worktree list --columns branch,path,age
 column set. Result follows canonical column ordering, not input order:
 
 ```bash
-git worktree list --columns +size,-annotation
-# Output: Branch | Path | Base | Changes | Remote | Age | Last Commit | Size
+git worktree list --columns -annotation,-last-commit
+# Output: Branch | Path | Base | Remote | Changes | Age
 
 git worktree list --columns -annotation,-last-commit,-remote
 # Output: Branch | Path | Base | Changes | Age
@@ -65,7 +69,7 @@ git worktree list --columns -annotation,-last-commit,-remote
 **Mixed mode = error** -- combining prefixed and unprefixed values is rejected:
 
 ```bash
-git worktree list --columns branch,+size
+git worktree list --columns branch,+age
 # Error: cannot mix column names with +/- modifiers
 ```
 
@@ -74,10 +78,14 @@ git worktree list --columns branch,+size
 - Unknown column name: error listing valid names for the command.
 - `-` a column not in defaults: silently ignored (idempotent).
 - `+` a column already in defaults: silently ignored (idempotent).
+- Duplicate column in replace mode: error.
+- Duplicate modifier (e.g. `+age,+age`): silently deduplicated (idempotent).
 - Empty result after removals: error.
 - `status` referenced on sync/prune: error ("cannot be controlled on this
   command").
 - `status` referenced on list: unknown column error (not in registry).
+- Whitespace around column names is trimmed (e.g. `branch, path` is equivalent
+  to `branch,path`).
 
 ## Git Config
 
@@ -97,8 +105,9 @@ defaults are used (identical to today's behavior).
 
 ## JSON Output
 
-When `--columns` is specified alongside `--json`, the JSON output only includes
-keys corresponding to the selected columns.
+Currently only `git-worktree-list` has `--json` output. When `--columns` is
+specified alongside `--json`, the JSON output only includes keys corresponding
+to the selected columns.
 
 | Column        | JSON keys                                                                                      |
 | ------------- | ---------------------------------------------------------------------------------------------- |
@@ -110,8 +119,9 @@ keys corresponding to the selected columns.
 | `remote`      | `remote_ahead`, `remote_behind` (+ `remote_lines_*` with `--stat lines`)                       |
 | `age`         | `branch_age`                                                                                   |
 | `last-commit` | `last_commit_age`, `last_commit_subject`                                                       |
-| `status`      | `status` (sync/prune only)                                                                     |
-| `size`        | `size` (future)                                                                                |
+
+If `--json` is added to sync/prune in the future, the same filtering applies and
+`status` would always be included (matching its pinned table behavior).
 
 When no `--columns` is specified, JSON output includes all keys (backward
 compatible with today's behavior).
@@ -165,7 +175,7 @@ error: unknown column 'foo'
 ```
 error: cannot mix column names with +/- modifiers
   use either replace mode:   --columns branch,path,age
-  or modifier mode:          --columns +size,-annotation
+  or modifier mode:          --columns -annotation,-remote
 ```
 
 **Empty result after removals:**
