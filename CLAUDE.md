@@ -76,6 +76,15 @@ prefix are deprecated (removed in v2.0.0).
 - PR titles use conventional commit format: `feat: add dark mode toggle`
 - Issue references go in PR body, not title: `Fixes #42`
 
+### PR Tagging
+
+Every PR must be tagged with:
+
+- **Assignee**: repository owner (`avihut`)
+- **Label**: matches the conventional commit type (`feat`, `fix`, `docs`,
+  `refactor`, `style`, `perf`, `test`, `chore`, `ci`)
+- **Milestone**: `Public Launch` (current active milestone)
+
 ## Commits
 
 [Conventional Commits](https://www.conventionalcommits.org/) format:
