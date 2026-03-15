@@ -633,8 +633,8 @@ fn format_pruned_overlay(
 
 /// Render the annotation cell (current worktree indicator and default branch marker).
 ///
-/// Matches `list` column layout: two fixed sub-positions `[> ][◉]` so that
-/// the `>` and `◉` markers stay in separate visual columns.
+/// Matches `list` column layout: two fixed sub-positions `[> ][✦]` so that
+/// the `>` and `✦` markers stay in separate visual columns.
 fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
 

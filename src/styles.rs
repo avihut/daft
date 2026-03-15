@@ -86,7 +86,7 @@ pub const DARK_GRAY: &str = "\x1b[90m";
 pub const CURRENT_WORKTREE_SYMBOL: &str = ">";
 
 /// Symbol for the default branch indicator.
-pub const DEFAULT_BRANCH_SYMBOL: &str = "\u{25c9}";
+pub const DEFAULT_BRANCH_SYMBOL: &str = "\u{2726}";
 
 /// Wraps text in bold styling.
 pub fn bold(text: &str) -> String {

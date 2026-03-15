@@ -22,7 +22,7 @@ and the remote tracking branch, branch age, and last commit details.
 Each worktree is shown with:
 
 - A `>` marker for the current worktree
-- Branch name, with `◉` for the default branch
+- Branch name, with `✦` for the default branch
 - Relative path from the current directory
 - Ahead/behind counts vs. the base branch (e.g. +3 -1)
 - File status: +N staged, -N unstaged, ?N untracked
