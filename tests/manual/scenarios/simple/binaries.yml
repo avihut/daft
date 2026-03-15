@@ -69,7 +69,7 @@ steps:
     expect:
       exit_code: 0
 
-  - name: git-sync binary exists
-    run: command -v git-sync
+  - name: git-worktree-sync binary exists
+    run: command -v git-worktree-sync
     expect:
       exit_code: 0

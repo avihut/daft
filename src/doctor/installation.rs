@@ -21,7 +21,7 @@ const EXPECTED_SYMLINKS: &[&str] = &[
     "git-worktree-flow-adopt",
     "git-worktree-flow-eject",
     "git-worktree-list",
-    "git-sync",
+    "git-worktree-sync",
     "git-daft",
     "daft-remove",
     "daft-rename",
@@ -737,9 +737,9 @@ mod tests {
         ));
 
         // User-created: symlink in brew prefix bin -> "daft" (relative)
-        std::os::unix::fs::symlink("daft", brew_prefix_bin.join("git-sync")).unwrap();
+        std::os::unix::fs::symlink("daft", brew_prefix_bin.join("git-worktree-sync")).unwrap();
         assert!(!is_homebrew_managed_symlink(
-            &brew_prefix_bin.join("git-sync"),
+            &brew_prefix_bin.join("git-worktree-sync"),
             temp.path(),
         ));
 

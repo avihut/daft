@@ -59,7 +59,7 @@ jobs:
                      git-worktree-branch git-worktree-branch-delete \
                      git-worktree-prune git-worktree-carry git-worktree-fetch \
                      git-worktree-flow-adopt git-worktree-flow-eject \
-                     git-worktree-list git-sync git-daft \
+                     git-worktree-list git-worktree-sync git-daft \
                      daft-remove daft-rename; do
             echo "  $cmd: $(which $cmd)"
           done
@@ -71,7 +71,7 @@ jobs:
                      git-worktree-branch git-worktree-branch-delete \
                      git-worktree-prune git-worktree-carry git-worktree-fetch \
                      git-worktree-flow-adopt git-worktree-flow-eject \
-                     git-worktree-list git-sync git-daft \
+                     git-worktree-list git-worktree-sync git-daft \
                      daft-remove daft-rename; do
             echo "  $cmd --help..."
             $cmd --help > /dev/null || { echo "FAILED: $cmd --help"; exit 1; }
@@ -89,7 +89,7 @@ jobs:
                       git-worktree-branch git-worktree-branch-delete \
                       git-worktree-prune git-worktree-carry git-worktree-fetch \
                       git-worktree-flow-adopt git-worktree-flow-eject \
-                      git-worktree-list git-sync daft-release-notes; do
+                      git-worktree-list git-worktree-sync daft-release-notes; do
             echo "  Checking man $page..."
             man -w $page > /dev/null 2>&1 || { echo "FAILED: man page not found for $page"; exit 1; }
           done

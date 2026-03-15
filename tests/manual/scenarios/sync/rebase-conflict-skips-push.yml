@@ -59,8 +59,8 @@ steps:
 
   - name: "Run sync with --rebase --push (should handle conflict gracefully)"
     run:
-      "git-sync --rebase main --push --force-with-lease --verbose --verbose 2>&1
-      || true"
+      "git-worktree-sync --rebase main --push --force-with-lease --verbose
+      --verbose 2>&1 || true"
     cwd: "$WORK_DIR/sync-conflict-repo/main"
     expect:
       exit_code: 0

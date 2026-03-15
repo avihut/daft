@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Integration tests for git-sync Rust binary
+# Integration tests for git-worktree-sync Rust binary
 
 source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 
@@ -35,7 +35,7 @@ test_sync_basic() {
     rm -rf "$temp_clone"
 
     # Run sync
-    git-sync || return 1
+    git-worktree-sync || return 1
 
     # Verify feature branch was pruned
     if [[ -d "feature/test-feature" ]]; then
@@ -82,7 +82,7 @@ test_sync_nothing_to_prune() {
     rm -rf "$temp_clone"
 
     # Run sync (nothing to prune, should still update)
-    git-sync || return 1
+    git-worktree-sync || return 1
 
     # Verify develop was updated
     if ! grep -q "Sync no prune update" develop/README.md; then
@@ -106,7 +106,7 @@ test_sync_verbose() {
     cd "test-repo-sync-verbose"
 
     # Run sync with --verbose (should not error)
-    git-sync --verbose || return 1
+    git-worktree-sync --verbose || return 1
 
     return 0
 }
@@ -149,7 +149,7 @@ test_sync_force() {
 
     # Sync without --force should still prune (prune ignores dirty by default
     # unless the worktree has uncommitted changes - then needs --force)
-    git-sync --force || return 1
+    git-worktree-sync --force || return 1
 
     # Verify the branch was pruned
     if [[ -d "feature/dirty-branch" ]]; then
@@ -200,7 +200,7 @@ test_sync_cd_target() {
 
     # Set up DAFT_CD_FILE to test cd target behavior
     local cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
-    DAFT_CD_FILE="$cd_file" git-sync || true
+    DAFT_CD_FILE="$cd_file" git-worktree-sync || true
 
     # Check if a cd target was written
     if [[ -s "$cd_file" ]]; then
@@ -217,15 +217,15 @@ test_sync_cd_target() {
 
 # Test sync help
 test_sync_help() {
-    assert_command_help "git-sync" || return 1
-    assert_command_version "git-sync" || return 1
+    assert_command_help "git-worktree-sync" || return 1
+    assert_command_version "git-worktree-sync" || return 1
 
     return 0
 }
 
 # Test sync outside git repository
 test_sync_outside_repo() {
-    assert_command_failure "git-sync" "Should fail outside git repository"
+    assert_command_failure "git-worktree-sync" "Should fail outside git repository"
 
     return 0
 }
@@ -250,7 +250,7 @@ test_sync_diverged_branch_with_rebase() {
     ) >/dev/null 2>&1
 
     # Run sync with --rebase (use --verbose --verbose for sequential mode)
-    git-sync --rebase main --verbose --verbose || {
+    git-worktree-sync --rebase main --verbose --verbose || {
         log_error "Sync --rebase should not fail when a branch has diverged"
         return 1
     }
@@ -290,7 +290,7 @@ test_sync_diverged_branch_no_rebase() {
     local diverged_commit=$(cd develop && git rev-parse HEAD)
 
     # Run sync without --rebase (use --verbose --verbose for sequential mode)
-    git-sync --verbose --verbose || {
+    git-worktree-sync --verbose --verbose || {
         log_error "Sync should not fail when a branch has diverged (should warn instead)"
         return 1
     }
@@ -341,7 +341,7 @@ test_sync_rebase_autostash() {
     echo "Uncommitted local work" > develop/local-wip.txt
 
     # Run sync with --rebase --autostash (use -vv for sequential mode)
-    git-sync --rebase main --autostash --verbose --verbose || {
+    git-worktree-sync --rebase main --autostash --verbose --verbose || {
         log_error "Sync --rebase --autostash should succeed with dirty worktree"
         return 1
     }
@@ -372,7 +372,7 @@ test_sync_autostash_without_rebase() {
 
     # Run sync with --autostash but without --rebase — should fail
     local output
-    output=$(git-sync --autostash 2>&1) && {
+    output=$(git-worktree-sync --autostash 2>&1) && {
         log_error "Sync --autostash without --rebase should fail"
         return 1
     }
@@ -425,7 +425,7 @@ test_sync_rebase_conflict_skips_push() {
 
     # Run sync with --rebase --push (use -vv for sequential mode)
     # This should NOT fail -- conflicts are warnings, not errors
-    git-sync --rebase main --push --force-with-lease --verbose --verbose 2>&1 || true
+    git-worktree-sync --rebase main --push --force-with-lease --verbose --verbose 2>&1 || true
 
     # Verify develop branch was NOT changed (rebase aborted)
     local develop_commit_after=$(cd develop && git rev-parse HEAD)
@@ -446,7 +446,7 @@ test_sync_rebase_conflict_skips_push() {
 
 # Run all sync tests
 run_sync_tests() {
-    log "Running git-sync integration tests..."
+    log "Running git-worktree-sync integration tests..."
 
     run_test "sync_basic" "test_sync_basic"
     run_test "sync_nothing_to_prune" "test_sync_nothing_to_prune"

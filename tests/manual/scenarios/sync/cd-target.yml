@@ -46,7 +46,7 @@ steps:
   - name: Run sync from pruned worktree with DAFT_CD_FILE
     run: |
       cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
-      DAFT_CD_FILE="$cd_file" git-sync 2>&1 || true
+      DAFT_CD_FILE="$cd_file" git-worktree-sync 2>&1 || true
       if [ -s "$cd_file" ]; then
         cd_target=$(cat "$cd_file")
         echo "cd_target=$cd_target"

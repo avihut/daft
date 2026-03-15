@@ -28,7 +28,7 @@ Prefix: `gwt` (Git Worktree)
 | `gwtcarry` | `git-worktree-carry`       |
 | `gwtfetch` | `git-worktree-fetch`       |
 | `gwtls`    | `git-worktree-list`        |
-| `gwtsync`  | `git-sync`                 |
+| `gwtsync`  | `git-worktree-sync`        |
 
 ### Shell Style
 
@@ -110,5 +110,6 @@ This creates shell functions (not symlinks) for the shell-style shortcuts
 the `--aliases` flag.
 
 `daft shell-init` also generates shell functions for `gwtrn` (maps to
-`daft rename`) and `gwtsync` (maps to `git-sync`). These are always included in
-the shell-init output and provide the same cd behavior as other shell wrappers.
+`daft rename`) and `gwtsync` (maps to `git-worktree-sync`). These are always
+included in the shell-init output and provide the same cd behavior as other
+shell wrappers.

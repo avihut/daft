@@ -29,7 +29,7 @@ steps:
       exit_code: 0
 
   - name: Run sync with --rebase main
-    run: git-sync --rebase main --verbose --verbose 2>&1
+    run: git-worktree-sync --rebase main --verbose --verbose 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

@@ -131,7 +131,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         alias: "gwtsync",
-        command: "git-sync",
+        command: "git-worktree-sync",
         style: ShortcutStyle::Git,
     },
     Shortcut {
@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(resolve("gwtfetch"), "git-worktree-fetch");
         assert_eq!(resolve("gwtbd"), "git-worktree-branch");
         assert_eq!(resolve("gwtinit"), "git-worktree-init");
-        assert_eq!(resolve("gwtsync"), "git-sync");
+        assert_eq!(resolve("gwtsync"), "git-worktree-sync");
     }
 
     #[test]
@@ -252,7 +252,7 @@ mod tests {
             "git-worktree-branch",
             "git-worktree-branch-delete",
             "git-worktree-fetch",
-            "git-sync",
+            "git-worktree-sync",
         ];
 
         for shortcut in SHORTCUTS {
