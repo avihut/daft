@@ -1,4 +1,5 @@
 use super::state::{WorktreeRow, WorktreeStatus};
+use crate::core::columns::ListColumn;
 use crate::output::format::ColumnValues;
 
 /// Columns available in the worktree table, ordered by display priority.
@@ -52,6 +53,20 @@ impl Column {
             Self::Remote => "Remote",
             Self::Age => "Age",
             Self::LastCommit => "Last Commit",
+        }
+    }
+
+    /// Convert from a user-facing `ListColumn` to the TUI `Column`.
+    pub fn from_list_column(lc: ListColumn) -> Self {
+        match lc {
+            ListColumn::Annotation => Column::Annotation,
+            ListColumn::Branch => Column::Branch,
+            ListColumn::Path => Column::Path,
+            ListColumn::Base => Column::Base,
+            ListColumn::Changes => Column::Changes,
+            ListColumn::Remote => Column::Remote,
+            ListColumn::Age => Column::Age,
+            ListColumn::LastCommit => Column::LastCommit,
         }
     }
 }

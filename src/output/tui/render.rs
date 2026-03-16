@@ -69,7 +69,28 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         .collect();
 
     // Select columns and compute dynamic constraints from content widths.
-    let columns = select_columns(area.width, &state.worktrees, &row_vals);
+    let columns = match (&state.columns, state.columns_explicit) {
+        // Replace mode: user explicitly chose columns, don't responsively drop.
+        (Some(user_cols), true) => user_cols.clone(),
+        // Modifier mode: user tweaked defaults, responsive dropping still applies.
+        (Some(user_cols), false) => {
+            let responsive = select_columns(area.width, &state.worktrees, &row_vals);
+            responsive
+                .into_iter()
+                .filter(|c| matches!(c, Column::Status) || user_cols.contains(c))
+                .collect()
+        }
+        // No column selection: fully responsive.
+        (None, _) => select_columns(area.width, &state.worktrees, &row_vals),
+    };
+    // Status is always prepended for TUI commands.
+    let columns = if !columns.contains(&Column::Status) {
+        let mut with_status = vec![Column::Status];
+        with_status.extend(columns);
+        with_status
+    } else {
+        columns
+    };
 
     let constraints: Vec<Constraint> = columns
         .iter()

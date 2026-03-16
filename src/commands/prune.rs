@@ -73,6 +73,12 @@ pub struct Args {
         help = "Statistics mode: summary or lines (default: from git config daft.prune.stat, or summary)"
     )]
     stat: Option<Stat>,
+
+    #[arg(
+        long,
+        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col"
+    )]
+    columns: Option<String>,
 }
 
 pub fn run() -> Result<()> {
@@ -188,6 +194,24 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     }
 
     // ── Create TUI state with known phases and worktrees ───────────────
+    use crate::core::columns::{ColumnSelection, CommandKind};
+    use crate::output::tui::Column;
+
+    let columns_input = args.columns.or_else(|| settings.prune_columns.clone());
+    let (tui_columns, columns_explicit) = match columns_input {
+        Some(ref input) => {
+            let resolved = ColumnSelection::parse(input, CommandKind::Prune)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let tui_cols: Vec<Column> = resolved
+                .columns
+                .iter()
+                .map(|c| Column::from_list_column(*c))
+                .collect();
+            (Some(tui_cols), resolved.explicit)
+        }
+        None => (None, false),
+    };
+
     let phases = vec![OperationPhase::Fetch, OperationPhase::Prune];
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
     let state = TuiState::new(
@@ -197,6 +221,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         cwd,
         stat,
         args.verbose,
+        tui_columns,
+        columns_explicit,
     );
 
     let hooks_config = HooksConfig::default();

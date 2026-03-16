@@ -111,6 +111,12 @@ pub struct Args {
         help = "Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary)"
     )]
     stat: Option<Stat>,
+
+    #[arg(
+        long,
+        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col"
+    )]
+    columns: Option<String>,
 }
 
 impl Args {
@@ -275,6 +281,24 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let hooks_config = HooksConfig::default();
     let shared_hooks_config = Arc::new(hooks_config.clone());
 
+    use crate::core::columns::{ColumnSelection, CommandKind};
+    use crate::output::tui::Column;
+
+    let columns_input = args.columns.or_else(|| settings.sync_columns.clone());
+    let (tui_columns, columns_explicit) = match columns_input {
+        Some(ref input) => {
+            let resolved = ColumnSelection::parse(input, CommandKind::Sync)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let tui_cols: Vec<Column> = resolved
+                .columns
+                .iter()
+                .map(|c| Column::from_list_column(*c))
+                .collect();
+            (Some(tui_cols), resolved.explicit)
+        }
+        None => (None, false),
+    };
+
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
     let state = TuiState::new(
         phases,
@@ -283,6 +307,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         cwd,
         stat,
         args.verbose,
+        tui_columns,
+        columns_explicit,
     );
 
     // ── Create channel and spawn orchestrator ──────────────────────────

@@ -52,6 +52,7 @@ git worktree-sync [OPTIONS]
 | `--push` | Push all branches to their remotes after syncing |  |
 | `--force-with-lease` | Use --force-with-lease when pushing (requires --push) |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary) |  |
+| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col |  |
 
 ## Global Options
 
