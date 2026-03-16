@@ -126,9 +126,11 @@ if [[ -n "$work_dir" && -d "$work_dir" ]]; then
         _zdir=$(mktemp -d)
         [[ -f "$HOME/.zshenv" ]] && ln -s "$HOME/.zshenv" "${_zdir}/.zshenv"
         cat > "${_zdir}/.zshrc" <<ZSHRC
+# Reset ZDOTDIR so subsequent shells use normal config
+ZDOTDIR="\$HOME"
 [[ -f "\$HOME/.zshrc" ]] && source "\$HOME/.zshrc"
-source "$envrc"
-source "$init_script"
+[[ -f "$envrc" ]] && source "$envrc"
+[[ -f "$init_script" ]] && source "$init_script"
 ZSHRC
         ZDOTDIR="$_zdir" exec zsh
     elif [[ "$SHELL" == *bash* ]]; then
