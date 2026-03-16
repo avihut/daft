@@ -20,7 +20,7 @@ steps:
         - '"name"'
         - '"path"'
         - '"kind"'
-      output_excludes:
+      output_not_contains:
         - '"ahead"'
         - '"behind"'
         - '"staged"'

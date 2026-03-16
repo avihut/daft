@@ -19,7 +19,7 @@ steps:
       output_contains:
         - "Branch"
         - "Path"
-      output_excludes:
+      output_not_contains:
         - "Base"
         - "Changes"
         - "Remote"
