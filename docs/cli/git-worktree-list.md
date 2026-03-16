@@ -57,6 +57,7 @@ git worktree-list [OPTIONS]
 | `-r, --remotes` | Also show remote tracking branches |  |
 | `-a, --all` | Show all branches (equivalent to -b -r) |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.list.stat, or summary) |  |
+| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col |  |
 
 ## Global Options
 

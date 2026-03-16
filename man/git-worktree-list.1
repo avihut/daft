@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-list \- List all worktrees with status information
 .SH SYNOPSIS
-\fBgit\-worktree\-list\fR [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-stat\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBgit\-worktree\-list\fR [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Lists all worktrees in the current project with enriched status information
@@ -63,6 +63,9 @@ summary: Summary counts: commits for base/remote, files for changes (default)
 .IP \(bu 2
 lines: Line\-level counts: insertions/deletions for all columns
 .RE
+.TP
+\fB\-\-columns\fR \fI<COLUMNS>\fR
+Columns to display (comma\-separated). Replace: branch,path,age. Modify defaults: +col,\-col
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
