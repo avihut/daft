@@ -191,8 +191,16 @@ impl TuiState {
                 // Auto-create row for newly discovered branches (e.g., gone branches
                 // found after fetch completes while TUI is already running).
                 if !branch_name.is_empty() && self.find_row_mut(branch_name).is_none() {
+                    let kind = if matches!(phase, OperationPhase::Prune) {
+                        EntryKind::LocalBranch
+                    } else {
+                        EntryKind::Worktree
+                    };
                     self.worktrees.push(WorktreeRow {
-                        info: WorktreeInfo::empty(branch_name),
+                        info: WorktreeInfo {
+                            kind,
+                            ..WorktreeInfo::empty(branch_name)
+                        },
                         status: WorktreeStatus::Idle,
                         prev_terminal_status: None,
                         hook_warned: false,
