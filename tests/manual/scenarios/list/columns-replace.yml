@@ -1,0 +1,36 @@
+name: Columns replace mode
+description: --columns flag selects exact columns in specified order
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: List with subset of columns
+    run: NO_COLOR=1 git-worktree-list --columns branch,path 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Branch"
+        - "Path"
+      output_not_contains:
+        - "Base"
+        - "Changes"
+        - "Remote"
+        - "Age"
+        - "Last Commit"
+
+  - name: List with reversed column order
+    run: NO_COLOR=1 git-worktree-list --columns age,branch 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Age"
+        - "Branch"

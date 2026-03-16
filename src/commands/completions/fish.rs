@@ -100,6 +100,31 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
         }
     }
 
+    // Value completions for --columns flag
+    let has_columns = matches!(
+        command_name,
+        "git-worktree-list" | "git-worktree-sync" | "git-worktree-prune"
+    );
+    if has_columns {
+        output.push_str("\n# Column name completions for --columns\n");
+        let columns = [
+            ("annotation", "Annotation markers"),
+            ("branch", "Branch name"),
+            ("path", "Worktree path"),
+            ("base", "Ahead/behind base branch"),
+            ("changes", "Local changes"),
+            ("remote", "Ahead/behind remote"),
+            ("age", "Branch age"),
+            ("last-commit", "Last commit"),
+        ];
+        for (name, desc) in &columns {
+            output.push_str(&format!(
+                "complete -c {} -l columns -x -a '{} +{} -{}' -d '{}'\n",
+                command_name, name, name, name, desc
+            ));
+        }
+    }
+
     Ok(output)
 }
 

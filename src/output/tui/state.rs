@@ -6,6 +6,8 @@ use crate::hooks::HookType;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use super::columns::Column;
+
 /// Status of a high-level operation phase in the header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PhaseStatus {
@@ -102,6 +104,10 @@ pub struct TuiState {
     pub stat: Stat,
     pub hook_summaries: Vec<HookSummaryEntry>,
     pub show_hook_sub_rows: bool,
+    /// User-selected columns (None = use responsive selection).
+    pub columns: Option<Vec<Column>>,
+    /// If true, the user explicitly chose columns (replace mode) — disables responsive dropping.
+    pub columns_explicit: bool,
 }
 
 /// A single row in the worktree table.
@@ -118,6 +124,7 @@ pub struct WorktreeRow {
 }
 
 impl TuiState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         phases: Vec<OperationPhase>,
         worktree_infos: Vec<WorktreeInfo>,
@@ -125,6 +132,8 @@ impl TuiState {
         cwd: PathBuf,
         stat: Stat,
         verbose: u8,
+        columns: Option<Vec<Column>>,
+        columns_explicit: bool,
     ) -> Self {
         Self {
             phases: phases
@@ -152,6 +161,8 @@ impl TuiState {
             stat,
             hook_summaries: Vec::new(),
             show_hook_sub_rows: verbose >= 1,
+            columns,
+            columns_explicit,
         }
     }
 
@@ -465,6 +476,8 @@ mod tests {
             PathBuf::from("/tmp/test"),
             Stat::Summary,
             0,
+            None,
+            false,
         )
     }
 
@@ -488,6 +501,8 @@ mod tests {
             PathBuf::from("/tmp/test"),
             Stat::Summary,
             1,
+            None,
+            false,
         )
     }
 
@@ -1050,6 +1065,8 @@ mod tests {
             PathBuf::from("/tmp/test"),
             Stat::Summary,
             0,
+            None,
+            false,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1094,6 +1111,8 @@ mod tests {
             PathBuf::from("/tmp/test"),
             Stat::Summary,
             0,
+            None,
+            false,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1135,6 +1154,8 @@ mod tests {
             PathBuf::from("/tmp/test"),
             Stat::Summary,
             0,
+            None,
+            false,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1199,6 +1220,8 @@ mod tests {
             PathBuf::from("/projects/test/master"),
             Stat::Summary,
             0,
+            None,
+            false,
         )
     }
 

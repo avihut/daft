@@ -38,6 +38,23 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
         output.push('\n');
     }
 
+    // Value completion for --columns flag
+    let has_columns = matches!(
+        command_name,
+        "git-worktree-list" | "git-worktree-sync" | "git-worktree-prune"
+    );
+    if has_columns {
+        output.push_str("    # Column name completion for --columns\n");
+        output.push_str("    if [[ \"$prev\" == \"--columns\" ]]; then\n");
+        output.push_str("        local columns=\"annotation branch path base changes remote age last-commit\"\n");
+        output.push_str("        local prefixed=\"\"\n");
+        output.push_str("        for c in $columns; do prefixed=\"$prefixed $c +$c -$c\"; done\n");
+        output.push_str("        COMPREPLY=( $(compgen -W \"$prefixed\" -- \"$cur\") )\n");
+        output.push_str("        return 0\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
     output.push_str("    # Static flag completions (extracted from clap)\n");
     output.push_str("    if [[ \"$cur\" == -* ]]; then\n");
     output.push_str("        local flags=\"");

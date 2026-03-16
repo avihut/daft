@@ -1,0 +1,40 @@
+name: Columns config
+description: daft.list.columns config sets default column selection
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Set columns config
+    run: git config daft.list.columns "branch,path"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: List uses config columns
+    run: NO_COLOR=1 git-worktree-list 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Branch"
+        - "Path"
+      output_not_contains:
+        - "Base"
+        - "Changes"
+
+  - name: CLI flag overrides config
+    run: NO_COLOR=1 git-worktree-list --columns branch,path,age 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Branch"
+        - "Path"
+        - "Age"

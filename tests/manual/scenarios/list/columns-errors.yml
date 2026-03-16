@@ -1,0 +1,36 @@
+name: Columns error cases
+description: --columns produces clear error messages for invalid input
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Unknown column name
+    run: git-worktree-list --columns branch,foo 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "unknown column 'foo'"
+
+  - name: Mixed mode error
+    run: git-worktree-list --columns branch,+age 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "cannot mix"
+
+  - name: Duplicate column error
+    run: git-worktree-list --columns branch,path,branch 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "duplicate"

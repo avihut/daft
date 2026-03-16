@@ -4,7 +4,7 @@
 .SH NAME
 daft\-list \- List all worktrees with status information
 .SH SYNOPSIS
-\fBdaft\-list\fR [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-stat\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBdaft\-list\fR [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Lists all worktrees in the current project with enriched status information
@@ -34,6 +34,11 @@ instead of the default summary (commit counts for base/remote, file counts for
 changes). This is slower as it requires computing diffs for each worktree.
 .PP
 Use \-\-json for machine\-readable output suitable for scripting.
+.PP
+Use \-\-columns to select which columns are shown and in what order.
+  Replace mode:  \-\-columns branch,path,age (exact set and order)
+  Modifier mode: \-\-columns \-annotation,\-last\-commit (remove from defaults)
+Defaults can be set in git config with daft.list.columns.
 .SH OPTIONS
 .TP
 \fB\-\-json\fR
@@ -63,6 +68,9 @@ summary: Summary counts: commits for base/remote, files for changes (default)
 .IP \(bu 2
 lines: Line\-level counts: insertions/deletions for all columns
 .RE
+.TP
+\fB\-\-columns\fR \fI<COLUMNS>\fR
+Columns to display (comma\-separated). Replace: branch,path,age. Modify defaults: +col,\-col
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

@@ -47,6 +47,20 @@ struct FigGenerator {
 struct FigOption {
     name: FigName,
     description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    args: Option<FigOptionArg>,
+}
+
+#[derive(Serialize)]
+struct FigOptionArg {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggestions: Option<Vec<FigSuggestion>>,
+}
+
+#[derive(Serialize)]
+struct FigSuggestion {
+    name: String,
+    description: String,
 }
 
 #[derive(Serialize)]
@@ -174,10 +188,47 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
     };
 
     // Build options from flags
+    let has_columns = matches!(
+        command_name,
+        "git-worktree-list" | "git-worktree-sync" | "git-worktree-prune"
+    );
     let flag_descriptions = get_flag_descriptions(&cmd);
     let options: Vec<FigOption> = flag_descriptions
         .into_iter()
         .map(|(short, long, desc)| {
+            // Add column name suggestions for --columns flag
+            let args = if has_columns && long == "--columns" {
+                let column_defs = [
+                    ("annotation", "Annotation markers"),
+                    ("branch", "Branch name"),
+                    ("path", "Worktree path"),
+                    ("base", "Ahead/behind base branch"),
+                    ("changes", "Local changes"),
+                    ("remote", "Ahead/behind remote"),
+                    ("age", "Branch age"),
+                    ("last-commit", "Last commit"),
+                ];
+                let mut suggestions: Vec<FigSuggestion> = Vec::new();
+                for (name, description) in &column_defs {
+                    suggestions.push(FigSuggestion {
+                        name: name.to_string(),
+                        description: description.to_string(),
+                    });
+                    suggestions.push(FigSuggestion {
+                        name: format!("+{name}"),
+                        description: format!("Add {description}"),
+                    });
+                    suggestions.push(FigSuggestion {
+                        name: format!("-{name}"),
+                        description: format!("Remove {description}"),
+                    });
+                }
+                Some(FigOptionArg {
+                    suggestions: Some(suggestions),
+                })
+            } else {
+                None
+            };
             let name = match (short.is_empty(), long.is_empty()) {
                 (false, false) => FigName::Multiple(vec![short, long]),
                 (true, false) => FigName::Single(long),
@@ -187,6 +238,7 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
             FigOption {
                 name,
                 description: desc.unwrap_or_default(),
+                args,
             }
         })
         .collect();
@@ -256,14 +308,17 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
             FigOption {
                 name: FigName::Single("--job".into()),
                 description: "Run only the named job".into(),
+                args: None,
             },
             FigOption {
                 name: FigName::Single("--tag".into()),
                 description: "Run only jobs with this tag".into(),
+                args: None,
             },
             FigOption {
                 name: FigName::Single("--dry-run".into()),
                 description: "Preview what would run".into(),
+                args: None,
             },
         ]),
     };
@@ -345,10 +400,12 @@ pub(super) fn generate_fig_daft_spec() -> Result<String> {
             FigOption {
                 name: FigName::Multiple(vec!["--version".to_string(), "-V".to_string()]),
                 description: "Print version information".to_string(),
+                args: None,
             },
             FigOption {
                 name: FigName::Multiple(vec!["--help".to_string(), "-h".to_string()]),
                 description: "Print help".to_string(),
+                args: None,
             },
         ]),
         subcommands: Some(subcommands),

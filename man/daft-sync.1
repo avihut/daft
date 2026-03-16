@@ -4,7 +4,7 @@
 .SH NAME
 daft\-sync \- Synchronize worktrees with remote (prune + update all)
 .SH SYNOPSIS
-\fBdaft\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-f\fR|\fB\-\-prune\-dirty\fR] [\fB\-\-rebase\fR] [\fB\-\-autostash\fR] [\fB\-\-push\fR] [\fB\-\-force\-with\-lease\fR] [\fB\-\-stat\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBdaft\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-f\fR|\fB\-\-prune\-dirty\fR] [\fB\-\-rebase\fR] [\fB\-\-autostash\fR] [\fB\-\-push\fR] [\fB\-\-force\-with\-lease\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Synchronizes all worktrees with the remote in a single command.
@@ -59,6 +59,9 @@ summary: Summary counts: commits for base/remote, files for changes (default)
 .IP \(bu 2
 lines: Line\-level counts: insertions/deletions for all columns
 .RE
+.TP
+\fB\-\-columns\fR \fI<COLUMNS>\fR
+Columns to display (comma\-separated). Replace: branch,path,age. Modify defaults: +col,\-col
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

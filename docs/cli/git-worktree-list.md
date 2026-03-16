@@ -41,6 +41,11 @@ changes). This is slower as it requires computing diffs for each worktree.
 
 Use --json for machine-readable output suitable for scripting.
 
+Use --columns to select which columns are shown and in what order.
+  Replace mode:  --columns branch,path,age (exact set and order)
+  Modifier mode: --columns -annotation,-last-commit (remove from defaults)
+Defaults can be set in git config with daft.list.columns.
+
 ## Usage
 
 ```
@@ -57,6 +62,7 @@ git worktree-list [OPTIONS]
 | `-r, --remotes` | Also show remote tracking branches |  |
 | `-a, --all` | Show all branches (equivalent to -b -r) |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.list.stat, or summary) |  |
+| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col |  |
 
 ## Global Options
 

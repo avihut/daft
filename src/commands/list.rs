@@ -1,5 +1,6 @@
 use crate::{
     core::{
+        columns::{ColumnSelection, CommandKind, ListColumn, ResolvedColumns},
         repo::{get_current_worktree_path, get_git_common_dir, get_project_root},
         worktree::list::{collect_branch_info, collect_worktree_info, EntryKind, Stat},
     },
@@ -59,6 +60,11 @@ instead of the default summary (commit counts for base/remote, file counts for
 changes). This is slower as it requires computing diffs for each worktree.
 
 Use --json for machine-readable output suitable for scripting.
+
+Use --columns to select which columns are shown and in what order.
+  Replace mode:  --columns branch,path,age (exact set and order)
+  Modifier mode: --columns -annotation,-last-commit (remove from defaults)
+Defaults can be set in git config with daft.list.columns.
 "#)]
 pub struct Args {
     #[arg(long, help = "Output in JSON format")]
@@ -94,6 +100,12 @@ pub struct Args {
         help = "Statistics mode: summary or lines (default: from git config daft.list.stat, or summary)"
     )]
     stat: Option<Stat>,
+
+    #[arg(
+        long,
+        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col"
+    )]
+    columns: Option<String>,
 }
 
 /// A row in the worktree list table.
@@ -127,6 +139,14 @@ pub fn run() -> Result<()> {
 
     let settings = DaftSettings::load()?;
     let stat = args.stat.unwrap_or(settings.list_stat);
+    let columns_input = args.columns.or(settings.list_columns);
+    let resolved = match columns_input {
+        Some(ref input) => {
+            ColumnSelection::parse(input, CommandKind::List).map_err(|e| anyhow::anyhow!("{e}"))?
+        }
+        None => ResolvedColumns::defaults(ListColumn::list_defaults()),
+    };
+    let selected_columns = &resolved.columns;
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let git_common_dir = get_git_common_dir()?;
     let base_branch = get_default_branch_local(&git_common_dir, "origin", settings.use_gitoxide)
@@ -176,10 +196,10 @@ pub fn run() -> Result<()> {
     };
 
     if args.json {
-        return print_json(&infos, &project_root, &cwd, stat);
+        return print_json(&infos, &project_root, &cwd, stat, selected_columns);
     }
 
-    print_table(&infos, &project_root, &cwd, stat);
+    print_table(&infos, &project_root, &cwd, stat, selected_columns);
     Ok(())
 }
 
@@ -188,81 +208,122 @@ fn print_json(
     project_root: &std::path::Path,
     cwd: &std::path::Path,
     stat: Stat,
+    selected_columns: &[ListColumn],
 ) -> Result<()> {
     let now = Utc::now().timestamp();
+    let all_columns = selected_columns == ListColumn::list_defaults();
+
     let entries: Vec<serde_json::Value> = infos
         .iter()
         .map(|info| {
-            let rel_path = info
-                .path
-                .as_ref()
-                .map(|p| relative_display_path(p, project_root, cwd));
-            let last_commit_age = info
-                .last_commit_timestamp
-                .map(|ts| shorthand_from_seconds(now - ts))
-                .unwrap_or_default();
-            let branch_age = info
-                .branch_creation_timestamp
-                .map(|ts| shorthand_from_seconds(now - ts))
-                .unwrap_or_default();
-            let kind = match info.kind {
-                EntryKind::Worktree => "worktree",
-                EntryKind::LocalBranch => "branch",
-                EntryKind::RemoteBranch => "remote",
-            };
-            let mut entry = serde_json::json!({
-                "kind": kind,
-                "name": info.name,
-                "path": rel_path,
-                "is_current": info.is_current,
-                "is_default_branch": info.is_default_branch,
-                "ahead": info.ahead,
-                "behind": info.behind,
-                "staged": info.staged,
-                "unstaged": info.unstaged,
-                "untracked": info.untracked,
-                "remote_ahead": info.remote_ahead,
-                "remote_behind": info.remote_behind,
-                "last_commit_age": last_commit_age,
-                "last_commit_subject": info.last_commit_subject,
-                "branch_age": branch_age,
-            });
-            if stat == Stat::Lines {
-                let obj = entry.as_object_mut().unwrap();
+            let mut obj = serde_json::Map::new();
+
+            if all_columns || selected_columns.contains(&ListColumn::Branch) {
                 obj.insert(
-                    "base_lines_inserted".into(),
-                    serde_json::json!(info.base_lines_inserted),
+                    "kind".into(),
+                    serde_json::json!(match info.kind {
+                        EntryKind::Worktree => "worktree",
+                        EntryKind::LocalBranch => "branch",
+                        EntryKind::RemoteBranch => "remote",
+                    }),
                 );
+                obj.insert("name".into(), serde_json::json!(info.name));
+            }
+
+            if all_columns || selected_columns.contains(&ListColumn::Annotation) {
+                obj.insert("is_current".into(), serde_json::json!(info.is_current));
                 obj.insert(
-                    "base_lines_deleted".into(),
-                    serde_json::json!(info.base_lines_deleted),
-                );
-                obj.insert(
-                    "staged_lines_inserted".into(),
-                    serde_json::json!(info.staged_lines_inserted),
-                );
-                obj.insert(
-                    "staged_lines_deleted".into(),
-                    serde_json::json!(info.staged_lines_deleted),
-                );
-                obj.insert(
-                    "unstaged_lines_inserted".into(),
-                    serde_json::json!(info.unstaged_lines_inserted),
-                );
-                obj.insert(
-                    "unstaged_lines_deleted".into(),
-                    serde_json::json!(info.unstaged_lines_deleted),
-                );
-                obj.insert(
-                    "remote_lines_inserted".into(),
-                    serde_json::json!(info.remote_lines_inserted),
-                );
-                obj.insert(
-                    "remote_lines_deleted".into(),
-                    serde_json::json!(info.remote_lines_deleted),
+                    "is_default_branch".into(),
+                    serde_json::json!(info.is_default_branch),
                 );
             }
-            entry
+
+            if all_columns || selected_columns.contains(&ListColumn::Path) {
+                let rel_path = info
+                    .path
+                    .as_ref()
+                    .map(|p| relative_display_path(p, project_root, cwd));
+                obj.insert("path".into(), serde_json::json!(rel_path));
+            }
+
+            if all_columns || selected_columns.contains(&ListColumn::Base) {
+                obj.insert("ahead".into(), serde_json::json!(info.ahead));
+                obj.insert("behind".into(), serde_json::json!(info.behind));
+                if stat == Stat::Lines {
+                    obj.insert(
+                        "base_lines_inserted".into(),
+                        serde_json::json!(info.base_lines_inserted),
+                    );
+                    obj.insert(
+                        "base_lines_deleted".into(),
+                        serde_json::json!(info.base_lines_deleted),
+                    );
+                }
+            }
+
+            if all_columns || selected_columns.contains(&ListColumn::Changes) {
+                obj.insert("staged".into(), serde_json::json!(info.staged));
+                obj.insert("unstaged".into(), serde_json::json!(info.unstaged));
+                obj.insert("untracked".into(), serde_json::json!(info.untracked));
+                if stat == Stat::Lines {
+                    obj.insert(
+                        "staged_lines_inserted".into(),
+                        serde_json::json!(info.staged_lines_inserted),
+                    );
+                    obj.insert(
+                        "staged_lines_deleted".into(),
+                        serde_json::json!(info.staged_lines_deleted),
+                    );
+                    obj.insert(
+                        "unstaged_lines_inserted".into(),
+                        serde_json::json!(info.unstaged_lines_inserted),
+                    );
+                    obj.insert(
+                        "unstaged_lines_deleted".into(),
+                        serde_json::json!(info.unstaged_lines_deleted),
+                    );
+                }
+            }
+
+            if all_columns || selected_columns.contains(&ListColumn::Remote) {
+                obj.insert("remote_ahead".into(), serde_json::json!(info.remote_ahead));
+                obj.insert(
+                    "remote_behind".into(),
+                    serde_json::json!(info.remote_behind),
+                );
+                if stat == Stat::Lines {
+                    obj.insert(
+                        "remote_lines_inserted".into(),
+                        serde_json::json!(info.remote_lines_inserted),
+                    );
+                    obj.insert(
+                        "remote_lines_deleted".into(),
+                        serde_json::json!(info.remote_lines_deleted),
+                    );
+                }
+            }
+
+            if all_columns || selected_columns.contains(&ListColumn::Age) {
+                let branch_age = info
+                    .branch_creation_timestamp
+                    .map(|ts| shorthand_from_seconds(now - ts))
+                    .unwrap_or_default();
+                obj.insert("branch_age".into(), serde_json::json!(branch_age));
+            }
+
+            if all_columns || selected_columns.contains(&ListColumn::LastCommit) {
+                let last_commit_age = info
+                    .last_commit_timestamp
+                    .map(|ts| shorthand_from_seconds(now - ts))
+                    .unwrap_or_default();
+                obj.insert("last_commit_age".into(), serde_json::json!(last_commit_age));
+                obj.insert(
+                    "last_commit_subject".into(),
+                    serde_json::json!(info.last_commit_subject),
+                );
+            }
+
+            serde_json::Value::Object(obj)
         })
         .collect();
 
@@ -275,6 +336,7 @@ fn print_table(
     project_root: &std::path::Path,
     cwd: &std::path::Path,
     stat: Stat,
+    selected_columns: &[ListColumn],
 ) {
     if infos.is_empty() {
         return;
@@ -453,34 +515,46 @@ fn print_table(
         })
         .collect();
 
-    let has_annotations = has_any_current || has_any_default;
-
     let mut builder = Builder::new();
-    let data_headers = [
-        "Branch",
-        "Path",
-        "Base",
-        "Changes",
-        "Remote",
-        "Age",
-        "Last Commit",
-    ];
-    let header: Vec<String> = if has_annotations {
+
+    // Build header from selected columns
+    let col_headers: Vec<(&str, ListColumn)> = selected_columns
+        .iter()
+        .filter(|c| **c != ListColumn::Annotation)
+        .map(|c| {
+            let label = match c {
+                ListColumn::Branch => "Branch",
+                ListColumn::Path => "Path",
+                ListColumn::Base => "Base",
+                ListColumn::Changes => "Changes",
+                ListColumn::Remote => "Remote",
+                ListColumn::Age => "Age",
+                ListColumn::LastCommit => "Last Commit",
+                ListColumn::Annotation => unreachable!(),
+            };
+            (label, *c)
+        })
+        .collect();
+
+    let show_annotations =
+        selected_columns.contains(&ListColumn::Annotation) && (has_any_current || has_any_default);
+
+    let header: Vec<String> = if show_annotations {
         std::iter::once("".to_string())
-            .chain(data_headers.iter().map(|h| {
+            .chain(col_headers.iter().map(|(h, _)| {
                 if use_color {
-                    styles::dim(h)
+                    styles::dim_underline(h)
                 } else {
                     h.to_string()
                 }
             }))
             .collect()
     } else {
-        data_headers
+        col_headers
             .iter()
-            .map(|h| {
+            .map(|(h, _)| {
                 if use_color {
-                    styles::dim(h)
+                    styles::dim_underline(h)
                 } else {
                     h.to_string()
                 }
@@ -489,16 +563,20 @@ fn print_table(
     };
     builder.push_record(header);
     for row in &rows {
-        let data_cols: Vec<&str> = vec![
-            &row.name,
-            &row.path,
-            &row.base,
-            &row.head,
-            &row.remote,
-            &row.branch_age,
-            &row.last_commit,
-        ];
-        if has_annotations {
+        let data_cols: Vec<&str> = col_headers
+            .iter()
+            .map(|(_, c)| match c {
+                ListColumn::Branch => row.name.as_str(),
+                ListColumn::Path => row.path.as_str(),
+                ListColumn::Base => row.base.as_str(),
+                ListColumn::Changes => row.head.as_str(),
+                ListColumn::Remote => row.remote.as_str(),
+                ListColumn::Age => row.branch_age.as_str(),
+                ListColumn::LastCommit => row.last_commit.as_str(),
+                ListColumn::Annotation => unreachable!(),
+            })
+            .collect();
+        if show_annotations {
             let mut record = vec![row.annotation.as_str()];
             record.extend(data_cols);
             builder.push_record(record);

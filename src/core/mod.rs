@@ -4,6 +4,7 @@
 //! report progress and trigger hooks without depending on specific UI
 //! implementations (CLI, TUI, tests, etc.).
 
+pub mod columns;
 pub mod config;
 pub mod multi_remote;
 mod progress;

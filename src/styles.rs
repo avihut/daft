@@ -96,9 +96,17 @@ pub fn bold(text: &str) -> String {
     format!("{BOLD}{text}{RESET}")
 }
 
+/// ANSI escape code for underlined text.
+pub const UNDERLINE: &str = "\x1b[4m";
+
 /// Wraps text in dim styling.
 pub fn dim(text: &str) -> String {
     format!("{DIM}{text}{RESET}")
+}
+
+/// Wraps text in dim + underlined styling.
+pub fn dim_underline(text: &str) -> String {
+    format!("{DIM}{UNDERLINE}{text}{RESET}")
 }
 
 /// Wraps text in green styling.

@@ -48,6 +48,7 @@ separately.
 | `--push` | Push all branches to their remotes after syncing | |
 | `--force-with-lease` | Use `--force-with-lease` when pushing (requires `--push`) | |
 | `--stat <STAT>` | Statistics mode: `summary` or `lines` (default: from git config `daft.sync.stat`, or `summary`) | |
+| `--columns <COLUMNS>` | Columns to display in the summary table (comma-separated). Replace mode: `branch,path,age`. Modifier mode: `+col,-col`. The status column is always shown. | |
 
 ::: info
 The `--force` flag is a deprecated alias for `--prune-dirty` and will be removed

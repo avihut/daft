@@ -42,6 +42,48 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push('\n');
     }
 
+    // Value completion for --columns flag
+    let has_columns = matches!(
+        command_name,
+        "git-worktree-list" | "git-worktree-sync" | "git-worktree-prune"
+    );
+    if has_columns {
+        output.push_str("    # Column name completion for --columns\n");
+        output.push_str("    local prev_word=\"${words[$((CURRENT-1))]}\"\n");
+        output.push_str("    if [[ \"$prev_word\" == \"--columns\" ]]; then\n");
+        output.push_str("        local -a column_values\n");
+        output.push_str("        column_values=(\n");
+        output.push_str("            'annotation:Annotation markers'\n");
+        output.push_str("            'branch:Branch name'\n");
+        output.push_str("            'path:Worktree path'\n");
+        output.push_str("            'base:Ahead/behind base branch'\n");
+        output.push_str("            'changes:Local changes'\n");
+        output.push_str("            'remote:Ahead/behind remote'\n");
+        output.push_str("            'age:Branch age'\n");
+        output.push_str("            'last-commit:Last commit'\n");
+        output.push_str("            '+annotation:Add annotation markers'\n");
+        output.push_str("            '+branch:Add branch name'\n");
+        output.push_str("            '+path:Add worktree path'\n");
+        output.push_str("            '+base:Add ahead/behind base branch'\n");
+        output.push_str("            '+changes:Add local changes'\n");
+        output.push_str("            '+remote:Add ahead/behind remote'\n");
+        output.push_str("            '+age:Add branch age'\n");
+        output.push_str("            '+last-commit:Add last commit'\n");
+        output.push_str("            '-annotation:Remove annotation markers'\n");
+        output.push_str("            '-branch:Remove branch name'\n");
+        output.push_str("            '-path:Remove worktree path'\n");
+        output.push_str("            '-base:Remove ahead/behind base branch'\n");
+        output.push_str("            '-changes:Remove local changes'\n");
+        output.push_str("            '-remote:Remove ahead/behind remote'\n");
+        output.push_str("            '-age:Remove branch age'\n");
+        output.push_str("            '-last-commit:Remove last commit'\n");
+        output.push_str("        )\n");
+        output.push_str("        _describe 'column' column_values\n");
+        output.push_str("        return\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
     output.push_str("    # Flag completions (extracted from clap)\n");
     output.push_str("    local -a flags\n");
     output.push_str("    flags=(\n");
