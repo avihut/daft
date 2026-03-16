@@ -220,8 +220,8 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         let y = data_start_y + offset;
         if y < area.y + area.height {
             let divider_line = Line::from(Span::styled(
-                "\u{2500}\u{2500} other branches \u{2500}\u{2500}",
-                Style::default().add_modifier(Modifier::DIM),
+                "Not included",
+                Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC),
             ));
             let divider_area = Rect::new(area.x, y, area.width, 1);
             frame.render_widget(Paragraph::new(divider_line), divider_area);

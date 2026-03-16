@@ -387,13 +387,15 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let unowned_start_index = {
         let mut sorted = worktree_infos.clone();
         sorted.sort_by(|a, b| {
+            let default_order = |w: &list::WorktreeInfo| u8::from(!w.is_default_branch);
             let kind_order = |k: &list::EntryKind| match k {
                 list::EntryKind::Worktree => 0,
                 list::EntryKind::LocalBranch => 1,
                 list::EntryKind::RemoteBranch => 2,
             };
-            kind_order(&a.kind)
-                .cmp(&kind_order(&b.kind))
+            default_order(a)
+                .cmp(&default_order(b))
+                .then_with(|| kind_order(&a.kind).cmp(&kind_order(&b.kind)))
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
         // Only show divider when user_email is known (otherwise all are unowned)

@@ -150,13 +150,16 @@ impl TuiState {
             })
             .collect();
         worktrees.sort_by(|a, b| {
+            // Default branch always first.
+            let default_order = |w: &WorktreeRow| u8::from(!w.info.is_default_branch);
             let kind_order = |k: &EntryKind| match k {
                 EntryKind::Worktree => 0,
                 EntryKind::LocalBranch => 1,
                 EntryKind::RemoteBranch => 2,
             };
-            kind_order(&a.info.kind)
-                .cmp(&kind_order(&b.info.kind))
+            default_order(a)
+                .cmp(&default_order(b))
+                .then_with(|| kind_order(&a.info.kind).cmp(&kind_order(&b.info.kind)))
                 .then_with(|| a.info.name.to_lowercase().cmp(&b.info.name.to_lowercase()))
         });
         Self {
