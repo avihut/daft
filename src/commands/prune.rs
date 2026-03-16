@@ -102,6 +102,9 @@ pub fn run() -> Result<()> {
         ColumnSelection::parse(input, CommandKind::Prune).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
 
+    let project_root = get_project_root()?;
+    crate::core::worktree::temp_worktree::cleanup_stale(&project_root)?;
+
     if !std::io::IsTerminal::is_terminal(&std::io::stderr()) || args.verbose >= 2 {
         run_prune(args, settings)
     } else {
