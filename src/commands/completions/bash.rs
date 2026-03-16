@@ -258,9 +258,13 @@ _daft() {
         esac
     fi
 
-    # top-level: complete daft subcommands
+    # top-level: complete daft subcommands and flags
     if [[ $cword -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor clone init go start carry update list prune rename sync remove adopt eject" -- "$cur") )
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=( $(compgen -W "--version -V --help -h" -- "$cur") )
+        else
+            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor clone init go start carry update list prune rename sync remove adopt eject" -- "$cur") )
+        fi
         return 0
     fi
 }
