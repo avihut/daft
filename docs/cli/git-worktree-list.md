@@ -41,6 +41,11 @@ changes). This is slower as it requires computing diffs for each worktree.
 
 Use --json for machine-readable output suitable for scripting.
 
+Use --columns to select which columns are shown and in what order.
+  Replace mode:  --columns branch,path,age (exact set and order)
+  Modifier mode: --columns -annotation,-last-commit (remove from defaults)
+Defaults can be set in git config with daft.list.columns.
+
 ## Usage
 
 ```

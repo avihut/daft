@@ -137,14 +137,14 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 
 ### Management
 
-| Command                             | Description                                                                                                                                                                                                                                                                                                                                       |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `daft worktree-list [--json]`       | List all worktrees with branch (`✦` = default), path (relative to cwd), base ahead/behind, file status (+N staged, -N unstaged, ?N untracked), remote status (⇡N unpushed, ⇣N unpulled), branch age, and commit info. JSON includes `is_default_branch`, `staged`, `unstaged`, `untracked`, `remote_ahead`, `remote_behind`, `branch_age` fields. |
-| `daft hooks <subcommand>`           | Manage hooks trust and configuration (`trust`, `prompt`, `deny`, `status`, `run`, `install`, `validate`, `dump`, `migrate`)                                                                                                                                                                                                                       |
-| `daft doctor`                       | Diagnose installation and configuration issues; `--fix` auto-repairs symlinks, shortcuts, refspecs, hooks; `--fix --dry-run` previews fixes                                                                                                                                                                                                       |
-| `daft setup shortcuts <subcommand>` | Manage command shortcut symlinks                                                                                                                                                                                                                                                                                                                  |
-| `daft shell-init <shell>`           | Generate shell integration wrappers                                                                                                                                                                                                                                                                                                               |
-| `daft completions <shell>`          | Generate shell tab completions                                                                                                                                                                                                                                                                                                                    |
+| Command                                                                             | Description                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `daft worktree-list [--json] [-b\|-r\|-a] [--stat summary\|lines] [--columns COLS]` | List all worktrees with branch (`✦` = default), path (relative to cwd), base ahead/behind, file status (+N staged, -N unstaged, ?N untracked), remote status (⇡N unpushed, ⇣N unpulled), branch age, and commit info. Use `-b`/`-r`/`-a` to include local/remote branches without worktrees. JSON includes `is_default_branch`, `staged`, `unstaged`, `untracked`, `remote_ahead`, `remote_behind`, `branch_age` fields. |
+| `daft hooks <subcommand>`                                                           | Manage hooks trust and configuration (`trust`, `prompt`, `deny`, `status`, `run`, `install`, `validate`, `dump`, `migrate`)                                                                                                                                                                                                                                                                                              |
+| `daft doctor`                                                                       | Diagnose installation and configuration issues; `--fix` auto-repairs symlinks, shortcuts, refspecs, hooks; `--fix --dry-run` previews fixes                                                                                                                                                                                                                                                                              |
+| `daft setup shortcuts <subcommand>`                                                 | Manage command shortcut symlinks                                                                                                                                                                                                                                                                                                                                                                                         |
+| `daft shell-init <shell>`                                                           | Generate shell integration wrappers                                                                                                                                                                                                                                                                                                                                                                                      |
+| `daft completions <shell>`                                                          | Generate shell tab completions                                                                                                                                                                                                                                                                                                                                                                                           |
 
 All worktree commands can be run from **any directory** within any worktree.
 They find the project root automatically via `git rev-parse --git-common-dir`.
@@ -599,20 +599,70 @@ the `daft` binary form (see [Invocation Forms](#invocation-forms)).
 
 Key `git config` settings:
 
-| Key                         | Default       | Description                                            |
-| --------------------------- | ------------- | ------------------------------------------------------ |
-| `daft.autocd`               | `true`        | CD into new worktrees via shell wrappers               |
-| `daft.remote`               | `"origin"`    | Default remote name                                    |
-| `daft.checkout.push`        | `true`        | Push new branches to remote                            |
-| `daft.checkout.upstream`    | `true`        | Set upstream tracking                                  |
-| `daft.checkout.carry`       | `false`       | Carry uncommitted changes on checkout                  |
-| `daft.checkoutBranch.carry` | `true`        | Carry uncommitted changes on branch creation           |
-| `daft.update.args`          | `"--ff-only"` | Default pull arguments for update (same-branch mode)   |
-| `daft.prune.cdTarget`       | `"root"`      | Where to cd after pruning (`root` or `default-branch`) |
-| `daft.list.stat`            | `"summary"`   | Statistics mode for list (`summary` or `lines`)        |
-| `daft.sync.stat`            | `"summary"`   | Statistics mode for sync (`summary` or `lines`)        |
-| `daft.prune.stat`           | `"summary"`   | Statistics mode for prune (`summary` or `lines`)       |
-| `daft.go.autoStart`         | `false`       | Auto-create worktree when branch not found in go       |
-| `daft.hooks.enabled`        | `true`        | Master switch for hooks                                |
-| `daft.hooks.defaultTrust`   | `"deny"`      | Default trust for unknown repos                        |
-| `daft.hooks.timeout`        | `300`         | Hook timeout in seconds                                |
+| Key                         | Default       | Description                                                  |
+| --------------------------- | ------------- | ------------------------------------------------------------ |
+| `daft.autocd`               | `true`        | CD into new worktrees via shell wrappers                     |
+| `daft.remote`               | `"origin"`    | Default remote name                                          |
+| `daft.checkout.push`        | `true`        | Push new branches to remote                                  |
+| `daft.checkout.upstream`    | `true`        | Set upstream tracking                                        |
+| `daft.checkout.carry`       | `false`       | Carry uncommitted changes on checkout                        |
+| `daft.checkoutBranch.carry` | `true`        | Carry uncommitted changes on branch creation                 |
+| `daft.update.args`          | `"--ff-only"` | Default pull arguments for update (same-branch mode)         |
+| `daft.prune.cdTarget`       | `"root"`      | Where to cd after pruning (`root` or `default-branch`)       |
+| `daft.list.stat`            | `"summary"`   | Statistics mode for list (`summary` or `lines`)              |
+| `daft.sync.stat`            | `"summary"`   | Statistics mode for sync (`summary` or `lines`)              |
+| `daft.prune.stat`           | `"summary"`   | Statistics mode for prune (`summary` or `lines`)             |
+| `daft.list.columns`         | (all columns) | Default columns for `daft list` (same syntax as `--columns`) |
+| `daft.sync.columns`         | (all columns) | Default columns for `daft sync` summary table                |
+| `daft.prune.columns`        | (all columns) | Default columns for `daft prune` summary table               |
+| `daft.go.autoStart`         | `false`       | Auto-create worktree when branch not found in go             |
+| `daft.hooks.enabled`        | `true`        | Master switch for hooks                                      |
+| `daft.hooks.defaultTrust`   | `"deny"`      | Default trust for unknown repos                              |
+| `daft.hooks.timeout`        | `300`         | Hook timeout in seconds                                      |
+
+## Column Selection (`--columns`)
+
+The `list`, `sync`, and `prune` commands support a `--columns` flag to control
+which columns appear in the output table and in what order.
+
+### Valid column names
+
+`annotation`, `branch`, `path`, `base`, `changes`, `remote`, `age`,
+`last-commit`
+
+### Two modes
+
+**Replace mode** — provide an exact comma-separated list; only those columns
+appear, in that order:
+
+```bash
+daft list --columns branch,path,age
+daft sync --columns branch,path,status,age   # status is always pinned on sync/prune
+```
+
+**Modifier mode** — prefix columns with `+` (add) or `-` (remove) to adjust the
+defaults:
+
+```bash
+daft list --columns -annotation,-last-commit   # remove two columns
+daft list --columns +base,-age                 # add base, remove age
+```
+
+Modifier mode is detected automatically when every entry starts with `+` or `-`.
+
+### Pinned columns on sync and prune
+
+The `status` column (showing pruned/updated/skipped) is always displayed on
+`sync` and `prune` and cannot be controlled via `--columns`.
+
+### Persistent defaults via git config
+
+Set a default so you never need to pass the flag manually:
+
+```bash
+git config daft.list.columns "branch,path,age"
+git config daft.sync.columns "-annotation,-last-commit"
+git config daft.prune.columns "branch,path,age"
+```
+
+The `--columns` flag overrides the git config value for that invocation.
