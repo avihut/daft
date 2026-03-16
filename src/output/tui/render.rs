@@ -134,10 +134,20 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     let mut all_rows: Vec<Row> = Vec::new();
     let mut hook_overlays: Vec<(u16, Line)> = Vec::new();
     let mut pruned_overlays: Vec<(u16, Line)> = Vec::new();
+    let mut divider_row_offset: Option<u16> = None;
     let mut row_count: u16 = 0;
     let num_columns = columns.len();
 
-    for (wt, vals) in state.worktrees.iter().zip(row_vals.iter()) {
+    for (wt_idx, (wt, vals)) in state.worktrees.iter().zip(row_vals.iter()).enumerate() {
+        // Insert a placeholder row for the section divider between owned and
+        // unowned worktrees.  The actual divider content is overlaid later.
+        if state.unowned_start_index == Some(wt_idx) {
+            let empty_cells: Vec<Cell> = (0..num_columns).map(|_| Cell::from("")).collect();
+            all_rows.push(Row::new(empty_cells));
+            divider_row_offset = Some(row_count);
+            row_count += 1;
+        }
+
         let is_pruned = matches!(wt.status, WorktreeStatus::Done(FinalStatus::Pruned));
         let main_cells: Vec<Cell> = if is_pruned {
             // Status and Annotation keep their normal cells; other columns are
@@ -202,9 +212,23 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(table, area);
 
-    // Overlay hook lines on placeholder rows (full terminal width, no column constraints).
     // The header row occupies 1 line, so data rows start at area.y + 1.
     let data_start_y = area.y + 1;
+
+    // Overlay section divider between owned and unowned worktrees.
+    if let Some(offset) = divider_row_offset {
+        let y = data_start_y + offset;
+        if y < area.y + area.height {
+            let divider_line = Line::from(Span::styled(
+                "\u{2500}\u{2500} other branches \u{2500}\u{2500}",
+                Style::default().add_modifier(Modifier::DIM),
+            ));
+            let divider_area = Rect::new(area.x, y, area.width, 1);
+            frame.render_widget(Paragraph::new(divider_line), divider_area);
+        }
+    }
+
+    // Overlay hook lines on placeholder rows (full terminal width, no column constraints).
     for (row_offset, line) in hook_overlays {
         let y = data_start_y + row_offset;
         if y < area.y + area.height {
