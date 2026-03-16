@@ -313,6 +313,10 @@ fn print_json(
                 obj.insert("branch_age".into(), serde_json::json!(branch_age));
             }
 
+            if all_columns || selected_columns.contains(&ListColumn::Owner) {
+                obj.insert("owner".into(), serde_json::json!(info.owner_email));
+            }
+
             if all_columns || selected_columns.contains(&ListColumn::LastCommit) {
                 let last_commit_age = info
                     .last_commit_timestamp
