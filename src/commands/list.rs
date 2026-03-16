@@ -543,7 +543,7 @@ fn print_table(
         std::iter::once("".to_string())
             .chain(col_headers.iter().map(|(h, _)| {
                 if use_color {
-                    styles::bold(h)
+                    styles::dim_underline(h)
                 } else {
                     h.to_string()
                 }
@@ -554,7 +554,7 @@ fn print_table(
             .iter()
             .map(|(h, _)| {
                 if use_color {
-                    styles::bold(h)
+                    styles::dim_underline(h)
                 } else {
                     h.to_string()
                 }

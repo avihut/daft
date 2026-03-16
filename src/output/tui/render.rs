@@ -120,7 +120,9 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         .map(|col| {
             Cell::from(Span::styled(
                 col.label(),
-                Style::default().add_modifier(Modifier::BOLD),
+                Style::default()
+                    .add_modifier(Modifier::DIM)
+                    .add_modifier(Modifier::UNDERLINED),
             ))
         })
         .collect();
