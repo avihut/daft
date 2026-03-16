@@ -21,7 +21,9 @@ pub enum Column {
     Changes,
     /// Branch age. Priority 7.
     Age,
-    /// Last commit subject. Priority 8.
+    /// Branch owner (from git author email). Priority 8.
+    Owner,
+    /// Last commit subject. Priority 9.
     LastCommit,
 }
 
@@ -37,7 +39,8 @@ impl Column {
             Self::Changes => 5,
             Self::Remote => 6,
             Self::Age => 7,
-            Self::LastCommit => 8,
+            Self::Owner => 8,
+            Self::LastCommit => 9,
         }
     }
 
@@ -52,6 +55,7 @@ impl Column {
             Self::Changes => "Changes",
             Self::Remote => "Remote",
             Self::Age => "Age",
+            Self::Owner => "Owner",
             Self::LastCommit => "Last Commit",
         }
     }
@@ -66,6 +70,7 @@ impl Column {
             ListColumn::Changes => Column::Changes,
             ListColumn::Remote => Column::Remote,
             ListColumn::Age => Column::Age,
+            ListColumn::Owner => Column::Owner,
             ListColumn::LastCommit => Column::LastCommit,
         }
     }
@@ -81,6 +86,7 @@ pub(super) const ALL_COLUMNS: &[Column] = &[
     Column::Changes,
     Column::Remote,
     Column::Age,
+    Column::Owner,
     Column::LastCommit,
 ];
 
@@ -143,6 +149,7 @@ pub(super) fn column_content_width(
             Column::Changes => v.changes.len() as u16,
             Column::Remote => v.remote.len() as u16,
             Column::Age => v.branch_age.len() as u16,
+            Column::Owner => v.owner.len() as u16,
             Column::LastCommit => LAST_COMMIT_MIN,
         })
         .max()
@@ -184,7 +191,7 @@ mod tests {
     #[test]
     fn column_selection_wide_terminal() {
         let cols = select_columns(120, &[], &[]);
-        assert_eq!(cols.len(), 9);
+        assert_eq!(cols.len(), 10);
     }
 
     #[test]

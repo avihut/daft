@@ -373,6 +373,7 @@ fn render_cell(
                 cell
             }
         }
+        Column::Owner => Cell::from(vals.owner.clone()),
         Column::LastCommit => {
             if vals.last_commit_age.is_empty() {
                 Cell::from(vals.last_commit_subject.clone())
