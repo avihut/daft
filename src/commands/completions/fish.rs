@@ -178,6 +178,8 @@ fn generate_verb_alias_flag_completions() -> String {
 
 const DAFT_FISH_COMPLETIONS: &str = r#"# daft subcommand completions
 complete -c daft -f
+complete -c daft -n '__fish_use_subcommand' -s V -l version -d 'Print version information'
+complete -c daft -n '__fish_use_subcommand' -s h -l help -d 'Print help'
 complete -c daft -n '__fish_use_subcommand' -a 'hooks' -d 'Manage lifecycle hooks'
 complete -c daft -n '__fish_use_subcommand' -a 'shell-init' -d 'Generate shell wrappers'
 complete -c daft -n '__fish_use_subcommand' -a 'setup' -d 'Setup and configuration'

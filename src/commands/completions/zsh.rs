@@ -296,10 +296,14 @@ _daft() {
         esac
     fi
 
-    # top-level: complete daft subcommands
+    # top-level: complete daft subcommands and flags
     if (( CURRENT == 2 )); then
-        compadd hooks shell-init setup multi-remote release-notes doctor \
-                clone init go start carry update list prune rename sync remove adopt eject
+        if [[ "$curword" == -* ]]; then
+            compadd -- --version -V --help -h
+        else
+            compadd hooks shell-init setup multi-remote release-notes doctor \
+                    clone init go start carry update list prune rename sync remove adopt eject
+        fi
         return
     fi
 }
