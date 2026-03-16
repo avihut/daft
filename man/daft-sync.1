@@ -4,7 +4,7 @@
 .SH NAME
 daft\-sync \- Synchronize worktrees with remote (prune + update all)
 .SH SYNOPSIS
-\fBdaft\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-f\fR|\fB\-\-prune\-dirty\fR] [\fB\-\-rebase\fR] [\fB\-\-autostash\fR] [\fB\-\-push\fR] [\fB\-\-force\-with\-lease\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBdaft\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-f\fR|\fB\-\-prune\-dirty\fR] [\fB\-\-rebase\fR] [\fB\-\-autostash\fR] [\fB\-\-push\fR] [\fB\-\-force\-with\-lease\fR] [\fB\-\-include\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Synchronizes all worktrees with the remote in a single command.
@@ -46,6 +46,9 @@ Push all branches to their remotes after syncing
 .TP
 \fB\-\-force\-with\-lease\fR
 Use \-\-force\-with\-lease when pushing (requires \-\-push)
+.TP
+\fB\-\-include\fR \fI<INCLUDE>\fR
+Include additional branches in rebase/push (email, branch name, or \*(Aqunowned\*(Aq)
 .TP
 \fB\-\-stat\fR \fI<STAT>\fR
 Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary)

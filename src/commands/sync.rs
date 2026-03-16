@@ -39,6 +39,60 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Parsed `--include` value.
+#[allow(dead_code)]
+enum IncludeFilter {
+    Unowned,
+    Email(String),
+    Branch(String),
+}
+
+#[allow(dead_code)]
+impl IncludeFilter {
+    fn parse(value: &str) -> Self {
+        if value == "unowned" {
+            Self::Unowned
+        } else if value.contains('@') {
+            Self::Email(value.to_string())
+        } else {
+            Self::Branch(value.to_string())
+        }
+    }
+}
+
+/// Check if a branch is included by the filters or by ownership.
+#[allow(dead_code)]
+fn is_branch_included(
+    branch: &str,
+    owner_email: Option<&str>,
+    user_email: Option<&str>,
+    filters: &[IncludeFilter],
+) -> bool {
+    // Check ownership first
+    if let (Some(owner), Some(user)) = (owner_email, user_email) {
+        if owner == user {
+            return true;
+        }
+    }
+    // Check include filters
+    for filter in filters {
+        match filter {
+            IncludeFilter::Unowned => return true,
+            IncludeFilter::Email(email) => {
+                if owner_email == Some(email.as_str()) {
+                    return true;
+                }
+            }
+            IncludeFilter::Branch(name) => {
+                if branch == name {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 #[derive(Parser)]
 #[command(name = "git-worktree-sync")]
 #[command(version = crate::VERSION)]
@@ -104,6 +158,12 @@ pub struct Args {
         help = "Use --force-with-lease when pushing (requires --push)"
     )]
     force_with_lease: bool,
+
+    #[arg(
+        long,
+        help = "Include additional branches in rebase/push (email, branch name, or 'unowned')"
+    )]
+    include: Vec<String>,
 
     #[arg(
         long,
