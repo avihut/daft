@@ -263,6 +263,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         args.verbose,
         tui_columns,
         columns_explicit,
+        None,
     );
 
     let hooks_config = HooksConfig::default();

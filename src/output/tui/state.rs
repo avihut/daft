@@ -108,6 +108,8 @@ pub struct TuiState {
     pub columns: Option<Vec<Column>>,
     /// If true, the user explicitly chose columns (replace mode) — disables responsive dropping.
     pub columns_explicit: bool,
+    /// Index of the first unowned worktree row (None if no unowned section).
+    pub unowned_start_index: Option<usize>,
 }
 
 /// A single row in the worktree table.
@@ -134,6 +136,7 @@ impl TuiState {
         verbose: u8,
         columns: Option<Vec<Column>>,
         columns_explicit: bool,
+        unowned_start_index: Option<usize>,
     ) -> Self {
         let mut worktrees: Vec<WorktreeRow> = worktree_infos
             .into_iter()
@@ -174,6 +177,7 @@ impl TuiState {
             show_hook_sub_rows: verbose >= 1,
             columns,
             columns_explicit,
+            unowned_start_index,
         }
     }
 
@@ -497,6 +501,7 @@ mod tests {
             0,
             None,
             false,
+            None,
         )
     }
 
@@ -522,6 +527,7 @@ mod tests {
             1,
             None,
             false,
+            None,
         )
     }
 
@@ -1086,6 +1092,7 @@ mod tests {
             0,
             None,
             false,
+            None,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1132,6 +1139,7 @@ mod tests {
             0,
             None,
             false,
+            None,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1175,6 +1183,7 @@ mod tests {
             0,
             None,
             false,
+            None,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1241,6 +1250,7 @@ mod tests {
             0,
             None,
             false,
+            None,
         )
     }
 

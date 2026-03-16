@@ -364,6 +364,43 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     };
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
+
+    // Compute the unowned section boundary for the TUI divider.
+    // The TuiState sorts rows by kind (worktree < local-branch < remote-branch)
+    // then alphabetically. Mirror that sort on the infos so the index matches.
+    let user_email: Option<String> = git.config_get("user.email").ok().flatten();
+    let include_filters: Vec<IncludeFilter> = args
+        .include
+        .iter()
+        .map(|v| IncludeFilter::parse(v))
+        .collect();
+    let unowned_start_index = {
+        let mut sorted = worktree_infos.clone();
+        sorted.sort_by(|a, b| {
+            let kind_order = |k: &list::EntryKind| match k {
+                list::EntryKind::Worktree => 0,
+                list::EntryKind::LocalBranch => 1,
+                list::EntryKind::RemoteBranch => 2,
+            };
+            kind_order(&a.kind)
+                .cmp(&kind_order(&b.kind))
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        // Only show divider when user_email is known (otherwise all are unowned)
+        user_email.as_ref().and_then(|_| {
+            let idx = sorted.iter().position(|info| {
+                !is_branch_included(
+                    &info.name,
+                    info.owner_email.as_deref(),
+                    user_email.as_deref(),
+                    &include_filters,
+                )
+            });
+            // Only emit a boundary when there are both owned and unowned rows
+            idx.filter(|&i| i > 0 && i < sorted.len())
+        })
+    };
+
     let state = TuiState::new(
         phases,
         worktree_infos,
@@ -373,6 +410,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         args.verbose,
         tui_columns,
         columns_explicit,
+        unowned_start_index,
     );
 
     // ── Create channel and spawn orchestrator ──────────────────────────
