@@ -40,14 +40,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Parsed `--include` value.
-#[allow(dead_code)]
 enum IncludeFilter {
     Unowned,
     Email(String),
     Branch(String),
 }
 
-#[allow(dead_code)]
 impl IncludeFilter {
     fn parse(value: &str) -> Self {
         if value == "unowned" {
@@ -61,7 +59,6 @@ impl IncludeFilter {
 }
 
 /// Check if a branch is included by the filters or by ownership.
-#[allow(dead_code)]
 fn is_branch_included(
     branch: &str,
     owner_email: Option<&str>,
@@ -441,6 +438,19 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let orch_base_branch = Arc::clone(&shared_base_branch);
     let orch_stat = stat;
 
+    // Ownership filtering for the orchestrator
+    let shared_include: Arc<Vec<String>> = Arc::new(args.include.clone());
+    // Build owner lookup from the worktree_infos collected before TUI started
+    let shared_owner_lookup: Arc<HashMap<String, Option<String>>> = Arc::new(
+        state
+            .worktrees
+            .iter()
+            .map(|wt| (wt.info.name.clone(), wt.info.owner_email.clone()))
+            .collect(),
+    );
+    let shared_user_email: Arc<Option<String>> =
+        Arc::new(git.config_get("user.email").ok().flatten());
+
     let orchestrator_handle = std::thread::spawn(move || {
         // ── Phase 1: Fetch ─────────────────────────────────────────────
         if !sync_shared::run_fetch_phase(&tx, orch_settings.use_gitoxide, &orch_settings.remote) {
@@ -468,8 +478,25 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             .filter(|(branch, _)| !gone_branches.contains(branch))
             .collect();
 
+        // Split worktrees into owned (rebase+push) and unowned (update only).
+        let include_filters: Vec<IncludeFilter> = shared_include
+            .iter()
+            .map(|v| IncludeFilter::parse(v))
+            .collect();
+
+        let (owned, unowned): (Vec<_>, Vec<_>) =
+            live_worktrees.into_iter().partition(|(branch, _)| {
+                is_branch_included(
+                    branch,
+                    shared_owner_lookup.get(branch).and_then(|e| e.as_deref()),
+                    shared_user_email.as_deref(),
+                    &include_filters,
+                )
+            });
+
         let dag = SyncDag::build_sync(
-            live_worktrees,
+            owned,
+            unowned,
             gone_branches,
             shared_rebase_branch.as_ref().clone(),
             shared_push,

@@ -142,8 +142,12 @@ pub struct SyncDag {
 
 impl SyncDag {
     /// Build a DAG for `daft sync` (with optional rebase and push).
+    ///
+    /// `owned_worktrees` get Update + Rebase + Push tasks.
+    /// `unowned_worktrees` get Update tasks only (no rebase/push).
     pub fn build_sync(
-        worktrees: Vec<(String, PathBuf)>,
+        owned_worktrees: Vec<(String, PathBuf)>,
+        unowned_worktrees: Vec<(String, PathBuf)>,
         gone_branches: Vec<String>,
         rebase_branch: Option<String>,
         push: bool,
@@ -152,6 +156,16 @@ impl SyncDag {
         let mut tasks = Vec::new();
         let mut dependencies: Vec<Vec<usize>> = Vec::new();
         let mut dependents: Vec<Vec<usize>> = Vec::new();
+
+        // Collect all worktrees for Update tasks.
+        let all_worktrees: Vec<(String, PathBuf)> = owned_worktrees
+            .iter()
+            .cloned()
+            .chain(unowned_worktrees.iter().cloned())
+            .collect();
+
+        // Set of owned branch names for filtering rebase/push.
+        let owned_set: HashSet<String> = owned_worktrees.iter().map(|(b, _)| b.clone()).collect();
 
         // Helper to push a task and its deps, returning the new index.
         let mut push_task = |task: SyncTask, deps: Vec<usize>| -> usize {
@@ -197,9 +211,9 @@ impl SyncDag {
             );
         }
 
-        // 3. Update tasks (each depends on fetch). Track indices for rebase/push deps.
+        // 3. Update tasks for ALL worktrees (each depends on fetch).
         let mut update_indices: Vec<(String, usize)> = Vec::new();
-        for (branch, path) in &worktrees {
+        for (branch, path) in &all_worktrees {
             let idx = push_task(
                 SyncTask {
                     id: TaskId::Update(branch.clone()),
@@ -212,12 +226,13 @@ impl SyncDag {
             update_indices.push((branch.clone(), idx));
         }
 
-        // 4. Rebase tasks if rebase_branch is specified.
-        // Track the last task index per branch for push dependencies.
+        // 4. Rebase tasks ONLY for owned worktrees (if rebase_branch is specified).
+        // Track the last task index per owned branch for push dependencies.
         let mut last_task_indices: Vec<(String, PathBuf, usize)> = update_indices
             .iter()
+            .filter(|(branch, _)| owned_set.contains(branch))
             .map(|(branch, idx)| {
-                let path = worktrees
+                let path = all_worktrees
                     .iter()
                     .find(|(b, _)| b == branch)
                     .map(|(_, p)| p.clone())
@@ -233,7 +248,7 @@ impl SyncDag {
                 .find(|(b, _)| b == base_branch)
                 .map(|(_, idx)| *idx);
 
-            for (branch, path) in &worktrees {
+            for (branch, path) in &owned_worktrees {
                 // Don't rebase the base branch onto itself.
                 if branch == base_branch {
                     continue;
@@ -270,7 +285,7 @@ impl SyncDag {
             }
         }
 
-        // 5. Push tasks if push is enabled.
+        // 5. Push tasks ONLY for owned worktrees (if push is enabled).
         if push {
             for (branch, path, last_idx) in &last_task_indices {
                 push_task(
@@ -296,7 +311,7 @@ impl SyncDag {
 
     /// Build a DAG for `daft prune`.
     pub fn build_prune(gone_branches: Vec<String>) -> Self {
-        Self::build_sync(vec![], gone_branches, None, false)
+        Self::build_sync(vec![], vec![], gone_branches, None, false)
     }
 
     /// Get the dependency indices for a task.
@@ -657,7 +672,7 @@ mod tests {
         ];
         let gone: Vec<String> = vec!["feat/old".into()];
 
-        let dag = SyncDag::build_sync(worktrees, gone, None, false);
+        let dag = SyncDag::build_sync(worktrees, vec![], gone, None, false);
 
         // 1 fetch + 1 prune + 2 updates = 4 tasks
         assert_eq!(dag.tasks.len(), 4);
@@ -678,7 +693,7 @@ mod tests {
         ];
         let gone: Vec<String> = vec![];
 
-        let dag = SyncDag::build_sync(worktrees, gone, Some("master".into()), false);
+        let dag = SyncDag::build_sync(worktrees, vec![], gone, Some("master".into()), false);
 
         // 1 fetch + 3 updates + 2 rebases = 6 tasks
         assert_eq!(dag.tasks.len(), 6);
@@ -713,7 +728,7 @@ mod tests {
     #[test]
     fn dag_phases_sync() {
         let worktrees = vec![("master".into(), PathBuf::from("/p/master"))];
-        let dag = SyncDag::build_sync(worktrees, vec![], None, false);
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], None, false);
         let phases = dag.phases();
         assert_eq!(phases.len(), 3); // Fetch, Prune, Update
     }
@@ -721,7 +736,7 @@ mod tests {
     #[test]
     fn dag_phases_sync_with_rebase() {
         let worktrees = vec![("master".into(), PathBuf::from("/p/master"))];
-        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()), false);
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], Some("master".into()), false);
         let phases = dag.phases();
         assert_eq!(phases.len(), 4); // Fetch, Prune, Update, Rebase
     }
@@ -765,7 +780,7 @@ mod tests {
             ("master".into(), PathBuf::from("/p/master")),
             ("feat/a".into(), PathBuf::from("/p/feat-a")),
         ];
-        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()), false);
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], Some("master".into()), false);
         let (tx, rx) = mpsc::channel();
 
         let order = Arc::new(Mutex::new(Vec::new()));
@@ -806,7 +821,7 @@ mod tests {
         ];
         let gone: Vec<String> = vec![];
 
-        let dag = SyncDag::build_sync(worktrees, gone, None, true);
+        let dag = SyncDag::build_sync(worktrees, vec![], gone, None, true);
 
         // 1 fetch + 2 updates + 2 pushes = 5 tasks
         assert_eq!(dag.tasks.len(), 5);
@@ -836,7 +851,7 @@ mod tests {
         ];
         let gone: Vec<String> = vec![];
 
-        let dag = SyncDag::build_sync(worktrees, gone, Some("master".into()), true);
+        let dag = SyncDag::build_sync(worktrees, vec![], gone, Some("master".into()), true);
 
         // 1 fetch + 3 updates + 2 rebases + 3 pushes = 9 tasks
         assert_eq!(dag.tasks.len(), 9);
@@ -877,7 +892,7 @@ mod tests {
     #[test]
     fn dag_phases_sync_with_push() {
         let worktrees = vec![("master".into(), PathBuf::from("/p/master"))];
-        let dag = SyncDag::build_sync(worktrees, vec![], None, true);
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], None, true);
         let phases = dag.phases();
         assert_eq!(phases.len(), 4); // Fetch, Prune, Update, Push
         assert!(phases.contains(&OperationPhase::Push));
@@ -889,7 +904,7 @@ mod tests {
             ("master".into(), PathBuf::from("/p/master")),
             ("feat/a".into(), PathBuf::from("/p/feat-a")),
         ];
-        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()), false);
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], Some("master".into()), false);
         let (tx, rx) = mpsc::channel();
 
         let executor = DagExecutor::new(dag, tx);
@@ -934,7 +949,7 @@ mod tests {
             ("master".into(), PathBuf::from("/p/master")),
             ("feat/a".into(), PathBuf::from("/p/feat-a")),
         ];
-        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()), true);
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], Some("master".into()), true);
         let (tx, rx) = mpsc::channel();
 
         let received_outcomes: Arc<Mutex<Vec<(TaskId, HashSet<TaskOutcome>)>>> =
@@ -1002,7 +1017,7 @@ mod tests {
             ("feat/a".into(), PathBuf::from("/p/feat-a")),
             ("feat/b".into(), PathBuf::from("/p/feat-b")),
         ];
-        let dag = SyncDag::build_sync(worktrees, vec![], Some("master".into()), true);
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], Some("master".into()), true);
         let (tx, rx) = mpsc::channel();
 
         let received_outcomes: Arc<Mutex<Vec<(TaskId, HashSet<TaskOutcome>)>>> =
