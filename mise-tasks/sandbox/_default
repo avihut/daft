@@ -115,7 +115,27 @@ work_dir=$(cd "$DAFT_WORKTREE" && cargo run --package xtask -- manual-test --set
 if [[ -n "$work_dir" && -d "$work_dir" ]]; then
     cd "$work_dir" || true
     echo "You are now in: $work_dir"
-    exec "$SHELL"
+    # Start a new shell with the sandbox environment, completions, and daft
+    # shell integration pre-loaded. Plain `exec $SHELL` would lose everything
+    # from `source init` and the direnv-loaded .envrc (PATH, DAFT_WORKTREE, etc.)
+    # because the new shell's startup scripts reset PATH and direnv won't fire
+    # outside the sandbox directory.
+    envrc="${sandbox_dir}/.envrc"
+    init_script="${sandbox_dir}/bin/init"
+    if [[ "$SHELL" == *zsh* ]]; then
+        _zdir=$(mktemp -d)
+        [[ -f "$HOME/.zshenv" ]] && ln -s "$HOME/.zshenv" "${_zdir}/.zshenv"
+        cat > "${_zdir}/.zshrc" <<ZSHRC
+[[ -f "\$HOME/.zshrc" ]] && source "\$HOME/.zshrc"
+source "$envrc"
+source "$init_script"
+ZSHRC
+        ZDOTDIR="$_zdir" exec zsh
+    elif [[ "$SHELL" == *bash* ]]; then
+        exec bash --rcfile <(echo "[[ -f ~/.bashrc ]] && source ~/.bashrc; source '$envrc'; source '$init_script'")
+    else
+        exec "$SHELL"
+    fi
 fi
 SCRIPT
 chmod +x "${bin_dir}/setup-test"

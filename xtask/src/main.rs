@@ -339,6 +339,14 @@ enum Commands {
         /// List available scenarios and exit
         #[arg(long)]
         list: bool,
+
+        /// Show scenario summary without running anything
+        #[arg(long)]
+        show: bool,
+
+        /// Include expectation checks in --show output
+        #[arg(long, requires = "show")]
+        checks: bool,
     },
 }
 
@@ -365,6 +373,8 @@ fn main() -> Result<()> {
             keep,
             setup_only,
             list,
+            show,
+            checks,
         } => manual_test::run(
             scenarios,
             no_interactive,
@@ -374,6 +384,8 @@ fn main() -> Result<()> {
             keep,
             setup_only,
             list,
+            show,
+            checks,
         ),
     }
 }
