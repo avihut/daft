@@ -1,0 +1,40 @@
+name: List owner column
+description: Owner column shows commit author email for each worktree
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Set local user email
+    run: git config user.email "me@example.com"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop and make a commit as current user
+    run: |
+      git-worktree-checkout develop
+      cd $WORK_DIR/test-repo/develop
+      git config user.email "me@example.com"
+      echo "owned change" >> README.md
+      git add README.md
+      GIT_AUTHOR_EMAIL="me@example.com" GIT_COMMITTER_EMAIL="me@example.com" \
+        git commit -m "Owned commit"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: List with owner column shows email
+    run: NO_COLOR=1 git-worktree-list --columns branch,owner 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Owner"
+        - "me@example.com"

@@ -241,6 +241,59 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
     // Phase 2: Update all remaining worktrees
     run_update_phase(&mut output, &settings, force, &default_branch)?;
 
+    // Compute ownership filter for rebase/push phases.
+    // When --include filters are specified or user.email is set, only owned
+    // (and explicitly included) branches are rebased and pushed.
+    let include_filters: Vec<IncludeFilter> = args
+        .include
+        .iter()
+        .map(|v| IncludeFilter::parse(v))
+        .collect();
+    let git_for_email = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
+    let user_email: Option<String> = git_for_email.config_get("user.email").ok().flatten();
+    // Build the included-branch set only when ownership filtering is active
+    // (i.e. when user.email is known or explicit --include filters are present).
+    let included_branches: Option<HashSet<String>> = if user_email.is_some()
+        || !include_filters.is_empty()
+    {
+        let worktrees = fetch::get_all_worktrees_with_branches(&git_for_email).unwrap_or_default();
+        let project_root = get_project_root()?;
+        let mut set = HashSet::new();
+        for (path, branch) in &worktrees {
+            let owner = list::get_author_email_for_ref(branch, path);
+            if is_branch_included(
+                branch,
+                owner.as_deref(),
+                user_email.as_deref(),
+                &include_filters,
+            ) {
+                set.insert(branch.clone());
+            }
+        }
+        // Also check local-only branches
+        if let Ok(ref_output) = git_for_email.for_each_ref("%(refname:short)", "refs/heads") {
+            let worktree_set: HashSet<&str> = worktrees.iter().map(|(_, b)| b.as_str()).collect();
+            for branch in ref_output.lines() {
+                let branch = branch.trim();
+                if branch.is_empty() || worktree_set.contains(branch) {
+                    continue;
+                }
+                let owner = list::get_author_email_for_ref(branch, &project_root);
+                if is_branch_included(
+                    branch,
+                    owner.as_deref(),
+                    user_email.as_deref(),
+                    &include_filters,
+                ) {
+                    set.insert(branch.to_string());
+                }
+            }
+        }
+        Some(set)
+    } else {
+        None
+    };
+
     // Phase 3: Rebase all worktrees onto base branch (if requested)
     let conflicted_branches: HashSet<String> = if let Some(ref base_branch) = args.rebase {
         let result = run_rebase_phase(
@@ -250,6 +303,7 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
             force,
             args.autostash,
             &default_branch,
+            included_branches.as_ref(),
         )?;
         result
             .results
@@ -263,11 +317,24 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
 
     // Phase 4: Push all branches to their remotes (if requested)
     if args.push {
+        // When ownership filtering is active, skip unowned branches from push.
+        let mut push_skip = conflicted_branches.clone();
+        if let Some(ref included) = included_branches {
+            // Collect all worktree branches and skip those not included.
+            let git_tmp = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
+            if let Ok(wts) = fetch::get_all_worktrees_with_branches(&git_tmp) {
+                for (_, branch) in wts {
+                    if !included.contains(&branch) {
+                        push_skip.insert(branch);
+                    }
+                }
+            }
+        }
         run_push_phase(
             &mut output,
             &settings,
             args.force_with_lease,
-            &conflicted_branches,
+            &push_skip,
             &default_branch,
         )?;
     }
@@ -1256,6 +1323,7 @@ fn run_rebase_phase(
     force: bool,
     autostash: bool,
     default_branch: &str,
+    included_branches: Option<&HashSet<String>>,
 ) -> Result<rebase::RebaseResult> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
@@ -1274,7 +1342,7 @@ fn run_rebase_phase(
     output.start_spinner("Rebasing worktrees...");
     let exec_result = {
         let mut sink = OutputSink(output);
-        rebase::execute(&params, &git, &project_root, &mut sink)
+        rebase::execute(&params, &git, &project_root, &mut sink, included_branches)
     };
     output.finish_spinner();
     let result = exec_result?;

@@ -1,0 +1,75 @@
+name: Sync temp worktree rebase
+description:
+  A local-only branch (no worktree) gets rebased via a temporary worktree and no
+  .daft-tmp directory remains afterwards
+
+repos:
+  - name: tmp-wt-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TMP_WT_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/tmp-wt-repo/main"
+
+  - name: Set local user email
+    run: git config user.email "me@example.com"
+    cwd: "$WORK_DIR/tmp-wt-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Make a commit on feature/test-feature as current user (no worktree)
+    run: |
+      git checkout feature/test-feature 2>/dev/null
+      echo "owned local-only change" > local-only.txt
+      git add local-only.txt
+      GIT_AUTHOR_EMAIL="me@example.com" GIT_COMMITTER_EMAIL="me@example.com" \
+        git commit -m "Owned commit on local-only branch"
+      git checkout main 2>/dev/null
+    cwd: "$WORK_DIR/tmp-wt-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Record feature branch commit hash before sync
+    run: git rev-parse feature/test-feature > /tmp/daft-tmp-wt-feature-before
+    cwd: "$WORK_DIR/tmp-wt-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Advance main on remote with a non-conflicting change
+    run: |
+      temp=$(mktemp -d)
+      git clone "$REMOTE_TMP_WT_REPO" "$temp" 2>/dev/null
+      cd "$temp"
+      echo "remote main advance" > remote-advance.txt
+      git add remote-advance.txt
+      git commit -m "Advance main on remote" 2>/dev/null
+      git push origin main 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Run sync with --rebase main (owned branch uses temp worktree)
+    run: git-worktree-sync --rebase main --verbose --verbose 2>&1
+    cwd: "$WORK_DIR/tmp-wt-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify local-only branch was rebased (commit hash changed)
+    run: |
+      before=$(cat /tmp/daft-tmp-wt-feature-before)
+      after=$(git rev-parse feature/test-feature)
+      echo "before=$before after=$after"
+      [ "$before" != "$after" ]
+    cwd: "$WORK_DIR/tmp-wt-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify no .daft-tmp directory remains
+    run: |
+      find $WORK_DIR/tmp-wt-repo -maxdepth 2 -name ".daft-tmp*" | grep . && exit 1 || exit 0
+    expect:
+      exit_code: 0
