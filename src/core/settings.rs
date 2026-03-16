@@ -179,6 +179,15 @@ pub mod keys {
     /// Config key for prune.stat setting.
     pub const PRUNE_STAT: &str = "daft.prune.stat";
 
+    /// Config key for list.columns setting.
+    pub const LIST_COLUMNS: &str = "daft.list.columns";
+
+    /// Config key for sync.columns setting.
+    pub const SYNC_COLUMNS: &str = "daft.sync.columns";
+
+    /// Config key for prune.columns setting.
+    pub const PRUNE_COLUMNS: &str = "daft.prune.columns";
+
     /// Experimental config keys.
     pub mod experimental {
         /// Config key for experimental.gitoxide setting.
@@ -273,6 +282,15 @@ pub struct DaftSettings {
 
     /// Default statistics mode for prune command.
     pub prune_stat: Stat,
+
+    /// Column selection for list command (None = use defaults).
+    pub list_columns: Option<String>,
+
+    /// Column selection for sync command (None = use defaults).
+    pub sync_columns: Option<String>,
+
+    /// Column selection for prune command (None = use defaults).
+    pub prune_columns: Option<String>,
 }
 
 impl Default for DaftSettings {
@@ -293,6 +311,9 @@ impl Default for DaftSettings {
             list_stat: defaults::LIST_STAT,
             sync_stat: defaults::SYNC_STAT,
             prune_stat: defaults::PRUNE_STAT,
+            list_columns: None,
+            sync_columns: None,
+            prune_columns: None,
         }
     }
 }
@@ -385,6 +406,24 @@ impl DaftSettings {
             }
         }
 
+        if let Some(value) = git.config_get(keys::LIST_COLUMNS)? {
+            if !value.is_empty() {
+                settings.list_columns = Some(value);
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::SYNC_COLUMNS)? {
+            if !value.is_empty() {
+                settings.sync_columns = Some(value);
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::PRUNE_COLUMNS)? {
+            if !value.is_empty() {
+                settings.prune_columns = Some(value);
+            }
+        }
+
         Ok(settings)
     }
 
@@ -471,6 +510,24 @@ impl DaftSettings {
         if let Some(value) = git.config_get_global(keys::PRUNE_STAT)? {
             if let Some(stat) = Stat::parse(&value) {
                 settings.prune_stat = stat;
+            }
+        }
+
+        if let Some(value) = git.config_get_global(keys::LIST_COLUMNS)? {
+            if !value.is_empty() {
+                settings.list_columns = Some(value);
+            }
+        }
+
+        if let Some(value) = git.config_get_global(keys::SYNC_COLUMNS)? {
+            if !value.is_empty() {
+                settings.sync_columns = Some(value);
+            }
+        }
+
+        if let Some(value) = git.config_get_global(keys::PRUNE_COLUMNS)? {
+            if !value.is_empty() {
+                settings.prune_columns = Some(value);
             }
         }
 
@@ -812,5 +869,13 @@ mod tests {
         assert!(!config.quiet);
         assert_eq!(config.timer_delay_secs, 5);
         assert_eq!(config.tail_lines, 6);
+    }
+
+    #[test]
+    fn test_default_column_settings() {
+        let settings = DaftSettings::default();
+        assert!(settings.list_columns.is_none());
+        assert!(settings.sync_columns.is_none());
+        assert!(settings.prune_columns.is_none());
     }
 }
