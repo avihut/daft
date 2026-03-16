@@ -186,7 +186,16 @@ pub fn run() -> Result<()> {
             )?;
             let mut merged = result;
             merged.extend(branch_infos);
-            merged.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            merged.sort_by(|a, b| {
+                let kind_order = |k: &EntryKind| match k {
+                    EntryKind::Worktree => 0,
+                    EntryKind::LocalBranch => 1,
+                    EntryKind::RemoteBranch => 2,
+                };
+                kind_order(&a.kind)
+                    .cmp(&kind_order(&b.kind))
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            });
             output.finish_spinner();
             merged
         } else {

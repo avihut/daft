@@ -1,4 +1,4 @@
-use crate::core::worktree::list::{Stat, WorktreeInfo};
+use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
 use crate::core::worktree::sync_dag::{
     DagEvent, JobCompletionStatus, OperationPhase, TaskMessage, TaskStatus,
 };
@@ -135,6 +135,27 @@ impl TuiState {
         columns: Option<Vec<Column>>,
         columns_explicit: bool,
     ) -> Self {
+        let mut worktrees: Vec<WorktreeRow> = worktree_infos
+            .into_iter()
+            .map(|info| WorktreeRow {
+                info,
+                status: WorktreeStatus::Idle,
+                prev_terminal_status: None,
+                hook_warned: false,
+                hook_failed: false,
+                hook_sub_rows: Vec::new(),
+            })
+            .collect();
+        worktrees.sort_by(|a, b| {
+            let kind_order = |k: &EntryKind| match k {
+                EntryKind::Worktree => 0,
+                EntryKind::LocalBranch => 1,
+                EntryKind::RemoteBranch => 2,
+            };
+            kind_order(&a.info.kind)
+                .cmp(&kind_order(&b.info.kind))
+                .then_with(|| a.info.name.to_lowercase().cmp(&b.info.name.to_lowercase()))
+        });
         Self {
             phases: phases
                 .into_iter()
@@ -143,17 +164,7 @@ impl TuiState {
                     status: PhaseStatus::Pending,
                 })
                 .collect(),
-            worktrees: worktree_infos
-                .into_iter()
-                .map(|info| WorktreeRow {
-                    info,
-                    status: WorktreeStatus::Idle,
-                    prev_terminal_status: None,
-                    hook_warned: false,
-                    hook_failed: false,
-                    hook_sub_rows: Vec::new(),
-                })
-                .collect(),
+            worktrees,
             done: false,
             tick: 0,
             project_root,
