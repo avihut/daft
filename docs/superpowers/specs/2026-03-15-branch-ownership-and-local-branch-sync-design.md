@@ -25,6 +25,10 @@ A new **Owner** column is added to all list interfaces (list, sync, prune).
   `git config user.email` to determine whether a branch "belongs to" the current
   user. This matches GitHub's heuristic for the "Your branches" feature in the
   branch dropdown — a commonly understood industry convention.
+- **Unconfigured email:** If `git config user.email` is not set, all branches
+  are treated as unowned. Rebase/push require `--include` to proceed. This is
+  the safe default — no silent modifications to branches without a clear owner
+  identity.
 - **Column position:** Between Age and Last Commit (canonical position 8; Last
   Commit shifts to position 9).
 - **CLI name:** `owner`.
@@ -51,10 +55,13 @@ associated worktree) are added as rows in the TUI table:
   `TaskId::Prune(branch_name)`, with final status "Pruned".
 - The owner column shows the branch tip email like any other row.
 
-The existing `TaskStarted` handler in `TuiState::apply_event` already
-auto-creates rows for dynamically discovered branches via `WorktreeInfo::empty`.
-The change ensures local-only gone branches are seeded as initial rows with
-proper `EntryKind` metadata rather than appearing as empty placeholders.
+**Row seeding:** Local-only gone branches are added to the `worktree_infos`
+vector before `TuiState::new` is called — alongside the worktree-backed entries
+from `collect_worktree_info`. This requires constructing `WorktreeInfo` entries
+with `kind: EntryKind::LocalBranch` and `path: None`. The existing `TaskStarted`
+auto-creation path (which uses `WorktreeInfo::empty` with hardcoded
+`EntryKind::Worktree`) serves as a fallback for any branches discovered after
+TUI construction, but the primary path seeds them upfront with correct metadata.
 
 ### 3. Ownership-Gated Rebase & Push
 
@@ -70,9 +77,12 @@ tip author email matches `git config user.email`.
   pushed.
 - **Prune:** Unaffected by ownership — always prunes all gone branches. Prune
   reflects the state of the remote, not a user's intent.
-- **DAG integration:** The ownership check happens at DAG build time. Unowned
-  branches (unless included) do not receive `Rebase` or `Push` task nodes. This
-  is cleaner than creating tasks that immediately skip.
+- **DAG integration:** Ownership filtering happens before DAG construction. The
+  caller splits worktrees into two lists: "owned" (full pipeline) and "unowned"
+  (update only). `SyncDag::build_sync` receives both lists — owned branches get
+  `Update` + `Rebase` + `Push` task nodes, unowned branches get `Update` only.
+  Both lists are also passed to `TuiState` so it knows which rows belong to
+  which section. This keeps ownership logic out of the DAG executor itself.
 
 ### 4. The `--include` Flag
 
@@ -90,8 +100,10 @@ full sync pipeline (rebase + push).
 **Syntax:** Repeatable flag. Multiple values use multiple flags:
 `--include alice@example.com --include feat/x`.
 
-**Resolution:** If the value contains `@`, treat as an email. If it equals
-`unowned`, treat as the special keyword. Otherwise, treat as a branch name.
+**Resolution:** If the value equals `unowned`, treat as the special keyword. If
+it contains `@`, treat as an email. Otherwise, treat as a branch name. Note:
+branch names containing `@` are technically valid in git but extremely rare; the
+`@` heuristic is pragmatic and matches user expectations.
 
 **Effect:** Matched branches move from the bottom (update-only) section to the
 top (full sync) section and receive rebase/push tasks.
@@ -110,8 +122,8 @@ receive updates (fast-forward/pull) but no rebase or push. Each row shows its
 update status normally (Updated, Up to date, Diverged) and progresses no
 further.
 
-**Separator:** A dim horizontal divider label between sections (e.g.,
-`── other branches ──`). Exact label TBD during implementation.
+**Separator:** A dim horizontal divider label between sections:
+`── other branches ──`.
 
 **With `--include unowned`:** Both sections merge — no divider, single unified
 list. The bottom section disappears entirely.
@@ -148,7 +160,9 @@ Local-only branches (no persistent worktree) need a working tree for rebase.
 
 1. Fast-forward the local ref first (as above).
 2. Create temp worktree: `git worktree add <tmp-path> <branch>` in
-   `<bare-root>/.daft-tmp/<branch-name>/`.
+   `<bare-root>/.daft-tmp/<sanitized-branch-name>/`. Branch names containing
+   slashes (e.g., `feat/login`) are sanitized by replacing `/` with `--` to
+   produce flat directory names (e.g., `.daft-tmp/feat--login/`).
 3. Rebase: `git -C <tmp-path> rebase <base-branch>`.
 4. Remove temp worktree: `git worktree remove <tmp-path>`.
 5. On conflict: abort rebase (`git rebase --abort`), remove temp worktree, show
@@ -169,9 +183,10 @@ since all worktrees in a bare repo share the same git hooks.
    at the start of the operation that removes all `.daft-tmp/` contents on any
    exit path.
 3. **Stale cleanup on next run:** At the start of every sync/prune invocation,
-   scan for and remove any leftover `.daft-tmp/` worktrees before doing anything
-   else. This catches crashes so severe that even the guard didn't fire
-   (SIGKILL, power loss).
+   scan for and remove any leftover `.daft-tmp/` worktrees using
+   `git worktree remove` (not `rm -rf`) to properly unregister them from git's
+   worktree tracking. This catches crashes so severe that even the guard didn't
+   fire (SIGKILL, power loss).
 4. **SIGINT/SIGTERM handling:** Existing signal handling triggers the cleanup
    guard before exiting.
 
