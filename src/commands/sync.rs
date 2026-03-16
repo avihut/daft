@@ -152,15 +152,29 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
 
     let force = args.force();
 
+    // Determine the default branch for display annotations
+    let default_branch = get_default_branch_local(
+        &get_git_common_dir()?,
+        &settings.remote,
+        settings.use_gitoxide,
+    )?;
+
     // Phase 1: Prune stale branches and worktrees
     let prune_result = run_prune_phase(&mut output, &settings, force)?;
 
     // Phase 2: Update all remaining worktrees
-    run_update_phase(&mut output, &settings, force)?;
+    run_update_phase(&mut output, &settings, force, &default_branch)?;
 
     // Phase 3: Rebase all worktrees onto base branch (if requested)
     let conflicted_branches: HashSet<String> = if let Some(ref base_branch) = args.rebase {
-        let result = run_rebase_phase(&mut output, &settings, base_branch, force, args.autostash)?;
+        let result = run_rebase_phase(
+            &mut output,
+            &settings,
+            base_branch,
+            force,
+            args.autostash,
+            &default_branch,
+        )?;
         result
             .results
             .iter()
@@ -178,6 +192,7 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
             &settings,
             args.force_with_lease,
             &conflicted_branches,
+            &default_branch,
         )?;
     }
 
@@ -787,7 +802,12 @@ fn run_prune_phase(
     Ok(result)
 }
 
-fn run_update_phase(output: &mut dyn Output, settings: &DaftSettings, force: bool) -> Result<()> {
+fn run_update_phase(
+    output: &mut dyn Output,
+    settings: &DaftSettings,
+    force: bool,
+    base_branch: &str,
+) -> Result<()> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
@@ -822,7 +842,7 @@ fn run_update_phase(output: &mut dyn Output, settings: &DaftSettings, force: boo
     output.finish_spinner();
     let result = exec_result?;
 
-    render_fetch_result(&result, output);
+    render_fetch_result(&result, output, base_branch);
 
     if result.failed_count() > 0 {
         anyhow::bail!("{} worktree(s) failed to update", result.failed_count());
@@ -831,7 +851,7 @@ fn run_update_phase(output: &mut dyn Output, settings: &DaftSettings, force: boo
     Ok(())
 }
 
-fn render_fetch_result(result: &fetch::FetchResult, output: &mut dyn Output) {
+fn render_fetch_result(result: &fetch::FetchResult, output: &mut dyn Output, base_branch: &str) {
     if result.results.is_empty() {
         output.info("No worktrees to update.");
         return;
@@ -845,23 +865,28 @@ fn render_fetch_result(result: &fetch::FetchResult, output: &mut dyn Output) {
 
     // Per-worktree status
     for r in &result.results {
-        render_worktree_status(r, output);
+        render_worktree_status(r, output, base_branch);
     }
 
     // Summary
     print_summary(result, output);
 }
 
-fn render_worktree_status(r: &fetch::WorktreeFetchResult, output: &mut dyn Output) {
+fn render_worktree_status(
+    r: &fetch::WorktreeFetchResult,
+    output: &mut dyn Output,
+    base_branch: &str,
+) {
+    let name = styles::format_with_default_marker(&r.worktree_name, r.worktree_name == base_branch);
     if r.skipped {
-        output.info(&format!(" * {} {}", tag_skipped(), r.worktree_name));
+        output.info(&format!(" * {} {name}", tag_skipped()));
     } else if r.diverged {
-        output.warning(&format!(" * {} {}", tag_diverged(), r.worktree_name));
+        output.warning(&format!(" * {} {name}", tag_diverged()));
     } else if r.success {
         if r.up_to_date {
-            output.info(&format!(" * {} {}", tag_up_to_date(), r.worktree_name));
+            output.info(&format!(" * {} {name}", tag_up_to_date()));
         } else {
-            output.info(&format!(" * {} {}", tag_updated(), r.worktree_name));
+            output.info(&format!(" * {} {name}", tag_updated()));
             // Show captured pull output indented under the branch name
             if let Some(ref pull_output) = r.pull_output {
                 for line in pull_output.lines() {
@@ -874,7 +899,7 @@ fn render_worktree_status(r: &fetch::WorktreeFetchResult, output: &mut dyn Outpu
             "Failed to update '{}': {}",
             r.worktree_name, r.message
         ));
-        output.info(&format!(" * {} {}", tag_failed(), r.worktree_name));
+        output.info(&format!(" * {} {name}", tag_failed()));
     }
 }
 
@@ -968,6 +993,7 @@ fn run_rebase_phase(
     base_branch: &str,
     force: bool,
     autostash: bool,
+    default_branch: &str,
 ) -> Result<rebase::RebaseResult> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
@@ -991,7 +1017,7 @@ fn run_rebase_phase(
     output.finish_spinner();
     let result = exec_result?;
 
-    render_rebase_result(&result, output);
+    render_rebase_result(&result, output, default_branch);
 
     if result.conflict_count() > 0 {
         output.warning(&format!(
@@ -1003,7 +1029,11 @@ fn run_rebase_phase(
     Ok(result)
 }
 
-fn render_rebase_result(result: &rebase::RebaseResult, output: &mut dyn Output) {
+fn render_rebase_result(
+    result: &rebase::RebaseResult,
+    output: &mut dyn Output,
+    default_branch: &str,
+) {
     if result.results.is_empty() {
         output.info("No worktrees to rebase.");
         return;
@@ -1014,36 +1044,37 @@ fn render_rebase_result(result: &rebase::RebaseResult, output: &mut dyn Output) 
 
     // Per-worktree status
     for r in &result.results {
-        render_rebase_worktree_status(r, output);
+        render_rebase_worktree_status(r, output, default_branch);
     }
 
     // Summary
     print_rebase_summary(result, output);
 }
 
-fn render_rebase_worktree_status(r: &rebase::WorktreeRebaseResult, output: &mut dyn Output) {
+fn render_rebase_worktree_status(
+    r: &rebase::WorktreeRebaseResult,
+    output: &mut dyn Output,
+    default_branch: &str,
+) {
+    let name =
+        styles::format_with_default_marker(&r.worktree_name, r.branch_name == default_branch);
     if r.skipped {
         output.info(&format!(
-            " * {} {} — uncommitted changes",
+            " * {} {name} — uncommitted changes",
             tag_skipped(),
-            r.worktree_name
         ));
     } else if r.conflict {
-        output.info(&format!(
-            " * {} {} — aborted",
-            tag_conflict(),
-            r.worktree_name
-        ));
+        output.info(&format!(" * {} {name} — aborted", tag_conflict(),));
     } else if r.already_rebased {
-        output.info(&format!(" * {} {}", tag_up_to_date(), r.worktree_name));
+        output.info(&format!(" * {} {name}", tag_up_to_date()));
     } else if r.success {
-        output.info(&format!(" * {} {}", tag_rebased(), r.worktree_name));
+        output.info(&format!(" * {} {name}", tag_rebased()));
     } else {
         output.error(&format!(
             "Failed to rebase '{}': {}",
             r.worktree_name, r.message
         ));
-        output.info(&format!(" * {} {}", tag_failed(), r.worktree_name));
+        output.info(&format!(" * {} {name}", tag_failed()));
     }
 }
 
@@ -1108,6 +1139,7 @@ fn run_push_phase(
     settings: &DaftSettings,
     force_with_lease: bool,
     skip_branches: &HashSet<String>,
+    base_branch: &str,
 ) -> Result<()> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
@@ -1129,7 +1161,7 @@ fn run_push_phase(
     output.finish_spinner();
     let result = exec_result?;
 
-    render_push_result(&result, output);
+    render_push_result(&result, output, base_branch);
 
     if result.failed_count() > 0 {
         output.warning(&format!(
@@ -1141,7 +1173,7 @@ fn run_push_phase(
     Ok(())
 }
 
-fn render_push_result(result: &push::PushResult, output: &mut dyn Output) {
+fn render_push_result(result: &push::PushResult, output: &mut dyn Output, base_branch: &str) {
     if result.results.is_empty() {
         output.info("No branches to push.");
         return;
@@ -1152,24 +1184,29 @@ fn render_push_result(result: &push::PushResult, output: &mut dyn Output) {
 
     // Per-worktree status
     for r in &result.results {
-        render_push_worktree_status(r, output);
+        render_push_worktree_status(r, output, base_branch);
     }
 
     // Summary
     print_push_summary(result, output);
 }
 
-fn render_push_worktree_status(r: &push::WorktreePushResult, output: &mut dyn Output) {
+fn render_push_worktree_status(
+    r: &push::WorktreePushResult,
+    output: &mut dyn Output,
+    base_branch: &str,
+) {
+    let name = styles::format_with_default_marker(&r.worktree_name, r.branch_name == base_branch);
     if r.no_upstream {
-        output.info(&format!(" * {} {}", tag_no_upstream(), r.worktree_name));
+        output.info(&format!(" * {} {name}", tag_no_upstream()));
     } else if r.success {
         if r.up_to_date {
-            output.info(&format!(" * {} {}", tag_up_to_date(), r.worktree_name));
+            output.info(&format!(" * {} {name}", tag_up_to_date()));
         } else {
-            output.info(&format!(" * {} {}", tag_pushed(), r.worktree_name));
+            output.info(&format!(" * {} {name}", tag_pushed()));
         }
     } else {
-        output.warning(&format!(" * {} {}", tag_diverged(), r.worktree_name));
+        output.warning(&format!(" * {} {name}", tag_diverged()));
     }
 }
 

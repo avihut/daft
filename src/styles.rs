@@ -79,7 +79,7 @@ pub const ACCENT_COLOR_INDEX: u8 = 208;
 /// ANSI escape code for orange text (256-color, matches [`ACCENT_COLOR_INDEX`]).
 pub const ORANGE: &str = "\x1b[38;5;208m";
 
-/// ANSI escape code for bright purple text.
+/// ANSI escape code for bright purple text (ratatui equivalent: `Color::LightMagenta`).
 pub const BRIGHT_PURPLE: &str = "\x1b[95m";
 
 /// ANSI escape code for dark gray text (bright black).
@@ -139,6 +139,22 @@ pub fn bright_purple(text: &str) -> String {
 /// Wraps text in dark gray styling (bright black).
 pub fn dark_gray(text: &str) -> String {
     format!("{DARK_GRAY}{text}{RESET}")
+}
+
+/// Formats a name with the default branch marker (`✦`) prepended when `is_default` is true.
+///
+/// Used by sync/prune non-TUI output to visually mark the default branch,
+/// matching the annotation column in `list`.
+pub fn format_with_default_marker(name: &str, is_default: bool) -> String {
+    if is_default {
+        if colors_enabled() {
+            format!("{} {name}", bright_purple(DEFAULT_BRANCH_SYMBOL))
+        } else {
+            format!("{DEFAULT_BRANCH_SYMBOL} {name}")
+        }
+    } else {
+        name.to_string()
+    }
 }
 
 /// Formats a definition list item with a bold term.
