@@ -210,15 +210,7 @@ pub fn run() -> Result<()> {
         return print_json(&infos, &project_root, &cwd, stat, selected_columns);
     }
 
-    let user_email: Option<String> = git.config_get("user.email").ok().flatten();
-    print_table(
-        &infos,
-        &project_root,
-        &cwd,
-        stat,
-        selected_columns,
-        user_email.as_deref(),
-    );
+    print_table(&infos, &project_root, &cwd, stat, selected_columns);
     Ok(())
 }
 
@@ -360,7 +352,6 @@ fn print_table(
     cwd: &std::path::Path,
     stat: Stat,
     selected_columns: &[ListColumn],
-    user_email: Option<&str>,
 ) {
     if infos.is_empty() {
         return;
@@ -592,33 +583,8 @@ fn print_table(
             })
             .collect()
     };
-    // Compute unowned section boundary for the divider row.
-    let unowned_start = user_email.and_then(|email| {
-        let idx = infos
-            .iter()
-            .position(|info| info.owner_email.as_deref() != Some(email));
-        // Only show divider when there are both owned and unowned rows.
-        idx.filter(|&i| i > 0 && i < infos.len())
-    });
-
-    let total_data_cols = col_headers.len() + usize::from(show_annotations);
-    let divider_text = if use_color {
-        styles::dim("\u{2500}\u{2500} other branches \u{2500}\u{2500}")
-    } else {
-        "\u{2500}\u{2500} other branches \u{2500}\u{2500}".to_string()
-    };
-
     builder.push_record(header);
-    for (i, row) in rows.iter().enumerate() {
-        // Insert divider row before the first unowned entry.
-        if unowned_start == Some(i) {
-            let mut divider_record: Vec<String> = vec![String::new(); total_data_cols];
-            // Place divider text in the first data column (skip annotation column).
-            let text_col = if show_annotations { 1 } else { 0 };
-            divider_record[text_col] = divider_text.clone();
-            builder.push_record(divider_record);
-        }
-
+    for row in &rows {
         let data_cols: Vec<&str> = col_headers
             .iter()
             .map(|(_, c)| match c {
