@@ -124,6 +124,8 @@ struct TableRow {
     remote: String,
     /// Branch age since creation (shorthand).
     branch_age: String,
+    /// Branch owner (git author email).
+    owner: String,
     /// Last commit: shorthand age + subject combined.
     last_commit: String,
 }
@@ -494,6 +496,11 @@ fn print_table(
                     } else {
                         styles::dim(&strip_ansi(&branch_age))
                     },
+                    owner: if vals.owner.is_empty() {
+                        vals.owner.clone()
+                    } else {
+                        styles::dim(&vals.owner)
+                    },
                     last_commit: if last_commit.is_empty() {
                         last_commit
                     } else {
@@ -509,6 +516,7 @@ fn print_table(
                     head,
                     remote,
                     branch_age,
+                    owner: vals.owner.clone(),
                     last_commit,
                 }
             }
@@ -529,6 +537,7 @@ fn print_table(
                 ListColumn::Changes => "Changes",
                 ListColumn::Remote => "Remote",
                 ListColumn::Age => "Age",
+                ListColumn::Owner => "Owner",
                 ListColumn::LastCommit => "Last Commit",
                 ListColumn::Annotation => unreachable!(),
             };
@@ -572,6 +581,7 @@ fn print_table(
                 ListColumn::Changes => row.head.as_str(),
                 ListColumn::Remote => row.remote.as_str(),
                 ListColumn::Age => row.branch_age.as_str(),
+                ListColumn::Owner => row.owner.as_str(),
                 ListColumn::LastCommit => row.last_commit.as_str(),
                 ListColumn::Annotation => unreachable!(),
             })
