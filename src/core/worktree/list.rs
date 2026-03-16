@@ -126,6 +126,36 @@ impl WorktreeInfo {
         }
     }
 
+    /// Create a stub entry for a local-only branch (no worktree).
+    pub fn local_branch_stub(name: &str, owner_email: Option<String>) -> Self {
+        Self {
+            kind: EntryKind::LocalBranch,
+            name: name.to_string(),
+            path: None,
+            is_current: false,
+            is_default_branch: false,
+            ahead: None,
+            behind: None,
+            staged: 0,
+            unstaged: 0,
+            untracked: 0,
+            remote_ahead: None,
+            remote_behind: None,
+            last_commit_timestamp: None,
+            last_commit_subject: String::new(),
+            branch_creation_timestamp: None,
+            base_lines_inserted: None,
+            base_lines_deleted: None,
+            staged_lines_inserted: None,
+            staged_lines_deleted: None,
+            unstaged_lines_inserted: None,
+            unstaged_lines_deleted: None,
+            remote_lines_inserted: None,
+            remote_lines_deleted: None,
+            owner_email,
+        }
+    }
+
     /// Re-compute the dynamic fields (ahead/behind, staged/unstaged, remote,
     /// last-commit) from the working tree on disk.  Static fields (kind, name,
     /// path, is_current, is_default_branch, branch_creation_timestamp) are
@@ -320,7 +350,7 @@ fn get_last_commit_info_for_ref(branch_ref: &str, cwd: &Path) -> (Option<i64>, S
 }
 
 /// Get the author email of the tip commit on a given branch ref.
-fn get_author_email_for_ref(branch_ref: &str, cwd: &Path) -> Option<String> {
+pub(crate) fn get_author_email_for_ref(branch_ref: &str, cwd: &Path) -> Option<String> {
     let output = Command::new("git")
         .args(["log", "-1", "--format=%ae", branch_ref])
         .current_dir(cwd)
