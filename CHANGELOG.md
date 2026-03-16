@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.2.0](https://github.com/avihut/daft/compare/v1.1.1...v1.2.0) - 2026-03-16
+
+### Bug Fixes
+
+- *(sandbox)* reset ZDOTDIR in setup-test to prevent shell contamination
+- add missing completions for top-level flags ([#311](https://github.com/avihut/daft/pull/311))
+- align default branch symbol and color in sync and prune with list ([#308](https://github.com/avihut/daft/pull/308))
+
+### Features
+
+- branch ownership, local branch sync, and --include flag ([#312](https://github.com/avihut/daft/pull/312))
+- add --columns flag for list, sync, and prune commands ([#310](https://github.com/avihut/daft/pull/310))
+
 ## [1.1.1](https://github.com/avihut/daft/compare/v1.1.0...v1.1.1) - 2026-03-15
 
 ### Bug Fixes
