@@ -12,7 +12,7 @@ steps:
       exit_code: 0
 
   - name: Remove annotation column
-    run: NO_COLOR=1 git-worktree-list --columns -annotation 2>&1
+    run: NO_COLOR=1 git-worktree-list --columns=-annotation 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
@@ -22,7 +22,7 @@ steps:
 
   - name: Remove multiple columns
     run:
-      NO_COLOR=1 git-worktree-list --columns -annotation,-last-commit,-remote
+      NO_COLOR=1 git-worktree-list --columns=-annotation,-last-commit,-remote
       2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
@@ -33,6 +33,6 @@ steps:
         - "Base"
         - "Changes"
         - "Age"
-      output_excludes:
+      output_not_contains:
         - "Remote"
         - "Last Commit"

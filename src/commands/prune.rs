@@ -92,6 +92,16 @@ pub fn run() -> Result<()> {
 
     let settings = DaftSettings::load()?;
 
+    // Validate --columns early so errors surface in both sequential and TUI modes.
+    let columns_input = args
+        .columns
+        .as_deref()
+        .or(settings.prune_columns.as_deref());
+    if let Some(input) = columns_input {
+        use crate::core::columns::{ColumnSelection, CommandKind};
+        ColumnSelection::parse(input, CommandKind::Prune).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+
     if !std::io::IsTerminal::is_terminal(&std::io::stderr()) || args.verbose >= 2 {
         run_prune(args, settings)
     } else {
