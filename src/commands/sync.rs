@@ -17,6 +17,7 @@ use crate::{
             sync_dag::{
                 self, DagExecutor, SyncDag, SyncTask, TaskId, TaskMessage, TaskOutcome, TaskStatus,
             },
+            temp_worktree,
         },
         CommandBridge, NullBridge, NullSink, OutputSink,
     },
@@ -212,6 +213,11 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
     let config = OutputConfig::with_autocd(false, args.verbose >= 2, settings.autocd);
     let mut output = CliOutput::new(config);
 
+    // Clean up stale temp worktrees from previous crashes.
+    if let Ok(project_root) = get_project_root() {
+        let _ = temp_worktree::cleanup_stale(&project_root);
+    }
+
     if args.force_deprecated {
         output.warning("--force is deprecated, use --prune-dirty (or -f) instead");
     }
@@ -285,6 +291,10 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
 fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
+
+    // Clean up stale temp worktrees from previous crashes.
+    let _ = temp_worktree::cleanup_stale(&project_root);
+
     let stat = args.stat.unwrap_or(settings.sync_stat);
 
     // ── Pre-TUI: collect worktree info (no fetch needed) ───────────────
@@ -468,9 +478,22 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     // Clone values needed by orchestrator
     let orch_settings = Arc::clone(&shared_settings);
-    let orch_all_worktrees: Vec<(String, PathBuf)> = all_worktrees
+    // Build worktree list including local-only branches (with None paths).
+    let worktree_branch_set: HashSet<String> =
+        all_worktrees.iter().map(|(_, b)| b.clone()).collect();
+    let orch_all_worktrees: Vec<(String, Option<PathBuf>)> = all_worktrees
         .iter()
-        .map(|(p, b)| (b.clone(), p.clone()))
+        .map(|(p, b)| (b.clone(), Some(p.clone())))
+        .chain(
+            state
+                .worktrees
+                .iter()
+                .filter(|wt| {
+                    wt.info.kind == list::EntryKind::LocalBranch
+                        && !worktree_branch_set.contains(&wt.info.name)
+                })
+                .map(|wt| (wt.info.name.clone(), None)),
+        )
         .collect();
     let orch_info_map = Arc::clone(&shared_info_map);
     let orch_base_branch = Arc::clone(&shared_base_branch);
@@ -511,7 +534,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
         // Filter out gone branches so they don't get Update/Rebase tasks
         // (their worktree paths will be removed by the Prune tasks).
-        let live_worktrees: Vec<(String, PathBuf)> = orch_all_worktrees
+        let live_worktrees: Vec<(String, Option<PathBuf>)> = orch_all_worktrees
             .into_iter()
             .filter(|(branch, _)| !gone_branches.contains(branch))
             .collect();
@@ -731,10 +754,8 @@ fn execute_update_task(
     force: bool,
 ) -> (TaskStatus, TaskMessage) {
     let Some(target_path) = worktree_path else {
-        return (
-            TaskStatus::Failed,
-            TaskMessage::Failed("no worktree path".into()),
-        );
+        // Local-only branch: attempt fast-forward from upstream.
+        return execute_local_branch_update(branch_name, project_root);
     };
 
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
@@ -795,13 +816,29 @@ fn execute_rebase_task(
     autostash: bool,
     branch_outcomes: &HashSet<TaskOutcome>,
 ) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
-    let Some(target_path) = worktree_path else {
-        return (
-            TaskStatus::Failed,
-            TaskMessage::Failed("no worktree path".into()),
-            branch_outcomes.clone(),
-        );
-    };
+    let target_path: PathBuf;
+    let _temp_guard: Option<temp_worktree::TempWorktreeGuard>;
+
+    if let Some(path) = worktree_path {
+        target_path = path.clone();
+        _temp_guard = None;
+    } else {
+        // Local-only branch: create a temporary worktree for the rebase.
+        match temp_worktree::create(project_root, branch_name) {
+            Ok(tmp_path) => {
+                _temp_guard = Some(temp_worktree::TempWorktreeGuard::new(tmp_path.clone()));
+                target_path = tmp_path;
+            }
+            Err(e) => {
+                return (
+                    TaskStatus::Failed,
+                    TaskMessage::Failed(format!("temp worktree: {e}")),
+                    branch_outcomes.clone(),
+                );
+            }
+        }
+    }
+    let target_path = &target_path;
 
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
 
@@ -858,13 +895,10 @@ fn execute_push_task(
     force_with_lease: bool,
     branch_outcomes: &HashSet<TaskOutcome>,
 ) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
-    let Some(target_path) = worktree_path else {
-        return (
-            TaskStatus::Failed,
-            TaskMessage::Failed("no worktree path".into()),
-            branch_outcomes.clone(),
-        );
-    };
+    // Push doesn't need the branch's worktree; any git dir works.
+    // For local-only branches, fall back to the project root.
+    let fallback_path = project_root.to_path_buf();
+    let target_path = worktree_path.unwrap_or(&fallback_path);
 
     if branch_outcomes.contains(&TaskOutcome::Conflict) {
         return (
@@ -924,6 +958,74 @@ fn execute_push_task(
             TaskMessage::Diverged,
             branch_outcomes.clone(),
         )
+    }
+}
+
+/// Fast-forward a local-only branch from its upstream (no worktree needed).
+fn execute_local_branch_update(
+    branch_name: &str,
+    git_dir: &std::path::Path,
+) -> (TaskStatus, TaskMessage) {
+    use std::process::Command;
+
+    let upstream = format!("{branch_name}@{{upstream}}");
+
+    // Check if the branch can be fast-forwarded to its upstream.
+    let is_ancestor = Command::new("git")
+        .args(["merge-base", "--is-ancestor", branch_name, &upstream])
+        .current_dir(git_dir)
+        .output();
+
+    match is_ancestor {
+        Ok(output) if output.status.success() => {
+            // Can fast-forward — move the branch pointer.
+            let ff = Command::new("git")
+                .args(["branch", "-f", branch_name, &upstream])
+                .current_dir(git_dir)
+                .output();
+
+            match ff {
+                Ok(o) if o.status.success() => (
+                    TaskStatus::Succeeded,
+                    TaskMessage::Ok("fast-forwarded".into()),
+                ),
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    (
+                        TaskStatus::Failed,
+                        TaskMessage::Failed(format!("branch -f failed: {stderr}")),
+                    )
+                }
+                Err(e) => (
+                    TaskStatus::Failed,
+                    TaskMessage::Failed(format!("branch -f error: {e}")),
+                ),
+            }
+        }
+        Ok(output) => {
+            // Check if already up-to-date (upstream is ancestor of branch,
+            // i.e. branch is at or ahead of upstream).
+            let reverse = Command::new("git")
+                .args(["merge-base", "--is-ancestor", &upstream, branch_name])
+                .current_dir(git_dir)
+                .output();
+
+            match reverse {
+                Ok(r) if r.status.success() => {
+                    // Branch is at or ahead of upstream — nothing to do.
+                    (TaskStatus::Succeeded, TaskMessage::UpToDate)
+                }
+                _ => {
+                    // Diverged — cannot fast-forward.
+                    let _stderr = String::from_utf8_lossy(&output.stderr);
+                    (TaskStatus::Succeeded, TaskMessage::Diverged)
+                }
+            }
+        }
+        Err(_) => {
+            // No upstream or git error — skip silently.
+            (TaskStatus::Succeeded, TaskMessage::UpToDate)
+        }
     }
 }
 

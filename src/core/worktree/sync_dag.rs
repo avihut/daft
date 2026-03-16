@@ -145,9 +145,10 @@ impl SyncDag {
     ///
     /// `owned_worktrees` get Update + Rebase + Push tasks.
     /// `unowned_worktrees` get Update tasks only (no rebase/push).
+    /// Branches with `None` paths are local-only (no persistent worktree).
     pub fn build_sync(
-        owned_worktrees: Vec<(String, PathBuf)>,
-        unowned_worktrees: Vec<(String, PathBuf)>,
+        owned_worktrees: Vec<(String, Option<PathBuf>)>,
+        unowned_worktrees: Vec<(String, Option<PathBuf>)>,
         gone_branches: Vec<String>,
         rebase_branch: Option<String>,
         push: bool,
@@ -158,7 +159,7 @@ impl SyncDag {
         let mut dependents: Vec<Vec<usize>> = Vec::new();
 
         // Collect all worktrees for Update tasks.
-        let all_worktrees: Vec<(String, PathBuf)> = owned_worktrees
+        let all_worktrees: Vec<(String, Option<PathBuf>)> = owned_worktrees
             .iter()
             .cloned()
             .chain(unowned_worktrees.iter().cloned())
@@ -218,7 +219,7 @@ impl SyncDag {
                 SyncTask {
                     id: TaskId::Update(branch.clone()),
                     phase: OperationPhase::Update,
-                    worktree_path: Some(path.clone()),
+                    worktree_path: path.clone(),
                     branch_name: branch.clone(),
                 },
                 vec![fetch_idx],
@@ -228,7 +229,7 @@ impl SyncDag {
 
         // 4. Rebase tasks ONLY for owned worktrees (if rebase_branch is specified).
         // Track the last task index per owned branch for push dependencies.
-        let mut last_task_indices: Vec<(String, PathBuf, usize)> = update_indices
+        let mut last_task_indices: Vec<(String, Option<PathBuf>, usize)> = update_indices
             .iter()
             .filter(|(branch, _)| owned_set.contains(branch))
             .map(|(branch, idx)| {
@@ -272,7 +273,7 @@ impl SyncDag {
                     SyncTask {
                         id: TaskId::Rebase(branch.clone()),
                         phase: OperationPhase::Rebase(base_branch.clone()),
-                        worktree_path: Some(path.clone()),
+                        worktree_path: path.clone(),
                         branch_name: branch.clone(),
                     },
                     deps,
@@ -292,7 +293,7 @@ impl SyncDag {
                     SyncTask {
                         id: TaskId::Push(branch.clone()),
                         phase: OperationPhase::Push,
-                        worktree_path: Some(path.clone()),
+                        worktree_path: path.clone(),
                         branch_name: branch.clone(),
                     },
                     vec![*last_idx],
@@ -667,8 +668,8 @@ mod tests {
     #[test]
     fn build_sync_dag_no_rebase() {
         let worktrees = vec![
-            ("master".into(), PathBuf::from("/p/master")),
-            ("feat/a".into(), PathBuf::from("/p/feat-a")),
+            ("master".into(), Some(PathBuf::from("/p/master"))),
+            ("feat/a".into(), Some(PathBuf::from("/p/feat-a"))),
         ];
         let gone: Vec<String> = vec!["feat/old".into()];
 
@@ -687,9 +688,9 @@ mod tests {
     #[test]
     fn build_sync_dag_with_rebase() {
         let worktrees = vec![
-            ("master".into(), PathBuf::from("/p/master")),
-            ("feat/a".into(), PathBuf::from("/p/feat-a")),
-            ("feat/b".into(), PathBuf::from("/p/feat-b")),
+            ("master".into(), Some(PathBuf::from("/p/master"))),
+            ("feat/a".into(), Some(PathBuf::from("/p/feat-a"))),
+            ("feat/b".into(), Some(PathBuf::from("/p/feat-b"))),
         ];
         let gone: Vec<String> = vec![];
 
@@ -727,7 +728,7 @@ mod tests {
 
     #[test]
     fn dag_phases_sync() {
-        let worktrees = vec![("master".into(), PathBuf::from("/p/master"))];
+        let worktrees = vec![("master".into(), Some(PathBuf::from("/p/master")))];
         let dag = SyncDag::build_sync(worktrees, vec![], vec![], None, false);
         let phases = dag.phases();
         assert_eq!(phases.len(), 3); // Fetch, Prune, Update
@@ -735,7 +736,7 @@ mod tests {
 
     #[test]
     fn dag_phases_sync_with_rebase() {
-        let worktrees = vec![("master".into(), PathBuf::from("/p/master"))];
+        let worktrees = vec![("master".into(), Some(PathBuf::from("/p/master")))];
         let dag = SyncDag::build_sync(worktrees, vec![], vec![], Some("master".into()), false);
         let phases = dag.phases();
         assert_eq!(phases.len(), 4); // Fetch, Prune, Update, Rebase
@@ -777,8 +778,8 @@ mod tests {
     #[test]
     fn executor_respects_dependencies() {
         let worktrees = vec![
-            ("master".into(), PathBuf::from("/p/master")),
-            ("feat/a".into(), PathBuf::from("/p/feat-a")),
+            ("master".into(), Some(PathBuf::from("/p/master"))),
+            ("feat/a".into(), Some(PathBuf::from("/p/feat-a"))),
         ];
         let dag = SyncDag::build_sync(worktrees, vec![], vec![], Some("master".into()), false);
         let (tx, rx) = mpsc::channel();
@@ -816,8 +817,8 @@ mod tests {
     #[test]
     fn build_sync_dag_with_push_no_rebase() {
         let worktrees = vec![
-            ("master".into(), PathBuf::from("/p/master")),
-            ("feat/a".into(), PathBuf::from("/p/feat-a")),
+            ("master".into(), Some(PathBuf::from("/p/master"))),
+            ("feat/a".into(), Some(PathBuf::from("/p/feat-a"))),
         ];
         let gone: Vec<String> = vec![];
 
@@ -845,9 +846,9 @@ mod tests {
     #[test]
     fn build_sync_dag_with_push_and_rebase() {
         let worktrees = vec![
-            ("master".into(), PathBuf::from("/p/master")),
-            ("feat/a".into(), PathBuf::from("/p/feat-a")),
-            ("feat/b".into(), PathBuf::from("/p/feat-b")),
+            ("master".into(), Some(PathBuf::from("/p/master"))),
+            ("feat/a".into(), Some(PathBuf::from("/p/feat-a"))),
+            ("feat/b".into(), Some(PathBuf::from("/p/feat-b"))),
         ];
         let gone: Vec<String> = vec![];
 
@@ -891,7 +892,7 @@ mod tests {
 
     #[test]
     fn dag_phases_sync_with_push() {
-        let worktrees = vec![("master".into(), PathBuf::from("/p/master"))];
+        let worktrees = vec![("master".into(), Some(PathBuf::from("/p/master")))];
         let dag = SyncDag::build_sync(worktrees, vec![], vec![], None, true);
         let phases = dag.phases();
         assert_eq!(phases.len(), 4); // Fetch, Prune, Update, Push
@@ -901,8 +902,8 @@ mod tests {
     #[test]
     fn executor_cascades_failure() {
         let worktrees = vec![
-            ("master".into(), PathBuf::from("/p/master")),
-            ("feat/a".into(), PathBuf::from("/p/feat-a")),
+            ("master".into(), Some(PathBuf::from("/p/master"))),
+            ("feat/a".into(), Some(PathBuf::from("/p/feat-a"))),
         ];
         let dag = SyncDag::build_sync(worktrees, vec![], vec![], Some("master".into()), false);
         let (tx, rx) = mpsc::channel();
@@ -946,8 +947,8 @@ mod tests {
     fn executor_propagates_outcomes_to_dependent_tasks() {
         use std::collections::HashSet;
         let worktrees = vec![
-            ("master".into(), PathBuf::from("/p/master")),
-            ("feat/a".into(), PathBuf::from("/p/feat-a")),
+            ("master".into(), Some(PathBuf::from("/p/master"))),
+            ("feat/a".into(), Some(PathBuf::from("/p/feat-a"))),
         ];
         let dag = SyncDag::build_sync(worktrees, vec![], vec![], Some("master".into()), true);
         let (tx, rx) = mpsc::channel();
@@ -1013,9 +1014,9 @@ mod tests {
     fn outcomes_do_not_leak_across_branches() {
         use std::collections::HashSet;
         let worktrees = vec![
-            ("master".into(), PathBuf::from("/p/master")),
-            ("feat/a".into(), PathBuf::from("/p/feat-a")),
-            ("feat/b".into(), PathBuf::from("/p/feat-b")),
+            ("master".into(), Some(PathBuf::from("/p/master"))),
+            ("feat/a".into(), Some(PathBuf::from("/p/feat-a"))),
+            ("feat/b".into(), Some(PathBuf::from("/p/feat-b"))),
         ];
         let dag = SyncDag::build_sync(worktrees, vec![], vec![], Some("master".into()), true);
         let (tx, rx) = mpsc::channel();
