@@ -20,6 +20,7 @@ pub mod push;
 pub mod rebase;
 pub mod rename;
 pub mod sync_dag;
+pub mod temp_worktree;
 
 /// Configuration for worktree operations.
 #[derive(Debug, Clone)]
