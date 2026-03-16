@@ -27,7 +27,7 @@ use crate::{
 };
 use anyhow::Result;
 use clap::Parser;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -101,6 +101,9 @@ pub fn run() -> Result<()> {
         use crate::core::columns::{ColumnSelection, CommandKind};
         ColumnSelection::parse(input, CommandKind::Prune).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
+
+    let project_root = get_project_root()?;
+    crate::core::worktree::temp_worktree::cleanup_stale(&project_root)?;
 
     if !std::io::IsTerminal::is_terminal(&std::io::stderr()) || args.verbose >= 2 {
         run_prune(args, settings)
@@ -181,7 +184,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         .ok()
         .and_then(|p| p.canonicalize().ok());
 
-    let worktree_infos = if stat == Stat::Lines {
+    let mut worktree_infos = if stat == Stat::Lines {
         let mut output = CliOutput::new(OutputConfig::new(false, false));
         output.start_spinner("Computing line statistics...");
         let result =
@@ -201,6 +204,36 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         if let Some(ref branch) = entry.branch {
             worktree_map.insert(branch.clone(), (entry.path.clone(), i == 0));
         }
+    }
+
+    // ── Seed local-only gone branches (pre-fetch best-effort) ──────────
+    // Identify branches already known to be gone from the last fetch so they
+    // appear in the table immediately rather than popping in after fetch.
+    {
+        let gone_branches = {
+            let mut sink = crate::core::NullBridge;
+            prune::identify_gone_branches(
+                &git,
+                &worktree_map,
+                &settings.remote,
+                settings.use_gitoxide,
+                &mut sink,
+            )
+            .unwrap_or_default()
+        };
+
+        let worktree_branch_set: HashSet<String> =
+            worktree_infos.iter().map(|i| i.name.clone()).collect();
+
+        let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
+        let mut stubs = Vec::new();
+        for branch in &gone_branches {
+            if !worktree_branch_set.contains(branch.as_str()) {
+                let owner_email = list::get_author_email_for_ref(branch, &cwd);
+                stubs.push(list::WorktreeInfo::local_branch_stub(branch, owner_email));
+            }
+        }
+        worktree_infos.extend(stubs);
     }
 
     // ── Create TUI state with known phases and worktrees ───────────────
@@ -233,6 +266,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         args.verbose,
         tui_columns,
         columns_explicit,
+        None,
     );
 
     let hooks_config = HooksConfig::default();

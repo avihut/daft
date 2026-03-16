@@ -1,0 +1,66 @@
+name: Prune local branch visible
+description:
+  Local-only branches (no worktree) with deleted remotes appear in prune output
+  and are deleted
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Push a new branch to the remote for tracking
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp"
+      git checkout -b feature/local-only 2>/dev/null
+      echo "local only branch content" >> local-only.txt
+      git add local-only.txt
+      git commit -m "Add local-only branch"
+      git push origin feature/local-only
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Fetch so the remote-tracking ref exists locally
+    run: git fetch origin 2>/dev/null
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Create a local branch tracking the remote (no worktree)
+    run: git branch --track feature/local-only origin/feature/local-only
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Delete the remote branch
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp" && git push origin --delete feature/local-only 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Run prune (which fetches and identifies gone branches)
+    run: git-worktree-prune --verbose --verbose 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature/local-only"
+
+  - name: Verify local branch was deleted
+    run: |
+      git branch | grep "feature/local-only" && exit 1 || exit 0
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0

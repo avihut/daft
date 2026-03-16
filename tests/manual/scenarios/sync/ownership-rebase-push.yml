@@ -1,0 +1,93 @@
+name: Sync ownership rebase push
+description:
+  "--rebase --push only rebases owned branches; unowned branches are skipped"
+
+repos:
+  - name: ownership-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone $REMOTE_OWNERSHIP_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/ownership-repo/main"
+
+  - name: Set local user email to current user
+    run: git config user.email "me@example.com"
+    cwd: "$WORK_DIR/ownership-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop as the owned branch
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/ownership-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/ownership-repo/develop"
+
+  - name: Make a commit on develop owned by current user
+    run: |
+      git config user.email "me@example.com"
+      echo "owned change" > owned.txt
+      git add owned.txt
+      GIT_AUTHOR_EMAIL="me@example.com" GIT_COMMITTER_EMAIL="me@example.com" \
+        git commit -m "Owned commit on develop"
+    cwd: "$WORK_DIR/ownership-repo/develop"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch as the unowned branch
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/ownership-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/ownership-repo/feature/test-feature"
+
+  - name: Make a commit on feature branch owned by other user
+    run: |
+      echo "other user change" > other.txt
+      git add other.txt
+      GIT_AUTHOR_EMAIL="other@example.com" GIT_COMMITTER_EMAIL="other@example.com" \
+        git commit -m "Unowned commit on feature"
+    cwd: "$WORK_DIR/ownership-repo/feature/test-feature"
+    expect:
+      exit_code: 0
+
+  - name: Advance main on remote with a non-conflicting change
+    run: |
+      temp=$(mktemp -d)
+      git clone "$REMOTE_OWNERSHIP_REPO" "$temp" 2>/dev/null
+      cd "$temp"
+      echo "remote main change" > remote-advance.txt
+      git add remote-advance.txt
+      git commit -m "Advance main on remote" 2>/dev/null
+      git push origin main 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Record feature branch commit hash before sync
+    run: git rev-parse HEAD > /tmp/daft-ownership-feature-before
+    cwd: "$WORK_DIR/ownership-repo/feature/test-feature"
+    expect:
+      exit_code: 0
+
+  - name: Run sync with --rebase main --push (owned branches only)
+    run: git-worktree-sync --rebase main --push --verbose --verbose 2>&1 || true
+    cwd: "$WORK_DIR/ownership-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify unowned feature branch was NOT rebased
+    run: |
+      before=$(cat /tmp/daft-ownership-feature-before)
+      after=$(git rev-parse HEAD)
+      echo "before=$before after=$after"
+      [ "$before" = "$after" ]
+    cwd: "$WORK_DIR/ownership-repo/feature/test-feature"
+    expect:
+      exit_code: 0

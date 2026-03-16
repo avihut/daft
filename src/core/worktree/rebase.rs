@@ -3,11 +3,12 @@
 //! Used by `daft sync --rebase <BRANCH>` to rebase all worktree branches
 //! onto a common base after updating from remote.
 
-use crate::core::worktree::fetch;
+use crate::core::worktree::{fetch, temp_worktree};
 use crate::core::ProgressSink;
 use crate::git::GitCommand;
 use crate::utils::*;
 use anyhow::Result;
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Input parameters for the rebase operation.
@@ -62,14 +63,22 @@ impl RebaseResult {
 }
 
 /// Execute the rebase operation across all worktrees.
+///
+/// When `included_branches` is `Some(set)`, only branches in that set are
+/// rebased. Branches not in the set are silently skipped. When `None`, all
+/// worktrees (and local-only branches, via temp worktrees) are rebased.
 pub fn execute(
     params: &RebaseParams,
     git: &GitCommand,
     project_root: &Path,
     progress: &mut dyn ProgressSink,
+    included_branches: Option<&HashSet<String>>,
 ) -> Result<RebaseResult> {
     let original_dir = get_current_directory()?;
     let worktrees = fetch::get_all_worktrees_with_branches(git)?;
+
+    // Build set of branches that already have a worktree.
+    let worktree_branch_set: HashSet<String> = worktrees.iter().map(|(_, b)| b.clone()).collect();
 
     let mut results: Vec<WorktreeRebaseResult> = Vec::new();
 
@@ -77,6 +86,13 @@ pub fn execute(
         // Skip the base branch itself
         if branch == &params.base_branch {
             continue;
+        }
+
+        // Skip branches not in the include filter
+        if let Some(included) = included_branches {
+            if !included.contains(branch.as_str()) {
+                continue;
+            }
         }
 
         let worktree_name = path
@@ -103,6 +119,63 @@ pub fn execute(
         );
         results.push(result);
     }
+
+    // Rebase local-only branches (no persistent worktree) via temp worktrees.
+    let all_local_branches = git.for_each_ref("%(refname:short)", "refs/heads")?;
+    for branch in all_local_branches.lines() {
+        let branch = branch.trim();
+        if branch.is_empty() || branch == params.base_branch {
+            continue;
+        }
+        // Skip branches that have a worktree (already handled above)
+        if worktree_branch_set.contains(branch) {
+            continue;
+        }
+        // Skip branches not in the include filter
+        if let Some(included) = included_branches {
+            if !included.contains(branch) {
+                continue;
+            }
+        }
+
+        progress.on_step(&format!(
+            "Rebasing local-only branch '{branch}' via temp worktree"
+        ));
+
+        // Create a temp worktree, rebase, then clean up.
+        let _temp_guard;
+        let tmp_path = match temp_worktree::create(project_root, branch) {
+            Ok(p) => {
+                _temp_guard = temp_worktree::TempWorktreeGuard::new(p.clone());
+                p
+            }
+            Err(e) => {
+                results.push(WorktreeRebaseResult {
+                    worktree_name: branch.to_string(),
+                    branch_name: branch.to_string(),
+                    message: format!("Failed to create temp worktree: {e}"),
+                    ..Default::default()
+                });
+                continue;
+            }
+        };
+
+        let result = rebase_single_worktree(
+            git,
+            &tmp_path,
+            branch,
+            branch,
+            &params.base_branch,
+            params.force,
+            params.autostash,
+            progress,
+        );
+        results.push(result);
+    }
+
+    // Clean up the .daft-tmp parent dir if it is now empty.
+    let tmp_parent = temp_worktree::tmp_dir(project_root);
+    let _ = std::fs::remove_dir(&tmp_parent);
 
     // Return to original directory
     change_directory(&original_dir)?;

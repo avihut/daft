@@ -26,6 +26,8 @@ pub enum ListColumn {
     Remote,
     /// Branch age since creation.
     Age,
+    /// Branch owner (from git author email).
+    Owner,
     /// Last commit age + subject.
     LastCommit,
 }
@@ -41,6 +43,7 @@ impl ListColumn {
             ListColumn::Changes,
             ListColumn::Remote,
             ListColumn::Age,
+            ListColumn::Owner,
             ListColumn::LastCommit,
         ]
     }
@@ -66,7 +69,8 @@ impl ListColumn {
             Self::Changes => 5,
             Self::Remote => 6,
             Self::Age => 7,
-            Self::LastCommit => 8,
+            Self::Owner => 8,
+            Self::LastCommit => 9,
         }
     }
 
@@ -80,6 +84,7 @@ impl ListColumn {
             Self::Remote => "remote",
             Self::Changes => "changes",
             Self::Age => "age",
+            Self::Owner => "owner",
             Self::LastCommit => "last-commit",
         }
     }
@@ -112,6 +117,7 @@ impl FromStr for ListColumn {
             "remote" => Ok(Self::Remote),
             "changes" => Ok(Self::Changes),
             "age" => Ok(Self::Age),
+            "owner" => Ok(Self::Owner),
             "last-commit" => Ok(Self::LastCommit),
             _ => Err(format!(
                 "unknown column '{}'\n  valid columns: {}",

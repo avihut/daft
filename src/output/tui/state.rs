@@ -1,4 +1,4 @@
-use crate::core::worktree::list::{Stat, WorktreeInfo};
+use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
 use crate::core::worktree::sync_dag::{
     DagEvent, JobCompletionStatus, OperationPhase, TaskMessage, TaskStatus,
 };
@@ -108,6 +108,8 @@ pub struct TuiState {
     pub columns: Option<Vec<Column>>,
     /// If true, the user explicitly chose columns (replace mode) — disables responsive dropping.
     pub columns_explicit: bool,
+    /// Index of the first unowned worktree row (None if no unowned section).
+    pub unowned_start_index: Option<usize>,
 }
 
 /// A single row in the worktree table.
@@ -134,7 +136,32 @@ impl TuiState {
         verbose: u8,
         columns: Option<Vec<Column>>,
         columns_explicit: bool,
+        unowned_start_index: Option<usize>,
     ) -> Self {
+        let mut worktrees: Vec<WorktreeRow> = worktree_infos
+            .into_iter()
+            .map(|info| WorktreeRow {
+                info,
+                status: WorktreeStatus::Idle,
+                prev_terminal_status: None,
+                hook_warned: false,
+                hook_failed: false,
+                hook_sub_rows: Vec::new(),
+            })
+            .collect();
+        worktrees.sort_by(|a, b| {
+            // Default branch always first.
+            let default_order = |w: &WorktreeRow| u8::from(!w.info.is_default_branch);
+            let kind_order = |k: &EntryKind| match k {
+                EntryKind::Worktree => 0,
+                EntryKind::LocalBranch => 1,
+                EntryKind::RemoteBranch => 2,
+            };
+            default_order(a)
+                .cmp(&default_order(b))
+                .then_with(|| kind_order(&a.info.kind).cmp(&kind_order(&b.info.kind)))
+                .then_with(|| a.info.name.to_lowercase().cmp(&b.info.name.to_lowercase()))
+        });
         Self {
             phases: phases
                 .into_iter()
@@ -143,17 +170,7 @@ impl TuiState {
                     status: PhaseStatus::Pending,
                 })
                 .collect(),
-            worktrees: worktree_infos
-                .into_iter()
-                .map(|info| WorktreeRow {
-                    info,
-                    status: WorktreeStatus::Idle,
-                    prev_terminal_status: None,
-                    hook_warned: false,
-                    hook_failed: false,
-                    hook_sub_rows: Vec::new(),
-                })
-                .collect(),
+            worktrees,
             done: false,
             tick: 0,
             project_root,
@@ -163,6 +180,7 @@ impl TuiState {
             show_hook_sub_rows: verbose >= 1,
             columns,
             columns_explicit,
+            unowned_start_index,
         }
     }
 
@@ -180,8 +198,16 @@ impl TuiState {
                 // Auto-create row for newly discovered branches (e.g., gone branches
                 // found after fetch completes while TUI is already running).
                 if !branch_name.is_empty() && self.find_row_mut(branch_name).is_none() {
+                    let kind = if matches!(phase, OperationPhase::Prune) {
+                        EntryKind::LocalBranch
+                    } else {
+                        EntryKind::Worktree
+                    };
                     self.worktrees.push(WorktreeRow {
-                        info: WorktreeInfo::empty(branch_name),
+                        info: WorktreeInfo {
+                            kind,
+                            ..WorktreeInfo::empty(branch_name)
+                        },
                         status: WorktreeStatus::Idle,
                         prev_terminal_status: None,
                         hook_warned: false,
@@ -478,6 +504,7 @@ mod tests {
             0,
             None,
             false,
+            None,
         )
     }
 
@@ -503,6 +530,7 @@ mod tests {
             1,
             None,
             false,
+            None,
         )
     }
 
@@ -1067,6 +1095,7 @@ mod tests {
             0,
             None,
             false,
+            None,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1113,6 +1142,7 @@ mod tests {
             0,
             None,
             false,
+            None,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1156,6 +1186,7 @@ mod tests {
             0,
             None,
             false,
+            None,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1222,6 +1253,7 @@ mod tests {
             0,
             None,
             false,
+            None,
         )
     }
 

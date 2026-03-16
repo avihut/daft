@@ -37,6 +37,43 @@ to a safe location (project root by default, or as configured via
 For fine-grained control over either phase, use `daft prune` and `daft update`
 separately.
 
+### Ownership-gated rebase and push
+
+When `--rebase` or `--push` is specified, daft applies these operations only to
+branches you own. A branch is considered yours when its tip commit author email
+matches your `git config user.email`.
+
+Branches owned by others are still fetched and updated (pulled), but they are
+not rebased or pushed. This protects teammates' branches from unintended rewrites
+when multiple people share a repository.
+
+The summary table shown after sync includes an **Owner** column displaying the
+tip commit author email for each branch, making it easy to see who owns what.
+
+### Controlling which branches are rebased and pushed
+
+Use `--include` to opt additional branches into the rebase and push phases. The
+flag is repeatable and accepts three value forms:
+
+| Value | Effect |
+|-------|--------|
+| `unowned` | Include all branches regardless of owner |
+| `alice@example.com` | Include all branches owned by that email |
+| `feature/my-branch` | Include that specific branch by name |
+
+Examples:
+
+```bash
+# Rebase and push your own branches plus a specific colleague's branch
+daft sync --rebase main --push --include bob@example.com
+
+# Rebase and push every branch (no ownership filtering)
+daft sync --rebase main --push --include unowned
+
+# Include one specific branch by name
+daft sync --rebase main --push --include feature/shared-work
+```
+
 ## Options
 
 | Option | Description | Default |
@@ -47,6 +84,7 @@ separately.
 | `--autostash` | Automatically stash/unstash uncommitted changes during rebase (requires `--rebase`) | |
 | `--push` | Push all branches to their remotes after syncing | |
 | `--force-with-lease` | Use `--force-with-lease` when pushing (requires `--push`) | |
+| `--include <VALUE>` | Include additional branches in rebase/push: `unowned`, an email address, or a branch name. Repeatable. | |
 | `--stat <STAT>` | Statistics mode: `summary` or `lines` (default: from git config `daft.sync.stat`, or `summary`) | |
 | `--columns <COLUMNS>` | Columns to display in the summary table (comma-separated). Replace mode: `branch,path,age`. Modifier mode: `+col,-col`. The status column is always shown. | |
 
@@ -88,6 +126,15 @@ daft sync --rebase main --push --force-with-lease
 
 # Force sync even if worktrees have uncommitted changes
 daft sync --prune-dirty
+
+# Rebase and push your branches plus a teammate's branches
+daft sync --rebase main --push --include alice@example.com
+
+# Rebase and push all branches regardless of owner
+daft sync --rebase main --push --include unowned
+
+# Show the Owner column in the summary table
+daft sync --columns +owner
 ```
 
 ## See Also

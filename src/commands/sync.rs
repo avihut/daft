@@ -17,6 +17,7 @@ use crate::{
             sync_dag::{
                 self, DagExecutor, SyncDag, SyncTask, TaskId, TaskMessage, TaskOutcome, TaskStatus,
             },
+            temp_worktree,
         },
         CommandBridge, NullBridge, NullSink, OutputSink,
     },
@@ -38,6 +39,57 @@ use clap::Parser;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// Parsed `--include` value.
+enum IncludeFilter {
+    Unowned,
+    Email(String),
+    Branch(String),
+}
+
+impl IncludeFilter {
+    fn parse(value: &str) -> Self {
+        if value == "unowned" {
+            Self::Unowned
+        } else if value.contains('@') {
+            Self::Email(value.to_string())
+        } else {
+            Self::Branch(value.to_string())
+        }
+    }
+}
+
+/// Check if a branch is included by the filters or by ownership.
+fn is_branch_included(
+    branch: &str,
+    owner_email: Option<&str>,
+    user_email: Option<&str>,
+    filters: &[IncludeFilter],
+) -> bool {
+    // Check ownership first
+    if let (Some(owner), Some(user)) = (owner_email, user_email) {
+        if owner == user {
+            return true;
+        }
+    }
+    // Check include filters
+    for filter in filters {
+        match filter {
+            IncludeFilter::Unowned => return true,
+            IncludeFilter::Email(email) => {
+                if owner_email == Some(email.as_str()) {
+                    return true;
+                }
+            }
+            IncludeFilter::Branch(name) => {
+                if branch == name {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
 
 #[derive(Parser)]
 #[command(name = "git-worktree-sync")]
@@ -107,6 +159,12 @@ pub struct Args {
 
     #[arg(
         long,
+        help = "Include additional branches in rebase/push (email, branch name, or 'unowned')"
+    )]
+    include: Vec<String>,
+
+    #[arg(
+        long,
         value_enum,
         help = "Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary)"
     )]
@@ -155,6 +213,11 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
     let config = OutputConfig::with_autocd(false, args.verbose >= 2, settings.autocd);
     let mut output = CliOutput::new(config);
 
+    // Clean up stale temp worktrees from previous crashes.
+    if let Ok(project_root) = get_project_root() {
+        let _ = temp_worktree::cleanup_stale(&project_root);
+    }
+
     if args.force_deprecated {
         output.warning("--force is deprecated, use --prune-dirty (or -f) instead");
     }
@@ -178,6 +241,59 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
     // Phase 2: Update all remaining worktrees
     run_update_phase(&mut output, &settings, force, &default_branch)?;
 
+    // Compute ownership filter for rebase/push phases.
+    // When --include filters are specified or user.email is set, only owned
+    // (and explicitly included) branches are rebased and pushed.
+    let include_filters: Vec<IncludeFilter> = args
+        .include
+        .iter()
+        .map(|v| IncludeFilter::parse(v))
+        .collect();
+    let git_for_email = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
+    let user_email: Option<String> = git_for_email.config_get("user.email").ok().flatten();
+    // Build the included-branch set only when ownership filtering is active
+    // (i.e. when user.email is known or explicit --include filters are present).
+    let included_branches: Option<HashSet<String>> = if user_email.is_some()
+        || !include_filters.is_empty()
+    {
+        let worktrees = fetch::get_all_worktrees_with_branches(&git_for_email).unwrap_or_default();
+        let project_root = get_project_root()?;
+        let mut set = HashSet::new();
+        for (path, branch) in &worktrees {
+            let owner = list::get_author_email_for_ref(branch, path);
+            if is_branch_included(
+                branch,
+                owner.as_deref(),
+                user_email.as_deref(),
+                &include_filters,
+            ) {
+                set.insert(branch.clone());
+            }
+        }
+        // Also check local-only branches
+        if let Ok(ref_output) = git_for_email.for_each_ref("%(refname:short)", "refs/heads") {
+            let worktree_set: HashSet<&str> = worktrees.iter().map(|(_, b)| b.as_str()).collect();
+            for branch in ref_output.lines() {
+                let branch = branch.trim();
+                if branch.is_empty() || worktree_set.contains(branch) {
+                    continue;
+                }
+                let owner = list::get_author_email_for_ref(branch, &project_root);
+                if is_branch_included(
+                    branch,
+                    owner.as_deref(),
+                    user_email.as_deref(),
+                    &include_filters,
+                ) {
+                    set.insert(branch.to_string());
+                }
+            }
+        }
+        Some(set)
+    } else {
+        None
+    };
+
     // Phase 3: Rebase all worktrees onto base branch (if requested)
     let conflicted_branches: HashSet<String> = if let Some(ref base_branch) = args.rebase {
         let result = run_rebase_phase(
@@ -187,6 +303,7 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
             force,
             args.autostash,
             &default_branch,
+            included_branches.as_ref(),
         )?;
         result
             .results
@@ -200,11 +317,24 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
 
     // Phase 4: Push all branches to their remotes (if requested)
     if args.push {
+        // When ownership filtering is active, skip unowned branches from push.
+        let mut push_skip = conflicted_branches.clone();
+        if let Some(ref included) = included_branches {
+            // Collect all worktree branches and skip those not included.
+            let git_tmp = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
+            if let Ok(wts) = fetch::get_all_worktrees_with_branches(&git_tmp) {
+                for (_, branch) in wts {
+                    if !included.contains(&branch) {
+                        push_skip.insert(branch);
+                    }
+                }
+            }
+        }
         run_push_phase(
             &mut output,
             &settings,
             args.force_with_lease,
-            &conflicted_branches,
+            &push_skip,
             &default_branch,
         )?;
     }
@@ -228,6 +358,10 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
 fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
+
+    // Clean up stale temp worktrees from previous crashes.
+    let _ = temp_worktree::cleanup_stale(&project_root);
+
     let stat = args.stat.unwrap_or(settings.sync_stat);
 
     // ── Pre-TUI: collect worktree info (no fetch needed) ───────────────
@@ -307,6 +441,45 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     };
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
+
+    // Compute the unowned section boundary for the TUI divider.
+    // The TuiState sorts rows by kind (worktree < local-branch < remote-branch)
+    // then alphabetically. Mirror that sort on the infos so the index matches.
+    let user_email: Option<String> = git.config_get("user.email").ok().flatten();
+    let include_filters: Vec<IncludeFilter> = args
+        .include
+        .iter()
+        .map(|v| IncludeFilter::parse(v))
+        .collect();
+    let unowned_start_index = {
+        let mut sorted = worktree_infos.clone();
+        sorted.sort_by(|a, b| {
+            let default_order = |w: &list::WorktreeInfo| u8::from(!w.is_default_branch);
+            let kind_order = |k: &list::EntryKind| match k {
+                list::EntryKind::Worktree => 0,
+                list::EntryKind::LocalBranch => 1,
+                list::EntryKind::RemoteBranch => 2,
+            };
+            default_order(a)
+                .cmp(&default_order(b))
+                .then_with(|| kind_order(&a.kind).cmp(&kind_order(&b.kind)))
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        // Only show divider when user_email is known (otherwise all are unowned)
+        user_email.as_ref().and_then(|_| {
+            let idx = sorted.iter().position(|info| {
+                !is_branch_included(
+                    &info.name,
+                    info.owner_email.as_deref(),
+                    user_email.as_deref(),
+                    &include_filters,
+                )
+            });
+            // Only emit a boundary when there are both owned and unowned rows
+            idx.filter(|&i| i > 0 && i < sorted.len())
+        })
+    };
+
     let state = TuiState::new(
         phases,
         worktree_infos,
@@ -316,6 +489,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         args.verbose,
         tui_columns,
         columns_explicit,
+        unowned_start_index,
     );
 
     // ── Create channel and spawn orchestrator ──────────────────────────
@@ -373,13 +547,39 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     // Clone values needed by orchestrator
     let orch_settings = Arc::clone(&shared_settings);
-    let orch_all_worktrees: Vec<(String, PathBuf)> = all_worktrees
+    // Build worktree list including local-only branches (with None paths).
+    let worktree_branch_set: HashSet<String> =
+        all_worktrees.iter().map(|(_, b)| b.clone()).collect();
+    let orch_all_worktrees: Vec<(String, Option<PathBuf>)> = all_worktrees
         .iter()
-        .map(|(p, b)| (b.clone(), p.clone()))
+        .map(|(p, b)| (b.clone(), Some(p.clone())))
+        .chain(
+            state
+                .worktrees
+                .iter()
+                .filter(|wt| {
+                    wt.info.kind == list::EntryKind::LocalBranch
+                        && !worktree_branch_set.contains(&wt.info.name)
+                })
+                .map(|wt| (wt.info.name.clone(), None)),
+        )
         .collect();
     let orch_info_map = Arc::clone(&shared_info_map);
     let orch_base_branch = Arc::clone(&shared_base_branch);
     let orch_stat = stat;
+
+    // Ownership filtering for the orchestrator
+    let shared_include: Arc<Vec<String>> = Arc::new(args.include.clone());
+    // Build owner lookup from the worktree_infos collected before TUI started
+    let shared_owner_lookup: Arc<HashMap<String, Option<String>>> = Arc::new(
+        state
+            .worktrees
+            .iter()
+            .map(|wt| (wt.info.name.clone(), wt.info.owner_email.clone()))
+            .collect(),
+    );
+    let shared_user_email: Arc<Option<String>> =
+        Arc::new(git.config_get("user.email").ok().flatten());
 
     let orchestrator_handle = std::thread::spawn(move || {
         // ── Phase 1: Fetch ─────────────────────────────────────────────
@@ -403,13 +603,30 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
         // Filter out gone branches so they don't get Update/Rebase tasks
         // (their worktree paths will be removed by the Prune tasks).
-        let live_worktrees: Vec<(String, PathBuf)> = orch_all_worktrees
+        let live_worktrees: Vec<(String, Option<PathBuf>)> = orch_all_worktrees
             .into_iter()
             .filter(|(branch, _)| !gone_branches.contains(branch))
             .collect();
 
+        // Split worktrees into owned (rebase+push) and unowned (update only).
+        let include_filters: Vec<IncludeFilter> = shared_include
+            .iter()
+            .map(|v| IncludeFilter::parse(v))
+            .collect();
+
+        let (owned, unowned): (Vec<_>, Vec<_>) =
+            live_worktrees.into_iter().partition(|(branch, _)| {
+                is_branch_included(
+                    branch,
+                    shared_owner_lookup.get(branch).and_then(|e| e.as_deref()),
+                    shared_user_email.as_deref(),
+                    &include_filters,
+                )
+            });
+
         let dag = SyncDag::build_sync(
-            live_worktrees,
+            owned,
+            unowned,
             gone_branches,
             shared_rebase_branch.as_ref().clone(),
             shared_push,
@@ -606,10 +823,8 @@ fn execute_update_task(
     force: bool,
 ) -> (TaskStatus, TaskMessage) {
     let Some(target_path) = worktree_path else {
-        return (
-            TaskStatus::Failed,
-            TaskMessage::Failed("no worktree path".into()),
-        );
+        // Local-only branch: attempt fast-forward from upstream.
+        return execute_local_branch_update(branch_name, project_root);
     };
 
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
@@ -670,13 +885,29 @@ fn execute_rebase_task(
     autostash: bool,
     branch_outcomes: &HashSet<TaskOutcome>,
 ) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
-    let Some(target_path) = worktree_path else {
-        return (
-            TaskStatus::Failed,
-            TaskMessage::Failed("no worktree path".into()),
-            branch_outcomes.clone(),
-        );
-    };
+    let target_path: PathBuf;
+    let _temp_guard: Option<temp_worktree::TempWorktreeGuard>;
+
+    if let Some(path) = worktree_path {
+        target_path = path.clone();
+        _temp_guard = None;
+    } else {
+        // Local-only branch: create a temporary worktree for the rebase.
+        match temp_worktree::create(project_root, branch_name) {
+            Ok(tmp_path) => {
+                _temp_guard = Some(temp_worktree::TempWorktreeGuard::new(tmp_path.clone()));
+                target_path = tmp_path;
+            }
+            Err(e) => {
+                return (
+                    TaskStatus::Failed,
+                    TaskMessage::Failed(format!("temp worktree: {e}")),
+                    branch_outcomes.clone(),
+                );
+            }
+        }
+    }
+    let target_path = &target_path;
 
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
 
@@ -733,13 +964,10 @@ fn execute_push_task(
     force_with_lease: bool,
     branch_outcomes: &HashSet<TaskOutcome>,
 ) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
-    let Some(target_path) = worktree_path else {
-        return (
-            TaskStatus::Failed,
-            TaskMessage::Failed("no worktree path".into()),
-            branch_outcomes.clone(),
-        );
-    };
+    // Push doesn't need the branch's worktree; any git dir works.
+    // For local-only branches, fall back to the project root.
+    let fallback_path = project_root.to_path_buf();
+    let target_path = worktree_path.unwrap_or(&fallback_path);
 
     if branch_outcomes.contains(&TaskOutcome::Conflict) {
         return (
@@ -799,6 +1027,74 @@ fn execute_push_task(
             TaskMessage::Diverged,
             branch_outcomes.clone(),
         )
+    }
+}
+
+/// Fast-forward a local-only branch from its upstream (no worktree needed).
+fn execute_local_branch_update(
+    branch_name: &str,
+    git_dir: &std::path::Path,
+) -> (TaskStatus, TaskMessage) {
+    use std::process::Command;
+
+    let upstream = format!("{branch_name}@{{upstream}}");
+
+    // Check if the branch can be fast-forwarded to its upstream.
+    let is_ancestor = Command::new("git")
+        .args(["merge-base", "--is-ancestor", branch_name, &upstream])
+        .current_dir(git_dir)
+        .output();
+
+    match is_ancestor {
+        Ok(output) if output.status.success() => {
+            // Can fast-forward — move the branch pointer.
+            let ff = Command::new("git")
+                .args(["branch", "-f", branch_name, &upstream])
+                .current_dir(git_dir)
+                .output();
+
+            match ff {
+                Ok(o) if o.status.success() => (
+                    TaskStatus::Succeeded,
+                    TaskMessage::Ok("fast-forwarded".into()),
+                ),
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    (
+                        TaskStatus::Failed,
+                        TaskMessage::Failed(format!("branch -f failed: {stderr}")),
+                    )
+                }
+                Err(e) => (
+                    TaskStatus::Failed,
+                    TaskMessage::Failed(format!("branch -f error: {e}")),
+                ),
+            }
+        }
+        Ok(output) => {
+            // Check if already up-to-date (upstream is ancestor of branch,
+            // i.e. branch is at or ahead of upstream).
+            let reverse = Command::new("git")
+                .args(["merge-base", "--is-ancestor", &upstream, branch_name])
+                .current_dir(git_dir)
+                .output();
+
+            match reverse {
+                Ok(r) if r.status.success() => {
+                    // Branch is at or ahead of upstream — nothing to do.
+                    (TaskStatus::Succeeded, TaskMessage::UpToDate)
+                }
+                _ => {
+                    // Diverged — cannot fast-forward.
+                    let _stderr = String::from_utf8_lossy(&output.stderr);
+                    (TaskStatus::Succeeded, TaskMessage::Diverged)
+                }
+            }
+        }
+        Err(_) => {
+            // No upstream or git error — skip silently.
+            (TaskStatus::Succeeded, TaskMessage::UpToDate)
+        }
     }
 }
 
@@ -1027,6 +1323,7 @@ fn run_rebase_phase(
     force: bool,
     autostash: bool,
     default_branch: &str,
+    included_branches: Option<&HashSet<String>>,
 ) -> Result<rebase::RebaseResult> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
@@ -1045,7 +1342,7 @@ fn run_rebase_phase(
     output.start_spinner("Rebasing worktrees...");
     let exec_result = {
         let mut sink = OutputSink(output);
-        rebase::execute(&params, &git, &project_root, &mut sink)
+        rebase::execute(&params, &git, &project_root, &mut sink, included_branches)
     };
     output.finish_spinner();
     let result = exec_result?;

@@ -34,29 +34,35 @@ impl TuiRenderer {
         self
     }
 
-    /// Compute total rendered worktree rows including hook sub-rows.
+    /// Compute total rendered worktree rows including hook sub-rows and divider.
     ///
     /// When `show_hook_sub_rows` is true (verbose >= 1), each hook sub-row and
     /// its nested job sub-rows add extra rendered rows beneath the parent worktree row.
     fn total_rendered_rows(&self) -> u16 {
         let base = self.state.worktrees.len() as u16;
-        if self.state.show_hook_sub_rows {
-            base + self
-                .state
-                .worktrees
-                .iter()
-                .map(|wt| {
-                    let hooks = wt.hook_sub_rows.len() as u16;
-                    let jobs: u16 = wt
-                        .hook_sub_rows
-                        .iter()
-                        .map(|h| h.job_sub_rows.len() as u16)
-                        .sum();
-                    hooks + jobs
-                })
-                .sum::<u16>()
+        let divider = if self.state.unowned_start_index.is_some() {
+            1
         } else {
-            base
+            0
+        };
+        if self.state.show_hook_sub_rows {
+            base + divider
+                + self
+                    .state
+                    .worktrees
+                    .iter()
+                    .map(|wt| {
+                        let hooks = wt.hook_sub_rows.len() as u16;
+                        let jobs: u16 = wt
+                            .hook_sub_rows
+                            .iter()
+                            .map(|h| h.job_sub_rows.len() as u16)
+                            .sum();
+                        hooks + jobs
+                    })
+                    .sum::<u16>()
+        } else {
+            base + divider
         }
     }
 
@@ -64,7 +70,12 @@ impl TuiRenderer {
     /// Returns the final `TuiState` for post-render summary.
     pub fn run(mut self) -> anyhow::Result<TuiState> {
         let header_height = self.state.phases.len() as u16 + 1;
-        let table_height = self.state.worktrees.len() as u16 + 2 + self.extra_rows;
+        let divider_row = if self.state.unowned_start_index.is_some() {
+            1
+        } else {
+            0
+        };
+        let table_height = self.state.worktrees.len() as u16 + 2 + self.extra_rows + divider_row;
         let viewport_height = header_height + table_height;
 
         let backend = ratatui::backend::CrosstermBackend::new(std::io::stderr());

@@ -90,6 +90,8 @@ pub struct WorktreeInfo {
     pub remote_lines_inserted: Option<usize>,
     /// Lines deleted vs remote tracking branch (None if not computed or no upstream).
     pub remote_lines_deleted: Option<usize>,
+    /// Author email of the branch tip commit (for ownership detection).
+    pub owner_email: Option<String>,
 }
 
 impl WorktreeInfo {
@@ -120,6 +122,37 @@ impl WorktreeInfo {
             unstaged_lines_deleted: None,
             remote_lines_inserted: None,
             remote_lines_deleted: None,
+            owner_email: None,
+        }
+    }
+
+    /// Create a stub entry for a local-only branch (no worktree).
+    pub fn local_branch_stub(name: &str, owner_email: Option<String>) -> Self {
+        Self {
+            kind: EntryKind::LocalBranch,
+            name: name.to_string(),
+            path: None,
+            is_current: false,
+            is_default_branch: false,
+            ahead: None,
+            behind: None,
+            staged: 0,
+            unstaged: 0,
+            untracked: 0,
+            remote_ahead: None,
+            remote_behind: None,
+            last_commit_timestamp: None,
+            last_commit_subject: String::new(),
+            branch_creation_timestamp: None,
+            base_lines_inserted: None,
+            base_lines_deleted: None,
+            staged_lines_inserted: None,
+            staged_lines_deleted: None,
+            unstaged_lines_inserted: None,
+            unstaged_lines_deleted: None,
+            remote_lines_inserted: None,
+            remote_lines_deleted: None,
+            owner_email,
         }
     }
 
@@ -313,6 +346,26 @@ fn get_last_commit_info_for_ref(branch_ref: &str, cwd: &Path) -> (Option<i64>, S
             }
         }
         _ => (None, String::new()),
+    }
+}
+
+/// Get the author email of the tip commit on a given branch ref.
+pub(crate) fn get_author_email_for_ref(branch_ref: &str, cwd: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["log", "-1", "--format=%ae", branch_ref])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let email = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if email.is_empty() {
+        None
+    } else {
+        Some(email)
     }
 }
 
@@ -576,6 +629,13 @@ pub fn collect_worktree_info(
         // Last commit info
         let (last_commit_timestamp, last_commit_subject) = get_last_commit_info(&entry.path);
 
+        // Owner email (author of branch tip commit)
+        let owner_email = if !entry.is_detached {
+            get_author_email_for_ref(&branch_display, &entry.path)
+        } else {
+            None
+        };
+
         // Branch creation timestamp (only for non-detached worktrees)
         let branch_creation_timestamp = if !entry.is_detached {
             entry
@@ -654,6 +714,7 @@ pub fn collect_worktree_info(
             unstaged_lines_deleted,
             remote_lines_inserted,
             remote_lines_deleted,
+            owner_email,
         });
     }
 
@@ -706,6 +767,8 @@ pub fn collect_branch_info(
             let (last_commit_timestamp, last_commit_subject) =
                 get_last_commit_info_for_ref(branch, cwd);
 
+            let owner_email = get_author_email_for_ref(branch, cwd);
+
             let branch_creation_timestamp = get_branch_creation_timestamp(branch, cwd);
 
             let is_default_branch = branch == base_branch;
@@ -753,6 +816,7 @@ pub fn collect_branch_info(
                 unstaged_lines_deleted: None,
                 remote_lines_inserted,
                 remote_lines_deleted,
+                owner_email,
             });
         }
     }
@@ -791,6 +855,8 @@ pub fn collect_branch_info(
             let (last_commit_timestamp, last_commit_subject) =
                 get_last_commit_info_for_ref(remote_branch, cwd);
 
+            let owner_email = get_author_email_for_ref(remote_branch, cwd);
+
             // Line-level stats (base only — no upstream concept for remote branches)
             let (base_lines_inserted, base_lines_deleted) = if stat == Stat::Lines {
                 match get_base_line_counts(base_branch, remote_branch, cwd) {
@@ -825,6 +891,7 @@ pub fn collect_branch_info(
                 unstaged_lines_deleted: None,
                 remote_lines_inserted: None,
                 remote_lines_deleted: None,
+                owner_email,
             });
         }
     }

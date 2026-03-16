@@ -45,6 +45,8 @@ pub fn run(
     keep: bool,
     setup_only: bool,
     list: bool,
+    show: bool,
+    checks: bool,
 ) -> Result<()> {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -55,6 +57,18 @@ pub fn run(
 
     if list {
         return list_scenarios(&scenarios_dir);
+    }
+
+    if show {
+        let scenario_files = if scenarios.is_empty() {
+            anyhow::bail!("--show requires a scenario name");
+        } else {
+            resolve_scenario_paths(&scenarios, &scenarios_dir)?
+        };
+        for path in &scenario_files {
+            show_scenario(path, checks)?;
+        }
+        return Ok(());
     }
 
     if loop_count.is_some() && step.is_none() {
@@ -388,6 +402,103 @@ fn list_scenarios(dir: &PathBuf) -> Result<()> {
     eprintln!();
 
     Ok(())
+}
+
+/// Print a human-readable summary of a scenario without executing anything.
+fn show_scenario(path: &Path, checks: bool) -> Result<()> {
+    use daft::styles;
+
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read scenario: {}", path.display()))?;
+    let raw: schema::RawScenario = serde_yaml::from_str(&content)
+        .with_context(|| format!("Failed to parse scenario: {}", path.display()))?;
+
+    // Header: scenario name + description
+    eprintln!();
+    eprintln!("{}", styles::bold(&raw.name));
+    if let Some(desc) = &raw.description {
+        eprintln!("  {}", styles::dim(desc));
+    }
+    eprintln!();
+
+    // Steps
+    for (i, step) in raw.steps.iter().enumerate() {
+        eprintln!("  {}. {}", styles::blue(&(i + 1).to_string()), &step.name);
+
+        // Print each line of the run command (multi-line commands get indented)
+        let run_trimmed = step.run.trim();
+        for (j, line) in run_trimmed.lines().enumerate() {
+            if j == 0 {
+                eprintln!("     {} {}", styles::dim("$"), line);
+            } else {
+                eprintln!("       {}", line);
+            }
+        }
+
+        // Print cwd if set
+        if let Some(cwd) = &step.cwd {
+            eprintln!("     {}", styles::dim(&format!("cwd: {cwd}")));
+        }
+
+        // Print expectations if --checks is set
+        if checks {
+            if let Some(expect) = &step.expect {
+                show_expectations(expect);
+            }
+        }
+
+        eprintln!();
+    }
+
+    Ok(())
+}
+
+/// Format and print expectation checks for a step.
+fn show_expectations(expect: &schema::Expectations) {
+    use daft::styles;
+
+    let mut lines: Vec<String> = Vec::new();
+
+    if let Some(code) = expect.exit_code {
+        lines.push(format!("exit_code: {code}"));
+    }
+    for dir in &expect.dirs_exist {
+        lines.push(format!("dir exists: {dir}"));
+    }
+    for file in &expect.files_exist {
+        lines.push(format!("file exists: {file}"));
+    }
+    for file in &expect.files_not_exist {
+        lines.push(format!("file not exists: {file}"));
+    }
+    for fc in &expect.file_contains {
+        lines.push(format!("file contains: {} => \"{}\"", fc.path, fc.content));
+    }
+    for fc in &expect.file_not_contains {
+        lines.push(format!(
+            "file not contains: {} => \"{}\"",
+            fc.path, fc.content
+        ));
+    }
+    for s in &expect.output_contains {
+        lines.push(format!("output contains: \"{s}\""));
+    }
+    for s in &expect.output_not_contains {
+        lines.push(format!("output not contains: \"{s}\""));
+    }
+    for wt in &expect.is_git_worktree {
+        lines.push(format!("is worktree: {} (branch: {})", wt.dir, wt.branch));
+    }
+    for bc in &expect.branch_exists {
+        lines.push(format!("branch exists: {} in {}", bc.branch, bc.repo));
+    }
+
+    if !lines.is_empty() {
+        eprintln!("     {}", styles::dim("checks:"));
+        for line in &lines {
+            eprintln!("       {} {}", styles::dim("-"), styles::dim(line));
+        }
+    }
 }
 
 /// Discover all scenarios recursively, returning `(qualified_name, path)` pairs.
