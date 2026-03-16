@@ -140,6 +140,31 @@ fi
 SCRIPT
 chmod +x "${bin_dir}/setup-test"
 
+cat > "${bin_dir}/show-test" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Parse args: show-test <scenario> [--checks]
+scenario=""
+checks_flag=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --checks) checks_flag="--checks"; shift ;;
+        -*) echo "Unknown option: $1" >&2; exit 1 ;;
+        *) scenario="$1"; shift ;;
+    esac
+done
+
+if [[ -z "$scenario" ]]; then
+    echo "Usage: show-test <scenario> [--checks]" >&2
+    exit 1
+fi
+
+# shellcheck disable=SC2086
+cd "$DAFT_WORKTREE" && cargo run --package xtask -- manual-test --show $checks_flag "$scenario"
+SCRIPT
+chmod +x "${bin_dir}/show-test"
+
 cat > "${bin_dir}/reset-test" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -307,6 +332,57 @@ _setup_test() {
 complete -F _setup_test setup-test
 BASH_COMP
 
+# --- Completions for show-test (same scenario list + --checks flag) ---
+cat > "${bin_dir}/completions/_show-test" <<'ZSH_COMP'
+#compdef show-test
+
+_show-test() {
+    local -a scenarios
+    local scenarios_dir="${DAFT_WORKTREE}/tests/manual/scenarios"
+
+    if [[ -d "$scenarios_dir" ]]; then
+        local f rel
+        for f in "$scenarios_dir"/**/*.yml "$scenarios_dir"/**/*.yaml(N); do
+            rel="${f#$scenarios_dir/}"
+            if [[ "$rel" == */* ]]; then
+                scenarios+=("${rel%%/*}:${${rel#*/}:r}")
+            else
+                scenarios+=("${rel:r}")
+            fi
+        done
+    fi
+
+    _arguments -s \
+        '--checks[Show expectation checks for each step]' \
+        '1:scenario:($scenarios)'
+}
+ZSH_COMP
+
+cat > "${bin_dir}/completions/show-test.bash" <<'BASH_COMP'
+_show_test() {
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=($(compgen -W "--checks" -- "$cur"))
+        return
+    fi
+    local scenarios_dir="${DAFT_WORKTREE}/tests/manual/scenarios"
+    if [[ -d "$scenarios_dir" ]]; then
+        local scenarios="" f rel name
+        while IFS= read -r -d '' f; do
+            rel="${f#$scenarios_dir/}"
+            name="${rel%.yml}"
+            name="${name%.yaml}"
+            if [[ "$name" == */* ]]; then
+                name="${name%%/*}:${name#*/}"
+            fi
+            scenarios="$scenarios $name"
+        done < <(find "$scenarios_dir" \( -name '*.yml' -o -name '*.yaml' \) -print0 2>/dev/null)
+        COMPREPLY=($(compgen -W "$scenarios" -- "$cur"))
+    fi
+}
+complete -F _show_test show-test
+BASH_COMP
+
 # --- Completions for reset-test (active test envs) ---
 cat > "${bin_dir}/completions/_reset-test" <<'ZSH_COMP'
 #compdef reset-test
@@ -355,12 +431,15 @@ if [[ -n "${ZSH_VERSION:-}" ]]; then
     compdef _manual-test manual-test
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/_setup-test"
     compdef _setup-test setup-test
+    source "${DAFT_SANDBOX_COMPLETIONS_DIR}/_show-test"
+    compdef _show-test show-test
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/_reset-test"
     compdef _reset-test reset-test
     eval "$(daft shell-init zsh)"
 elif [[ -n "${BASH_VERSION:-}" ]]; then
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/manual-test.bash"
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/setup-test.bash"
+    source "${DAFT_SANDBOX_COMPLETIONS_DIR}/show-test.bash"
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/reset-test.bash"
     eval "$(daft shell-init bash)"
 fi
@@ -381,6 +460,7 @@ Initialize completions and daft shell integration:
     help                     Show this guide
     manual-test <scenario>   Run a manual test scenario interactively
     manual-test --list       List available scenarios
+    show-test <scenario>     Show test steps and commands for a scenario
     setup-test <scenario>    Set up a test environment for manual exploration
     reset-test [name]        Reset a test environment to its initial state
     rebuild-daft             Rebuild daft and update symlinks
