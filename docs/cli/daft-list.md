@@ -29,6 +29,7 @@ Each worktree is shown with:
 - Remote tracking status: ⇡N unpushed, ⇣N unpulled
 - Branch age since creation (e.g. 3d, 2w, 5mo)
 - Last commit: shorthand age + subject (e.g. 1h fix login bug)
+- Owner: tip commit author email (available via `--columns owner`)
 
 Ages use shorthand notation: `<1m`, `Xm`, `Xh`, `Xd`, `Xw`, `Xmo`, `Xy`.
 
@@ -44,9 +45,20 @@ changes). This is slower as it requires computing diffs for each worktree.
 
 Use `--json` for machine-readable output suitable for scripting. JSON output
 includes fields like `is_default_branch`, `staged`, `unstaged`, `untracked`,
-`remote_ahead`, `remote_behind`, and `branch_age`.
+`remote_ahead`, `remote_behind`, `branch_age`, and `owner_email`.
 
 Use `--columns` to select which columns are shown and in what order.
+
+### Two-section layout
+
+When `git config user.email` is set, the output is split into two sections:
+
+- **Your branches** — branches whose tip commit author email matches your
+  configured email.
+- **Other branches** — all remaining branches.
+
+This makes it easy to identify your active work at a glance. The section
+divider is only shown when both sections are non-empty.
 
 ## Options
 
@@ -93,6 +105,12 @@ daft list --columns branch,path,age
 
 # Remove annotation and last-commit from defaults (modifier mode)
 daft list --columns -annotation,-last-commit
+
+# Add the Owner column to the default layout
+daft list --columns +owner
+
+# Show branch, path, and owner only
+daft list --columns branch,path,owner
 ```
 
 ## See Also
