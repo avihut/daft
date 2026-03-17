@@ -262,6 +262,11 @@ pub fn rebase_single_worktree(
             }
         }
         Err(_) => {
+            // Clean up stale lock files that would prevent rebase --abort
+            // from succeeding. These can be left behind by crashed git
+            // processes (e.g., parallel sync workers).
+            clean_stale_lock_files(worktree_path, progress);
+
             // Abort the failed rebase to leave the worktree clean
             if let Err(abort_err) = git.rebase_abort_in(Some(worktree_path)) {
                 progress.on_warning(&format!(
@@ -275,6 +280,50 @@ pub fn rebase_single_worktree(
                 message: "Rebase conflict — aborted".to_string(),
                 ..Default::default()
             }
+        }
+    }
+}
+
+/// Remove stale lock files from a worktree's git directory.
+///
+/// Git operations create `index.lock` while working. If a process crashes
+/// (e.g., a parallel rebase worker), the lock file is left behind and blocks
+/// subsequent git operations like `rebase --abort`. This function removes
+/// such stale lock files so the abort can proceed.
+fn clean_stale_lock_files(worktree_path: &Path, progress: &mut dyn ProgressSink) {
+    // Resolve the worktree's git dir (e.g., .git/worktrees/<name>/)
+    let git_dir = std::process::Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .current_dir(worktree_path)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| {
+            let p = std::path::PathBuf::from(s.trim());
+            if p.is_relative() {
+                worktree_path.join(p)
+            } else {
+                p
+            }
+        });
+
+    let Some(git_dir) = git_dir else {
+        return;
+    };
+
+    let lock_file = git_dir.join("index.lock");
+    if lock_file.exists() {
+        progress.on_warning(&format!(
+            "Removing stale index.lock in '{}'",
+            worktree_path.display()
+        ));
+        if let Err(e) = std::fs::remove_file(&lock_file) {
+            progress.on_warning(&format!(
+                "Failed to remove stale index.lock in '{}': {e}",
+                worktree_path.display()
+            ));
         }
     }
 }
