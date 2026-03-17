@@ -145,6 +145,34 @@ pub fn execute(
         });
     }
 
+    // Fallback: check if the worktree directory already exists on disk.
+    // This handles cases where the branch association is missing from
+    // `git worktree list` (e.g., detached HEAD from an interrupted rebase).
+    if worktree_path.exists() && worktree_path.join(".git").is_file() {
+        sink.on_step(&format!(
+            "Worktree directory '{}' already exists, switching to it",
+            worktree_path.display()
+        ));
+        change_directory(&worktree_path)?;
+
+        return Ok(CheckoutResult {
+            branch_name: params.branch_name.clone(),
+            worktree_path,
+            already_existed: true,
+            cd_target: get_current_directory()?,
+            stash_applied: false,
+            stash_conflict: false,
+            upstream_set: false,
+            upstream_skipped: true,
+            git_dir,
+            post_hook_outcome: HookOutcome {
+                success: true,
+                skipped: true,
+                skip_reason: None,
+            },
+        });
+    }
+
     // Fetch latest changes from remote
     let fetch_failed = !fetch_branch(git, &params.remote_name, &params.branch_name, sink);
 
