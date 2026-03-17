@@ -213,11 +213,12 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         let empty_cells: Vec<Cell> = (0..num_columns).map(|_| Cell::from("")).collect();
         all_rows.push(Row::new(empty_cells));
 
-        // Summary row with total size
+        // Summary row with total size (excludes pruned worktrees)
         let total_bytes: u64 = state
             .worktrees
             .iter()
             .filter(|wt| wt.info.kind == EntryKind::Worktree)
+            .filter(|wt| !matches!(wt.status, WorktreeStatus::Done(FinalStatus::Pruned)))
             .filter_map(|wt| wt.info.size_bytes)
             .sum();
         let total_size = format_human_size(total_bytes);
