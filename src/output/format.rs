@@ -188,6 +188,7 @@ pub fn relative_display_path(abs_path: &Path, project_root: &Path, cwd: &Path) -
 pub struct ColumnValues {
     pub branch: String,
     pub path: String,
+    pub size: String,
     pub base: String,
     pub changes: String,
     pub remote: String,
@@ -225,6 +226,29 @@ pub fn format_head_status_lines(info: &WorktreeInfo) -> String {
     parts.join(" ")
 }
 
+/// Format a byte count as a human-readable size string.
+///
+/// Uses binary units (1024-based) with short labels: K, M, G, T.
+/// Examples: `<1K`, `42K`, `1.3M`, `2.5G`, `1.0T`.
+pub fn format_human_size(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * 1024;
+    const GIB: u64 = 1024 * 1024 * 1024;
+    const TIB: u64 = 1024 * 1024 * 1024 * 1024;
+
+    if bytes < KIB {
+        "<1K".to_string()
+    } else if bytes < MIB {
+        format!("{}K", bytes / KIB)
+    } else if bytes < GIB {
+        format!("{:.1}M", bytes as f64 / MIB as f64)
+    } else if bytes < TIB {
+        format!("{:.1}G", bytes as f64 / GIB as f64)
+    } else {
+        format!("{:.1}T", bytes as f64 / TIB as f64)
+    }
+}
+
 /// Compute plain-text column values for a single `WorktreeInfo`.
 ///
 /// Respects `ctx.stat`: Summary mode uses commit/file counts, Lines mode
@@ -237,6 +261,8 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
         .as_ref()
         .map(|p| relative_display_path(p, ctx.project_root, ctx.cwd))
         .unwrap_or_default();
+
+    let size = info.size_bytes.map(format_human_size).unwrap_or_default();
 
     let (base, changes, remote) = if ctx.stat == Stat::Lines {
         (
@@ -273,6 +299,7 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
     ColumnValues {
         branch,
         path,
+        size,
         base,
         changes,
         remote,
@@ -341,6 +368,42 @@ mod tests {
     #[test]
     fn test_shorthand_from_seconds_negative() {
         assert_eq!(shorthand_from_seconds(-100), "<1m");
+    }
+
+    #[test]
+    fn test_format_human_size_bytes() {
+        assert_eq!(format_human_size(0), "<1K");
+        assert_eq!(format_human_size(500), "<1K");
+        assert_eq!(format_human_size(1023), "<1K");
+    }
+
+    #[test]
+    fn test_format_human_size_kilobytes() {
+        assert_eq!(format_human_size(1024), "1K");
+        assert_eq!(format_human_size(500 * 1024), "500K");
+        assert_eq!(format_human_size(1024 * 1024 - 1), "1023K");
+    }
+
+    #[test]
+    fn test_format_human_size_megabytes() {
+        assert_eq!(format_human_size(1024 * 1024), "1.0M");
+        assert_eq!(format_human_size(1300 * 1024 * 1024 / 1000), "1.3M");
+        assert_eq!(format_human_size(500 * 1024 * 1024), "500.0M");
+    }
+
+    #[test]
+    fn test_format_human_size_gigabytes() {
+        assert_eq!(format_human_size(1024 * 1024 * 1024), "1.0G");
+        assert_eq!(format_human_size(1300 * 1024 * 1024), "1.3G");
+        assert_eq!(
+            format_human_size(2u64 * 1024 * 1024 * 1024 + 500 * 1024 * 1024),
+            "2.5G"
+        );
+    }
+
+    #[test]
+    fn test_format_human_size_terabytes() {
+        assert_eq!(format_human_size(1024u64 * 1024 * 1024 * 1024), "1.0T");
     }
 
     #[test]

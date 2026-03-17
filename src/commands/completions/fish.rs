@@ -111,10 +111,12 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
             ("annotation", "Annotation markers"),
             ("branch", "Branch name"),
             ("path", "Worktree path"),
+            ("size", "Disk size of worktree"),
             ("base", "Ahead/behind base branch"),
             ("changes", "Local changes"),
             ("remote", "Ahead/behind remote"),
             ("age", "Branch age"),
+            ("owner", "Branch owner"),
             ("last-commit", "Last commit"),
         ];
         for (name, desc) in &columns {

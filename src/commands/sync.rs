@@ -376,15 +376,34 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         .ok()
         .and_then(|p| p.canonicalize().ok());
 
-    let worktree_infos = if stat == Stat::Lines {
+    let has_size = {
+        use crate::core::columns::{ColumnSelection, CommandKind, ListColumn};
+        args.columns
+            .as_deref()
+            .or(settings.sync_columns.as_deref())
+            .and_then(|input| ColumnSelection::parse(input, CommandKind::Sync).ok())
+            .is_some_and(|r| r.columns.contains(&ListColumn::Size))
+    };
+    let needs_spinner = stat == Stat::Lines || has_size;
+    let worktree_infos = if needs_spinner {
         let mut output = CliOutput::new(OutputConfig::new(false, false));
-        output.start_spinner("Computing line statistics...");
-        let result =
-            list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat)?;
+        let msg = if stat == Stat::Lines {
+            "Computing line statistics..."
+        } else {
+            "Computing worktree sizes..."
+        };
+        output.start_spinner(msg);
+        let result = list::collect_worktree_info(
+            &git,
+            &base_branch,
+            current_path.as_deref(),
+            stat,
+            has_size,
+        )?;
         output.finish_spinner();
         result
     } else {
-        list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat)?
+        list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat, has_size)?
     };
 
     // Get worktree list for DAG (branch name + path pairs)

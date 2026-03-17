@@ -9,8 +9,9 @@ use crate::{
     logging::init_logging,
     output::{
         format::{
-            compute_column_values, format_ahead_behind, format_head_status, format_remote_status,
-            format_shorthand_age, relative_display_path, shorthand_from_seconds, ColumnContext,
+            compute_column_values, format_ahead_behind, format_head_status, format_human_size,
+            format_remote_status, format_shorthand_age, relative_display_path,
+            shorthand_from_seconds, ColumnContext,
         },
         CliOutput, Output, OutputConfig,
     },
@@ -64,7 +65,12 @@ Use --json for machine-readable output suitable for scripting.
 Use --columns to select which columns are shown and in what order.
   Replace mode:  --columns branch,path,age (exact set and order)
   Modifier mode: --columns -annotation,-last-commit (remove from defaults)
+  Add optional:  --columns +size (add disk size column after path)
 Defaults can be set in git config with daft.list.columns.
+
+The size column is not shown by default. Add it with --columns +size to see the
+disk size of each worktree folder in human-readable format (e.g. 42K, 1.3M, 2.5G).
+A summary row at the bottom shows the total size across all worktrees.
 "#)]
 pub struct Args {
     #[arg(long, help = "Output in JSON format")]
@@ -116,6 +122,8 @@ struct TableRow {
     name: String,
     /// Relative path from current directory.
     path: String,
+    /// Human-readable disk size.
+    size: String,
     /// Ahead/behind base branch (e.g. "+3 -1").
     base: String,
     /// Worktrunk-style status indicators (e.g. "+3 -2 ?1").
@@ -149,6 +157,7 @@ pub fn run() -> Result<()> {
         None => ResolvedColumns::defaults(ListColumn::list_defaults()),
     };
     let selected_columns = &resolved.columns;
+    let has_size = selected_columns.contains(&ListColumn::Size);
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let git_common_dir = get_git_common_dir()?;
     let base_branch = get_default_branch_local(&git_common_dir, "origin", settings.use_gitoxide)
@@ -161,17 +170,20 @@ pub fn run() -> Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
     let show_local = args.branches || args.all;
     let show_remote = args.remotes || args.all;
-    let needs_spinner = stat == Stat::Lines || show_local || show_remote;
+    let needs_spinner = stat == Stat::Lines || show_local || show_remote || has_size;
 
     let infos = if needs_spinner {
         let mut output = CliOutput::new(OutputConfig::new(false, args.verbose));
         let msg = if stat == Stat::Lines {
             "Computing line statistics..."
+        } else if has_size && !show_local && !show_remote {
+            "Computing worktree sizes..."
         } else {
             "Collecting branch information..."
         };
         output.start_spinner(msg);
-        let result = collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat)?;
+        let result =
+            collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat, has_size)?;
         if show_local || show_remote {
             let worktree_branches: HashSet<String> =
                 result.iter().map(|i| i.name.clone()).collect();
@@ -203,7 +215,7 @@ pub fn run() -> Result<()> {
             result
         }
     } else {
-        collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat)?
+        collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat, has_size)?
     };
 
     if args.json {
@@ -222,14 +234,14 @@ fn print_json(
     selected_columns: &[ListColumn],
 ) -> Result<()> {
     let now = Utc::now().timestamp();
-    let all_columns = selected_columns == ListColumn::list_defaults();
+    let is_default_columns = selected_columns == ListColumn::list_defaults();
 
     let entries: Vec<serde_json::Value> = infos
         .iter()
         .map(|info| {
             let mut obj = serde_json::Map::new();
 
-            if all_columns || selected_columns.contains(&ListColumn::Branch) {
+            if is_default_columns || selected_columns.contains(&ListColumn::Branch) {
                 obj.insert(
                     "kind".into(),
                     serde_json::json!(match info.kind {
@@ -241,7 +253,7 @@ fn print_json(
                 obj.insert("name".into(), serde_json::json!(info.name));
             }
 
-            if all_columns || selected_columns.contains(&ListColumn::Annotation) {
+            if is_default_columns || selected_columns.contains(&ListColumn::Annotation) {
                 obj.insert("is_current".into(), serde_json::json!(info.is_current));
                 obj.insert(
                     "is_default_branch".into(),
@@ -249,7 +261,7 @@ fn print_json(
                 );
             }
 
-            if all_columns || selected_columns.contains(&ListColumn::Path) {
+            if is_default_columns || selected_columns.contains(&ListColumn::Path) {
                 let rel_path = info
                     .path
                     .as_ref()
@@ -257,7 +269,13 @@ fn print_json(
                 obj.insert("path".into(), serde_json::json!(rel_path));
             }
 
-            if all_columns || selected_columns.contains(&ListColumn::Base) {
+            if selected_columns.contains(&ListColumn::Size) {
+                obj.insert("size_bytes".into(), serde_json::json!(info.size_bytes));
+                let size = info.size_bytes.map(format_human_size).unwrap_or_default();
+                obj.insert("size".into(), serde_json::json!(size));
+            }
+
+            if is_default_columns || selected_columns.contains(&ListColumn::Base) {
                 obj.insert("ahead".into(), serde_json::json!(info.ahead));
                 obj.insert("behind".into(), serde_json::json!(info.behind));
                 if stat == Stat::Lines {
@@ -272,7 +290,7 @@ fn print_json(
                 }
             }
 
-            if all_columns || selected_columns.contains(&ListColumn::Changes) {
+            if is_default_columns || selected_columns.contains(&ListColumn::Changes) {
                 obj.insert("staged".into(), serde_json::json!(info.staged));
                 obj.insert("unstaged".into(), serde_json::json!(info.unstaged));
                 obj.insert("untracked".into(), serde_json::json!(info.untracked));
@@ -296,7 +314,7 @@ fn print_json(
                 }
             }
 
-            if all_columns || selected_columns.contains(&ListColumn::Remote) {
+            if is_default_columns || selected_columns.contains(&ListColumn::Remote) {
                 obj.insert("remote_ahead".into(), serde_json::json!(info.remote_ahead));
                 obj.insert(
                     "remote_behind".into(),
@@ -314,7 +332,7 @@ fn print_json(
                 }
             }
 
-            if all_columns || selected_columns.contains(&ListColumn::Age) {
+            if is_default_columns || selected_columns.contains(&ListColumn::Age) {
                 let branch_age = info
                     .branch_creation_timestamp
                     .map(|ts| shorthand_from_seconds(now - ts))
@@ -322,11 +340,11 @@ fn print_json(
                 obj.insert("branch_age".into(), serde_json::json!(branch_age));
             }
 
-            if all_columns || selected_columns.contains(&ListColumn::Owner) {
+            if is_default_columns || selected_columns.contains(&ListColumn::Owner) {
                 obj.insert("owner".into(), serde_json::json!(info.owner_email));
             }
 
-            if all_columns || selected_columns.contains(&ListColumn::LastCommit) {
+            if is_default_columns || selected_columns.contains(&ListColumn::LastCommit) {
                 let last_commit_age = info
                     .last_commit_timestamp
                     .map(|ts| shorthand_from_seconds(now - ts))
@@ -342,7 +360,21 @@ fn print_json(
         })
         .collect();
 
-    println!("{}", serde_json::to_string_pretty(&entries)?);
+    if selected_columns.contains(&ListColumn::Size) {
+        let total_bytes: u64 = infos
+            .iter()
+            .filter(|i| i.kind == EntryKind::Worktree)
+            .filter_map(|i| i.size_bytes)
+            .sum();
+        let output = serde_json::json!({
+            "worktrees": entries,
+            "total_size_bytes": total_bytes,
+            "total_size": format_human_size(total_bytes),
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+    }
     Ok(())
 }
 
@@ -489,6 +521,11 @@ fn print_table(
                     annotation,
                     name: styles::dim(&vals.branch),
                     path: styles::dim(&vals.path),
+                    size: if vals.size.is_empty() {
+                        vals.size.clone()
+                    } else {
+                        styles::dim(&vals.size)
+                    },
                     base: if base.is_empty() {
                         base
                     } else {
@@ -525,6 +562,7 @@ fn print_table(
                     annotation,
                     name: vals.branch.clone(),
                     path: vals.path.clone(),
+                    size: vals.size.clone(),
                     base,
                     head,
                     remote,
@@ -546,6 +584,7 @@ fn print_table(
             let label = match c {
                 ListColumn::Branch => "Branch",
                 ListColumn::Path => "Path",
+                ListColumn::Size => "Size",
                 ListColumn::Base => "Base",
                 ListColumn::Changes => "Changes",
                 ListColumn::Remote => "Remote",
@@ -590,6 +629,7 @@ fn print_table(
             .map(|(_, c)| match c {
                 ListColumn::Branch => row.name.as_str(),
                 ListColumn::Path => row.path.as_str(),
+                ListColumn::Size => row.size.as_str(),
                 ListColumn::Base => row.base.as_str(),
                 ListColumn::Changes => row.head.as_str(),
                 ListColumn::Remote => row.remote.as_str(),
@@ -606,6 +646,47 @@ fn print_table(
         } else {
             builder.push_record(data_cols);
         }
+    }
+
+    // Summary footer row for the Size column
+    if selected_columns.contains(&ListColumn::Size) {
+        let total_bytes: u64 = infos
+            .iter()
+            .filter(|i| i.kind == EntryKind::Worktree)
+            .filter_map(|i| i.size_bytes)
+            .sum();
+        let total_size = format_human_size(total_bytes);
+        let total_styled = if use_color {
+            styles::dim(&total_size)
+        } else {
+            total_size
+        };
+        let footer: Vec<String> = if show_annotations {
+            std::iter::once(String::new())
+                .chain(col_headers.iter().map(|(_, c)| {
+                    if *c == ListColumn::Size {
+                        total_styled.clone()
+                    } else {
+                        String::new()
+                    }
+                }))
+                .collect()
+        } else {
+            col_headers
+                .iter()
+                .map(|(_, c)| {
+                    if *c == ListColumn::Size {
+                        total_styled.clone()
+                    } else {
+                        String::new()
+                    }
+                })
+                .collect()
+        };
+        // Empty separator row
+        let empty: Vec<String> = footer.iter().map(|_| String::new()).collect();
+        builder.push_record(empty);
+        builder.push_record(footer);
     }
 
     let mut table = builder.build();

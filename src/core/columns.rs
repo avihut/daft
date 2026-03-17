@@ -18,6 +18,8 @@ pub enum ListColumn {
     Branch,
     /// Worktree path.
     Path,
+    /// Disk size of the worktree folder.
+    Size,
     /// Ahead/behind base branch.
     Base,
     /// Local changes (staged/unstaged/untracked).
@@ -39,6 +41,7 @@ impl ListColumn {
             ListColumn::Annotation,
             ListColumn::Branch,
             ListColumn::Path,
+            ListColumn::Size,
             ListColumn::Base,
             ListColumn::Changes,
             ListColumn::Remote,
@@ -49,14 +52,26 @@ impl ListColumn {
     }
 
     /// The default column set for the list command.
+    /// Size is excluded — it must be explicitly added via `--columns +size`.
     pub fn list_defaults() -> &'static [ListColumn] {
-        Self::all()
+        &[
+            ListColumn::Annotation,
+            ListColumn::Branch,
+            ListColumn::Path,
+            ListColumn::Base,
+            ListColumn::Changes,
+            ListColumn::Remote,
+            ListColumn::Age,
+            ListColumn::Owner,
+            ListColumn::LastCommit,
+        ]
     }
 
     /// The default column set for sync and prune commands.
     /// (Status is pinned separately by TUI code, not included here.)
+    /// Size is excluded — it must be explicitly added via `--columns +size`.
     pub fn tui_defaults() -> &'static [ListColumn] {
-        Self::all()
+        Self::list_defaults()
     }
 
     /// Canonical display position (used to order columns in modifier mode).
@@ -65,12 +80,13 @@ impl ListColumn {
             Self::Annotation => 1,
             Self::Branch => 2,
             Self::Path => 3,
-            Self::Base => 4,
-            Self::Changes => 5,
-            Self::Remote => 6,
-            Self::Age => 7,
-            Self::Owner => 8,
-            Self::LastCommit => 9,
+            Self::Size => 4,
+            Self::Base => 5,
+            Self::Changes => 6,
+            Self::Remote => 7,
+            Self::Age => 8,
+            Self::Owner => 9,
+            Self::LastCommit => 10,
         }
     }
 
@@ -80,6 +96,7 @@ impl ListColumn {
             Self::Annotation => "annotation",
             Self::Branch => "branch",
             Self::Path => "path",
+            Self::Size => "size",
             Self::Base => "base",
             Self::Remote => "remote",
             Self::Changes => "changes",
@@ -113,6 +130,7 @@ impl FromStr for ListColumn {
             "annotation" => Ok(Self::Annotation),
             "branch" => Ok(Self::Branch),
             "path" => Ok(Self::Path),
+            "size" => Ok(Self::Size),
             "base" => Ok(Self::Base),
             "remote" => Ok(Self::Remote),
             "changes" => Ok(Self::Changes),
@@ -291,6 +309,7 @@ mod tests {
         );
         assert_eq!("branch".parse::<ListColumn>().unwrap(), ListColumn::Branch);
         assert_eq!("path".parse::<ListColumn>().unwrap(), ListColumn::Path);
+        assert_eq!("size".parse::<ListColumn>().unwrap(), ListColumn::Size);
         assert_eq!("base".parse::<ListColumn>().unwrap(), ListColumn::Base);
         assert_eq!("remote".parse::<ListColumn>().unwrap(), ListColumn::Remote);
         assert_eq!(
@@ -368,6 +387,37 @@ mod tests {
         let r1 = ColumnSelection::parse("-last-commit,-annotation", CommandKind::List).unwrap();
         let r2 = ColumnSelection::parse("-annotation,-last-commit", CommandKind::List).unwrap();
         assert_eq!(r1.columns, r2.columns);
+    }
+
+    #[test]
+    fn test_defaults_exclude_size() {
+        assert!(!ListColumn::list_defaults().contains(&ListColumn::Size));
+        assert!(!ListColumn::tui_defaults().contains(&ListColumn::Size));
+        assert!(ListColumn::all().contains(&ListColumn::Size));
+    }
+
+    #[test]
+    fn test_modifier_add_size() {
+        let resolved = ColumnSelection::parse("+size", CommandKind::List).unwrap();
+        assert!(resolved.columns.contains(&ListColumn::Size));
+        // Size should appear after Path and before Base
+        let size_pos = resolved
+            .columns
+            .iter()
+            .position(|c| *c == ListColumn::Size)
+            .unwrap();
+        let path_pos = resolved
+            .columns
+            .iter()
+            .position(|c| *c == ListColumn::Path)
+            .unwrap();
+        let base_pos = resolved
+            .columns
+            .iter()
+            .position(|c| *c == ListColumn::Base)
+            .unwrap();
+        assert!(size_pos > path_pos);
+        assert!(size_pos < base_pos);
     }
 
     #[test]
