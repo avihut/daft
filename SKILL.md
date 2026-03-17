@@ -627,8 +627,14 @@ which columns appear in the output table and in what order.
 
 ### Valid column names
 
-`annotation`, `branch`, `path`, `base`, `changes`, `remote`, `age`,
-`last-commit`, `owner`
+**Default columns** (shown unless removed): `annotation`, `branch`, `path`,
+`base`, `changes`, `remote`, `age`, `owner`, `last-commit`
+
+**Optional columns** (must be explicitly added): `size`
+
+The `size` column shows the disk size of each worktree folder in human-readable
+format (e.g. `42K`, `1.3M`, `2.5G`). When visible, a summary footer row displays
+the total size across all worktrees.
 
 ### Two modes
 
@@ -646,6 +652,7 @@ defaults:
 ```bash
 daft list --columns -annotation,-last-commit   # remove two columns
 daft list --columns +base,-age                 # add base, remove age
+daft list --columns +size                      # add optional size column
 ```
 
 Modifier mode is detected automatically when every entry starts with `+` or `-`.

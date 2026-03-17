@@ -92,6 +92,8 @@ pub struct WorktreeInfo {
     pub remote_lines_deleted: Option<usize>,
     /// Author email of the branch tip commit (for ownership detection).
     pub owner_email: Option<String>,
+    /// Total disk size of the worktree directory in bytes (None if not computed).
+    pub size_bytes: Option<u64>,
 }
 
 impl WorktreeInfo {
@@ -123,6 +125,7 @@ impl WorktreeInfo {
             remote_lines_inserted: None,
             remote_lines_deleted: None,
             owner_email: None,
+            size_bytes: None,
         }
     }
 
@@ -153,6 +156,7 @@ impl WorktreeInfo {
             remote_lines_inserted: None,
             remote_lines_deleted: None,
             owner_email,
+            size_bytes: None,
         }
     }
 
@@ -203,6 +207,11 @@ impl WorktreeInfo {
             let remote_lines = get_remote_line_counts(&self.name, path);
             self.remote_lines_inserted = remote_lines.map(|(i, _)| i);
             self.remote_lines_deleted = remote_lines.map(|(_, d)| d);
+        }
+
+        // Re-compute size if it was previously computed
+        if self.size_bytes.is_some() {
+            self.size_bytes = compute_directory_size(path);
         }
     }
 }
@@ -558,6 +567,43 @@ fn get_remote_line_counts(branch: &str, worktree_path: &Path) -> Option<(usize, 
     Some(parse_numstat(&String::from_utf8_lossy(&output.stdout)))
 }
 
+/// Recursively compute the total size of a directory in bytes.
+///
+/// Skips unreadable files/directories rather than aborting the entire traversal,
+/// so a worktree with a few permission-denied entries still reports the sum of
+/// all readable files. Tracks seen inodes to count hard-linked files only once
+/// (matching `du` behavior). Does not follow symlinks.
+fn compute_directory_size(path: &Path) -> Option<u64> {
+    use std::collections::HashSet;
+    use std::os::unix::fs::MetadataExt;
+
+    fn walk(dir: &Path, seen: &mut HashSet<(u64, u64)>) -> u64 {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        let mut total = 0u64;
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
+            if meta.is_dir() {
+                total += walk(&entry.path(), seen);
+            } else {
+                // Skip hard links we've already counted (dev + ino pair).
+                if meta.nlink() > 1 && !seen.insert((meta.dev(), meta.ino())) {
+                    continue;
+                }
+                total += meta.len();
+            }
+        }
+        total
+    }
+
+    let mut seen = HashSet::new();
+    Some(walk(path, &mut seen))
+}
+
 /// Collect enriched worktree information for all worktrees in the project.
 ///
 /// Parses the porcelain output, skips bare entries, enriches each entry with
@@ -568,6 +614,7 @@ pub fn collect_worktree_info(
     base_branch: &str,
     current_worktree_path: Option<&Path>,
     stat: Stat,
+    compute_size: bool,
 ) -> Result<Vec<WorktreeInfo>> {
     let porcelain_output = git
         .worktree_list_porcelain()
@@ -690,6 +737,12 @@ pub fn collect_worktree_info(
                 (None, None)
             };
 
+        let size_bytes = if compute_size {
+            compute_directory_size(&entry.path)
+        } else {
+            None
+        };
+
         infos.push(WorktreeInfo {
             kind: EntryKind::Worktree,
             name: branch_display,
@@ -715,6 +768,7 @@ pub fn collect_worktree_info(
             remote_lines_inserted,
             remote_lines_deleted,
             owner_email,
+            size_bytes,
         });
     }
 
@@ -817,6 +871,7 @@ pub fn collect_branch_info(
                 remote_lines_inserted,
                 remote_lines_deleted,
                 owner_email,
+                size_bytes: None,
             });
         }
     }
@@ -892,6 +947,7 @@ pub fn collect_branch_info(
                 remote_lines_inserted: None,
                 remote_lines_deleted: None,
                 owner_email,
+                size_bytes: None,
             });
         }
     }

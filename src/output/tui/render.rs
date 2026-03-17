@@ -1,7 +1,7 @@
 use super::columns::{column_content_width, select_columns, Column};
 use super::state::{FinalStatus, PhaseStatus, TuiState, WorktreeStatus};
-use crate::core::worktree::list::{Stat, WorktreeInfo};
-use crate::output::format::{self, ColumnContext, ColumnValues};
+use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
+use crate::output::format::{self, format_human_size, ColumnContext, ColumnValues};
 use crate::styles;
 use ratatui::{
     layout::{Constraint, Rect},
@@ -206,6 +206,38 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         }
     }
 
+    // Summary footer row for the Size column
+    let has_size_column = columns.contains(&Column::Size);
+    if has_size_column {
+        // Empty separator row
+        let empty_cells: Vec<Cell> = (0..num_columns).map(|_| Cell::from("")).collect();
+        all_rows.push(Row::new(empty_cells));
+
+        // Summary row with total size (excludes pruned worktrees)
+        let total_bytes: u64 = state
+            .worktrees
+            .iter()
+            .filter(|wt| wt.info.kind == EntryKind::Worktree)
+            .filter(|wt| !matches!(wt.status, WorktreeStatus::Done(FinalStatus::Pruned)))
+            .filter_map(|wt| wt.info.size_bytes)
+            .sum();
+        let total_size = format_human_size(total_bytes);
+        let summary_cells: Vec<Cell> = columns
+            .iter()
+            .map(|col| {
+                if matches!(col, Column::Size) {
+                    Cell::from(Span::styled(
+                        total_size.clone(),
+                        Style::default().add_modifier(Modifier::DIM),
+                    ))
+                } else {
+                    Cell::from("")
+                }
+            })
+            .collect();
+        all_rows.push(Row::new(summary_cells));
+    }
+
     let table = Table::new(all_rows, &constraints)
         .header(header_row)
         .column_spacing(2);
@@ -386,6 +418,7 @@ fn render_cell(
         Column::Annotation => render_annotation_cell(&wt.info),
         Column::Branch => Cell::from(vals.branch.clone()),
         Column::Path => Cell::from(vals.path.clone()),
+        Column::Size => Cell::from(vals.size.clone()),
         Column::Base => render_base_cell(&wt.info, stat),
         Column::Changes => render_changes_cell(&wt.info, stat),
         Column::Remote => render_remote_cell(&wt.info, stat),
@@ -612,6 +645,7 @@ fn column_plain_text(col: &Column, vals: &ColumnValues) -> String {
     match col {
         Column::Branch => vals.branch.clone(),
         Column::Path => vals.path.clone(),
+        Column::Size => vals.size.clone(),
         Column::Base => vals.base.clone(),
         Column::Changes => vals.changes.clone(),
         Column::Remote => vals.remote.clone(),

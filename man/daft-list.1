@@ -38,7 +38,12 @@ Use \-\-json for machine\-readable output suitable for scripting.
 Use \-\-columns to select which columns are shown and in what order.
   Replace mode:  \-\-columns branch,path,age (exact set and order)
   Modifier mode: \-\-columns \-annotation,\-last\-commit (remove from defaults)
+  Add optional:  \-\-columns +size (add disk size column after path)
 Defaults can be set in git config with daft.list.columns.
+.PP
+The size column is not shown by default. Add it with \-\-columns +size to see the
+disk size of each worktree folder in human\-readable format (e.g. 42K, 1.3M, 2.5G).
+A summary row at the bottom shows the total size across all worktrees.
 .SH OPTIONS
 .TP
 \fB\-\-json\fR

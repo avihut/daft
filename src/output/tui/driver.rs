@@ -1,3 +1,4 @@
+use super::columns::Column;
 use super::render;
 use super::state::TuiState;
 use crate::core::worktree::sync_dag::DagEvent;
@@ -45,8 +46,20 @@ impl TuiRenderer {
         } else {
             0
         };
+        // Summary footer: 2 rows (separator + total) when Size column is present
+        let summary = if self
+            .state
+            .columns
+            .as_ref()
+            .is_some_and(|cols| cols.contains(&Column::Size))
+        {
+            2
+        } else {
+            0
+        };
         if self.state.show_hook_sub_rows {
             base + divider
+                + summary
                 + self
                     .state
                     .worktrees
@@ -62,7 +75,7 @@ impl TuiRenderer {
                     })
                     .sum::<u16>()
         } else {
-            base + divider
+            base + divider + summary
         }
     }
 

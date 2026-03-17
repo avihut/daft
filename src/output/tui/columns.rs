@@ -13,7 +13,9 @@ pub enum Column {
     Branch,
     /// Worktree path. Priority 3.
     Path,
-    /// Commits ahead/behind base branch. Priority 4.
+    /// Disk size of worktree. Priority 4.
+    Size,
+    /// Commits ahead/behind base branch. Priority 5.
     Base,
     /// Commits ahead/behind remote. Priority 5.
     Remote,
@@ -35,12 +37,13 @@ impl Column {
             Self::Annotation => 1,
             Self::Branch => 2,
             Self::Path => 3,
-            Self::Base => 4,
-            Self::Changes => 5,
-            Self::Remote => 6,
-            Self::Age => 7,
-            Self::Owner => 8,
-            Self::LastCommit => 9,
+            Self::Size => 4,
+            Self::Base => 5,
+            Self::Changes => 6,
+            Self::Remote => 7,
+            Self::Age => 8,
+            Self::Owner => 9,
+            Self::LastCommit => 10,
         }
     }
 
@@ -51,6 +54,7 @@ impl Column {
             Self::Annotation => "",
             Self::Branch => "Branch",
             Self::Path => "Path",
+            Self::Size => "Size",
             Self::Base => "Base",
             Self::Changes => "Changes",
             Self::Remote => "Remote",
@@ -66,6 +70,7 @@ impl Column {
             ListColumn::Annotation => Column::Annotation,
             ListColumn::Branch => Column::Branch,
             ListColumn::Path => Column::Path,
+            ListColumn::Size => Column::Size,
             ListColumn::Base => Column::Base,
             ListColumn::Changes => Column::Changes,
             ListColumn::Remote => Column::Remote,
@@ -82,6 +87,7 @@ pub(super) const ALL_COLUMNS: &[Column] = &[
     Column::Annotation,
     Column::Branch,
     Column::Path,
+    Column::Size,
     Column::Base,
     Column::Changes,
     Column::Remote,
@@ -145,6 +151,7 @@ pub(super) fn column_content_width(
             Column::Annotation => 3,
             Column::Branch => v.branch.len() as u16,
             Column::Path => v.path.len() as u16,
+            Column::Size => v.size.len() as u16,
             Column::Base => v.base.len() as u16,
             Column::Changes => v.changes.len() as u16,
             Column::Remote => v.remote.len() as u16,
@@ -190,8 +197,8 @@ mod tests {
 
     #[test]
     fn column_selection_wide_terminal() {
-        let cols = select_columns(120, &[], &[]);
-        assert_eq!(cols.len(), 10);
+        let cols = select_columns(200, &[], &[]);
+        assert_eq!(cols.len(), ALL_COLUMNS.len());
     }
 
     #[test]

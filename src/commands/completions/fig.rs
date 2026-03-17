@@ -202,10 +202,12 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                     ("annotation", "Annotation markers"),
                     ("branch", "Branch name"),
                     ("path", "Worktree path"),
+                    ("size", "Disk size of worktree"),
                     ("base", "Ahead/behind base branch"),
                     ("changes", "Local changes"),
                     ("remote", "Ahead/behind remote"),
                     ("age", "Branch age"),
+                    ("owner", "Branch owner"),
                     ("last-commit", "Last commit"),
                 ];
                 let mut suggestions: Vec<FigSuggestion> = Vec::new();
