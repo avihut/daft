@@ -153,6 +153,10 @@ pub fn execute(
             "Worktree directory '{}' already exists, switching to it",
             worktree_path.display()
         ));
+        sink.on_warning(
+            "Worktree may be in detached HEAD state (e.g., from an interrupted rebase). \
+             Run 'git status' to check, and 'git rebase --abort' or 'git checkout <branch>' to recover.",
+        );
         change_directory(&worktree_path)?;
 
         return Ok(CheckoutResult {
