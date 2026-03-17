@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.2.1](https://github.com/avihut/daft/compare/v1.2.0...v1.2.1) - 2026-03-17
+
+### Bug Fixes
+
+- navigate to detached HEAD worktrees and clean rebase lock files ([#313](https://github.com/avihut/daft/pull/313))
+
 ## [1.2.0](https://github.com/avihut/daft/compare/v1.1.1...v1.2.0) - 2026-03-16
 
 ### Bug Fixes
