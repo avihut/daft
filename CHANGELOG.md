@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.0](https://github.com/avihut/daft/compare/v1.2.1...v1.3.0) - 2026-03-17
+
+### Features
+
+- add optional size column with summary footer ([#315](https://github.com/avihut/daft/pull/315))
+
 ## [1.2.1](https://github.com/avihut/daft/compare/v1.2.0...v1.2.1) - 2026-03-17
 
 ### Bug Fixes
