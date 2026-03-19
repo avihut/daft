@@ -1,4 +1,5 @@
 pub mod bare;
+pub mod resolver;
 pub mod template;
 
 use std::path::PathBuf;
