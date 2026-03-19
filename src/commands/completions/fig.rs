@@ -235,7 +235,11 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                     ("size", "Sort by disk size"),
                     ("age", "Sort by branch age"),
                     ("owner", "Sort by branch owner"),
-                    ("activity", "Sort by last commit time"),
+                    (
+                        "activity",
+                        "Sort by overall activity (commits + uncommitted)",
+                    ),
+                    ("commit", "Sort by last commit time only"),
                 ];
                 let mut suggestions: Vec<FigSuggestion> = Vec::new();
                 for (name, description) in &sort_defs {

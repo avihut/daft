@@ -79,9 +79,11 @@ Use --sort to control the sort order. Prefix with + for ascending (default) or
   Sort by owner then size:    --sort +owner,-size
   Most recent activity first: --sort -activity
 
-Sortable columns: branch, path, size, age, owner, activity (aliases: commit,
-last-commit). You can sort by columns not shown in the output (e.g. --sort -size
-without --columns +size). Defaults can be set with daft.list.sort.
+Sortable columns: branch, path, size, age, owner, activity, commit (alias:
+last-commit). activity considers both commits and uncommitted file changes;
+commit sorts by last commit time only. You can sort by columns not shown in
+the output (e.g. --sort -size without --columns +size). Defaults can be set
+with daft.list.sort.
 "#)]
 pub struct Args {
     #[arg(long, help = "Output in JSON format")]
@@ -180,6 +182,7 @@ pub fn run() -> Result<()> {
         None => SortSpec::default_sort(),
     };
     let has_size = selected_columns.contains(&ListColumn::Size) || sort_spec.needs_size();
+    let compute_mtime = sort_spec.needs_mtime();
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let git_common_dir = get_git_common_dir()?;
     let base_branch = get_default_branch_local(&git_common_dir, "origin", settings.use_gitoxide)
@@ -204,8 +207,14 @@ pub fn run() -> Result<()> {
             "Collecting branch information..."
         };
         output.start_spinner(msg);
-        let result =
-            collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat, has_size)?;
+        let result = collect_worktree_info(
+            &git,
+            &base_branch,
+            current_path.as_deref(),
+            stat,
+            has_size,
+            compute_mtime,
+        )?;
         if show_local || show_remote {
             let worktree_branches: HashSet<String> =
                 result.iter().map(|i| i.name.clone()).collect();
@@ -239,8 +248,14 @@ pub fn run() -> Result<()> {
             result
         }
     } else {
-        let mut result =
-            collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat, has_size)?;
+        let mut result = collect_worktree_info(
+            &git,
+            &base_branch,
+            current_path.as_deref(),
+            stat,
+            has_size,
+            compute_mtime,
+        )?;
         sort_spec.sort(&mut result);
         result
     };

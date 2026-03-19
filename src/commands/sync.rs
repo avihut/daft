@@ -403,6 +403,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             .is_some_and(|r| r.columns.contains(&ListColumn::Size));
         from_columns || sort_spec.as_ref().is_some_and(|s| s.needs_size())
     };
+    let compute_mtime = sort_spec.as_ref().is_some_and(|s| s.needs_mtime());
     let needs_spinner = stat == Stat::Lines || has_size;
     let worktree_infos = if needs_spinner {
         let mut output = CliOutput::new(OutputConfig::new(false, false));
@@ -418,11 +419,19 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             current_path.as_deref(),
             stat,
             has_size,
+            compute_mtime,
         )?;
         output.finish_spinner();
         result
     } else {
-        list::collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat, has_size)?
+        list::collect_worktree_info(
+            &git,
+            &base_branch,
+            current_path.as_deref(),
+            stat,
+            has_size,
+            compute_mtime,
+        )?
     };
 
     // Get worktree list for DAG (branch name + path pairs)

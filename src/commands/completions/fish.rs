@@ -133,7 +133,11 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
             ("size", "Sort by disk size"),
             ("age", "Sort by branch age"),
             ("owner", "Sort by branch owner"),
-            ("activity", "Sort by last commit time"),
+            (
+                "activity",
+                "Sort by overall activity (commits + uncommitted)",
+            ),
+            ("commit", "Sort by last commit time only"),
         ];
         for (name, desc) in &sort_columns {
             output.push_str(&format!(

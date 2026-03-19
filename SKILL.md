@@ -684,9 +684,10 @@ sort order of the output.
 
 ### Sortable columns
 
-`branch`, `path`, `size`, `age`, `owner`, `activity`
+`branch`, `path`, `size`, `age`, `owner`, `activity`, `commit`
 
-Aliases: `commit` and `last-commit` are aliases for `activity`.
+`activity` considers both committed and uncommitted file changes (working tree
+mtime). `commit` (alias: `last-commit`) sorts by last commit time only.
 
 ### Syntax
 
@@ -695,7 +696,8 @@ can be comma-separated for multi-level sort:
 
 ```bash
 daft list --sort branch            # ascending by branch name (default)
-daft list --sort -activity         # most recent commit first
+daft list --sort -activity         # most recent activity first (commits + uncommitted)
+daft list --sort -commit           # most recent commit first (ignores uncommitted)
 daft list --sort +owner,-size      # by owner ascending, then size descending
 ```
 

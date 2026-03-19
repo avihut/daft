@@ -57,9 +57,11 @@ Use --sort to control the sort order. Prefix with + for ascending (default) or
   Sort by owner then size:    --sort +owner,-size
   Most recent activity first: --sort -activity
 
-Sortable columns: branch, path, size, age, owner, activity (aliases: commit,
-last-commit). You can sort by columns not shown in the output (e.g. --sort -size
-without --columns +size). Defaults can be set with daft.list.sort.
+Sortable columns: branch, path, size, age, owner, activity, commit (alias:
+last-commit). activity considers both commits and uncommitted file changes;
+commit sorts by last commit time only. You can sort by columns not shown in
+the output (e.g. --sort -size without --columns +size). Defaults can be set
+with daft.list.sort.
 
 ## Usage
 

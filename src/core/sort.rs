@@ -22,28 +22,33 @@ pub enum SortColumn {
     Age,
     /// Sort by branch owner email (case-insensitive).
     Owner,
-    /// Sort by last commit timestamp. Aliases: `commit`, `last-commit`.
+    /// Sort by overall activity: `max(last_commit_timestamp, working_tree_mtime)`.
+    /// Considers both committed and uncommitted work.
     Activity,
+    /// Sort by last commit timestamp only (ignores uncommitted changes).
+    /// Aliases: `commit`, `last-commit`.
+    LastCommit,
 }
 
 impl SortColumn {
     /// All valid CLI sort column names, for use in error messages.
     pub fn valid_names() -> &'static str {
-        "branch, path, size, age, owner, activity (aliases: commit, last-commit)"
+        "branch, path, size, age, owner, activity, commit (alias: last-commit)"
     }
 
     /// Map this sort column to the corresponding display column, if any.
     ///
-    /// `Activity` maps to `LastCommit` since that's the display column
-    /// whose data it sorts by.
-    pub fn to_list_column(self) -> ListColumn {
+    /// Returns `None` for `Activity` since it's a composite signal (commit +
+    /// working tree mtime) that doesn't correspond to a single display column.
+    pub fn to_list_column(self) -> Option<ListColumn> {
         match self {
-            Self::Branch => ListColumn::Branch,
-            Self::Path => ListColumn::Path,
-            Self::Size => ListColumn::Size,
-            Self::Age => ListColumn::Age,
-            Self::Owner => ListColumn::Owner,
-            Self::Activity => ListColumn::LastCommit,
+            Self::Branch => Some(ListColumn::Branch),
+            Self::Path => Some(ListColumn::Path),
+            Self::Size => Some(ListColumn::Size),
+            Self::Age => Some(ListColumn::Age),
+            Self::Owner => Some(ListColumn::Owner),
+            Self::LastCommit => Some(ListColumn::LastCommit),
+            Self::Activity => None,
         }
     }
 
@@ -55,7 +60,8 @@ impl SortColumn {
             "size" => Ok(Self::Size),
             "age" => Ok(Self::Age),
             "owner" => Ok(Self::Owner),
-            "activity" | "commit" | "last-commit" => Ok(Self::Activity),
+            "activity" => Ok(Self::Activity),
+            "commit" | "last-commit" => Ok(Self::LastCommit),
             _ => Err(format!(
                 "unknown sort column '{}'\n  sortable columns: {}",
                 name.trim(),
@@ -106,9 +112,15 @@ impl SortKey {
                 self.compare_optional(a_owner.as_deref(), b_owner.as_deref())
             }
             SortColumn::Activity => {
-                // "Ascending activity" = most active first (largest/most recent
-                // timestamp at top). Reverse the natural timestamp ordering so
-                // ascending means highest value first.
+                // Overall activity = max(last_commit, working_tree_mtime).
+                // "Ascending activity" = most active first.
+                let a_ts = max_optional(a.last_commit_timestamp, a.working_tree_mtime);
+                let b_ts = max_optional(b.last_commit_timestamp, b.working_tree_mtime);
+                self.compare_optional_reversed(a_ts, b_ts)
+            }
+            SortColumn::LastCommit => {
+                // Pure git: last commit timestamp only.
+                // "Ascending" = most recent commit first.
                 self.compare_optional_reversed(a.last_commit_timestamp, b.last_commit_timestamp)
             }
         }
@@ -145,6 +157,16 @@ impl SortKey {
             SortDirection::Ascending => ord,
             SortDirection::Descending => ord.reverse(),
         }
+    }
+}
+
+/// Return the maximum of two optional values, or whichever is `Some`.
+fn max_optional(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
     }
 }
 
@@ -230,7 +252,7 @@ impl SortSpec {
     /// or `None` if the column is not being sorted.
     pub fn direction_indicator(&self, col: ListColumn) -> Option<&'static str> {
         self.keys.iter().find_map(|key| {
-            if key.column.to_list_column() == col {
+            if key.column.to_list_column() == Some(col) {
                 Some(match key.direction {
                     SortDirection::Ascending => "\u{2193}",  // ↓
                     SortDirection::Descending => "\u{2191}", // ↑
@@ -244,6 +266,11 @@ impl SortSpec {
     /// Whether this sort spec requires size data to be collected.
     pub fn needs_size(&self) -> bool {
         self.keys.iter().any(|k| k.column == SortColumn::Size)
+    }
+
+    /// Whether this sort spec requires working tree mtime to be collected.
+    pub fn needs_mtime(&self) -> bool {
+        self.keys.iter().any(|k| k.column == SortColumn::Activity)
     }
 
     /// Sort a slice of `WorktreeInfo` in place according to this specification.
@@ -344,15 +371,26 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_activity_aliases() {
-        for name in &["activity", "commit", "last-commit"] {
+    fn test_parse_activity_and_last_commit() {
+        let spec = SortSpec::parse("activity").unwrap();
+        assert_eq!(spec.keys[0].column, SortColumn::Activity);
+
+        for name in &["commit", "last-commit"] {
             let spec = SortSpec::parse(name).unwrap();
             assert_eq!(
                 spec.keys[0].column,
-                SortColumn::Activity,
-                "alias '{name}' should map to Activity"
+                SortColumn::LastCommit,
+                "'{name}' should map to LastCommit"
             );
         }
+    }
+
+    #[test]
+    fn test_activity_and_last_commit_are_distinct() {
+        // Both can coexist in a sort spec since they're different columns
+        let spec = SortSpec::parse("activity,commit").unwrap();
+        assert_eq!(spec.keys[0].column, SortColumn::Activity);
+        assert_eq!(spec.keys[1].column, SortColumn::LastCommit);
     }
 
     #[test]
@@ -397,7 +435,7 @@ mod tests {
 
     #[test]
     fn test_parse_duplicate_alias_error() {
-        let err = SortSpec::parse("activity,commit").unwrap_err();
+        let err = SortSpec::parse("commit,-last-commit").unwrap_err();
         assert!(err.contains("duplicate"), "Got: {err}");
     }
 
@@ -438,6 +476,19 @@ mod tests {
     fn test_needs_size_false() {
         assert!(!SortSpec::parse("branch").unwrap().needs_size());
         assert!(!SortSpec::parse("activity").unwrap().needs_size());
+    }
+
+    #[test]
+    fn test_needs_mtime_true() {
+        assert!(SortSpec::parse("activity").unwrap().needs_mtime());
+        assert!(SortSpec::parse("branch,activity").unwrap().needs_mtime());
+    }
+
+    #[test]
+    fn test_needs_mtime_false() {
+        assert!(!SortSpec::parse("branch").unwrap().needs_mtime());
+        assert!(!SortSpec::parse("commit").unwrap().needs_mtime());
+        assert!(!SortSpec::parse("last-commit").unwrap().needs_mtime());
     }
 
     // ── Sorting tests ──────────────────────────────────────────────────
@@ -548,6 +599,39 @@ mod tests {
         spec.sort(&mut infos);
         let names: Vec<&str> = infos.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["old", "middle", "newest"]);
+    }
+
+    #[test]
+    fn test_sort_by_activity_considers_mtime() {
+        // "stale-commit" has an old commit but recent uncommitted changes (high mtime).
+        // "fresh-commit" has a recent commit but no uncommitted changes.
+        // Activity ascending = most active first, so stale-commit wins due to mtime.
+        let spec = SortSpec::parse("activity").unwrap();
+        let mut stale_commit = info_with_activity("stale-commit", Some(1000));
+        stale_commit.working_tree_mtime = Some(5000); // recent file edits
+        let fresh_commit = info_with_activity("fresh-commit", Some(4000));
+        // fresh-commit has no mtime (clean worktree)
+
+        let mut infos = vec![fresh_commit, stale_commit];
+        spec.sort(&mut infos);
+        let names: Vec<&str> = infos.iter().map(|i| i.name.as_str()).collect();
+        // stale-commit has max(1000, 5000) = 5000 > 4000, so it's more active
+        assert_eq!(names, vec!["stale-commit", "fresh-commit"]);
+    }
+
+    #[test]
+    fn test_sort_by_last_commit_ignores_mtime() {
+        // Same data as above but using "commit" sort — should ignore mtime.
+        let spec = SortSpec::parse("commit").unwrap();
+        let mut stale_commit = info_with_activity("stale-commit", Some(1000));
+        stale_commit.working_tree_mtime = Some(5000);
+        let fresh_commit = info_with_activity("fresh-commit", Some(4000));
+
+        let mut infos = vec![fresh_commit, stale_commit];
+        spec.sort(&mut infos);
+        let names: Vec<&str> = infos.iter().map(|i| i.name.as_str()).collect();
+        // commit only: 4000 > 1000, so fresh-commit is more active
+        assert_eq!(names, vec!["fresh-commit", "stale-commit"]);
     }
 
     #[test]
