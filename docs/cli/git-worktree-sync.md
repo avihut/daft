@@ -54,6 +54,7 @@ git worktree-sync [OPTIONS]
 | `--include <INCLUDE>` | Include additional branches in rebase/push (email, branch name, or 'unowned') |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary) |  |
 | `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col |  |
+| `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, age, owner, activity |  |
 
 ## Global Options
 

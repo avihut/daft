@@ -1,6 +1,7 @@
 use super::sync_shared;
 use crate::{
     core::{
+        sort::SortSpec,
         worktree::{
             list,
             list::Stat,
@@ -79,6 +80,12 @@ pub struct Args {
         help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col"
     )]
     columns: Option<String>,
+
+    #[arg(
+        long,
+        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, age, owner, activity"
+    )]
+    sort: Option<String>,
 }
 
 pub fn run() -> Result<()> {
@@ -92,7 +99,7 @@ pub fn run() -> Result<()> {
 
     let settings = DaftSettings::load()?;
 
-    // Validate --columns early so errors surface in both sequential and TUI modes.
+    // Validate --columns and --sort early so errors surface in both sequential and TUI modes.
     let columns_input = args
         .columns
         .as_deref()
@@ -100,6 +107,10 @@ pub fn run() -> Result<()> {
     if let Some(input) = columns_input {
         use crate::core::columns::{ColumnSelection, CommandKind};
         ColumnSelection::parse(input, CommandKind::Prune).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    let sort_input = args.sort.as_deref().or(settings.prune_sort.as_deref());
+    if let Some(input) = sort_input {
+        SortSpec::parse(input).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
 
     let project_root = get_project_root()?;
@@ -184,13 +195,21 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         .ok()
         .and_then(|p| p.canonicalize().ok());
 
+    let sort_spec = {
+        let sort_input = args.sort.as_deref().or(settings.prune_sort.as_deref());
+        sort_input
+            .map(|input| SortSpec::parse(input).map_err(|e| anyhow::anyhow!("{e}")))
+            .transpose()?
+    };
     let has_size = {
         use crate::core::columns::{ColumnSelection, CommandKind, ListColumn};
-        args.columns
+        let from_columns = args
+            .columns
             .as_deref()
             .or(settings.prune_columns.as_deref())
             .and_then(|input| ColumnSelection::parse(input, CommandKind::Prune).ok())
-            .is_some_and(|r| r.columns.contains(&ListColumn::Size))
+            .is_some_and(|r| r.columns.contains(&ListColumn::Size));
+        from_columns || sort_spec.as_ref().is_some_and(|s| s.needs_size())
     };
     let needs_spinner = stat == Stat::Lines || has_size;
     let mut worktree_infos = if needs_spinner {
@@ -286,6 +305,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         tui_columns,
         columns_explicit,
         None,
+        sort_spec,
     );
 
     let hooks_config = HooksConfig::default();

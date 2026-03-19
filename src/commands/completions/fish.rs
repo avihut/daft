@@ -125,6 +125,22 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
                 command_name, name, name, name, desc
             ));
         }
+
+        output.push_str("\n# Sort column completions for --sort\n");
+        let sort_columns = [
+            ("branch", "Sort by branch name"),
+            ("path", "Sort by worktree path"),
+            ("size", "Sort by disk size"),
+            ("age", "Sort by branch age"),
+            ("owner", "Sort by branch owner"),
+            ("activity", "Sort by last commit time"),
+        ];
+        for (name, desc) in &sort_columns {
+            output.push_str(&format!(
+                "complete -c {} -l sort -x -a '{} +{} -{}' -d '{}'\n",
+                command_name, name, name, name, desc
+            ));
+        }
     }
 
     Ok(output)

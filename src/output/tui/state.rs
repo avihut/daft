@@ -1,3 +1,4 @@
+use crate::core::sort::SortSpec;
 use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
 use crate::core::worktree::sync_dag::{
     DagEvent, JobCompletionStatus, OperationPhase, TaskMessage, TaskStatus,
@@ -110,6 +111,8 @@ pub struct TuiState {
     pub columns_explicit: bool,
     /// Index of the first unowned worktree row (None if no unowned section).
     pub unowned_start_index: Option<usize>,
+    /// User-specified sort order (None = default alphabetical).
+    pub sort_spec: Option<SortSpec>,
 }
 
 /// A single row in the worktree table.
@@ -137,6 +140,7 @@ impl TuiState {
         columns: Option<Vec<Column>>,
         columns_explicit: bool,
         unowned_start_index: Option<usize>,
+        sort_spec: Option<SortSpec>,
     ) -> Self {
         let mut worktrees: Vec<WorktreeRow> = worktree_infos
             .into_iter()
@@ -160,7 +164,10 @@ impl TuiState {
             default_order(a)
                 .cmp(&default_order(b))
                 .then_with(|| kind_order(&a.info.kind).cmp(&kind_order(&b.info.kind)))
-                .then_with(|| a.info.name.to_lowercase().cmp(&b.info.name.to_lowercase()))
+                .then_with(|| match &sort_spec {
+                    Some(spec) => spec.compare(&a.info, &b.info),
+                    None => a.info.name.to_lowercase().cmp(&b.info.name.to_lowercase()),
+                })
         });
         Self {
             phases: phases
@@ -181,6 +188,7 @@ impl TuiState {
             columns,
             columns_explicit,
             unowned_start_index,
+            sort_spec,
         }
     }
 
@@ -505,6 +513,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         )
     }
 
@@ -530,6 +539,7 @@ mod tests {
             1,
             None,
             false,
+            None,
             None,
         )
     }
@@ -1096,6 +1106,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1143,6 +1154,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1186,6 +1198,7 @@ mod tests {
             0,
             None,
             false,
+            None,
             None,
         );
 
@@ -1253,6 +1266,7 @@ mod tests {
             0,
             None,
             false,
+            None,
             None,
         )
     }

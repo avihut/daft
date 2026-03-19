@@ -11,6 +11,7 @@ mod progress;
 pub mod remote;
 pub mod repo;
 pub mod settings;
+pub mod sort;
 mod tui_bridge;
 pub mod worktree;
 

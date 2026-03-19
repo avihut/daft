@@ -2,6 +2,7 @@ use crate::{
     core::{
         columns::{ColumnSelection, CommandKind, ListColumn, ResolvedColumns},
         repo::{get_current_worktree_path, get_git_common_dir, get_project_root},
+        sort::SortSpec,
         worktree::list::{collect_branch_info, collect_worktree_info, EntryKind, Stat},
     },
     git::GitCommand,
@@ -71,6 +72,16 @@ Defaults can be set in git config with daft.list.columns.
 The size column is not shown by default. Add it with --columns +size to see the
 disk size of each worktree folder in human-readable format (e.g. 42K, 1.3M, 2.5G).
 A summary row at the bottom shows the total size across all worktrees.
+
+Use --sort to control the sort order. Prefix with + for ascending (default) or
+- for descending. Multiple columns can be comma-separated for multi-level sort.
+  Sort by branch descending:  --sort -branch
+  Sort by owner then size:    --sort +owner,-size
+  Most recent activity first: --sort -activity
+
+Sortable columns: branch, path, size, age, owner, activity (aliases: commit,
+last-commit). You can sort by columns not shown in the output (e.g. --sort -size
+without --columns +size). Defaults can be set with daft.list.sort.
 "#)]
 pub struct Args {
     #[arg(long, help = "Output in JSON format")]
@@ -112,6 +123,12 @@ pub struct Args {
         help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col"
     )]
     columns: Option<String>,
+
+    #[arg(
+        long,
+        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, age, owner, activity"
+    )]
+    sort: Option<String>,
 }
 
 /// A row in the worktree list table.
@@ -157,7 +174,12 @@ pub fn run() -> Result<()> {
         None => ResolvedColumns::defaults(ListColumn::list_defaults()),
     };
     let selected_columns = &resolved.columns;
-    let has_size = selected_columns.contains(&ListColumn::Size);
+    let sort_input = args.sort.or(settings.list_sort);
+    let sort_spec = match sort_input {
+        Some(ref input) => SortSpec::parse(input).map_err(|e| anyhow::anyhow!("{e}"))?,
+        None => SortSpec::default_sort(),
+    };
+    let has_size = selected_columns.contains(&ListColumn::Size) || sort_spec.needs_size();
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let git_common_dir = get_git_common_dir()?;
     let base_branch = get_default_branch_local(&git_common_dir, "origin", settings.use_gitoxide)
@@ -206,23 +228,35 @@ pub fn run() -> Result<()> {
                 };
                 kind_order(&a.kind)
                     .cmp(&kind_order(&b.kind))
-                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                    .then_with(|| sort_spec.compare(a, b))
             });
             output.finish_spinner();
             merged
         } else {
             output.finish_spinner();
+            let mut result = result;
+            sort_spec.sort(&mut result);
             result
         }
     } else {
-        collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat, has_size)?
+        let mut result =
+            collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat, has_size)?;
+        sort_spec.sort(&mut result);
+        result
     };
 
     if args.json {
         return print_json(&infos, &project_root, &cwd, stat, selected_columns);
     }
 
-    print_table(&infos, &project_root, &cwd, stat, selected_columns);
+    print_table(
+        &infos,
+        &project_root,
+        &cwd,
+        stat,
+        selected_columns,
+        &sort_spec,
+    );
     Ok(())
 }
 
@@ -384,6 +418,7 @@ fn print_table(
     cwd: &std::path::Path,
     stat: Stat,
     selected_columns: &[ListColumn],
+    sort_spec: &SortSpec,
 ) {
     if infos.is_empty() {
         return;
@@ -576,7 +611,7 @@ fn print_table(
 
     let mut builder = Builder::new();
 
-    // Build header from selected columns
+    // Build header from selected columns, with sort direction indicators
     let col_headers: Vec<(&str, ListColumn)> = selected_columns
         .iter()
         .filter(|c| **c != ListColumn::Annotation)
@@ -600,26 +635,30 @@ fn print_table(
     let show_annotations =
         selected_columns.contains(&ListColumn::Annotation) && (has_any_current || has_any_default);
 
+    // Format a header cell: dim+underline for label, plain for sort arrow
+    let format_header = |label: &str, col: ListColumn| -> String {
+        let arrow = sort_spec.direction_indicator(col);
+        if use_color {
+            match arrow {
+                Some(a) => format!("{} {a}", styles::dim_underline(label)),
+                None => styles::dim_underline(label),
+            }
+        } else {
+            match arrow {
+                Some(a) => format!("{label} {a}"),
+                None => label.to_string(),
+            }
+        }
+    };
+
     let header: Vec<String> = if show_annotations {
         std::iter::once("".to_string())
-            .chain(col_headers.iter().map(|(h, _)| {
-                if use_color {
-                    styles::dim_underline(h)
-                } else {
-                    h.to_string()
-                }
-            }))
+            .chain(col_headers.iter().map(|(h, c)| format_header(h, *c)))
             .collect()
     } else {
         col_headers
             .iter()
-            .map(|(h, _)| {
-                if use_color {
-                    styles::dim_underline(h)
-                } else {
-                    h.to_string()
-                }
-            })
+            .map(|(h, c)| format_header(h, *c))
             .collect()
     };
     builder.push_record(header);

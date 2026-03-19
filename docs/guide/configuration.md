@@ -46,9 +46,11 @@ git config --global daft.autocd false
 
 ## List Settings
 
-| Key              | Default     | Description                                                     |
-| ---------------- | ----------- | --------------------------------------------------------------- |
-| `daft.list.stat` | `"summary"` | Default statistics mode for list command (`summary` or `lines`) |
+| Key                 | Default     | Description                                                                                                                            |
+| ------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `daft.list.stat`    | `"summary"` | Default statistics mode for list command (`summary` or `lines`)                                                                        |
+| `daft.list.columns` |             | Default column selection for list command (e.g., `branch,path,age` or `+size,-annotation`)                                             |
+| `daft.list.sort`    |             | Default sort order for list command (e.g., `+branch`, `-activity`, `+owner,-size`). Sortable: branch, path, size, age, owner, activity |
 
 ## Prune Settings
 
@@ -56,12 +58,16 @@ git config --global daft.autocd false
 | --------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `daft.prune.cdTarget` | `"root"`    | Where to cd after pruning the current worktree. Values: `root` (project root) or `default-branch` (default branch worktree) |
 | `daft.prune.stat`     | `"summary"` | Default statistics mode for prune command (`summary` or `lines`)                                                            |
+| `daft.prune.columns`  |             | Default column selection for prune command                                                                                  |
+| `daft.prune.sort`     |             | Default sort order for prune command (e.g., `+branch`, `-activity`)                                                         |
 
 ## Sync Settings
 
-| Key              | Default     | Description                                                     |
-| ---------------- | ----------- | --------------------------------------------------------------- |
-| `daft.sync.stat` | `"summary"` | Default statistics mode for sync command (`summary` or `lines`) |
+| Key                 | Default     | Description                                                        |
+| ------------------- | ----------- | ------------------------------------------------------------------ |
+| `daft.sync.stat`    | `"summary"` | Default statistics mode for sync command (`summary` or `lines`)    |
+| `daft.sync.columns` |             | Default column selection for sync command                          |
+| `daft.sync.sort`    |             | Default sort order for sync command (e.g., `+branch`, `-activity`) |
 
 ## Multi-Remote Settings
 

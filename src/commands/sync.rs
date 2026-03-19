@@ -10,6 +10,7 @@
 use super::sync_shared;
 use crate::{
     core::{
+        sort::SortSpec,
         worktree::{
             fetch, list,
             list::Stat,
@@ -175,6 +176,12 @@ pub struct Args {
         help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col"
     )]
     columns: Option<String>,
+
+    #[arg(
+        long,
+        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, age, owner, activity"
+    )]
+    sort: Option<String>,
 }
 
 impl Args {
@@ -194,11 +201,15 @@ pub fn run() -> Result<()> {
 
     let settings = DaftSettings::load()?;
 
-    // Validate --columns early so errors surface in both sequential and TUI modes.
+    // Validate --columns and --sort early so errors surface in both sequential and TUI modes.
     let columns_input = args.columns.as_deref().or(settings.sync_columns.as_deref());
     if let Some(input) = columns_input {
         use crate::core::columns::{ColumnSelection, CommandKind};
         ColumnSelection::parse(input, CommandKind::Sync).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    let sort_input = args.sort.as_deref().or(settings.sync_sort.as_deref());
+    if let Some(input) = sort_input {
+        SortSpec::parse(input).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
 
     if !std::io::IsTerminal::is_terminal(&std::io::stderr()) || args.verbose >= 2 {
@@ -376,13 +387,21 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         .ok()
         .and_then(|p| p.canonicalize().ok());
 
+    let sort_spec = {
+        let sort_input = args.sort.as_deref().or(settings.sync_sort.as_deref());
+        sort_input
+            .map(|input| SortSpec::parse(input).map_err(|e| anyhow::anyhow!("{e}")))
+            .transpose()?
+    };
     let has_size = {
         use crate::core::columns::{ColumnSelection, CommandKind, ListColumn};
-        args.columns
+        let from_columns = args
+            .columns
             .as_deref()
             .or(settings.sync_columns.as_deref())
             .and_then(|input| ColumnSelection::parse(input, CommandKind::Sync).ok())
-            .is_some_and(|r| r.columns.contains(&ListColumn::Size))
+            .is_some_and(|r| r.columns.contains(&ListColumn::Size));
+        from_columns || sort_spec.as_ref().is_some_and(|s| s.needs_size())
     };
     let needs_spinner = stat == Stat::Lines || has_size;
     let worktree_infos = if needs_spinner {
@@ -482,7 +501,10 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             default_order(a)
                 .cmp(&default_order(b))
                 .then_with(|| kind_order(&a.kind).cmp(&kind_order(&b.kind)))
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                .then_with(|| match &sort_spec {
+                    Some(spec) => spec.compare(a, b),
+                    None => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                })
         });
         // Only show divider when user_email is known (otherwise all are unowned)
         user_email.as_ref().and_then(|_| {
@@ -509,6 +531,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         tui_columns,
         columns_explicit,
         unowned_start_index,
+        sort_spec,
     );
 
     // ── Create channel and spawn orchestrator ──────────────────────────

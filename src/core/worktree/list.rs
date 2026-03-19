@@ -772,9 +772,6 @@ pub fn collect_worktree_info(
         });
     }
 
-    // Sort alphabetically by name (case-insensitive)
-    infos.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-
     Ok(infos)
 }
 

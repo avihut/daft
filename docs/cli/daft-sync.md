@@ -87,6 +87,7 @@ daft sync --rebase main --push --include feature/shared-work
 | `--include <VALUE>` | Include additional branches in rebase/push: `unowned`, an email address, or a branch name. Repeatable. | |
 | `--stat <STAT>` | Statistics mode: `summary` or `lines` (default: from git config `daft.sync.stat`, or `summary`) | |
 | `--columns <COLUMNS>` | Columns to display in the summary table (comma-separated). Replace mode: `branch,path,age`. Modifier mode: `+col,-col`. The status column is always shown. | |
+| `--sort <SORT>` | Sort order (comma-separated). `+col` ascending, `-col` descending. Sortable columns: `branch`, `path`, `size`, `age`, `owner`, `activity`. Default: `daft.sync.sort` or `+branch`. | |
 
 ::: info
 The `--force` flag is a deprecated alias for `--prune-dirty` and will be removed

@@ -4,7 +4,7 @@
 .SH NAME
 daft\-list \- List all worktrees with status information
 .SH SYNOPSIS
-\fBdaft\-list\fR [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBdaft\-list\fR [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-\-sort\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Lists all worktrees in the current project with enriched status information
@@ -44,6 +44,16 @@ Defaults can be set in git config with daft.list.columns.
 The size column is not shown by default. Add it with \-\-columns +size to see the
 disk size of each worktree folder in human\-readable format (e.g. 42K, 1.3M, 2.5G).
 A summary row at the bottom shows the total size across all worktrees.
+.PP
+Use \-\-sort to control the sort order. Prefix with + for ascending (default) or
+\- for descending. Multiple columns can be comma\-separated for multi\-level sort.
+  Sort by branch descending:  \-\-sort \-branch
+  Sort by owner then size:    \-\-sort +owner,\-size
+  Most recent activity first: \-\-sort \-activity
+.PP
+Sortable columns: branch, path, size, age, owner, activity (aliases: commit,
+last\-commit). You can sort by columns not shown in the output (e.g. \-\-sort \-size
+without \-\-columns +size). Defaults can be set with daft.list.sort.
 .SH OPTIONS
 .TP
 \fB\-\-json\fR
@@ -76,6 +86,9 @@ lines: Line\-level counts: insertions/deletions for all columns
 .TP
 \fB\-\-columns\fR \fI<COLUMNS>\fR
 Columns to display (comma\-separated). Replace: branch,path,age. Modify defaults: +col,\-col
+.TP
+\fB\-\-sort\fR \fI<SORT>\fR
+Sort order (comma\-separated). +col ascending, \-col descending. Columns: branch, path, size, age, owner, activity
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

@@ -69,19 +69,20 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         .collect();
 
     // Select columns and compute dynamic constraints from content widths.
+    let sort_ref = state.sort_spec.as_ref();
     let columns = match (&state.columns, state.columns_explicit) {
         // Replace mode: user explicitly chose columns, don't responsively drop.
         (Some(user_cols), true) => user_cols.clone(),
         // Modifier mode: user tweaked defaults, responsive dropping still applies.
         (Some(user_cols), false) => {
-            let responsive = select_columns(area.width, &state.worktrees, &row_vals);
+            let responsive = select_columns(area.width, &state.worktrees, &row_vals, sort_ref);
             responsive
                 .into_iter()
                 .filter(|c| matches!(c, Column::Status) || user_cols.contains(c))
                 .collect()
         }
         // No column selection: fully responsive.
-        (None, _) => select_columns(area.width, &state.worktrees, &row_vals),
+        (None, _) => select_columns(area.width, &state.worktrees, &row_vals, sort_ref),
     };
     // Status is always prepended for TUI commands.
     let columns = if !columns.contains(&Column::Status) {
@@ -98,7 +99,12 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
             if matches!(col, Column::LastCommit) {
                 Constraint::Fill(1)
             } else {
-                Constraint::Length(column_content_width(*col, &state.worktrees, &row_vals))
+                Constraint::Length(column_content_width(
+                    *col,
+                    &state.worktrees,
+                    &row_vals,
+                    sort_ref,
+                ))
             }
         })
         .collect();
@@ -118,12 +124,22 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     let header_cells: Vec<Cell> = columns
         .iter()
         .map(|col| {
-            Cell::from(Span::styled(
-                col.label(),
-                Style::default()
-                    .add_modifier(Modifier::DIM)
-                    .add_modifier(Modifier::UNDERLINED),
-            ))
+            let dim_underline = Style::default()
+                .add_modifier(Modifier::DIM)
+                .add_modifier(Modifier::UNDERLINED);
+            let arrow = col.to_list_column().and_then(|lc| {
+                state
+                    .sort_spec
+                    .as_ref()
+                    .and_then(|s| s.direction_indicator(lc))
+            });
+            match arrow {
+                Some(a) => Cell::from(Line::from(vec![
+                    Span::styled(col.label(), dim_underline),
+                    Span::raw(format!(" {a}")),
+                ])),
+                None => Cell::from(Span::styled(col.label(), dim_underline)),
+            }
         })
         .collect();
     let header_row = Row::new(header_cells);

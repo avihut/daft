@@ -228,6 +228,33 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                 Some(FigOptionArg {
                     suggestions: Some(suggestions),
                 })
+            } else if has_columns && long == "--sort" {
+                let sort_defs = [
+                    ("branch", "Sort by branch name"),
+                    ("path", "Sort by worktree path"),
+                    ("size", "Sort by disk size"),
+                    ("age", "Sort by branch age"),
+                    ("owner", "Sort by branch owner"),
+                    ("activity", "Sort by last commit time"),
+                ];
+                let mut suggestions: Vec<FigSuggestion> = Vec::new();
+                for (name, description) in &sort_defs {
+                    suggestions.push(FigSuggestion {
+                        name: name.to_string(),
+                        description: description.to_string(),
+                    });
+                    suggestions.push(FigSuggestion {
+                        name: format!("+{name}"),
+                        description: format!("{description} ascending"),
+                    });
+                    suggestions.push(FigSuggestion {
+                        name: format!("-{name}"),
+                        description: format!("{description} descending"),
+                    });
+                }
+                Some(FigOptionArg {
+                    suggestions: Some(suggestions),
+                })
             } else {
                 None
             };
