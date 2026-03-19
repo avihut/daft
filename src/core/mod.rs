@@ -6,6 +6,7 @@
 
 pub mod columns;
 pub mod config;
+pub mod global_config;
 pub mod layout;
 pub mod multi_remote;
 mod progress;
