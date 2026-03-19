@@ -102,6 +102,8 @@ pub mod utils;
 
 // Re-exported from core
 pub use self::core::config;
+pub use self::core::global_config;
+pub use self::core::layout;
 pub use self::core::multi_remote;
 pub use self::core::remote;
 pub use self::core::repo::{
