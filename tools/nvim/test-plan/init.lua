@@ -41,9 +41,30 @@ require("lazy").setup({
   change_detection = { enabled = false },
 })
 
--- Markdown defaults
+-- Editor defaults
 vim.opt.termguicolors = true
 vim.opt.number = true
 vim.opt.wrap = true
 vim.opt.linebreak = true
 vim.opt.conceallevel = 2
+
+-- Re-apply number after plugins load (some plugins override it)
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "markdown",
+  callback = function()
+    vim.opt_local.number = true
+  end,
+})
+
+-- Toggle markdown checkbox on current line with <CR> in normal mode
+vim.keymap.set("n", "<Space>", function()
+  local line = vim.api.nvim_get_current_line()
+  local new_line = line:gsub("%- %[( )%]", "- [x]", 1)
+  if new_line == line then
+    new_line = line:gsub("%- %[x%]", "- [ ]", 1)
+  end
+  if new_line ~= line then
+    vim.api.nvim_set_current_line(new_line)
+    vim.cmd("silent write")
+  end
+end, { desc = "Toggle checkbox" })
