@@ -61,6 +61,22 @@ impl SortColumn {
         }
     }
 
+    /// Human-readable display name for this sort column.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Branch => "Branch",
+            Self::Path => "Path",
+            Self::Size => "Size",
+            Self::Base => "Base",
+            Self::Changes => "Changes",
+            Self::Remote => "Remote",
+            Self::Age => "Age",
+            Self::Owner => "Owner",
+            Self::Activity => "Activity",
+            Self::LastCommit => "Commit",
+        }
+    }
+
     /// Parse a sort column name (case-insensitive).
     fn parse(name: &str) -> Result<Self, String> {
         match name.trim().to_lowercase().as_str() {
@@ -346,6 +362,32 @@ impl SortSpec {
                 None
             }
         })
+    }
+
+    /// Whether a "Sorted by" summary line should be shown above the table.
+    ///
+    /// Returns true when the sort indicators in column headers alone are
+    /// insufficient to convey the full sort specification:
+    /// - Any sort column doesn't map to a displayed column (e.g., Activity,
+    ///   or sorting by a column not in `--columns`)
+    /// - 4+ sort keys (the brightness gradient only has 3 distinct levels)
+    pub fn needs_summary_line(&self, displayed_columns: &[ListColumn]) -> bool {
+        if self.keys.len() >= 4 {
+            return true;
+        }
+        self.keys.iter().any(|key| {
+            key.column
+                .to_list_column()
+                .is_none_or(|lc| !displayed_columns.contains(&lc))
+        })
+    }
+
+    /// Return the direction arrow for a sort key.
+    pub fn arrow(direction: SortDirection) -> &'static str {
+        match direction {
+            SortDirection::Ascending => "\u{2193}",  // ↓
+            SortDirection::Descending => "\u{2191}", // ↑
+        }
     }
 
     /// Whether this sort spec requires size data to be collected.

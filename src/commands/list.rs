@@ -442,6 +442,35 @@ fn print_table(
     }
 
     let use_color = styles::colors_enabled();
+
+    // Print "Sorted by" summary when column headers alone can't convey the sort.
+    if sort_spec.needs_summary_line(selected_columns) {
+        let parts: Vec<String> = sort_spec
+            .keys
+            .iter()
+            .enumerate()
+            .map(|(rank, key)| {
+                let arrow = SortSpec::arrow(key.direction);
+                let name = key.column.display_name();
+                if use_color {
+                    let color_index = match rank {
+                        0 => 255,
+                        1 => 249,
+                        _ => 243,
+                    };
+                    format!("{name} \x1b[38;5;{color_index}m{arrow}\x1b[0m")
+                } else {
+                    format!("{name} {arrow}")
+                }
+            })
+            .collect();
+        let label = if use_color {
+            styles::dim("Sorted by")
+        } else {
+            "Sorted by".to_string()
+        };
+        println!(" {label} {}", parts.join(", "));
+    }
     let now = Utc::now().timestamp();
 
     // Determine which annotation types exist across all rows
