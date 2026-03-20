@@ -1,0 +1,17 @@
+name: Layout list
+description: daft layout list shows all built-in layouts
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: List available layouts
+    run: daft layout list
+    expect:
+      exit_code: 0
+      output_contains:
+        - "contained"
+        - "sibling"
+        - "nested"
+        - "centralized"
