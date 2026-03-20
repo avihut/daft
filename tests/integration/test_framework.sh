@@ -114,6 +114,10 @@ setup() {
         export GIT_CONFIG_GLOBAL="$DAFT_TEST_GLOBAL_CONFIG"
     fi
 
+    # Isolate daft config to prevent global config leakage
+    export DAFT_CONFIG_DIR="$TEMP_BASE_DIR/daft-config"
+    mkdir -p "$DAFT_CONFIG_DIR"
+
     # Verify all binaries are available
     local binary_names=("git-worktree-clone" "git-worktree-checkout" "git-worktree-init" "git-worktree-prune")
     for binary in "${binary_names[@]}"; do
