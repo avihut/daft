@@ -55,7 +55,7 @@ test_simple_help_commands() {
 # Test git-worktree-init bare mode (this should work)
 test_simple_init_bare() {
     # Test bare init
-    git-worktree-init --bare simple-bare-repo || return 1
+    git-worktree-init --layout contained --bare simple-bare-repo || return 1
     
     # Verify structure
     assert_directory_exists "simple-bare-repo" || return 1

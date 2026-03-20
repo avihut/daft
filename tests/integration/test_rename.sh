@@ -8,7 +8,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 test_rename_basic() {
     local remote_repo=$(create_test_remote "test-repo-rn-basic" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-rn-basic"
     local project_root=$(pwd)
 
@@ -57,7 +57,7 @@ test_rename_basic() {
 test_rename_from_inside_worktree() {
     local remote_repo=$(create_test_remote "test-repo-rn-inside" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-rn-inside"
     local project_root
     project_root=$(cd "$(pwd)" && pwd -P)
@@ -104,7 +104,7 @@ test_rename_from_inside_worktree() {
 test_rename_no_remote() {
     local remote_repo=$(create_test_remote "test-repo-rn-noremote" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-rn-noremote"
     local project_root=$(pwd)
 
@@ -142,7 +142,7 @@ test_rename_no_remote() {
 test_rename_dry_run() {
     local remote_repo=$(create_test_remote "test-repo-rn-dryrun" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-rn-dryrun"
     local project_root=$(pwd)
 
@@ -178,7 +178,7 @@ test_rename_dry_run() {
 test_rename_source_not_found() {
     local remote_repo=$(create_test_remote "test-repo-rn-nosource" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-rn-nosource"
 
     # Try to rename nonexistent branch
@@ -194,7 +194,7 @@ test_rename_source_not_found() {
 test_rename_dest_branch_exists() {
     local remote_repo=$(create_test_remote "test-repo-rn-destexists" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-rn-destexists"
     local project_root=$(pwd)
 
@@ -219,7 +219,7 @@ test_rename_dest_branch_exists() {
 test_rename_dest_path_exists() {
     local remote_repo=$(create_test_remote "test-repo-rn-pathexists" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-rn-pathexists"
     local project_root=$(pwd)
 
@@ -247,7 +247,7 @@ test_rename_dest_path_exists() {
 test_rename_cleanup_empty_parent() {
     local remote_repo=$(create_test_remote "test-repo-rn-cleanup" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-rn-cleanup"
     local project_root=$(pwd)
 
@@ -281,7 +281,7 @@ test_rename_cleanup_empty_parent() {
 test_rename_with_remote() {
     local remote_repo=$(create_test_remote "test-repo-rn-remote" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-rn-remote"
     local project_root=$(pwd)
 
@@ -324,7 +324,7 @@ test_rename_with_remote() {
 test_rename_by_relative_path() {
     local remote_repo=$(create_test_remote "test-repo-rn-relpath" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-rn-relpath"
     local project_root=$(pwd)
 
@@ -348,7 +348,7 @@ test_rename_by_relative_path() {
 test_rename_by_absolute_path() {
     local remote_repo=$(create_test_remote "test-repo-rn-abspath" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-rn-abspath"
     local project_root=$(pwd)
 
@@ -373,7 +373,7 @@ test_rename_by_absolute_path() {
 test_rename_simple_branch() {
     local remote_repo=$(create_test_remote "test-repo-rn-simple" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-rn-simple"
     local project_root=$(pwd)
 

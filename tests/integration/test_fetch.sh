@@ -9,7 +9,7 @@ test_fetch_current_worktree() {
     local remote_repo=$(create_test_remote "test-repo-fetch-current" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-current"
 
     # Simulate remote changes by pushing from another clone
@@ -44,7 +44,7 @@ test_fetch_specific_worktree() {
     local remote_repo=$(create_test_remote "test-repo-fetch-specific" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-specific"
 
     # Create a worktree
@@ -83,7 +83,7 @@ test_fetch_multiple_worktrees() {
     local remote_repo=$(create_test_remote "test-repo-fetch-multiple" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-multiple"
 
     # Create worktrees
@@ -133,7 +133,7 @@ test_fetch_all() {
     local remote_repo=$(create_test_remote "test-repo-fetch-all" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-all"
 
     # Create worktrees
@@ -181,7 +181,7 @@ test_fetch_uncommitted_changes_skip() {
     local remote_repo=$(create_test_remote "test-repo-fetch-uncommitted" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-uncommitted"
 
     # Simulate remote changes
@@ -218,7 +218,7 @@ test_fetch_force() {
     local remote_repo=$(create_test_remote "test-repo-fetch-force" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-force"
 
     # Simulate remote changes
@@ -253,7 +253,7 @@ test_fetch_dry_run() {
     local remote_repo=$(create_test_remote "test-repo-fetch-dryrun" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-dryrun"
 
     # Get current state
@@ -292,7 +292,7 @@ test_fetch_rebase() {
     local remote_repo=$(create_test_remote "test-repo-fetch-rebase" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-rebase"
 
     # Simulate remote changes
@@ -327,7 +327,7 @@ test_fetch_config() {
     local remote_repo=$(create_test_remote "test-repo-fetch-config" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-config"
 
     # Set config for fetch args
@@ -367,7 +367,7 @@ test_fetch_passthrough_args() {
     local remote_repo=$(create_test_remote "test-repo-fetch-passthrough" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-passthrough"
 
     # Simulate remote changes
@@ -419,7 +419,7 @@ test_fetch_no_tracking() {
     local remote_repo=$(create_test_remote "test-repo-fetch-notracking" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-notracking"
 
     # Create a new local branch without remote tracking
@@ -441,7 +441,7 @@ test_fetch_performance() {
     local remote_repo=$(create_test_remote "test-repo-fetch-performance" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-performance"
 
     # Create multiple worktrees
@@ -468,7 +468,7 @@ test_fetch_from_subdirectory() {
     local remote_repo=$(create_test_remote "test-repo-fetch-subdir" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-subdir"
 
     # Simulate remote changes
@@ -511,7 +511,7 @@ test_fetch_clean_target_from_dirty_worktree() {
     local remote_repo=$(create_test_remote "test-repo-fetch-dirty-cwd" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-dirty-cwd"
 
     # Checkout the develop worktree
@@ -568,7 +568,7 @@ test_fetch_dirty_target_from_clean_worktree() {
     local remote_repo=$(create_test_remote "test-repo-fetch-dirty-target" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-dirty-target"
 
     # Checkout the develop worktree
@@ -611,7 +611,7 @@ test_fetch_cross_branch_refspec() {
     local remote_repo=$(create_test_remote "test-repo-fetch-crossbranch" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-crossbranch"
 
     # Create a feature worktree
@@ -649,7 +649,7 @@ test_fetch_cross_branch_dirty_fails() {
     local remote_repo=$(create_test_remote "test-repo-fetch-crossdirty" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-crossdirty"
 
     # Create a feature worktree
@@ -676,7 +676,7 @@ test_fetch_cross_branch_force() {
     local remote_repo=$(create_test_remote "test-repo-fetch-crossforce" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-crossforce"
 
     # Create a feature worktree
@@ -717,7 +717,7 @@ test_fetch_cross_branch_dry_run() {
     local remote_repo=$(create_test_remote "test-repo-fetch-crossdry" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-crossdry"
 
     # Create a feature worktree
@@ -762,7 +762,7 @@ test_fetch_self_referencing_refspec() {
     local remote_repo=$(create_test_remote "test-repo-fetch-selfref" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-selfref"
 
     # Simulate remote changes
@@ -797,7 +797,7 @@ test_fetch_config_fallback() {
     local remote_repo=$(create_test_remote "test-repo-fetch-configfb" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-fetch-configfb"
 
     # Set the deprecated config key (should still work as fallback)

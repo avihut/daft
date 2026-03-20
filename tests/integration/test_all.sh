@@ -63,7 +63,7 @@ test_integration_full_workflow() {
     # Test complete workflow: init -> checkout branches -> prune
     
     # Step 1: Initialize a new repository
-    git-worktree-init test-workflow || return 1
+    git-worktree-init --layout contained test-workflow || return 1
     assert_directory_exists "test-workflow" || return 1
     assert_git_worktree "test-workflow/master" "master" || return 1
     
@@ -102,7 +102,7 @@ test_integration_full_workflow() {
 # Performance test: Large repository simulation with Rust binaries
 test_integration_performance_basic() {
     # Test performance with a repository that has many files
-    git-worktree-init perf-test || return 1
+    git-worktree-init --layout contained perf-test || return 1
     
     cd "perf-test/master"
     
@@ -139,7 +139,7 @@ test_integration_error_handling() {
     # Test that failed operations don't leave partial state
     
     # Create a repository
-    git-worktree-init error-test || return 1
+    git-worktree-init --layout contained error-test || return 1
     cd "error-test"
     
     # Try to checkout nonexistent branch (should fail cleanly)
@@ -160,7 +160,7 @@ test_integration_cross_platform() {
     # Test operations that might behave differently on different platforms
     
     # Test with branch names that might cause issues
-    git-worktree-init compat-test || return 1
+    git-worktree-init --layout contained compat-test || return 1
     cd "compat-test"
     
     # Create initial commit so we have something to branch from
@@ -187,7 +187,7 @@ test_integration_cross_platform() {
 test_integration_security_path_traversal() {
     # Test that malicious paths are handled safely
     
-    git-worktree-init security-test || return 1
+    git-worktree-init --layout contained security-test || return 1
     cd "security-test"
     
     # Test with path traversal attempts (should fail or be sanitized)
@@ -223,7 +223,7 @@ test_integration_rust_vs_shell_compatibility() {
     # Test that Rust binaries produce similar results to shell scripts
     
     # Test init command
-    git-worktree-init rust-test || return 1
+    git-worktree-init --layout contained rust-test || return 1
     assert_directory_exists "rust-test" || return 1
     assert_directory_exists "rust-test/master" || return 1
     assert_git_worktree "rust-test/master" "master" || return 1
@@ -254,7 +254,7 @@ test_integration_real_world_scenarios() {
     # Scenario 1: Clone, feature development, and cleanup
     local remote_repo=$(create_test_remote "real-world-test" "main")
     
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "real-world-test"
     
     # Feature development workflow

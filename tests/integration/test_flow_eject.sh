@@ -9,7 +9,7 @@ create_worktree_repo() {
     local repo_name="$1"
     local branch="${2:-master}"
 
-    git-worktree-init "$repo_name" >/dev/null 2>&1 || return 1
+    git-worktree-init --layout contained "$repo_name" >/dev/null 2>&1 || return 1
 
     # Add initial content
     cd "$repo_name/$branch"
