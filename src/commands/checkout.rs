@@ -1,12 +1,14 @@
 use crate::{
     core::{
+        global_config::GlobalConfig,
+        layout::resolver::{resolve_layout, LayoutResolutionContext},
         worktree::{checkout, checkout_branch, previous},
         CommandBridge,
     },
     get_current_worktree_path, get_git_common_dir, get_project_root,
     git::{should_show_gitoxide_notice, GitCommand},
     hints::maybe_show_shell_hint,
-    hooks::{HookExecutor, HooksConfig},
+    hooks::{yaml_config_loader, HookExecutor, HooksConfig, TrustDatabase},
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -428,6 +430,48 @@ fn run_go_previous(output: &mut dyn Output) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the layout for checkout operations.
+///
+/// Loads the layout from the config chain: repo store > daft.yml > global config > default.
+/// Also checks if the resolved layout requires a bare repo and warns if the current repo
+/// is not bare.
+fn resolve_checkout_layout(
+    git: &GitCommand,
+    output: &mut dyn Output,
+) -> crate::core::layout::Layout {
+    let global_config = GlobalConfig::load().unwrap_or_default();
+    let git_dir = get_git_common_dir().ok();
+    let trust_db = TrustDatabase::load().unwrap_or_default();
+
+    // Load daft.yml layout field from the current worktree (best-effort)
+    let yaml_layout: Option<String> = get_current_worktree_path()
+        .ok()
+        .and_then(|wt| yaml_config_loader::load_merged_config(&wt).ok().flatten())
+        .and_then(|cfg| cfg.layout);
+
+    let repo_store_layout = git_dir
+        .as_ref()
+        .and_then(|d| trust_db.get_layout(d).map(String::from));
+
+    let (layout, _source) = resolve_layout(&LayoutResolutionContext {
+        cli_layout: None, // checkout doesn't have --layout yet
+        repo_store_layout: repo_store_layout.as_deref(),
+        yaml_layout: yaml_layout.as_deref(),
+        global_config: &global_config,
+    });
+
+    // Graceful degradation: warn if layout needs bare but repo is not bare
+    if layout.needs_bare() && !git.rev_parse_is_bare_repository().unwrap_or(false) {
+        output.warning(&format!(
+            "Layout '{}' works best with a bare repository. \
+             Consider running `daft layout transform` to convert.",
+            layout.name
+        ));
+    }
+
+    layout
+}
+
 fn run_checkout(
     args: &Args,
     settings: &DaftSettings,
@@ -440,6 +484,8 @@ fn run_checkout(
     let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
 
+    let layout = resolve_checkout_layout(&git, output);
+
     let params = checkout::CheckoutParams {
         branch_name: args.branch_name.clone(),
         carry: args.carry,
@@ -450,6 +496,7 @@ fn run_checkout(
         multi_remote_default: settings.multi_remote_default.clone(),
         checkout_carry: settings.checkout_carry,
         checkout_upstream: settings.checkout_upstream,
+        layout: Some(layout),
     };
 
     let hooks_config = HooksConfig::default();
@@ -499,6 +546,8 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
     let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
 
+    let layout = resolve_checkout_layout(&git, output);
+
     let params = checkout_branch::CheckoutBranchParams {
         new_branch_name: args.branch_name.clone(),
         base_branch_name: args.base_branch_name.clone(),
@@ -510,6 +559,7 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
         multi_remote_default: settings.multi_remote_default.clone(),
         checkout_branch_carry: settings.checkout_branch_carry,
         checkout_push: settings.checkout_push,
+        layout: Some(layout),
     };
 
     let hooks_config = HooksConfig::default();

@@ -3,10 +3,13 @@
 //! Creates a worktree with a new branch.
 
 use crate::config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT};
+use crate::core::layout::Layout;
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
 use crate::git::GitCommand;
 use crate::hooks::{HookContext, HookType};
-use crate::multi_remote::path::{calculate_worktree_path, resolve_remote_for_branch};
+use crate::multi_remote::path::{
+    build_template_context, calculate_worktree_path, resolve_remote_for_branch,
+};
 use crate::utils::*;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -33,6 +36,9 @@ pub struct CheckoutBranchParams {
     pub checkout_branch_carry: bool,
     /// Whether to push and set upstream (from settings).
     pub checkout_push: bool,
+    /// Optional layout for computing the worktree path.
+    /// When `Some`, uses `layout.worktree_path()` instead of `calculate_worktree_path()`.
+    pub layout: Option<Layout>,
 }
 
 /// Result of a checkout-branch operation.
@@ -63,19 +69,23 @@ pub fn execute(
     let git_dir = crate::core::repo::get_git_common_dir()?;
     let source_worktree = get_current_directory()?;
 
-    let remote_for_path = resolve_remote_for_branch(
-        git,
-        &params.new_branch_name,
-        params.remote.as_deref(),
-        &params.multi_remote_default,
-    )?;
-
-    let worktree_path = calculate_worktree_path(
-        project_root,
-        &params.new_branch_name,
-        &remote_for_path,
-        params.multi_remote_enabled,
-    );
+    let worktree_path = if let Some(ref layout) = params.layout {
+        let ctx = build_template_context(project_root, &params.new_branch_name);
+        layout.worktree_path(&ctx)?
+    } else {
+        let remote_for_path = resolve_remote_for_branch(
+            git,
+            &params.new_branch_name,
+            params.remote.as_deref(),
+            &params.multi_remote_default,
+        )?;
+        calculate_worktree_path(
+            project_root,
+            &params.new_branch_name,
+            &remote_for_path,
+            params.multi_remote_enabled,
+        )
+    };
 
     // Fetch latest changes
     fetch_remote(git, &params.remote_name, sink);
