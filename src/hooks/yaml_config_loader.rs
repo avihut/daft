@@ -196,6 +196,9 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
     if overlay.source_dir_local.is_some() {
         merged.source_dir_local = overlay.source_dir_local;
     }
+    if overlay.layout.is_some() {
+        merged.layout = overlay.layout;
+    }
 
     // Hooks: merge each hook definition
     for (name, overlay_hook) in overlay.hooks {

@@ -210,7 +210,13 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     // Run hooks and exec only if a worktree was created
     if result.worktree_dir.is_some() {
         run_post_clone_hook(args, &result, output)?;
-        run_post_create_hook(args, &result, output)?;
+        // worktree-post-create fires only for non-bare layouts. For bare
+        // layouts the initial worktree is created via `git worktree add` and
+        // subsequent worktrees go through checkout.rs which fires the hook
+        // itself; firing it here too would duplicate.
+        if !params.layout.needs_bare() {
+            run_post_create_hook(args, &result, output)?;
+        }
 
         let exec_result = crate::exec::run_exec_commands(&args.exec, output);
 

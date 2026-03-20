@@ -201,6 +201,12 @@ _daft() {
         return 0
     fi
 
+    # layout: complete subcommands
+    if [[ $cword -eq 2 && "${words[1]}" == "layout" ]]; then
+        COMPREPLY=( $(compgen -W "list show transform" -- "$cur") )
+        return 0
+    fi
+
     # multi-remote: complete subcommands
     if [[ $cword -eq 2 && "${words[1]}" == "multi-remote" ]]; then
         COMPREPLY=( $(compgen -W "enable disable status set-default move" -- "$cur") )
@@ -272,7 +278,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor clone init go start carry update list prune rename sync remove adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout clone init go start carry update list prune rename sync remove adopt eject" -- "$cur") )
         fi
         return 0
     fi

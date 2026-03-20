@@ -282,6 +282,12 @@ _daft() {
         return
     fi
 
+    # layout: complete subcommands
+    if (( CURRENT == 3 )) && [[ "$words[2]" == "layout" ]]; then
+        compadd list show transform
+        return
+    fi
+
     # multi-remote: complete subcommands
     if (( CURRENT == 3 )) && [[ "$words[2]" == "multi-remote" ]]; then
         compadd enable disable status set-default move
@@ -353,7 +359,7 @@ _daft() {
         if [[ "$curword" == -* ]]; then
             compadd -- --version -V --help -h
         else
-            compadd hooks shell-init setup multi-remote release-notes doctor \
+            compadd hooks shell-init setup multi-remote release-notes doctor layout \
                     clone init go start carry update list prune rename sync remove adopt eject
         fi
         return
