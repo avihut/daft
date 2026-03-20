@@ -10,8 +10,8 @@ use crate::{
     git::should_show_gitoxide_notice,
     hints::maybe_show_shell_hint,
     hooks::{
-        get_remote_url_for_git_dir, HookContext, HookExecutor, HookType, HooksConfig,
-        TrustDatabase, TrustLevel,
+        get_remote_url_for_git_dir, yaml_config_loader, HookContext, HookExecutor, HookType,
+        HooksConfig, TrustDatabase, TrustLevel,
     },
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -225,6 +225,33 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             output.cd_path(cd_target);
         }
         maybe_show_shell_hint(output)?;
+    }
+
+    // Post-clone layout reconciliation: if no --layout flag and no global
+    // default, check if the cloned repo's daft.yml specifies a layout.
+    // Store it in repos.json and hint if it differs from the resolved layout.
+    if args.layout.is_none() && global_config.defaults.layout.is_none() {
+        if let Some(ref worktree_dir) = result.worktree_dir {
+            if let Ok(Some(yaml_config)) = yaml_config_loader::load_merged_config(worktree_dir) {
+                if let Some(ref yaml_layout) = yaml_config.layout {
+                    let mut db = TrustDatabase::load().unwrap_or_default();
+                    db.set_layout(&result.git_dir, yaml_layout.clone());
+                    if let Err(e) = db.save() {
+                        output.warning(&format!(
+                            "Could not save layout from daft.yml to repos.json: {e}"
+                        ));
+                    }
+
+                    if params.layout.name != *yaml_layout {
+                        output.info(&format!(
+                            "This repo suggests layout '{}'. \
+                             Run `daft layout transform {}` to apply.",
+                            yaml_layout, yaml_layout
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
