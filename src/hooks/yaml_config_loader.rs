@@ -7,6 +7,7 @@ use super::yaml_config::{HookDef, JobDef, YamlConfig};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Where the main config file was found, which determines where
 /// per-hook and local config files are located.
@@ -299,6 +300,144 @@ pub fn get_effective_jobs(hook_def: &HookDef) -> Vec<JobDef> {
     }
 
     jobs
+}
+
+/// Parse a YAML string into a `YamlConfig`.
+///
+/// This is a standalone parser that does not process `extends`, per-hook files,
+/// or local overrides — those are filesystem concepts that don't apply when
+/// reading config from a git object (branch ref). Legacy `commands` maps are
+/// normalized to `jobs`.
+pub fn parse_yaml_config_str(yaml: &str) -> Result<YamlConfig> {
+    let mut config: YamlConfig =
+        serde_yaml::from_str(yaml).context("Failed to parse YAML config")?;
+    normalize_commands_to_jobs(&mut config);
+    Ok(config)
+}
+
+/// Read a file from a git ref using `git show <ref>:<path>`.
+///
+/// Returns `Some(content)` if the file exists on the given ref, `None` if it
+/// does not (git exits non-zero). Runs git with `-C <git_dir>` so it works
+/// without being inside a worktree.
+fn git_show_file(git_dir: &Path, ref_name: &str, file_path: &str) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(git_dir)
+        .args(["show", &format!("{ref_name}:{file_path}")])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        String::from_utf8(output.stdout).ok()
+    } else {
+        None
+    }
+}
+
+/// Detect the default branch from the local repository's remote HEAD reference.
+///
+/// Reads `refs/remotes/origin/HEAD` from the git common directory. Falls back
+/// to `git symbolic-ref refs/remotes/origin/HEAD` if the file is not present.
+/// Returns `None` if the default branch cannot be determined.
+fn detect_default_branch(git_dir: &Path) -> Option<String> {
+    // Try reading the file directly (most common case)
+    let head_ref_file = git_dir.join("refs/remotes/origin/HEAD");
+    if let Ok(content) = std::fs::read_to_string(&head_ref_file) {
+        let content = content.trim();
+        if let Some(ref_path) = content.strip_prefix("ref: ") {
+            if let Some(branch) = ref_path.strip_prefix("refs/remotes/origin/") {
+                if !branch.is_empty() {
+                    return Some(branch.to_string());
+                }
+            }
+        }
+    }
+
+    // Fallback: ask git to resolve the symbolic ref
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(git_dir)
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8(output.stdout).ok()?;
+        let trimmed = stdout.trim();
+        trimmed
+            .strip_prefix("refs/remotes/origin/")
+            .map(|s| s.to_string())
+    } else {
+        None
+    }
+}
+
+/// Try to load a `YamlConfig` from a single branch ref.
+///
+/// Searches config file candidates in priority order using `git show`.
+/// Returns `None` if no config file is found on the given ref.
+fn try_load_config_from_ref(git_dir: &Path, ref_name: &str) -> Result<Option<YamlConfig>> {
+    for (candidate, _location) in CONFIG_CANDIDATES {
+        if let Some(content) = git_show_file(git_dir, ref_name, candidate) {
+            let config = parse_yaml_config_str(&content)
+                .with_context(|| format!("Failed to parse {candidate} from ref {ref_name}"))?;
+            return Ok(Some(config));
+        }
+    }
+    Ok(None)
+}
+
+/// Load a `YamlConfig` from a branch ref with a fallback chain.
+///
+/// This is used for hooks that need config from a branch that may not have a
+/// worktree checked out yet (e.g., `worktree-pre-create` where the target
+/// worktree does not exist).
+///
+/// The fallback chain is:
+/// 1. `target_branch` — the branch being checked out
+/// 2. `base_branch` — the branch the new worktree is based on (if provided)
+/// 3. The repository's default branch (detected from `refs/remotes/origin/HEAD`)
+///
+/// Extends, per-hook files, and local overrides are **not** applied — those are
+/// filesystem concepts that require a worktree checkout.
+///
+/// # Arguments
+/// * `git_dir` — path to the git common directory (`.git` or bare repo root)
+/// * `target_branch` — the branch to try first
+/// * `base_branch` — optional fallback branch (e.g., the source branch)
+pub fn load_config_from_branch(
+    git_dir: &Path,
+    target_branch: &str,
+    base_branch: Option<&str>,
+) -> Result<Option<YamlConfig>> {
+    // 1. Try the target branch
+    if let Some(config) = try_load_config_from_ref(git_dir, target_branch)? {
+        return Ok(Some(config));
+    }
+
+    // 2. Try the base branch if provided (and different from target)
+    if let Some(base) = base_branch {
+        if base != target_branch {
+            if let Some(config) = try_load_config_from_ref(git_dir, base)? {
+                return Ok(Some(config));
+            }
+        }
+    }
+
+    // 3. Try the default branch
+    if let Some(default_branch) = detect_default_branch(git_dir) {
+        // Avoid re-checking branches we already tried
+        if default_branch != target_branch && base_branch != Some(default_branch.as_str()) {
+            if let Some(config) = try_load_config_from_ref(git_dir, &default_branch)? {
+                return Ok(Some(config));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -683,5 +822,254 @@ hooks:
 
         let jobs = get_effective_jobs(&hook);
         assert_eq!(jobs.len(), 2);
+    }
+
+    // ── Tests for parse_yaml_config_str ──────────────────────────────
+
+    #[test]
+    fn test_parse_yaml_config_str_basic() {
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: setup
+        run: echo "hello"
+"#;
+        let config = parse_yaml_config_str(yaml).unwrap();
+        assert!(config.hooks.contains_key("worktree-post-create"));
+        let jobs = config.hooks["worktree-post-create"].jobs.as_ref().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].name.as_deref(), Some("setup"));
+    }
+
+    #[test]
+    fn test_parse_yaml_config_str_normalizes_commands() {
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    commands:
+      lint:
+        run: cargo clippy
+"#;
+        let config = parse_yaml_config_str(yaml).unwrap();
+        let hook = &config.hooks["worktree-post-create"];
+        // commands should be normalized to jobs
+        assert!(hook.commands.is_none());
+        let jobs = hook.jobs.as_ref().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].name.as_deref(), Some("lint"));
+    }
+
+    #[test]
+    fn test_parse_yaml_config_str_empty() {
+        let config = parse_yaml_config_str("").unwrap();
+        assert!(config.hooks.is_empty());
+    }
+
+    #[test]
+    fn test_parse_yaml_config_str_invalid() {
+        let result = parse_yaml_config_str("{{invalid yaml");
+        assert!(result.is_err());
+    }
+
+    // ── Tests for git_show_file ──────────────────────────────────────
+
+    /// Helper: create a bare git repo with a committed file.
+    fn create_test_repo_with_file(
+        dir: &Path,
+        branch: &str,
+        file_name: &str,
+        content: &str,
+    ) -> PathBuf {
+        let repo_dir = dir.join("repo.git");
+
+        // Init a bare repo
+        Command::new("git")
+            .args(["init", "--bare"])
+            .arg(&repo_dir)
+            .output()
+            .unwrap();
+
+        // Create a temporary worktree to make commits
+        let work_dir = dir.join("work");
+        fs::create_dir_all(&work_dir).unwrap();
+
+        Command::new("git")
+            .arg("clone")
+            .arg(&repo_dir)
+            .arg(&work_dir)
+            .output()
+            .unwrap();
+
+        // Configure local identity for the commit
+        Command::new("git")
+            .arg("-C")
+            .arg(&work_dir)
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(&work_dir)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
+
+        // Create the file and commit
+        let file_path = work_dir.join(file_name);
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&file_path, content).unwrap();
+
+        Command::new("git")
+            .arg("-C")
+            .arg(&work_dir)
+            .args(["add", "."])
+            .output()
+            .unwrap();
+
+        Command::new("git")
+            .arg("-C")
+            .arg(&work_dir)
+            .args(["commit", "-m", "initial"])
+            .output()
+            .unwrap();
+
+        // Create the requested branch if not default
+        if branch != "master" && branch != "main" {
+            Command::new("git")
+                .arg("-C")
+                .arg(&work_dir)
+                .args(["checkout", "-b", branch])
+                .output()
+                .unwrap();
+
+            Command::new("git")
+                .arg("-C")
+                .arg(&work_dir)
+                .args(["push", "origin", branch])
+                .output()
+                .unwrap();
+        } else {
+            // Push the default branch
+            Command::new("git")
+                .arg("-C")
+                .arg(&work_dir)
+                .args(["push", "origin", "HEAD"])
+                .output()
+                .unwrap();
+        }
+
+        repo_dir
+    }
+
+    #[test]
+    fn test_git_show_file_exists() {
+        let dir = tempdir().unwrap();
+        let repo_dir = create_test_repo_with_file(
+            dir.path(),
+            "master",
+            "daft.yml",
+            "hooks:\n  post-clone:\n    jobs:\n      - run: echo hi\n",
+        );
+
+        let content = git_show_file(&repo_dir, "master", "daft.yml");
+        assert!(content.is_some());
+        assert!(content.unwrap().contains("post-clone"));
+    }
+
+    #[test]
+    fn test_git_show_file_not_found() {
+        let dir = tempdir().unwrap();
+        let repo_dir = create_test_repo_with_file(dir.path(), "master", "daft.yml", "hooks: {}");
+
+        let content = git_show_file(&repo_dir, "master", "nonexistent.yml");
+        assert!(content.is_none());
+    }
+
+    #[test]
+    fn test_git_show_file_branch_not_found() {
+        let dir = tempdir().unwrap();
+        let repo_dir = create_test_repo_with_file(dir.path(), "master", "daft.yml", "hooks: {}");
+
+        let content = git_show_file(&repo_dir, "no-such-branch", "daft.yml");
+        assert!(content.is_none());
+    }
+
+    // ── Tests for load_config_from_branch ────────────────────────────
+
+    #[test]
+    fn test_load_config_from_branch_target_found() {
+        let dir = tempdir().unwrap();
+        let yaml = r#"hooks:
+  worktree-pre-create:
+    jobs:
+      - name: check
+        run: echo "from target"
+"#;
+        let repo_dir = create_test_repo_with_file(dir.path(), "master", "daft.yml", yaml);
+
+        let config = load_config_from_branch(&repo_dir, "master", None)
+            .unwrap()
+            .unwrap();
+        assert!(config.hooks.contains_key("worktree-pre-create"));
+    }
+
+    #[test]
+    fn test_load_config_from_branch_falls_back_to_base() {
+        let dir = tempdir().unwrap();
+        let yaml = r#"hooks:
+  post-clone:
+    jobs:
+      - run: echo "from base"
+"#;
+        let repo_dir = create_test_repo_with_file(dir.path(), "master", "daft.yml", yaml);
+
+        // target branch doesn't exist, should fall back to base
+        let config = load_config_from_branch(&repo_dir, "new-feature", Some("master"))
+            .unwrap()
+            .unwrap();
+        assert!(config.hooks.contains_key("post-clone"));
+    }
+
+    #[test]
+    fn test_load_config_from_branch_no_config_anywhere() {
+        let dir = tempdir().unwrap();
+        // Create a repo with a file that is NOT a config file
+        let repo_dir = create_test_repo_with_file(dir.path(), "master", "README.md", "# Hello\n");
+
+        let config = load_config_from_branch(&repo_dir, "master", None).unwrap();
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn test_load_config_from_branch_dot_daft_yml() {
+        let dir = tempdir().unwrap();
+        let yaml = r#"hooks:
+  worktree-post-create:
+    jobs:
+      - run: echo "dot prefix"
+"#;
+        // Use .daft.yml (third priority candidate)
+        let repo_dir = create_test_repo_with_file(dir.path(), "master", ".daft.yml", yaml);
+
+        let config = load_config_from_branch(&repo_dir, "master", None)
+            .unwrap()
+            .unwrap();
+        assert!(config.hooks.contains_key("worktree-post-create"));
+    }
+
+    #[test]
+    fn test_load_config_from_branch_skips_duplicate_refs() {
+        let dir = tempdir().unwrap();
+        let yaml = "hooks:\n  post-clone:\n    jobs:\n      - run: echo ok\n";
+        let repo_dir = create_test_repo_with_file(dir.path(), "master", "daft.yml", yaml);
+
+        // base_branch == target_branch — should not re-check
+        let config = load_config_from_branch(&repo_dir, "master", Some("master"))
+            .unwrap()
+            .unwrap();
+        assert!(config.hooks.contains_key("post-clone"));
     }
 }
