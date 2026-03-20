@@ -372,7 +372,20 @@ fn run_with_args(args: Args) -> Result<()> {
         run_create_branch(&args, &settings, &mut output)
     } else {
         match run_checkout(&args, &settings, &mut output) {
-            Ok(()) => Ok(()),
+            Ok(already_existed) => {
+                // --at is invalid when navigating to an existing worktree
+                // (it only applies when creating a new one)
+                if args.at.is_some() && already_existed {
+                    change_directory(&original_dir).ok();
+                    anyhow::bail!(
+                        "--at cannot be used: worktree already exists for '{}'. \
+                         Use 'daft go {}' without --at to navigate to it.",
+                        args.branch_name,
+                        args.branch_name
+                    );
+                }
+                Ok(())
+            }
             Err(checkout::CheckoutError::BranchNotFound {
                 ref branch,
                 ref remote,
@@ -387,10 +400,14 @@ fn run_with_args(args: Args) -> Result<()> {
                     run_create_branch(&args, &settings, &mut output)
                 } else {
                     change_directory(&original_dir).ok();
+                    // --at with a non-existent branch requires --start or autoStart
+                    if args.at.is_some() {
+                        anyhow::bail!(
+                            "--at requires --start (or daft.go.autoStart=true) \
+                             when branch '{branch}' does not exist"
+                        );
+                    }
                     render_branch_not_found_error(branch, remote, fetch_failed, &settings);
-                    // Exit directly: the error is already rendered to stderr with
-                    // custom formatting. Returning an anyhow error here would cause
-                    // main() to print a redundant "Error:" line.
                     std::process::exit(1);
                 }
             }
@@ -487,11 +504,13 @@ fn resolve_checkout_layout(
     layout
 }
 
+/// Returns `Ok(already_existed)` — true if the worktree already existed
+/// (navigation only, no creation).
 fn run_checkout(
     args: &Args,
     settings: &DaftSettings,
     output: &mut dyn Output,
-) -> Result<(), checkout::CheckoutError> {
+) -> Result<bool, checkout::CheckoutError> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
@@ -551,7 +570,7 @@ fn run_checkout(
     // Propagate exec error after cd_path is written
     exec_result?;
 
-    Ok(())
+    Ok(result.already_existed)
 }
 
 fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
