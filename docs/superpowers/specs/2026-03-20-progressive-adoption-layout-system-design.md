@@ -61,7 +61,7 @@ template geometry at resolution time.
 
 | Name          | Template                                          | Inferred bare | Description                                          |
 | ------------- | ------------------------------------------------- | ------------- | ---------------------------------------------------- |
-| `contained`   | `{{ branch \| sanitize }}`                        | Yes           | Worktrees as children of project root                |
+| `contained`   | `{{ branch }}`                                    | Yes           | Worktrees as children of project root                |
 | `sibling`     | `../{{ repo }}.{{ branch \| sanitize }}`          | No            | Worktrees adjacent to the repo                       |
 | `nested`      | `.worktrees/{{ branch \| sanitize }}`             | No            | Worktrees in a hidden subdirectory (auto-gitignored) |
 | `centralized` | `~/worktrees/{{ repo }}/{{ branch \| sanitize }}` | No            | Worktrees in a global directory                      |

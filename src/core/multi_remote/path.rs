@@ -207,7 +207,7 @@ mod layout_tests {
         let layout = BuiltinLayout::Contained.to_layout();
         let ctx = build_template_context(Path::new("/home/user/myproject"), "feature/auth");
         let path = layout.worktree_path(&ctx).unwrap();
-        assert_eq!(path, PathBuf::from("/home/user/myproject/feature-auth"));
+        assert_eq!(path, PathBuf::from("/home/user/myproject/feature/auth"));
     }
 
     #[test]

@@ -115,7 +115,7 @@ impl BuiltinLayout {
 
     fn template(&self) -> &'static str {
         match self {
-            Self::Contained => "{{ branch | sanitize }}",
+            Self::Contained => "{{ branch }}",
             Self::Sibling => "../{{ repo }}.{{ branch | sanitize }}",
             Self::Nested => ".worktrees/{{ branch | sanitize }}",
             Self::Centralized => "~/worktrees/{{ repo }}/{{ branch | sanitize }}",
@@ -201,7 +201,7 @@ mod tests {
             branch: "feature/auth".into(),
         };
         let path = layout.worktree_path(&ctx).unwrap();
-        assert_eq!(path, PathBuf::from("/home/user/myproject/feature-auth"));
+        assert_eq!(path, PathBuf::from("/home/user/myproject/feature/auth"));
     }
 
     #[test]
