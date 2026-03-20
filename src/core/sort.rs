@@ -6,7 +6,7 @@
 //! (annotation, base, changes, remote).
 
 use crate::core::columns::ListColumn;
-use crate::core::worktree::list::WorktreeInfo;
+use crate::core::worktree::list::{Stat, WorktreeInfo};
 use std::cmp::Ordering;
 
 /// A column that can be used in a `--sort` specification.
@@ -28,12 +28,18 @@ pub enum SortColumn {
     /// Sort by last commit timestamp only (ignores uncommitted changes).
     /// Aliases: `commit`, `last-commit`.
     LastCommit,
+    /// Sort by total base divergence (`ahead + behind`).
+    Base,
+    /// Sort by total local changes (`staged + unstaged + untracked`).
+    Changes,
+    /// Sort by total remote divergence (`remote_ahead + remote_behind`).
+    Remote,
 }
 
 impl SortColumn {
     /// All valid CLI sort column names, for use in error messages.
     pub fn valid_names() -> &'static str {
-        "branch, path, size, age, owner, activity, commit (alias: last-commit)"
+        "branch, path, size, base, changes, remote, age, owner, activity, commit (alias: last-commit)"
     }
 
     /// Map this sort column to the corresponding display column, if any.
@@ -48,6 +54,9 @@ impl SortColumn {
             Self::Age => Some(ListColumn::Age),
             Self::Owner => Some(ListColumn::Owner),
             Self::LastCommit => Some(ListColumn::LastCommit),
+            Self::Base => Some(ListColumn::Base),
+            Self::Changes => Some(ListColumn::Changes),
+            Self::Remote => Some(ListColumn::Remote),
             Self::Activity => None,
         }
     }
@@ -62,6 +71,9 @@ impl SortColumn {
             "owner" => Ok(Self::Owner),
             "activity" => Ok(Self::Activity),
             "commit" | "last-commit" => Ok(Self::LastCommit),
+            "base" => Ok(Self::Base),
+            "changes" => Ok(Self::Changes),
+            "remote" => Ok(Self::Remote),
             _ => Err(format!(
                 "unknown sort column '{}'\n  sortable columns: {}",
                 name.trim(),
@@ -89,7 +101,7 @@ impl SortKey {
     /// Compare two `WorktreeInfo` entries by this key's column and direction.
     ///
     /// `None` values always sort last, regardless of sort direction.
-    fn compare(&self, a: &WorktreeInfo, b: &WorktreeInfo) -> Ordering {
+    fn compare(&self, a: &WorktreeInfo, b: &WorktreeInfo, stat: Stat) -> Ordering {
         match self.column {
             SortColumn::Branch => {
                 // Branch name is always present, just apply direction directly.
@@ -122,6 +134,53 @@ impl SortKey {
                 // Pure git: last commit timestamp only.
                 // "Ascending" = most recent commit first.
                 self.compare_optional_reversed(a.last_commit_timestamp, b.last_commit_timestamp)
+            }
+            SortColumn::Base => {
+                if stat == Stat::Lines {
+                    // Line-level: total insertions + deletions vs base.
+                    let a_total = sum_optional(a.base_lines_inserted, a.base_lines_deleted);
+                    let b_total = sum_optional(b.base_lines_inserted, b.base_lines_deleted);
+                    self.compare_optional(a_total, b_total)
+                } else {
+                    // Summary: total commit divergence (ahead + behind).
+                    let a_total = sum_optional(a.ahead, a.behind);
+                    let b_total = sum_optional(b.ahead, b.behind);
+                    self.compare_optional(a_total, b_total)
+                }
+            }
+            SortColumn::Changes => {
+                if stat == Stat::Lines {
+                    // Line-level: total insertions + deletions (staged + unstaged) + untracked count.
+                    let a_lines = a.staged_lines_inserted.unwrap_or(0)
+                        + a.staged_lines_deleted.unwrap_or(0)
+                        + a.unstaged_lines_inserted.unwrap_or(0)
+                        + a.unstaged_lines_deleted.unwrap_or(0);
+                    let b_lines = b.staged_lines_inserted.unwrap_or(0)
+                        + b.staged_lines_deleted.unwrap_or(0)
+                        + b.unstaged_lines_inserted.unwrap_or(0)
+                        + b.unstaged_lines_deleted.unwrap_or(0);
+                    let a_total = a_lines + a.untracked;
+                    let b_total = b_lines + b.untracked;
+                    self.apply_direction(a_total.cmp(&b_total))
+                } else {
+                    // Summary: total file count (staged + unstaged + untracked).
+                    let a_total = a.staged + a.unstaged + a.untracked;
+                    let b_total = b.staged + b.unstaged + b.untracked;
+                    self.apply_direction(a_total.cmp(&b_total))
+                }
+            }
+            SortColumn::Remote => {
+                if stat == Stat::Lines {
+                    // Line-level: total insertions + deletions vs remote.
+                    let a_total = sum_optional(a.remote_lines_inserted, a.remote_lines_deleted);
+                    let b_total = sum_optional(b.remote_lines_inserted, b.remote_lines_deleted);
+                    self.compare_optional(a_total, b_total)
+                } else {
+                    // Summary: total commit divergence (remote_ahead + remote_behind).
+                    let a_total = sum_optional(a.remote_ahead, a.remote_behind);
+                    let b_total = sum_optional(b.remote_ahead, b.remote_behind);
+                    self.compare_optional(a_total, b_total)
+                }
             }
         }
     }
@@ -170,20 +229,35 @@ fn max_optional(a: Option<i64>, b: Option<i64>) -> Option<i64> {
     }
 }
 
+/// Sum two optional values. Returns `None` only if both are `None`.
+fn sum_optional(a: Option<usize>, b: Option<usize>) -> Option<usize> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a + b),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
 /// A complete sort specification (one or more sort keys in priority order).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SortSpec {
     pub keys: Vec<SortKey>,
+    /// Statistics mode — affects how base/changes/remote are compared.
+    /// `Summary` (default): commit counts for base/remote, file counts for changes.
+    /// `Lines`: line-level insertions/deletions.
+    pub stat: Stat,
 }
 
 impl SortSpec {
-    /// The default sort: branch name ascending.
+    /// The default sort: branch name ascending, summary stat mode.
     pub fn default_sort() -> Self {
         Self {
             keys: vec![SortKey {
                 column: SortColumn::Branch,
                 direction: SortDirection::Ascending,
             }],
+            stat: Stat::Summary,
         }
     }
 
@@ -239,7 +313,16 @@ impl SortSpec {
             return Err("no sort columns specified".to_string());
         }
 
-        Ok(Self { keys })
+        Ok(Self {
+            keys,
+            stat: Stat::Summary,
+        })
+    }
+
+    /// Set the statistics mode for sort comparison.
+    pub fn with_stat(mut self, stat: Stat) -> Self {
+        self.stat = stat;
+        self
     }
 
     /// Return the sort direction indicator for a display column, if that
@@ -286,7 +369,7 @@ impl SortSpec {
     /// criteria (e.g., TUI default-branch pinning, kind grouping).
     pub fn compare(&self, a: &WorktreeInfo, b: &WorktreeInfo) -> Ordering {
         for key in &self.keys {
-            let ord = key.compare(a, b);
+            let ord = key.compare(a, b, self.stat);
             if ord != Ordering::Equal {
                 return ord;
             }
@@ -420,13 +503,28 @@ mod tests {
 
     #[test]
     fn test_parse_non_sortable_column_error() {
-        for name in &["annotation", "base", "changes", "remote"] {
-            let err = SortSpec::parse(name).unwrap_err();
-            assert!(
-                err.contains("unknown sort column"),
-                "'{name}' should not be sortable, got: {err}"
-            );
-        }
+        // Only annotation is not sortable
+        let err = SortSpec::parse("annotation").unwrap_err();
+        assert!(
+            err.contains("unknown sort column"),
+            "'annotation' should not be sortable, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_base_changes_remote_sortable() {
+        assert_eq!(
+            SortSpec::parse("base").unwrap().keys[0].column,
+            SortColumn::Base
+        );
+        assert_eq!(
+            SortSpec::parse("changes").unwrap().keys[0].column,
+            SortColumn::Changes
+        );
+        assert_eq!(
+            SortSpec::parse("remote").unwrap().keys[0].column,
+            SortColumn::Remote
+        );
     }
 
     #[test]

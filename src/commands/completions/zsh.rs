@@ -95,6 +95,9 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            'branch:Sort by branch name'\n");
         output.push_str("            'path:Sort by worktree path'\n");
         output.push_str("            'size:Sort by disk size'\n");
+        output.push_str("            'base:Sort by total base divergence'\n");
+        output.push_str("            'changes:Sort by total local changes'\n");
+        output.push_str("            'remote:Sort by total remote divergence'\n");
         output.push_str("            'age:Sort by branch age'\n");
         output.push_str("            'owner:Sort by branch owner'\n");
         output
@@ -103,6 +106,9 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            '+branch:Sort by branch name ascending'\n");
         output.push_str("            '+path:Sort by worktree path ascending'\n");
         output.push_str("            '+size:Sort by disk size ascending'\n");
+        output.push_str("            '+base:Sort by total base divergence ascending'\n");
+        output.push_str("            '+changes:Sort by total local changes ascending'\n");
+        output.push_str("            '+remote:Sort by total remote divergence ascending'\n");
         output.push_str("            '+age:Sort by branch age ascending'\n");
         output.push_str("            '+owner:Sort by branch owner ascending'\n");
         output.push_str("            '+activity:Sort by overall activity ascending'\n");
@@ -110,6 +116,9 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            '-branch:Sort by branch name descending'\n");
         output.push_str("            '-path:Sort by worktree path descending'\n");
         output.push_str("            '-size:Sort by disk size descending'\n");
+        output.push_str("            '-base:Sort by total base divergence descending'\n");
+        output.push_str("            '-changes:Sort by total local changes descending'\n");
+        output.push_str("            '-remote:Sort by total remote divergence descending'\n");
         output.push_str("            '-age:Sort by branch age descending'\n");
         output.push_str("            '-owner:Sort by branch owner descending'\n");
         output.push_str("            '-activity:Sort by overall activity descending'\n");

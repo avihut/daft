@@ -80,7 +80,7 @@ git worktree-list [OPTIONS]
 | `-a, --all` | Show all branches (equivalent to -b -r) |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.list.stat, or summary) |  |
 | `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col |  |
-| `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, age, owner, activity |  |
+| `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, activity, commit |  |
 
 ## Global Options
 

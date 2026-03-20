@@ -46,7 +46,7 @@ git worktree-prune [OPTIONS]
 | `-f, --force` | Force removal of worktrees with uncommitted changes or untracked files |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.prune.stat, or summary) |  |
 | `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col |  |
-| `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, age, owner, activity |  |
+| `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, activity, commit |  |
 
 ## Global Options
 

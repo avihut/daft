@@ -128,7 +128,7 @@ pub struct Args {
 
     #[arg(
         long,
-        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, age, owner, activity"
+        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, activity, commit"
     )]
     sort: Option<String>,
 }
@@ -178,8 +178,10 @@ pub fn run() -> Result<()> {
     let selected_columns = &resolved.columns;
     let sort_input = args.sort.or(settings.list_sort);
     let sort_spec = match sort_input {
-        Some(ref input) => SortSpec::parse(input).map_err(|e| anyhow::anyhow!("{e}"))?,
-        None => SortSpec::default_sort(),
+        Some(ref input) => SortSpec::parse(input)
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .with_stat(stat),
+        None => SortSpec::default_sort().with_stat(stat),
     };
     let has_size = selected_columns.contains(&ListColumn::Size) || sort_spec.needs_size();
     let compute_mtime = sort_spec.needs_mtime();

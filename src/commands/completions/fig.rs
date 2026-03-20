@@ -233,6 +233,9 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                     ("branch", "Sort by branch name"),
                     ("path", "Sort by worktree path"),
                     ("size", "Sort by disk size"),
+                    ("base", "Sort by total base divergence"),
+                    ("changes", "Sort by total local changes"),
+                    ("remote", "Sort by total remote divergence"),
                     ("age", "Sort by branch age"),
                     ("owner", "Sort by branch owner"),
                     (

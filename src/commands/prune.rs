@@ -83,7 +83,7 @@ pub struct Args {
 
     #[arg(
         long,
-        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, age, owner, activity"
+        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, activity, commit"
     )]
     sort: Option<String>,
 }
@@ -198,7 +198,11 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let sort_spec = {
         let sort_input = args.sort.as_deref().or(settings.prune_sort.as_deref());
         sort_input
-            .map(|input| SortSpec::parse(input).map_err(|e| anyhow::anyhow!("{e}")))
+            .map(|input| {
+                SortSpec::parse(input)
+                    .map(|s| s.with_stat(stat))
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+            })
             .transpose()?
     };
     let has_size = {
