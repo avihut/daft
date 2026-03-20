@@ -640,7 +640,7 @@ fn print_table(
                 ListColumn::Remote => "Remote",
                 ListColumn::Age => "Age",
                 ListColumn::Owner => "Owner",
-                ListColumn::LastCommit => "Last Commit",
+                ListColumn::LastCommit => "Commit",
                 ListColumn::Annotation => unreachable!(),
             };
             (label, *c)

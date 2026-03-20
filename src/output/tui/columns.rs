@@ -61,7 +61,7 @@ impl Column {
             Self::Remote => "Remote",
             Self::Age => "Age",
             Self::Owner => "Owner",
-            Self::LastCommit => "Last Commit",
+            Self::LastCommit => "Commit",
         }
     }
 
