@@ -1,0 +1,42 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH layout 1  "layout " 
+.SH NAME
+layout \- Manage worktree layouts
+.SH SYNOPSIS
+\fBlayout\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+.PP
+Manage worktree layouts for daft repositories.
+.PP
+Layouts control where worktrees are placed relative to the bare repository.
+Built\-in layouts:
+.PP
+  contained     Worktrees inside the repo directory (bare required)
+  sibling       Worktrees next to the repo directory (default)
+  nested        Worktrees in a hidden subdirectory
+  centralized   Worktrees in a global ~/worktrees/ directory
+.PP
+Use `daft layout list` to see all available layouts including custom ones
+defined in your global config (~/.config/daft/config.toml).
+.PP
+Use `daft layout show` to see the resolved layout for the current repo.
+.PP
+Use `daft layout transform <layout>` to convert a repo between layouts.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH SUBCOMMANDS
+.TP
+layout\-list(1)
+List all available layouts
+.TP
+layout\-show(1)
+Show the resolved layout for the current repo
+.TP
+layout\-transform(1)
+Transform the current repo to a different layout
+.TP
+layout\-help(1)
+Print this message or the help of the given subcommand(s)
