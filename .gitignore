@@ -32,6 +32,9 @@ node_modules/
 # Mise hook state
 .mise/
 
+# Daft dev sandbox (isolated config for development)
+.daft-sandbox/
+
 # Docs site build artifacts
 docs/.vitepress/dist/
 docs/.vitepress/cache/
