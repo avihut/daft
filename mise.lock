@@ -96,6 +96,10 @@ url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.10/bun-windows-
 checksum = "sha256:715709c69b176e20994533d3292bd0b7c32de9c0c5575b916746ec6b2aa38346"
 url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.10/bun-windows-x64-baseline.zip"
 
+[[tools."cargo:treemd"]]
+version = "0.5.9"
+backend = "cargo:treemd"
+
 [[tools.cocogitto]]
 version = "7.0.0"
 backend = "aqua:cocogitto/cocogitto"
