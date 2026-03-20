@@ -19,7 +19,8 @@ repos:
 
 steps:
   - name: Clone with --trust-hooks to execute hook
-    run: git-worktree-clone --trust-hooks $REMOTE_TEST_HOOK_ENV
+    run:
+      git-worktree-clone --trust-hooks --layout contained $REMOTE_TEST_HOOK_ENV
     expect:
       exit_code: 0
       dirs_exist:

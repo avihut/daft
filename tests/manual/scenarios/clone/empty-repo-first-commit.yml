@@ -8,7 +8,8 @@ steps:
       exit_code: 0
 
   - name: Clone the empty repository
-    run: git-worktree-clone $BASE_DIR/remotes/empty-commit-repo
+    run:
+      git-worktree-clone --layout contained $BASE_DIR/remotes/empty-commit-repo
     expect:
       exit_code: 0
       dirs_exist:

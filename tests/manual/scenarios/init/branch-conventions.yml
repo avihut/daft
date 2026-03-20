@@ -3,7 +3,8 @@ description: "Init supports various valid branch naming formats"
 
 steps:
   - name: "Init with branch name 'main'"
-    run: "git-worktree-init --initial-branch main test-repo-0"
+    run:
+      "git-worktree-init --initial-branch main --layout contained test-repo-0"
     expect:
       exit_code: 0
       dirs_exist:
@@ -13,7 +14,8 @@ steps:
           branch: main
 
   - name: "Init with branch name 'develop'"
-    run: "git-worktree-init --initial-branch develop test-repo-1"
+    run:
+      "git-worktree-init --initial-branch develop --layout contained test-repo-1"
     expect:
       exit_code: 0
       dirs_exist:
@@ -23,7 +25,9 @@ steps:
           branch: develop
 
   - name: "Init with branch name 'release-1.0'"
-    run: "git-worktree-init --initial-branch release-1.0 test-repo-2"
+    run:
+      "git-worktree-init --initial-branch release-1.0 --layout contained
+      test-repo-2"
     expect:
       exit_code: 0
       dirs_exist:
@@ -33,7 +37,9 @@ steps:
           branch: release-1.0
 
   - name: "Init with branch name 'feature/init'"
-    run: "git-worktree-init --initial-branch feature/init test-repo-3"
+    run:
+      "git-worktree-init --initial-branch feature/init --layout contained
+      test-repo-3"
     expect:
       exit_code: 0
       dirs_exist:
@@ -43,7 +49,9 @@ steps:
           branch: feature/init
 
   - name: "Init with branch name 'hotfix_urgent'"
-    run: "git-worktree-init --initial-branch hotfix_urgent test-repo-4"
+    run:
+      "git-worktree-init --initial-branch hotfix_urgent --layout contained
+      test-repo-4"
     expect:
       exit_code: 0
       dirs_exist:

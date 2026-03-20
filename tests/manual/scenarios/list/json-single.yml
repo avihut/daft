@@ -3,7 +3,7 @@ description: JSON with single worktree from init
 
 steps:
   - name: Init a test repo
-    run: git-worktree-init json-single-test
+    run: git-worktree-init --layout contained json-single-test
     expect:
       exit_code: 0
       dirs_exist:

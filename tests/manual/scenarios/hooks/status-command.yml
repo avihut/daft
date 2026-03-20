@@ -21,7 +21,7 @@ repos:
 
 steps:
   - name: Clone the repository
-    run: git-worktree-clone $REMOTE_TEST_HOOKS_STATUS
+    run: git-worktree-clone --layout contained $REMOTE_TEST_HOOKS_STATUS
     expect:
       exit_code: 0
       dirs_exist:

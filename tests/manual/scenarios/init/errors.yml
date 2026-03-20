@@ -13,12 +13,13 @@ steps:
       exit_code: 0
 
   - name: "Fail with existing directory"
-    run: "git-worktree-init existing-dir 2>&1"
+    run: "git-worktree-init --layout contained existing-dir 2>&1"
     expect:
       exit_code: 1
 
   - name: "Fail with invalid branch name containing spaces"
     run:
-      "git-worktree-init --initial-branch 'invalid branch name' test-repo 2>&1"
+      "git-worktree-init --layout contained --initial-branch 'invalid branch
+      name' test-repo 2>&1"
     expect:
       exit_code: 1

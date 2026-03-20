@@ -1,6 +1,11 @@
 use crate::{
     check_dependencies,
-    core::{worktree::init, OutputSink},
+    core::{
+        global_config::GlobalConfig,
+        layout::resolver::{resolve_layout, LayoutResolutionContext},
+        worktree::init,
+        OutputSink,
+    },
     git::{should_show_gitoxide_notice, GitCommand},
     hints::maybe_show_shell_hint,
     logging::init_logging,
@@ -73,6 +78,14 @@ pub struct Args {
     #[arg(long, help = "Do not change directory to the new worktree")]
     no_cd: bool,
 
+    /// Worktree layout to use for this repository.
+    ///
+    /// Built-in layouts: contained, sibling, nested, centralized.
+    /// Can also be a custom layout name from ~/.config/daft/config.toml
+    /// or an inline template string.
+    #[arg(long, value_name = "LAYOUT")]
+    layout: Option<String>,
+
     #[arg(
         short = 'x',
         long = "exec",
@@ -112,6 +125,16 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
 
     // Load global settings to check for multi-remote preferences
     let settings = DaftSettings::load_global()?;
+
+    // Resolve layout (init always creates the contained structure, but
+    // the flag participates in the resolution chain for consistency).
+    let global_config = GlobalConfig::load().unwrap_or_default();
+    let (_layout, _source) = resolve_layout(&LayoutResolutionContext {
+        cli_layout: args.layout.as_deref(),
+        repo_store_layout: None,
+        yaml_layout: None,
+        global_config: &global_config,
+    });
 
     let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
 
@@ -203,6 +226,7 @@ mod tests {
             initial_branch: Some("master".to_string()),
             remote: None,
             no_cd: false,
+            layout: None,
             exec: vec![],
         }
     }
@@ -282,6 +306,7 @@ mod tests {
             initial_branch: Some("master".to_string()),
             remote: None,
             no_cd: false,
+            layout: None,
             exec: vec![],
         };
         let mut output = TestOutput::new();
@@ -305,6 +330,7 @@ mod tests {
             initial_branch: Some("".to_string()),
             remote: None,
             no_cd: false,
+            layout: None,
             exec: vec![],
         };
         let mut output = TestOutput::new();

@@ -20,7 +20,7 @@ repos:
 
 steps:
   - name: Clone the repository
-    run: git-worktree-clone $REMOTE_TEST_HOOKS_TRUST
+    run: git-worktree-clone --layout contained $REMOTE_TEST_HOOKS_TRUST
     expect:
       exit_code: 0
       dirs_exist:

@@ -36,7 +36,7 @@ repos:
 
 steps:
   - name: "Clone the repository"
-    run: "git-worktree-clone $REMOTE_MY_PROJECT"
+    run: "git-worktree-clone --layout contained $REMOTE_MY_PROJECT"
     expect:
       exit_code: 0
       dirs_exist:

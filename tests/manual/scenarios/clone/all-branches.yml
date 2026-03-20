@@ -8,7 +8,9 @@ repos:
 
 steps:
   - name: "Clone with --all-branches flag"
-    run: "git-worktree-clone --all-branches $REMOTE_TEST_REPO_ALL_BRANCHES"
+    run:
+      "git-worktree-clone --all-branches --layout contained
+      $REMOTE_TEST_REPO_ALL_BRANCHES"
     expect:
       exit_code: 0
       dirs_exist:

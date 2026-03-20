@@ -7,7 +7,7 @@ repos:
 
 steps:
   - name: "Clone using file:// URL"
-    run: "git-worktree-clone file://$REMOTE_TEST_REPO_SSH"
+    run: "git-worktree-clone --layout contained file://$REMOTE_TEST_REPO_SSH"
     expect:
       exit_code: 0
       dirs_exist:

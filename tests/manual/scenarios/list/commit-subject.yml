@@ -3,7 +3,7 @@ description: List shows the last commit subject for each worktree
 
 steps:
   - name: Init a test repo
-    run: git-worktree-init subject-test
+    run: git-worktree-init --layout contained subject-test
     expect:
       exit_code: 0
 

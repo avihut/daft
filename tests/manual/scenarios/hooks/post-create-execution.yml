@@ -22,7 +22,7 @@ repos:
 
 steps:
   - name: Clone the repository
-    run: git-worktree-clone $REMOTE_TEST_HOOKS_EXEC
+    run: git-worktree-clone --layout contained $REMOTE_TEST_HOOKS_EXEC
     expect:
       exit_code: 0
       files_exist:

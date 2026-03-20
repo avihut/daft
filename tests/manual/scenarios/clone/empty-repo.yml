@@ -9,7 +9,7 @@ steps:
       exit_code: 0
 
   - name: "Clone the empty repository"
-    run: "git-worktree-clone $BASE_DIR/remotes/empty-remote"
+    run: "git-worktree-clone --layout contained $BASE_DIR/remotes/empty-remote"
     expect:
       exit_code: 0
       dirs_exist:
@@ -22,7 +22,8 @@ steps:
 
   - name: "Clone empty repo with --all-branches should fail"
     run:
-      "git-worktree-clone --all-branches $BASE_DIR/remotes/empty-remote-all 2>&1"
+      "git-worktree-clone --all-branches --layout contained
+      $BASE_DIR/remotes/empty-remote-all 2>&1"
     expect:
       exit_code: 1
 
@@ -32,7 +33,9 @@ steps:
       exit_code: 0
 
   - name: "Clone the empty repo for commit test"
-    run: "git-worktree-clone $BASE_DIR/remotes/empty-remote-commit"
+    run:
+      "git-worktree-clone --layout contained
+      $BASE_DIR/remotes/empty-remote-commit"
     expect:
       exit_code: 0
       dirs_exist:

@@ -3,7 +3,9 @@ description: "The --initial-branch option sets the default branch name"
 
 steps:
   - name: "Init repo with --initial-branch main"
-    run: "git-worktree-init --initial-branch main simple-main-repo"
+    run:
+      "git-worktree-init --initial-branch main --layout contained
+      simple-main-repo"
     expect:
       exit_code: 0
       dirs_exist:

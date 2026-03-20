@@ -3,7 +3,7 @@ description: Detached HEAD worktrees show "(detached)" in list output
 
 steps:
   - name: Init a test repo
-    run: git-worktree-init detached-test
+    run: git-worktree-init --layout contained detached-test
     expect:
       exit_code: 0
       dirs_exist:
