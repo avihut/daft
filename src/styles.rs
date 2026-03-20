@@ -91,6 +91,9 @@ pub const CURRENT_WORKTREE_SYMBOL: &str = ">";
 /// Symbol for the default branch indicator.
 pub const DEFAULT_BRANCH_SYMBOL: &str = "\u{2726}";
 
+/// Symbol for sandbox (detached HEAD) worktrees.
+pub const SANDBOX_SYMBOL: &str = "\u{25cb}";
+
 /// Wraps text in bold styling.
 pub fn bold(text: &str) -> String {
     format!("{BOLD}{text}{RESET}")
