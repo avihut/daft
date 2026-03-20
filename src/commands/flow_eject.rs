@@ -1,13 +1,14 @@
 use crate::{
     core::{worktree::flow_eject, CommandBridge},
+    get_git_common_dir,
     git::should_show_gitoxide_notice,
-    hooks::{HookExecutor, HooksConfig},
+    hooks::{HookExecutor, HooksConfig, TrustDatabase},
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
     utils::*,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -150,6 +151,18 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         "Converted to traditional layout on branch '{}'",
         result.target_branch
     ));
+
+    // Store "sibling" layout in repos.json
+    let git_dir = get_git_common_dir()?;
+    let mut trust_db = TrustDatabase::load().unwrap_or_default();
+    trust_db.set_layout(&git_dir, "sibling".to_string());
+    trust_db
+        .save()
+        .context("Failed to save layout to repos.json")?;
+
+    output.info(
+        "hint: `daft eject` will be replaced by `daft layout transform sibling` in a future release.",
+    );
 
     output.cd_path(&result.project_root);
 

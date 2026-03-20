@@ -1,16 +1,18 @@
 use crate::{
     core::{worktree::flow_adopt, OutputSink},
     executor::cli_presenter::CliPresenter,
+    get_git_common_dir,
     git::should_show_gitoxide_notice,
     hooks::{
-        get_remote_url_for_git_dir, HookContext, HookExecutor, HookType, HooksConfig, TrustLevel,
+        get_remote_url_for_git_dir, HookContext, HookExecutor, HookType, HooksConfig,
+        TrustDatabase, TrustLevel,
     },
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::{DaftSettings, HookOutputConfig},
     utils::*,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 #[derive(Parser)]
@@ -173,6 +175,18 @@ fn run_adopt(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         "Converted to worktree layout. Working directory: '{}/{}'",
         result.repo_display_name, result.current_branch
     ));
+
+    // Store "contained" layout in repos.json
+    let git_dir = get_git_common_dir()?;
+    let mut trust_db = TrustDatabase::load().unwrap_or_default();
+    trust_db.set_layout(&git_dir, "contained".to_string());
+    trust_db
+        .save()
+        .context("Failed to save layout to repos.json")?;
+
+    output.info(
+        "hint: `daft adopt` will be replaced by `daft layout transform contained` in a future release.",
+    );
 
     output.cd_path(&get_current_directory()?);
 
