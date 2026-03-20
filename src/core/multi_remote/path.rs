@@ -1,5 +1,6 @@
 //! Path calculation for multi-remote worktree organization.
 
+use crate::core::layout::template::TemplateContext;
 use crate::git::GitCommand;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -97,6 +98,22 @@ pub fn extract_branch_from_path(
     }
 }
 
+/// Build a TemplateContext from repository information.
+///
+/// Used by layout-aware commands to compute worktree paths from templates.
+pub fn build_template_context(repo_path: &Path, branch_name: &str) -> TemplateContext {
+    let repo = repo_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+    TemplateContext {
+        repo_path: repo_path.to_path_buf(),
+        repo,
+        branch: branch_name.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +178,54 @@ mod tests {
         assert_eq!(
             extract_branch_from_path(project_root, worktree_path, true),
             Some("feature/foo".to_string())
+        );
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use crate::core::layout::BuiltinLayout;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_build_template_context() {
+        let ctx = build_template_context(Path::new("/home/user/myproject"), "feature/auth");
+        assert_eq!(ctx.repo_path, PathBuf::from("/home/user/myproject"));
+        assert_eq!(ctx.repo, "myproject");
+        assert_eq!(ctx.branch, "feature/auth");
+    }
+
+    #[test]
+    fn test_build_template_context_root_path() {
+        let ctx = build_template_context(Path::new("/"), "main");
+        assert_eq!(ctx.repo, "unknown");
+    }
+
+    #[test]
+    fn test_contained_layout_via_helper() {
+        let layout = BuiltinLayout::Contained.to_layout();
+        let ctx = build_template_context(Path::new("/home/user/myproject"), "feature/auth");
+        let path = layout.worktree_path(&ctx).unwrap();
+        assert_eq!(path, PathBuf::from("/home/user/myproject/feature-auth"));
+    }
+
+    #[test]
+    fn test_sibling_layout_via_helper() {
+        let layout = BuiltinLayout::Sibling.to_layout();
+        let ctx = build_template_context(Path::new("/home/user/myproject"), "feature/auth");
+        let path = layout.worktree_path(&ctx).unwrap();
+        assert_eq!(path, PathBuf::from("/home/user/myproject.feature-auth"));
+    }
+
+    #[test]
+    fn test_nested_layout_via_helper() {
+        let layout = BuiltinLayout::Nested.to_layout();
+        let ctx = build_template_context(Path::new("/home/user/myproject"), "feature/auth");
+        let path = layout.worktree_path(&ctx).unwrap();
+        assert_eq!(
+            path,
+            PathBuf::from("/home/user/myproject/.worktrees/feature-auth")
         );
     }
 }
