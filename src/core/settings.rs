@@ -17,6 +17,9 @@
 //! | `daft.go.autoStart` | `false` | Auto-create worktree when branch not found in go |
 //! | `daft.prune.cdTarget` | `root` | Where to cd after pruning current worktree (`root` or `default-branch`) |
 //! | `daft.list.stat` | `summary` | Default statistics mode for list command (`summary` or `lines`) |
+//! | `daft.list.sort` | `branch` | Default sort order for list command |
+//! | `daft.sync.sort` | `branch` | Default sort order for sync command |
+//! | `daft.prune.sort` | `branch` | Default sort order for prune command |
 //! | `daft.updateCheck` | `true` | Enable/disable new version notifications |
 //!
 //! # Hooks Config Keys
@@ -188,6 +191,15 @@ pub mod keys {
     /// Config key for prune.columns setting.
     pub const PRUNE_COLUMNS: &str = "daft.prune.columns";
 
+    /// Config key for list.sort setting.
+    pub const LIST_SORT: &str = "daft.list.sort";
+
+    /// Config key for sync.sort setting.
+    pub const SYNC_SORT: &str = "daft.sync.sort";
+
+    /// Config key for prune.sort setting.
+    pub const PRUNE_SORT: &str = "daft.prune.sort";
+
     /// Experimental config keys.
     pub mod experimental {
         /// Config key for experimental.gitoxide setting.
@@ -291,6 +303,15 @@ pub struct DaftSettings {
 
     /// Column selection for prune command (None = use defaults).
     pub prune_columns: Option<String>,
+
+    /// Sort specification for list command (None = default branch ascending).
+    pub list_sort: Option<String>,
+
+    /// Sort specification for sync command (None = default branch ascending).
+    pub sync_sort: Option<String>,
+
+    /// Sort specification for prune command (None = default branch ascending).
+    pub prune_sort: Option<String>,
 }
 
 impl Default for DaftSettings {
@@ -314,6 +335,9 @@ impl Default for DaftSettings {
             list_columns: None,
             sync_columns: None,
             prune_columns: None,
+            list_sort: None,
+            sync_sort: None,
+            prune_sort: None,
         }
     }
 }
@@ -424,6 +448,24 @@ impl DaftSettings {
             }
         }
 
+        if let Some(value) = git.config_get(keys::LIST_SORT)? {
+            if !value.is_empty() {
+                settings.list_sort = Some(value);
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::SYNC_SORT)? {
+            if !value.is_empty() {
+                settings.sync_sort = Some(value);
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::PRUNE_SORT)? {
+            if !value.is_empty() {
+                settings.prune_sort = Some(value);
+            }
+        }
+
         Ok(settings)
     }
 
@@ -528,6 +570,24 @@ impl DaftSettings {
         if let Some(value) = git.config_get_global(keys::PRUNE_COLUMNS)? {
             if !value.is_empty() {
                 settings.prune_columns = Some(value);
+            }
+        }
+
+        if let Some(value) = git.config_get_global(keys::LIST_SORT)? {
+            if !value.is_empty() {
+                settings.list_sort = Some(value);
+            }
+        }
+
+        if let Some(value) = git.config_get_global(keys::SYNC_SORT)? {
+            if !value.is_empty() {
+                settings.sync_sort = Some(value);
+            }
+        }
+
+        if let Some(value) = git.config_get_global(keys::PRUNE_SORT)? {
+            if !value.is_empty() {
+                settings.prune_sort = Some(value);
             }
         }
 

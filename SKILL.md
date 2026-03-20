@@ -615,6 +615,9 @@ Key `git config` settings:
 | `daft.list.columns`         | (all columns) | Default columns for `daft list` (same syntax as `--columns`) |
 | `daft.sync.columns`         | (all columns) | Default columns for `daft sync` summary table                |
 | `daft.prune.columns`        | (all columns) | Default columns for `daft prune` summary table               |
+| `daft.list.sort`            | `"+branch"`   | Default sort order for `daft list` (same syntax as `--sort`) |
+| `daft.sync.sort`            | `"+branch"`   | Default sort order for `daft sync`                           |
+| `daft.prune.sort`           | `"+branch"`   | Default sort order for `daft prune`                          |
 | `daft.go.autoStart`         | `false`       | Auto-create worktree when branch not found in go             |
 | `daft.hooks.enabled`        | `true`        | Master switch for hooks                                      |
 | `daft.hooks.defaultTrust`   | `"deny"`      | Default trust for unknown repos                              |
@@ -673,3 +676,40 @@ git config daft.prune.columns "branch,path,age"
 ```
 
 The `--columns` flag overrides the git config value for that invocation.
+
+## Sorting (`--sort`)
+
+The `list`, `sync`, and `prune` commands support a `--sort` flag to control the
+sort order of the output.
+
+### Sortable columns
+
+`branch`, `path`, `size`, `age`, `owner`, `activity`, `commit`
+
+`activity` considers both committed and uncommitted file changes (working tree
+mtime). `commit` (alias: `last-commit`) sorts by last commit time only.
+
+### Syntax
+
+Prefix with `+` (ascending, the default) or `-` (descending). Multiple columns
+can be comma-separated for multi-level sort:
+
+```bash
+daft list --sort branch            # ascending by branch name (default)
+daft list --sort -activity         # most recent activity first (commits + uncommitted)
+daft list --sort -commit           # most recent commit first (ignores uncommitted)
+daft list --sort +owner,-size      # by owner ascending, then size descending
+```
+
+You can sort by columns not shown in the output (e.g., `--sort -size` without
+`--columns +size`). The sort data is collected automatically.
+
+### Persistent defaults via git config
+
+```bash
+git config daft.list.sort "-activity"
+git config daft.sync.sort "+owner,-size"
+git config daft.prune.sort "+branch"
+```
+
+The `--sort` flag overrides the git config value for that invocation.

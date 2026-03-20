@@ -1,5 +1,6 @@
 use super::state::{WorktreeRow, WorktreeStatus};
 use crate::core::columns::ListColumn;
+use crate::core::sort::SortSpec;
 use crate::output::format::ColumnValues;
 
 /// Columns available in the worktree table, ordered by display priority.
@@ -60,7 +61,7 @@ impl Column {
             Self::Remote => "Remote",
             Self::Age => "Age",
             Self::Owner => "Owner",
-            Self::LastCommit => "Last Commit",
+            Self::LastCommit => "Commit",
         }
     }
 
@@ -77,6 +78,25 @@ impl Column {
             ListColumn::Age => Column::Age,
             ListColumn::Owner => Column::Owner,
             ListColumn::LastCommit => Column::LastCommit,
+        }
+    }
+
+    /// Convert to the corresponding `ListColumn`, if one exists.
+    ///
+    /// Returns `None` for `Status` (TUI-only column with no `ListColumn` equivalent).
+    pub fn to_list_column(self) -> Option<ListColumn> {
+        match self {
+            Self::Status => None,
+            Self::Annotation => Some(ListColumn::Annotation),
+            Self::Branch => Some(ListColumn::Branch),
+            Self::Path => Some(ListColumn::Path),
+            Self::Size => Some(ListColumn::Size),
+            Self::Base => Some(ListColumn::Base),
+            Self::Changes => Some(ListColumn::Changes),
+            Self::Remote => Some(ListColumn::Remote),
+            Self::Age => Some(ListColumn::Age),
+            Self::Owner => Some(ListColumn::Owner),
+            Self::LastCommit => Some(ListColumn::LastCommit),
         }
     }
 }
@@ -134,8 +154,15 @@ pub(super) fn column_content_width(
     col: Column,
     worktrees: &[WorktreeRow],
     vals: &[ColumnValues],
+    sort_spec: Option<&SortSpec>,
 ) -> u16 {
-    let header_width = col.label().len() as u16;
+    // Account for sort indicator (" ↓" / " ↑" = 2 visible chars) in header width.
+    let sort_extra: u16 = col
+        .to_list_column()
+        .and_then(|lc| sort_spec.and_then(|s| s.direction_indicator(lc)))
+        .map(|_| 2)
+        .unwrap_or(0);
+    let header_width = col.label().len() as u16 + sort_extra;
     if worktrees.is_empty() {
         return match col {
             Column::Status => header_width.max(STATUS_MAX_WIDTH),
@@ -168,14 +195,19 @@ pub(super) fn column_content_width(
 ///
 /// Always keeps columns with priority <= 2 (Status, Annotation, Branch).
 /// Drops lowest-priority columns first when the terminal is too narrow.
-pub fn select_columns(width: u16, worktrees: &[WorktreeRow], vals: &[ColumnValues]) -> Vec<Column> {
+pub fn select_columns(
+    width: u16,
+    worktrees: &[WorktreeRow],
+    vals: &[ColumnValues],
+    sort_spec: Option<&SortSpec>,
+) -> Vec<Column> {
     let mut cols: Vec<Column> = ALL_COLUMNS.to_vec();
 
     loop {
         // Total = sum of content widths + inter-column spacing (1 char each gap).
         let content: u16 = cols
             .iter()
-            .map(|c| column_content_width(*c, worktrees, vals))
+            .map(|c| column_content_width(*c, worktrees, vals, sort_spec))
             .sum();
         let spacing = cols.len().saturating_sub(1) as u16 * 2;
         if content + spacing <= width {
@@ -197,19 +229,19 @@ mod tests {
 
     #[test]
     fn column_selection_wide_terminal() {
-        let cols = select_columns(200, &[], &[]);
+        let cols = select_columns(200, &[], &[], None);
         assert_eq!(cols.len(), ALL_COLUMNS.len());
     }
 
     #[test]
     fn column_selection_narrow_drops_last_commit() {
-        let cols = select_columns(60, &[], &[]);
+        let cols = select_columns(60, &[], &[], None);
         assert!(!cols.iter().any(|c| matches!(c, Column::LastCommit)));
     }
 
     #[test]
     fn column_selection_very_narrow_keeps_essentials() {
-        let cols = select_columns(30, &[], &[]);
+        let cols = select_columns(30, &[], &[], None);
         assert!(cols.iter().any(|c| matches!(c, Column::Status)));
         assert!(cols.iter().any(|c| matches!(c, Column::Branch)));
     }

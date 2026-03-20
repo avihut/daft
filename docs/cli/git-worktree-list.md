@@ -51,6 +51,18 @@ The size column is not shown by default. Add it with --columns +size to see the
 disk size of each worktree folder in human-readable format (e.g. 42K, 1.3M, 2.5G).
 A summary row at the bottom shows the total size across all worktrees.
 
+Use --sort to control the sort order. Prefix with + for ascending (default) or
+- for descending. Multiple columns can be comma-separated for multi-level sort.
+  Sort by branch descending:  --sort -branch
+  Sort by owner then size:    --sort +owner,-size
+  Most recent activity first: --sort -activity
+
+Sortable columns: branch, path, size, age, owner, activity, commit (alias:
+last-commit). activity considers both commits and uncommitted file changes;
+commit sorts by last commit time only. You can sort by columns not shown in
+the output (e.g. --sort -size without --columns +size). Defaults can be set
+with daft.list.sort.
+
 ## Usage
 
 ```
@@ -68,6 +80,7 @@ git worktree-list [OPTIONS]
 | `-a, --all` | Show all branches (equivalent to -b -r) |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.list.stat, or summary) |  |
 | `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col |  |
+| `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, activity, commit |  |
 
 ## Global Options
 

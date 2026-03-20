@@ -2,6 +2,7 @@ use crate::{
     core::{
         columns::{ColumnSelection, CommandKind, ListColumn, ResolvedColumns},
         repo::{get_current_worktree_path, get_git_common_dir, get_project_root},
+        sort::SortSpec,
         worktree::list::{collect_branch_info, collect_worktree_info, EntryKind, Stat},
     },
     git::GitCommand,
@@ -71,6 +72,18 @@ Defaults can be set in git config with daft.list.columns.
 The size column is not shown by default. Add it with --columns +size to see the
 disk size of each worktree folder in human-readable format (e.g. 42K, 1.3M, 2.5G).
 A summary row at the bottom shows the total size across all worktrees.
+
+Use --sort to control the sort order. Prefix with + for ascending (default) or
+- for descending. Multiple columns can be comma-separated for multi-level sort.
+  Sort by branch descending:  --sort -branch
+  Sort by owner then size:    --sort +owner,-size
+  Most recent activity first: --sort -activity
+
+Sortable columns: branch, path, size, age, owner, activity, commit (alias:
+last-commit). activity considers both commits and uncommitted file changes;
+commit sorts by last commit time only. You can sort by columns not shown in
+the output (e.g. --sort -size without --columns +size). Defaults can be set
+with daft.list.sort.
 "#)]
 pub struct Args {
     #[arg(long, help = "Output in JSON format")]
@@ -112,6 +125,12 @@ pub struct Args {
         help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col"
     )]
     columns: Option<String>,
+
+    #[arg(
+        long,
+        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, activity, commit"
+    )]
+    sort: Option<String>,
 }
 
 /// A row in the worktree list table.
@@ -157,7 +176,15 @@ pub fn run() -> Result<()> {
         None => ResolvedColumns::defaults(ListColumn::list_defaults()),
     };
     let selected_columns = &resolved.columns;
-    let has_size = selected_columns.contains(&ListColumn::Size);
+    let sort_input = args.sort.or(settings.list_sort);
+    let sort_spec = match sort_input {
+        Some(ref input) => SortSpec::parse(input)
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .with_stat(stat),
+        None => SortSpec::default_sort().with_stat(stat),
+    };
+    let has_size = selected_columns.contains(&ListColumn::Size) || sort_spec.needs_size();
+    let compute_mtime = sort_spec.needs_mtime();
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let git_common_dir = get_git_common_dir()?;
     let base_branch = get_default_branch_local(&git_common_dir, "origin", settings.use_gitoxide)
@@ -182,8 +209,14 @@ pub fn run() -> Result<()> {
             "Collecting branch information..."
         };
         output.start_spinner(msg);
-        let result =
-            collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat, has_size)?;
+        let result = collect_worktree_info(
+            &git,
+            &base_branch,
+            current_path.as_deref(),
+            stat,
+            has_size,
+            compute_mtime,
+        )?;
         if show_local || show_remote {
             let worktree_branches: HashSet<String> =
                 result.iter().map(|i| i.name.clone()).collect();
@@ -206,23 +239,41 @@ pub fn run() -> Result<()> {
                 };
                 kind_order(&a.kind)
                     .cmp(&kind_order(&b.kind))
-                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                    .then_with(|| sort_spec.compare(a, b))
             });
             output.finish_spinner();
             merged
         } else {
             output.finish_spinner();
+            let mut result = result;
+            sort_spec.sort(&mut result);
             result
         }
     } else {
-        collect_worktree_info(&git, &base_branch, current_path.as_deref(), stat, has_size)?
+        let mut result = collect_worktree_info(
+            &git,
+            &base_branch,
+            current_path.as_deref(),
+            stat,
+            has_size,
+            compute_mtime,
+        )?;
+        sort_spec.sort(&mut result);
+        result
     };
 
     if args.json {
         return print_json(&infos, &project_root, &cwd, stat, selected_columns);
     }
 
-    print_table(&infos, &project_root, &cwd, stat, selected_columns);
+    print_table(
+        &infos,
+        &project_root,
+        &cwd,
+        stat,
+        selected_columns,
+        &sort_spec,
+    );
     Ok(())
 }
 
@@ -384,12 +435,43 @@ fn print_table(
     cwd: &std::path::Path,
     stat: Stat,
     selected_columns: &[ListColumn],
+    sort_spec: &SortSpec,
 ) {
     if infos.is_empty() {
         return;
     }
 
     let use_color = styles::colors_enabled();
+
+    // Print "Sorted by" summary when column headers alone can't convey the sort.
+    if sort_spec.needs_summary_line(selected_columns) {
+        let parts: Vec<String> = sort_spec
+            .keys
+            .iter()
+            .enumerate()
+            .map(|(rank, key)| {
+                let arrow = SortSpec::arrow(key.direction);
+                let name = key.column.display_name();
+                if use_color {
+                    let color_index = match rank {
+                        0 => 255,
+                        1 => 249,
+                        _ => 243,
+                    };
+                    format!("{name} \x1b[38;5;{color_index}m{arrow}\x1b[0m")
+                } else {
+                    format!("{name} {arrow}")
+                }
+            })
+            .collect();
+        let label = if use_color {
+            styles::dim("Sorted by")
+        } else {
+            "Sorted by".to_string()
+        };
+        println!(" {label} {}", parts.join(", "));
+        println!();
+    }
     let now = Utc::now().timestamp();
 
     // Determine which annotation types exist across all rows
@@ -576,7 +658,7 @@ fn print_table(
 
     let mut builder = Builder::new();
 
-    // Build header from selected columns
+    // Build header from selected columns, with sort direction indicators
     let col_headers: Vec<(&str, ListColumn)> = selected_columns
         .iter()
         .filter(|c| **c != ListColumn::Annotation)
@@ -590,7 +672,7 @@ fn print_table(
                 ListColumn::Remote => "Remote",
                 ListColumn::Age => "Age",
                 ListColumn::Owner => "Owner",
-                ListColumn::LastCommit => "Last Commit",
+                ListColumn::LastCommit => "Commit",
                 ListColumn::Annotation => unreachable!(),
             };
             (label, *c)
@@ -600,26 +682,42 @@ fn print_table(
     let show_annotations =
         selected_columns.contains(&ListColumn::Annotation) && (has_any_current || has_any_default);
 
+    // Format a header cell: dim+underline for label, sort arrow with
+    // brightness gradient based on sort priority rank.
+    let format_header = |label: &str, col: ListColumn| -> String {
+        let indicator = sort_spec.direction_indicator(col);
+        if use_color {
+            match indicator {
+                Some((arrow, rank)) => {
+                    // 256-color grayscale: 232 (darkest) to 255 (brightest).
+                    let color_index = match rank {
+                        0 => 255, // bright white
+                        1 => 249, // light gray
+                        _ => 243, // medium gray
+                    };
+                    format!(
+                        "{} \x1b[38;5;{color_index}m{arrow}\x1b[0m",
+                        styles::dim_underline(label)
+                    )
+                }
+                None => styles::dim_underline(label),
+            }
+        } else {
+            match indicator {
+                Some((arrow, _)) => format!("{label} {arrow}"),
+                None => label.to_string(),
+            }
+        }
+    };
+
     let header: Vec<String> = if show_annotations {
         std::iter::once("".to_string())
-            .chain(col_headers.iter().map(|(h, _)| {
-                if use_color {
-                    styles::dim_underline(h)
-                } else {
-                    h.to_string()
-                }
-            }))
+            .chain(col_headers.iter().map(|(h, c)| format_header(h, *c)))
             .collect()
     } else {
         col_headers
             .iter()
-            .map(|(h, _)| {
-                if use_color {
-                    styles::dim_underline(h)
-                } else {
-                    h.to_string()
-                }
-            })
+            .map(|(h, c)| format_header(h, *c))
             .collect()
     };
     builder.push_record(header);

@@ -1,5 +1,6 @@
 use super::columns::{column_content_width, select_columns, Column};
 use super::state::{FinalStatus, PhaseStatus, TuiState, WorktreeStatus};
+use crate::core::sort::SortSpec;
 use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
 use crate::output::format::{self, format_human_size, ColumnContext, ColumnValues};
 use crate::styles;
@@ -51,6 +52,33 @@ pub fn render_header(state: &TuiState, frame: &mut Frame, area: Rect) {
     frame.render_widget(header, area);
 }
 
+/// Build styled spans for the "Sorted by" summary (e.g., "Branch ↓, Size ↑").
+fn render_sort_summary_spans(spec: &SortSpec) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (rank, key) in spec.keys.iter().enumerate() {
+        if rank > 0 {
+            spans.push(Span::styled(
+                ", ",
+                Style::default().add_modifier(Modifier::DIM),
+            ));
+        }
+        let arrow_color = match rank {
+            0 => Color::White,
+            1 => Color::Gray,
+            _ => Color::DarkGray,
+        };
+        spans.push(Span::styled(
+            key.column.display_name().to_string(),
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+        spans.push(Span::styled(
+            format!(" {}", SortSpec::arrow(key.direction)),
+            Style::default().fg(arrow_color),
+        ));
+    }
+    spans
+}
+
 /// Render the worktree status table.
 pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     let now = chrono::Utc::now().timestamp();
@@ -69,19 +97,52 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         .collect();
 
     // Select columns and compute dynamic constraints from content widths.
+    let sort_ref = state.sort_spec.as_ref();
+
+    // Render "Sorted by" summary line if column headers can't convey the sort.
+    let table_area = if let Some(spec) = sort_ref {
+        // Collect displayed ListColumns (excluding Status which is TUI-only).
+        let displayed: Vec<crate::core::columns::ListColumn> = state
+            .columns
+            .as_deref()
+            .map(|cols| cols.iter().filter_map(|c| c.to_list_column()).collect())
+            .unwrap_or_else(|| crate::core::columns::ListColumn::list_defaults().to_vec());
+        if spec.needs_summary_line(&displayed) {
+            let spans: Vec<Span> = render_sort_summary_spans(spec);
+            let mut line_spans = vec![Span::styled(
+                "Sorted by ",
+                Style::default().add_modifier(Modifier::DIM),
+            )];
+            line_spans.extend(spans);
+            let summary = Paragraph::new(Line::from(line_spans));
+            let chunks = ratatui::layout::Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1), // spacer
+                Constraint::Fill(1),
+            ])
+            .split(area);
+            frame.render_widget(summary, chunks[0]);
+            chunks[2]
+        } else {
+            area
+        }
+    } else {
+        area
+    };
     let columns = match (&state.columns, state.columns_explicit) {
         // Replace mode: user explicitly chose columns, don't responsively drop.
         (Some(user_cols), true) => user_cols.clone(),
         // Modifier mode: user tweaked defaults, responsive dropping still applies.
         (Some(user_cols), false) => {
-            let responsive = select_columns(area.width, &state.worktrees, &row_vals);
+            let responsive =
+                select_columns(table_area.width, &state.worktrees, &row_vals, sort_ref);
             responsive
                 .into_iter()
                 .filter(|c| matches!(c, Column::Status) || user_cols.contains(c))
                 .collect()
         }
         // No column selection: fully responsive.
-        (None, _) => select_columns(area.width, &state.worktrees, &row_vals),
+        (None, _) => select_columns(table_area.width, &state.worktrees, &row_vals, sort_ref),
     };
     // Status is always prepended for TUI commands.
     let columns = if !columns.contains(&Column::Status) {
@@ -98,7 +159,12 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
             if matches!(col, Column::LastCommit) {
                 Constraint::Fill(1)
             } else {
-                Constraint::Length(column_content_width(*col, &state.worktrees, &row_vals))
+                Constraint::Length(column_content_width(
+                    *col,
+                    &state.worktrees,
+                    &row_vals,
+                    sort_ref,
+                ))
             }
         })
         .collect();
@@ -118,12 +184,29 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     let header_cells: Vec<Cell> = columns
         .iter()
         .map(|col| {
-            Cell::from(Span::styled(
-                col.label(),
-                Style::default()
-                    .add_modifier(Modifier::DIM)
-                    .add_modifier(Modifier::UNDERLINED),
-            ))
+            let dim_underline = Style::default()
+                .add_modifier(Modifier::DIM)
+                .add_modifier(Modifier::UNDERLINED);
+            let indicator = col.to_list_column().and_then(|lc| {
+                state
+                    .sort_spec
+                    .as_ref()
+                    .and_then(|s| s.direction_indicator(lc))
+            });
+            match indicator {
+                Some((arrow, rank)) => {
+                    let arrow_color = match rank {
+                        0 => Color::White,
+                        1 => Color::Gray,
+                        _ => Color::DarkGray,
+                    };
+                    Cell::from(Line::from(vec![
+                        Span::styled(col.label(), dim_underline),
+                        Span::styled(format!(" {arrow}"), Style::default().fg(arrow_color)),
+                    ]))
+                }
+                None => Cell::from(Span::styled(col.label(), dim_underline)),
+            }
         })
         .collect();
     let header_row = Row::new(header_cells);
@@ -242,20 +325,20 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         .header(header_row)
         .column_spacing(2);
 
-    frame.render_widget(table, area);
+    frame.render_widget(table, table_area);
 
-    // The header row occupies 1 line, so data rows start at area.y + 1.
-    let data_start_y = area.y + 1;
+    // The header row occupies 1 line, so data rows start at table_area.y + 1.
+    let data_start_y = table_area.y + 1;
 
     // Overlay section divider between owned and unowned worktrees.
     if let Some(offset) = divider_row_offset {
         let y = data_start_y + offset;
-        if y < area.y + area.height {
+        if y < table_area.y + table_area.height {
             let divider_line = Line::from(Span::styled(
                 "Not included",
                 Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC),
             ));
-            let divider_area = Rect::new(area.x, y, area.width, 1);
+            let divider_area = Rect::new(table_area.x, y, table_area.width, 1);
             frame.render_widget(Paragraph::new(divider_line), divider_area);
         }
     }
@@ -263,8 +346,8 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     // Overlay hook lines on placeholder rows (full terminal width, no column constraints).
     for (row_offset, line) in hook_overlays {
         let y = data_start_y + row_offset;
-        if y < area.y + area.height {
-            let hook_area = Rect::new(area.x, y, area.width, 1);
+        if y < table_area.y + table_area.height {
+            let hook_area = Rect::new(table_area.x, y, table_area.width, 1);
             frame.render_widget(Paragraph::new(line), hook_area);
         }
     }
@@ -273,9 +356,9 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     // column onwards, bridging column separator gaps.
     for (row_offset, line) in pruned_overlays {
         let y = data_start_y + row_offset;
-        if y < area.y + area.height {
-            let remaining = area.width.saturating_sub(pruned_x_offset);
-            let pruned_area = Rect::new(area.x + pruned_x_offset, y, remaining, 1);
+        if y < table_area.y + table_area.height {
+            let remaining = table_area.width.saturating_sub(pruned_x_offset);
+            let pruned_area = Rect::new(table_area.x + pruned_x_offset, y, remaining, 1);
             frame.render_widget(Paragraph::new(line), pruned_area);
         }
     }

@@ -71,6 +71,7 @@ divider is only shown when both sections are non-empty.
 | `-a, --all` | Show all branches (equivalent to `-b -r`) | |
 | `--stat <STAT>` | Statistics mode: `summary` or `lines` (default: from git config `daft.list.stat`, or `summary`) | |
 | `--columns <COLUMNS>` | Columns to display (comma-separated). Replace mode: `branch,path,age`. Modifier mode: `+col,-col` | |
+| `--sort <SORT>` | Sort order (comma-separated). `+col` ascending, `-col` descending. Sortable columns: `branch`, `path`, `size`, `age`, `owner`, `activity` (aliases: `commit`, `last-commit`). Default: `daft.list.sort` or `+branch`. | |
 
 ## Global Options
 

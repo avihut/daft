@@ -94,6 +94,8 @@ pub struct WorktreeInfo {
     pub owner_email: Option<String>,
     /// Total disk size of the worktree directory in bytes (None if not computed).
     pub size_bytes: Option<u64>,
+    /// Most recent mtime of changed/untracked files (None if clean or not computed).
+    pub working_tree_mtime: Option<i64>,
 }
 
 impl WorktreeInfo {
@@ -126,6 +128,7 @@ impl WorktreeInfo {
             remote_lines_deleted: None,
             owner_email: None,
             size_bytes: None,
+            working_tree_mtime: None,
         }
     }
 
@@ -157,6 +160,7 @@ impl WorktreeInfo {
             remote_lines_deleted: None,
             owner_email,
             size_bytes: None,
+            working_tree_mtime: None,
         }
     }
 
@@ -177,7 +181,8 @@ impl WorktreeInfo {
         }
 
         // Working tree status
-        let (staged, unstaged, untracked) = count_changed_files(path);
+        let changed = count_changed_files(path);
+        let (staged, unstaged, untracked) = (changed.staged, changed.unstaged, changed.untracked);
         self.staged = staged;
         self.unstaged = unstaged;
         self.untracked = untracked;
@@ -420,10 +425,17 @@ fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) -> Option<i
     None
 }
 
+/// Result of counting changed files in a worktree.
+struct ChangedFiles {
+    staged: usize,
+    unstaged: usize,
+    untracked: usize,
+    /// Relative paths of all changed/untracked files (for mtime computation).
+    paths: Vec<String>,
+}
+
 /// Count staged, unstaged, and untracked files in a worktree.
-///
-/// Returns `(staged, unstaged, untracked)`.
-fn count_changed_files(worktree_path: &Path) -> (usize, usize, usize) {
+fn count_changed_files(worktree_path: &Path) -> ChangedFiles {
     let output = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(worktree_path)
@@ -435,6 +447,7 @@ fn count_changed_files(worktree_path: &Path) -> (usize, usize, usize) {
             let mut staged = 0;
             let mut unstaged = 0;
             let mut untracked = 0;
+            let mut paths = Vec::new();
             for line in stdout.lines() {
                 if line.len() < 2 {
                     continue;
@@ -452,10 +465,27 @@ fn count_changed_files(worktree_path: &Path) -> (usize, usize, usize) {
                         unstaged += 1;
                     }
                 }
+                // Extract filename (starts after "XY " at byte 3).
+                if line.len() > 3 {
+                    let path = &line[3..];
+                    // Renames show "old -> new"; take the new path.
+                    let path = path.rsplit_once(" -> ").map_or(path, |(_, new)| new);
+                    paths.push(path.to_string());
+                }
             }
-            (staged, unstaged, untracked)
+            ChangedFiles {
+                staged,
+                unstaged,
+                untracked,
+                paths,
+            }
         }
-        _ => (0, 0, 0),
+        _ => ChangedFiles {
+            staged: 0,
+            unstaged: 0,
+            untracked: 0,
+            paths: Vec::new(),
+        },
     }
 }
 
@@ -604,6 +634,28 @@ fn compute_directory_size(path: &Path) -> Option<u64> {
     Some(walk(path, &mut seen))
 }
 
+/// Return the most recent mtime among a set of changed/untracked files.
+///
+/// `worktree_path` is the root of the worktree; `relative_paths` are the
+/// paths reported by `git status --porcelain` (relative to the worktree root).
+/// Returns `None` if the list is empty or no file could be stat-ed.
+fn max_mtime_of_files(worktree_path: &Path, relative_paths: &[String]) -> Option<i64> {
+    let mut max_mtime: Option<i64> = None;
+    for rel in relative_paths {
+        let full = worktree_path.join(rel);
+        if let Ok(meta) = std::fs::symlink_metadata(&full) {
+            if let Ok(modified) = meta.modified() {
+                let ts = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                max_mtime = Some(max_mtime.map_or(ts, |cur| cur.max(ts)));
+            }
+        }
+    }
+    max_mtime
+}
+
 /// Collect enriched worktree information for all worktrees in the project.
 ///
 /// Parses the porcelain output, skips bare entries, enriches each entry with
@@ -615,6 +667,7 @@ pub fn collect_worktree_info(
     current_worktree_path: Option<&Path>,
     stat: Stat,
     compute_size: bool,
+    compute_mtime: bool,
 ) -> Result<Vec<WorktreeInfo>> {
     let porcelain_output = git
         .worktree_list_porcelain()
@@ -657,7 +710,8 @@ pub fn collect_worktree_info(
         };
 
         // Count staged, unstaged, and untracked files
-        let (staged, unstaged, untracked) = count_changed_files(&entry.path);
+        let changed = count_changed_files(&entry.path);
+        let (staged, unstaged, untracked) = (changed.staged, changed.unstaged, changed.untracked);
 
         // Ahead/behind relative to upstream tracking branch
         let (remote_ahead, remote_behind) = if !entry.is_detached {
@@ -743,6 +797,12 @@ pub fn collect_worktree_info(
             None
         };
 
+        let working_tree_mtime = if compute_mtime && !changed.paths.is_empty() {
+            max_mtime_of_files(&entry.path, &changed.paths)
+        } else {
+            None
+        };
+
         infos.push(WorktreeInfo {
             kind: EntryKind::Worktree,
             name: branch_display,
@@ -769,11 +829,9 @@ pub fn collect_worktree_info(
             remote_lines_deleted,
             owner_email,
             size_bytes,
+            working_tree_mtime,
         });
     }
-
-    // Sort alphabetically by name (case-insensitive)
-    infos.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
     Ok(infos)
 }
@@ -872,6 +930,7 @@ pub fn collect_branch_info(
                 remote_lines_deleted,
                 owner_email,
                 size_bytes: None,
+                working_tree_mtime: None,
             });
         }
     }
@@ -948,6 +1007,7 @@ pub fn collect_branch_info(
                 remote_lines_deleted: None,
                 owner_email,
                 size_bytes: None,
+                working_tree_mtime: None,
             });
         }
     }
