@@ -15,6 +15,7 @@ bin_dir="${sandbox_dir}/bin"
 # pwd returns the project root because mise always runs tasks from there
 worktree_path="$(pwd)"
 bat_path="$(mise which bat)"
+treemd_path="$(mise which treemd)"
 
 # --- Warn if release binary hasn't been built yet ---
 if [ ! -d "${worktree_path}/target/release" ]; then
@@ -220,6 +221,52 @@ ${bat_path} "\$(dirname "\$(dirname "\$(realpath "\$0")")")/README.md" -p
 SCRIPT
 chmod +x "${bin_dir}/help"
 
+cat > "${bin_dir}/test-plan" <<SCRIPT
+#!/usr/bin/env bash
+set -euo pipefail
+
+plans_dir="\${DAFT_WORKTREE}/test-plans"
+
+if [[ \$# -gt 0 ]]; then
+    # Explicit plan name: test-plan progressive-adoption
+    plan="\${plans_dir}/\$1.md"
+    if [[ ! -f "\$plan" ]]; then
+        echo "Test plan not found: \$plan" >&2
+        exit 1
+    fi
+else
+    # Auto-resolve from current branch via frontmatter
+    branch=\$(git -C "\$DAFT_WORKTREE" branch --show-current 2>/dev/null || true)
+    if [[ -z "\$branch" ]]; then
+        echo "Could not determine current branch" >&2
+        exit 1
+    fi
+    plan=""
+    for f in "\${plans_dir}"/*.md; do
+        [[ -f "\$f" ]] || continue
+        # Match "branch: <value>" in YAML frontmatter (between --- delimiters)
+        if sed -n '/^---$/,/^---$/p' "\$f" | grep -qE "^branch:\\s*\${branch}$"; then
+            plan="\$f"
+            break
+        fi
+    done
+    if [[ -z "\$plan" ]]; then
+        echo "No test plan found for branch: \$branch" >&2
+        if ls "\${plans_dir}"/*.md &>/dev/null; then
+            echo "" >&2
+            echo "Available test plans:" >&2
+            for f in "\${plans_dir}"/*.md; do
+                echo "  \$(basename "\${f%.md}")" >&2
+            done
+        fi
+        exit 1
+    fi
+fi
+
+exec ${treemd_path} "\$plan"
+SCRIPT
+chmod +x "${bin_dir}/test-plan"
+
 # --- Completions for helper scripts ---
 cat > "${bin_dir}/completions/_manual-test" <<'ZSH_COMP'
 #compdef manual-test
@@ -424,6 +471,43 @@ _reset_test() {
 complete -F _reset_test reset-test
 BASH_COMP
 
+# --- Completions for test-plan (test plan names from test-plans/) ---
+cat > "${bin_dir}/completions/_test-plan" <<'ZSH_COMP'
+#compdef test-plan
+
+_test-plan() {
+    local -a plans
+    local plans_dir="${DAFT_WORKTREE}/test-plans"
+
+    if [[ -d "$plans_dir" ]]; then
+        local f
+        for f in "$plans_dir"/*.md(N); do
+            plans+=("${${f:t}:r}")
+        done
+    fi
+
+    _arguments -s \
+        '1:test plan:($plans)'
+}
+ZSH_COMP
+
+cat > "${bin_dir}/completions/test-plan.bash" <<'BASH_COMP'
+_test_plan() {
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    local plans_dir="${DAFT_WORKTREE}/test-plans"
+    if [[ -d "$plans_dir" ]]; then
+        local plans="" f
+        for f in "$plans_dir"/*.md; do
+            [[ -f "$f" ]] || continue
+            local name="$(basename "${f%.md}")"
+            plans="$plans $name"
+        done
+        COMPREPLY=($(compgen -W "$plans" -- "$cur"))
+    fi
+}
+complete -F _test_plan test-plan
+BASH_COMP
+
 # --- Sourceable init script (completions + shell-init) ---
 cat > "${bin_dir}/init" <<'LOADER'
 # Initialize the sandbox shell: completions + daft shell integration.
@@ -437,12 +521,15 @@ if [[ -n "${ZSH_VERSION:-}" ]]; then
     compdef _show-test show-test
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/_reset-test"
     compdef _reset-test reset-test
+    source "${DAFT_SANDBOX_COMPLETIONS_DIR}/_test-plan"
+    compdef _test-plan test-plan
     eval "$(daft shell-init zsh)"
 elif [[ -n "${BASH_VERSION:-}" ]]; then
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/manual-test.bash"
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/setup-test.bash"
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/show-test.bash"
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/reset-test.bash"
+    source "${DAFT_SANDBOX_COMPLETIONS_DIR}/test-plan.bash"
     eval "$(daft shell-init bash)"
 fi
 LOADER
@@ -460,6 +547,7 @@ Initialize completions and daft shell integration:
 ## Available commands
 
     help                     Show this guide
+    test-plan [name]         Open branch test plan in treemd (auto-detects branch)
     manual-test <scenario>   Run a manual test scenario interactively
     manual-test --list       List available scenarios
     show-test <scenario>     Show test steps and commands for a scenario

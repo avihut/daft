@@ -140,6 +140,32 @@ mise run man:gen      # Generate/update man pages
 mise run man:verify   # Check if man pages are up-to-date (also runs in CI)
 ```
 
+## Test Plans
+
+Manual test plans live in `test-plans/`. Each file is a markdown checklist tied
+to a branch via YAML frontmatter:
+
+```markdown
+---
+branch: feat/progressive-adoption
+---
+
+# Progressive Adoption
+
+## Layout resolution
+
+- [ ] Default layout is sibling when no config exists
+- [ ] CLI --layout flag overrides config
+```
+
+- **File name**: descriptive feature name, not the branch name
+  (`progressive-adoption.md`, not `feat-progressive-adoption.md`)
+- **`branch:` frontmatter**: must match the full branch name — used by the
+  sandbox `test-plan` command to auto-resolve the plan for the current worktree
+- **Committed to the repo**: serves as documentation of what was manually tested
+- In the sandbox: `test-plan` opens the current branch's plan in treemd,
+  `test-plan <name>` opens a specific plan by filename
+
 ## Documentation Site
 
 `docs/` contains the project documentation (VitePress/Markdown). Update when
