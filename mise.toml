@@ -7,7 +7,7 @@ lefthook = "latest"
 cocogitto = "latest"
 bun = "latest"
 bat = "latest"
-"cargo:treemd" = "latest"
+neovim = "stable"
 
 [env]
 _.path = ["./target/release"]

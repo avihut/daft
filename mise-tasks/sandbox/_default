@@ -15,7 +15,7 @@ bin_dir="${sandbox_dir}/bin"
 # pwd returns the project root because mise always runs tasks from there
 worktree_path="$(pwd)"
 bat_path="$(mise which bat)"
-treemd_path="$(mise which treemd)"
+nvim_path="$(mise which nvim)"
 
 # --- Warn if release binary hasn't been built yet ---
 if [ ! -d "${worktree_path}/target/release" ]; then
@@ -263,7 +263,12 @@ else
     fi
 fi
 
-exec ${treemd_path} "\$plan"
+XDG_CONFIG_HOME="\${DAFT_WORKTREE}/tools/nvim" \
+XDG_DATA_HOME="${sandbox_dir}/nvim-data" \
+XDG_STATE_HOME="${sandbox_dir}/nvim-state" \
+XDG_CACHE_HOME="${sandbox_dir}/nvim-cache" \
+NVIM_APPNAME=test-plan \
+exec ${nvim_path} "\$plan"
 SCRIPT
 chmod +x "${bin_dir}/test-plan"
 
@@ -547,7 +552,7 @@ Initialize completions and daft shell integration:
 ## Available commands
 
     help                     Show this guide
-    test-plan [name]         Open branch test plan in treemd (auto-detects branch)
+    test-plan [name]         Open branch test plan in neovim (auto-detects branch)
     manual-test <scenario>   Run a manual test scenario interactively
     manual-test --list       List available scenarios
     show-test <scenario>     Show test steps and commands for a scenario
