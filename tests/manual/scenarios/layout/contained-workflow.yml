@@ -1,0 +1,40 @@
+name: Contained layout workflow
+description:
+  Clone with contained layout (traditional daft), create a worktree, verify it
+  is a sibling to main inside the project root
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with contained layout
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/.git"
+        - "$WORK_DIR/test-repo/main"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/main"
+          branch: main
+
+  - name: Create worktree for new branch
+    run: git-worktree-checkout -b feature/test
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/test"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/feature/test"
+          branch: feature/test
+
+  - name: List worktrees shows both
+    run: NO_COLOR=1 git-worktree-list 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"
+        - "feature/test"
