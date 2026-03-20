@@ -2,7 +2,7 @@
 //!
 //! Creates a worktree for an existing branch.
 
-use crate::core::layout::Layout;
+use crate::core::layout::{auto_gitignore_if_needed, Layout};
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
 use crate::git::GitCommand;
 use crate::hooks::{HookContext, HookType};
@@ -261,6 +261,11 @@ pub fn execute(
             worktree_path.display()
         )
         .into());
+    }
+
+    // Auto-add worktree parent directory to .gitignore for in-repo layouts
+    if let Err(e) = auto_gitignore_if_needed(project_root, &worktree_path, params.layout.as_ref()) {
+        sink.on_warning(&format!("Could not update .gitignore: {e}"));
     }
 
     sink.on_step(&format!(
