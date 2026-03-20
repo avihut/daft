@@ -70,7 +70,7 @@ git worktree-checkout [OPTIONS] <BRANCH_NAME> [BASE_BRANCH_NAME]
 | `--no-cd` | Do not change directory to the new worktree |  |
 | `-x, --exec <EXEC>` | Run a command in the worktree after setup completes (repeatable) |  |
 | `-s, --start` | Create a new worktree if the branch does not exist |  |
-| `--at <PATH>` | Place the worktree at a specific path instead of using the layout template |  |
+| `-@, --at <PATH>` | Place the worktree at a specific path instead of using the layout template |  |
 
 ## Global Options
 

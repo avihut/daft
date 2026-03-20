@@ -4,7 +4,7 @@
 .SH NAME
 daft start \- Create a new branch and worktree
 .SH SYNOPSIS
-\fBdaft start\fR [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-at\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fINEW_BRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
+\fBdaft start\fR [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fINEW_BRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
 .SH DESCRIPTION
 .PP
 Creates a new branch and a corresponding worktree in a single operation. The
@@ -42,7 +42,7 @@ Operate quietly; suppress progress reporting
 \fB\-v\fR, \fB\-\-verbose\fR
 Be verbose; show detailed progress
 .TP
-\fB\-\-at\fR \fI<PATH>\fR
+\fB\-@\fR, \fB\-\-at\fR \fI<PATH>\fR
 Place the worktree at a specific path instead of using the layout template
 .TP
 \fB\-h\fR, \fB\-\-help\fR

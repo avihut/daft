@@ -114,7 +114,7 @@ pub struct Args {
     start: bool,
 
     /// Place the worktree at a specific path instead of using the layout template.
-    #[arg(long, value_name = "PATH")]
+    #[arg(short = '@', long, value_name = "PATH")]
     at: Option<PathBuf>,
 }
 
@@ -211,7 +211,7 @@ pub struct GoArgs {
     verbose: bool,
 
     /// Place the worktree at a specific path instead of using the layout template.
-    #[arg(long, value_name = "PATH")]
+    #[arg(short = '@', long, value_name = "PATH")]
     at: Option<PathBuf>,
 }
 
@@ -276,7 +276,7 @@ pub struct StartArgs {
     verbose: bool,
 
     /// Place the worktree at a specific path instead of using the layout template.
-    #[arg(long, value_name = "PATH")]
+    #[arg(short = '@', long, value_name = "PATH")]
     at: Option<PathBuf>,
 }
 
