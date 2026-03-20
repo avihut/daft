@@ -39,6 +39,9 @@ pub struct CheckoutBranchParams {
     /// Optional layout for computing the worktree path.
     /// When `Some`, uses `layout.worktree_path()` instead of `calculate_worktree_path()`.
     pub layout: Option<Layout>,
+    /// Explicit path override for worktree placement (`--at` flag).
+    /// When `Some`, takes priority over both `layout` and the default path computation.
+    pub at_path: Option<PathBuf>,
 }
 
 /// Result of a checkout-branch operation.
@@ -69,7 +72,9 @@ pub fn execute(
     let git_dir = crate::core::repo::get_git_common_dir()?;
     let source_worktree = get_current_directory()?;
 
-    let worktree_path = if let Some(ref layout) = params.layout {
+    let worktree_path = if let Some(ref at) = params.at_path {
+        at.clone()
+    } else if let Some(ref layout) = params.layout {
         let ctx = build_template_context(project_root, &params.new_branch_name);
         layout.worktree_path(&ctx)?
     } else {

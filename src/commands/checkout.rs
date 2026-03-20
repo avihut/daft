@@ -18,6 +18,7 @@ use crate::{
 };
 use anyhow::Result;
 use clap::Parser;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-checkout")]
@@ -111,6 +112,10 @@ pub struct Args {
         help = "Create a new worktree if the branch does not exist"
     )]
     start: bool,
+
+    /// Place the worktree at a specific path instead of using the layout template.
+    #[arg(long, value_name = "PATH")]
+    at: Option<PathBuf>,
 }
 
 /// Daft-style args for `daft go`. Separate from `Args` so that `-h`/`--help`
@@ -204,6 +209,10 @@ pub struct GoArgs {
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
+
+    /// Place the worktree at a specific path instead of using the layout template.
+    #[arg(long, value_name = "PATH")]
+    at: Option<PathBuf>,
 }
 
 /// Daft-style args for `daft start`. Separate from `Args` so that `-h`/`--help`
@@ -265,6 +274,10 @@ pub struct StartArgs {
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
+
+    /// Place the worktree at a specific path instead of using the layout template.
+    #[arg(long, value_name = "PATH")]
+    at: Option<PathBuf>,
 }
 
 /// Entry point for `git-worktree-checkout`.
@@ -291,6 +304,7 @@ pub fn run_go() -> Result<()> {
         exec: go_args.exec,
         quiet: go_args.quiet,
         verbose: go_args.verbose,
+        at: go_args.at,
     };
     run_with_args(args)
 }
@@ -313,6 +327,7 @@ pub fn run_start() -> Result<()> {
         exec: start_args.exec,
         quiet: start_args.quiet,
         verbose: start_args.verbose,
+        at: start_args.at,
     };
     run_with_args(args)
 }
@@ -497,6 +512,7 @@ fn run_checkout(
         checkout_carry: settings.checkout_carry,
         checkout_upstream: settings.checkout_upstream,
         layout: Some(layout),
+        at_path: args.at.clone(),
     };
 
     let hooks_config = HooksConfig::default();
@@ -560,6 +576,7 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
         checkout_branch_carry: settings.checkout_branch_carry,
         checkout_push: settings.checkout_push,
         layout: Some(layout),
+        at_path: args.at.clone(),
     };
 
     let hooks_config = HooksConfig::default();
