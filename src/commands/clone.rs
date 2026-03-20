@@ -1,6 +1,11 @@
 use crate::{
     check_dependencies,
-    core::{worktree::clone, OutputSink},
+    core::{
+        global_config::GlobalConfig,
+        layout::resolver::{resolve_layout, LayoutResolutionContext},
+        worktree::clone,
+        OutputSink,
+    },
     executor::cli_presenter::CliPresenter,
     git::should_show_gitoxide_notice,
     hints::maybe_show_shell_hint,
@@ -93,6 +98,14 @@ pub struct Args {
     #[arg(long, help = "Do not change directory to the new worktree")]
     no_cd: bool,
 
+    /// Worktree layout to use for this repository.
+    ///
+    /// Built-in layouts: contained, sibling, nested, centralized.
+    /// Can also be a custom layout name from ~/.config/daft/config.toml
+    /// or an inline template string.
+    #[arg(long, value_name = "LAYOUT")]
+    layout: Option<String>,
+
     #[arg(
         short = 'x',
         long = "exec",
@@ -143,6 +156,14 @@ fn validate_arg_combinations(args: &Args) -> Result<()> {
 fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
     check_dependencies()?;
 
+    let global_config = GlobalConfig::load().unwrap_or_default();
+    let (layout, _source) = resolve_layout(&LayoutResolutionContext {
+        cli_layout: args.layout.as_deref(),
+        repo_store_layout: None, // New clone, no repo store entry yet
+        yaml_layout: None,       // Can't read daft.yml before clone
+        global_config: &global_config,
+    });
+
     let params = clone::CloneParams {
         repository_url: args.repository_url.clone(),
         branch: args.branch.clone(),
@@ -154,6 +175,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         multi_remote_default: settings.multi_remote_default.clone(),
         checkout_upstream: settings.checkout_upstream,
         use_gitoxide: settings.use_gitoxide,
+        layout,
     };
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {

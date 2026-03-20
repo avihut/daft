@@ -2,8 +2,10 @@
 //!
 //! Clones a repository into a worktree-based directory structure.
 
+use crate::core::layout::Layout;
 use crate::core::ProgressSink;
 use crate::git::GitCommand;
+use crate::hooks::TrustDatabase;
 use crate::multi_remote::path::calculate_worktree_path;
 use crate::remote::{get_default_branch_remote, get_remote_branches, is_remote_empty};
 use crate::resolve_initial_branch;
@@ -33,6 +35,8 @@ pub struct CloneParams {
     pub checkout_upstream: bool,
     /// Whether to use gitoxide.
     pub use_gitoxide: bool,
+    /// Worktree layout to use for this repository.
+    pub layout: Layout,
 }
 
 /// Result of a clone operation.
@@ -58,10 +62,23 @@ pub struct CloneResult {
 
 /// Execute the clone operation.
 ///
-/// Handles the entire clone workflow: detect branches, clone bare, create
-/// worktrees, fetch tracking refs, and set upstream. Does NOT run hooks --
+/// Handles the entire clone workflow: detect branches, clone bare or regular,
+/// create worktrees, fetch tracking refs, and set upstream. Does NOT run hooks --
 /// the command layer handles that due to clone-specific trust semantics.
 pub fn execute(params: &CloneParams, progress: &mut dyn ProgressSink) -> Result<CloneResult> {
+    let needs_bare = params.layout.needs_bare();
+
+    if needs_bare {
+        execute_bare(params, progress)
+    } else {
+        execute_regular(params, progress)
+    }
+}
+
+/// Execute a bare clone (the original/contained layout path).
+///
+/// Creates a bare repo at `<repo>/.git` and adds worktrees as subdirectories.
+fn execute_bare(params: &CloneParams, progress: &mut dyn ProgressSink) -> Result<CloneResult> {
     let repo_name = crate::extract_repo_name(&params.repository_url)?;
     progress.on_step(&format!("Repository name detected: '{repo_name}'"));
 
@@ -139,6 +156,9 @@ pub fn execute(params: &CloneParams, progress: &mut dyn ProgressSink) -> Result<
         crate::multi_remote::config::set_multi_remote_enabled(&git, true)?;
         crate::multi_remote::config::set_multi_remote_default(&git, &remote_for_path)?;
     }
+
+    // Store layout in repos.json
+    store_layout(&git_dir, &params.layout, progress);
 
     let should_create_worktree = !params.no_checkout && (branch_exists || is_empty);
 
@@ -238,6 +258,130 @@ pub fn execute(params: &CloneParams, progress: &mut dyn ProgressSink) -> Result<
             is_empty,
             no_checkout: true,
         })
+    }
+}
+
+/// Execute a regular (non-bare) clone.
+///
+/// Performs a standard `git clone` — the result is a normal repository with a
+/// `.git` directory. No worktrees are created; the clone IS the working directory.
+/// Future worktrees will be created via `daft start` using the layout template.
+fn execute_regular(params: &CloneParams, progress: &mut dyn ProgressSink) -> Result<CloneResult> {
+    let repo_name = crate::extract_repo_name(&params.repository_url)?;
+    progress.on_step(&format!("Repository name detected: '{repo_name}'"));
+
+    let parent_dir = PathBuf::from(&repo_name);
+
+    if path_exists(&parent_dir) {
+        anyhow::bail!("Target path './{} already exists.", parent_dir.display());
+    }
+
+    let git = GitCommand::new(false).with_gitoxide(params.use_gitoxide);
+
+    // For non-bare clones, --all-branches is not supported (standard git clone
+    // already fetches all remote tracking refs)
+    if params.all_branches {
+        progress.on_warning(
+            "--all-branches has no effect with non-bare layouts; \
+             all remote branches are already tracked",
+        );
+    }
+
+    // Detect target branch for reporting and checkout
+    let (default_branch, target_branch, branch_exists, is_empty) =
+        detect_branches(params, progress)?;
+
+    progress.on_step(&format!(
+        "Target repository directory: './{}'",
+        parent_dir.display()
+    ));
+
+    progress.on_step(&format!(
+        "Cloning repository into './{}'...",
+        parent_dir.display()
+    ));
+
+    // Determine which clone variant to use
+    let clone_result = if let Some(ref branch) = params.branch {
+        if !branch_exists {
+            // Branch doesn't exist on remote — clone default then report
+            progress.on_warning(&format!(
+                "Branch '{}' does not exist on remote; cloning default branch",
+                branch
+            ));
+            git.clone_regular(&params.repository_url, &parent_dir)
+        } else {
+            git.clone_regular_branch(&params.repository_url, &parent_dir, branch)
+        }
+    } else {
+        git.clone_regular(&params.repository_url, &parent_dir)
+    };
+
+    if let Err(e) = clone_result {
+        remove_directory(&parent_dir).ok();
+        return Err(e.context("Git clone failed"));
+    }
+
+    // Canonicalize the git dir
+    let git_dir = parent_dir.join(".git").canonicalize().with_context(|| {
+        format!(
+            "Failed to canonicalize git directory: {}",
+            parent_dir.join(".git").display()
+        )
+    })?;
+
+    progress.on_step(&format!(
+        "Changing directory to './{}'",
+        parent_dir.display()
+    ));
+    change_directory(&parent_dir)?;
+
+    // Store layout in repos.json
+    store_layout(&git_dir, &params.layout, progress);
+
+    let current_dir = get_current_directory()?;
+
+    // For non-bare clones, the clone itself is the working directory — there's
+    // no separate worktree to create. We report the clone dir as both cd_target
+    // and worktree_dir so hooks can run against it.
+    let has_worktree = !params.no_checkout && (branch_exists || is_empty);
+
+    Ok(CloneResult {
+        repo_name,
+        target_branch,
+        default_branch,
+        parent_dir,
+        git_dir,
+        remote_name: params.remote_name.clone(),
+        repository_url: params.repository_url.clone(),
+        cd_target: if has_worktree || (!branch_exists && !params.no_checkout) {
+            Some(current_dir.clone())
+        } else {
+            None
+        },
+        worktree_dir: if has_worktree {
+            Some(current_dir)
+        } else {
+            None
+        },
+        branch_not_found: !branch_exists && !params.no_checkout && params.branch.is_some(),
+        is_empty,
+        no_checkout: params.no_checkout,
+    })
+}
+
+/// Store the resolved layout in repos.json.
+fn store_layout(git_dir: &Path, layout: &Layout, progress: &mut dyn ProgressSink) {
+    match TrustDatabase::load() {
+        Ok(mut db) => {
+            db.set_layout(git_dir, layout.name.clone());
+            if let Err(e) = db.save() {
+                progress.on_warning(&format!("Could not save layout to repos.json: {e}"));
+            }
+        }
+        Err(e) => {
+            progress.on_warning(&format!("Could not load repos.json to save layout: {e}"));
+        }
     }
 }
 

@@ -26,6 +26,58 @@ impl GitCommand {
         Ok(())
     }
 
+    /// Clone a repository normally (non-bare) into `target_dir`.
+    pub fn clone_regular(&self, repo_url: &str, target_dir: &Path) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.arg("clone");
+
+        if self.quiet {
+            cmd.arg("--quiet");
+        }
+
+        cmd.arg(repo_url).arg(target_dir);
+
+        let output = cmd
+            .output()
+            .context("Failed to execute git clone command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git clone failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
+    /// Clone a repository normally (non-bare) into `target_dir`, checking out a specific branch.
+    pub fn clone_regular_branch(
+        &self,
+        repo_url: &str,
+        target_dir: &Path,
+        branch: &str,
+    ) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.arg("clone");
+
+        if self.quiet {
+            cmd.arg("--quiet");
+        }
+
+        cmd.args(["--branch", branch]);
+        cmd.arg(repo_url).arg(target_dir);
+
+        let output = cmd
+            .output()
+            .context("Failed to execute git clone command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git clone failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
     pub fn init_bare(&self, target_dir: &Path, initial_branch: &str) -> Result<()> {
         let mut cmd = Command::new("git");
         cmd.args(["init", "--bare"]);
