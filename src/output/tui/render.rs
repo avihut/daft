@@ -127,17 +127,24 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
             let dim_underline = Style::default()
                 .add_modifier(Modifier::DIM)
                 .add_modifier(Modifier::UNDERLINED);
-            let arrow = col.to_list_column().and_then(|lc| {
+            let indicator = col.to_list_column().and_then(|lc| {
                 state
                     .sort_spec
                     .as_ref()
                     .and_then(|s| s.direction_indicator(lc))
             });
-            match arrow {
-                Some(a) => Cell::from(Line::from(vec![
-                    Span::styled(col.label(), dim_underline),
-                    Span::raw(format!(" {a}")),
-                ])),
+            match indicator {
+                Some((arrow, rank)) => {
+                    let arrow_color = match rank {
+                        0 => Color::White,
+                        1 => Color::Gray,
+                        _ => Color::DarkGray,
+                    };
+                    Cell::from(Line::from(vec![
+                        Span::styled(col.label(), dim_underline),
+                        Span::styled(format!(" {arrow}"), Style::default().fg(arrow_color)),
+                    ]))
+                }
                 None => Cell::from(Span::styled(col.label(), dim_underline)),
             }
         })

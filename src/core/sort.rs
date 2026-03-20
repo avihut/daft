@@ -248,15 +248,17 @@ impl SortSpec {
     /// Arrows follow terminal visual flow: ascending (smallest first) flows
     /// downward `↓`, descending (largest first) flows upward `↑`.
     ///
-    /// Returns `Some("↓")` for ascending, `Some("↑")` for descending,
-    /// or `None` if the column is not being sorted.
-    pub fn direction_indicator(&self, col: ListColumn) -> Option<&'static str> {
-        self.keys.iter().find_map(|key| {
+    /// Returns the arrow string and the 0-based rank (position in the sort
+    /// key list, for brightness gradient), or `None` if the column is not
+    /// being sorted.
+    pub fn direction_indicator(&self, col: ListColumn) -> Option<(&'static str, usize)> {
+        self.keys.iter().enumerate().find_map(|(rank, key)| {
             if key.column.to_list_column() == Some(col) {
-                Some(match key.direction {
+                let arrow = match key.direction {
                     SortDirection::Ascending => "\u{2193}",  // ↓
                     SortDirection::Descending => "\u{2191}", // ↑
-                })
+                };
+                Some((arrow, rank))
             } else {
                 None
             }

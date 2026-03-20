@@ -650,17 +650,29 @@ fn print_table(
     let show_annotations =
         selected_columns.contains(&ListColumn::Annotation) && (has_any_current || has_any_default);
 
-    // Format a header cell: dim+underline for label, plain for sort arrow
+    // Format a header cell: dim+underline for label, sort arrow with
+    // brightness gradient based on sort priority rank.
     let format_header = |label: &str, col: ListColumn| -> String {
-        let arrow = sort_spec.direction_indicator(col);
+        let indicator = sort_spec.direction_indicator(col);
         if use_color {
-            match arrow {
-                Some(a) => format!("{} {a}", styles::dim_underline(label)),
+            match indicator {
+                Some((arrow, rank)) => {
+                    // 256-color grayscale: 232 (darkest) to 255 (brightest).
+                    let color_index = match rank {
+                        0 => 255, // bright white
+                        1 => 249, // light gray
+                        _ => 243, // medium gray
+                    };
+                    format!(
+                        "{} \x1b[38;5;{color_index}m{arrow}\x1b[0m",
+                        styles::dim_underline(label)
+                    )
+                }
                 None => styles::dim_underline(label),
             }
         } else {
-            match arrow {
-                Some(a) => format!("{label} {a}"),
+            match indicator {
+                Some((arrow, _)) => format!("{label} {arrow}"),
                 None => label.to_string(),
             }
         }
