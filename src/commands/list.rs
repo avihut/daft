@@ -470,6 +470,7 @@ fn print_table(
             "Sorted by".to_string()
         };
         println!(" {label} {}", parts.join(", "));
+        println!();
     }
     let now = Utc::now().timestamp();
 

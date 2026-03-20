@@ -115,11 +115,14 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
             )];
             line_spans.extend(spans);
             let summary = Paragraph::new(Line::from(line_spans));
-            let chunks =
-                ratatui::layout::Layout::vertical([Constraint::Length(1), Constraint::Fill(1)])
-                    .split(area);
+            let chunks = ratatui::layout::Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1), // spacer
+                Constraint::Fill(1),
+            ])
+            .split(area);
             frame.render_widget(summary, chunks[0]);
-            chunks[1]
+            chunks[2]
         } else {
             area
         }
