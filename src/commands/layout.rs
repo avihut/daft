@@ -135,11 +135,11 @@ fn cmd_list(output: &mut dyn Output) -> Result<()> {
     builder.push_record(if use_color {
         vec![
             String::new(), // annotation column
-            dim_underline("layout"),
-            dim_underline("template"),
+            dim_underline("Layout"),
+            dim_underline("Template"),
         ]
     } else {
-        vec![String::new(), "layout".into(), "template".into()]
+        vec![String::new(), "Layout".into(), "Template".into()]
     });
 
     for row in &layouts {
@@ -190,16 +190,18 @@ fn cmd_list(output: &mut dyn Output) -> Result<()> {
 
 /// Syntax-highlight a template string.
 ///
-/// Three-tier visual hierarchy:
-/// - **Bold**: variable names (the dynamic data — most important)
-/// - **Normal**: literal path text (the structure — important)
-/// - **Dark gray**: delimiters `{{ }}` and filters `| sanitize` (syntax — least important)
+/// Follows Jinja2 syntax highlighting conventions used by editors:
+/// - **Yellow**: delimiters `{{` `}}` (accent, frames the expression)
+/// - **Cyan**: variable names `repo_path`, `repo`, `branch` (data)
+/// - **White/default**: pipe operator `|` (punctuation)
+/// - **Green**: filter names `sanitize` (function-like)
+/// - **Default**: literal path text `/`, `.worktrees/`, `~/` (structure)
 fn highlight_template(template: &str) -> String {
     let mut result = String::new();
     let mut rest = template;
 
     while let Some(start) = rest.find("{{") {
-        // Literal text before the expression — normal (no styling)
+        // Literal path text — default color (no styling)
         result.push_str(&rest[..start]);
 
         let after_open = &rest[start + 2..];
@@ -208,14 +210,16 @@ fn highlight_template(template: &str) -> String {
             if let Some(pipe_pos) = expr.find('|') {
                 let var = expr[..pipe_pos].trim();
                 let filter = expr[pipe_pos + 1..].trim();
-                result.push_str(&styles::dark_gray("{{"));
-                result.push_str(&format!(" {} ", bold(var)));
-                result.push_str(&styles::dark_gray(&format!("| {filter} }}")));
+                result.push_str(&styles::yellow("{{"));
+                result.push_str(&format!(" {} ", styles::cyan(var)));
+                result.push_str(" | ");
+                result.push_str(&styles::green(filter));
+                result.push_str(&format!(" {}", styles::yellow("}}")));
             } else {
                 let var = expr.trim();
-                result.push_str(&styles::dark_gray("{{"));
-                result.push_str(&format!(" {} ", bold(var)));
-                result.push_str(&styles::dark_gray("}}"));
+                result.push_str(&styles::yellow("{{"));
+                result.push_str(&format!(" {} ", styles::cyan(var)));
+                result.push_str(&styles::yellow("}}"));
             }
             rest = &after_open[end + 2..];
         } else {
@@ -223,7 +227,7 @@ fn highlight_template(template: &str) -> String {
             rest = "";
         }
     }
-    // Remaining literal text — normal (no styling)
+    // Remaining literal path text — default color
     result.push_str(rest);
     result
 }
