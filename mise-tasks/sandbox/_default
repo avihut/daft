@@ -264,9 +264,9 @@ else
 fi
 
 XDG_CONFIG_HOME="\${DAFT_WORKTREE}/tools/nvim" \
-XDG_DATA_HOME="${sandbox_dir}/nvim-data" \
-XDG_STATE_HOME="${sandbox_dir}/nvim-state" \
-XDG_CACHE_HOME="${sandbox_dir}/nvim-cache" \
+XDG_DATA_HOME="${sandbox_dir}/config/nvim/data" \
+XDG_STATE_HOME="${sandbox_dir}/config/nvim/state" \
+XDG_CACHE_HOME="${sandbox_dir}/config/nvim/cache" \
 NVIM_APPNAME=test-plan \
 exec ${nvim_path} "\$plan"
 SCRIPT
