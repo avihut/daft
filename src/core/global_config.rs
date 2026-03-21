@@ -114,6 +114,40 @@ impl GlobalConfig {
             .with_context(|| format!("Failed to write config to {}", path.display()))
     }
 
+    /// Remove the default layout from the config file.
+    ///
+    /// Reverts to the built-in default (sibling). Only removes lines under
+    /// `[defaults]` section (section-aware). No-op if config file doesn't
+    /// exist or has no layout line.
+    pub fn remove_default_layout() -> Result<()> {
+        let path = Self::default_path()?;
+
+        if !path.exists() {
+            return Ok(());
+        }
+
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read config from {}", path.display()))?;
+
+        let mut result = String::new();
+        let mut in_defaults = false;
+
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_defaults = trimmed == "[defaults]";
+            }
+            if in_defaults && (trimmed.starts_with("layout = ") || trimmed.starts_with("layout=")) {
+                continue; // Skip this line
+            }
+            result.push_str(line);
+            result.push('\n');
+        }
+
+        std::fs::write(&path, result)
+            .with_context(|| format!("Failed to write config to {}", path.display()))
+    }
+
     /// Get the default layout, if configured.
     pub fn default_layout(&self) -> Option<Layout> {
         let name = self.defaults.layout.as_deref()?;
