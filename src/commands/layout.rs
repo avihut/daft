@@ -296,7 +296,7 @@ fn cmd_show(output: &mut dyn Output) -> Result<()> {
 
     let source_display = match source {
         LayoutSource::Cli => "CLI flag",
-        LayoutSource::RepoStore => "repos.json",
+        LayoutSource::RepoStore => "repo setting",
         LayoutSource::YamlConfig => "daft.yml",
         LayoutSource::GlobalConfig => "global config",
         LayoutSource::Default => "default",
