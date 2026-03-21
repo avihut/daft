@@ -207,7 +207,24 @@ daft() {
         worktree-sync|sync)
             shift; __daft_wrapper git-worktree-sync "$@" ;;
         layout)
-            shift; __daft_wrapper daft layout "$@" ;;
+            # Layout needs cd support (for transform) but can't use exec -a
+            # since "daft layout" is a subcommand, not a separate binary.
+            local __cd_file
+            __cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd.XXXXXX" 2>/dev/null)
+            if [ -n "$__cd_file" ]; then
+                DAFT_CD_FILE="$__cd_file" command daft "$@"
+                local __exit=$?
+                if [ -s "$__cd_file" ]; then
+                    local __target
+                    __target=$(cat "$__cd_file")
+                    builtin cd "$__target" 2>/dev/null
+                fi
+                rm -f "$__cd_file"
+                return $__exit
+            else
+                command daft "$@"
+            fi
+            ;;
         *)
             command daft "$@" ;;
     esac
@@ -437,7 +454,19 @@ function daft --wraps daft
         case worktree-sync sync
             __daft_wrapper git-worktree-sync $argv[2..-1]
         case layout
-            __daft_wrapper daft layout $argv[2..-1]
+            # Layout needs cd support but can't use exec -a
+            set -l cd_file (mktemp (set -q TMPDIR; and echo $TMPDIR; or echo /tmp)/daft-cd.XXXXXX 2>/dev/null)
+            if test -n "$cd_file"
+                DAFT_CD_FILE=$cd_file command daft $argv
+                set -l exit_code $status
+                if test -s "$cd_file"
+                    builtin cd (cat "$cd_file") 2>/dev/null
+                end
+                rm -f "$cd_file"
+                return $exit_code
+            else
+                command daft $argv
+            end
         case '*'
             command daft $argv
     end
