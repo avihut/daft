@@ -14,11 +14,16 @@ use crate::{
     is_git_repository,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
-    styles::{bold, dim},
+    styles,
+    styles::{bold, cyan, dim, dim_underline},
     utils::*,
 };
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use tabled::{
+    builder::Builder,
+    settings::{object::Columns, Padding, Style},
+};
 
 #[derive(Parser)]
 #[command(name = "layout")]
@@ -87,89 +92,170 @@ fn cmd_list(output: &mut dyn Output) -> Result<()> {
         .as_deref()
         .unwrap_or(DEFAULT_LAYOUT.name());
 
+    let use_color = styles::colors_enabled();
+
+    // Resolve current repo layout (best-effort, for "selected" indicator)
+    let current_layout_name = resolve_current_layout_name(&global_config);
+
     // Collect all layouts: built-ins first, then custom
     let mut layouts: Vec<LayoutRow> = Vec::new();
 
     for builtin in BuiltinLayout::all() {
-        let layout = builtin.to_layout();
         let is_default = builtin.name() == default_layout_name;
+        let is_selected = current_layout_name.as_deref() == Some(builtin.name());
         layouts.push(LayoutRow {
             name: builtin.name().to_string(),
             template: builtin.to_layout().template,
-            bare: layout.needs_bare(),
             is_default,
+            is_selected,
         });
     }
 
     for (name, custom) in &global_config.layouts {
-        // Skip if a custom layout overrides a built-in name (already shown)
         if BuiltinLayout::from_name(name).is_some() {
-            // Find and update the built-in entry with the custom template
             if let Some(row) = layouts.iter_mut().find(|r| r.name == *name) {
-                let layout = Layout {
-                    name: name.clone(),
-                    template: custom.template.clone(),
-                    bare: custom.bare,
-                };
                 row.template = custom.template.clone();
-                row.bare = layout.needs_bare();
             }
             continue;
         }
-        let layout = Layout {
-            name: name.clone(),
-            template: custom.template.clone(),
-            bare: custom.bare,
-        };
         let is_default = name == default_layout_name;
+        let is_selected = current_layout_name.as_deref() == Some(name.as_str());
         layouts.push(LayoutRow {
             name: name.clone(),
             template: custom.template.clone(),
-            bare: layout.needs_bare(),
             is_default,
+            is_selected,
         });
     }
 
-    // Calculate column widths
-    let name_width = layouts
-        .iter()
-        .map(|r| r.name.len())
-        .max()
-        .unwrap_or(0)
-        .max(6); // "Layout" header
-    let template_width = layouts
-        .iter()
-        .map(|r| r.template.len())
-        .max()
-        .unwrap_or(0)
-        .max(8); // "Template" header
+    // Build table with tabled (matches list command style)
+    let mut builder = Builder::new();
 
-    // Print header
-    output.info(&format!(
-        "{:<name_width$}  {:<template_width$}  {}",
-        bold("Layout"),
-        bold("Template"),
-        bold("Bare"),
-    ));
+    // Header: dim+underline (same as list command)
+    builder.push_record(if use_color {
+        vec![
+            String::new(), // annotation column
+            dim_underline("layout"),
+            dim_underline("template"),
+        ]
+    } else {
+        vec![String::new(), "layout".into(), "template".into()]
+    });
 
-    // Print rows
     for row in &layouts {
-        let bare_str = if row.bare { "yes" } else { "no" };
-        let default_marker = if row.is_default { "  (default)" } else { "" };
-        output.info(&format!(
-            "{:<name_width$}  {:<template_width$}  {bare_str}{default_marker}",
-            row.name, row.template,
-        ));
+        let annotation = if row.is_selected {
+            if use_color {
+                styles::green(styles::CURRENT_WORKTREE_SYMBOL)
+            } else {
+                styles::CURRENT_WORKTREE_SYMBOL.to_string()
+            }
+        } else {
+            String::new()
+        };
+
+        let name_display = if use_color {
+            let styled = if row.is_selected {
+                bold(&row.name)
+            } else {
+                row.name.clone()
+            };
+            if row.is_default {
+                format!("{styled} {}", dim("(default)"))
+            } else {
+                styled
+            }
+        } else if row.is_default {
+            format!("{} (default)", row.name)
+        } else {
+            row.name.clone()
+        };
+
+        let template_display = if use_color {
+            highlight_template(&row.template)
+        } else {
+            row.template.clone()
+        };
+
+        builder.push_record(vec![annotation, name_display, template_display]);
     }
 
+    let mut table = builder.build();
+    table.with(Style::blank());
+    table.modify(Columns::first(), Padding::new(1, 0, 0, 0));
+
+    output.info(&table.to_string());
+
     Ok(())
+}
+
+/// Syntax-highlight a template string.
+///
+/// Variables `{{ ... }}` are colored cyan, literal text stays default,
+/// filters `| sanitize` are dimmed.
+fn highlight_template(template: &str) -> String {
+    let mut result = String::new();
+    let mut rest = template;
+
+    while let Some(start) = rest.find("{{") {
+        // Literal text before the expression
+        result.push_str(&styles::dim(&rest[..start]));
+
+        let after_open = &rest[start + 2..];
+        if let Some(end) = after_open.find("}}") {
+            let expr = &after_open[..end];
+            // Split on pipe to style filter differently
+            if let Some(pipe_pos) = expr.find('|') {
+                let var = expr[..pipe_pos].trim();
+                let filter = expr[pipe_pos + 1..].trim();
+                result.push_str(&styles::dim("{{"));
+                result.push_str(&format!(" {} ", cyan(var)));
+                result.push_str(&styles::dim(&format!("| {filter} }}")));
+            } else {
+                let var = expr.trim();
+                result.push_str(&styles::dim("{{"));
+                result.push_str(&format!(" {} ", cyan(var)));
+                result.push_str(&styles::dim("}}"));
+            }
+            rest = &after_open[end + 2..];
+        } else {
+            result.push_str(&rest[start..]);
+            rest = "";
+        }
+    }
+    // Remaining literal text
+    if !rest.is_empty() {
+        result.push_str(&styles::dim(rest));
+    }
+    result
+}
+
+/// Try to resolve the current repo's layout name (best-effort).
+fn resolve_current_layout_name(global_config: &GlobalConfig) -> Option<String> {
+    let git_dir = get_git_common_dir().ok()?;
+    let trust_db = TrustDatabase::load().ok()?;
+
+    let yaml_layout: Option<String> = get_current_worktree_path()
+        .ok()
+        .and_then(|wt| yaml_config_loader::load_merged_config(&wt).ok().flatten())
+        .and_then(|cfg| cfg.layout);
+
+    let repo_store_layout = trust_db.get_layout(&git_dir).map(String::from);
+
+    let (layout, _) = resolve_layout(&LayoutResolutionContext {
+        cli_layout: None,
+        repo_store_layout: repo_store_layout.as_deref(),
+        yaml_layout: yaml_layout.as_deref(),
+        global_config,
+    });
+
+    Some(layout.name)
 }
 
 struct LayoutRow {
     name: String,
     template: String,
-    bare: bool,
     is_default: bool,
+    is_selected: bool,
 }
 
 // ── layout show ────────────────────────────────────────────────────────────
@@ -206,12 +292,16 @@ fn cmd_show(output: &mut dyn Output) -> Result<()> {
         LayoutSource::Default => "built-in default",
     };
 
-    let bare_str = if layout.needs_bare() { "yes" } else { "no" };
+    let use_color = styles::colors_enabled();
+    let template_display = if use_color {
+        highlight_template(&layout.template)
+    } else {
+        layout.template.clone()
+    };
 
-    output.info(&format!("{} {}", bold("Layout:"), layout.name));
-    output.info(&format!("{} {}", bold("Template:"), layout.template));
-    output.info(&format!("{} {}", bold("Bare:"), bare_str));
-    output.info(&format!("{} {}", bold("Source:"), source_display));
+    output.info(&format!("  {} {}", bold("Layout:"), layout.name));
+    output.info(&format!("  {} {}", bold("Template:"), template_display));
+    output.info(&format!("  {} {}", bold("Source:"), dim(source_display)));
 
     Ok(())
 }
