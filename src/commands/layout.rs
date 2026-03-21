@@ -438,19 +438,33 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
             transform_to_bare(&settings, output)?;
             relocate_worktrees(&target_layout, &git, output, &[])?;
         }
-        // bare -> non-bare (collapse bare, then relocate worktrees)
+        // bare -> non-bare (relocate non-default worktrees OUT, then collapse)
         (true, false) => {
             output.step(&format!(
                 "Transforming to layout '{}' (bare -> non-bare)...",
                 target_layout.name
             ));
-            // Collapse the bare repo to non-bare: moves the default branch's
-            // files to the project root and sets core.bare=false, but keeps
-            // all other linked worktrees intact.
+            // Detect the default branch so we can skip it during relocation.
+            // The collapse step will handle the default branch by moving its
+            // files to the project root.
+            let default_branch = crate::remote::get_default_branch_local(
+                &get_git_common_dir()?,
+                &settings.remote,
+                settings.use_gitoxide,
+            )
+            .unwrap_or_else(|_| "main".to_string());
+
+            // Relocate non-default worktrees FIRST to avoid collisions when
+            // collapsing the default branch's files into the project root.
+            // (e.g., a "test/" dir in the default branch would collide with a
+            // "test/" worktree still sitting at its contained position.)
+            relocate_worktrees(&target_layout, &git, output, &[&default_branch])?;
+
+            // Now collapse: moves default branch files to root, converts non-bare.
             collapse_bare_to_non_bare(&settings, output)?;
 
-            // Now relocate all remaining linked worktrees to target positions.
-            // Re-create GitCommand since the repo structure changed.
+            // Relocate any remaining worktrees (the default branch is now the
+            // main working tree and won't be touched by relocate).
             let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
             relocate_worktrees(&target_layout, &git, output, &[])?;
         }
