@@ -80,6 +80,14 @@ exec "$SHELL"
 SCRIPT
 chmod +x "${bin_dir}/clean-sandbox"
 
+cat > "${bin_dir}/reset-sandbox" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+worktree="$DAFT_WORKTREE"
+(cd "$worktree" && mise run sandbox:clean && mise run sandbox)
+SCRIPT
+chmod +x "${bin_dir}/reset-sandbox"
+
 cat > "${bin_dir}/manual-test" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -568,6 +576,7 @@ Initialize completions and daft shell integration:
     reset-test [name]        Reset a test environment to its initial state
     rebuild-daft             Rebuild daft and update symlinks
     reload-sandbox           Re-source .envrc and init (pick up config changes)
+    reset-sandbox            Wipe and recreate the sandbox from scratch
     go-to-worktree           Open a shell in the worktree directory
     clean-sandbox            Remove this sandbox and return to the worktree
 
