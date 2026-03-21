@@ -49,6 +49,7 @@ fn resolve_expression(expr: &str, ctx: &TemplateContext) -> Result<String> {
         "repo_path" => ctx.repo_path.to_string_lossy().to_string(),
         "repo" => ctx.repo.clone(),
         "branch" => ctx.branch.clone(),
+        "daft_data_dir" => crate::daft_data_dir()?.to_string_lossy().to_string(),
         _ => bail!("Unknown template variable: {var_name}"),
     };
 
@@ -107,6 +108,8 @@ fn normalize_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::env;
 
     #[test]
     fn test_sanitize_replaces_slashes() {
@@ -169,6 +172,27 @@ mod tests {
             render("{{ repo_path }}/{{ branch }}", &ctx).unwrap(),
             "/home/user/myproject/main"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn test_render_centralized_template() {
+        env::set_var("DAFT_DATA_DIR", "/tmp/daft-test-data");
+        let ctx = TemplateContext {
+            repo_path: PathBuf::from("/home/user/myproject"),
+            repo: "myproject".into(),
+            branch: "feature/auth".into(),
+        };
+        let rendered = render(
+            "{{ daft_data_dir }}/worktrees/{{ repo }}/{{ branch | sanitize }}",
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(
+            rendered,
+            "/tmp/daft-test-data/worktrees/myproject/feature-auth"
+        );
+        env::remove_var("DAFT_DATA_DIR");
     }
 
     #[test]
