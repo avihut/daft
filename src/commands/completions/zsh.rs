@@ -284,7 +284,7 @@ _daft() {
 
     # layout: complete subcommands
     if (( CURRENT == 3 )) && [[ "$words[2]" == "layout" ]]; then
-        compadd list show transform
+        compadd default list show transform
         return
     fi
 

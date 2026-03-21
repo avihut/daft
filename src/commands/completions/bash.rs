@@ -203,7 +203,7 @@ _daft() {
 
     # layout: complete subcommands
     if [[ $cword -eq 2 && "${words[1]}" == "layout" ]]; then
-        COMPREPLY=( $(compgen -W "list show transform" -- "$cur") )
+        COMPREPLY=( $(compgen -W "default list show transform" -- "$cur") )
         return 0
     fi
 
