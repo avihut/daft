@@ -2,7 +2,10 @@ use crate::{
     check_dependencies,
     core::{
         global_config::GlobalConfig,
-        layout::resolver::{resolve_layout, LayoutResolutionContext},
+        layout::{
+            resolver::{resolve_layout, LayoutResolutionContext},
+            transform, Layout,
+        },
         worktree::clone,
         OutputSink,
     },
@@ -235,25 +238,28 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 
     // Post-clone layout reconciliation: if no --layout flag and no global
     // default, check if the cloned repo's daft.yml specifies a layout.
-    // Store it in repos.json and hint if it differs from the resolved layout.
+    // If the yaml layout differs from the resolved layout, auto-transform.
     if args.layout.is_none() && global_config.defaults.layout.is_none() {
         if let Some(ref worktree_dir) = result.worktree_dir {
             if let Ok(Some(yaml_config)) = yaml_config_loader::load_merged_config(worktree_dir) {
                 if let Some(ref yaml_layout) = yaml_config.layout {
-                    let mut db = TrustDatabase::load().unwrap_or_default();
-                    db.set_layout(&result.git_dir, yaml_layout.clone());
-                    if let Err(e) = db.save() {
-                        output.warning(&format!(
-                            "Could not save layout from daft.yml to repos.json: {e}"
-                        ));
-                    }
-
                     if params.layout.name != *yaml_layout {
-                        output.info(&format!(
-                            "This repo suggests layout '{}'. \
-                             Run `daft layout transform {}` to apply.",
-                            yaml_layout, yaml_layout
-                        ));
+                        reconcile_layout(
+                            yaml_layout,
+                            &result.git_dir,
+                            settings,
+                            &global_config,
+                            output,
+                        );
+                    } else {
+                        // Same layout — just store in repos.json
+                        let mut db = TrustDatabase::load().unwrap_or_default();
+                        db.set_layout(&result.git_dir, yaml_layout.clone());
+                        if let Err(e) = db.save() {
+                            output.warning(&format!(
+                                "Could not save layout from daft.yml to repos.json: {e}"
+                            ));
+                        }
                     }
                 }
             }
@@ -377,4 +383,100 @@ fn run_post_create_hook(
     executor.execute(&ctx, output, presenter)?;
 
     Ok(())
+}
+
+/// Auto-transform to a layout suggested by daft.yml after clone.
+///
+/// Called when the cloned repo's daft.yml specifies a layout different from
+/// the one used for the clone. Transforms the repo to match the team's
+/// convention and stores the layout in repos.json.
+fn reconcile_layout(
+    yaml_layout_name: &str,
+    git_dir: &std::path::Path,
+    settings: &DaftSettings,
+    global_config: &GlobalConfig,
+    output: &mut dyn Output,
+) {
+    let target_layout = match global_config.resolve_layout_by_name(yaml_layout_name) {
+        Some(layout) => layout,
+        None => Layout {
+            name: yaml_layout_name.to_string(),
+            template: yaml_layout_name.to_string(),
+            bare: None,
+        },
+    };
+
+    output.info(&format!(
+        "Repo suggests layout '{}' (from daft.yml). Transforming...",
+        target_layout.name
+    ));
+
+    let git = crate::git::GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let is_currently_bare = git.rev_parse_is_bare_repository().unwrap_or(false);
+    let target_needs_bare = target_layout.needs_bare();
+
+    let transform_result = match (is_currently_bare, target_needs_bare) {
+        (false, true) => {
+            // non-bare -> bare: convert then relocate
+            let params = transform::ConvertToBareParams {
+                use_gitoxide: settings.use_gitoxide,
+            };
+            let exec_result = {
+                let mut sink = OutputSink(output);
+                transform::convert_to_bare(&params, &mut sink)
+            };
+            exec_result.map(|_| ()).and_then(|()| {
+                let git = crate::git::GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+                crate::commands::layout::relocate_worktrees_public(&target_layout, &git, output)
+            })
+        }
+        (true, false) => {
+            // bare -> non-bare: collapse then relocate
+            let params = transform::CollapseBareParams {
+                use_gitoxide: settings.use_gitoxide,
+                remote_name: settings.remote.clone(),
+            };
+            let exec_result = {
+                let mut sink = OutputSink(output);
+                transform::collapse_bare_to_non_bare(&params, &mut sink)
+            };
+            exec_result.map(|_| ()).and_then(|()| {
+                let git = crate::git::GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+                crate::commands::layout::relocate_worktrees_public(&target_layout, &git, output)
+            })
+        }
+        _ => {
+            // Same bare-ness: just relocate worktrees (if any linked ones exist)
+            let git = crate::git::GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+            crate::commands::layout::relocate_worktrees_public(&target_layout, &git, output)
+        }
+    };
+
+    match transform_result {
+        Ok(()) => {
+            // Store the yaml layout in repos.json
+            let mut db = TrustDatabase::load().unwrap_or_default();
+            db.set_layout(git_dir, yaml_layout_name.to_string());
+            if let Err(e) = db.save() {
+                output.warning(&format!(
+                    "Could not save layout from daft.yml to repos.json: {e}"
+                ));
+            }
+            output.info(&format!("Transformed to layout '{}'.", target_layout.name));
+        }
+        Err(e) => {
+            output.warning(&format!(
+                "Could not auto-transform to layout '{}': {e}",
+                target_layout.name
+            ));
+            output.info(&format!(
+                "Run `daft layout transform {}` manually to apply.",
+                yaml_layout_name
+            ));
+            // Still store the layout intent so future checkouts use it
+            let mut db = TrustDatabase::load().unwrap_or_default();
+            db.set_layout(git_dir, yaml_layout_name.to_string());
+            db.save().ok();
+        }
+    }
 }

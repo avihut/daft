@@ -1,0 +1,43 @@
+name: Global config default layout used when no other source
+description:
+  When no --layout flag and no per-repo setting, the global config
+  defaults.layout should be used for clone.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Set global default layout to nested
+    run: |
+      mkdir -p $DAFT_CONFIG_DIR
+      cat > $DAFT_CONFIG_DIR/config.toml << 'TOML'
+      [defaults]
+      layout = "nested"
+      TOML
+    expect:
+      exit_code: 0
+
+  - name: Clone without --layout flag
+    run: git-worktree-clone $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Verify nested layout was used
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.git"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: main
+
+  - name: Create worktree to verify nested placement
+    run: |
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/test 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/.worktrees/feature-test"

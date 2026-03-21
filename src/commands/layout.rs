@@ -405,6 +405,22 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         }
     }
 
+    // Auto-add .gitignore entries if the target layout places worktrees
+    // inside the repo (e.g. nested → .worktrees/). Only relevant for non-bare
+    // layouts since bare repos don't have a working tree to conflict with.
+    if !target_layout.needs_bare() {
+        let project_root = crate::get_project_root()?;
+        // Compute a sample worktree path to derive the gitignore pattern
+        let ctx = crate::core::multi_remote::path::build_template_context(&project_root, "sample");
+        if let Ok(sample_path) = target_layout.worktree_path(&ctx) {
+            crate::core::layout::auto_gitignore_if_needed(
+                &project_root,
+                &sample_path,
+                Some(&target_layout),
+            )?;
+        }
+    }
+
     // Update repos.json with the new layout
     let git_dir = get_git_common_dir()?;
     let mut trust_db = TrustDatabase::load().unwrap_or_default();
@@ -472,19 +488,31 @@ fn relocate_worktrees(
 
     let mut moved_count = 0;
 
+    // Canonicalize project root for comparison with worktree paths
+    let project_root_canonical = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.clone());
+
     for (current_path, branch) in &worktrees {
         if skip_branches.iter().any(|s| s == branch) {
             continue;
         }
+
+        // Skip the main working tree (non-bare repo root). It's not a linked
+        // worktree and cannot be moved with `git worktree move`.
+        let current_canonical = current_path
+            .canonicalize()
+            .unwrap_or_else(|_| current_path.clone());
+        if current_canonical == project_root_canonical {
+            continue;
+        }
+
         let ctx = build_template_context(&project_root, branch);
         let expected_path = target_layout
             .worktree_path(&ctx)
             .with_context(|| format!("Failed to compute path for branch '{branch}'"))?;
 
         // Canonicalize for comparison (handles symlinks, /tmp vs /private/tmp)
-        let current_canonical = current_path
-            .canonicalize()
-            .unwrap_or_else(|_| current_path.clone());
         let expected_canonical = expected_path
             .canonicalize()
             .unwrap_or_else(|_| expected_path.clone());
@@ -533,6 +561,18 @@ fn relocate_worktrees(
     }
 
     Ok(())
+}
+
+/// Public entry point for worktree relocation (used by post-clone reconciliation).
+///
+/// Thin wrapper around the internal `relocate_worktrees` that accepts `Output`
+/// so callers outside this module can use it.
+pub fn relocate_worktrees_public(
+    target_layout: &Layout,
+    git: &GitCommand,
+    output: &mut dyn Output,
+) -> Result<()> {
+    relocate_worktrees(target_layout, git, output, &[])
 }
 
 /// Remove empty parent directories up to (but not including) the stop directory.

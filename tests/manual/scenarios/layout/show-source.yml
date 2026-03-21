@@ -18,4 +18,4 @@ steps:
       exit_code: 0
       output_contains:
         - "contained"
-        - "repos.json"
+        - "repo setting"
