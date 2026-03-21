@@ -11,7 +11,7 @@ use crate::{
     },
     executor::cli_presenter::CliPresenter,
     git::should_show_gitoxide_notice,
-    hints::maybe_show_shell_hint,
+    hints::{maybe_show_layout_hint, maybe_show_shell_hint},
     hooks::{
         get_remote_url_for_git_dir, yaml_config_loader, HookContext, HookExecutor, HookType,
         HooksConfig, TrustDatabase, TrustLevel,
@@ -234,6 +234,13 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             output.cd_path(cd_target);
         }
         maybe_show_shell_hint(output)?;
+    }
+
+    // First-time layout hint: when using the built-in default layout (no
+    // --layout flag, no global config default), show a one-time hint about
+    // available layouts.
+    if args.layout.is_none() && global_config.defaults.layout.is_none() {
+        maybe_show_layout_hint(output)?;
     }
 
     // Post-clone layout reconciliation: if no --layout flag and no global

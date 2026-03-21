@@ -102,6 +102,9 @@ impl HintsState {
 /// Hint identifier for shell integration.
 pub const SHELL_INTEGRATION_HINT: &str = "shell-integration";
 
+/// Hint identifier for layout options on first clone.
+pub const LAYOUT_HINT: &str = "layout-options";
+
 /// Check if hints are globally disabled via environment variable.
 pub fn hints_disabled() -> bool {
     env::var(NO_HINTS_ENV).is_ok()
@@ -156,6 +159,41 @@ pub fn maybe_show_shell_hint(output: &mut dyn Output) -> Result<bool> {
     state.mark_shown(SHELL_INTEGRATION_HINT);
     // Don't fail the command if we can't save state - the hint might show again next time
     // but that's acceptable behavior
+    let _ = state.save();
+
+    Ok(true)
+}
+
+/// Show the layout options hint on first clone with default layout.
+///
+/// This should be called after a successful clone when no `--layout` flag
+/// was given and no global config default layout is set. The hint is shown
+/// only once and tells the user about available layouts.
+///
+/// Returns Ok(true) if the hint was shown, Ok(false) otherwise.
+pub fn maybe_show_layout_hint(output: &mut dyn Output) -> Result<bool> {
+    if hints_disabled() {
+        return Ok(false);
+    }
+
+    if output.is_quiet() {
+        return Ok(false);
+    }
+
+    let mut state = HintsState::load().unwrap_or_default();
+    if state.has_shown(LAYOUT_HINT) {
+        return Ok(false);
+    }
+
+    output.info("");
+    output.info(
+        "hint: daft supports multiple worktree layouts. \
+         Run `daft layout list` to see options.",
+    );
+    output.info("  Change layout: daft layout transform <name>  or  daft clone --layout <name>");
+    output.info(&format!("To suppress hints: export {NO_HINTS_ENV}=1"));
+
+    state.mark_shown(LAYOUT_HINT);
     let _ = state.save();
 
     Ok(true)

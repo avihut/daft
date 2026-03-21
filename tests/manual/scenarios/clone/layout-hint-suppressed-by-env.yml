@@ -1,0 +1,19 @@
+name: Layout hint suppressed by DAFT_NO_HINTS
+description:
+  The DAFT_NO_HINTS environment variable should suppress the first-time layout
+  hint.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+env:
+  DAFT_NO_HINTS: "1"
+
+steps:
+  - name: Clone with hints disabled
+    run: git-worktree-clone $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "daft layout list"
