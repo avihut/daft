@@ -254,62 +254,66 @@ pub fn maybe_prompt_layout_choice(output: &mut dyn Output) -> LayoutPromptResult
         eprint!("Use contained? [y=this repo / d=set as default / N] ");
     }
 
-    // Suppress ^C echo and handle Ctrl+C gracefully. stty -echoctl
-    // prevents the terminal from printing "^C". The ctrlc handler exits
-    // cleanly — hints.json is NOT updated since mark_shown hasn't been
-    // called yet, so the prompt reappears next time. The shell restores
-    // terminal settings (including echoctl) when it regains control.
-    let _ = std::process::Command::new("stty")
-        .arg("-echoctl")
-        .stdin(std::process::Stdio::inherit())
-        .status();
-
-    let _ = ctrlc::set_handler(|| {
-        let use_color = std::io::stderr().is_terminal() && std::env::var("NO_COLOR").is_err();
-        eprintln!();
-        if use_color {
-            eprintln!("\x1b[2mClone cancelled. Nothing was changed.\x1b[0m");
-        } else {
-            eprintln!("Clone cancelled. Nothing was changed.");
-        }
-        std::process::exit(0);
-    });
-
     std::io::stderr().flush().ok();
 
-    let mut answer = String::new();
-    let read_result = std::io::stdin().read_line(&mut answer);
+    let config = crate::prompt::PromptConfig {
+        options: vec![
+            crate::prompt::PromptOption {
+                key: 'n',
+                label: "no",
+                is_default: true,
+            },
+            crate::prompt::PromptOption {
+                key: 'y',
+                label: "yes, this repo",
+                is_default: false,
+            },
+            crate::prompt::PromptOption {
+                key: 'd',
+                label: "set as default",
+                is_default: false,
+            },
+        ],
+        cancel_message: Some("Clone cancelled. Nothing was changed.".to_string()),
+    };
 
-    // Restore terminal echo
-    let _ = std::process::Command::new("stty")
-        .arg("echoctl")
-        .stdin(std::process::Stdio::inherit())
-        .status();
+    let key = match crate::prompt::single_key_select(&config) {
+        crate::prompt::PromptResult::Selected(k) => k,
+        crate::prompt::PromptResult::Cancelled => {
+            eprintln!();
+            return LayoutPromptResult::Cancelled;
+        }
+    };
 
-    if matches!(read_result, Ok(0) | Err(_)) {
-        // Ctrl+D or error — don't mark as shown
-        eprintln!();
-        return LayoutPromptResult::Cancelled;
+    // Print the chosen label after the prompt
+    let label = config
+        .options
+        .iter()
+        .find(|o| o.key == key)
+        .map(|o| o.label)
+        .unwrap_or("no");
+    if use_color {
+        eprintln!("{}{}{}", styles::BOLD, label, styles::RESET);
+    } else {
+        eprintln!("{label}");
     }
 
     // User answered — mark as shown so we don't prompt again
     state.mark_shown(LAYOUT_HINT);
     let _ = state.save();
 
-    let answer = answer.trim().to_lowercase();
-    if answer == "d" || answer == "default" {
-        // Set as global default for all future clones
-        if let Err(e) = crate::core::global_config::GlobalConfig::set_default_layout("contained") {
-            output.warning(&format!("Could not save default layout: {e}"));
+    match key {
+        'd' => {
+            if let Err(e) =
+                crate::core::global_config::GlobalConfig::set_default_layout("contained")
+            {
+                output.warning(&format!("Could not save default layout: {e}"));
+            }
+            LayoutPromptResult::Chosen("contained".to_string())
         }
-        return LayoutPromptResult::Chosen("contained".to_string());
+        'y' => LayoutPromptResult::Chosen("contained".to_string()),
+        _ => LayoutPromptResult::Default,
     }
-    if answer == "y" || answer == "yes" {
-        // Use contained for this repo only (stored in repos.json by clone)
-        return LayoutPromptResult::Chosen("contained".to_string());
-    }
-
-    LayoutPromptResult::Default
 }
 
 #[cfg(test)]

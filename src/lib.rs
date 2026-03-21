@@ -93,6 +93,7 @@ pub mod homebrew;
 pub mod hooks;
 pub mod logging;
 pub mod output;
+pub mod prompt;
 pub mod shortcuts;
 pub mod styles;
 pub mod suggest;
