@@ -537,6 +537,14 @@ elif [[ -n "${BASH_VERSION:-}" ]]; then
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/test-plan.bash"
     eval "$(daft shell-init bash)"
 fi
+
+# Shell function to reload the sandbox environment in the current shell
+reload-sandbox() {
+    local sandbox_dir="$(dirname "$(dirname "${DAFT_SANDBOX_COMPLETIONS_DIR}")")"
+    source "${sandbox_dir}/.envrc"
+    source "${sandbox_dir}/bin/init"
+    echo "Sandbox reloaded"
+}
 LOADER
 
 # --- README ---
@@ -559,6 +567,7 @@ Initialize completions and daft shell integration:
     setup-test <scenario>    Set up a test environment for manual exploration
     reset-test [name]        Reset a test environment to its initial state
     rebuild-daft             Rebuild daft and update symlinks
+    reload-sandbox           Re-source .envrc and init (pick up config changes)
     go-to-worktree           Open a shell in the worktree directory
     clean-sandbox            Remove this sandbox and return to the worktree
 
