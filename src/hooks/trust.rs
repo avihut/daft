@@ -428,6 +428,15 @@ impl TrustDatabase {
             .insert(canonical.to_string_lossy().to_string(), layout);
     }
 
+    /// Remove the layout override for a repository.
+    pub fn remove_layout(&mut self, git_dir: &Path) -> bool {
+        let canonical = git_dir
+            .canonicalize()
+            .unwrap_or_else(|_| git_dir.to_path_buf());
+        let git_dir_str = canonical.to_string_lossy();
+        self.layouts.remove(git_dir_str.as_ref()).is_some()
+    }
+
     /// Add a pattern-based trust rule.
     pub fn add_pattern(&mut self, pattern: String, level: TrustLevel, comment: Option<String>) {
         self.patterns.push(TrustPattern {

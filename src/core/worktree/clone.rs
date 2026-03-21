@@ -371,9 +371,16 @@ fn execute_regular(params: &CloneParams, progress: &mut dyn ProgressSink) -> Res
 }
 
 /// Store the resolved layout in repos.json.
+/// Store the layout for a freshly cloned repo, resetting any prior registry
+/// entry. A re-clone means the old config is stale — start fresh.
 fn store_layout(git_dir: &Path, layout: &Layout, progress: &mut dyn ProgressSink) {
     match TrustDatabase::load() {
         Ok(mut db) => {
+            // Reset prior entries: a re-clone into the same path means the old
+            // trust/layout config is stale and should not carry over.
+            db.remove_trust(git_dir);
+            db.remove_layout(git_dir);
+
             db.set_layout(git_dir, layout.name.clone());
             if let Err(e) = db.save() {
                 progress.on_warning(&format!("Could not save layout to repos.json: {e}"));
