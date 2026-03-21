@@ -244,12 +244,27 @@ pub fn maybe_prompt_layout_choice(output: &mut dyn Output) -> LayoutPromptResult
     }
     output.info("");
 
-    // Intercept Ctrl+C so it doesn't print ^C or kill the process.
-    // Instead we detect it and exit gracefully.
-    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let flag = cancelled.clone();
-    let _ = ctrlc::set_handler(move || {
-        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Suppress ^C echo and handle Ctrl+C gracefully. stty -echoctl
+    // prevents the terminal from printing "^C". The ctrlc handler exits
+    // cleanly — hints.json is NOT updated since mark_shown hasn't been
+    // called yet, so the prompt reappears next time. The shell restores
+    // terminal settings (including echoctl) when it regains control.
+    let _ = std::process::Command::new("stty")
+        .arg("-echoctl")
+        .stdin(std::process::Stdio::inherit())
+        .status();
+
+    let _ = ctrlc::set_handler(|| {
+        // Check if stderr supports color (can't access the closure's env easily,
+        // so re-check here)
+        let use_color = std::io::stderr().is_terminal() && std::env::var("NO_COLOR").is_err();
+        eprintln!();
+        if use_color {
+            eprintln!("\x1b[2mClone cancelled. Nothing was changed.\x1b[0m");
+        } else {
+            eprintln!("Clone cancelled. Nothing was changed.");
+        }
+        std::process::exit(0);
     });
 
     // Flush stderr so the prompt appears before reading input
@@ -259,9 +274,14 @@ pub fn maybe_prompt_layout_choice(output: &mut dyn Output) -> LayoutPromptResult
     let mut answer = String::new();
     let read_result = std::io::stdin().read_line(&mut answer);
 
-    if cancelled.load(std::sync::atomic::Ordering::SeqCst) || matches!(read_result, Ok(0) | Err(_))
-    {
-        // Ctrl+C, Ctrl+D, or error — don't mark as shown
+    // Restore terminal echo and default Ctrl+C behavior
+    let _ = std::process::Command::new("stty")
+        .arg("echoctl")
+        .stdin(std::process::Stdio::inherit())
+        .status();
+
+    if matches!(read_result, Ok(0) | Err(_)) {
+        // Ctrl+D or error — don't mark as shown
         eprintln!();
         return LayoutPromptResult::Cancelled;
     }

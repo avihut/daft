@@ -492,8 +492,16 @@ fn resolve_checkout_layout(
         global_config: &global_config,
     });
 
-    // Graceful degradation: warn if layout needs bare but repo is not bare
-    if layout.needs_bare() && !git.rev_parse_is_bare_repository().unwrap_or(false) {
+    // Graceful degradation: warn if layout needs bare but repo is not bare.
+    // Use config_get("core.bare") instead of rev_parse_is_bare_repository()
+    // because the latter returns false from inside a linked worktree of a
+    // bare repo — which is exactly where users run checkout from.
+    let is_bare = git
+        .config_get("core.bare")
+        .ok()
+        .flatten()
+        .is_some_and(|v| v.to_lowercase() == "true");
+    if layout.needs_bare() && !is_bare {
         output.warning(&format!(
             "Layout '{}' works best with a bare repository. \
              Consider running `daft layout transform` to convert.",
