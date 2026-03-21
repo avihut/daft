@@ -331,6 +331,9 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     let global_config = GlobalConfig::load().unwrap_or_default();
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
 
+    // Remember which branch the user is on, for CD target after transform
+    let user_branch = crate::get_current_branch().ok();
+
     // Resolve target layout
     let target_layout = match global_config.resolve_layout_by_name(&args.layout) {
         Some(layout) => layout,
@@ -344,6 +347,15 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     let is_currently_bare = git.rev_parse_is_bare_repository().unwrap_or(false);
     let target_needs_bare = target_layout.needs_bare();
 
+    // For non-bare → bare: adopt must run from the main working tree (not a
+    // linked worktree) because it reads HEAD to determine which branch's files
+    // to move. CD to the main repo root before running adopt.
+    if !is_currently_bare && target_needs_bare {
+        let git_dir = get_git_common_dir()?;
+        let main_repo_root = git_dir.parent().context("Invalid git directory")?;
+        change_directory(main_repo_root)?;
+    }
+
     match (is_currently_bare, target_needs_bare) {
         // non-bare -> bare (adopt + relocate)
         (false, true) => {
@@ -352,7 +364,6 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
                 target_layout.name
             ));
             transform_to_bare(&settings, output)?;
-            // After adopt, relocate any linked worktrees to the new layout paths
             relocate_worktrees(&target_layout, &git, output)?;
         }
         // bare -> non-bare (eject)
@@ -362,7 +373,6 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
                 target_layout.name
             ));
             transform_to_non_bare(&settings, args.force, output)?;
-            // After eject, relocate any linked worktrees to the new layout paths
             relocate_worktrees(&target_layout, &git, output)?;
         }
         // non-bare -> non-bare (relocate only)
@@ -391,10 +401,14 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         .save()
         .context("Failed to save layout to repos.json")?;
 
-    output.result(&format!(
-        "Transformed to layout '{}'. Layout saved to repos.json.",
-        target_layout.name
-    ));
+    // CD to the worktree for the user's original branch (it may have moved)
+    if let Some(ref branch) = user_branch {
+        if let Ok(Some(wt_path)) = git.find_worktree_for_branch(branch) {
+            output.cd_path(&wt_path);
+        }
+    }
+
+    output.result(&format!("Transformed to layout '{}'.", target_layout.name));
 
     Ok(())
 }
@@ -541,11 +555,9 @@ fn transform_to_bare(settings: &DaftSettings, output: &mut dyn Output) -> Result
     let result = exec_result?;
 
     output.step(&format!(
-        "Converted to worktree layout. Working directory: '{}/{}'",
+        "Converted to worktree layout: '{}/{}'",
         result.repo_display_name, result.current_branch
     ));
-
-    output.cd_path(&get_current_directory()?);
 
     Ok(())
 }
@@ -581,8 +593,6 @@ fn transform_to_non_bare(
         "Converted to traditional layout on branch '{}'",
         result.target_branch
     ));
-
-    output.cd_path(&result.project_root);
 
     Ok(())
 }

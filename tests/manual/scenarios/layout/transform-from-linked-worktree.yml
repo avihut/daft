@@ -1,0 +1,42 @@
+name: Transform from linked worktree
+description:
+  Transform to contained while inside a linked worktree (not the main repo).
+  Both worktrees should be correctly relocated.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone sibling and create a worktree
+    run: |
+      git-worktree-clone --layout sibling $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo.feature-test"
+
+  - name: Transform to contained from the linked worktree
+    run: daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo.feature-test"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "contained"
+
+  - name: Verify both worktrees relocated correctly
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+        - "$WORK_DIR/test-repo/feature/test"
+      files_not_exist:
+        - "$WORK_DIR/test-repo.feature-test"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/main"
+          branch: main
+        - dir: "$WORK_DIR/test-repo/feature/test"
+          branch: feature/test
