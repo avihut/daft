@@ -345,13 +345,15 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     let target_needs_bare = target_layout.needs_bare();
 
     match (is_currently_bare, target_needs_bare) {
-        // non-bare -> bare (adopt)
+        // non-bare -> bare (adopt + relocate)
         (false, true) => {
             output.step(&format!(
                 "Transforming to layout '{}' (non-bare -> bare)...",
                 target_layout.name
             ));
             transform_to_bare(&settings, output)?;
+            // After adopt, relocate any linked worktrees to the new layout paths
+            relocate_worktrees(&target_layout, &git, output)?;
         }
         // bare -> non-bare (eject)
         (true, false) => {
@@ -360,28 +362,24 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
                 target_layout.name
             ));
             transform_to_non_bare(&settings, args.force, output)?;
+            // After eject, relocate any linked worktrees to the new layout paths
+            relocate_worktrees(&target_layout, &git, output)?;
         }
-        // non-bare -> non-bare (worktree move)
+        // non-bare -> non-bare (relocate only)
         (false, false) => {
-            output.warning(&format!(
-                "Transform from non-bare to non-bare layout '{}' is not yet supported.",
+            output.step(&format!(
+                "Transforming to layout '{}'...",
                 target_layout.name
             ));
-            output.info(&dim(
-                "Worktree relocation between non-bare layouts will be added in a future release.",
-            ));
-            return Ok(());
+            relocate_worktrees(&target_layout, &git, output)?;
         }
-        // bare -> bare (worktree move within bare)
+        // bare -> bare (relocate only)
         (true, true) => {
-            output.warning(&format!(
-                "Transform from bare to bare layout '{}' is not yet supported.",
+            output.step(&format!(
+                "Transforming to layout '{}'...",
                 target_layout.name
             ));
-            output.info(&dim(
-                "Worktree relocation between bare layouts will be added in a future release.",
-            ));
-            return Ok(());
+            relocate_worktrees(&target_layout, &git, output)?;
         }
     }
 
@@ -398,6 +396,131 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         target_layout.name
     ));
 
+    Ok(())
+}
+
+/// Relocate all linked worktrees to match the target layout template.
+///
+/// Parses `git worktree list --porcelain`, computes the expected path for
+/// each worktree using the target layout, and moves any that are out of place.
+/// Skips the bare root entry and detached HEAD worktrees.
+fn relocate_worktrees(
+    target_layout: &Layout,
+    git: &GitCommand,
+    output: &mut dyn Output,
+) -> Result<()> {
+    use crate::core::multi_remote::path::build_template_context;
+    use std::path::PathBuf;
+
+    let project_root = crate::get_project_root()?;
+    let porcelain = git.worktree_list_porcelain()?;
+
+    // Parse porcelain output into (path, branch) pairs
+    let mut worktrees: Vec<(PathBuf, String)> = Vec::new();
+    let mut current_path: Option<PathBuf> = None;
+    let mut is_bare = false;
+
+    for line in porcelain.lines() {
+        if let Some(wt_path) = line.strip_prefix("worktree ") {
+            current_path = Some(PathBuf::from(wt_path));
+            is_bare = false;
+        } else if line == "bare" {
+            is_bare = true;
+        } else if line.starts_with("detached") {
+            // Skip detached HEAD worktrees (sandboxes)
+            current_path = None;
+        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
+            if !is_bare {
+                if let (Some(path), Some(branch)) =
+                    (current_path.take(), branch_ref.strip_prefix("refs/heads/"))
+                {
+                    worktrees.push((path, branch.to_string()));
+                }
+            }
+        } else if line.is_empty() {
+            is_bare = false;
+        }
+    }
+
+    let mut moved_count = 0;
+
+    for (current_path, branch) in &worktrees {
+        let ctx = build_template_context(&project_root, branch);
+        let expected_path = target_layout
+            .worktree_path(&ctx)
+            .with_context(|| format!("Failed to compute path for branch '{branch}'"))?;
+
+        // Canonicalize for comparison (handles symlinks, /tmp vs /private/tmp)
+        let current_canonical = current_path
+            .canonicalize()
+            .unwrap_or_else(|_| current_path.clone());
+        let expected_canonical = expected_path
+            .canonicalize()
+            .unwrap_or_else(|_| expected_path.clone());
+
+        if current_canonical == expected_canonical {
+            continue; // Already in the right place
+        }
+
+        // Create parent directory for the target path
+        if let Some(parent) = expected_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory {}", parent.display()))?;
+        }
+
+        output.step(&format!(
+            "Moving '{}': {} -> {}",
+            branch,
+            current_path.display(),
+            expected_path.display()
+        ));
+
+        git.worktree_move(current_path, &expected_path)
+            .with_context(|| {
+                format!(
+                    "Failed to move worktree '{}' from {} to {}",
+                    branch,
+                    current_path.display(),
+                    expected_path.display()
+                )
+            })?;
+
+        moved_count += 1;
+
+        // Clean up empty parent directories left behind
+        if let Some(parent) = current_path.parent() {
+            let _ = cleanup_empty_parents(parent, &project_root);
+        }
+    }
+
+    if moved_count > 0 {
+        output.step(&format!(
+            "Relocated {} worktree{}",
+            moved_count,
+            if moved_count == 1 { "" } else { "s" }
+        ));
+    }
+
+    Ok(())
+}
+
+/// Remove empty parent directories up to (but not including) the stop directory.
+fn cleanup_empty_parents(mut dir: &std::path::Path, stop: &std::path::Path) -> Result<()> {
+    while dir != stop {
+        if dir
+            .read_dir()
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(false)
+        {
+            std::fs::remove_dir(dir)?;
+        } else {
+            break;
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => break,
+        }
+    }
     Ok(())
 }
 
