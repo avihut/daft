@@ -4,20 +4,22 @@ branch: feat/progressive-adoption
 
 # Progressive Adoption and Layout System
 
-## New commands
+## Features
+
+### New commands
 
 - `daft layout list` — show available layouts
 - `daft layout show` — show resolved layout for current repo
 - `daft layout transform <layout>` — convert repo between layouts
 
-## New flags
+### New flags
 
 - `daft clone --layout <name|template>` — clone with a specific layout
 - `git-worktree-init --layout <name|template>` — init with a specific layout
 - `daft start -@ <path>` / `--at <path>` — place worktree at custom path
 - `daft go -@ <path>` / `--at <path>` — same (requires creation context)
 
-## Built-in layouts
+### Built-in layouts
 
 | Name        | Template                                          | Bare |
 | ----------- | ------------------------------------------------- | ---- |
@@ -28,7 +30,7 @@ branch: feat/progressive-adoption
 
 Default: `sibling`
 
-## Config resolution order
+### Config resolution order
 
 1. `--layout` CLI flag
 2. `repos.json` per-repo entry
@@ -36,7 +38,7 @@ Default: `sibling`
 4. `~/.config/daft/config.toml` defaults.layout
 5. Built-in default (sibling)
 
-## Key behaviors
+### Key behaviors
 
 - Bare repo is inferred from template geometry, never user-facing
 - `repos.json` replaces `trust.json` (auto-migrated)
@@ -47,3 +49,15 @@ Default: `sibling`
 - Detached HEAD worktrees show sandbox indicator in list, skipped by prune
 - `-@` on `go` requires worktree creation (fails if worktree already exists)
 - Dev sandbox: `DAFT_CONFIG_DIR=.daft-sandbox/` isolates dev from real config
+
+## Test Plan
+
+- [x] daft start creates new sibling worktree by default
+- [x] daft remove sibling layout
+- [ ] daft start new worktree --at a path works
+- [ ] daft clone to existing repo doesn't assume previously configured layout
+      but restores to default
+- [ ] daft layout transform contained from a sibling repo in the main worktree
+      transforms to a contained repo and CDs to the main worktree.
+- [ ] daft layout transform sibling from a contained repo on the main worktree
+      transforms to a sibling repo and CDs to the repo root path.
