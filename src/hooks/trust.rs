@@ -437,6 +437,14 @@ impl TrustDatabase {
         self.layouts.remove(git_dir_str.as_ref()).is_some()
     }
 
+    /// Reset all per-repo settings to defaults (trust, layout, and any future
+    /// fields). Use when a repo is re-cloned and stale config should not carry
+    /// over.
+    pub fn reset_repo(&mut self, git_dir: &Path) {
+        self.remove_trust(git_dir);
+        self.remove_layout(git_dir);
+    }
+
     /// Add a pattern-based trust rule.
     pub fn add_pattern(&mut self, pattern: String, level: TrustLevel, comment: Option<String>) {
         self.patterns.push(TrustPattern {
