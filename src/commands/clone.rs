@@ -190,7 +190,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     output.finish_spinner();
     let result = exec_result?;
 
-    render_clone_result(&result, output);
+    render_clone_result(&result, &params.layout, output);
 
     // Remove stale trust entry if cloning to a path that was previously trusted.
     // The old repo at this path no longer exists (overwritten by clone), so the
@@ -263,12 +263,20 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     Ok(())
 }
 
-fn render_clone_result(result: &clone::CloneResult, output: &mut dyn Output) {
+fn render_clone_result(
+    result: &clone::CloneResult,
+    layout: &crate::core::layout::Layout,
+    output: &mut dyn Output,
+) {
     if result.worktree_dir.is_some() {
-        output.result(&format!(
-            "Cloned into '{}/{}'",
-            result.repo_name, result.target_branch
-        ));
+        // For bare layouts, the worktree is a subdirectory: "repo/branch".
+        // For regular layouts, the repo IS the worktree: just "repo".
+        let display = if layout.needs_bare() {
+            format!("{}/{}", result.repo_name, result.target_branch)
+        } else {
+            result.repo_name.clone()
+        };
+        output.result(&format!("Cloned into '{display}'"));
     } else if result.branch_not_found {
         output.result(&format!(
             "Cloned '{}' (branch '{}' not found, no worktree created)",
