@@ -175,3 +175,37 @@ pub fn def(term: &str, description: &str) -> String {
     let padding = " ".repeat(9_usize.saturating_sub(term.len()));
     format!("  {BOLD}{term}{RESET}{padding}{description}")
 }
+
+// ── Syntax highlighting palette ──────────────────────────────────────────
+
+/// Semantic color roles for syntax highlighting.
+///
+/// Maps abstract roles to ANSI escape sequences so all syntax highlighters
+/// in the CLI share a consistent palette. Each field is a raw ANSI code
+/// (e.g., `"\x1b[36m"`); callers must append [`RESET`] after the styled span.
+///
+/// Use [`SYNTAX`] for the shared palette instance.
+pub struct SyntaxPalette {
+    /// Structural delimiters and keywords: `{{ }}`, top-level YAML keys.
+    pub keyword: &'static str,
+    /// Data references and names: variable names, YAML sub-keys.
+    pub identifier: &'static str,
+    /// Value-producing tokens: quoted strings, filter/function names.
+    pub string: &'static str,
+    /// Constant values: booleans, numbers, null.
+    pub literal: &'static str,
+    /// Low-emphasis structural markers: list dashes, pipe operators.
+    pub punctuation: &'static str,
+    /// Emphasis modifier for headings/special names (bold, not a color).
+    pub heading: &'static str,
+}
+
+/// Shared syntax highlighting palette.
+pub const SYNTAX: SyntaxPalette = SyntaxPalette {
+    keyword: YELLOW,
+    identifier: CYAN,
+    string: GREEN,
+    literal: YELLOW,
+    punctuation: DIM,
+    heading: BOLD,
+};

@@ -14,8 +14,7 @@ use crate::{
     is_git_repository,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
-    styles,
-    styles::{bold, dim, dim_underline},
+    styles::{self, bold, dim, dim_underline},
     utils::*,
 };
 use anyhow::{Context, Result};
@@ -188,15 +187,17 @@ fn cmd_list(output: &mut dyn Output) -> Result<()> {
     Ok(())
 }
 
-/// Syntax-highlight a template string.
+/// Syntax-highlight a template string using the shared [`SYNTAX`] palette.
 ///
-/// Follows Jinja2 syntax highlighting conventions used by editors:
-/// - **Yellow**: delimiters `{{` `}}` (accent, frames the expression)
-/// - **Cyan**: variable names `repo_path`, `repo`, `branch` (data)
-/// - **White/default**: pipe operator `|` (punctuation)
-/// - **Green**: filter names `sanitize` (function-like)
-/// - **Default**: literal path text `/`, `.worktrees/`, `~/` (structure)
+/// Uses semantic roles from the palette:
+/// - `keyword`: delimiters `{{` `}}` (frames expressions)
+/// - `identifier`: variable names `repo_path`, `repo`, `branch`
+/// - `punctuation`: pipe operator `|`
+/// - `string`: filter names `sanitize` (value-producing)
+/// - Default: literal path text `/`, `.worktrees/`, `~/`
 fn highlight_template(template: &str) -> String {
+    use crate::styles::{RESET, SYNTAX};
+
     let mut result = String::new();
     let mut rest = template;
 
@@ -210,16 +211,20 @@ fn highlight_template(template: &str) -> String {
             if let Some(pipe_pos) = expr.find('|') {
                 let var = expr[..pipe_pos].trim();
                 let filter = expr[pipe_pos + 1..].trim();
-                result.push_str(&styles::yellow("{{"));
-                result.push_str(&format!(" {} ", styles::cyan(var)));
-                result.push_str("| ");
-                result.push_str(&styles::green(filter));
-                result.push_str(&format!(" {}", styles::yellow("}}")));
+                result.push_str(&format!(
+                    "{kw}{{{{{RESET} {id}{var}{RESET} {p}|{RESET} {s}{filter}{RESET} {kw}}}}}{RESET}",
+                    kw = SYNTAX.keyword,
+                    id = SYNTAX.identifier,
+                    p = SYNTAX.punctuation,
+                    s = SYNTAX.string,
+                ));
             } else {
                 let var = expr.trim();
-                result.push_str(&styles::yellow("{{"));
-                result.push_str(&format!(" {} ", styles::cyan(var)));
-                result.push_str(&styles::yellow("}}"));
+                result.push_str(&format!(
+                    "{kw}{{{{{RESET} {id}{var}{RESET} {kw}}}}}{RESET}",
+                    kw = SYNTAX.keyword,
+                    id = SYNTAX.identifier,
+                ));
             }
             rest = &after_open[end + 2..];
         } else {
