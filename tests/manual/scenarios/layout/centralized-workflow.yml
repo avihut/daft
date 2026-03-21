@@ -1,7 +1,7 @@
 name: Centralized layout workflow
 description:
-  Clone with centralized layout. Worktrees should land in ~/worktrees/<repo>/.
-  Verify worktree creation and layout show.
+  Clone with centralized layout. Worktrees should land in the daft data
+  directory under worktrees/<repo>/. Verify worktree creation and layout show.
 
 repos:
   - name: test-repo
@@ -42,6 +42,6 @@ steps:
         - "feature/test"
 
   - name: Cleanup centralized worktrees
-    run: rm -rf ~/worktrees/test-repo
+    run: rm -rf $DAFT_DATA_DIR/worktrees/test-repo
     expect:
       exit_code: 0

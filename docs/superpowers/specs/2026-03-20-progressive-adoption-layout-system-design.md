@@ -59,26 +59,27 @@ template geometry at resolution time.
 
 ### Built-in Layouts
 
-| Name          | Template                                          | Inferred bare | Description                                          |
-| ------------- | ------------------------------------------------- | ------------- | ---------------------------------------------------- |
-| `contained`   | `{{ repo_path }}/{{ branch }}`                    | Yes           | Worktrees as children of project root                |
-| `sibling`     | `{{ repo }}.{{ branch \| sanitize }}`             | No            | Worktrees adjacent to the repo                       |
-| `nested`      | `{{ repo }}/.worktrees/{{ branch \| sanitize }}`  | No            | Worktrees in a hidden subdirectory (auto-gitignored) |
-| `centralized` | `~/worktrees/{{ repo }}/{{ branch \| sanitize }}` | No            | Worktrees in a global directory                      |
+| Name          | Template                                                            | Inferred bare | Description                                          |
+| ------------- | ------------------------------------------------------------------- | ------------- | ---------------------------------------------------- |
+| `contained`   | `{{ repo_path }}/{{ branch }}`                                      | Yes           | Worktrees as children of project root                |
+| `sibling`     | `{{ repo }}.{{ branch \| sanitize }}`                               | No            | Worktrees adjacent to the repo                       |
+| `nested`      | `{{ repo }}/.worktrees/{{ branch \| sanitize }}`                    | No            | Worktrees in a hidden subdirectory (auto-gitignored) |
+| `centralized` | `{{ daft_data_dir }}/worktrees/{{ repo }}/{{ branch \| sanitize }}` | No            | Worktrees in the XDG data directory                  |
 
 The built-in default layout is `sibling`.
 
 ### Template Variables
 
-| Variable                   | Description                         | Example           |
-| -------------------------- | ----------------------------------- | ----------------- |
-| `{{ repo_path }}`          | Absolute path to the repo root      | `/home/me/myproj` |
-| `{{ repo }}`               | Repository directory name           | `myproj`          |
-| `{{ branch }}`             | Raw branch name                     | `feature/auth`    |
-| `{{ branch \| sanitize }}` | Filesystem-safe (slashes to dashes) | `feature-auth`    |
+| Variable                   | Description                         | Example               |
+| -------------------------- | ----------------------------------- | --------------------- |
+| `{{ repo_path }}`          | Absolute path to the repo root      | `/home/me/myproj`     |
+| `{{ repo }}`               | Repository directory name           | `myproj`              |
+| `{{ branch }}`             | Raw branch name                     | `feature/auth`        |
+| `{{ branch \| sanitize }}` | Filesystem-safe (slashes to dashes) | `feature-auth`        |
+| `{{ daft_data_dir }}`      | XDG data directory for daft         | `~/.local/share/daft` |
 
-Templates that do not start with `~/`, `/`, or `../` are resolved relative to
-`{{ repo_path }}`.
+Templates that do not start with `~/`, `/`, `{{ daft_data_dir }}`, or `../` are
+resolved relative to `{{ repo_path }}`.
 
 ### Bare Inference Heuristic
 
