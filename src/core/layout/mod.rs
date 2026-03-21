@@ -119,7 +119,7 @@ impl BuiltinLayout {
             Self::Contained => "{{ repo_path }}/{{ branch }}",
             Self::Sibling => "{{ repo }}.{{ branch | sanitize }}",
             Self::Nested => "{{ repo }}/.worktrees/{{ branch | sanitize }}",
-            Self::Centralized => "~/worktrees/{{ repo }}/{{ branch | sanitize }}",
+            Self::Centralized => "{{ daft_data_dir }}/worktrees/{{ repo }}/{{ branch | sanitize }}",
         }
     }
 

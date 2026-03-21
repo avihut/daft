@@ -69,6 +69,13 @@ mod tests {
         ));
     }
     #[test]
+    fn test_daft_data_dir_path_not_bare() {
+        assert!(!infer_bare(
+            "{{ daft_data_dir }}/worktrees/{{ repo }}/{{ branch | sanitize }}",
+            None
+        ));
+    }
+    #[test]
     fn test_repo_name_relative_not_bare() {
         assert!(!infer_bare("{{ repo }}/{{ branch | sanitize }}", None));
     }
