@@ -43,6 +43,8 @@ defined in your global config (~/.config/daft/config.toml).
 Use `daft layout show` to see the resolved layout for the current repo.
 
 Use `daft layout transform <layout>` to convert a repo between layouts.
+
+Use `daft layout default` to view or change the global default layout.
 "#)]
 pub struct LayoutArgs {
     #[command(subcommand)]
