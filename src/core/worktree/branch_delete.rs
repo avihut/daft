@@ -752,7 +752,16 @@ fn delete_single_branch(
 
     // Step 3: Remove worktree (if one exists)
     if let Some(ref wt_path) = branch.worktree_path {
-        if wt_path.exists() {
+        // Guard: the main working tree (contains .git/ directory, not a .git file)
+        // cannot be removed. In non-bare layouts, this is the original clone directory.
+        let git_entry = wt_path.join(".git");
+        if git_entry.is_dir() {
+            result.errors.push(format!(
+                "Cannot remove '{}': this is the main working tree. \
+                 Use `daft layout transform` to restructure, or delete other worktrees instead.",
+                branch.name
+            ));
+        } else if wt_path.exists() {
             sink.on_step(&format!("Removing worktree at {}...", wt_path.display()));
             match ctx.git.worktree_remove(wt_path, force) {
                 Ok(()) => {
