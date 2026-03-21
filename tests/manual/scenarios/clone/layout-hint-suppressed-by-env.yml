@@ -1,7 +1,7 @@
-name: Layout hint suppressed by DAFT_NO_HINTS
+name: Layout prompt suppressed by DAFT_NO_HINTS
 description:
   The DAFT_NO_HINTS environment variable should suppress the first-time layout
-  hint.
+  prompt.
 
 repos:
   - name: test-repo
@@ -16,4 +16,4 @@ steps:
     expect:
       exit_code: 0
       output_not_contains:
-        - "daft layout list"
+        - "[y/N]"

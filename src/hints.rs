@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 /// Environment variable to suppress all hints.
@@ -164,39 +165,117 @@ pub fn maybe_show_shell_hint(output: &mut dyn Output) -> Result<bool> {
     Ok(true)
 }
 
-/// Show the layout options hint on first clone with default layout.
+/// Result of the layout prompt.
+pub enum LayoutPromptResult {
+    /// User chose a layout (e.g., "contained").
+    Chosen(String),
+    /// User declined or prompt was skipped — use default.
+    Default,
+    /// User cancelled (Ctrl+C/Ctrl+D) — abort the operation.
+    Cancelled,
+}
+
+/// Prompt the user to choose a layout on their first clone.
 ///
-/// This should be called after a successful clone when no `--layout` flag
-/// was given and no global config default layout is set. The hint is shown
-/// only once and tells the user about available layouts.
+/// Called before clone starts when no `--layout` flag, no global config
+/// default, and this is the first time. Returns [`LayoutPromptResult`]
+/// indicating the user's choice.
 ///
-/// Returns Ok(true) if the hint was shown, Ok(false) otherwise.
-pub fn maybe_show_layout_hint(output: &mut dyn Output) -> Result<bool> {
+/// The prompt is shown only once (tracked in hints.json). Ctrl+C does
+/// NOT mark as shown, so the prompt reappears next time.
+pub fn maybe_prompt_layout_choice(output: &mut dyn Output) -> LayoutPromptResult {
     if hints_disabled() {
-        return Ok(false);
+        return LayoutPromptResult::Default;
     }
 
     if output.is_quiet() {
-        return Ok(false);
+        return LayoutPromptResult::Default;
     }
 
     let mut state = HintsState::load().unwrap_or_default();
     if state.has_shown(LAYOUT_HINT) {
-        return Ok(false);
+        return LayoutPromptResult::Default;
     }
 
-    output.info("");
-    output.info(
-        "hint: daft supports multiple worktree layouts. \
-         Run `daft layout list` to see options.",
-    );
-    output.info("  Change layout: daft layout transform <name>  or  daft clone --layout <name>");
-    output.info(&format!("To suppress hints: export {NO_HINTS_ENV}=1"));
+    // Only prompt on interactive terminals (or in test mode where stdin is piped)
+    let is_testing = env::var("DAFT_TESTING").is_ok();
+    if !is_testing && !std::io::stdin().is_terminal() {
+        return LayoutPromptResult::Default;
+    }
 
+    use crate::styles;
+    use std::io::Write;
+
+    let use_color = styles::colors_enabled_stderr();
+
+    output.info("");
+    if use_color {
+        output.info(&format!(
+            "Worktrees will be placed {}next to the repo{} (default):",
+            styles::BOLD,
+            styles::RESET,
+        ));
+        output.info(&format!(
+            "  {}myrepo/{reset}          {}myrepo.feature-login/{reset}",
+            styles::CYAN,
+            styles::CYAN,
+            reset = styles::RESET,
+        ));
+    } else {
+        output.info("Worktrees will be placed next to the repo (default):");
+        output.info("  myrepo/          myrepo.feature-login/");
+    }
+    output.info("");
+    if use_color {
+        output.info(&format!(
+            "Or {}inside the repo{} with the contained layout:",
+            styles::BOLD,
+            styles::RESET,
+        ));
+        output.info(&format!(
+            "  {}myrepo/{reset}main/     {}myrepo/{reset}feature-login/",
+            styles::CYAN,
+            styles::CYAN,
+            reset = styles::RESET,
+        ));
+    } else {
+        output.info("Or inside the repo with the contained layout:");
+        output.info("  myrepo/main/     myrepo/feature-login/");
+    }
+    output.info("");
+
+    // Intercept Ctrl+C so it doesn't print ^C or kill the process.
+    // Instead we detect it and exit gracefully.
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = cancelled.clone();
+    let _ = ctrlc::set_handler(move || {
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+
+    // Flush stderr so the prompt appears before reading input
+    eprint!("Switch default to contained? [y/N] ");
+    std::io::stderr().flush().ok();
+
+    let mut answer = String::new();
+    let read_result = std::io::stdin().read_line(&mut answer);
+
+    if cancelled.load(std::sync::atomic::Ordering::SeqCst) || matches!(read_result, Ok(0) | Err(_))
+    {
+        // Ctrl+C, Ctrl+D, or error — don't mark as shown
+        eprintln!();
+        return LayoutPromptResult::Cancelled;
+    }
+
+    // User answered — mark as shown so we don't prompt again
     state.mark_shown(LAYOUT_HINT);
     let _ = state.save();
 
-    Ok(true)
+    let answer = answer.trim().to_lowercase();
+    if answer == "y" || answer == "yes" {
+        return LayoutPromptResult::Chosen("contained".to_string());
+    }
+
+    LayoutPromptResult::Default
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
-name: Layout hint not shown when --layout flag is used
+name: Layout prompt not shown when --layout flag is used
 description:
   When the user explicitly specifies a layout via --layout, the first-time
-  layout hint should not be shown (the user already knows about layouts).
+  layout prompt should not appear (the user already knows about layouts).
 
 repos:
   - name: test-repo
@@ -13,4 +13,4 @@ steps:
     expect:
       exit_code: 0
       output_not_contains:
-        - "daft layout list"
+        - "[y/N]"

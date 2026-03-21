@@ -11,7 +11,7 @@ use crate::{
     },
     executor::cli_presenter::CliPresenter,
     git::should_show_gitoxide_notice,
-    hints::{maybe_show_layout_hint, maybe_show_shell_hint},
+    hints::{maybe_prompt_layout_choice, maybe_show_shell_hint, LayoutPromptResult},
     hooks::{
         get_remote_url_for_git_dir, yaml_config_loader, HookContext, HookExecutor, HookType,
         HooksConfig, TrustDatabase, TrustLevel,
@@ -160,8 +160,23 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     check_dependencies()?;
 
     let global_config = GlobalConfig::load().unwrap_or_default();
+
+    // First-time layout prompt: when using the built-in default (no --layout
+    // flag, no global config default), prompt the user to choose contained.
+    let prompted_layout = if args.layout.is_none() && global_config.defaults.layout.is_none() {
+        match maybe_prompt_layout_choice(output) {
+            LayoutPromptResult::Chosen(layout) => Some(layout),
+            LayoutPromptResult::Default => None,
+            LayoutPromptResult::Cancelled => return Ok(()),
+        }
+    } else {
+        None
+    };
+
+    let effective_cli_layout = args.layout.as_deref().or(prompted_layout.as_deref());
+
     let (layout, _source) = resolve_layout(&LayoutResolutionContext {
-        cli_layout: args.layout.as_deref(),
+        cli_layout: effective_cli_layout,
         repo_store_layout: None, // New clone, no repo store entry yet
         yaml_layout: None,       // Can't read daft.yml before clone
         global_config: &global_config,
@@ -236,17 +251,11 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         maybe_show_shell_hint(output)?;
     }
 
-    // First-time layout hint: when using the built-in default layout (no
-    // --layout flag, no global config default), show a one-time hint about
-    // available layouts.
-    if args.layout.is_none() && global_config.defaults.layout.is_none() {
-        maybe_show_layout_hint(output)?;
-    }
-
     // Post-clone layout reconciliation: if no --layout flag and no global
     // default, check if the cloned repo's daft.yml specifies a layout.
     // If the yaml layout differs from the resolved layout, auto-transform.
-    if args.layout.is_none() && global_config.defaults.layout.is_none() {
+    if args.layout.is_none() && prompted_layout.is_none() && global_config.defaults.layout.is_none()
+    {
         if let Some(ref worktree_dir) = result.worktree_dir {
             if let Ok(Some(yaml_config)) = yaml_config_loader::load_merged_config(worktree_dir) {
                 if let Some(ref yaml_layout) = yaml_config.layout {

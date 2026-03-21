@@ -99,6 +99,7 @@ tabled = { version = "0.20", default-features = false, features = ["std", "ansi"
 terminal_size = "0.4"
 toml = "0.8"
 pathdiff = "0.2.3"
+ctrlc = "3.5.2"
 
 # pager is Unix-only (uses fork/pipes)
 [target.'cfg(unix)'.dependencies]

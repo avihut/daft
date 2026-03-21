@@ -1,8 +1,8 @@
-name: First clone with default layout shows layout hint
+name: First clone prompts for layout choice
 description:
-  On the first ever daft clone using the default layout (sibling), daft should
-  show a one-time hint about available layouts. The hint should not appear on
-  subsequent clones.
+  On the first ever daft clone using the default layout (no --layout flag, no
+  global config), prompt the user to opt into the contained layout. Default is
+  no (sibling). The prompt should not appear on subsequent clones.
 
 repos:
   - name: test-repo-1
@@ -11,17 +11,27 @@ repos:
     use_fixture: standard-remote
 
 steps:
-  - name: First clone shows layout hint
-    run: git-worktree-clone $REMOTE_TEST_REPO_1 2>&1
+  - name: First clone prompts and user declines (default)
+    run: echo "" | git-worktree-clone $REMOTE_TEST_REPO_1 2>&1
     expect:
       exit_code: 0
       output_contains:
-        - "layout"
-        - "daft layout list"
+        - "Switch default to contained?"
+        - "[y/N]"
 
-  - name: Second clone does not show layout hint
+  - name: Verify sibling layout was used (default choice)
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo-1"
+        - "$WORK_DIR/test-repo-1/.git"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo-1"
+          branch: main
+
+  - name: Second clone does not prompt
     run: git-worktree-clone $REMOTE_TEST_REPO_2 2>&1
     expect:
       exit_code: 0
       output_not_contains:
-        - "daft layout list"
+        - "[y/N]"

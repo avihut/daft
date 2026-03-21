@@ -1,0 +1,36 @@
+name: daft.yml auto-transforms even after prompt decline
+description:
+  When the cloned repo has a daft.yml with a layout field, the daft.yml layout
+  takes effect after clone via auto-transform, even if the user declined the
+  pre-clone prompt.
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      layout: contained
+
+steps:
+  - name: Clone and decline prompt (daft.yml will take over)
+    run: echo "" | git-worktree-clone $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Transforming"
+        - "contained"
+
+  - name: Verify auto-transformed to contained from daft.yml
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/main"
+          branch: main
