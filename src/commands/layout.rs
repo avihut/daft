@@ -370,18 +370,25 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
                 target_layout.name
             ));
             transform_to_bare(&settings, output)?;
-            relocate_worktrees(&target_layout, &git, output)?;
+            relocate_worktrees(&target_layout, &git, output, &[])?;
         }
-        // bare -> non-bare (relocate first, then eject)
+        // bare -> non-bare (relocate non-default, then eject default)
         (true, false) => {
             output.step(&format!(
                 "Transforming to layout '{}' (bare -> non-bare)...",
                 target_layout.name
             ));
-            // Relocate worktrees BEFORE eject. Eject removes all non-target
-            // worktrees, so we move them to their new paths first. Then eject
-            // picks the default branch and converts bare → non-bare.
-            relocate_worktrees(&target_layout, &git, output)?;
+            // Detect the default branch — eject will handle this one by moving
+            // its files to the project root and converting bare → non-bare.
+            // All OTHER worktrees must be relocated first since eject destroys them.
+            let default_branch = crate::remote::get_default_branch_local(
+                &get_git_common_dir()?,
+                &settings.remote,
+                settings.use_gitoxide,
+            )
+            .unwrap_or_else(|_| "main".to_string());
+
+            relocate_worktrees(&target_layout, &git, output, &[&default_branch])?;
             transform_to_non_bare(&settings, args.force, output)?;
         }
         // non-bare -> non-bare (relocate only)
@@ -390,7 +397,7 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
                 "Transforming to layout '{}'...",
                 target_layout.name
             ));
-            relocate_worktrees(&target_layout, &git, output)?;
+            relocate_worktrees(&target_layout, &git, output, &[])?;
         }
         // bare -> bare (relocate only)
         (true, true) => {
@@ -398,7 +405,7 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
                 "Transforming to layout '{}'...",
                 target_layout.name
             ));
-            relocate_worktrees(&target_layout, &git, output)?;
+            relocate_worktrees(&target_layout, &git, output, &[])?;
         }
     }
 
@@ -422,15 +429,17 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     Ok(())
 }
 
-/// Relocate all linked worktrees to match the target layout template.
+/// Relocate linked worktrees to match the target layout template.
 ///
 /// Parses `git worktree list --porcelain`, computes the expected path for
 /// each worktree using the target layout, and moves any that are out of place.
-/// Skips the bare root entry and detached HEAD worktrees.
+/// Skips the bare root entry, detached HEAD worktrees, and any branch in
+/// `skip_branches` (used to preserve the default branch for eject).
 fn relocate_worktrees(
     target_layout: &Layout,
     git: &GitCommand,
     output: &mut dyn Output,
+    skip_branches: &[&str],
 ) -> Result<()> {
     use crate::core::multi_remote::path::build_template_context;
     use std::path::PathBuf;
@@ -468,6 +477,9 @@ fn relocate_worktrees(
     let mut moved_count = 0;
 
     for (current_path, branch) in &worktrees {
+        if skip_branches.iter().any(|s| s == branch) {
+            continue;
+        }
         let ctx = build_template_context(&project_root, branch);
         let expected_path = target_layout
             .worktree_path(&ctx)
