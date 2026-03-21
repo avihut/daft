@@ -4,38 +4,72 @@
 ///
 /// Rules:
 /// 1. If `explicit_bare` is provided, use it (custom layout override).
-/// 2. Starts with `../`, `/`, or `~/` — not bare (worktrees outside repo).
-/// 3. First path segment starts with `.` — not bare (hidden directory).
-/// 4. Otherwise — bare required (worktrees would conflict with working tree).
+/// 2. Template starts with `{{ repo_path }}/` — worktrees are inside the repo:
+///    a. Next segment starts with `.` — not bare (hidden directory, gitignored).
+///    b. Otherwise — bare required (worktrees conflict with working tree).
+/// 3. Everything else — not bare (worktrees are outside the repo: sibling,
+///    centralized, or absolute paths).
 pub fn infer_bare(template: &str, explicit_bare: Option<bool>) -> bool {
     if let Some(bare) = explicit_bare {
         return bare;
     }
-    if template.starts_with("../") || template.starts_with('/') || template.starts_with("~/") {
-        return false;
+
+    // Templates anchored to repo_path place worktrees inside the repo
+    const REPO_PATH_PREFIX: &str = "{{ repo_path }}/";
+    if let Some(rest) = template.strip_prefix(REPO_PATH_PREFIX) {
+        // Check the first segment after repo_path/
+        let first_segment = rest.split('/').next().unwrap_or("");
+        // Hidden directory (e.g., .worktrees/) → not bare, gitignored
+        if first_segment.starts_with('.') {
+            return false;
+        }
+        // Visible child of repo_path → bare required
+        return true;
     }
-    let first_segment = template.split('/').next().unwrap_or("");
-    if first_segment.starts_with('.') {
-        return false;
-    }
-    true
+
+    // Everything else: relative paths (sibling), absolute paths, ~/paths
+    // All place worktrees outside the repo → not bare
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // Rule 1: explicit override
     #[test]
     fn test_explicit_bare_true() {
         assert!(infer_bare("anything", Some(true)));
     }
     #[test]
     fn test_explicit_bare_false() {
-        assert!(!infer_bare("{{ branch | sanitize }}", Some(false)));
+        assert!(!infer_bare("{{ repo_path }}/{{ branch }}", Some(false)));
+    }
+
+    // Rule 2: repo_path-anchored templates
+    #[test]
+    fn test_contained_is_bare() {
+        assert!(infer_bare("{{ repo_path }}/{{ branch }}", None));
     }
     #[test]
-    fn test_parent_relative_not_bare() {
-        assert!(!infer_bare("../{{ repo }}.{{ branch | sanitize }}", None));
+    fn test_nested_hidden_not_bare() {
+        assert!(!infer_bare(
+            "{{ repo_path }}/.worktrees/{{ branch | sanitize }}",
+            None
+        ));
+    }
+    #[test]
+    fn test_repo_path_visible_subdir_is_bare() {
+        assert!(infer_bare(
+            "{{ repo_path }}/worktrees/{{ branch | sanitize }}",
+            None
+        ));
+    }
+
+    // Rule 3: everything else is not bare
+    #[test]
+    fn test_sibling_not_bare() {
+        assert!(!infer_bare("{{ repo }}.{{ branch | sanitize }}", None));
     }
     #[test]
     fn test_absolute_path_not_bare() {
@@ -52,26 +86,7 @@ mod tests {
         ));
     }
     #[test]
-    fn test_hidden_dir_not_bare() {
-        assert!(!infer_bare(".worktrees/{{ branch | sanitize }}", None));
-    }
-    #[test]
-    fn test_hidden_dir_nested_not_bare() {
-        assert!(!infer_bare(
-            ".trees/{{ repo }}/{{ branch | sanitize }}",
-            None
-        ));
-    }
-    #[test]
-    fn test_direct_child_is_bare() {
-        assert!(infer_bare("{{ branch | sanitize }}", None));
-    }
-    #[test]
-    fn test_visible_subdir_is_bare() {
-        assert!(infer_bare("worktrees/{{ branch | sanitize }}", None));
-    }
-    #[test]
-    fn test_nested_visible_is_bare() {
-        assert!(infer_bare("trees/{{ repo }}/{{ branch | sanitize }}", None));
+    fn test_repo_name_relative_not_bare() {
+        assert!(!infer_bare("{{ repo }}/{{ branch | sanitize }}", None));
     }
 }

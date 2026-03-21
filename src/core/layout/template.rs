@@ -61,9 +61,14 @@ fn resolve_expression(expr: &str, ctx: &TemplateContext) -> Result<String> {
 
 /// Resolve a rendered template path to an absolute PathBuf.
 ///
-/// - `~/` expands to home directory
-/// - `/` is absolute
-/// - Everything else resolves relative to repo_path
+/// - Absolute paths (starting with `/`) are used as-is.
+/// - Home-relative paths (starting with `~/`) expand to the home directory.
+/// - Relative paths are resolved against the **parent directory** of
+///   `repo_path` — i.e., the directory that contains the repository.
+///
+/// Templates that use `{{ repo_path }}` render to absolute paths and bypass
+/// the relative resolution entirely. Templates that use `{{ repo }}` produce
+/// relative paths like `myrepo.feature-auth` which resolve next to the repo.
 ///
 /// All paths are normalized (`..` components resolved without filesystem access).
 pub fn resolve_path(rendered: &str, repo_path: &Path) -> Result<PathBuf> {
@@ -75,7 +80,11 @@ pub fn resolve_path(rendered: &str, repo_path: &Path) -> Result<PathBuf> {
             .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
         return Ok(normalize_path(&home.join(rest_of_path)));
     }
-    Ok(normalize_path(&repo_path.join(rendered)))
+    // Relative paths resolve against the parent of repo_path
+    let parent = repo_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Repository path has no parent directory"))?;
+    Ok(normalize_path(&parent.join(rendered)))
 }
 
 /// Normalize a path by resolving `.` and `..` components without filesystem access.
@@ -137,26 +146,29 @@ mod tests {
     }
 
     #[test]
-    fn test_render_mixed_text_and_variables() {
+    fn test_render_sibling_template() {
         let ctx = TemplateContext {
             repo_path: PathBuf::from("/home/user/myproject"),
             repo: "myproject".into(),
             branch: "feature/auth".into(),
         };
         assert_eq!(
-            render("../{{ repo }}.{{ branch | sanitize }}", &ctx).unwrap(),
-            "../myproject.feature-auth"
+            render("{{ repo }}.{{ branch | sanitize }}", &ctx).unwrap(),
+            "myproject.feature-auth"
         );
     }
 
     #[test]
-    fn test_render_contained_layout() {
+    fn test_render_contained_template() {
         let ctx = TemplateContext {
             repo_path: PathBuf::from("/home/user/myproject"),
             repo: "myproject".into(),
             branch: "main".into(),
         };
-        assert_eq!(render("{{ branch | sanitize }}", &ctx).unwrap(), "main");
+        assert_eq!(
+            render("{{ repo_path }}/{{ branch }}", &ctx).unwrap(),
+            "/home/user/myproject/main"
+        );
     }
 
     #[test]
@@ -180,17 +192,17 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_path_relative() {
+    fn test_resolve_path_relative_sibling() {
         let repo = Path::new("/home/user/myproject");
-        let resolved = resolve_path("main", repo).unwrap();
-        assert_eq!(resolved, PathBuf::from("/home/user/myproject/main"));
+        let resolved = resolve_path("myproject.feature-auth", repo).unwrap();
+        assert_eq!(resolved, PathBuf::from("/home/user/myproject.feature-auth"));
     }
 
     #[test]
-    fn test_resolve_path_parent_relative() {
+    fn test_resolve_path_relative_subdir() {
         let repo = Path::new("/home/user/myproject");
-        let resolved = resolve_path("../myproject.feature-auth", repo).unwrap();
-        assert_eq!(resolved, PathBuf::from("/home/user/myproject.feature-auth"));
+        let resolved = resolve_path("myproject/main", repo).unwrap();
+        assert_eq!(resolved, PathBuf::from("/home/user/myproject/main"));
     }
 
     #[test]
@@ -209,9 +221,10 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_path_dotdir() {
+    fn test_resolve_path_absolute_with_repo_path() {
+        // Templates using {{ repo_path }} render to absolute paths
         let repo = Path::new("/home/user/myproject");
-        let resolved = resolve_path(".worktrees/feature-auth", repo).unwrap();
+        let resolved = resolve_path("/home/user/myproject/.worktrees/feature-auth", repo).unwrap();
         assert_eq!(
             resolved,
             PathBuf::from("/home/user/myproject/.worktrees/feature-auth")

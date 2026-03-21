@@ -115,9 +115,9 @@ impl BuiltinLayout {
 
     fn template(&self) -> &'static str {
         match self {
-            Self::Contained => "{{ branch }}",
-            Self::Sibling => "../{{ repo }}.{{ branch | sanitize }}",
-            Self::Nested => ".worktrees/{{ branch | sanitize }}",
+            Self::Contained => "{{ repo_path }}/{{ branch }}",
+            Self::Sibling => "{{ repo }}.{{ branch | sanitize }}",
+            Self::Nested => "{{ repo_path }}/.worktrees/{{ branch | sanitize }}",
             Self::Centralized => "~/worktrees/{{ repo }}/{{ branch | sanitize }}",
         }
     }
