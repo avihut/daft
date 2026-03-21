@@ -1,0 +1,10 @@
+name: Layout default rejects --reset with layout name
+description: --reset and layout name are mutually exclusive (clap conflict).
+
+steps:
+  - name: Conflict produces error
+    run: daft layout default contained --reset 2>&1
+    expect:
+      exit_code: 2
+      output_contains:
+        - "cannot be used with"

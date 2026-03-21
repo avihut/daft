@@ -1,0 +1,30 @@
+name: Layout default set changes global default
+description:
+  daft layout default <name> sets the default and subsequent clones use it.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Set default to contained
+    run: daft layout default contained 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "contained"
+
+  - name: Clone uses the new default
+    run: git-worktree-clone $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Verify clone used contained layout
+    run: NO_COLOR=1 daft layout show 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "contained"
