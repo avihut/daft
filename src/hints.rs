@@ -242,16 +242,17 @@ pub fn maybe_prompt_layout_choice(output: &mut dyn Output) -> LayoutPromptResult
         output.info("Or inside the repo with the contained layout:");
         output.info("  myrepo/main/     myrepo/feature-login/");
     }
+    // Print prompt inline — no trailing newline so cursor stays on same line
+    output.info("");
     if use_color {
-        output.info(&format!(
-            "Use contained? {dim}[y=this repo / d=set as default / N]{reset}",
+        eprint!(
+            "Use contained? {dim}[y=this repo / d=set as default / N]{reset} ",
             dim = styles::DIM,
             reset = styles::RESET,
-        ));
+        );
     } else {
-        output.info("Use contained? [y=this repo / d=set as default / N]");
+        eprint!("Use contained? [y=this repo / d=set as default / N] ");
     }
-    output.info("");
 
     // Suppress ^C echo and handle Ctrl+C gracefully. stty -echoctl
     // prevents the terminal from printing "^C". The ctrlc handler exits
@@ -274,8 +275,6 @@ pub fn maybe_prompt_layout_choice(output: &mut dyn Output) -> LayoutPromptResult
         std::process::exit(0);
     });
 
-    // Flush stderr so the prompt appears before reading input
-    eprint!("> ");
     std::io::stderr().flush().ok();
 
     let mut answer = String::new();
