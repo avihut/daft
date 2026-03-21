@@ -1,0 +1,43 @@
+name: Layout prompt "d" sets contained as global default
+description:
+  When the user answers "d" to the layout prompt, contained is used for this
+  clone AND persisted as the global default for future clones.
+
+repos:
+  - name: test-repo-1
+    use_fixture: standard-remote
+  - name: test-repo-2
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and set contained as default
+    run: echo "d" | git-worktree-clone $REMOTE_TEST_REPO_1 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Use contained?"
+
+  - name: Verify contained layout was used
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo-1/main"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo-1/main"
+          branch: main
+
+  - name: Second clone uses contained without prompting
+    run: git-worktree-clone $REMOTE_TEST_REPO_2 2>&1
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "Use contained?"
+
+  - name: Verify second clone also used contained
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo-2/main"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo-2/main"
+          branch: main

@@ -13,7 +13,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "[y/N]"
+        - "Use contained?"
 
   - name: Verify contained layout was used
     run: "true"

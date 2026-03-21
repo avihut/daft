@@ -16,8 +16,8 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Switch default to contained?"
-        - "[y/N]"
+        - "Use contained?"
+        - "d=set as default"
 
   - name: Verify sibling layout was used (default choice)
     run: "true"
@@ -34,4 +34,4 @@ steps:
     expect:
       exit_code: 0
       output_not_contains:
-        - "[y/N]"
+        - "Use contained?"

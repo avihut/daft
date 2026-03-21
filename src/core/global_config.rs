@@ -64,6 +64,56 @@ impl GlobalConfig {
         BuiltinLayout::from_name(name).map(|b| b.to_layout())
     }
 
+    /// Set the default layout in the config file.
+    ///
+    /// Reads the existing config file, updates or adds `defaults.layout`,
+    /// and writes it back. Preserves all other content.
+    pub fn set_default_layout(layout_name: &str) -> Result<()> {
+        let path = Self::default_path()?;
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let contents = if path.exists() {
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read config from {}", path.display()))?
+        } else {
+            String::new()
+        };
+
+        let new_line = format!("layout = \"{}\"", layout_name);
+
+        let updated = if contents.contains("layout = ") {
+            // Replace existing layout line
+            let mut result = String::new();
+            for line in contents.lines() {
+                if line.trim().starts_with("layout = ") || line.trim().starts_with("layout=") {
+                    result.push_str(&new_line);
+                } else {
+                    result.push_str(line);
+                }
+                result.push('\n');
+            }
+            result
+        } else if contents.contains("[defaults]") {
+            // Add layout under existing [defaults] section
+            contents.replace("[defaults]", &format!("[defaults]\n{new_line}"))
+        } else {
+            // No [defaults] section — add it
+            let mut result = contents;
+            if !result.is_empty() && !result.ends_with('\n') {
+                result.push('\n');
+            }
+            result.push_str(&format!("[defaults]\n{new_line}\n"));
+            result
+        };
+
+        std::fs::write(&path, updated)
+            .with_context(|| format!("Failed to write config to {}", path.display()))
+    }
+
     /// Get the default layout, if configured.
     pub fn default_layout(&self) -> Option<Layout> {
         let name = self.defaults.layout.as_deref()?;

@@ -242,6 +242,15 @@ pub fn maybe_prompt_layout_choice(output: &mut dyn Output) -> LayoutPromptResult
         output.info("Or inside the repo with the contained layout:");
         output.info("  myrepo/main/     myrepo/feature-login/");
     }
+    if use_color {
+        output.info(&format!(
+            "Use contained? {dim}[y=this repo / d=set as default / N]{reset}",
+            dim = styles::DIM,
+            reset = styles::RESET,
+        ));
+    } else {
+        output.info("Use contained? [y=this repo / d=set as default / N]");
+    }
     output.info("");
 
     // Suppress ^C echo and handle Ctrl+C gracefully. stty -echoctl
@@ -255,8 +264,6 @@ pub fn maybe_prompt_layout_choice(output: &mut dyn Output) -> LayoutPromptResult
         .status();
 
     let _ = ctrlc::set_handler(|| {
-        // Check if stderr supports color (can't access the closure's env easily,
-        // so re-check here)
         let use_color = std::io::stderr().is_terminal() && std::env::var("NO_COLOR").is_err();
         eprintln!();
         if use_color {
@@ -268,13 +275,13 @@ pub fn maybe_prompt_layout_choice(output: &mut dyn Output) -> LayoutPromptResult
     });
 
     // Flush stderr so the prompt appears before reading input
-    eprint!("Switch default to contained? [y/N] ");
+    eprint!("> ");
     std::io::stderr().flush().ok();
 
     let mut answer = String::new();
     let read_result = std::io::stdin().read_line(&mut answer);
 
-    // Restore terminal echo and default Ctrl+C behavior
+    // Restore terminal echo
     let _ = std::process::Command::new("stty")
         .arg("echoctl")
         .stdin(std::process::Stdio::inherit())
@@ -291,7 +298,15 @@ pub fn maybe_prompt_layout_choice(output: &mut dyn Output) -> LayoutPromptResult
     let _ = state.save();
 
     let answer = answer.trim().to_lowercase();
+    if answer == "d" || answer == "default" {
+        // Set as global default for all future clones
+        if let Err(e) = crate::core::global_config::GlobalConfig::set_default_layout("contained") {
+            output.warning(&format!("Could not save default layout: {e}"));
+        }
+        return LayoutPromptResult::Chosen("contained".to_string());
+    }
     if answer == "y" || answer == "yes" {
+        // Use contained for this repo only (stored in repos.json by clone)
         return LayoutPromptResult::Chosen("contained".to_string());
     }
 
