@@ -3,9 +3,8 @@ use crate::{
         global_config::GlobalConfig,
         layout::{
             resolver::{resolve_layout, LayoutResolutionContext, LayoutSource},
-            BuiltinLayout, Layout, DEFAULT_LAYOUT,
+            transform, BuiltinLayout, Layout, DEFAULT_LAYOUT,
         },
-        worktree::{flow_adopt, flow_eject},
         CommandBridge, OutputSink,
     },
     get_current_worktree_path, get_git_common_dir,
@@ -559,18 +558,16 @@ fn cleanup_empty_parents(mut dir: &std::path::Path, stop: &std::path::Path) -> R
     Ok(())
 }
 
-/// Delegate to flow_adopt core logic (non-bare -> bare).
+/// Convert non-bare -> bare using the layout transform module.
 fn transform_to_bare(settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
-    let params = flow_adopt::AdoptParams {
-        repository_path: None,
-        dry_run: false,
+    let params = transform::ConvertToBareParams {
         use_gitoxide: settings.use_gitoxide,
     };
 
     output.start_spinner("Converting to bare (worktree) layout...");
     let exec_result = {
         let mut sink = OutputSink(output);
-        flow_adopt::execute(&params, &mut sink)
+        transform::convert_to_bare(&params, &mut sink)
     };
     output.finish_spinner();
     let result = exec_result?;
@@ -583,17 +580,15 @@ fn transform_to_bare(settings: &DaftSettings, output: &mut dyn Output) -> Result
     Ok(())
 }
 
-/// Delegate to flow_eject core logic (bare -> non-bare).
+/// Convert bare -> non-bare using the layout transform module.
 fn transform_to_non_bare(
     settings: &DaftSettings,
     force: bool,
     output: &mut dyn Output,
 ) -> Result<()> {
-    let params = flow_eject::EjectParams {
-        repository_path: None,
+    let params = transform::ConvertToNonBareParams {
         branch: None,
         force,
-        dry_run: false,
         use_gitoxide: settings.use_gitoxide,
         is_quiet: false,
         remote_name: settings.remote.clone(),
@@ -605,7 +600,7 @@ fn transform_to_non_bare(
     output.start_spinner("Converting to traditional layout...");
     let exec_result = {
         let mut bridge = CommandBridge::new(output, executor);
-        flow_eject::execute(&params, &mut bridge)
+        transform::convert_to_non_bare(&params, &mut bridge)
     };
     output.finish_spinner();
     let result = exec_result?;

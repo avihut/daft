@@ -1,6 +1,7 @@
 pub mod bare;
 pub mod resolver;
 pub mod template;
+pub mod transform;
 
 use std::fs;
 use std::io::Write;
