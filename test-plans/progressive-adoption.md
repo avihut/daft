@@ -19,12 +19,12 @@ branch: feat/progressive-adoption
 
 ## Built-in layouts
 
-| Name        | Template                                              | Bare |
-| ----------- | ----------------------------------------------------- | ---- |
-| contained   | `{{ repo_path }}/{{ branch }}`                        | yes  |
-| sibling     | `{{ repo }}.{{ branch \| sanitize }}`                 | no   |
-| nested      | `{{ repo_path }}/.worktrees/{{ branch \| sanitize }}` | no   |
-| centralized | `~/worktrees/{{ repo }}/{{ branch \| sanitize }}`     | no   |
+| Name        | Template                                          | Bare |
+| ----------- | ------------------------------------------------- | ---- |
+| contained   | `{{ repo_path }}/{{ branch }}`                    | yes  |
+| sibling     | `{{ repo }}.{{ branch \| sanitize }}`             | no   |
+| nested      | `{{ repo }}/.worktrees/{{ branch \| sanitize }}`  | no   |
+| centralized | `~/worktrees/{{ repo }}/{{ branch \| sanitize }}` | no   |
 
 Default: `sibling`
 

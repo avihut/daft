@@ -59,12 +59,12 @@ template geometry at resolution time.
 
 ### Built-in Layouts
 
-| Name          | Template                                              | Inferred bare | Description                                          |
-| ------------- | ----------------------------------------------------- | ------------- | ---------------------------------------------------- |
-| `contained`   | `{{ repo_path }}/{{ branch }}`                        | Yes           | Worktrees as children of project root                |
-| `sibling`     | `{{ repo }}.{{ branch \| sanitize }}`                 | No            | Worktrees adjacent to the repo                       |
-| `nested`      | `{{ repo_path }}/.worktrees/{{ branch \| sanitize }}` | No            | Worktrees in a hidden subdirectory (auto-gitignored) |
-| `centralized` | `~/worktrees/{{ repo }}/{{ branch \| sanitize }}`     | No            | Worktrees in a global directory                      |
+| Name          | Template                                          | Inferred bare | Description                                          |
+| ------------- | ------------------------------------------------- | ------------- | ---------------------------------------------------- |
+| `contained`   | `{{ repo_path }}/{{ branch }}`                    | Yes           | Worktrees as children of project root                |
+| `sibling`     | `{{ repo }}.{{ branch \| sanitize }}`             | No            | Worktrees adjacent to the repo                       |
+| `nested`      | `{{ repo }}/.worktrees/{{ branch \| sanitize }}`  | No            | Worktrees in a hidden subdirectory (auto-gitignored) |
+| `centralized` | `~/worktrees/{{ repo }}/{{ branch \| sanitize }}` | No            | Worktrees in a global directory                      |
 
 The built-in default layout is `sibling`.
 

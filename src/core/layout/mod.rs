@@ -117,7 +117,7 @@ impl BuiltinLayout {
         match self {
             Self::Contained => "{{ repo_path }}/{{ branch }}",
             Self::Sibling => "{{ repo }}.{{ branch | sanitize }}",
-            Self::Nested => "{{ repo_path }}/.worktrees/{{ branch | sanitize }}",
+            Self::Nested => "{{ repo }}/.worktrees/{{ branch | sanitize }}",
             Self::Centralized => "~/worktrees/{{ repo }}/{{ branch | sanitize }}",
         }
     }
