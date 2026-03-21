@@ -57,6 +57,8 @@ enum LayoutCommand {
     Show,
     /// Transform the current repo to a different layout
     Transform(TransformArgs),
+    /// View or set the global default layout
+    Default(DefaultArgs),
 }
 
 #[derive(Args)]
@@ -66,6 +68,17 @@ struct TransformArgs {
     /// Force transform even with uncommitted changes
     #[arg(short, long)]
     force: bool,
+}
+
+#[derive(Args)]
+struct DefaultArgs {
+    /// Layout name or template to set as the global default
+    #[arg(conflicts_with = "reset")]
+    layout: Option<String>,
+
+    /// Remove the global default, reverting to built-in (sibling)
+    #[arg(long)]
+    reset: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -79,6 +92,7 @@ pub fn run() -> Result<()> {
         Some(LayoutCommand::Transform(transform_args)) => {
             cmd_transform(&transform_args, &mut output)
         }
+        Some(LayoutCommand::Default(default_args)) => cmd_default(&default_args, &mut output),
     }
 }
 
@@ -267,6 +281,50 @@ struct LayoutRow {
     is_selected: bool,
 }
 
+// ── layout default ─────────────────────────────────────────────────────────
+
+fn cmd_default(args: &DefaultArgs, output: &mut dyn Output) -> Result<()> {
+    if args.reset {
+        GlobalConfig::remove_default_layout()?;
+        output.result("Default layout reset to built-in (sibling).");
+        return Ok(());
+    }
+
+    if let Some(ref layout_name) = args.layout {
+        if layout_name.is_empty() {
+            anyhow::bail!("Layout name cannot be empty.");
+        }
+        GlobalConfig::set_default_layout(layout_name)?;
+        output.result(&format!("Default layout set to '{layout_name}'."));
+        return Ok(());
+    }
+
+    // Show current default
+    let global_config = GlobalConfig::load().unwrap_or_default();
+    let use_color = styles::colors_enabled();
+
+    let (layout, source) = match global_config.defaults.layout {
+        Some(_) => (global_config.default_layout().unwrap(), "global config"),
+        None => (DEFAULT_LAYOUT.to_layout(), "default"),
+    };
+    let (name, template) = (layout.name, layout.template);
+
+    let template_display = if use_color {
+        highlight_template(&template)
+    } else {
+        template
+    };
+
+    output.info(&format!(
+        "{} {} {}",
+        bold(&name),
+        template_display,
+        dim(&format!("({source})"))
+    ));
+
+    Ok(())
+}
+
 // ── layout show ────────────────────────────────────────────────────────────
 
 fn cmd_show(output: &mut dyn Output) -> Result<()> {
@@ -349,7 +407,14 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         }
     };
 
-    let is_currently_bare = git.rev_parse_is_bare_repository().unwrap_or(false);
+    // Use config_get("core.bare") instead of rev_parse_is_bare_repository()
+    // because the latter returns false from inside a linked worktree of a
+    // bare repo — which is where users typically run transform from.
+    let is_currently_bare = git
+        .config_get("core.bare")
+        .ok()
+        .flatten()
+        .is_some_and(|v| v.to_lowercase() == "true");
     let target_needs_bare = target_layout.needs_bare();
 
     // For non-bare → bare: adopt must run from the main working tree (not a
