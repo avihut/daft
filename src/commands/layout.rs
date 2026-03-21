@@ -15,7 +15,7 @@ use crate::{
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
     styles,
-    styles::{bold, cyan, dim, dim_underline},
+    styles::{bold, dim, dim_underline},
     utils::*,
 };
 use anyhow::{Context, Result};
@@ -190,31 +190,32 @@ fn cmd_list(output: &mut dyn Output) -> Result<()> {
 
 /// Syntax-highlight a template string.
 ///
-/// Variables `{{ ... }}` are colored cyan, literal text stays default,
-/// filters `| sanitize` are dimmed.
+/// Three-tier visual hierarchy:
+/// - **Bold**: variable names (the dynamic data — most important)
+/// - **Normal**: literal path text (the structure — important)
+/// - **Dark gray**: delimiters `{{ }}` and filters `| sanitize` (syntax — least important)
 fn highlight_template(template: &str) -> String {
     let mut result = String::new();
     let mut rest = template;
 
     while let Some(start) = rest.find("{{") {
-        // Literal text before the expression
-        result.push_str(&styles::dim(&rest[..start]));
+        // Literal text before the expression — normal (no styling)
+        result.push_str(&rest[..start]);
 
         let after_open = &rest[start + 2..];
         if let Some(end) = after_open.find("}}") {
             let expr = &after_open[..end];
-            // Split on pipe to style filter differently
             if let Some(pipe_pos) = expr.find('|') {
                 let var = expr[..pipe_pos].trim();
                 let filter = expr[pipe_pos + 1..].trim();
-                result.push_str(&styles::dim("{{"));
-                result.push_str(&format!(" {} ", cyan(var)));
-                result.push_str(&styles::dim(&format!("| {filter} }}")));
+                result.push_str(&styles::dark_gray("{{"));
+                result.push_str(&format!(" {} ", bold(var)));
+                result.push_str(&styles::dark_gray(&format!("| {filter} }}")));
             } else {
                 let var = expr.trim();
-                result.push_str(&styles::dim("{{"));
-                result.push_str(&format!(" {} ", cyan(var)));
-                result.push_str(&styles::dim("}}"));
+                result.push_str(&styles::dark_gray("{{"));
+                result.push_str(&format!(" {} ", bold(var)));
+                result.push_str(&styles::dark_gray("}}"));
             }
             rest = &after_open[end + 2..];
         } else {
@@ -222,10 +223,8 @@ fn highlight_template(template: &str) -> String {
             rest = "";
         }
     }
-    // Remaining literal text
-    if !rest.is_empty() {
-        result.push_str(&styles::dim(rest));
-    }
+    // Remaining literal text — normal (no styling)
+    result.push_str(rest);
     result
 }
 
