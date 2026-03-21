@@ -291,6 +291,214 @@ pub fn convert_to_non_bare(
     })
 }
 
+// ── Collapse bare to non-bare (for layout transform) ───────────────────────
+
+/// Parameters for collapsing a bare repo to non-bare during layout transform.
+pub struct CollapseBareParams {
+    pub use_gitoxide: bool,
+    pub remote_name: String,
+}
+
+/// Result of collapsing a bare repo to non-bare.
+pub struct CollapseBareResult {
+    pub project_root: PathBuf,
+    pub default_branch: String,
+}
+
+/// Collapse a bare (worktree) repo into a non-bare repo, keeping linked worktrees.
+///
+/// Unlike [`convert_to_non_bare`] (which removes all non-target worktrees for
+/// the eject command), this function preserves every linked worktree. Only the
+/// default branch's worktree is dissolved — its files become the main working
+/// tree of the now-non-bare repo.
+///
+/// Handles both clone-style bare repos (git metadata at root) and adopt-style
+/// bare repos (git metadata in `.git/` subdirectory).
+pub fn collapse_bare_to_non_bare(
+    params: &CollapseBareParams,
+    progress: &mut dyn ProgressSink,
+) -> Result<CollapseBareResult> {
+    let git = GitCommand::new(false).with_gitoxide(params.use_gitoxide);
+    let git_common_dir = get_git_common_dir()?;
+    let git_common_dir = std::fs::canonicalize(&git_common_dir).with_context(|| {
+        format!(
+            "Could not canonicalize git dir: {}",
+            git_common_dir.display()
+        )
+    })?;
+
+    // Determine repo structure: clone-style bare (metadata at root) vs
+    // adopt-style bare (metadata in .git/ subdirectory).
+    let is_clone_style = git_common_dir.file_name().is_none_or(|n| n != ".git");
+    let project_root = if is_clone_style {
+        // Clone-style: git_common_dir IS the project root
+        git_common_dir.clone()
+    } else {
+        // Adopt-style: git_common_dir is <root>/.git, parent is project root
+        git_common_dir
+            .parent()
+            .context("Could not determine project root")?
+            .to_path_buf()
+    };
+
+    change_directory(&project_root)?;
+
+    // Parse worktrees to find the default branch worktree
+    let worktrees = parse_worktrees(&git)?;
+    let non_bare_worktrees: Vec<_> = worktrees.iter().filter(|wt| !wt.is_bare).collect();
+
+    if non_bare_worktrees.is_empty() {
+        anyhow::bail!(
+            "No worktrees found. Cannot convert to non-bare without at least one worktree."
+        );
+    }
+
+    // Pick the default branch worktree (same logic as resolve_target_worktree)
+    let default_branch = crate::remote::get_default_branch_local(
+        &git_common_dir,
+        &params.remote_name,
+        params.use_gitoxide,
+    )
+    .unwrap_or_else(|_| "main".to_string());
+    let find_wt = |name: &str| -> Option<&WorktreeInfo> {
+        non_bare_worktrees
+            .iter()
+            .find(|wt| wt.branch.as_deref() == Some(name))
+            .copied()
+    };
+    let (target_branch, target_wt) = [Some(default_branch.as_str()), Some("main"), Some("master")]
+        .into_iter()
+        .flatten()
+        .find_map(|b| find_wt(b).map(|wt| (b.to_string(), wt)))
+        .unwrap_or_else(|| {
+            let wt = non_bare_worktrees[0];
+            let b = wt.branch.clone().unwrap_or_else(|| "unknown".to_string());
+            (b, wt)
+        });
+
+    progress.on_step(&format!("Default branch: '{target_branch}'"));
+
+    // For clone-style bare repos, restructure git metadata into .git/ subdir
+    if is_clone_style {
+        progress.on_step("Restructuring bare repository...");
+        restructure_bare_to_dotgit(&project_root, &worktrees, progress)?;
+    }
+
+    let git_dir = project_root.join(".git");
+
+    // Move default worktree files to project root via staging
+    progress.on_step(&format!(
+        "Moving '{}' files to project root...",
+        target_branch
+    ));
+    move_files_from_worktree(&target_wt.path, &project_root, &git_dir, progress)?;
+
+    // Remove only the default worktree's registration (keep others)
+    let wt_name = target_branch.replace('/', "-");
+    let wt_reg = git_dir.join("worktrees").join(&wt_name);
+    if wt_reg.exists() {
+        progress.on_step(&format!(
+            "Removing worktree registration for '{target_branch}'..."
+        ));
+        fs::remove_dir_all(&wt_reg).ok();
+    }
+
+    // If no more worktree registrations, clean up the worktrees/ dir
+    let worktrees_dir = git_dir.join("worktrees");
+    if worktrees_dir.exists()
+        && worktrees_dir
+            .read_dir()
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(false)
+    {
+        fs::remove_dir(&worktrees_dir).ok();
+    }
+
+    // Convert to non-bare
+    progress.on_step("Setting core.bare=false...");
+    // Need a new GitCommand since we restructured the repo
+    let git = GitCommand::new(false).with_gitoxide(params.use_gitoxide);
+    git.config_set("core.bare", "false")
+        .context("Failed to set core.bare to false")?;
+
+    // Set HEAD and reset index
+    initialize_index(&project_root, &target_branch, progress)?;
+
+    Ok(CollapseBareResult {
+        project_root,
+        default_branch: target_branch,
+    })
+}
+
+/// Restructure a clone-style bare repo by moving git metadata into `.git/`.
+///
+/// Identifies worktree directories (from `git worktree list`) and moves
+/// everything else (HEAD, config, refs/, objects/, etc.) into a new `.git/`
+/// subdirectory. Updates each worktree's `.git` file to point to the new
+/// worktrees registration path.
+fn restructure_bare_to_dotgit(
+    project_root: &Path,
+    worktrees: &[WorktreeInfo],
+    progress: &mut dyn ProgressSink,
+) -> Result<()> {
+    let dotgit = project_root.join(".git");
+    fs::create_dir(&dotgit).context("Failed to create .git directory")?;
+
+    // Collect worktree directory paths (canonicalized for comparison)
+    let wt_paths: Vec<PathBuf> = worktrees
+        .iter()
+        .filter(|wt| !wt.is_bare)
+        .map(|wt| wt.path.canonicalize().unwrap_or_else(|_| wt.path.clone()))
+        .collect();
+
+    // Move everything except .git/ and worktree directories into .git/
+    for entry in fs::read_dir(project_root)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        // Skip the .git dir we just created
+        if name == ".git" {
+            continue;
+        }
+
+        // Skip worktree directories
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if wt_paths.contains(&canonical) {
+            continue;
+        }
+
+        let dest = dotgit.join(&name);
+        fs::rename(&path, &dest)
+            .with_context(|| format!("Failed to move '{}' into .git/: {}", name, path.display()))?;
+    }
+
+    // Update each worktree's .git file to point to new location
+    for wt in worktrees.iter().filter(|wt| !wt.is_bare) {
+        let gitlink = wt.path.join(".git");
+        if gitlink.exists() {
+            let content = fs::read_to_string(&gitlink)?;
+            if let Some(old_path) = content.trim().strip_prefix("gitdir: ") {
+                // Insert .git/ segment: <root>/worktrees/<name> → <root>/.git/worktrees/<name>
+                let old_path = PathBuf::from(old_path);
+                if let Ok(rel) = old_path.strip_prefix(project_root) {
+                    let new_path = project_root.join(".git").join(rel);
+                    fs::write(&gitlink, format!("gitdir: {}", new_path.display())).with_context(
+                        || format!("Failed to update .git file in {}", wt.path.display()),
+                    )?;
+                }
+            }
+        }
+    }
+
+    progress.on_step("Moved git metadata into .git/ subdirectory");
+
+    Ok(())
+}
+
 // ── Shared utilities ───────────────────────────────────────────────────────
 
 /// Check if the repository is in bare worktree layout (core.bare=true + worktrees).

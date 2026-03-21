@@ -5,11 +5,11 @@ use crate::{
             resolver::{resolve_layout, LayoutResolutionContext, LayoutSource},
             transform, BuiltinLayout, Layout, DEFAULT_LAYOUT,
         },
-        CommandBridge, OutputSink,
+        OutputSink,
     },
     get_current_worktree_path, get_git_common_dir,
     git::GitCommand,
-    hooks::{yaml_config_loader, HookExecutor, HooksConfig, TrustDatabase},
+    hooks::{yaml_config_loader, TrustDatabase},
     is_git_repository,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
@@ -371,24 +371,21 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
             transform_to_bare(&settings, output)?;
             relocate_worktrees(&target_layout, &git, output, &[])?;
         }
-        // bare -> non-bare (relocate non-default, then eject default)
+        // bare -> non-bare (collapse bare, then relocate worktrees)
         (true, false) => {
             output.step(&format!(
                 "Transforming to layout '{}' (bare -> non-bare)...",
                 target_layout.name
             ));
-            // Detect the default branch — eject will handle this one by moving
-            // its files to the project root and converting bare → non-bare.
-            // All OTHER worktrees must be relocated first since eject destroys them.
-            let default_branch = crate::remote::get_default_branch_local(
-                &get_git_common_dir()?,
-                &settings.remote,
-                settings.use_gitoxide,
-            )
-            .unwrap_or_else(|_| "main".to_string());
+            // Collapse the bare repo to non-bare: moves the default branch's
+            // files to the project root and sets core.bare=false, but keeps
+            // all other linked worktrees intact.
+            collapse_bare_to_non_bare(&settings, output)?;
 
-            relocate_worktrees(&target_layout, &git, output, &[&default_branch])?;
-            transform_to_non_bare(&settings, args.force, output)?;
+            // Now relocate all remaining linked worktrees to target positions.
+            // Re-create GitCommand since the repo structure changed.
+            let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+            relocate_worktrees(&target_layout, &git, output, &[])?;
         }
         // non-bare -> non-bare (relocate only)
         (false, false) => {
@@ -580,35 +577,28 @@ fn transform_to_bare(settings: &DaftSettings, output: &mut dyn Output) -> Result
     Ok(())
 }
 
-/// Convert bare -> non-bare using the layout transform module.
-fn transform_to_non_bare(
+/// Collapse a bare repo to non-bare, keeping linked worktrees (for layout transform).
+fn collapse_bare_to_non_bare(
     settings: &DaftSettings,
-    force: bool,
     output: &mut dyn Output,
-) -> Result<()> {
-    let params = transform::ConvertToNonBareParams {
-        branch: None,
-        force,
+) -> Result<transform::CollapseBareResult> {
+    let params = transform::CollapseBareParams {
         use_gitoxide: settings.use_gitoxide,
-        is_quiet: false,
         remote_name: settings.remote.clone(),
     };
 
-    let hooks_config = HooksConfig::default();
-    let executor = HookExecutor::new(hooks_config)?;
-
-    output.start_spinner("Converting to traditional layout...");
+    output.start_spinner("Converting bare repository to non-bare...");
     let exec_result = {
-        let mut bridge = CommandBridge::new(output, executor);
-        transform::convert_to_non_bare(&params, &mut bridge)
+        let mut sink = OutputSink(output);
+        transform::collapse_bare_to_non_bare(&params, &mut sink)
     };
     output.finish_spinner();
     let result = exec_result?;
 
     output.step(&format!(
-        "Converted to traditional layout on branch '{}'",
-        result.target_branch
+        "Converted to non-bare on branch '{}'",
+        result.default_branch
     ));
 
-    Ok(())
+    Ok(result)
 }
