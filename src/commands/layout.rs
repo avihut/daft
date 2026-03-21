@@ -334,14 +334,20 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     // Remember which branch the user is on, for CD target after transform
     let user_branch = crate::get_current_branch().ok();
 
-    // Resolve target layout
-    let target_layout = match global_config.resolve_layout_by_name(&args.layout) {
-        Some(layout) => layout,
-        None => Layout {
-            name: args.layout.clone(),
-            template: args.layout.clone(),
-            bare: None,
-        },
+    // Resolve target layout ("default" is reserved — resolves to the system default)
+    let target_layout = if args.layout == "default" {
+        global_config
+            .default_layout()
+            .unwrap_or_else(|| DEFAULT_LAYOUT.to_layout())
+    } else {
+        match global_config.resolve_layout_by_name(&args.layout) {
+            Some(layout) => layout,
+            None => Layout {
+                name: args.layout.clone(),
+                template: args.layout.clone(),
+                bare: None,
+            },
+        }
     };
 
     let is_currently_bare = git.rev_parse_is_bare_repository().unwrap_or(false);
