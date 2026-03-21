@@ -212,7 +212,7 @@ fn highlight_template(template: &str) -> String {
                 let filter = expr[pipe_pos + 1..].trim();
                 result.push_str(&styles::yellow("{{"));
                 result.push_str(&format!(" {} ", styles::cyan(var)));
-                result.push_str(" | ");
+                result.push_str("| ");
                 result.push_str(&styles::green(filter));
                 result.push_str(&format!(" {}", styles::yellow("}}")));
             } else {
