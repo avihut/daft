@@ -51,6 +51,10 @@ mise run bench:tests:integration       # Benchmark bash vs YAML (TUI)
 IMPORTANT: Before committing, always run `mise run fmt`, `mise run clippy`, and
 `mise run test:unit`. These checks are required and enforced in CI.
 
+IMPORTANT: Every bug fix must include a regression test that reproduces the
+issue. Add a YAML scenario in `tests/manual/scenarios/` or a unit test that
+fails without the fix and passes with it.
+
 ## Architecture
 
 **Multicall binary**: All commands route through a single `daft` binary
