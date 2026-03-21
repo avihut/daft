@@ -47,7 +47,7 @@ Use `daft layout transform <layout>` to convert a repo between layouts.
 "#)]
 pub struct LayoutArgs {
     #[command(subcommand)]
-    command: LayoutCommand,
+    command: Option<LayoutCommand>,
 }
 
 #[derive(Subcommand)]
@@ -75,9 +75,11 @@ pub fn run() -> Result<()> {
     let mut output = CliOutput::new(OutputConfig::new(false, false));
 
     match layout_args.command {
-        LayoutCommand::List => cmd_list(&mut output),
-        LayoutCommand::Show => cmd_show(&mut output),
-        LayoutCommand::Transform(transform_args) => cmd_transform(&transform_args, &mut output),
+        Some(LayoutCommand::List) => cmd_list(&mut output),
+        Some(LayoutCommand::Show) | None => cmd_show(&mut output),
+        Some(LayoutCommand::Transform(transform_args)) => {
+            cmd_transform(&transform_args, &mut output)
+        }
     }
 }
 
@@ -294,10 +296,10 @@ fn cmd_show(output: &mut dyn Output) -> Result<()> {
 
     let source_display = match source {
         LayoutSource::Cli => "CLI flag",
-        LayoutSource::RepoStore => "repos.json (per-repo)",
-        LayoutSource::YamlConfig => "daft.yml (team convention)",
-        LayoutSource::GlobalConfig => "global config (~/.config/daft/config.toml)",
-        LayoutSource::Default => "built-in default",
+        LayoutSource::RepoStore => "repos.json",
+        LayoutSource::YamlConfig => "daft.yml",
+        LayoutSource::GlobalConfig => "global config",
+        LayoutSource::Default => "default",
     };
 
     let use_color = styles::colors_enabled();
@@ -307,9 +309,13 @@ fn cmd_show(output: &mut dyn Output) -> Result<()> {
         layout.template.clone()
     };
 
-    output.info(&format!("  {} {}", bold("Layout:"), layout.name));
-    output.info(&format!("  {} {}", bold("Template:"), template_display));
-    output.info(&format!("  {} {}", bold("Source:"), dim(source_display)));
+    // One-line output: <layout> <template> (<source>)
+    output.info(&format!(
+        "{} {} {}",
+        bold(&layout.name),
+        template_display,
+        dim(&format!("({source_display})"))
+    ));
 
     Ok(())
 }
