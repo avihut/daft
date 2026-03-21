@@ -206,6 +206,8 @@ daft() {
             shift; __daft_wrapper git-worktree-flow-eject "$@" ;;
         worktree-sync|sync)
             shift; __daft_wrapper git-worktree-sync "$@" ;;
+        layout)
+            shift; __daft_wrapper daft layout "$@" ;;
         *)
             command daft "$@" ;;
     esac
@@ -434,6 +436,8 @@ function daft --wraps daft
             __daft_wrapper git-worktree-flow-eject $argv[2..-1]
         case worktree-sync sync
             __daft_wrapper git-worktree-sync $argv[2..-1]
+        case layout
+            __daft_wrapper daft layout $argv[2..-1]
         case '*'
             command daft $argv
     end

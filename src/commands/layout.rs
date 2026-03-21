@@ -372,14 +372,17 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
             transform_to_bare(&settings, output)?;
             relocate_worktrees(&target_layout, &git, output)?;
         }
-        // bare -> non-bare (eject)
+        // bare -> non-bare (relocate first, then eject)
         (true, false) => {
             output.step(&format!(
                 "Transforming to layout '{}' (bare -> non-bare)...",
                 target_layout.name
             ));
-            transform_to_non_bare(&settings, args.force, output)?;
+            // Relocate worktrees BEFORE eject. Eject removes all non-target
+            // worktrees, so we move them to their new paths first. Then eject
+            // picks the default branch and converts bare → non-bare.
             relocate_worktrees(&target_layout, &git, output)?;
+            transform_to_non_bare(&settings, args.force, output)?;
         }
         // non-bare -> non-bare (relocate only)
         (false, false) => {
