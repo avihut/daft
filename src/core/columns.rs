@@ -30,6 +30,8 @@ pub enum ListColumn {
     Age,
     /// Branch owner (from git author email).
     Owner,
+    /// Abbreviated commit hash (7 chars) of the worktree HEAD.
+    Hash,
     /// Last commit age + subject.
     LastCommit,
 }
@@ -47,6 +49,7 @@ impl ListColumn {
             ListColumn::Remote,
             ListColumn::Age,
             ListColumn::Owner,
+            ListColumn::Hash,
             ListColumn::LastCommit,
         ]
     }
@@ -86,7 +89,8 @@ impl ListColumn {
             Self::Remote => 7,
             Self::Age => 8,
             Self::Owner => 9,
-            Self::LastCommit => 10,
+            Self::Hash => 10,
+            Self::LastCommit => 11,
         }
     }
 
@@ -102,6 +106,7 @@ impl ListColumn {
             Self::Changes => "changes",
             Self::Age => "age",
             Self::Owner => "owner",
+            Self::Hash => "hash",
             Self::LastCommit => "last-commit",
         }
     }
@@ -136,6 +141,7 @@ impl FromStr for ListColumn {
             "changes" => Ok(Self::Changes),
             "age" => Ok(Self::Age),
             "owner" => Ok(Self::Owner),
+            "hash" => Ok(Self::Hash),
             "last-commit" => Ok(Self::LastCommit),
             _ => Err(format!(
                 "unknown column '{}'\n  valid columns: {}",
@@ -492,5 +498,43 @@ mod tests {
     fn test_status_on_list_unknown() {
         let err = ColumnSelection::parse("status,branch", CommandKind::List).unwrap_err();
         assert!(err.contains("unknown column 'status'"), "Got: {err}");
+    }
+
+    #[test]
+    fn test_defaults_exclude_hash() {
+        assert!(!ListColumn::list_defaults().contains(&ListColumn::Hash));
+        assert!(!ListColumn::tui_defaults().contains(&ListColumn::Hash));
+        assert!(ListColumn::all().contains(&ListColumn::Hash));
+    }
+
+    #[test]
+    fn test_modifier_add_hash() {
+        let resolved = ColumnSelection::parse("+hash", CommandKind::List).unwrap();
+        assert!(resolved.columns.contains(&ListColumn::Hash));
+        // Hash should appear after Owner and before LastCommit
+        let hash_pos = resolved
+            .columns
+            .iter()
+            .position(|c| *c == ListColumn::Hash)
+            .unwrap();
+        let owner_pos = resolved
+            .columns
+            .iter()
+            .position(|c| *c == ListColumn::Owner)
+            .unwrap();
+        let last_commit_pos = resolved
+            .columns
+            .iter()
+            .position(|c| *c == ListColumn::LastCommit)
+            .unwrap();
+        assert!(hash_pos > owner_pos);
+        assert!(hash_pos < last_commit_pos);
+    }
+
+    #[test]
+    fn test_hash_cli_name_roundtrip() {
+        let col: ListColumn = "hash".parse().unwrap();
+        assert_eq!(col, ListColumn::Hash);
+        assert_eq!(col.cli_name(), "hash");
     }
 }
