@@ -12,9 +12,10 @@ replacing subprocess calls when `daft.experimental.gitoxide` is enabled.
 
 ### New field on `WorktreeInfo`
 
-Add `pub last_commit_hash: String` to the `WorktreeInfo` struct in
+Add `pub last_commit_hash: Option<String>` to the `WorktreeInfo` struct in
 `src/core/worktree/list.rs`. Stores the 7-character abbreviated SHA of the
-worktree's HEAD commit. Empty string when unavailable.
+worktree's HEAD commit. `None` when unavailable (consistent with other optional
+fields like `last_commit_timestamp` and `owner_email`).
 
 ### Subprocess path changes
 
@@ -47,9 +48,9 @@ Implementation uses `gix` to:
 
 ### Integration via `&GitCommand`
 
-Pass `&GitCommand` into the listing functions (`collect_worktree_infos`,
-`collect_branch_infos`, and `refresh_dynamic_fields`). The commit metadata
-helpers check `git.use_gitoxide`:
+The `collect_worktree_info` and `collect_branch_info` functions already receive
+`&GitCommand`. Add `&GitCommand` to `refresh_dynamic_fields` as well. The commit
+metadata helpers check `git.use_gitoxide`:
 
 - When enabled: call the gitoxide functions via `git.gix_repo()`
 - When disabled (or on gitoxide failure): fall back to the subprocess path
