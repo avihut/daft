@@ -1,0 +1,43 @@
+name: Transform nested to contained with linked worktrees
+description:
+  Regression test for nested-to-contained transform. Linked worktrees in
+  .worktrees/ must not be moved into the main branch worktree during the
+  non-bare to bare conversion.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone nested and create a worktree
+    run: |
+      git-worktree-clone --layout nested $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.worktrees/test"
+
+  - name: Transform to contained layout
+    run: daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "contained"
+
+  - name: Verify correct contained structure
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+        - "$WORK_DIR/test-repo/test"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/.worktrees"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/main"
+          branch: main
+        - dir: "$WORK_DIR/test-repo/test"
+          branch: test

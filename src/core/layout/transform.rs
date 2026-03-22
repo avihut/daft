@@ -82,8 +82,23 @@ pub fn convert_to_bare(
 
     change_directory(&project_root)?;
 
+    // Collect linked worktree paths so we can exclude them from the move.
+    // Linked worktrees (e.g., .worktrees/test/) must stay in place — they'll
+    // be relocated separately by relocate_worktrees() after the conversion.
+    let linked_wt_paths: Vec<PathBuf> = parse_worktrees(&git)?
+        .into_iter()
+        .filter(|wt| !wt.is_bare && wt.path != project_root)
+        .map(|wt| wt.path)
+        .collect();
+
     // Move files via staging directory
-    move_files_to_worktree(&project_root, &git_dir, &worktree_path, progress)?;
+    move_files_to_worktree(
+        &project_root,
+        &git_dir,
+        &worktree_path,
+        &linked_wt_paths,
+        progress,
+    )?;
 
     // Convert to bare
     progress.on_step("Converting to bare repository...");
@@ -571,16 +586,27 @@ fn move_files_to_worktree(
     project_root: &Path,
     git_dir: &Path,
     worktree_path: &Path,
+    skip_paths: &[PathBuf],
     progress: &mut dyn ProgressSink,
 ) -> Result<()> {
     let entries_to_move: Vec<PathBuf> = fs::read_dir(project_root)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
         .filter(|path| {
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .map(|name| name != ".git")
-                .unwrap_or(false)
+            // Skip .git directory
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                return false;
+            }
+            // Skip directories that contain linked worktrees (they're
+            // relocated separately). Check both directions: the entry could BE
+            // a worktree path, or it could be an ancestor directory containing one.
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            !skip_paths.iter().any(|skip| {
+                let skip_canonical = skip.canonicalize().unwrap_or_else(|_| skip.clone());
+                canonical == skip_canonical
+                    || canonical.starts_with(&skip_canonical)
+                    || skip_canonical.starts_with(&canonical)
+            })
         })
         .collect();
 
