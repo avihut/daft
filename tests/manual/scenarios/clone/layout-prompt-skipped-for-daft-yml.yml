@@ -1,8 +1,7 @@
-name: daft.yml auto-transforms even after prompt decline
+name: daft.yml layout suppresses first-time prompt
 description:
-  When the cloned repo has a daft.yml with a layout field, the daft.yml layout
-  takes effect after clone via auto-transform, even if the user declined the
-  pre-clone prompt.
+  When the cloned repo has a daft.yml with a layout field, the first-time layout
+  prompt should not appear. The daft.yml layout is used directly.
 
 repos:
   - name: test-repo
@@ -18,15 +17,15 @@ repos:
       layout: contained
 
 steps:
-  - name: Clone and decline prompt (daft.yml will take over)
-    run: echo "" | git-worktree-clone $REMOTE_TEST_REPO 2>&1
+  - name: Clone (no prompt should appear, daft.yml takes over)
+    run: git-worktree-clone $REMOTE_TEST_REPO 2>&1
     expect:
       exit_code: 0
-      output_contains:
-        - "Transforming"
-        - "contained"
+      output_not_contains:
+        - "Use contained?"
+        - "set as default"
 
-  - name: Verify auto-transformed to contained from daft.yml
+  - name: Verify contained layout used directly
     run: "true"
     expect:
       dirs_exist:

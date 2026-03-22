@@ -1,7 +1,7 @@
-name: Clone auto-transforms to daft.yml layout
+name: Clone uses daft.yml layout directly
 description:
   When a cloned repo has daft.yml with a layout field and no --layout flag was
-  given, daft should auto-transform to that layout after clone.
+  given, daft should clone directly with that layout (no post-clone transform).
 
 repos:
   - name: test-repo
@@ -21,11 +21,8 @@ steps:
     run: git-worktree-clone $REMOTE_TEST_REPO 2>&1
     expect:
       exit_code: 0
-      output_contains:
-        - "Transforming"
-        - "contained"
 
-  - name: Verify repo was auto-transformed to contained (bare) layout
+  - name: Verify repo uses contained (bare) layout
     run: "true"
     expect:
       dirs_exist:
@@ -41,4 +38,3 @@ steps:
       exit_code: 0
       output_contains:
         - "contained"
-        - "repo setting"
