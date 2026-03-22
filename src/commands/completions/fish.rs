@@ -117,6 +117,7 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
             ("remote", "Ahead/behind remote"),
             ("age", "Branch age"),
             ("owner", "Branch owner"),
+            ("hash", "Commit hash"),
             ("last-commit", "Last commit"),
         ];
         for (name, desc) in &columns {
@@ -136,6 +137,7 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
             ("remote", "Sort by total remote divergence"),
             ("age", "Sort by branch age"),
             ("owner", "Sort by branch owner"),
+            ("hash", "Sort by commit hash"),
             (
                 "activity",
                 "Sort by overall activity (commits + uncommitted)",

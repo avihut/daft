@@ -46,7 +46,7 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
     if has_columns {
         output.push_str("    # Column name completion for --columns\n");
         output.push_str("    if [[ \"$prev\" == \"--columns\" ]]; then\n");
-        output.push_str("        local columns=\"annotation branch path size base changes remote age owner last-commit\"\n");
+        output.push_str("        local columns=\"annotation branch path size base changes remote age owner hash last-commit\"\n");
         output.push_str("        local prefixed=\"\"\n");
         output.push_str("        for c in $columns; do prefixed=\"$prefixed $c +$c -$c\"; done\n");
         output.push_str("        COMPREPLY=( $(compgen -W \"$prefixed\" -- \"$cur\") )\n");
