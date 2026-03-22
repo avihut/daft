@@ -54,10 +54,10 @@ Default: `sibling`
 
 - [x] daft start creates new sibling worktree by default
 - [x] daft remove sibling layout
-- [ ] daft start new worktree --at a path works
-- [ ] daft clone to existing repo doesn't assume previously configured layout
+- [x] daft start new worktree --at a path works
+- [x] daft clone to existing repo doesn't assume previously configured layout
       but restores to default
-- [ ] daft layout transform contained from a sibling repo in the main worktree
+- [x] daft layout transform contained from a sibling repo in the main worktree
       transforms to a contained repo and CDs to the main worktree.
-- [ ] daft layout transform sibling from a contained repo on the main worktree
+- [x] daft layout transform sibling from a contained repo on the main worktree
       transforms to a sibling repo and CDs to the repo root path.
