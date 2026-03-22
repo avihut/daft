@@ -172,7 +172,7 @@ impl WorktreeInfo {
     /// last-commit) from the working tree on disk.  Static fields (kind, name,
     /// path, is_current, is_default_branch, branch_creation_timestamp) are
     /// left untouched.
-    pub fn refresh_dynamic_fields(&mut self, base_branch: &str, stat: Stat) {
+    pub fn refresh_dynamic_fields(&mut self, base_branch: &str, stat: Stat, git: &GitCommand) {
         let Some(path) = self.path.as_deref() else {
             return;
         };
@@ -197,7 +197,7 @@ impl WorktreeInfo {
         self.remote_behind = rab.map(|(_, b)| b);
 
         // Last commit
-        let (ts, hash, subj) = get_last_commit_info(path);
+        let (ts, hash, subj) = get_commit_metadata(path, git);
         self.last_commit_timestamp = ts;
         self.last_commit_hash = hash;
         self.last_commit_subject = subj;
@@ -317,6 +317,45 @@ fn get_ahead_behind(
     } else {
         None
     }
+}
+
+/// Dispatch commit metadata retrieval for a worktree HEAD, using gitoxide when
+/// enabled with a fallback to the git subprocess.
+fn get_commit_metadata(
+    worktree_path: &Path,
+    git: &GitCommand,
+) -> (Option<i64>, Option<String>, String) {
+    if git.use_gitoxide {
+        if let Ok((ts, hash, subj)) = crate::git::oxide::get_commit_metadata_for_head(worktree_path)
+        {
+            return (Some(ts), Some(hash), subj);
+        }
+    }
+    get_last_commit_info(worktree_path)
+}
+
+/// Dispatch commit metadata retrieval for a named ref, using gitoxide when
+/// enabled with a fallback to the git subprocess.
+fn get_commit_metadata_for_ref_dispatched(
+    branch_ref: &str,
+    cwd: &Path,
+    git: &GitCommand,
+) -> (Option<i64>, Option<String>, String) {
+    if git.use_gitoxide {
+        if let Ok(repo) = git.gix_repo() {
+            let full_ref = if branch_ref.starts_with("refs/") {
+                branch_ref.to_string()
+            } else {
+                format!("refs/heads/{branch_ref}")
+            };
+            if let Ok((ts, hash, subj)) =
+                crate::git::oxide::get_commit_metadata_for_ref(&repo, &full_ref)
+            {
+                return (Some(ts), Some(hash), subj);
+            }
+        }
+    }
+    get_last_commit_info_for_ref(branch_ref, cwd)
 }
 
 /// Get the last commit's Unix timestamp, abbreviated hash, and subject for a worktree.
@@ -755,7 +794,7 @@ pub fn collect_worktree_info(
 
         // Last commit info
         let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
-            get_last_commit_info(&entry.path);
+            get_commit_metadata(&entry.path, git);
 
         // Owner email (author of branch tip commit)
         let owner_email = if !entry.is_detached {
@@ -905,7 +944,7 @@ pub fn collect_branch_info(
             };
 
             let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
-                get_last_commit_info_for_ref(branch, cwd);
+                get_commit_metadata_for_ref_dispatched(branch, cwd, git);
 
             let owner_email = get_author_email_for_ref(branch, cwd);
 
@@ -996,7 +1035,7 @@ pub fn collect_branch_info(
             };
 
             let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
-                get_last_commit_info_for_ref(remote_branch, cwd);
+                get_commit_metadata_for_ref_dispatched(remote_branch, cwd, git);
 
             let owner_email = get_author_email_for_ref(remote_branch, cwd);
 

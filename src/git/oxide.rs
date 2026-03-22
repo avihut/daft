@@ -253,6 +253,65 @@ pub fn has_uncommitted_changes(repo: &Repository) -> Result<bool> {
     Ok(false)
 }
 
+/// Gitoxide-native commit metadata retrieval for a named ref.
+///
+/// Returns `(timestamp, short_hash, subject)` where:
+/// - timestamp is seconds since Unix epoch
+/// - short_hash is the first 7 characters of the commit hash
+/// - subject is the first line of the commit message
+pub fn get_commit_metadata_for_ref(
+    repo: &Repository,
+    ref_name: &str,
+) -> Result<(i64, String, String)> {
+    let reference = repo
+        .find_reference(ref_name)
+        .with_context(|| format!("Failed to find reference '{ref_name}'"))?;
+    let commit = reference
+        .into_fully_peeled_id()
+        .with_context(|| format!("Failed to peel reference '{ref_name}'"))?
+        .object()
+        .context("Failed to find object")?
+        .try_into_commit()
+        .map_err(|_| anyhow::anyhow!("Reference '{ref_name}' does not point to a commit"))?;
+
+    let timestamp = commit.time().context("Failed to read commit time")?.seconds;
+    let full_hex = commit.id().to_hex().to_string();
+    let short_hash = full_hex[..7.min(full_hex.len())].to_string();
+    let subject = commit
+        .message_raw_sloppy()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_str_lossy()
+        .to_string();
+
+    Ok((timestamp, short_hash, subject))
+}
+
+/// Gitoxide-native commit metadata retrieval for a worktree HEAD.
+///
+/// Opens the repository at the given path, reads the HEAD commit, and extracts
+/// the same three fields as `get_commit_metadata_for_ref`.
+pub fn get_commit_metadata_for_head(
+    worktree_path: &std::path::Path,
+) -> Result<(i64, String, String)> {
+    let repo = gix::open(worktree_path).context("Failed to open repository at worktree path")?;
+    let commit = repo.head_commit().context("Failed to read HEAD commit")?;
+
+    let timestamp = commit.time().context("Failed to read commit time")?.seconds;
+    let full_hex = commit.id().to_hex().to_string();
+    let short_hash = full_hex[..7.min(full_hex.len())].to_string();
+    let subject = commit
+        .message_raw_sloppy()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_str_lossy()
+        .to_string();
+
+    Ok((timestamp, short_hash, subject))
+}
+
 /// gitoxide equivalent of `git rev-list --count <range>`
 ///
 /// Supports ranges like "A..B" and "A...B".

@@ -744,7 +744,13 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         let updated = if status == TaskStatus::Succeeded {
                             orch_info_map.get(branch_name.as_str()).map(|info| {
                                 let mut refreshed = info.clone();
-                                refreshed.refresh_dynamic_fields(&orch_base_branch, orch_stat);
+                                let git = GitCommand::new(false)
+                                    .with_gitoxide(orch_settings.use_gitoxide);
+                                refreshed.refresh_dynamic_fields(
+                                    &orch_base_branch,
+                                    orch_stat,
+                                    &git,
+                                );
                                 Box::new(refreshed)
                             })
                         } else {
@@ -769,7 +775,13 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         {
                             orch_info_map.get(branch_name.as_str()).map(|info| {
                                 let mut refreshed = info.clone();
-                                refreshed.refresh_dynamic_fields(&orch_base_branch, orch_stat);
+                                let git = GitCommand::new(false)
+                                    .with_gitoxide(orch_settings.use_gitoxide);
+                                refreshed.refresh_dynamic_fields(
+                                    &orch_base_branch,
+                                    orch_stat,
+                                    &git,
+                                );
                                 Box::new(refreshed)
                             })
                         } else {
@@ -789,7 +801,13 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         let updated = if status == TaskStatus::Succeeded {
                             orch_info_map.get(branch_name.as_str()).map(|info| {
                                 let mut refreshed = info.clone();
-                                refreshed.refresh_dynamic_fields(&orch_base_branch, orch_stat);
+                                let git = GitCommand::new(false)
+                                    .with_gitoxide(orch_settings.use_gitoxide);
+                                refreshed.refresh_dynamic_fields(
+                                    &orch_base_branch,
+                                    orch_stat,
+                                    &git,
+                                );
                                 Box::new(refreshed)
                             })
                         } else {
