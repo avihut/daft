@@ -2,10 +2,7 @@ use crate::{
     check_dependencies,
     core::{
         global_config::GlobalConfig,
-        layout::{
-            resolver::{resolve_layout, LayoutResolutionContext},
-            transform, Layout,
-        },
+        layout::resolver::{resolve_layout, LayoutResolutionContext},
         worktree::clone,
         OutputSink,
     },
@@ -160,29 +157,10 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     check_dependencies()?;
 
     let global_config = GlobalConfig::load().unwrap_or_default();
+    let original_dir = get_current_directory()?;
 
-    // First-time layout prompt: when using the built-in default (no --layout
-    // flag, no global config default), prompt the user to choose contained.
-    let prompted_layout = if args.layout.is_none() && global_config.defaults.layout.is_none() {
-        match maybe_prompt_layout_choice(output) {
-            LayoutPromptResult::Chosen(layout) => Some(layout),
-            LayoutPromptResult::Default => None,
-            LayoutPromptResult::Cancelled => return Ok(()),
-        }
-    } else {
-        None
-    };
-
-    let effective_cli_layout = args.layout.as_deref().or(prompted_layout.as_deref());
-
-    let (layout, _source) = resolve_layout(&LayoutResolutionContext {
-        cli_layout: effective_cli_layout,
-        repo_store_layout: None, // New clone, no repo store entry yet
-        yaml_layout: None,       // Can't read daft.yml before clone
-        global_config: &global_config,
-    });
-
-    let params = clone::CloneParams {
+    // Phase 1: Always clone bare first
+    let bare_params = clone::BareCloneParams {
         repository_url: args.repository_url.clone(),
         branch: args.branch.clone(),
         no_checkout: args.no_checkout,
@@ -193,7 +171,6 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         multi_remote_default: settings.multi_remote_default.clone(),
         checkout_upstream: settings.checkout_upstream,
         use_gitoxide: settings.use_gitoxide,
-        layout,
     };
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {
@@ -201,18 +178,87 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     }
 
     output.start_spinner("Cloning repository...");
-    let exec_result = {
+    let bare_result = {
         let mut sink = OutputSink(output);
-        clone::execute(&params, &mut sink)
+        clone::clone_bare_phase(&bare_params, &mut sink)
     };
     output.finish_spinner();
-    let result = exec_result?;
+    let bare_result = bare_result?;
 
-    render_clone_result(&result, &params.layout, output);
+    // Phase 2: Read daft.yml from the bare repo (if no --layout flag)
+    let yaml_layout = if args.layout.is_none() && !bare_result.is_empty {
+        match yaml_config_loader::load_config_from_bare(&bare_result.git_dir) {
+            Ok(Some(config)) => config.layout,
+            Ok(None) => None,
+            Err(e) => {
+                output.warning(&format!("Could not read daft.yml: {e}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Phase 3: Resolve layout with full context
+    let prompted_layout = if args.layout.is_none()
+        && yaml_layout.is_none()
+        && global_config.defaults.layout.is_none()
+    {
+        match maybe_prompt_layout_choice(output) {
+            LayoutPromptResult::Chosen(layout) => Some(layout),
+            LayoutPromptResult::Default => None,
+            LayoutPromptResult::Cancelled => {
+                // Clean up: we already cloned, so delete it
+                change_directory(&original_dir).ok();
+                remove_directory(&bare_result.parent_dir).ok();
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
+
+    let effective_cli_layout = args.layout.as_deref().or(prompted_layout.as_deref());
+
+    let (layout, _source) = resolve_layout(&LayoutResolutionContext {
+        cli_layout: effective_cli_layout,
+        repo_store_layout: None,
+        yaml_layout: yaml_layout.as_deref(),
+        global_config: &global_config,
+    });
+
+    // Report layout decision
+    if layout.needs_bare() {
+        output.step(&format!(
+            "Using layout '{}' (worktrees inside repo)",
+            layout.name
+        ));
+    } else {
+        output.step(&format!("Using layout '{}'", layout.name));
+    }
+
+    // Phase 4: Set up repo in the correct layout
+    let result = if layout.needs_bare() {
+        output.start_spinner("Setting up worktrees...");
+        let r = {
+            let mut sink = OutputSink(output);
+            clone::setup_bare_worktrees(&bare_result, &bare_params, &layout, &mut sink)
+        };
+        output.finish_spinner();
+        r?
+    } else {
+        output.start_spinner("Setting up repository...");
+        let r = {
+            let mut sink = OutputSink(output);
+            clone::unbare_and_checkout(&bare_result, &bare_params, &layout, &mut sink)
+        };
+        output.finish_spinner();
+        r?
+    };
+
+    render_clone_result(&result, &layout, output);
 
     // Remove stale trust entry if cloning to a path that was previously trusted.
-    // The old repo at this path no longer exists (overwritten by clone), so the
-    // trust entry is for a different repo.
     if !args.trust_hooks {
         let mut trust_db = TrustDatabase::load().unwrap_or_default();
         if trust_db.has_explicit_trust(&result.git_dir) {
@@ -228,11 +274,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     // Run hooks and exec only if a worktree was created
     if result.worktree_dir.is_some() {
         run_post_clone_hook(args, &result, output)?;
-        // worktree-post-create fires only for non-bare layouts. For bare
-        // layouts the initial worktree is created via `git worktree add` and
-        // subsequent worktrees go through checkout.rs which fires the hook
-        // itself; firing it here too would duplicate.
-        if !params.layout.needs_bare() {
+        if !layout.needs_bare() {
             run_post_create_hook(args, &result, output)?;
         }
 
@@ -249,37 +291,6 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             output.cd_path(cd_target);
         }
         maybe_show_shell_hint(output)?;
-    }
-
-    // Post-clone layout reconciliation: if no --layout flag and no global
-    // default, check if the cloned repo's daft.yml specifies a layout.
-    // If the yaml layout differs from the resolved layout, auto-transform.
-    if args.layout.is_none() && prompted_layout.is_none() && global_config.defaults.layout.is_none()
-    {
-        if let Some(ref worktree_dir) = result.worktree_dir {
-            if let Ok(Some(yaml_config)) = yaml_config_loader::load_merged_config(worktree_dir) {
-                if let Some(ref yaml_layout) = yaml_config.layout {
-                    if params.layout.name != *yaml_layout {
-                        reconcile_layout(
-                            yaml_layout,
-                            &result.git_dir,
-                            settings,
-                            &global_config,
-                            output,
-                        );
-                    } else {
-                        // Same layout — just store in repos.json
-                        let mut db = TrustDatabase::load().unwrap_or_default();
-                        db.set_layout(&result.git_dir, yaml_layout.clone());
-                        if let Err(e) = db.save() {
-                            output.warning(&format!(
-                                "Could not save layout from daft.yml to repos.json: {e}"
-                            ));
-                        }
-                    }
-                }
-            }
-        }
     }
 
     Ok(())
@@ -399,100 +410,4 @@ fn run_post_create_hook(
     executor.execute(&ctx, output, presenter)?;
 
     Ok(())
-}
-
-/// Auto-transform to a layout suggested by daft.yml after clone.
-///
-/// Called when the cloned repo's daft.yml specifies a layout different from
-/// the one used for the clone. Transforms the repo to match the team's
-/// convention and stores the layout in repos.json.
-fn reconcile_layout(
-    yaml_layout_name: &str,
-    git_dir: &std::path::Path,
-    settings: &DaftSettings,
-    global_config: &GlobalConfig,
-    output: &mut dyn Output,
-) {
-    let target_layout = match global_config.resolve_layout_by_name(yaml_layout_name) {
-        Some(layout) => layout,
-        None => Layout {
-            name: yaml_layout_name.to_string(),
-            template: yaml_layout_name.to_string(),
-            bare: None,
-        },
-    };
-
-    output.info(&format!(
-        "Repo suggests layout '{}' (from daft.yml). Transforming...",
-        target_layout.name
-    ));
-
-    let git = crate::git::GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
-    let is_currently_bare = git.rev_parse_is_bare_repository().unwrap_or(false);
-    let target_needs_bare = target_layout.needs_bare();
-
-    let transform_result = match (is_currently_bare, target_needs_bare) {
-        (false, true) => {
-            // non-bare -> bare: convert then relocate
-            let params = transform::ConvertToBareParams {
-                use_gitoxide: settings.use_gitoxide,
-            };
-            let exec_result = {
-                let mut sink = OutputSink(output);
-                transform::convert_to_bare(&params, &mut sink)
-            };
-            exec_result.map(|_| ()).and_then(|()| {
-                let git = crate::git::GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
-                crate::commands::layout::relocate_worktrees_public(&target_layout, &git, output)
-            })
-        }
-        (true, false) => {
-            // bare -> non-bare: collapse then relocate
-            let params = transform::CollapseBareParams {
-                use_gitoxide: settings.use_gitoxide,
-                remote_name: settings.remote.clone(),
-            };
-            let exec_result = {
-                let mut sink = OutputSink(output);
-                transform::collapse_bare_to_non_bare(&params, &mut sink)
-            };
-            exec_result.map(|_| ()).and_then(|()| {
-                let git = crate::git::GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
-                crate::commands::layout::relocate_worktrees_public(&target_layout, &git, output)
-            })
-        }
-        _ => {
-            // Same bare-ness: just relocate worktrees (if any linked ones exist)
-            let git = crate::git::GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
-            crate::commands::layout::relocate_worktrees_public(&target_layout, &git, output)
-        }
-    };
-
-    match transform_result {
-        Ok(()) => {
-            // Store the yaml layout in repos.json
-            let mut db = TrustDatabase::load().unwrap_or_default();
-            db.set_layout(git_dir, yaml_layout_name.to_string());
-            if let Err(e) = db.save() {
-                output.warning(&format!(
-                    "Could not save layout from daft.yml to repos.json: {e}"
-                ));
-            }
-            output.info(&format!("Transformed to layout '{}'.", target_layout.name));
-        }
-        Err(e) => {
-            output.warning(&format!(
-                "Could not auto-transform to layout '{}': {e}",
-                target_layout.name
-            ));
-            output.info(&format!(
-                "Run `daft layout transform {}` manually to apply.",
-                yaml_layout_name
-            ));
-            // Still store the layout intent so future checkouts use it
-            let mut db = TrustDatabase::load().unwrap_or_default();
-            db.set_layout(git_dir, yaml_layout_name.to_string());
-            db.save().ok();
-        }
-    }
 }
