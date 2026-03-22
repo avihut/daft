@@ -39,6 +39,39 @@ pub struct CloneParams {
     pub layout: Layout,
 }
 
+/// Input parameters for the bare clone phase.
+///
+/// Contains everything needed to clone a repository as bare. Layout is NOT
+/// included — it's decided after the bare clone, once daft.yml can be read.
+pub struct BareCloneParams {
+    pub repository_url: String,
+    pub branch: Option<String>,
+    pub no_checkout: bool,
+    pub all_branches: bool,
+    pub remote: Option<String>,
+    pub remote_name: String,
+    pub multi_remote_enabled: bool,
+    pub multi_remote_default: String,
+    pub checkout_upstream: bool,
+    pub use_gitoxide: bool,
+}
+
+/// Result of the bare clone phase.
+///
+/// Contains all the information needed by subsequent phases to set up
+/// worktrees (bare layout) or convert to a regular repo (non-bare layout).
+pub struct BareCloneResult {
+    pub repo_name: String,
+    pub parent_dir: PathBuf,
+    pub git_dir: PathBuf,
+    pub default_branch: String,
+    pub target_branch: String,
+    pub branch_exists: bool,
+    pub is_empty: bool,
+    pub remote_name: String,
+    pub repository_url: String,
+}
+
 /// Result of a clone operation.
 pub struct CloneResult {
     pub repo_name: String,
@@ -389,6 +422,112 @@ fn store_layout(git_dir: &Path, layout: &Layout, progress: &mut dyn ProgressSink
             progress.on_warning(&format!("Could not load repos.json to save layout: {e}"));
         }
     }
+}
+
+/// Phase 1: Clone a repository as bare into `<repo>/.git`.
+///
+/// Every clone starts here regardless of the final layout. After this
+/// phase the caller reads daft.yml and resolves the layout, then calls
+/// either `setup_bare_worktrees()` or `unbare_and_checkout()`.
+///
+/// On return the process cwd is `parent_dir` (the repo directory).
+pub fn clone_bare_phase(
+    params: &BareCloneParams,
+    progress: &mut dyn ProgressSink,
+) -> Result<BareCloneResult> {
+    let repo_name = crate::extract_repo_name(&params.repository_url)?;
+    progress.on_step(&format!("Repository name detected: '{repo_name}'"));
+
+    let (default_branch, target_branch, branch_exists, is_empty) =
+        detect_branches_bare(params, progress)?;
+
+    let parent_dir = PathBuf::from(&repo_name);
+
+    if path_exists(&parent_dir) {
+        anyhow::bail!("Target path './{} already exists.", parent_dir.display());
+    }
+
+    progress.on_step("Creating repository directory...");
+    create_directory(&parent_dir)?;
+
+    let git_dir = parent_dir.join(".git");
+    let git = GitCommand::new(false).with_gitoxide(params.use_gitoxide);
+
+    progress.on_step(&format!(
+        "Cloning bare repository into './{}'...",
+        git_dir.display()
+    ));
+
+    if let Err(e) = git.clone_bare(&params.repository_url, &git_dir) {
+        remove_directory(&parent_dir).ok();
+        return Err(e.context("Git clone failed"));
+    }
+
+    let git_dir = git_dir.canonicalize().with_context(|| {
+        format!(
+            "Failed to canonicalize git directory: {}",
+            git_dir.display()
+        )
+    })?;
+
+    progress.on_step(&format!(
+        "Changing directory to './{}'",
+        parent_dir.display()
+    ));
+    change_directory(&parent_dir)?;
+
+    // Set up fetch refspec for bare repo
+    progress.on_step("Setting up fetch refspec for remote tracking...");
+    if let Err(e) = git.setup_fetch_refspec(&params.remote_name) {
+        progress.on_warning(&format!("Could not set fetch refspec: {e}"));
+    }
+
+    // Set multi-remote config if --remote was provided
+    if params.remote.is_some() {
+        progress.on_step("Enabling multi-remote mode for this repository...");
+        crate::multi_remote::config::set_multi_remote_enabled(&git, true)?;
+        let remote_for_path = params
+            .remote
+            .clone()
+            .unwrap_or_else(|| params.multi_remote_default.clone());
+        crate::multi_remote::config::set_multi_remote_default(&git, &remote_for_path)?;
+    }
+
+    Ok(BareCloneResult {
+        repo_name,
+        parent_dir,
+        git_dir,
+        default_branch,
+        target_branch,
+        branch_exists,
+        is_empty,
+        remote_name: params.remote_name.clone(),
+        repository_url: params.repository_url.clone(),
+    })
+}
+
+fn detect_branches_bare(
+    params: &BareCloneParams,
+    progress: &mut dyn ProgressSink,
+) -> Result<(String, String, bool, bool)> {
+    let compat = CloneParams {
+        repository_url: params.repository_url.clone(),
+        branch: params.branch.clone(),
+        no_checkout: params.no_checkout,
+        all_branches: params.all_branches,
+        remote: params.remote.clone(),
+        remote_name: params.remote_name.clone(),
+        multi_remote_enabled: params.multi_remote_enabled,
+        multi_remote_default: params.multi_remote_default.clone(),
+        checkout_upstream: params.checkout_upstream,
+        use_gitoxide: params.use_gitoxide,
+        layout: crate::core::layout::Layout {
+            name: String::new(),
+            template: String::new(),
+            bare: None,
+        },
+    };
+    detect_branches(&compat, progress)
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
