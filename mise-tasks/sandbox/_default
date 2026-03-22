@@ -31,6 +31,7 @@ else
 fi
 
 mkdir -p "${sandbox_dir}/config"
+mkdir -p "${sandbox_dir}/data"
 mkdir -p "${bin_dir}/completions"
 
 # --- Always (re)generate .envrc to pick up config changes ---
@@ -41,6 +42,7 @@ cat > "${sandbox_dir}/.envrc" <<ENVRC
 
 export DAFT_WORKTREE="${worktree_path}"
 export DAFT_CONFIG_DIR="${sandbox_dir}/config"
+export DAFT_DATA_DIR="${sandbox_dir}/data"
 export DAFT_NO_UPDATE_CHECK=1
 export DAFT_NO_TRUST_PRUNE=1
 export PATH="${bin_dir}:\${DAFT_WORKTREE}/target/release:\$PATH"
