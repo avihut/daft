@@ -56,18 +56,22 @@ test_init_bare() {
 # Test init with quiet mode
 test_init_quiet() {
     # Test quiet init (should produce minimal output)
-    local output=$(git-worktree-init --layout contained --quiet quiet-repo 2>&1)
-    
+    # Filter the DAFT_CONFIG_DIR override warning — it's a dev-build diagnostic
+    # that prints before argument parsing and cannot respect --quiet.
+    local output=$(git-worktree-init --layout contained --quiet quiet-repo 2>&1 \
+        | grep -v "^warning: config directory overridden" \
+        | grep -v "^  -> ")
+
     # Verify structure was created
     assert_directory_exists "quiet-repo" || return 1
     assert_directory_exists "quiet-repo/master" || return 1
-    
+
     # Check output is minimal
     if [[ ${#output} -gt 100 ]]; then
         log_error "Quiet mode produced too much output (${#output} characters)"
         return 1
     fi
-    
+
     return 0
 }
 
