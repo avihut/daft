@@ -514,7 +514,7 @@ fn render_cell(
             }
         }
         Column::Owner => Cell::from(vals.owner.clone()),
-        Column::Hash => Cell::from(String::new()),
+        Column::Hash => Cell::from(vals.hash.clone()),
         Column::LastCommit => {
             if vals.last_commit_age.is_empty() {
                 Cell::from(vals.last_commit_subject.clone())
@@ -734,6 +734,8 @@ fn column_plain_text(col: &Column, vals: &ColumnValues) -> String {
         Column::Changes => vals.changes.clone(),
         Column::Remote => vals.remote.clone(),
         Column::Age => vals.branch_age.clone(),
+        Column::Owner => vals.owner.clone(),
+        Column::Hash => vals.hash.clone(),
         Column::LastCommit => {
             if vals.last_commit_age.is_empty() {
                 vals.last_commit_subject.clone()

@@ -397,6 +397,10 @@ fn print_json(
                 obj.insert("owner".into(), serde_json::json!(info.owner_email));
             }
 
+            if selected_columns.contains(&ListColumn::Hash) {
+                obj.insert("hash".into(), serde_json::json!(info.last_commit_hash));
+            }
+
             if is_default_columns || selected_columns.contains(&ListColumn::LastCommit) {
                 let last_commit_age = info
                     .last_commit_timestamp
@@ -635,7 +639,11 @@ fn print_table(
                     } else {
                         styles::dim(&vals.owner)
                     },
-                    hash: String::new(),
+                    hash: if vals.hash.is_empty() {
+                        vals.hash.clone()
+                    } else {
+                        styles::dim(&vals.hash)
+                    },
                     last_commit: if last_commit.is_empty() {
                         last_commit
                     } else {
@@ -653,7 +661,7 @@ fn print_table(
                     remote,
                     branch_age,
                     owner: vals.owner.clone(),
-                    hash: String::new(),
+                    hash: vals.hash.clone(),
                     last_commit,
                 }
             }

@@ -196,6 +196,7 @@ pub struct ColumnValues {
     pub last_commit_age: String,
     pub last_commit_subject: String,
     pub owner: String,
+    pub hash: String,
     pub is_old_branch: bool,
     pub is_old_commit: bool,
 }
@@ -296,6 +297,8 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
 
     let owner = info.owner_email.clone().unwrap_or_default();
 
+    let hash = info.last_commit_hash.clone().unwrap_or_default();
+
     ColumnValues {
         branch,
         path,
@@ -307,6 +310,7 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
         last_commit_age,
         last_commit_subject,
         owner,
+        hash,
         is_old_branch,
         is_old_commit,
     }
