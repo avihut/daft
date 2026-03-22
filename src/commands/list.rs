@@ -79,7 +79,7 @@ Use --sort to control the sort order. Prefix with + for ascending (default) or
   Sort by owner then size:    --sort +owner,-size
   Most recent activity first: --sort -activity
 
-Sortable columns: branch, path, size, age, owner, activity, commit (alias:
+Sortable columns: branch, path, size, age, owner, hash, activity, commit (alias:
 last-commit). activity considers both commits and uncommitted file changes;
 commit sorts by last commit time only. You can sort by columns not shown in
 the output (e.g. --sort -size without --columns +size). Defaults can be set
@@ -122,13 +122,13 @@ pub struct Args {
 
     #[arg(
         long,
-        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col"
+        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit"
     )]
     columns: Option<String>,
 
     #[arg(
         long,
-        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, activity, commit"
+        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit"
     )]
     sort: Option<String>,
 }

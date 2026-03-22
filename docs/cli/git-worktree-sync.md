@@ -53,8 +53,8 @@ git worktree-sync [OPTIONS]
 | `--force-with-lease` | Use --force-with-lease when pushing (requires --push) |  |
 | `--include <INCLUDE>` | Include additional branches in rebase/push (email, branch name, or 'unowned') |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary) |  |
-| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col |  |
-| `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, activity, commit |  |
+| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit |  |
+| `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit |  |
 
 ## Global Options
 
