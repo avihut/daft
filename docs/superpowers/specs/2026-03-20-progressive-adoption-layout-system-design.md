@@ -59,14 +59,55 @@ template geometry at resolution time.
 
 ### Built-in Layouts
 
-| Name          | Template                                                            | Inferred bare | Description                                          |
-| ------------- | ------------------------------------------------------------------- | ------------- | ---------------------------------------------------- |
-| `contained`   | `{{ repo_path }}/{{ branch }}`                                      | Yes           | Worktrees as children of project root                |
-| `sibling`     | `{{ repo }}.{{ branch \| sanitize }}`                               | No            | Worktrees adjacent to the repo                       |
-| `nested`      | `{{ repo }}/.worktrees/{{ branch \| sanitize }}`                    | No            | Worktrees in a hidden subdirectory (auto-gitignored) |
-| `centralized` | `{{ daft_data_dir }}/worktrees/{{ repo }}/{{ branch \| sanitize }}` | No            | Worktrees in the XDG data directory                  |
+| Name                  | Template                                                            | Inferred bare | Description                                           |
+| --------------------- | ------------------------------------------------------------------- | ------------- | ----------------------------------------------------- |
+| `contained`           | `{{ repo_path }}/{{ branch }}`                                      | Yes           | Worktrees as children of project root (bare)          |
+| `contained-classic`   | `{{ repo_path }}/{{ branch \| repo }}`                              | No            | Like contained but default branch is a regular clone  |
+| `contained-sanitized` | `{{ repo_path }}/{{ branch \| sanitize }}`                          | Yes           | Like contained but branch slashes flattened to dashes |
+| `sibling`             | `{{ repo }}.{{ branch \| sanitize }}`                               | No            | Worktrees adjacent to the repo                        |
+| `nested`              | `{{ repo }}/.worktrees/{{ branch \| sanitize }}`                    | No            | Worktrees in a hidden subdirectory (auto-gitignored)  |
+| `centralized`         | `{{ daft_data_dir }}/worktrees/{{ repo }}/{{ branch \| sanitize }}` | No            | Worktrees in the XDG data directory                   |
 
 The built-in default layout is `sibling`.
+
+#### Contained-Classic Layout
+
+The `contained-classic` layout produces the same directory structure as
+`contained` but without a bare repository. The default branch is a regular
+`git clone` that holds the `.git` directory, and additional branches are
+worktrees created alongside it:
+
+```
+my-project/
+├── main/                    # Regular clone (non-bare, .git/ lives here)
+│   ├── .git/
+│   ├── src/
+│   └── package.json
+├── feature/auth/            # Worktree (linked to main/.git)
+│   ├── .git                 # File, not directory — points back to main/.git
+│   └── src/
+└── bugfix/login/            # Worktree
+```
+
+This is the "classic" way to use `git worktree` — clone normally, then add
+worktrees as siblings. The `repo` filter on `{{ branch }}` is the mechanism that
+communicates this to the layout system (see [Filters](#filters) below).
+
+#### Contained-Sanitized Layout
+
+The `contained-sanitized` layout is identical to `contained` but uses the
+`sanitize` filter to flatten branch slashes into dashes:
+
+```
+my-project/
+├── .git/                    # Shared Git metadata (bare)
+├── main/                    # Worktree
+├── feature-auth/            # feature/auth → feature-auth
+└── bugfix-login/            # bugfix/login → bugfix-login
+```
+
+This avoids the nested directories that `contained` creates for branches with
+slashes (e.g., `feature/auth` → `feature/auth/` as a nested directory).
 
 ### Template Variables
 
@@ -81,14 +122,64 @@ The built-in default layout is `sibling`.
 Templates that do not start with `~/`, `/`, `{{ daft_data_dir }}`, or `../` are
 resolved relative to `{{ repo_path }}`.
 
+### Filters
+
+Filters transform template variable values and are applied with the pipe (`|`)
+operator. Multiple filters can be chained left to right:
+`{{ branch | repo | sanitize }}`.
+
+| Filter     | Applies to | Value transformation      | Side effect                                                     |
+| ---------- | ---------- | ------------------------- | --------------------------------------------------------------- |
+| `sanitize` | Any        | Replaces `/` `\` with `-` | None                                                            |
+| `repo`     | `branch`   | None (identity)           | Signals that the default branch is a non-bare clone (see below) |
+
+#### The `repo` Filter
+
+The `repo` filter is an identity filter — it does not change the value it
+receives. Its purpose is structural: when applied to `{{ branch }}`, it tells
+the layout system that the default branch evaluation of the template is a
+regular (non-bare) clone, not a worktree linked to a bare repository.
+
+```
+{{ repo_path }}/{{ branch }}              # contained — bare, all worktrees
+{{ repo_path }}/{{ branch | repo }}       # contained-classic — non-bare, default branch is a clone
+{{ repo_path }}/{{ branch | sanitize }}   # contained-sanitized — bare, sanitized names
+```
+
+The `repo` filter can be chained with other filters. Filter order does not
+affect the structural signal — `{{ branch | repo | sanitize }}` and
+`{{ branch | sanitize | repo }}` both produce the same value and the same
+non-bare inference. By convention, `repo` should appear first:
+`{{ branch | repo | sanitize }}`.
+
+#### Filter Chain Implementation
+
+The template engine splits expressions on all `|` separators and applies filters
+left to right. Each filter receives the output of the previous one:
+
+```
+{{ branch | repo | sanitize }}
+→ branch = "feature/auth"
+→ repo filter: "feature/auth" (unchanged, marks as non-bare)
+→ sanitize filter: "feature-auth"
+```
+
 ### Bare Inference Heuristic
 
-Given a template resolved relative to `repo_path`:
+Given a template:
 
-1. Starts with `../` or is absolute or starts with `~/` -- **not bare** (outside
+1. Explicit `bare` field is set -- **use it** (custom layout override)
+2. Template contains the `repo` filter -- **not bare** (wrapped non-bare mode;
+   the default branch is a regular clone)
+3. Starts with `../` or is absolute or starts with `~/` -- **not bare** (outside
    repo)
-2. First path segment starts with `.` -- **not bare** (hidden directory)
-3. Otherwise -- **bare required** (worktrees would conflict with working tree)
+4. First path segment starts with `.` -- **not bare** (hidden directory)
+5. Otherwise -- **bare required** (worktrees would conflict with working tree)
+
+The `repo` filter (rule 2) takes precedence over geometric inference (rules
+3--5). A template like `{{ repo_path }}/{{ branch | repo }}` starts with
+`{{ repo_path }}/` (which would normally infer bare), but the `repo` filter
+overrides this to produce a non-bare wrapped layout.
 
 Bare is a structural implementation detail. Users never need to know about it.
 daft infers it, manages it, and hides it.
@@ -104,7 +195,8 @@ bare = false
 ```
 
 When `bare` is explicitly set, the heuristic is skipped. When omitted, the
-heuristic applies. Built-in layouts never need this field.
+heuristic applies. Built-in layouts never need this field (including
+`contained-classic`, whose `repo` filter handles inference automatically).
 
 ### Auto-gitignore for Non-Bare In-Repo Layouts
 
@@ -121,6 +213,23 @@ ran `daft start` on an existing regular clone with default layout set to
 `contained`): resolve the template as if non-bare, place worktrees per template
 relative to `repo_path`, and warn with a suggestion to run
 `daft layout transform`.
+
+### Wrapped Non-Bare Repo Detection
+
+For wrapped non-bare layouts (`contained-classic`), the `.git` directory lives
+inside the default branch subdirectory, not at the project root. daft needs to
+locate the actual repo from any worktree within the wrapper:
+
+- From a worktree like `my-project/feature-auth/`, the `.git` file points back
+  to `my-project/main/.git/worktrees/feature-auth`. Git's
+  `git rev-parse --git-common-dir` resolves to `my-project/main/.git`, which is
+  the correct repo location. This works without daft-specific logic.
+- From the default branch checkout `my-project/main/`, `git rev-parse` works
+  normally (it's a regular clone).
+- `DAFT_PROJECT_ROOT` for wrapped non-bare layouts points to the wrapper
+  directory (`my-project/`), not the clone subdirectory. This is consistent with
+  how `DAFT_PROJECT_ROOT` works for `contained` (points to the wrapper, not
+  `.git/`).
 
 ### Custom Layouts
 
@@ -201,9 +310,11 @@ settings, layout choice, and future per-repo preferences.
 }
 ```
 
-Keyed by canonicalized `.git` directory path. Remote URL fingerprint for
-identity verification. Auto-pruning of stale entries (repos that no longer exist
-on disk).
+Keyed by canonicalized `.git` directory path. For wrapped non-bare layouts
+(`contained-classic`), the key is the `.git` directory inside the default branch
+subdirectory (e.g., `/Users/user/projects/myrepo/main/.git`). Remote URL
+fingerprint for identity verification. Auto-pruning of stale entries (repos that
+no longer exist on disk).
 
 #### Migration from trust.json
 
@@ -227,8 +338,16 @@ No data loss window.
 
 - Resolves layout from: `--layout` flag > global config default > `sibling`
 - `--layout` accepts a named layout or an inline template string
-- If layout needs bare (inferred) -- `git clone --bare`, create first worktree
-- If layout does not need bare -- `git clone`
+- Three clone modes based on layout inference:
+  1. **Bare** (template infers bare, e.g., `contained`): `git clone --bare` into
+     `<name>/.git`, then `git worktree add` for the default branch
+  2. **Wrapped non-bare** (template starts with `{{ repo_path }}/` but uses
+     `repo` filter, e.g., `contained-classic`): create wrapper directory
+     `<name>/`, evaluate template for default branch to determine clone
+     destination, `git clone` (regular) into that subdirectory. The default
+     branch checkout IS the clone. Additional worktrees are placed by the
+     template as siblings.
+  3. **Regular** (everything else, e.g., `sibling`): `git clone` into `<name>/`
 - Stores chosen layout in `repos.json`
 - Runs `post-clone` hook
 - For non-bare clones: also fires `worktree-post-create` (the clone both creates
@@ -285,6 +404,15 @@ Replaces `adopt` and `eject` as a general-purpose layout migration:
 - Bare to non-bare layout: same mechanics as current `eject`
 - Between two non-bare layouts: move worktrees to new template paths
 - Between two bare-needing layouts: move worktrees to new template paths
+- Bare to wrapped non-bare (e.g., `contained` → `contained-classic`): un-bare
+  the repo into the default branch subdirectory, relink existing worktrees
+- Wrapped non-bare to bare (e.g., `contained-classic` → `contained`): bare the
+  default branch clone, move `.git` to the wrapper root, convert the default
+  branch directory into a worktree
+- Regular to wrapped non-bare (e.g., `sibling` → `contained-classic`): create
+  wrapper directory, move the regular clone into a subdirectory named after the
+  default branch, move existing worktrees to template-computed paths inside the
+  wrapper
 - Updates `repos.json` with new layout
 
 `adopt` becomes an alias for `layout transform contained`. `eject` becomes an
@@ -337,10 +465,11 @@ hooks for their needs.
 
 ### Clone Hook Overlap
 
-For non-bare `daft clone`, both `post-clone` and `worktree-post-create` fire.
-This is intentional: a non-bare clone both creates a repo and results in a
-worktree. If hook definitions overlap, users manage that in their `daft.yml`.
-This is a natural overlap that will be refined based on real usage patterns.
+For non-bare `daft clone` (including `contained-classic` and all unwrapped
+layouts like `sibling`), both `post-clone` and `worktree-post-create` fire. This
+is intentional: a non-bare clone both creates a repo and results in a worktree.
+If hook definitions overlap, users manage that in their `daft.yml`. This is a
+natural overlap that will be refined based on real usage patterns.
 
 ### Hook Environment Variables
 
