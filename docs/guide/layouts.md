@@ -100,7 +100,7 @@ no extra directories — worktrees live elsewhere entirely.
 | **contained**   | Inside the repo directory        | Bare (no working files at root) | Yes, as subdirectories      |
 | **sibling**     | Next to the repo directory       | Regular Git repo                | Yes, as sibling directories |
 | **nested**      | Hidden `.worktrees/` inside repo | Regular Git repo                | Hidden (in `.worktrees/`)   |
-| **centralized** | `~/.local/share/daft/worktrees/` | Regular Git repo                | No (stored elsewhere)       |
+| **centralized** | daft data directory (XDG)        | Regular Git repo                | No (stored elsewhere)       |
 
 ## Choosing a Layout
 
@@ -133,8 +133,9 @@ Without `--layout`, daft uses the first available from:
 2. Your global default
 3. The built-in default (sibling)
 
-On your first clone, if none of these are set, daft asks which layout you
-prefer.
+On your very first clone, if none of these are configured, daft prompts you to
+choose between sibling and contained. This prompt appears only once — subsequent
+clones use whichever source is available, or fall back to sibling.
 
 ### Setting a Global Default
 
@@ -225,12 +226,12 @@ daft layout default my-team
 
 ### Template Variables
 
-| Variable              | Description                          | Example                 |
-| --------------------- | ------------------------------------ | ----------------------- |
-| `{{ repo_path }}`     | Absolute path to the repository root | `/home/user/my-project` |
-| `{{ repo }}`          | Repository directory name            | `my-project`            |
-| `{{ branch }}`        | Branch name (as-is)                  | `feature/auth`          |
-| `{{ daft_data_dir }}` | daft's XDG data directory            | `~/.local/share/daft`   |
+| Variable              | Description                          | Example                                                                     |
+| --------------------- | ------------------------------------ | --------------------------------------------------------------------------- |
+| `{{ repo_path }}`     | Absolute path to the repository root | `/home/user/my-project`                                                     |
+| `{{ repo }}`          | Repository directory name            | `my-project`                                                                |
+| `{{ branch }}`        | Branch name (as-is)                  | `feature/auth`                                                              |
+| `{{ daft_data_dir }}` | daft's XDG data directory            | `~/.local/share/daft` (Linux), `~/Library/Application Support/daft` (macOS) |
 
 ### Filters
 
@@ -275,6 +276,10 @@ order:
 The first match wins. This means a team convention in `daft.yml` is respected
 unless you explicitly override it with `--layout` or have already transformed
 the repo to a different layout.
+
+::: tip On your very first clone, if no layout is configured at any level, daft
+prompts you to choose. The chosen layout is applied as if you had passed
+`--layout`. This prompt appears only once. :::
 
 ## See Also
 

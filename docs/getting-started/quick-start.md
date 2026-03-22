@@ -25,8 +25,9 @@ my-project/
 
 You're automatically placed in `my-project/main/`.
 
-::: tip This shows the default **contained** layout. daft supports other layouts
-too — see [Layouts](/guide/layouts) to explore your options. :::
+::: tip This shows the **contained** layout. daft supports other layouts that
+organize worktrees differently — see [Layouts](/guide/layouts) to explore your
+options. :::
 
 ## 2. Create a Feature Branch
 
