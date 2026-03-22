@@ -393,6 +393,17 @@ fn try_load_config_from_ref(git_dir: &Path, ref_name: &str) -> Result<Option<Yam
     Ok(None)
 }
 
+/// Load daft.yml from a bare repository's HEAD ref.
+///
+/// Used by the clone command to read the team's layout preference before
+/// deciding the final layout. Searches all config file candidates
+/// (daft.yml, daft.yaml, .daft.yml, etc.) in priority order.
+///
+/// Returns `None` if no config file is found on HEAD.
+pub fn load_config_from_bare(git_dir: &Path) -> Result<Option<YamlConfig>> {
+    try_load_config_from_ref(git_dir, "HEAD")
+}
+
 /// Load a `YamlConfig` from a branch ref with a fallback chain.
 ///
 /// This is used for hooks that need config from a branch that may not have a
