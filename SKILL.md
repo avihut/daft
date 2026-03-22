@@ -34,7 +34,7 @@ repo. Navigate between worktree directories instead.
 
 ## Detecting a daft-managed Repository
 
-A daft-managed repository has this layout:
+daft supports multiple layouts. The most common is the **contained** layout:
 
 ```
 my-project/
@@ -48,15 +48,61 @@ my-project/
 +-- bugfix/login/            # Worktree for a bugfix branch
 ```
 
-Key indicators:
+Other layouts you may encounter:
 
-- `.git/` at the project root is a **bare repository** (directory, not a file)
-- Branch worktrees are **sibling directories** to `.git/`
-- Use `git rev-parse --git-common-dir` from any worktree to find the project
-  root
+- **Sibling** (default): `my-project/` + `my-project.feature-auth/` as siblings
+- **Nested**: `my-project/.worktrees/feature-auth/` hidden inside the repo
+- **Centralized**: worktrees stored in `~/.local/share/daft/worktrees/`
 
-If you see this layout, the user is using daft. Apply worktree-aware guidance
-throughout the session.
+Key indicators of any daft-managed repository:
+
+- Use `git rev-parse --git-common-dir` from any worktree to find the shared Git
+  directory
+- Run `daft layout show` to see which layout the repo uses
+- For contained layout: `.git/` at the project root is a **bare repository**
+  (directory, not a file) with branch worktrees as sibling directories
+- For other layouts: the main checkout looks like a normal Git repo, but
+  worktrees are managed by daft elsewhere
+
+If you see any of these patterns, the user is using daft. Apply worktree-aware
+guidance throughout the session.
+
+## Layouts
+
+daft supports four built-in layouts that control where worktrees are placed:
+
+| Layout        | Template                                                            | Description                           |
+| ------------- | ------------------------------------------------------------------- | ------------------------------------- |
+| `contained`   | `{{ repo_path }}/{{ branch }}`                                      | Worktrees inside the repo directory   |
+| `sibling`     | `{{ repo }}.{{ branch \| sanitize }}`                               | Worktrees next to the repo (default)  |
+| `nested`      | `{{ repo }}/.worktrees/{{ branch \| sanitize }}`                    | Worktrees in a hidden subdirectory    |
+| `centralized` | `{{ daft_data_dir }}/worktrees/{{ repo }}/{{ branch \| sanitize }}` | Worktrees in a central data directory |
+
+Layout commands:
+
+| Command                          | Description                               |
+| -------------------------------- | ----------------------------------------- |
+| `daft layout show`               | Show resolved layout for the current repo |
+| `daft layout list`               | List all available layouts                |
+| `daft layout transform <layout>` | Convert repo to a different layout        |
+| `daft layout default [layout]`   | View or set global default layout         |
+
+Layout is selected at clone time via `--layout` flag, `daft.yml` `layout` field,
+global config default, or the built-in default (sibling). Users can also define
+custom layouts with templates in `~/.config/daft/config.toml`.
+
+The `daft.yml` file can specify a `layout` field alongside hooks to set the
+team-recommended layout:
+
+```yaml
+layout: contained
+
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: install-deps
+        run: npm install
+```
 
 ## Invocation Forms
 
@@ -114,8 +160,8 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 
 | Command                                                                                                                                            | Description                                                                                                                                                                                                                                                                                                                                                                                                               |
 | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `daft worktree-clone <url>`                                                                                                                        | Clone a remote repository into daft's worktree layout                                                                                                                                                                                                                                                                                                                                                                     |
-| `daft worktree-init <name>`                                                                                                                        | Initialize a new local repository in worktree layout                                                                                                                                                                                                                                                                                                                                                                      |
+| `daft worktree-clone <url> [--layout <LAYOUT>]`                                                                                                    | Clone a remote repository into daft's worktree layout (use `--layout` to choose: `contained`, `sibling`, `nested`, `centralized`, or custom)                                                                                                                                                                                                                                                                              |
+| `daft worktree-init <name> [--layout <LAYOUT>]`                                                                                                    | Initialize a new local repository in worktree layout (use `--layout` to choose layout)                                                                                                                                                                                                                                                                                                                                    |
 | `daft worktree-checkout <branch>`                                                                                                                  | Create a worktree for an existing local or remote branch                                                                                                                                                                                                                                                                                                                                                                  |
 | `daft worktree-checkout -- -`                                                                                                                      | Switch to the previous worktree (`cd -` style toggle)                                                                                                                                                                                                                                                                                                                                                                     |
 | `daft worktree-checkout -s <branch>`                                                                                                               | Same as above, but auto-creates branch if not found (also `daft.go.autoStart`)                                                                                                                                                                                                                                                                                                                                            |
@@ -140,6 +186,7 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 | Command                                                                             | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `daft worktree-list [--json] [-b\|-r\|-a] [--stat summary\|lines] [--columns COLS]` | List all worktrees with branch (`✦` = default), path (relative to cwd), base ahead/behind, file status (+N staged, -N unstaged, ?N untracked), remote status (⇡N unpushed, ⇣N unpulled), branch age, and commit info. Use `-b`/`-r`/`-a` to include local/remote branches without worktrees. JSON includes `is_default_branch`, `staged`, `unstaged`, `untracked`, `remote_ahead`, `remote_behind`, `branch_age`, `owner_email` fields. When `user.email` is configured, output is split into two sections (your branches / other branches). Use `--columns owner` or `--columns +owner` to show the Owner column (tip commit author email). |
+| `daft layout [show\|list\|transform\|default]`                                      | Manage worktree layouts: show current, list available, transform between layouts, set global default                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `daft hooks <subcommand>`                                                           | Manage hooks trust and configuration (`trust`, `prompt`, `deny`, `status`, `run`, `install`, `validate`, `dump`, `migrate`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `daft doctor`                                                                       | Diagnose installation and configuration issues; `--fix` auto-repairs symlinks, shortcuts, refspecs, hooks; `--fix --dry-run` previews fixes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `daft setup shortcuts <subcommand>`                                                 | Manage command shortcut symlinks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |

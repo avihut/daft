@@ -52,7 +52,7 @@ git worktree-clone [OPTIONS] <REPOSITORY_URL>
 | `--no-hooks` | Do not run any hooks from the repository |  |
 | `-r, --remote <REMOTE>` | Organize worktree under this remote folder (enables multi-remote mode) |  |
 | `--no-cd` | Do not change directory to the new worktree |  |
-| `--layout <LAYOUT>` | Worktree layout to use for this repository |  |
+| `--layout <LAYOUT>` | Worktree layout to use for this repository. Built-in: `contained`, `sibling`, `nested`, `centralized`. Can also be a custom layout name or an inline template. See [Layouts](/guide/layouts) |  |
 | `-x, --exec <EXEC>` | Run a command in the worktree after setup completes (repeatable) |  |
 
 ## Global Options
