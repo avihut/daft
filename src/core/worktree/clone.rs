@@ -6,38 +6,11 @@ use crate::core::layout::Layout;
 use crate::core::ProgressSink;
 use crate::git::GitCommand;
 use crate::hooks::TrustDatabase;
-use crate::multi_remote::path::calculate_worktree_path;
 use crate::remote::{get_default_branch_remote, get_remote_branches, is_remote_empty};
 use crate::resolve_initial_branch;
 use crate::utils::*;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-
-/// Input parameters for the clone operation.
-pub struct CloneParams {
-    /// The repository URL to clone.
-    pub repository_url: String,
-    /// Check out this branch instead of the remote's default.
-    pub branch: Option<String>,
-    /// Perform a bare clone only.
-    pub no_checkout: bool,
-    /// Create a worktree for each remote branch.
-    pub all_branches: bool,
-    /// Remote for worktree organization (multi-remote mode).
-    pub remote: Option<String>,
-    /// Remote name (from settings).
-    pub remote_name: String,
-    /// Whether multi-remote mode is enabled.
-    pub multi_remote_enabled: bool,
-    /// Default remote name for multi-remote.
-    pub multi_remote_default: String,
-    /// Whether to set upstream tracking (from settings).
-    pub checkout_upstream: bool,
-    /// Whether to use gitoxide.
-    pub use_gitoxide: bool,
-    /// Worktree layout to use for this repository.
-    pub layout: Layout,
-}
 
 /// Input parameters for the bare clone phase.
 ///
@@ -93,316 +66,6 @@ pub struct CloneResult {
     pub no_checkout: bool,
 }
 
-/// Execute the clone operation.
-///
-/// Handles the entire clone workflow: detect branches, clone bare or regular,
-/// create worktrees, fetch tracking refs, and set upstream. Does NOT run hooks --
-/// the command layer handles that due to clone-specific trust semantics.
-pub fn execute(params: &CloneParams, progress: &mut dyn ProgressSink) -> Result<CloneResult> {
-    let needs_bare = params.layout.needs_bare();
-
-    if needs_bare {
-        execute_bare(params, progress)
-    } else {
-        execute_regular(params, progress)
-    }
-}
-
-/// Execute a bare clone (the original/contained layout path).
-///
-/// Creates a bare repo at `<repo>/.git` and adds worktrees as subdirectories.
-fn execute_bare(params: &CloneParams, progress: &mut dyn ProgressSink) -> Result<CloneResult> {
-    let repo_name = crate::extract_repo_name(&params.repository_url)?;
-    progress.on_step(&format!("Repository name detected: '{repo_name}'"));
-
-    // Detect remote branches and determine targets
-    let (default_branch, target_branch, branch_exists, is_empty) =
-        detect_branches(params, progress)?;
-
-    let parent_dir = PathBuf::from(&repo_name);
-    let use_multi_remote = params.remote.is_some() || params.multi_remote_enabled;
-    let remote_for_path = params
-        .remote
-        .clone()
-        .unwrap_or_else(|| params.multi_remote_default.clone());
-
-    let worktree_dir = calculate_worktree_path(
-        &parent_dir,
-        &target_branch,
-        &remote_for_path,
-        use_multi_remote,
-    );
-
-    report_plan(
-        params,
-        &parent_dir,
-        &worktree_dir,
-        branch_exists,
-        is_empty,
-        progress,
-    );
-
-    if path_exists(&parent_dir) {
-        anyhow::bail!("Target path './{} already exists.", parent_dir.display());
-    }
-
-    progress.on_step("Creating repository directory...");
-    create_directory(&parent_dir)?;
-
-    let git_dir = parent_dir.join(".git");
-    let git = GitCommand::new(false).with_gitoxide(params.use_gitoxide);
-
-    progress.on_step(&format!(
-        "Cloning bare repository into './{}'...",
-        git_dir.display()
-    ));
-
-    if let Err(e) = git.clone_bare(&params.repository_url, &git_dir) {
-        remove_directory(&parent_dir).ok();
-        return Err(e.context("Git clone failed"));
-    }
-
-    // Canonicalize git_dir now that it exists on disk, so that trust entries
-    // and all other consumers use a consistent absolute path.
-    let git_dir = git_dir.canonicalize().with_context(|| {
-        format!(
-            "Failed to canonicalize git directory: {}",
-            git_dir.display()
-        )
-    })?;
-
-    progress.on_step(&format!(
-        "Changing directory to './{}'",
-        parent_dir.display()
-    ));
-    change_directory(&parent_dir)?;
-
-    // Set up fetch refspec for bare repo
-    progress.on_step("Setting up fetch refspec for remote tracking...");
-    if let Err(e) = git.setup_fetch_refspec(&params.remote_name) {
-        progress.on_warning(&format!("Could not set fetch refspec: {e}"));
-    }
-
-    // Set multi-remote config if --remote was provided
-    if params.remote.is_some() {
-        progress.on_step("Enabling multi-remote mode for this repository...");
-        crate::multi_remote::config::set_multi_remote_enabled(&git, true)?;
-        crate::multi_remote::config::set_multi_remote_default(&git, &remote_for_path)?;
-    }
-
-    // Store layout in repos.json
-    store_layout(&git_dir, &params.layout, progress);
-
-    let should_create_worktree = !params.no_checkout && (branch_exists || is_empty);
-
-    if should_create_worktree {
-        let relative_worktree_path = if use_multi_remote {
-            PathBuf::from(&remote_for_path).join(&target_branch)
-        } else {
-            PathBuf::from(&target_branch)
-        };
-
-        if params.all_branches {
-            if is_empty {
-                anyhow::bail!(
-                    "Cannot use --all-branches with an empty repository (no branches exist)"
-                );
-            }
-            create_all_worktrees(
-                &git,
-                &params.remote_name,
-                use_multi_remote,
-                &remote_for_path,
-                params.use_gitoxide,
-                progress,
-            )?;
-        } else if is_empty {
-            create_orphan_worktree(&git, &target_branch, &relative_worktree_path, progress)?;
-        } else {
-            create_single_worktree(&git, &target_branch, &relative_worktree_path, progress)?;
-        }
-
-        progress.on_step(&format!(
-            "Changing directory to worktree: './{}'",
-            relative_worktree_path.display()
-        ));
-
-        if let Err(e) = change_directory(&relative_worktree_path) {
-            change_directory(parent_dir.parent().unwrap_or(Path::new("."))).ok();
-            return Err(e);
-        }
-
-        // Skip fetch and upstream setup for empty repos
-        if !is_empty {
-            setup_tracking(
-                &git,
-                &params.remote_name,
-                &target_branch,
-                params.checkout_upstream,
-                progress,
-            );
-        }
-
-        let current_dir = get_current_directory()?;
-
-        Ok(CloneResult {
-            repo_name,
-            target_branch,
-            default_branch,
-            parent_dir,
-            git_dir,
-            remote_name: params.remote_name.clone(),
-            repository_url: params.repository_url.clone(),
-            cd_target: Some(current_dir),
-            worktree_dir: Some(get_current_directory()?),
-            branch_not_found: false,
-            is_empty,
-            no_checkout: false,
-        })
-    } else if !params.no_checkout && !branch_exists {
-        let current_dir = get_current_directory()?;
-
-        Ok(CloneResult {
-            repo_name,
-            target_branch,
-            default_branch,
-            parent_dir,
-            git_dir,
-            remote_name: params.remote_name.clone(),
-            repository_url: params.repository_url.clone(),
-            cd_target: Some(current_dir),
-            worktree_dir: None,
-            branch_not_found: true,
-            is_empty,
-            no_checkout: false,
-        })
-    } else {
-        Ok(CloneResult {
-            repo_name,
-            target_branch,
-            default_branch,
-            parent_dir,
-            git_dir,
-            remote_name: params.remote_name.clone(),
-            repository_url: params.repository_url.clone(),
-            cd_target: None,
-            worktree_dir: None,
-            branch_not_found: false,
-            is_empty,
-            no_checkout: true,
-        })
-    }
-}
-
-/// Execute a regular (non-bare) clone.
-///
-/// Performs a standard `git clone` — the result is a normal repository with a
-/// `.git` directory. No worktrees are created; the clone IS the working directory.
-/// Future worktrees will be created via `daft start` using the layout template.
-fn execute_regular(params: &CloneParams, progress: &mut dyn ProgressSink) -> Result<CloneResult> {
-    let repo_name = crate::extract_repo_name(&params.repository_url)?;
-    progress.on_step(&format!("Repository name detected: '{repo_name}'"));
-
-    let parent_dir = PathBuf::from(&repo_name);
-
-    if path_exists(&parent_dir) {
-        anyhow::bail!("Target path './{} already exists.", parent_dir.display());
-    }
-
-    let git = GitCommand::new(false).with_gitoxide(params.use_gitoxide);
-
-    // For non-bare clones, --all-branches is not supported (standard git clone
-    // already fetches all remote tracking refs)
-    if params.all_branches {
-        progress.on_warning(
-            "--all-branches has no effect with non-bare layouts; \
-             all remote branches are already tracked",
-        );
-    }
-
-    // Detect target branch for reporting and checkout
-    let (default_branch, target_branch, branch_exists, is_empty) =
-        detect_branches(params, progress)?;
-
-    progress.on_step(&format!(
-        "Target repository directory: './{}'",
-        parent_dir.display()
-    ));
-
-    progress.on_step(&format!(
-        "Cloning repository into './{}'...",
-        parent_dir.display()
-    ));
-
-    // Determine which clone variant to use
-    let clone_result = if let Some(ref branch) = params.branch {
-        if !branch_exists {
-            // Branch doesn't exist on remote — clone default then report
-            progress.on_warning(&format!(
-                "Branch '{}' does not exist on remote; cloning default branch",
-                branch
-            ));
-            git.clone_regular(&params.repository_url, &parent_dir)
-        } else {
-            git.clone_regular_branch(&params.repository_url, &parent_dir, branch)
-        }
-    } else {
-        git.clone_regular(&params.repository_url, &parent_dir)
-    };
-
-    if let Err(e) = clone_result {
-        remove_directory(&parent_dir).ok();
-        return Err(e.context("Git clone failed"));
-    }
-
-    // Canonicalize the git dir
-    let git_dir = parent_dir.join(".git").canonicalize().with_context(|| {
-        format!(
-            "Failed to canonicalize git directory: {}",
-            parent_dir.join(".git").display()
-        )
-    })?;
-
-    progress.on_step(&format!(
-        "Changing directory to './{}'",
-        parent_dir.display()
-    ));
-    change_directory(&parent_dir)?;
-
-    // Store layout in repos.json
-    store_layout(&git_dir, &params.layout, progress);
-
-    let current_dir = get_current_directory()?;
-
-    // For non-bare clones, the clone itself is the working directory — there's
-    // no separate worktree to create. We report the clone dir as both cd_target
-    // and worktree_dir so hooks can run against it.
-    let has_worktree = !params.no_checkout && (branch_exists || is_empty);
-
-    Ok(CloneResult {
-        repo_name,
-        target_branch,
-        default_branch,
-        parent_dir,
-        git_dir,
-        remote_name: params.remote_name.clone(),
-        repository_url: params.repository_url.clone(),
-        cd_target: if has_worktree || (!branch_exists && !params.no_checkout) {
-            Some(current_dir.clone())
-        } else {
-            None
-        },
-        worktree_dir: if has_worktree {
-            Some(current_dir)
-        } else {
-            None
-        },
-        branch_not_found: !branch_exists && !params.no_checkout && params.branch.is_some(),
-        is_empty,
-        no_checkout: params.no_checkout,
-    })
-}
-
 /// Store the resolved layout in repos.json.
 /// Store the layout for a freshly cloned repo, resetting any prior registry
 /// entry. A re-clone means the old config is stale — start fresh.
@@ -439,7 +102,7 @@ pub fn clone_bare_phase(
     progress.on_step(&format!("Repository name detected: '{repo_name}'"));
 
     let (default_branch, target_branch, branch_exists, is_empty) =
-        detect_branches_bare(params, progress)?;
+        detect_branches(params, progress)?;
 
     let parent_dir = PathBuf::from(&repo_name);
 
@@ -506,35 +169,11 @@ pub fn clone_bare_phase(
     })
 }
 
-fn detect_branches_bare(
-    params: &BareCloneParams,
-    progress: &mut dyn ProgressSink,
-) -> Result<(String, String, bool, bool)> {
-    let compat = CloneParams {
-        repository_url: params.repository_url.clone(),
-        branch: params.branch.clone(),
-        no_checkout: params.no_checkout,
-        all_branches: params.all_branches,
-        remote: params.remote.clone(),
-        remote_name: params.remote_name.clone(),
-        multi_remote_enabled: params.multi_remote_enabled,
-        multi_remote_default: params.multi_remote_default.clone(),
-        checkout_upstream: params.checkout_upstream,
-        use_gitoxide: params.use_gitoxide,
-        layout: crate::core::layout::Layout {
-            name: String::new(),
-            template: String::new(),
-            bare: None,
-        },
-    };
-    detect_branches(&compat, progress)
-}
-
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /// Detect the default branch, target branch, and whether the repo is empty.
 fn detect_branches(
-    params: &CloneParams,
+    params: &BareCloneParams,
     progress: &mut dyn ProgressSink,
 ) -> Result<(String, String, bool, bool)> {
     match get_default_branch_remote(&params.repository_url, params.use_gitoxide) {
@@ -572,36 +211,6 @@ fn detect_branches(
                 Err(e.context("Failed to determine default branch"))
             }
         }
-    }
-}
-
-/// Report the plan before executing.
-fn report_plan(
-    params: &CloneParams,
-    parent_dir: &Path,
-    worktree_dir: &Path,
-    branch_exists: bool,
-    is_empty: bool,
-    progress: &mut dyn ProgressSink,
-) {
-    progress.on_step(&format!(
-        "Target repository directory: './{}'",
-        parent_dir.display()
-    ));
-
-    if !params.no_checkout {
-        if params.all_branches {
-            progress.on_step("Worktrees will be created for all remote branches");
-        } else if branch_exists || is_empty {
-            progress.on_step(&format!(
-                "Initial worktree will be in: './{}'",
-                worktree_dir.display()
-            ));
-        } else {
-            progress.on_step("Worktree creation will be skipped (branch does not exist)");
-        }
-    } else {
-        progress.on_step("No-checkout mode: Only bare repository will be created");
     }
 }
 
