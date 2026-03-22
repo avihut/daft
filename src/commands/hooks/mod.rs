@@ -505,7 +505,15 @@ pub(super) fn styled_trust_level(level: TrustLevel) -> String {
 /// For bare repos, checks worktree subdirectories.
 pub(super) fn find_project_hooks(git_dir: &Path) -> Result<Vec<std::path::PathBuf>> {
     let project_root = git_dir.parent().context("Invalid git directory")?;
-    let is_bare = git_dir.join("HEAD").exists() && !git_dir.join("..").join(".git").exists();
+    // Use config_get("core.bare") instead of path heuristics — the path-based
+    // check fails for contained layouts where git_dir is <repo>/.git (the parent
+    // check resolves back to itself).
+    let git = crate::git::GitCommand::new(false);
+    let is_bare = git
+        .config_get("core.bare")
+        .ok()
+        .flatten()
+        .is_some_and(|v| v.to_lowercase() == "true");
 
     let mut hooks = Vec::new();
     let mut found_yaml = false;
