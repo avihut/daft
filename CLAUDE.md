@@ -55,6 +55,12 @@ IMPORTANT: Every bug fix must include a regression test that reproduces the
 issue. Add a YAML scenario in `tests/manual/scenarios/` or a unit test that
 fails without the fix and passes with it.
 
+## XDG Conventions
+
+This project follows the XDG Base Directory Specification. Use the `dirs` crate
+for cross-platform path resolution. Never hardcode `~/` paths for config or data
+storage.
+
 ## Architecture
 
 **Multicall binary**: All commands route through a single `daft` binary
