@@ -55,7 +55,7 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
         output.push('\n');
         output.push_str("    # Sort column completion for --sort\n");
         output.push_str("    if [[ \"$prev\" == \"--sort\" ]]; then\n");
-        output.push_str("        local cols=\"branch path size base changes remote age owner activity commit\"\n");
+        output.push_str("        local cols=\"branch path size base changes remote age owner hash activity commit\"\n");
         output.push_str("        local prefixed=\"\"\n");
         output.push_str("        for c in $cols; do prefixed=\"$prefixed $c +$c -$c\"; done\n");
         output.push_str("        COMPREPLY=( $(compgen -W \"$prefixed\" -- \"$cur\") )\n");

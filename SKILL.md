@@ -633,11 +633,14 @@ which columns appear in the output table and in what order.
 **Default columns** (shown unless removed): `annotation`, `branch`, `path`,
 `base`, `changes`, `remote`, `age`, `owner`, `last-commit`
 
-**Optional columns** (must be explicitly added): `size`
+**Optional columns** (must be explicitly added): `size`, `hash`
 
 The `size` column shows the disk size of each worktree folder in human-readable
 format (e.g. `42K`, `1.3M`, `2.5G`). When visible, a summary footer row displays
 the total size across all worktrees.
+
+The `hash` column shows the abbreviated (7-char) commit hash of each worktree's
+HEAD commit.
 
 ### Two modes
 
@@ -684,7 +687,7 @@ sort order of the output.
 
 ### Sortable columns
 
-`branch`, `path`, `size`, `age`, `owner`, `activity`, `commit`
+`branch`, `path`, `size`, `age`, `owner`, `hash`, `activity`, `commit`
 
 `activity` considers both committed and uncommitted file changes (working tree
 mtime). `commit` (alias: `last-commit`) sorts by last commit time only.

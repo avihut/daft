@@ -345,6 +345,9 @@ fn get_commit_metadata_for_ref_dispatched(
         if let Ok(repo) = git.gix_repo() {
             let full_ref = if branch_ref.starts_with("refs/") {
                 branch_ref.to_string()
+            } else if branch_ref.contains('/') {
+                // Remote branch like "origin/feature-x"
+                format!("refs/remotes/{branch_ref}")
             } else {
                 format!("refs/heads/{branch_ref}")
             };
