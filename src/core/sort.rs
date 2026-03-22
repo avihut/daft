@@ -22,6 +22,8 @@ pub enum SortColumn {
     Age,
     /// Sort by branch owner email (case-insensitive).
     Owner,
+    /// Sort by abbreviated commit hash (lexicographic).
+    Hash,
     /// Sort by overall activity: `max(last_commit_timestamp, working_tree_mtime)`.
     /// Considers both committed and uncommitted work.
     Activity,
@@ -39,7 +41,7 @@ pub enum SortColumn {
 impl SortColumn {
     /// All valid CLI sort column names, for use in error messages.
     pub fn valid_names() -> &'static str {
-        "branch, path, size, base, changes, remote, age, owner, activity, commit (alias: last-commit)"
+        "branch, path, size, base, changes, remote, age, owner, hash, activity, commit (alias: last-commit)"
     }
 
     /// Map this sort column to the corresponding display column, if any.
@@ -53,6 +55,7 @@ impl SortColumn {
             Self::Size => Some(ListColumn::Size),
             Self::Age => Some(ListColumn::Age),
             Self::Owner => Some(ListColumn::Owner),
+            Self::Hash => Some(ListColumn::Hash),
             Self::LastCommit => Some(ListColumn::LastCommit),
             Self::Base => Some(ListColumn::Base),
             Self::Changes => Some(ListColumn::Changes),
@@ -72,6 +75,7 @@ impl SortColumn {
             Self::Remote => "Remote",
             Self::Age => "Age",
             Self::Owner => "Owner",
+            Self::Hash => "Hash",
             Self::Activity => "Activity",
             Self::LastCommit => "Commit",
         }
@@ -85,6 +89,7 @@ impl SortColumn {
             "size" => Ok(Self::Size),
             "age" => Ok(Self::Age),
             "owner" => Ok(Self::Owner),
+            "hash" => Ok(Self::Hash),
             "activity" => Ok(Self::Activity),
             "commit" | "last-commit" => Ok(Self::LastCommit),
             "base" => Ok(Self::Base),
@@ -138,6 +143,9 @@ impl SortKey {
                 let a_owner = a.owner_email.as_deref().map(|s| s.to_lowercase());
                 let b_owner = b.owner_email.as_deref().map(|s| s.to_lowercase());
                 self.compare_optional(a_owner.as_deref(), b_owner.as_deref())
+            }
+            SortColumn::Hash => {
+                self.compare_optional(a.last_commit_hash.as_deref(), b.last_commit_hash.as_deref())
             }
             SortColumn::Activity => {
                 // Overall activity = max(last_commit, working_tree_mtime).
@@ -567,6 +575,21 @@ mod tests {
             SortSpec::parse("remote").unwrap().keys[0].column,
             SortColumn::Remote
         );
+    }
+
+    #[test]
+    fn test_hash_sort_parse() {
+        let spec = SortSpec::parse("hash").unwrap();
+        assert_eq!(spec.keys.len(), 1);
+        assert_eq!(spec.keys[0].column, SortColumn::Hash);
+        assert_eq!(spec.keys[0].direction, SortDirection::Ascending);
+    }
+
+    #[test]
+    fn test_hash_sort_descending() {
+        let spec = SortSpec::parse("-hash").unwrap();
+        assert_eq!(spec.keys[0].column, SortColumn::Hash);
+        assert_eq!(spec.keys[0].direction, SortDirection::Descending);
     }
 
     #[test]

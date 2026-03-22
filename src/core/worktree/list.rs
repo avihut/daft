@@ -70,6 +70,8 @@ pub struct WorktreeInfo {
     pub remote_behind: Option<usize>,
     /// Unix timestamp of the last commit (None if unavailable).
     pub last_commit_timestamp: Option<i64>,
+    /// Abbreviated commit hash of the last commit (None if unavailable).
+    pub last_commit_hash: Option<String>,
     /// Subject line of the last commit.
     pub last_commit_subject: String,
     /// Unix timestamp of branch creation (None for detached HEAD or if unavailable).
@@ -116,6 +118,7 @@ impl WorktreeInfo {
             remote_ahead: None,
             remote_behind: None,
             last_commit_timestamp: None,
+            last_commit_hash: None,
             last_commit_subject: String::new(),
             branch_creation_timestamp: None,
             base_lines_inserted: None,
@@ -148,6 +151,7 @@ impl WorktreeInfo {
             remote_ahead: None,
             remote_behind: None,
             last_commit_timestamp: None,
+            last_commit_hash: None,
             last_commit_subject: String::new(),
             branch_creation_timestamp: None,
             base_lines_inserted: None,
@@ -168,7 +172,7 @@ impl WorktreeInfo {
     /// last-commit) from the working tree on disk.  Static fields (kind, name,
     /// path, is_current, is_default_branch, branch_creation_timestamp) are
     /// left untouched.
-    pub fn refresh_dynamic_fields(&mut self, base_branch: &str, stat: Stat) {
+    pub fn refresh_dynamic_fields(&mut self, base_branch: &str, stat: Stat, git: &GitCommand) {
         let Some(path) = self.path.as_deref() else {
             return;
         };
@@ -193,8 +197,9 @@ impl WorktreeInfo {
         self.remote_behind = rab.map(|(_, b)| b);
 
         // Last commit
-        let (ts, subj) = get_last_commit_info(path);
+        let (ts, hash, subj) = get_commit_metadata(path, git);
         self.last_commit_timestamp = ts;
+        self.last_commit_hash = hash;
         self.last_commit_subject = subj;
 
         // Line-level stats (only when Stat::Lines mode)
@@ -314,12 +319,54 @@ fn get_ahead_behind(
     }
 }
 
-/// Get the last commit's Unix timestamp and subject for a worktree.
+/// Dispatch commit metadata retrieval for a worktree HEAD, using gitoxide when
+/// enabled with a fallback to the git subprocess.
+fn get_commit_metadata(
+    worktree_path: &Path,
+    git: &GitCommand,
+) -> (Option<i64>, Option<String>, String) {
+    if git.use_gitoxide {
+        if let Ok((ts, hash, subj)) = crate::git::oxide::get_commit_metadata_for_head(worktree_path)
+        {
+            return (Some(ts), Some(hash), subj);
+        }
+    }
+    get_last_commit_info(worktree_path)
+}
+
+/// Dispatch commit metadata retrieval for a named ref, using gitoxide when
+/// enabled with a fallback to the git subprocess.
+fn get_commit_metadata_for_ref_dispatched(
+    branch_ref: &str,
+    cwd: &Path,
+    git: &GitCommand,
+) -> (Option<i64>, Option<String>, String) {
+    if git.use_gitoxide {
+        if let Ok(repo) = git.gix_repo() {
+            let full_ref = if branch_ref.starts_with("refs/") {
+                branch_ref.to_string()
+            } else if branch_ref.contains('/') {
+                // Remote branch like "origin/feature-x"
+                format!("refs/remotes/{branch_ref}")
+            } else {
+                format!("refs/heads/{branch_ref}")
+            };
+            if let Ok((ts, hash, subj)) =
+                crate::git::oxide::get_commit_metadata_for_ref(&repo, &full_ref)
+            {
+                return (Some(ts), Some(hash), subj);
+            }
+        }
+    }
+    get_last_commit_info_for_ref(branch_ref, cwd)
+}
+
+/// Get the last commit's Unix timestamp, abbreviated hash, and subject for a worktree.
 ///
-/// Returns `(timestamp, subject)` where timestamp is seconds since epoch.
-fn get_last_commit_info(worktree_path: &Path) -> (Option<i64>, String) {
+/// Returns `(timestamp, hash, subject)` where timestamp is seconds since epoch.
+fn get_last_commit_info(worktree_path: &Path) -> (Option<i64>, Option<String>, String) {
     let output = Command::new("git")
-        .args(["log", "-1", "--format=%ct\x1f%s"])
+        .args(["log", "-1", "--format=%ct\x1f%h\x1f%s"])
         .current_dir(worktree_path)
         .output();
 
@@ -327,24 +374,36 @@ fn get_last_commit_info(worktree_path: &Path) -> (Option<i64>, String) {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let trimmed = stdout.trim();
-            if let Some((ts_str, subject)) = trimmed.split_once('\x1f') {
-                let timestamp = ts_str.parse::<i64>().ok();
-                (timestamp, subject.to_string())
+            let mut parts = trimmed.splitn(3, '\x1f');
+            let ts_str = parts.next().unwrap_or("");
+            let hash_str = parts.next().unwrap_or("");
+            let subject = parts.next().unwrap_or("");
+            if ts_str.is_empty() {
+                (None, None, String::new())
             } else {
-                (None, String::new())
+                let timestamp = ts_str.parse::<i64>().ok();
+                let hash = if hash_str.is_empty() {
+                    None
+                } else {
+                    Some(hash_str.to_string())
+                };
+                (timestamp, hash, subject.to_string())
             }
         }
-        _ => (None, String::new()),
+        _ => (None, None, String::new()),
     }
 }
 
-/// Get the last commit's Unix timestamp and subject for a specific branch ref.
+/// Get the last commit's Unix timestamp, abbreviated hash, and subject for a specific branch ref.
 ///
 /// Unlike `get_last_commit_info`, this targets a named ref rather than HEAD,
 /// so it can be called from any directory in the repository.
-fn get_last_commit_info_for_ref(branch_ref: &str, cwd: &Path) -> (Option<i64>, String) {
+fn get_last_commit_info_for_ref(
+    branch_ref: &str,
+    cwd: &Path,
+) -> (Option<i64>, Option<String>, String) {
     let output = Command::new("git")
-        .args(["log", "-1", "--format=%ct\x1f%s", branch_ref])
+        .args(["log", "-1", "--format=%ct\x1f%h\x1f%s", branch_ref])
         .current_dir(cwd)
         .output();
 
@@ -352,14 +411,23 @@ fn get_last_commit_info_for_ref(branch_ref: &str, cwd: &Path) -> (Option<i64>, S
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let trimmed = stdout.trim();
-            if let Some((ts_str, subject)) = trimmed.split_once('\x1f') {
-                let timestamp = ts_str.parse::<i64>().ok();
-                (timestamp, subject.to_string())
+            let mut parts = trimmed.splitn(3, '\x1f');
+            let ts_str = parts.next().unwrap_or("");
+            let hash_str = parts.next().unwrap_or("");
+            let subject = parts.next().unwrap_or("");
+            if ts_str.is_empty() {
+                (None, None, String::new())
             } else {
-                (None, String::new())
+                let timestamp = ts_str.parse::<i64>().ok();
+                let hash = if hash_str.is_empty() {
+                    None
+                } else {
+                    Some(hash_str.to_string())
+                };
+                (timestamp, hash, subject.to_string())
             }
         }
-        _ => (None, String::new()),
+        _ => (None, None, String::new()),
     }
 }
 
@@ -728,7 +796,8 @@ pub fn collect_worktree_info(
         };
 
         // Last commit info
-        let (last_commit_timestamp, last_commit_subject) = get_last_commit_info(&entry.path);
+        let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
+            get_commit_metadata(&entry.path, git);
 
         // Owner email (author of branch tip commit)
         let owner_email = if !entry.is_detached {
@@ -817,6 +886,7 @@ pub fn collect_worktree_info(
             remote_ahead,
             remote_behind,
             last_commit_timestamp,
+            last_commit_hash,
             last_commit_subject,
             branch_creation_timestamp,
             base_lines_inserted,
@@ -876,8 +946,8 @@ pub fn collect_branch_info(
                 None => (None, None),
             };
 
-            let (last_commit_timestamp, last_commit_subject) =
-                get_last_commit_info_for_ref(branch, cwd);
+            let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
+                get_commit_metadata_for_ref_dispatched(branch, cwd, git);
 
             let owner_email = get_author_email_for_ref(branch, cwd);
 
@@ -918,6 +988,7 @@ pub fn collect_branch_info(
                 remote_ahead,
                 remote_behind,
                 last_commit_timestamp,
+                last_commit_hash,
                 last_commit_subject,
                 branch_creation_timestamp,
                 base_lines_inserted,
@@ -966,8 +1037,8 @@ pub fn collect_branch_info(
                 None => (None, None),
             };
 
-            let (last_commit_timestamp, last_commit_subject) =
-                get_last_commit_info_for_ref(remote_branch, cwd);
+            let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
+                get_commit_metadata_for_ref_dispatched(remote_branch, cwd, git);
 
             let owner_email = get_author_email_for_ref(remote_branch, cwd);
 
@@ -995,6 +1066,7 @@ pub fn collect_branch_info(
                 remote_ahead: None,
                 remote_behind: None,
                 last_commit_timestamp,
+                last_commit_hash,
                 last_commit_subject,
                 branch_creation_timestamp: None,
                 base_lines_inserted,

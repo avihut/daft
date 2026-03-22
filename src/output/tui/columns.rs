@@ -26,7 +26,9 @@ pub enum Column {
     Age,
     /// Branch owner (from git author email). Priority 8.
     Owner,
-    /// Last commit subject. Priority 9.
+    /// Abbreviated commit hash (7 chars). Priority 9.
+    Hash,
+    /// Last commit subject. Priority 10.
     LastCommit,
 }
 
@@ -44,7 +46,8 @@ impl Column {
             Self::Remote => 7,
             Self::Age => 8,
             Self::Owner => 9,
-            Self::LastCommit => 10,
+            Self::Hash => 10,
+            Self::LastCommit => 11,
         }
     }
 
@@ -61,6 +64,7 @@ impl Column {
             Self::Remote => "Remote",
             Self::Age => "Age",
             Self::Owner => "Owner",
+            Self::Hash => "Hash",
             Self::LastCommit => "Commit",
         }
     }
@@ -77,6 +81,7 @@ impl Column {
             ListColumn::Remote => Column::Remote,
             ListColumn::Age => Column::Age,
             ListColumn::Owner => Column::Owner,
+            ListColumn::Hash => Column::Hash,
             ListColumn::LastCommit => Column::LastCommit,
         }
     }
@@ -96,6 +101,7 @@ impl Column {
             Self::Remote => Some(ListColumn::Remote),
             Self::Age => Some(ListColumn::Age),
             Self::Owner => Some(ListColumn::Owner),
+            Self::Hash => Some(ListColumn::Hash),
             Self::LastCommit => Some(ListColumn::LastCommit),
         }
     }
@@ -113,6 +119,7 @@ pub(super) const ALL_COLUMNS: &[Column] = &[
     Column::Remote,
     Column::Age,
     Column::Owner,
+    Column::Hash,
     Column::LastCommit,
 ];
 
@@ -184,6 +191,7 @@ pub(super) fn column_content_width(
             Column::Remote => v.remote.len() as u16,
             Column::Age => v.branch_age.len() as u16,
             Column::Owner => v.owner.len() as u16,
+            Column::Hash => 7,
             Column::LastCommit => LAST_COMMIT_MIN,
         })
         .max()

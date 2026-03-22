@@ -79,7 +79,7 @@ Use --sort to control the sort order. Prefix with + for ascending (default) or
   Sort by owner then size:    --sort +owner,-size
   Most recent activity first: --sort -activity
 
-Sortable columns: branch, path, size, age, owner, activity, commit (alias:
+Sortable columns: branch, path, size, age, owner, hash, activity, commit (alias:
 last-commit). activity considers both commits and uncommitted file changes;
 commit sorts by last commit time only. You can sort by columns not shown in
 the output (e.g. --sort -size without --columns +size). Defaults can be set
@@ -122,13 +122,13 @@ pub struct Args {
 
     #[arg(
         long,
-        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col"
+        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit"
     )]
     columns: Option<String>,
 
     #[arg(
         long,
-        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, activity, commit"
+        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit"
     )]
     sort: Option<String>,
 }
@@ -153,6 +153,8 @@ struct TableRow {
     branch_age: String,
     /// Branch owner (git author email).
     owner: String,
+    /// Abbreviated commit hash (7 chars).
+    hash: String,
     /// Last commit: shorthand age + subject combined.
     last_commit: String,
 }
@@ -395,6 +397,10 @@ fn print_json(
                 obj.insert("owner".into(), serde_json::json!(info.owner_email));
             }
 
+            if selected_columns.contains(&ListColumn::Hash) {
+                obj.insert("hash".into(), serde_json::json!(info.last_commit_hash));
+            }
+
             if is_default_columns || selected_columns.contains(&ListColumn::LastCommit) {
                 let last_commit_age = info
                     .last_commit_timestamp
@@ -633,6 +639,11 @@ fn print_table(
                     } else {
                         styles::dim(&vals.owner)
                     },
+                    hash: if vals.hash.is_empty() {
+                        vals.hash.clone()
+                    } else {
+                        styles::dim(&vals.hash)
+                    },
                     last_commit: if last_commit.is_empty() {
                         last_commit
                     } else {
@@ -650,6 +661,7 @@ fn print_table(
                     remote,
                     branch_age,
                     owner: vals.owner.clone(),
+                    hash: vals.hash.clone(),
                     last_commit,
                 }
             }
@@ -672,6 +684,7 @@ fn print_table(
                 ListColumn::Remote => "Remote",
                 ListColumn::Age => "Age",
                 ListColumn::Owner => "Owner",
+                ListColumn::Hash => "Hash",
                 ListColumn::LastCommit => "Commit",
                 ListColumn::Annotation => unreachable!(),
             };
@@ -733,6 +746,7 @@ fn print_table(
                 ListColumn::Remote => row.remote.as_str(),
                 ListColumn::Age => row.branch_age.as_str(),
                 ListColumn::Owner => row.owner.as_str(),
+                ListColumn::Hash => row.hash.as_str(),
                 ListColumn::LastCommit => row.last_commit.as_str(),
                 ListColumn::Annotation => unreachable!(),
             })

@@ -62,6 +62,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            'remote:Ahead/behind remote'\n");
         output.push_str("            'age:Branch age'\n");
         output.push_str("            'owner:Branch owner'\n");
+        output.push_str("            'hash:Commit hash'\n");
         output.push_str("            'last-commit:Last commit'\n");
         output.push_str("            '+annotation:Add annotation markers'\n");
         output.push_str("            '+branch:Add branch name'\n");
@@ -72,6 +73,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            '+remote:Add ahead/behind remote'\n");
         output.push_str("            '+age:Add branch age'\n");
         output.push_str("            '+owner:Add branch owner'\n");
+        output.push_str("            '+hash:Add commit hash'\n");
         output.push_str("            '+last-commit:Add last commit'\n");
         output.push_str("            '-annotation:Remove annotation markers'\n");
         output.push_str("            '-branch:Remove branch name'\n");
@@ -82,6 +84,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            '-remote:Remove ahead/behind remote'\n");
         output.push_str("            '-age:Remove branch age'\n");
         output.push_str("            '-owner:Remove branch owner'\n");
+        output.push_str("            '-hash:Remove commit hash'\n");
         output.push_str("            '-last-commit:Remove last commit'\n");
         output.push_str("        )\n");
         output.push_str("        _describe 'column' column_values\n");
@@ -100,6 +103,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            'remote:Sort by total remote divergence'\n");
         output.push_str("            'age:Sort by branch age'\n");
         output.push_str("            'owner:Sort by branch owner'\n");
+        output.push_str("            'hash:Sort by commit hash'\n");
         output
             .push_str("            'activity:Sort by overall activity (commits + uncommitted)'\n");
         output.push_str("            'commit:Sort by last commit time only'\n");
@@ -111,6 +115,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            '+remote:Sort by total remote divergence ascending'\n");
         output.push_str("            '+age:Sort by branch age ascending'\n");
         output.push_str("            '+owner:Sort by branch owner ascending'\n");
+        output.push_str("            '+hash:Sort by commit hash ascending'\n");
         output.push_str("            '+activity:Sort by overall activity ascending'\n");
         output.push_str("            '+commit:Sort by last commit time ascending'\n");
         output.push_str("            '-branch:Sort by branch name descending'\n");
@@ -121,6 +126,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            '-remote:Sort by total remote divergence descending'\n");
         output.push_str("            '-age:Sort by branch age descending'\n");
         output.push_str("            '-owner:Sort by branch owner descending'\n");
+        output.push_str("            '-hash:Sort by commit hash descending'\n");
         output.push_str("            '-activity:Sort by overall activity descending'\n");
         output.push_str("            '-commit:Sort by last commit time descending'\n");
         output.push_str("        )\n");

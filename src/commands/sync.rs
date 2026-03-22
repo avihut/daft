@@ -173,13 +173,13 @@ pub struct Args {
 
     #[arg(
         long,
-        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col"
+        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit"
     )]
     columns: Option<String>,
 
     #[arg(
         long,
-        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, activity, commit"
+        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit"
     )]
     sort: Option<String>,
 }
@@ -744,7 +744,13 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         let updated = if status == TaskStatus::Succeeded {
                             orch_info_map.get(branch_name.as_str()).map(|info| {
                                 let mut refreshed = info.clone();
-                                refreshed.refresh_dynamic_fields(&orch_base_branch, orch_stat);
+                                let git = GitCommand::new(false)
+                                    .with_gitoxide(orch_settings.use_gitoxide);
+                                refreshed.refresh_dynamic_fields(
+                                    &orch_base_branch,
+                                    orch_stat,
+                                    &git,
+                                );
                                 Box::new(refreshed)
                             })
                         } else {
@@ -769,7 +775,13 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         {
                             orch_info_map.get(branch_name.as_str()).map(|info| {
                                 let mut refreshed = info.clone();
-                                refreshed.refresh_dynamic_fields(&orch_base_branch, orch_stat);
+                                let git = GitCommand::new(false)
+                                    .with_gitoxide(orch_settings.use_gitoxide);
+                                refreshed.refresh_dynamic_fields(
+                                    &orch_base_branch,
+                                    orch_stat,
+                                    &git,
+                                );
                                 Box::new(refreshed)
                             })
                         } else {
@@ -789,7 +801,13 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         let updated = if status == TaskStatus::Succeeded {
                             orch_info_map.get(branch_name.as_str()).map(|info| {
                                 let mut refreshed = info.clone();
-                                refreshed.refresh_dynamic_fields(&orch_base_branch, orch_stat);
+                                let git = GitCommand::new(false)
+                                    .with_gitoxide(orch_settings.use_gitoxide);
+                                refreshed.refresh_dynamic_fields(
+                                    &orch_base_branch,
+                                    orch_stat,
+                                    &git,
+                                );
                                 Box::new(refreshed)
                             })
                         } else {
