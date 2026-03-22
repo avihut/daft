@@ -336,7 +336,7 @@ fn get_last_commit_info(worktree_path: &Path) -> (Option<i64>, Option<String>, S
             let ts_str = parts.next().unwrap_or("");
             let hash_str = parts.next().unwrap_or("");
             let subject = parts.next().unwrap_or("");
-            if ts_str.is_empty() && hash_str.is_empty() {
+            if ts_str.is_empty() {
                 (None, None, String::new())
             } else {
                 let timestamp = ts_str.parse::<i64>().ok();
@@ -373,7 +373,7 @@ fn get_last_commit_info_for_ref(
             let ts_str = parts.next().unwrap_or("");
             let hash_str = parts.next().unwrap_or("");
             let subject = parts.next().unwrap_or("");
-            if ts_str.is_empty() && hash_str.is_empty() {
+            if ts_str.is_empty() {
                 (None, None, String::new())
             } else {
                 let timestamp = ts_str.parse::<i64>().ok();
