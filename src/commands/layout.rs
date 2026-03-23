@@ -733,10 +733,9 @@ fn revert_layout_gitignore(
     }
 }
 
-/// Relocate linked worktrees to match the target layout template.
-///
-/// Parses `git worktree list --porcelain`, computes the expected path for
-/// each worktree using the target layout, and moves any that are out of place.
+/// Legacy worktree relocation (superseded by the plan-based transform engine).
+/// Kept for reference during transition; no active callers.
+#[allow(dead_code)]
 /// Skips the bare root entry, detached HEAD worktrees, and any branch in
 /// `skip_branches` (used to preserve the default branch for eject).
 fn relocate_worktrees(
@@ -855,10 +854,8 @@ fn relocate_worktrees(
     Ok(())
 }
 
-/// Public entry point for worktree relocation (used by post-clone reconciliation).
-///
-/// Thin wrapper around the internal `relocate_worktrees` that accepts `Output`
-/// so callers outside this module can use it.
+/// Legacy public entry point — no active callers.
+#[allow(dead_code)]
 pub fn relocate_worktrees_public(
     target_layout: &Layout,
     git: &GitCommand,
@@ -885,54 +882,4 @@ fn cleanup_empty_parents(mut dir: &std::path::Path, stop: &std::path::Path) -> R
         }
     }
     Ok(())
-}
-
-/// Convert non-bare -> bare using the layout transform module.
-#[allow(dead_code)]
-fn transform_to_bare(settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
-    let params = transform::ConvertToBareParams {
-        use_gitoxide: settings.use_gitoxide,
-    };
-
-    output.start_spinner("Converting to bare (worktree) layout...");
-    let exec_result = {
-        let mut sink = OutputSink(output);
-        transform::convert_to_bare(&params, &mut sink)
-    };
-    output.finish_spinner();
-    let result = exec_result?;
-
-    output.step(&format!(
-        "Converted to worktree layout: '{}/{}'",
-        result.repo_display_name, result.current_branch
-    ));
-
-    Ok(())
-}
-
-/// Collapse a bare repo to non-bare, keeping linked worktrees (for layout transform).
-#[allow(dead_code)]
-fn collapse_bare_to_non_bare(
-    settings: &DaftSettings,
-    output: &mut dyn Output,
-) -> Result<transform::CollapseBareResult> {
-    let params = transform::CollapseBareParams {
-        use_gitoxide: settings.use_gitoxide,
-        remote_name: settings.remote.clone(),
-    };
-
-    output.start_spinner("Converting bare repository to non-bare...");
-    let exec_result = {
-        let mut sink = OutputSink(output);
-        transform::collapse_bare_to_non_bare(&params, &mut sink)
-    };
-    output.finish_spinner();
-    let result = exec_result?;
-
-    output.step(&format!(
-        "Converted to non-bare on branch '{}'",
-        result.default_branch
-    ));
-
-    Ok(result)
 }

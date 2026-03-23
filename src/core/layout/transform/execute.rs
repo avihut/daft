@@ -365,27 +365,99 @@ fn exec_init_worktree_index(path: &Path, progress: &mut dyn ProgressSink) -> Res
 }
 
 fn exec_validate_integrity(progress: &mut dyn ProgressSink) -> Result<()> {
-    let output = Command::new("git").args(["status", "--porcelain"]).output();
+    let mut errors: Vec<String> = Vec::new();
 
-    match output {
-        Ok(result) if result.status.success() => {
-            progress.on_step("Integrity check passed");
-        }
+    // 1. Run git fsck to check repository integrity
+    progress.on_step("Running git fsck...");
+    match Command::new("git").args(["fsck", "--no-dangling"]).output() {
+        Ok(result) if result.status.success() => {}
         Ok(result) => {
             let stderr = String::from_utf8_lossy(&result.stderr);
-            progress.on_warning(&format!(
-                "Integrity check warning: git status returned non-zero: {}",
-                stderr.trim()
-            ));
+            let msg = stderr.trim();
+            if !msg.is_empty() {
+                errors.push(format!("git fsck: {msg}"));
+            }
         }
         Err(e) => {
-            progress.on_warning(&format!(
-                "Integrity check warning: could not run git status: {e}"
-            ));
+            progress.on_warning(&format!("Could not run git fsck: {e}"));
         }
     }
 
-    Ok(())
+    // 2. Check each worktree for unexpected dirty state
+    progress.on_step("Verifying worktree state...");
+    match Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+    {
+        Ok(result) if result.status.success() => {
+            let porcelain = String::from_utf8_lossy(&result.stdout);
+            let mut current_path: Option<String> = None;
+            let mut is_bare = false;
+
+            for line in porcelain.lines() {
+                if let Some(path) = line.strip_prefix("worktree ") {
+                    current_path = Some(path.to_string());
+                    is_bare = false;
+                } else if line == "bare" {
+                    is_bare = true;
+                } else if line.is_empty() {
+                    // Check non-bare worktrees for dirty state
+                    if let Some(ref path) = current_path {
+                        if !is_bare {
+                            if let Ok(status) = Command::new("git")
+                                .args(["status", "--porcelain"])
+                                .current_dir(path)
+                                .output()
+                            {
+                                if status.status.success() {
+                                    let out = String::from_utf8_lossy(&status.stdout);
+                                    // Filter out layout artifacts (.gitignore,
+                                    // .worktrees/) that are cleaned up after the
+                                    // transform completes.
+                                    let real_changes = out
+                                        .lines()
+                                        .filter(|l| !l.is_empty())
+                                        .filter(|l| {
+                                            let path_part = if l.len() > 3 { &l[3..] } else { l };
+                                            !path_part.starts_with(".gitignore")
+                                                && !path_part.starts_with(".worktrees/")
+                                                && !path_part.starts_with(".worktrees")
+                                        })
+                                        .count();
+                                    if real_changes > 0 {
+                                        errors.push(format!(
+                                            "Worktree at {} has unexpected dirty state",
+                                            path
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    current_path = None;
+                    is_bare = false;
+                }
+            }
+        }
+        _ => {
+            progress.on_warning("Could not verify worktree states");
+        }
+    }
+
+    if errors.is_empty() {
+        progress.on_step("Integrity check passed");
+        Ok(())
+    } else {
+        for err in &errors {
+            progress.on_warning(&format!("Integrity issue: {err}"));
+        }
+        anyhow::bail!(
+            "Transform completed but integrity check found {} issue{}. \
+             The repository may need manual inspection.",
+            errors.len(),
+            if errors.len() == 1 { "" } else { "s" }
+        )
+    }
 }
 
 // ── Gitdir fixup ───────────────────────────────────────────────────────────
