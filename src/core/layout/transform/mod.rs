@@ -7,6 +7,7 @@
 pub mod execute;
 pub mod legacy;
 pub mod plan;
+pub mod print;
 pub mod state;
 
 // Re-export legacy items that are still used by adopt/eject and other callers
@@ -17,6 +18,8 @@ pub use legacy::{
 };
 
 pub use execute::{describe_op, execute_plan, ExecuteResult};
+
+pub use print::print_plan;
 
 pub use plan::{build_plan, classify_worktrees, TransformOp, TransformPlan};
 
