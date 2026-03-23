@@ -328,6 +328,15 @@ pub fn detect_layout_from_porcelain(
 ///    `wrapper/<branch>/.git`).
 pub fn detect_layout(git_common_dir: &Path, global_config: &GlobalConfig) -> DetectionResult {
     use crate::git::GitCommand;
+    use crate::settings::DaftSettings;
+
+    // Skip detection for multi-remote repos — template matching doesn't
+    // account for the extra remote-name path component.
+    if let Ok(settings) = DaftSettings::load_global() {
+        if settings.multi_remote_enabled {
+            return DetectionResult::NoMatch;
+        }
+    }
 
     let git = GitCommand::new(true);
 
