@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use super::{BuiltinLayout, Layout};
+use crate::core::global_config::GlobalConfig;
 use crate::core::layout::resolver::DetectionResult;
 use crate::core::layout::template::{render, resolve_path};
 use crate::core::multi_remote::path::build_template_context;
@@ -271,6 +272,115 @@ pub fn detect_structure_with_worktrees_dir(
 
     // Step 5: No structural signals — plain git clone.
     DetectionResult::NoWorktrees
+}
+
+/// Detect the layout for a repository given the raw porcelain output.
+///
+/// This is the testable entry point — it accepts already-fetched porcelain
+/// text instead of running `git` live.
+///
+/// Detection order:
+/// 1. Parse worktrees from porcelain. If no linked worktrees with branches
+///    exist → `NoWorktrees`.
+/// 2. Build candidate list: builtins + custom layouts from `global_config`.
+/// 3. Try template matching against linked worktrees.
+/// 4. If template matching doesn't detect → fall back to structural detection.
+pub fn detect_layout_from_porcelain(
+    porcelain: &str,
+    git_common_dir: &Path,
+    project_root: &Path,
+    is_bare: bool,
+    global_config: &GlobalConfig,
+) -> DetectionResult {
+    let worktrees = parse_worktree_list(porcelain);
+
+    // If there are no linked worktrees with branches, skip template matching.
+    let has_linked = worktrees.iter().any(|w| !w.is_main && w.branch.is_some());
+    if !has_linked {
+        // No linked worktrees — fall back to structural detection.
+        return detect_structure(git_common_dir, project_root, is_bare, &worktrees);
+    }
+
+    // Build candidate list: builtins first, then custom layouts.
+    let mut candidates: Vec<Layout> = BuiltinLayout::all().iter().map(|b| b.to_layout()).collect();
+    candidates.extend(global_config.custom_layouts());
+
+    // Try template matching.
+    let template_result = match_templates(&worktrees, project_root, is_bare, &candidates);
+
+    match template_result {
+        DetectionResult::Detected(_) => template_result,
+        _ => detect_structure(git_common_dir, project_root, is_bare, &worktrees),
+    }
+}
+
+/// Detect the layout for the repository rooted at `git_common_dir` by
+/// running live git commands.
+///
+/// Detection order:
+/// 1. Read `core.bare` via git config.
+/// 2. Derive `project_root` as `git_common_dir.parent()`.
+/// 3. Fetch the worktree list via `git worktree list --porcelain`.
+/// 4. Try `detect_layout_from_porcelain` with the direct parent as
+///    `project_root`.
+/// 5. If no match and non-bare, retry with the grandparent as
+///    `project_root` (contained-classic case where `.git` lives at
+///    `wrapper/<branch>/.git`).
+pub fn detect_layout(git_common_dir: &Path, global_config: &GlobalConfig) -> DetectionResult {
+    use crate::git::GitCommand;
+
+    let git = GitCommand::new(true);
+
+    let is_bare = git
+        .config_get("core.bare")
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
+    let porcelain = match git.worktree_list_porcelain() {
+        Ok(p) => p,
+        Err(_) => return DetectionResult::NoWorktrees,
+    };
+
+    // Primary project_root: direct parent of git_common_dir.
+    let project_root = match git_common_dir.parent() {
+        Some(p) => p.to_path_buf(),
+        None => return DetectionResult::NoWorktrees,
+    };
+
+    let result = detect_layout_from_porcelain(
+        &porcelain,
+        git_common_dir,
+        &project_root,
+        is_bare,
+        global_config,
+    );
+
+    // For non-bare repos, retry with the grandparent when no match was found.
+    // This handles the contained-classic case where .git is at
+    // <wrapper>/<branch>/.git, making the effective project_root <wrapper>.
+    if !is_bare
+        && matches!(
+            result,
+            DetectionResult::NoWorktrees | DetectionResult::NoMatch
+        )
+    {
+        if let Some(grandparent) = project_root.parent() {
+            let retry = detect_layout_from_porcelain(
+                &porcelain,
+                git_common_dir,
+                grandparent,
+                is_bare,
+                global_config,
+            );
+            if matches!(retry, DetectionResult::Detected(_)) {
+                return retry;
+            }
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -591,5 +701,36 @@ branch refs/heads/develop
             matches!(result, DetectionResult::NoWorktrees),
             "Expected NoWorktrees for plain git clone, got {result:?}"
         );
+    }
+
+    // ── detect_layout_from_porcelain tests ───────────────────────────────────
+
+    #[test]
+    fn test_detect_layout_sibling_from_porcelain() {
+        let porcelain = "worktree /home/user/myproject\nbranch refs/heads/main\n\nworktree /home/user/myproject.develop\nbranch refs/heads/develop\n\n";
+        let result = detect_layout_from_porcelain(
+            porcelain,
+            Path::new("/home/user/myproject/.git"),
+            Path::new("/home/user/myproject"),
+            false,
+            &GlobalConfig::default(),
+        );
+        match result {
+            DetectionResult::Detected(layout) => assert_eq!(layout.name, "sibling"),
+            other => panic!("Expected Detected(sibling), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_layout_plain_clone_no_worktrees() {
+        let porcelain = "worktree /home/user/myproject\nbranch refs/heads/main\n\n";
+        let result = detect_layout_from_porcelain(
+            porcelain,
+            Path::new("/home/user/myproject/.git"),
+            Path::new("/home/user/myproject"),
+            false,
+            &GlobalConfig::default(),
+        );
+        assert!(matches!(result, DetectionResult::NoWorktrees));
     }
 }

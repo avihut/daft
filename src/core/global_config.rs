@@ -148,6 +148,18 @@ impl GlobalConfig {
             .with_context(|| format!("Failed to write config to {}", path.display()))
     }
 
+    /// Returns all custom layouts defined in `[layouts.*]` config sections.
+    pub fn custom_layouts(&self) -> Vec<Layout> {
+        self.layouts
+            .iter()
+            .map(|(name, def)| Layout {
+                name: name.clone(),
+                template: def.template.clone(),
+                bare: def.bare,
+            })
+            .collect()
+    }
+
     /// Get the default layout, if configured.
     pub fn default_layout(&self) -> Option<Layout> {
         let name = self.defaults.layout.as_deref()?;
