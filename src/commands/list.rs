@@ -145,7 +145,7 @@ struct TableRow {
     size: String,
     /// Ahead/behind base branch (e.g. "+3 -1").
     base: String,
-    /// Worktrunk-style status indicators (e.g. "+3 -2 ?1").
+    /// Status indicators (e.g. "+3 -2 ?1").
     head: String,
     /// Ahead/behind remote tracking branch (e.g. "⇡1 ⇣2").
     remote: String,

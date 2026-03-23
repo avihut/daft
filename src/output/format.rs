@@ -37,7 +37,7 @@ pub fn format_ahead_behind(ahead: Option<usize>, behind: Option<usize>, use_colo
     parts.join(" ")
 }
 
-/// Format head status using worktrunk-style indicators: `+` staged, `-` unstaged, `?` untracked.
+/// Format head status indicators: `+` staged, `-` unstaged, `?` untracked.
 pub fn format_head_status(
     staged: usize,
     unstaged: usize,
