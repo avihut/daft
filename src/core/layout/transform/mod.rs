@@ -4,6 +4,7 @@
 //! current repository layout state against a target layout. Operations are
 //! sequenced via path-conflict analysis and executed with rollback support.
 
+pub mod execute;
 pub mod legacy;
 pub mod plan;
 pub mod state;
@@ -14,6 +15,8 @@ pub use legacy::{
     parse_worktrees, CollapseBareParams, CollapseBareResult, ConvertToBareParams,
     ConvertToBareResult, ConvertToNonBareParams, ConvertToNonBareResult, WorktreeInfo,
 };
+
+pub use execute::{describe_op, execute_plan, ExecuteResult};
 
 pub use plan::{build_plan, classify_worktrees, TransformOp, TransformPlan};
 

@@ -672,7 +672,7 @@ fn move_files_to_worktree(
 }
 
 /// Register the worktree with git's worktree tracking.
-fn register_worktree(
+pub(crate) fn register_worktree(
     git_dir: &Path,
     worktree_path: &Path,
     current_branch: &str,
