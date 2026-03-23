@@ -23,7 +23,7 @@ steps:
         - dir: "$WORK_DIR/test-repo/main"
           branch: main
 
-  - name: Checkout develop branch
+  - name: Checkout existing branch
     run: git-worktree-checkout develop
     cwd: "$WORK_DIR/test-repo/main"
     expect:
@@ -33,3 +33,14 @@ steps:
       is_git_worktree:
         - dir: "$WORK_DIR/test-repo/develop"
           branch: develop
+
+  - name: Start new branch (daft start)
+    run: git-worktree-checkout --start my-feature
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/my-feature"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/my-feature"
+          branch: my-feature
