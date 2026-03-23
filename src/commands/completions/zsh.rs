@@ -384,6 +384,18 @@ _daft() {
                 __git_worktree_prune_impl
                 return
                 ;;
+            clone)
+                words=("git-worktree-clone" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __git_worktree_clone_impl
+                return
+                ;;
+            init)
+                words=("git-worktree-init" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __git_worktree_init_impl
+                return
+                ;;
         esac
     fi
 

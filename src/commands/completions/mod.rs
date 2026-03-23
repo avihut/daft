@@ -34,6 +34,8 @@ pub(super) const VERB_ALIAS_GROUPS: &[(&[&str], &str)] = &[
     (&["sync"], "git-worktree-sync"),
     (&["list"], "git-worktree-list"),
     (&["prune"], "git-worktree-prune"),
+    (&["clone"], "git-worktree-clone"),
+    (&["init"], "git-worktree-init"),
 ];
 
 /// Available daft commands that need completion scripts

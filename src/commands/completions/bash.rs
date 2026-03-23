@@ -304,6 +304,18 @@ _daft() {
                 _git_worktree_prune
                 return 0
                 ;;
+            clone)
+                COMP_WORDS=("git-worktree-clone" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _git_worktree_clone
+                return 0
+                ;;
+            init)
+                COMP_WORDS=("git-worktree-init" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _git_worktree_init
+                return 0
+                ;;
         esac
     fi
 
