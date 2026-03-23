@@ -13,3 +13,9 @@ pub use legacy::{
     parse_worktrees, CollapseBareParams, CollapseBareResult, ConvertToBareParams,
     ConvertToBareResult, ConvertToNonBareParams, ConvertToNonBareResult, WorktreeInfo,
 };
+
+pub use state::{
+    compute_target_git_dir, compute_target_state, compute_target_worktree_path,
+    parse_porcelain_to_entries, read_source_state, ClassifiedWorktree, LayoutState,
+    WorktreeDisposition, WorktreeEntry,
+};
