@@ -282,9 +282,28 @@ _daft() {
         return
     fi
 
-    # layout: complete subcommands
-    if (( CURRENT == 3 )) && [[ "$words[2]" == "layout" ]]; then
-        compadd default list show transform
+    # layout: complete subcommands and arguments
+    if (( CURRENT >= 3 )) && [[ "$words[2]" == "layout" ]]; then
+        if (( CURRENT == 3 )); then
+            compadd default list show transform
+            return
+        fi
+        case "$words[3]" in
+            transform|default)
+                if [[ "$curword" == -* ]]; then
+                    if [[ "$words[3]" == "transform" ]]; then
+                        compadd -- --force -f -h --help
+                    else
+                        compadd -- --reset -h --help
+                    fi
+                    return
+                fi
+                local -a layouts
+                layouts=("${(@f)$(daft __complete layout-$words[3] "$curword" 2>/dev/null)}")
+                _describe 'layout' layouts
+                return
+                ;;
+        esac
         return
     fi
 

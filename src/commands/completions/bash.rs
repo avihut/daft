@@ -201,9 +201,28 @@ _daft() {
         return 0
     fi
 
-    # layout: complete subcommands
-    if [[ $cword -eq 2 && "${words[1]}" == "layout" ]]; then
-        COMPREPLY=( $(compgen -W "default list show transform" -- "$cur") )
+    # layout: complete subcommands and arguments
+    if [[ $cword -ge 2 && "${words[1]}" == "layout" ]]; then
+        if [[ $cword -eq 2 ]]; then
+            COMPREPLY=( $(compgen -W "default list show transform" -- "$cur") )
+            return 0
+        fi
+        case "${words[2]}" in
+            transform|default)
+                if [[ "$cur" == -* ]]; then
+                    if [[ "${words[2]}" == "transform" ]]; then
+                        COMPREPLY=( $(compgen -W "--force -f -h --help" -- "$cur") )
+                    else
+                        COMPREPLY=( $(compgen -W "--reset -h --help" -- "$cur") )
+                    fi
+                    return 0
+                fi
+                local layouts
+                layouts=$(daft __complete layout-"${words[2]}" "$cur" 2>/dev/null | cut -f1)
+                COMPREPLY=( $(compgen -W "$layouts" -- "$cur") )
+                return 0
+                ;;
+        esac
         return 0
     fi
 
