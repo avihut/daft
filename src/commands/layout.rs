@@ -568,8 +568,10 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
 
     // Auto-add .gitignore entries if the target layout places worktrees
     // inside the repo (e.g. nested → .worktrees/). Only relevant for non-bare
-    // layouts since bare repos don't have a working tree to conflict with.
-    if !target_layout.needs_bare() {
+    // layouts that aren't wrapped. Bare repos don't have a working tree to
+    // conflict with, and wrapped layouts (contained-classic) place worktrees
+    // at the wrapper level, not inside the working tree.
+    if !target_layout.needs_bare() && !target_layout.needs_wrapper() {
         let project_root = crate::get_project_root()?;
         // Compute a sample worktree path to derive the gitignore pattern
         let ctx = crate::core::multi_remote::path::build_template_context(&project_root, "sample");
