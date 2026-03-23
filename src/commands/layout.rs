@@ -443,16 +443,21 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     let classified =
         transform::classify_worktrees(&source, &target, &args.include, args.include_all);
 
-    // Check for dirty worktrees (unless --force)
+    // Check for dirty worktrees (unless --force).
+    // Only check the default branch worktree (the repo root for non-bare
+    // layouts). Non-default worktrees are linked worktrees that git manages
+    // independently — their dirty state is preserved via stash ops.
+    // Layout artifacts (.gitignore with auto-added patterns, worktree
+    // directories managed by the layout) are excluded from the check.
     if !args.force {
         let prev_dir = get_current_directory()?;
         for cw in &classified {
-            if cw.disposition == transform::WorktreeDisposition::NonConforming {
+            if cw.disposition != transform::WorktreeDisposition::DefaultBranch {
                 continue;
             }
             if cw.current_path.exists() {
                 change_directory(&cw.current_path)?;
-                if git.has_uncommitted_changes()? {
+                if has_real_uncommitted_changes(&git, &source)? {
                     change_directory(&prev_dir)?;
                     anyhow::bail!(
                         "Worktree '{}' has uncommitted changes. Commit, stash, or use --force.",
@@ -539,6 +544,11 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         crate::utils::change_directory(&source.project_root)?;
     }
 
+    // Clean up layout artifacts from the source layout (e.g., .gitignore
+    // entries auto-added by nested). Must happen after worktrees are moved
+    // so that .worktrees/ is empty and can be ignored.
+    revert_layout_gitignore(&source, &git, output);
+
     // Auto-add .gitignore entries if the target layout places worktrees
     // inside the repo (e.g. nested → .worktrees/). Only relevant for non-bare
     // layouts since bare repos don't have a working tree to conflict with.
@@ -573,6 +583,137 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     output.result(&format!("Transformed to layout '{}'.", target_layout.name));
 
     Ok(())
+}
+
+/// Check for uncommitted changes, ignoring layout artifacts.
+///
+/// Layout artifacts are: auto-generated .gitignore entries and worktree
+/// directories managed by the layout system (e.g., `.worktrees/` for nested).
+/// These would show up as untracked files but are not real user changes.
+fn has_real_uncommitted_changes(
+    _git: &GitCommand,
+    source: &transform::LayoutState,
+) -> Result<bool> {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .context("Failed to execute git status")?;
+
+    if !output.status.success() {
+        return Ok(false);
+    }
+
+    let status = String::from_utf8_lossy(&output.stdout);
+
+    // Compute layout artifact paths to ignore
+    let mut ignore_patterns: Vec<String> = Vec::new();
+    ignore_patterns.push(".gitignore".to_string());
+
+    // Worktree parent directories (e.g., .worktrees/ for nested)
+    for wt in &source.worktrees {
+        if wt.is_default {
+            continue;
+        }
+        if let Ok(rel) = wt.path.strip_prefix(&source.project_root) {
+            if let Some(first) = rel.components().next() {
+                let dir_name = first.as_os_str().to_string_lossy();
+                ignore_patterns.push(format!("{dir_name}/"));
+                ignore_patterns.push(dir_name.to_string());
+            }
+        }
+    }
+
+    for line in status.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Porcelain format: "XY path" where XY is 2-char status
+        let path = if line.len() > 3 { &line[3..] } else { line };
+
+        let is_artifact = ignore_patterns.iter().any(|p| path.starts_with(p));
+        if !is_artifact {
+            return Ok(true); // Real change found
+        }
+    }
+
+    Ok(false) // Only artifacts, no real changes
+}
+
+/// Revert layout-specific .gitignore entries that were auto-added by the source
+/// layout (e.g., `.worktrees/` for nested). Removes only the specific pattern,
+/// preserving any user-added entries. If the .gitignore becomes empty, deletes it.
+fn revert_layout_gitignore(
+    source: &transform::LayoutState,
+    _git: &GitCommand,
+    output: &mut dyn Output,
+) {
+    // Only relevant for non-bare source layouts that place worktrees inside
+    // the project root (nested is the main case).
+    let gitignore_path = source.project_root.join(".gitignore");
+    if !gitignore_path.exists() {
+        return;
+    }
+
+    // Compute the auto-gitignore pattern the source layout would have added.
+    // This is the first path component of a worktree path relative to the root.
+    let sample_wt = source.worktrees.iter().find(|wt| !wt.is_default);
+    let pattern = sample_wt.and_then(|wt| {
+        wt.path
+            .strip_prefix(&source.project_root)
+            .ok()
+            .and_then(|rel| rel.components().next())
+            .map(|c| format!("{}/", c.as_os_str().to_string_lossy()))
+    });
+
+    let Some(pattern) = pattern else {
+        return;
+    };
+
+    // Read .gitignore and remove the specific pattern
+    let Ok(contents) = std::fs::read_to_string(&gitignore_path) else {
+        return;
+    };
+
+    let new_contents: String = contents
+        .lines()
+        .filter(|line| line.trim() != pattern.trim())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if new_contents == contents {
+        return; // Pattern wasn't there, nothing to revert
+    }
+
+    let new_contents = new_contents.trim().to_string();
+
+    if new_contents.is_empty() {
+        // File only had the layout pattern — remove it entirely
+        if std::fs::remove_file(&gitignore_path).is_ok() {
+            // If it was tracked, stage the removal
+            let _ = std::process::Command::new("git")
+                .args([
+                    "rm",
+                    "--cached",
+                    "--quiet",
+                    "--ignore-unmatch",
+                    ".gitignore",
+                ])
+                .current_dir(&source.project_root)
+                .output();
+            output.step("Reverted layout-specific .gitignore");
+        }
+    } else {
+        // Write back without the pattern
+        if std::fs::write(&gitignore_path, format!("{new_contents}\n")).is_ok() {
+            // If it was tracked, stage the change
+            let _ = std::process::Command::new("git")
+                .args(["add", "--ignore-errors", ".gitignore"])
+                .current_dir(&source.project_root)
+                .output();
+            output.step("Reverted layout-specific .gitignore entry");
+        }
+    }
 }
 
 /// Relocate linked worktrees to match the target layout template.

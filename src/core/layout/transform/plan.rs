@@ -192,15 +192,24 @@ pub fn build_plan(
                         to: cw.target_path.clone(),
                     };
 
-                    // A worktree needs early vacating if it currently lives
-                    // INSIDE the project root and its target is OUTSIDE (or at
-                    // a different location). This handles contained -> sibling
-                    // where worktrees must leave the wrapper before the default
-                    // branch collapses into the root.
+                    // A worktree needs early vacating if:
+                    // 1. It currently lives INSIDE the project root and its
+                    //    target is OUTSIDE — handles contained→sibling where
+                    //    worktrees must leave the wrapper before collapse.
+                    // 2. The default branch will NestFromRoot (root→subdir),
+                    //    which moves ALL root contents — any worktree inside
+                    //    the root would get swept into the subdir.
                     let currently_inside = is_inside(&cw.current_path, &source.project_root);
                     let target_outside = !is_inside(&cw.target_path, &source.project_root);
+                    let default_is_at_root = source.worktrees.iter().any(|wt| {
+                        wt.is_default && paths_equivalent(&wt.path, &source.project_root)
+                    });
+                    let default_will_nest = default_is_at_root
+                        && target.worktrees.iter().any(|wt| {
+                            wt.is_default && !paths_equivalent(&wt.path, &target.project_root)
+                        });
 
-                    if currently_inside && target_outside {
+                    if currently_inside && (target_outside || default_will_nest) {
                         vacate_ops.push(op);
                     } else {
                         regular_ops.push(op);
