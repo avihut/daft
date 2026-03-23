@@ -1,0 +1,27 @@
+name: Layout show detects sibling layout
+description: >
+  A repo with sibling-pattern worktrees created manually is detected as sibling
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone normally
+    run: git clone $REMOTE_TEST_REPO test-repo
+    expect:
+      exit_code: 0
+
+  - name: Add worktree in sibling pattern
+    run: cd test-repo && git worktree add ../test-repo.develop develop
+    expect:
+      exit_code: 0
+
+  - name: Show layout detects sibling
+    run: NO_COLOR=1 daft layout show 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "sibling"
+        - "detected"

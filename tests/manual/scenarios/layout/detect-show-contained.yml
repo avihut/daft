@@ -1,0 +1,27 @@
+name: Layout show detects contained layout
+description: >
+  daft layout show detects the contained layout on a repo set up without daft's
+  knowledge
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Set up contained repo manually
+    run: |
+      git clone --bare $REMOTE_TEST_REPO test-repo/.git
+      cd test-repo
+      git worktree add main main
+      git worktree add develop develop
+    expect:
+      exit_code: 0
+
+  - name: Show layout detects contained
+    run: NO_COLOR=1 daft layout show 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "contained"
+        - "detected"
