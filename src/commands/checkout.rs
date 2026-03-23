@@ -1,7 +1,10 @@
 use crate::{
     core::{
         global_config::GlobalConfig,
-        layout::resolver::{resolve_layout, LayoutResolutionContext},
+        layout::{
+            resolver::{resolve_layout, LayoutResolutionContext, LayoutSource},
+            BuiltinLayout, Layout,
+        },
         worktree::{checkout, checkout_branch, previous},
         CommandBridge,
     },
@@ -18,6 +21,7 @@ use crate::{
 };
 use anyhow::Result;
 use clap::Parser;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -464,13 +468,13 @@ fn run_go_previous(output: &mut dyn Output) -> Result<()> {
 
 /// Resolve the layout for checkout operations.
 ///
-/// Loads the layout from the config chain: repo store > daft.yml > global config > default.
+/// Loads the layout from the config chain: repo store > daft.yml > global config > detection > default.
 /// Also checks if the resolved layout requires a bare repo and warns if the current repo
 /// is not bare.
 fn resolve_checkout_layout(
     git: &GitCommand,
     output: &mut dyn Output,
-) -> crate::core::layout::Layout {
+) -> (crate::core::layout::Layout, LayoutSource) {
     let global_config = GlobalConfig::load().unwrap_or_default();
     let git_dir = get_git_common_dir().ok();
     let trust_db = TrustDatabase::load().unwrap_or_default();
@@ -485,12 +489,21 @@ fn resolve_checkout_layout(
         .as_ref()
         .and_then(|d| trust_db.get_layout(d).map(String::from));
 
-    let (layout, _source) = resolve_layout(&LayoutResolutionContext {
+    // Run detection when no explicit layout is set.
+    let detection = if repo_store_layout.is_none() && yaml_layout.is_none() {
+        git_dir
+            .as_ref()
+            .map(|d| crate::core::layout::detect::detect_layout(d, &global_config))
+    } else {
+        None
+    };
+
+    let (layout, source) = resolve_layout(&LayoutResolutionContext {
         cli_layout: None, // checkout doesn't have --layout yet
         repo_store_layout: repo_store_layout.as_deref(),
         yaml_layout: yaml_layout.as_deref(),
         global_config: &global_config,
-        detection: None,
+        detection,
     });
 
     // Graceful degradation: warn if layout needs bare but repo is not bare.
@@ -510,7 +523,109 @@ fn resolve_checkout_layout(
         ));
     }
 
-    layout
+    (layout, source)
+}
+
+/// Decide whether to use the resolved layout as-is or to prompt the user.
+///
+/// Returns `(layout, should_persist)`:
+/// - `should_persist` is true when the layout should be saved to the repo store.
+fn interactive_layout_resolution(
+    layout: &Layout,
+    source: LayoutSource,
+    output: &mut dyn Output,
+) -> Result<(Layout, bool)> {
+    let is_testing = std::env::var("DAFT_TESTING").is_ok();
+    let is_interactive = std::io::stdin().is_terminal() && !is_testing;
+
+    match source {
+        // Explicitly configured — use as-is, never persist again.
+        LayoutSource::Cli
+        | LayoutSource::RepoStore
+        | LayoutSource::YamlConfig
+        | LayoutSource::GlobalConfig => Ok((layout.clone(), false)),
+
+        // Detection found a match — ask the user to confirm (interactive only).
+        LayoutSource::Detected => {
+            if !is_interactive {
+                // Non-interactive: use detected layout and persist it.
+                return Ok((layout.clone(), true));
+            }
+
+            output.info(&format!("Detected layout: {}", layout.name));
+
+            let confirmed =
+                dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
+                    .with_prompt("Use this layout?")
+                    .default(true)
+                    .interact()?;
+
+            if confirmed {
+                Ok((layout.clone(), true))
+            } else {
+                let picked = show_layout_picker(Some(layout))?;
+                Ok((picked, true))
+            }
+        }
+
+        // Nothing was detected — check if this is a repo with linked worktrees.
+        LayoutSource::Unresolved => {
+            // Check for linked worktrees (Flow A vs Flow C).
+            let git = GitCommand::new(true);
+            let has_linked_worktrees = git
+                .worktree_list_porcelain()
+                .ok()
+                .map(|porcelain| {
+                    crate::core::layout::detect::parse_worktree_list(&porcelain)
+                        .into_iter()
+                        .any(|w| !w.is_main)
+                })
+                .unwrap_or(false);
+
+            if !has_linked_worktrees {
+                // Flow A: plain git clone — silently use default and persist.
+                return Ok((layout.clone(), true));
+            }
+
+            // Flow C: worktrees exist in an unrecognized arrangement.
+            if !is_interactive {
+                // Non-interactive: use default layout, do not persist.
+                return Ok((layout.clone(), false));
+            }
+
+            output.info("Found worktrees in unrecognized arrangement.");
+            let picked = show_layout_picker(Some(layout))?;
+            Ok((picked, true))
+        }
+    }
+}
+
+/// Show a layout picker and return the selected layout.
+fn show_layout_picker(preselect: Option<&Layout>) -> Result<Layout> {
+    let global_config = GlobalConfig::load().unwrap_or_default();
+
+    // Build list: builtins first, then custom layouts.
+    let mut items: Vec<Layout> = BuiltinLayout::all().iter().map(|b| b.to_layout()).collect();
+    items.extend(global_config.custom_layouts());
+
+    // Format each item as "{name:<20}{template}"
+    let display: Vec<String> = items
+        .iter()
+        .map(|l| format!("{:<20}{}", l.name, l.template))
+        .collect();
+
+    // Pre-select the provided layout, or fall back to index 0.
+    let default_idx = preselect
+        .and_then(|pre| items.iter().position(|l| l.name == pre.name))
+        .unwrap_or(0);
+
+    let selection = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+        .with_prompt("Select a layout")
+        .items(&display)
+        .default(default_idx)
+        .interact()?;
+
+    Ok(items.remove(selection))
 }
 
 /// Returns `Ok(already_existed)` — true if the worktree already existed
@@ -527,7 +642,16 @@ fn run_checkout(
     let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
 
-    let layout = resolve_checkout_layout(&git, output);
+    let (resolved_layout, source) = resolve_checkout_layout(&git, output);
+    let (layout, should_persist) = interactive_layout_resolution(&resolved_layout, source, output)?;
+
+    if should_persist {
+        if let Ok(git_dir) = get_git_common_dir() {
+            let mut trust_db = TrustDatabase::load().unwrap_or_default();
+            trust_db.set_layout(&git_dir, layout.name.clone());
+            let _ = trust_db.save();
+        }
+    }
 
     let params = checkout::CheckoutParams {
         branch_name: args.branch_name.clone(),
@@ -590,7 +714,16 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
     let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
 
-    let layout = resolve_checkout_layout(&git, output);
+    let (resolved_layout, source) = resolve_checkout_layout(&git, output);
+    let (layout, should_persist) = interactive_layout_resolution(&resolved_layout, source, output)?;
+
+    if should_persist {
+        if let Ok(git_dir) = get_git_common_dir() {
+            let mut trust_db = TrustDatabase::load().unwrap_or_default();
+            trust_db.set_layout(&git_dir, layout.name.clone());
+            let _ = trust_db.save();
+        }
+    }
 
     let params = checkout_branch::CheckoutBranchParams {
         new_branch_name: args.branch_name.clone(),
