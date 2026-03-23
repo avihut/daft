@@ -72,6 +72,15 @@ struct TransformArgs {
     /// Force transform even with uncommitted changes
     #[arg(short, long)]
     force: bool,
+    /// Show plan without executing
+    #[arg(long)]
+    dry_run: bool,
+    /// Also relocate this non-conforming worktree (repeatable)
+    #[arg(long = "include", value_name = "BRANCH")]
+    include: Vec<String>,
+    /// Relocate all non-conforming worktrees
+    #[arg(long)]
+    include_all: bool,
 }
 
 #[derive(Args)]
@@ -411,81 +420,123 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         }
     };
 
-    // Use config_get("core.bare") instead of rev_parse_is_bare_repository()
-    // because the latter returns false from inside a linked worktree of a
-    // bare repo — which is where users typically run transform from.
-    let is_currently_bare = git
-        .config_get("core.bare")
-        .ok()
-        .flatten()
-        .is_some_and(|v| v.to_lowercase() == "true");
-    let target_needs_bare = target_layout.needs_bare();
+    // Detect default branch
+    let default_branch = crate::remote::get_default_branch_local(
+        &get_git_common_dir()?,
+        &settings.remote,
+        settings.use_gitoxide,
+    )
+    .unwrap_or_else(|_| "main".to_string());
 
-    // For non-bare → bare: adopt must run from the main working tree (not a
-    // linked worktree) because it reads HEAD to determine which branch's files
-    // to move. CD to the main repo root before running adopt.
-    if !is_currently_bare && target_needs_bare {
-        let git_dir = get_git_common_dir()?;
-        let main_repo_root = git_dir.parent().context("Invalid git directory")?;
-        change_directory(main_repo_root)?;
+    // Read current state
+    let source = transform::read_source_state(&git, &default_branch)?;
+
+    // Compute target state using the project root from source
+    let target = transform::compute_target_state(
+        &target_layout,
+        &source.project_root,
+        &default_branch,
+        &source.worktrees,
+    )?;
+
+    // Classify worktrees
+    let classified =
+        transform::classify_worktrees(&source, &target, &args.include, args.include_all);
+
+    // Check for dirty worktrees (unless --force)
+    if !args.force {
+        let prev_dir = get_current_directory()?;
+        for cw in &classified {
+            if cw.disposition == transform::WorktreeDisposition::NonConforming {
+                continue;
+            }
+            if cw.current_path.exists() {
+                change_directory(&cw.current_path)?;
+                if git.has_uncommitted_changes()? {
+                    change_directory(&prev_dir)?;
+                    anyhow::bail!(
+                        "Worktree '{}' has uncommitted changes. Commit, stash, or use --force.",
+                        cw.branch
+                    );
+                }
+            }
+        }
+        change_directory(&prev_dir)?;
     }
 
-    match (is_currently_bare, target_needs_bare) {
-        // non-bare -> bare (adopt + relocate)
-        (false, true) => {
-            output.step(&format!(
-                "Transforming to layout '{}' (non-bare -> bare)...",
-                target_layout.name
-            ));
-            transform_to_bare(&settings, output)?;
-            relocate_worktrees(&target_layout, &git, output, &[])?;
-        }
-        // bare -> non-bare (relocate non-default worktrees OUT, then collapse)
-        (true, false) => {
-            output.step(&format!(
-                "Transforming to layout '{}' (bare -> non-bare)...",
-                target_layout.name
-            ));
-            // Detect the default branch so we can skip it during relocation.
-            // The collapse step will handle the default branch by moving its
-            // files to the project root.
-            let default_branch = crate::remote::get_default_branch_local(
-                &get_git_common_dir()?,
-                &settings.remote,
-                settings.use_gitoxide,
-            )
-            .unwrap_or_else(|_| "main".to_string());
+    // Build the plan
+    let mut plan = transform::build_plan(&source, &target, &classified, args.force)?;
 
-            // Relocate non-default worktrees FIRST to avoid collisions when
-            // collapsing the default branch's files into the project root.
-            // (e.g., a "test/" dir in the default branch would collide with a
-            // "test/" worktree still sitting at its contained position.)
-            relocate_worktrees(&target_layout, &git, output, &[&default_branch])?;
+    // Insert stash/pop ops for dirty worktrees when --force
+    if args.force {
+        let prev_dir = get_current_directory()?;
+        let mut stash_ops = Vec::new();
+        let mut pop_ops = Vec::new();
+        for cw in &classified {
+            if cw.disposition == transform::WorktreeDisposition::NonConforming {
+                continue;
+            }
+            if cw.current_path.exists() {
+                change_directory(&cw.current_path)?;
+                if git.has_uncommitted_changes()? {
+                    stash_ops.push(transform::TransformOp::StashChanges {
+                        branch: cw.branch.clone(),
+                        worktree_path: cw.current_path.clone(),
+                    });
+                    pop_ops.push(transform::TransformOp::PopStash {
+                        branch: cw.branch.clone(),
+                        worktree_path: cw.target_path.clone(),
+                    });
+                }
+            }
+        }
+        change_directory(&prev_dir)?;
 
-            // Now collapse: moves default branch files to root, converts non-bare.
-            collapse_bare_to_non_bare(&settings, output)?;
+        // Prepend stash ops and append pop ops (before ValidateIntegrity)
+        if !stash_ops.is_empty() {
+            let validate = plan.ops.pop(); // Remove ValidateIntegrity
+            let mut new_ops = stash_ops;
+            new_ops.append(&mut plan.ops);
+            new_ops.append(&mut pop_ops);
+            if let Some(v) = validate {
+                new_ops.push(v);
+            }
+            plan.ops = new_ops;
+        }
+    }
 
-            // Relocate any remaining worktrees (the default branch is now the
-            // main working tree and won't be touched by relocate).
-            let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
-            relocate_worktrees(&target_layout, &git, output, &[])?;
-        }
-        // non-bare -> non-bare (relocate only)
-        (false, false) => {
-            output.step(&format!(
-                "Transforming to layout '{}'...",
-                target_layout.name
-            ));
-            relocate_worktrees(&target_layout, &git, output, &[])?;
-        }
-        // bare -> bare (relocate only)
-        (true, true) => {
-            output.step(&format!(
-                "Transforming to layout '{}'...",
-                target_layout.name
-            ));
-            relocate_worktrees(&target_layout, &git, output, &[])?;
-        }
+    // Dry run: print plan and exit
+    if args.dry_run {
+        transform::print_plan(&plan, output);
+        return Ok(());
+    }
+
+    // Execute
+    output.step(&format!(
+        "Transforming to layout '{}'...",
+        target_layout.name
+    ));
+    output.start_spinner("Transforming layout...");
+    let exec_result = {
+        let mut sink = OutputSink(output);
+        transform::execute_plan(&plan, &git, &mut sink)
+    };
+    output.finish_spinner();
+    exec_result?;
+
+    // After transform, CWD may be in a directory that was moved or removed.
+    // CD to a known-valid location: the target's default branch worktree if
+    // it exists, or the project root.
+    let target_default = target
+        .worktrees
+        .iter()
+        .find(|wt| wt.is_default)
+        .map(|wt| wt.path.clone())
+        .unwrap_or_else(|| source.project_root.clone());
+    if target_default.exists() {
+        crate::utils::change_directory(&target_default)?;
+    } else {
+        crate::utils::change_directory(&source.project_root)?;
     }
 
     // Auto-add .gitignore entries if the target layout places worktrees
@@ -679,6 +730,7 @@ fn cleanup_empty_parents(mut dir: &std::path::Path, stop: &std::path::Path) -> R
 }
 
 /// Convert non-bare -> bare using the layout transform module.
+#[allow(dead_code)]
 fn transform_to_bare(settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
     let params = transform::ConvertToBareParams {
         use_gitoxide: settings.use_gitoxide,
@@ -701,6 +753,7 @@ fn transform_to_bare(settings: &DaftSettings, output: &mut dyn Output) -> Result
 }
 
 /// Collapse a bare repo to non-bare, keeping linked worktrees (for layout transform).
+#[allow(dead_code)]
 fn collapse_bare_to_non_bare(
     settings: &DaftSettings,
     output: &mut dyn Output,

@@ -421,11 +421,28 @@ fn build_fig_layout_subcommand() -> FigSubcommand {
         load_spec: None,
         subcommands: None,
         args: Some(layout_arg.clone()),
-        options: Some(vec![FigOption {
-            name: FigName::Multiple(vec!["--force".into(), "-f".into()]),
-            description: "Force transform even with uncommitted changes".into(),
-            args: None,
-        }]),
+        options: Some(vec![
+            FigOption {
+                name: FigName::Multiple(vec!["--force".into(), "-f".into()]),
+                description: "Force transform even with uncommitted changes".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--dry-run".into()),
+                description: "Show plan without executing".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--include".into()),
+                description: "Also relocate non-conforming worktree".into(),
+                args: Some(FigOptionArg { suggestions: None }),
+            },
+            FigOption {
+                name: FigName::Single("--include-all".into()),
+                description: "Relocate all non-conforming worktrees".into(),
+                args: None,
+            },
+        ]),
     };
 
     let default = FigSubcommand {

@@ -257,8 +257,21 @@ fn exec_collapse_into_root(worktree_path: &Path, root_path: &Path) -> Result<()>
             .with_context(|| format!("Failed to move {} to staging", entry.path().display()))?;
     }
 
-    // Remove empty worktree dir (best-effort)
+    // Remove the worktree's .git pointer file (it's a text file, not a
+    // directory) that linked back to the bare repo's worktree registration.
+    // This file is orphaned after collapse — the UnregisterWorktree op will
+    // clean up the registration side.
+    let wt_git_file = worktree_path.join(".git");
+    if wt_git_file.is_file() {
+        fs::remove_file(&wt_git_file).ok();
+    }
+
+    // Remove the now-empty worktree dir
     fs::remove_dir(worktree_path).ok();
+
+    // CD to root_path — the old worktree dir may have been the CWD, and it's
+    // now deleted. Subsequent ops (SetBare, etc.) need a valid CWD.
+    crate::utils::change_directory(root_path)?;
 
     // Move from staging to root
     for entry in fs::read_dir(&staging)

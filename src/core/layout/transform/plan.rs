@@ -285,9 +285,15 @@ pub fn build_plan(
 
     // e. InitWorktreeIndex (if going from bare to non-bare)
     if bare_changed && !target.is_bare {
-        ops.push(TransformOp::InitWorktreeIndex {
-            path: target.git_dir.clone(),
-        });
+        // The index init path is the working tree, not the .git directory.
+        // For wrapped non-bare: the clone subdir (parent of .git)
+        // For regular non-bare: the project root
+        let index_path = target
+            .git_dir
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| target.project_root.clone());
+        ops.push(TransformOp::InitWorktreeIndex { path: index_path });
     }
 
     // f. RegisterWorktree (if going bare, register the default branch)

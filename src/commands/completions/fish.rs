@@ -235,6 +235,9 @@ complete -c daft -n '__fish_seen_subcommand_from rename' -f -a "(daft __complete
 complete -c daft -n '__fish_seen_subcommand_from layout; and not __fish_seen_subcommand_from default list show transform' -f -a 'default list show transform'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -f -a "(daft __complete layout-transform '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l force -s f -d 'Force transform even with uncommitted changes'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l dry-run -d 'Show plan without executing'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l include -r -d 'Also relocate non-conforming worktree'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l include-all -d 'Relocate all non-conforming worktrees'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from default' -f -a "(daft __complete layout-default '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from default' -l reset -d 'Reset to built-in default'
 complete -c daft -n '__fish_seen_subcommand_from multi-remote; and not __fish_seen_subcommand_from enable disable status set-default move' -f -a 'enable disable status set-default move'

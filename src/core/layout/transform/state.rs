@@ -191,7 +191,15 @@ pub fn compute_target_state(
 
     let mut worktrees = Vec::with_capacity(source_worktrees.len());
     for wt in source_worktrees {
-        let target_path = compute_target_worktree_path(layout, project_root, &wt.branch)?;
+        // For regular non-bare layouts (sibling, nested, centralized), the
+        // default branch IS the repo root — it's not placed by the template.
+        // For bare and wrapped non-bare layouts, all branches (including the
+        // default) are placed by the template.
+        let target_path = if wt.is_default && !is_bare && !layout.needs_wrapper() {
+            project_root.to_path_buf()
+        } else {
+            compute_target_worktree_path(layout, project_root, &wt.branch)?
+        };
         worktrees.push(WorktreeEntry {
             branch: wt.branch.clone(),
             path: target_path,
@@ -321,7 +329,8 @@ mod tests {
         assert!(!target.is_bare);
         assert_eq!(target.git_dir, PathBuf::from("/repo/.git"));
         assert_eq!(target.worktrees.len(), 2);
-        assert_eq!(target.worktrees[0].path, PathBuf::from("/repo.main"));
+        // Default branch in sibling layout lives at project root, not template path
+        assert_eq!(target.worktrees[0].path, PathBuf::from("/repo"));
         assert_eq!(target.worktrees[1].path, PathBuf::from("/repo.develop"));
     }
 }

@@ -292,7 +292,7 @@ _daft() {
             transform|default)
                 if [[ "$curword" == -* ]]; then
                     if [[ "$words[3]" == "transform" ]]; then
-                        compadd -- --force -f -h --help
+                        compadd -- --force -f --dry-run --include --include-all -h --help
                     else
                         compadd -- --reset -h --help
                     fi

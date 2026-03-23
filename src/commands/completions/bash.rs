@@ -211,7 +211,7 @@ _daft() {
             transform|default)
                 if [[ "$cur" == -* ]]; then
                     if [[ "${words[2]}" == "transform" ]]; then
-                        COMPREPLY=( $(compgen -W "--force -f -h --help" -- "$cur") )
+                        COMPREPLY=( $(compgen -W "--force -f --dry-run --include --include-all -h --help" -- "$cur") )
                     else
                         COMPREPLY=( $(compgen -W "--reset -h --help" -- "$cur") )
                     fi
