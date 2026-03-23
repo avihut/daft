@@ -564,6 +564,7 @@ fn interactive_layout_resolution(
                 Ok((layout.clone(), true))
             } else {
                 let picked = show_layout_picker(Some(layout))?;
+                maybe_consolidate(&picked, output)?;
                 Ok((picked, true))
             }
         }
@@ -595,6 +596,7 @@ fn interactive_layout_resolution(
 
             output.info("Found worktrees in unrecognized arrangement.");
             let picked = show_layout_picker(Some(layout))?;
+            maybe_consolidate(&picked, output)?;
             Ok((picked, true))
         }
     }
@@ -626,6 +628,43 @@ fn show_layout_picker(preselect: Option<&Layout>) -> Result<Layout> {
         .interact()?;
 
     Ok(items.remove(selection))
+}
+
+/// Ask whether to consolidate existing worktrees to the chosen layout.
+fn maybe_consolidate(chosen_layout: &Layout, output: &mut dyn Output) -> Result<()> {
+    if !std::io::stdin().is_terminal() || std::env::var("DAFT_TESTING").is_ok() {
+        return Ok(());
+    }
+
+    let git = GitCommand::new(true);
+    let porcelain = git.worktree_list_porcelain()?;
+    let worktrees = crate::core::layout::detect::parse_worktree_list(&porcelain);
+    let linked_count = worktrees.iter().filter(|wt| !wt.is_main).count();
+
+    if linked_count == 0 {
+        return Ok(());
+    }
+
+    let prompt = format!(
+        "Consolidate {} existing worktree{} to match \"{}\" layout?",
+        linked_count,
+        if linked_count == 1 { "" } else { "s" },
+        chosen_layout.name,
+    );
+
+    let consolidate = dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
+        .with_prompt(prompt)
+        .default(false)
+        .interact()?;
+
+    if consolidate {
+        output.info(&format!(
+            "Run `daft layout transform {}` to consolidate.",
+            chosen_layout.name,
+        ));
+    }
+
+    Ok(())
 }
 
 /// Returns `Ok(already_existed)` — true if the worktree already existed
