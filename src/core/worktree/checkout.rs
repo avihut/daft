@@ -108,7 +108,18 @@ pub fn execute(
     let worktree_path = if let Some(ref at) = params.at_path {
         at.clone()
     } else if let Some(ref layout) = params.layout {
-        let ctx = build_template_context(project_root, &params.branch_name);
+        // For wrapped non-bare layouts (e.g., contained-classic), the project
+        // root from get_project_root() is the clone subdirectory (repo/main/),
+        // but the template expects the wrapper directory (repo/).
+        let effective_root = if layout.needs_wrapper() {
+            project_root
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| project_root.to_path_buf())
+        } else {
+            project_root.to_path_buf()
+        };
+        let ctx = build_template_context(&effective_root, &params.branch_name);
         layout.worktree_path(&ctx)?
     } else {
         let remote_for_path = resolve_remote_for_branch(

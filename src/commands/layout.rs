@@ -32,10 +32,12 @@ Manage worktree layouts for daft repositories.
 Layouts control where worktrees are placed relative to the bare repository.
 Built-in layouts:
 
-  contained     Worktrees inside the repo directory (bare required)
-  sibling       Worktrees next to the repo directory (default)
-  nested        Worktrees in a hidden subdirectory
-  centralized   Worktrees in a global ~/worktrees/ directory
+  contained           Worktrees inside the repo directory (bare required)
+  contained-classic   Like contained but default branch is a regular clone
+  contained-sanitized Like contained but branch slashes flattened to dashes
+  sibling             Worktrees next to the repo directory (default)
+  nested              Worktrees in a hidden subdirectory
+  centralized         Worktrees in a global ~/worktrees/ directory
 
 Use `daft layout list` to see all available layouts including custom ones
 defined in your global config (~/.config/daft/config.toml).

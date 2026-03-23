@@ -522,6 +522,121 @@ pub fn unbare_and_checkout(
     }
 }
 
+/// Phase 4c: Convert a fresh bare clone to a wrapped non-bare layout.
+///
+/// For `contained-classic`, the directory structure after clone_bare_phase is:
+///   `<repo>/.git`  (bare)
+///
+/// This function moves `.git` into a subdirectory named after the default
+/// branch, un-bares it, and checks out the working tree:
+///   `<repo>/<default_branch>/.git`  (regular clone)
+///
+/// Additional worktrees are added as siblings of the default branch directory.
+pub fn setup_wrapped_nonbare(
+    bare_result: &BareCloneResult,
+    params: &BareCloneParams,
+    layout: &crate::core::layout::Layout,
+    progress: &mut dyn ProgressSink,
+) -> Result<CloneResult> {
+    let git = GitCommand::new(false).with_gitoxide(params.use_gitoxide);
+
+    // After clone_bare_phase, CWD is already inside parent_dir.
+    // Use the branch name directly (relative to CWD) to avoid double nesting.
+    let branch_dir = PathBuf::from(&bare_result.target_branch);
+    let new_git_dir = branch_dir.join(".git");
+
+    progress.on_step(&format!(
+        "Moving repository into '{}/{}'...",
+        bare_result.repo_name, bare_result.target_branch
+    ));
+
+    // Create the default branch subdirectory
+    std::fs::create_dir_all(&branch_dir).context("Failed to create default branch subdirectory")?;
+
+    // Move .git from the wrapper root into the branch subdirectory
+    std::fs::rename(&bare_result.git_dir, &new_git_dir)
+        .context("Failed to move .git into branch subdirectory")?;
+
+    // CD into the branch directory (the new repo root)
+    change_directory(&branch_dir)?;
+
+    // Now that we're inside the branch dir, canonicalize the git_dir
+    let canonical_git_dir = PathBuf::from(".git")
+        .canonicalize()
+        .context("Failed to canonicalize new git directory")?;
+
+    // Un-bare and check out
+    progress.on_step("Converting to non-bare repository...");
+    git.config_set("core.bare", "false")
+        .context("Failed to set core.bare to false")?;
+
+    // Store layout in repos.json using the canonicalized git_dir path
+    store_layout(&canonical_git_dir, layout, progress);
+
+    if !params.no_checkout && (bare_result.branch_exists || bare_result.is_empty) {
+        if !bare_result.is_empty {
+            progress.on_step("Checking out working tree...");
+            git.checkout(&bare_result.target_branch)
+                .context("Failed to check out working tree")?;
+
+            setup_tracking(
+                &git,
+                &bare_result.remote_name,
+                &bare_result.target_branch,
+                params.checkout_upstream,
+                progress,
+            );
+        }
+
+        let current_dir = get_current_directory()?;
+        Ok(CloneResult {
+            repo_name: bare_result.repo_name.clone(),
+            target_branch: bare_result.target_branch.clone(),
+            default_branch: bare_result.default_branch.clone(),
+            parent_dir: bare_result.parent_dir.clone(),
+            git_dir: canonical_git_dir.clone(),
+            remote_name: bare_result.remote_name.clone(),
+            repository_url: bare_result.repository_url.clone(),
+            cd_target: Some(current_dir.clone()),
+            worktree_dir: Some(current_dir),
+            branch_not_found: false,
+            is_empty: bare_result.is_empty,
+            no_checkout: false,
+        })
+    } else if !params.no_checkout && !bare_result.branch_exists {
+        let current_dir = get_current_directory()?;
+        Ok(CloneResult {
+            repo_name: bare_result.repo_name.clone(),
+            target_branch: bare_result.target_branch.clone(),
+            default_branch: bare_result.default_branch.clone(),
+            parent_dir: bare_result.parent_dir.clone(),
+            git_dir: canonical_git_dir.clone(),
+            remote_name: bare_result.remote_name.clone(),
+            repository_url: bare_result.repository_url.clone(),
+            cd_target: Some(current_dir),
+            worktree_dir: None,
+            branch_not_found: true,
+            is_empty: bare_result.is_empty,
+            no_checkout: false,
+        })
+    } else {
+        Ok(CloneResult {
+            repo_name: bare_result.repo_name.clone(),
+            target_branch: bare_result.target_branch.clone(),
+            default_branch: bare_result.default_branch.clone(),
+            parent_dir: bare_result.parent_dir.clone(),
+            git_dir: canonical_git_dir.clone(),
+            remote_name: bare_result.remote_name.clone(),
+            repository_url: bare_result.repository_url.clone(),
+            cd_target: None,
+            worktree_dir: None,
+            branch_not_found: false,
+            is_empty: bare_result.is_empty,
+            no_checkout: true,
+        })
+    }
+}
+
 /// Set up remote tracking refs and upstream after worktree creation.
 fn setup_tracking(
     git: &GitCommand,

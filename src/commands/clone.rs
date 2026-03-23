@@ -246,6 +246,14 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         };
         output.finish_spinner();
         r?
+    } else if layout.needs_wrapper() {
+        output.start_spinner("Setting up wrapped repository...");
+        let r = {
+            let mut sink = OutputSink(output);
+            clone::setup_wrapped_nonbare(&bare_result, &bare_params, &layout, &mut sink)
+        };
+        output.finish_spinner();
+        r?
     } else {
         output.start_spinner("Setting up repository...");
         let r = {

@@ -23,6 +23,8 @@ pub struct Layout {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinLayout {
     Contained,
+    ContainedClassic,
+    ContainedSanitized,
     Sibling,
     Nested,
     Centralized,
@@ -34,6 +36,18 @@ pub const DEFAULT_LAYOUT: BuiltinLayout = BuiltinLayout::Sibling;
 impl Layout {
     pub fn needs_bare(&self) -> bool {
         bare::infer_bare(&self.template, self.bare)
+    }
+
+    /// Whether this layout uses a wrapper directory with a non-bare clone inside.
+    ///
+    /// Returns `true` when the template places worktrees inside `repo_path`
+    /// (starts with `{{ repo_path }}/`) but the repo is NOT bare (because
+    /// the `repo` filter is present). This is the "wrapped non-bare" mode
+    /// used by `contained-classic`.
+    pub fn needs_wrapper(&self) -> bool {
+        !self.needs_bare()
+            && self.template.starts_with("{{ repo_path }}/")
+            && bare::has_repo_filter(&self.template)
     }
 
     pub fn worktree_path(&self, ctx: &TemplateContext) -> Result<PathBuf> {
@@ -108,6 +122,8 @@ impl BuiltinLayout {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Contained => "contained",
+            Self::ContainedClassic => "contained-classic",
+            Self::ContainedSanitized => "contained-sanitized",
             Self::Sibling => "sibling",
             Self::Nested => "nested",
             Self::Centralized => "centralized",
@@ -117,6 +133,8 @@ impl BuiltinLayout {
     fn template(&self) -> &'static str {
         match self {
             Self::Contained => "{{ repo_path }}/{{ branch }}",
+            Self::ContainedClassic => "{{ repo_path }}/{{ branch | repo }}",
+            Self::ContainedSanitized => "{{ repo_path }}/{{ branch | sanitize }}",
             Self::Sibling => "{{ repo }}.{{ branch | sanitize }}",
             Self::Nested => "{{ repo }}/.worktrees/{{ branch | sanitize }}",
             Self::Centralized => "{{ daft_data_dir }}/worktrees/{{ repo }}/{{ branch | sanitize }}",
@@ -126,6 +144,8 @@ impl BuiltinLayout {
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "contained" => Some(Self::Contained),
+            "contained-classic" => Some(Self::ContainedClassic),
+            "contained-sanitized" => Some(Self::ContainedSanitized),
             "sibling" => Some(Self::Sibling),
             "nested" => Some(Self::Nested),
             "centralized" => Some(Self::Centralized),
@@ -136,6 +156,8 @@ impl BuiltinLayout {
     pub fn all() -> &'static [BuiltinLayout] {
         &[
             Self::Contained,
+            Self::ContainedClassic,
+            Self::ContainedSanitized,
             Self::Sibling,
             Self::Nested,
             Self::Centralized,
@@ -189,8 +211,36 @@ mod tests {
     }
 
     #[test]
+    fn test_builtin_contained_classic_not_bare() {
+        let layout = BuiltinLayout::ContainedClassic.to_layout();
+        assert!(!layout.needs_bare());
+        assert!(layout.needs_wrapper());
+        assert_eq!(layout.name, "contained-classic");
+    }
+
+    #[test]
+    fn test_builtin_contained_sanitized_is_bare() {
+        let layout = BuiltinLayout::ContainedSanitized.to_layout();
+        assert!(layout.needs_bare());
+        assert!(!layout.needs_wrapper());
+        assert_eq!(layout.name, "contained-sanitized");
+    }
+
+    #[test]
+    fn test_builtin_from_name_new_layouts() {
+        assert_eq!(
+            BuiltinLayout::from_name("contained-classic"),
+            Some(BuiltinLayout::ContainedClassic)
+        );
+        assert_eq!(
+            BuiltinLayout::from_name("contained-sanitized"),
+            Some(BuiltinLayout::ContainedSanitized)
+        );
+    }
+
+    #[test]
     fn test_builtin_all() {
-        assert_eq!(BuiltinLayout::all().len(), 4);
+        assert_eq!(BuiltinLayout::all().len(), 6);
     }
 
     #[test]
@@ -230,6 +280,44 @@ mod tests {
             path,
             PathBuf::from("/home/user/myproject/.worktrees/feature-auth")
         );
+    }
+
+    #[test]
+    fn test_contained_classic_worktree_path() {
+        let layout = BuiltinLayout::ContainedClassic.to_layout();
+        let ctx = TemplateContext {
+            repo_path: PathBuf::from("/home/user/myproject"),
+            repo: "myproject".into(),
+            branch: "feature/auth".into(),
+        };
+        let path = layout.worktree_path(&ctx).unwrap();
+        // Same path as contained — repo filter is identity
+        assert_eq!(path, PathBuf::from("/home/user/myproject/feature/auth"));
+    }
+
+    #[test]
+    fn test_contained_sanitized_worktree_path() {
+        let layout = BuiltinLayout::ContainedSanitized.to_layout();
+        let ctx = TemplateContext {
+            repo_path: PathBuf::from("/home/user/myproject"),
+            repo: "myproject".into(),
+            branch: "feature/auth".into(),
+        };
+        let path = layout.worktree_path(&ctx).unwrap();
+        // Sanitized: slashes become dashes, so flat directory
+        assert_eq!(path, PathBuf::from("/home/user/myproject/feature-auth"));
+    }
+
+    #[test]
+    fn test_needs_wrapper_only_for_classic() {
+        assert!(!BuiltinLayout::Contained.to_layout().needs_wrapper());
+        assert!(BuiltinLayout::ContainedClassic.to_layout().needs_wrapper());
+        assert!(!BuiltinLayout::ContainedSanitized
+            .to_layout()
+            .needs_wrapper());
+        assert!(!BuiltinLayout::Sibling.to_layout().needs_wrapper());
+        assert!(!BuiltinLayout::Nested.to_layout().needs_wrapper());
+        assert!(!BuiltinLayout::Centralized.to_layout().needs_wrapper());
     }
 
     #[test]

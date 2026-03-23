@@ -41,9 +41,9 @@ pub fn render(template: &str, ctx: &TemplateContext) -> Result<String> {
 }
 
 fn resolve_expression(expr: &str, ctx: &TemplateContext) -> Result<String> {
-    let parts: Vec<&str> = expr.splitn(2, '|').map(|s| s.trim()).collect();
+    let parts: Vec<&str> = expr.split('|').map(|s| s.trim()).collect();
     let var_name = parts[0];
-    let filter = parts.get(1).copied();
+    let filters = &parts[1..];
 
     let raw_value = match var_name {
         "repo_path" => ctx.repo_path.to_string_lossy().to_string(),
@@ -53,11 +53,15 @@ fn resolve_expression(expr: &str, ctx: &TemplateContext) -> Result<String> {
         _ => bail!("Unknown template variable: {var_name}"),
     };
 
-    match filter {
-        None => Ok(raw_value),
-        Some("sanitize") => Ok(sanitize(&raw_value)),
-        Some(f) => bail!("Unknown template filter: {f}"),
+    let mut value = raw_value;
+    for filter in filters {
+        match *filter {
+            "sanitize" => value = sanitize(&value),
+            "repo" => {} // Identity filter — signals non-bare to the layout system
+            f => bail!("Unknown template filter: {f}"),
+        }
     }
+    Ok(value)
 }
 
 /// Resolve a rendered template path to an absolute PathBuf.
@@ -253,5 +257,70 @@ mod tests {
             resolved,
             PathBuf::from("/home/user/myproject/.worktrees/feature-auth")
         );
+    }
+
+    // ── repo filter tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_render_repo_filter_is_identity() {
+        let ctx = TemplateContext {
+            repo_path: PathBuf::from("/home/user/myproject"),
+            repo: "myproject".into(),
+            branch: "feature/auth".into(),
+        };
+        // repo filter does not change the value
+        assert_eq!(render("{{ branch | repo }}", &ctx).unwrap(), "feature/auth");
+    }
+
+    #[test]
+    fn test_render_contained_classic_template() {
+        let ctx = TemplateContext {
+            repo_path: PathBuf::from("/home/user/myproject"),
+            repo: "myproject".into(),
+            branch: "main".into(),
+        };
+        assert_eq!(
+            render("{{ repo_path }}/{{ branch | repo }}", &ctx).unwrap(),
+            "/home/user/myproject/main"
+        );
+    }
+
+    // ── filter chaining tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_render_chained_repo_then_sanitize() {
+        let ctx = TemplateContext {
+            repo_path: PathBuf::from("/home/user/myproject"),
+            repo: "myproject".into(),
+            branch: "feature/auth".into(),
+        };
+        assert_eq!(
+            render("{{ branch | repo | sanitize }}", &ctx).unwrap(),
+            "feature-auth"
+        );
+    }
+
+    #[test]
+    fn test_render_chained_sanitize_then_repo() {
+        let ctx = TemplateContext {
+            repo_path: PathBuf::from("/home/user/myproject"),
+            repo: "myproject".into(),
+            branch: "feature/auth".into(),
+        };
+        // Order doesn't matter for repo (identity) + sanitize
+        assert_eq!(
+            render("{{ branch | sanitize | repo }}", &ctx).unwrap(),
+            "feature-auth"
+        );
+    }
+
+    #[test]
+    fn test_render_chained_unknown_filter_errors() {
+        let ctx = TemplateContext {
+            repo_path: PathBuf::from("/home/user/myproject"),
+            repo: "myproject".into(),
+            branch: "main".into(),
+        };
+        assert!(render("{{ branch | repo | unknown }}", &ctx).is_err());
     }
 }
