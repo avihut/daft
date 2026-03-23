@@ -306,6 +306,9 @@ pub fn build_plan(
     }
 
     // f. RegisterWorktree (if going bare, register the default branch)
+    //    Must be followed by InitWorktreeIndex to rebuild the index — the
+    //    worktree was previously the main working tree of a non-bare repo
+    //    and needs a fresh index as a linked worktree.
     if bare_changed && target.is_bare {
         if let Some(cw) = classified
             .iter()
@@ -313,6 +316,9 @@ pub fn build_plan(
         {
             ops.push(TransformOp::RegisterWorktree {
                 branch: cw.branch.clone(),
+                path: cw.target_path.clone(),
+            });
+            ops.push(TransformOp::InitWorktreeIndex {
                 path: cw.target_path.clone(),
             });
         }
