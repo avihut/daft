@@ -429,9 +429,26 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     .unwrap_or_else(|_| "main".to_string());
 
     // Read current state
-    let source = transform::read_source_state(&git, &default_branch)?;
+    let mut source = transform::read_source_state(&git, &default_branch)?;
 
-    // Compute target state using the project root from source
+    // For wrapped non-bare layouts (contained-classic), project_root from
+    // read_source_state is the clone subdir (e.g., repo/master/). The actual
+    // wrapper directory is one level up. Detect this by checking the current
+    // layout stored in repos.json.
+    if let Ok(db) = TrustDatabase::load() {
+        if let Some(current_layout_name) = db.get_layout(&source.git_dir) {
+            if let Some(current_layout) = global_config.resolve_layout_by_name(current_layout_name)
+            {
+                if current_layout.needs_wrapper() {
+                    if let Some(wrapper) = source.project_root.parent() {
+                        source.project_root = wrapper.to_path_buf();
+                    }
+                }
+            }
+        }
+    }
+
+    // Compute target state using the (possibly adjusted) project root
     let target = transform::compute_target_state(
         &target_layout,
         &source.project_root,
