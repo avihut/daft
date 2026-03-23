@@ -1,4 +1,5 @@
 pub mod bare;
+pub mod detect;
 pub mod resolver;
 pub mod template;
 pub mod transform;
