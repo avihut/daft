@@ -5,6 +5,7 @@
 //! sequenced via path-conflict analysis and executed with rollback support.
 
 pub mod legacy;
+pub mod plan;
 pub mod state;
 
 // Re-export legacy items that are still used by adopt/eject and other callers
@@ -13,6 +14,8 @@ pub use legacy::{
     parse_worktrees, CollapseBareParams, CollapseBareResult, ConvertToBareParams,
     ConvertToBareResult, ConvertToNonBareParams, ConvertToNonBareResult, WorktreeInfo,
 };
+
+pub use plan::{build_plan, classify_worktrees, TransformOp, TransformPlan};
 
 pub use state::{
     compute_target_git_dir, compute_target_state, compute_target_worktree_path,
