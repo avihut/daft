@@ -242,6 +242,7 @@ complete -c daft -n '__fish_seen_subcommand_from carry update' -f -a "(daft __co
 complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from rename' -f -a "(daft __complete daft-rename '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from layout; and not __fish_seen_subcommand_from default list show transform' -f -a 'default list show transform'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from show' -F
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -f -a "(daft __complete layout-transform '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l force -s f -d 'Force transform even with uncommitted changes'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l dry-run -d 'Show plan without executing'

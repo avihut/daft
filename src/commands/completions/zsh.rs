@@ -303,6 +303,10 @@ _daft() {
             return
         fi
         case "$words[3]" in
+            show)
+                _files -/
+                return
+                ;;
             transform|default)
                 if [[ "$curword" == -* ]]; then
                     if [[ "$words[3]" == "transform" ]]; then

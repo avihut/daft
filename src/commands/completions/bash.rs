@@ -223,6 +223,10 @@ _daft() {
             return 0
         fi
         case "${words[2]}" in
+            show)
+                COMPREPLY=( $(compgen -d -- "$cur") )
+                return 0
+                ;;
             transform|default)
                 if [[ "$cur" == -* ]]; then
                     if [[ "${words[2]}" == "transform" ]]; then
