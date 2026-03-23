@@ -2,7 +2,8 @@ use crate::{
     core::{
         global_config::GlobalConfig,
         layout::{
-            resolver::{resolve_layout, LayoutResolutionContext, LayoutSource},
+            detect::detect_layout,
+            resolver::{resolve_layout, DetectionResult, LayoutResolutionContext, LayoutSource},
             transform, BuiltinLayout, Layout, DEFAULT_LAYOUT,
         },
         OutputSink,
@@ -18,6 +19,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use std::path::{Path, PathBuf};
 use tabled::{
     builder::Builder,
     settings::{object::Columns, Padding, Style},
@@ -58,11 +60,17 @@ enum LayoutCommand {
     /// List all available layouts
     List,
     /// Show the resolved layout for the current repo
-    Show,
+    Show(ShowArgs),
     /// Transform the current repo to a different layout
     Transform(TransformArgs),
     /// View or set the global default layout
     Default(DefaultArgs),
+}
+
+#[derive(Args)]
+struct ShowArgs {
+    /// Path to a git repository (defaults to current directory)
+    path: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -101,7 +109,8 @@ pub fn run() -> Result<()> {
 
     match layout_args.command {
         Some(LayoutCommand::List) => cmd_list(&mut output),
-        Some(LayoutCommand::Show) | None => cmd_show(&mut output),
+        Some(LayoutCommand::Show(show_args)) => cmd_show(&show_args, &mut output),
+        None => cmd_show(&ShowArgs { path: None }, &mut output),
         Some(LayoutCommand::Transform(transform_args)) => {
             cmd_transform(&transform_args, &mut output)
         }
@@ -341,7 +350,36 @@ fn cmd_default(args: &DefaultArgs, output: &mut dyn Output) -> Result<()> {
 
 // ── layout show ────────────────────────────────────────────────────────────
 
-fn cmd_show(output: &mut dyn Output) -> Result<()> {
+/// RAII guard that changes the current working directory and restores it on drop.
+struct CwdGuard {
+    original: Option<PathBuf>,
+}
+
+impl CwdGuard {
+    fn new(target: &Path) -> Result<Self> {
+        let original = std::env::current_dir().ok();
+        std::env::set_current_dir(target)
+            .with_context(|| format!("Cannot cd to {}", target.display()))?;
+        Ok(Self { original })
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        if let Some(ref old) = self.original {
+            let _ = std::env::set_current_dir(old);
+        }
+    }
+}
+
+fn cmd_show(args: &ShowArgs, output: &mut dyn Output) -> Result<()> {
+    // If a path was provided, switch CWD so all subsequent git calls work there.
+    let _guard = if let Some(ref path) = args.path {
+        Some(CwdGuard::new(path)?)
+    } else {
+        None
+    };
+
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository. Run this command from within a repo.");
     }
@@ -358,13 +396,43 @@ fn cmd_show(output: &mut dyn Output) -> Result<()> {
 
     let repo_store_layout = trust_db.get_layout(&git_dir).map(String::from);
 
+    // Run detection when no explicit layout is configured.
+    let detection = if repo_store_layout.is_none() && yaml_layout.is_none() {
+        Some(detect_layout(&git_dir, &global_config))
+    } else {
+        None
+    };
+
     let (layout, source) = resolve_layout(&LayoutResolutionContext {
         cli_layout: None,
         repo_store_layout: repo_store_layout.as_deref(),
         yaml_layout: yaml_layout.as_deref(),
         global_config: &global_config,
-        detection: None,
+        detection: detection.clone(),
     });
+
+    let use_color = styles::colors_enabled();
+
+    // Handle Unresolved source with differentiated messages based on detection result.
+    if source == LayoutSource::Unresolved {
+        let message = match detection {
+            None | Some(DetectionResult::NoWorktrees) => {
+                "No layout (no worktrees to detect from)".to_string()
+            }
+            Some(DetectionResult::NoMatch) => {
+                "Unknown layout (worktrees don't match any known template)".to_string()
+            }
+            Some(DetectionResult::Ambiguous) => {
+                "Unknown layout (worktrees match multiple templates)".to_string()
+            }
+            Some(DetectionResult::Detected(_)) => {
+                // Should not happen: Detected is handled by the resolver before Unresolved.
+                "Unknown layout".to_string()
+            }
+        };
+        output.info(&if use_color { dim(&message) } else { message });
+        return Ok(());
+    }
 
     let source_display = match source {
         LayoutSource::Cli => "CLI flag",
@@ -372,10 +440,9 @@ fn cmd_show(output: &mut dyn Output) -> Result<()> {
         LayoutSource::YamlConfig => "daft.yml",
         LayoutSource::GlobalConfig => "global config",
         LayoutSource::Detected => "detected",
-        LayoutSource::Unresolved => "default",
+        LayoutSource::Unresolved => unreachable!("handled above"),
     };
 
-    let use_color = styles::colors_enabled();
     let template_display = if use_color {
         highlight_template(&layout.template)
     } else {
