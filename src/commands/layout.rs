@@ -65,6 +65,8 @@ enum LayoutCommand {
     Transform(TransformArgs),
     /// View or set the global default layout
     Default(DefaultArgs),
+    /// Clear the stored layout for a repo
+    Reset(ResetArgs),
 }
 
 #[derive(Args)]
@@ -92,6 +94,12 @@ struct TransformArgs {
 }
 
 #[derive(Args)]
+struct ResetArgs {
+    /// Path to a git repository (defaults to current directory)
+    path: Option<PathBuf>,
+}
+
+#[derive(Args)]
 struct DefaultArgs {
     /// Layout name or template to set as the global default
     #[arg(conflicts_with = "reset")]
@@ -115,6 +123,7 @@ pub fn run() -> Result<()> {
             cmd_transform(&transform_args, &mut output)
         }
         Some(LayoutCommand::Default(default_args)) => cmd_default(&default_args, &mut output),
+        Some(LayoutCommand::Reset(reset_args)) => cmd_reset(&reset_args, &mut output),
     }
 }
 
@@ -456,6 +465,34 @@ fn cmd_show(args: &ShowArgs, output: &mut dyn Output) -> Result<()> {
         template_display,
         dim(&format!("({source_display})"))
     ));
+
+    Ok(())
+}
+
+// ── layout reset ──────────────────────────────────────────────────────────
+
+fn cmd_reset(args: &ResetArgs, output: &mut dyn Output) -> Result<()> {
+    let _guard = if let Some(ref path) = args.path {
+        let resolved = std::fs::canonicalize(path)
+            .with_context(|| format!("Cannot resolve path: {}", path.display()))?;
+        Some(CwdGuard::new(&resolved)?)
+    } else {
+        None
+    };
+
+    if !is_git_repository()? {
+        anyhow::bail!("Not inside a Git repository. Run this command from within a repo.");
+    }
+
+    let git_dir = get_git_common_dir()?;
+    let mut trust_db = TrustDatabase::load().unwrap_or_default();
+
+    if trust_db.remove_layout(&git_dir) {
+        trust_db.save()?;
+        output.info("Layout setting cleared for this repository.");
+    } else {
+        output.info("No layout setting found for this repository.");
+    }
 
     Ok(())
 }
