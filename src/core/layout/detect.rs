@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::Layout;
+use super::{BuiltinLayout, Layout};
 use crate::core::layout::resolver::DetectionResult;
 use crate::core::layout::template::{render, resolve_path};
 use crate::core::multi_remote::path::build_template_context;
@@ -182,6 +182,95 @@ pub fn match_templates(
 
     // Different layouts match different worktrees
     DetectionResult::Ambiguous
+}
+
+/// Detect the layout structure for a repo that may have only a single worktree
+/// (i.e. the template-matching path found no linked worktrees).
+///
+/// This is the public entry point. It checks whether `project_root/.worktrees/`
+/// exists on the filesystem and delegates to [`detect_structure_with_worktrees_dir`].
+pub fn detect_structure(
+    git_common_dir: &Path,
+    project_root: &Path,
+    is_bare: bool,
+    worktrees: &[WorktreeInfo],
+) -> DetectionResult {
+    let has_worktrees_dir = project_root.join(".worktrees").is_dir();
+    detect_structure_with_worktrees_dir(
+        git_common_dir,
+        project_root,
+        is_bare,
+        worktrees,
+        has_worktrees_dir,
+    )
+}
+
+/// Detect the layout structure for a repo that may have only a single worktree.
+///
+/// Accepts `has_worktrees_dir` explicitly to enable deterministic unit testing
+/// without touching the filesystem.
+///
+/// Detection order:
+/// 1. If no main worktree is found → `NoWorktrees`.
+/// 2. **ContainedClassic**: non-bare, `git_common_dir`'s parent is a direct
+///    child of `project_root`, and that child's name matches the main branch.
+/// 3. **Contained** (bare): bare repo, main worktree path ==
+///    `project_root.join(branch)`.
+/// 4. **Nested**: `project_root/.worktrees/` directory exists.
+/// 5. Otherwise → `NoWorktrees` (plain git clone, no layout signal).
+pub fn detect_structure_with_worktrees_dir(
+    git_common_dir: &Path,
+    project_root: &Path,
+    is_bare: bool,
+    worktrees: &[WorktreeInfo],
+    has_worktrees_dir: bool,
+) -> DetectionResult {
+    // Step 1: find the main worktree.
+    let main = match worktrees.iter().find(|w| w.is_main) {
+        Some(w) => w,
+        None => return DetectionResult::NoWorktrees,
+    };
+
+    // Step 2: ContainedClassic — non-bare, .git lives inside a branch subdir.
+    if !is_bare {
+        if let Some(branch) = &main.branch {
+            // git_common_dir is typically <project_root>/<branch>/.git
+            // Its parent is the branch subdir.
+            if let Some(git_parent) = git_common_dir.parent() {
+                // The git parent must be a direct child of project_root.
+                if let Ok(relative) = git_parent.strip_prefix(project_root) {
+                    let components: Vec<_> = relative.components().collect();
+                    if components.len() == 1 {
+                        let subdir_name = components[0].as_os_str().to_string_lossy();
+                        if subdir_name == branch.as_str() {
+                            return DetectionResult::Detected(
+                                BuiltinLayout::ContainedClassic.to_layout(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 3: Contained (bare) — bare repo, main worktree is a child of project_root
+    // named after the branch.
+    if is_bare {
+        if let Some(branch) = &main.branch {
+            let expected = project_root.join(branch.as_str());
+            if main.path == expected {
+                return DetectionResult::Detected(BuiltinLayout::Contained.to_layout());
+            }
+        }
+    }
+
+    // Step 4: Nested — .worktrees/ directory exists inside project_root.
+    if has_worktrees_dir {
+        return DetectionResult::Detected(BuiltinLayout::Nested.to_layout());
+    }
+
+    // Step 5: No structural signals — plain git clone.
+    DetectionResult::NoWorktrees
 }
 
 #[cfg(test)]
@@ -390,5 +479,117 @@ branch refs/heads/develop
             }
             other => panic!("Expected Detected(contained), got {other:?}"),
         }
+    }
+
+    // ── detect_structure tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_structural_detect_contained_bare_with_child_worktree() {
+        // Bare repo at /home/user/myproject, main worktree is at
+        // /home/user/myproject/main — matches Contained layout.
+        let project_root = PathBuf::from("/home/user/myproject");
+        let git_common_dir = project_root.join("main").join(".git"); // irrelevant for bare path
+        let worktrees = vec![WorktreeInfo {
+            path: project_root.join("main"),
+            branch: Some("main".to_string()),
+            is_main: true,
+        }];
+
+        let result = detect_structure_with_worktrees_dir(
+            &git_common_dir,
+            &project_root,
+            true, // is_bare
+            &worktrees,
+            false, // no .worktrees/ dir
+        );
+
+        match result {
+            DetectionResult::Detected(layout) => {
+                assert_eq!(layout.name, "contained");
+            }
+            other => panic!("Expected Detected(contained), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_structural_detect_contained_classic() {
+        // Non-bare repo. The .git directory lives at /home/user/myproject/main/.git,
+        // so git_common_dir = /home/user/myproject/main/.git.
+        // Its parent /home/user/myproject/main is a direct child of project_root,
+        // and the subdir name "main" matches the main worktree's branch → ContainedClassic.
+        let project_root = PathBuf::from("/home/user/myproject");
+        let git_common_dir = project_root.join("main").join(".git");
+        let worktrees = vec![WorktreeInfo {
+            path: project_root.join("main"),
+            branch: Some("main".to_string()),
+            is_main: true,
+        }];
+
+        let result = detect_structure_with_worktrees_dir(
+            &git_common_dir,
+            &project_root,
+            false, // not bare
+            &worktrees,
+            false, // no .worktrees/ dir
+        );
+
+        match result {
+            DetectionResult::Detected(layout) => {
+                assert_eq!(layout.name, "contained-classic");
+            }
+            other => panic!("Expected Detected(contained-classic), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_structural_detect_nested_has_worktrees_dir() {
+        // Non-bare repo, main worktree IS the project root (plain clone).
+        // .worktrees/ directory exists → Nested layout.
+        let project_root = PathBuf::from("/home/user/myproject");
+        let git_common_dir = project_root.join(".git");
+        let worktrees = vec![WorktreeInfo {
+            path: project_root.clone(),
+            branch: Some("main".to_string()),
+            is_main: true,
+        }];
+
+        let result = detect_structure_with_worktrees_dir(
+            &git_common_dir,
+            &project_root,
+            false, // not bare
+            &worktrees,
+            true, // .worktrees/ dir exists
+        );
+
+        match result {
+            DetectionResult::Detected(layout) => {
+                assert_eq!(layout.name, "nested");
+            }
+            other => panic!("Expected Detected(nested), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_structural_detect_plain_clone_no_detection() {
+        // Non-bare repo, main worktree IS the project root, no .worktrees/ dir.
+        // No structural signals → NoWorktrees (plain git clone).
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let project_root = dir.path().to_path_buf();
+        let git_common_dir = project_root.join(".git");
+        let worktrees = vec![WorktreeInfo {
+            path: project_root.clone(),
+            branch: Some("main".to_string()),
+            is_main: true,
+        }];
+
+        // Use detect_structure directly (no .worktrees/ directory on disk)
+        let result = detect_structure(&git_common_dir, &project_root, false, &worktrees);
+
+        assert!(
+            matches!(result, DetectionResult::NoWorktrees),
+            "Expected NoWorktrees for plain git clone, got {result:?}"
+        );
     }
 }
