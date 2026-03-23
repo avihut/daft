@@ -267,7 +267,7 @@ fn complete_layouts(prefix: &str) -> Result<Vec<String>> {
             .map(|(_, d)| *d)
             .unwrap_or("");
         let layout = builtin.to_layout();
-        entries.push(format!("{name}\t{desc} — {}", layout.template));
+        entries.push(format!("{name}\t{desc:<36}— {}", layout.template));
     }
 
     // Custom layouts from global config
@@ -280,7 +280,8 @@ fn complete_layouts(prefix: &str) -> Result<Vec<String>> {
             if BuiltinLayout::from_name(name).is_some() {
                 continue;
             }
-            entries.push(format!("{name}\tcustom — {}", custom.template));
+            let desc = "custom";
+            entries.push(format!("{name}\t{desc:<36}— {}", custom.template));
         }
     }
 
