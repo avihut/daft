@@ -106,8 +106,10 @@ fn complete(command: &str, position: usize, word: &str, verbose: bool) -> Result
         // hooks run --job: complete job names for a hook type
         ("hooks-run-job", 1) => complete_hook_jobs(word, verbose),
 
-        // layout transform / layout default: complete layout names
-        ("layout-transform", 1) | ("layout-default", 1) => complete_layouts(word),
+        // layout transform / layout default / clone --layout: complete layout names
+        ("layout-transform", 1) | ("layout-default", 1) | ("layout-value", 1) => {
+            complete_layouts(word)
+        }
 
         // Default: no completions
         _ => Ok(vec![]),

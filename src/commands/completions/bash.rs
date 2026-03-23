@@ -38,6 +38,21 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
         output.push('\n');
     }
 
+    // Value completion for --layout flag
+    let has_layout = matches!(command_name, "git-worktree-clone" | "git-worktree-init");
+    if has_layout {
+        output.push_str("    # Layout name completion for --layout\n");
+        output.push_str("    if [[ \"$prev\" == \"--layout\" ]]; then\n");
+        output.push_str("        local layouts\n");
+        output.push_str(
+            "        layouts=$(daft __complete layout-value \"$cur\" 2>/dev/null | cut -f1)\n",
+        );
+        output.push_str("        COMPREPLY=( $(compgen -W \"$layouts\" -- \"$cur\") )\n");
+        output.push_str("        return 0\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
     // Value completion for --columns flag
     let has_columns = matches!(
         command_name,

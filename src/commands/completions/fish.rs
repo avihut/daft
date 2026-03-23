@@ -100,6 +100,15 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
         }
     }
 
+    // Value completions for --layout flag
+    let has_layout = matches!(command_name, "git-worktree-clone" | "git-worktree-init");
+    if has_layout {
+        output.push_str(&format!(
+            "\n# Layout name completions for --layout\ncomplete -c {} -l layout -x -a \"(daft __complete layout-value '' 2>/dev/null)\"\n",
+            command_name
+        ));
+    }
+
     // Value completions for --columns flag
     let has_columns = matches!(
         command_name,
