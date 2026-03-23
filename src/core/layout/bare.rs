@@ -82,7 +82,7 @@ mod tests {
         assert!(infer_bare("{{ repo_path }}/{{ branch }}", None));
     }
     #[test]
-    fn test_contained_sanitized_is_bare() {
+    fn test_contained_flat_is_bare() {
         assert!(infer_bare("{{ repo_path }}/{{ branch | sanitize }}", None));
     }
     #[test]

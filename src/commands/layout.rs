@@ -34,7 +34,7 @@ Built-in layouts:
 
   contained           Worktrees inside the repo directory (bare required)
   contained-classic   Like contained but default branch is a regular clone
-  contained-sanitized Like contained but branch slashes flattened to dashes
+  contained-flat      Like contained but branch slashes flattened to dashes
   sibling             Worktrees next to the repo directory (default)
   nested              Worktrees in a hidden subdirectory
   centralized         Worktrees in a global ~/worktrees/ directory

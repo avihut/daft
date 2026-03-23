@@ -59,14 +59,14 @@ template geometry at resolution time.
 
 ### Built-in Layouts
 
-| Name                  | Template                                                            | Inferred bare | Description                                           |
-| --------------------- | ------------------------------------------------------------------- | ------------- | ----------------------------------------------------- |
-| `contained`           | `{{ repo_path }}/{{ branch }}`                                      | Yes           | Worktrees as children of project root (bare)          |
-| `contained-classic`   | `{{ repo_path }}/{{ branch \| repo }}`                              | No            | Like contained but default branch is a regular clone  |
-| `contained-sanitized` | `{{ repo_path }}/{{ branch \| sanitize }}`                          | Yes           | Like contained but branch slashes flattened to dashes |
-| `sibling`             | `{{ repo }}.{{ branch \| sanitize }}`                               | No            | Worktrees adjacent to the repo                        |
-| `nested`              | `{{ repo }}/.worktrees/{{ branch \| sanitize }}`                    | No            | Worktrees in a hidden subdirectory (auto-gitignored)  |
-| `centralized`         | `{{ daft_data_dir }}/worktrees/{{ repo }}/{{ branch \| sanitize }}` | No            | Worktrees in the XDG data directory                   |
+| Name                | Template                                                            | Inferred bare | Description                                           |
+| ------------------- | ------------------------------------------------------------------- | ------------- | ----------------------------------------------------- |
+| `contained`         | `{{ repo_path }}/{{ branch }}`                                      | Yes           | Worktrees as children of project root (bare)          |
+| `contained-classic` | `{{ repo_path }}/{{ branch \| repo }}`                              | No            | Like contained but default branch is a regular clone  |
+| `contained-flat`    | `{{ repo_path }}/{{ branch \| sanitize }}`                          | Yes           | Like contained but branch slashes flattened to dashes |
+| `sibling`           | `{{ repo }}.{{ branch \| sanitize }}`                               | No            | Worktrees adjacent to the repo                        |
+| `nested`            | `{{ repo }}/.worktrees/{{ branch \| sanitize }}`                    | No            | Worktrees in a hidden subdirectory (auto-gitignored)  |
+| `centralized`       | `{{ daft_data_dir }}/worktrees/{{ repo }}/{{ branch \| sanitize }}` | No            | Worktrees in the XDG data directory                   |
 
 The built-in default layout is `sibling`.
 
@@ -93,10 +93,10 @@ This is the "classic" way to use `git worktree` — clone normally, then add
 worktrees as siblings. The `repo` filter on `{{ branch }}` is the mechanism that
 communicates this to the layout system (see [Filters](#filters) below).
 
-#### Contained-Sanitized Layout
+#### Contained-Flat Layout
 
-The `contained-sanitized` layout is identical to `contained` but uses the
-`sanitize` filter to flatten branch slashes into dashes:
+The `contained-flat` layout is identical to `contained` but uses the `sanitize`
+filter to flatten branch slashes into dashes:
 
 ```
 my-project/
@@ -143,7 +143,7 @@ regular (non-bare) clone, not a worktree linked to a bare repository.
 ```
 {{ repo_path }}/{{ branch }}              # contained — bare, all worktrees
 {{ repo_path }}/{{ branch | repo }}       # contained-classic — non-bare, default branch is a clone
-{{ repo_path }}/{{ branch | sanitize }}   # contained-sanitized — bare, sanitized names
+{{ repo_path }}/{{ branch | sanitize }}   # contained-flat — bare, sanitized names
 ```
 
 The `repo` filter can be chained with other filters. Filter order does not

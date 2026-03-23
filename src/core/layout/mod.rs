@@ -24,7 +24,7 @@ pub struct Layout {
 pub enum BuiltinLayout {
     Contained,
     ContainedClassic,
-    ContainedSanitized,
+    ContainedFlat,
     Sibling,
     Nested,
     Centralized,
@@ -123,7 +123,7 @@ impl BuiltinLayout {
         match self {
             Self::Contained => "contained",
             Self::ContainedClassic => "contained-classic",
-            Self::ContainedSanitized => "contained-sanitized",
+            Self::ContainedFlat => "contained-flat",
             Self::Sibling => "sibling",
             Self::Nested => "nested",
             Self::Centralized => "centralized",
@@ -134,7 +134,7 @@ impl BuiltinLayout {
         match self {
             Self::Contained => "{{ repo_path }}/{{ branch }}",
             Self::ContainedClassic => "{{ repo_path }}/{{ branch | repo }}",
-            Self::ContainedSanitized => "{{ repo_path }}/{{ branch | sanitize }}",
+            Self::ContainedFlat => "{{ repo_path }}/{{ branch | sanitize }}",
             Self::Sibling => "{{ repo }}.{{ branch | sanitize }}",
             Self::Nested => "{{ repo }}/.worktrees/{{ branch | sanitize }}",
             Self::Centralized => "{{ daft_data_dir }}/worktrees/{{ repo }}/{{ branch | sanitize }}",
@@ -145,7 +145,7 @@ impl BuiltinLayout {
         match name {
             "contained" => Some(Self::Contained),
             "contained-classic" => Some(Self::ContainedClassic),
-            "contained-sanitized" => Some(Self::ContainedSanitized),
+            "contained-flat" => Some(Self::ContainedFlat),
             "sibling" => Some(Self::Sibling),
             "nested" => Some(Self::Nested),
             "centralized" => Some(Self::Centralized),
@@ -157,7 +157,7 @@ impl BuiltinLayout {
         &[
             Self::Contained,
             Self::ContainedClassic,
-            Self::ContainedSanitized,
+            Self::ContainedFlat,
             Self::Sibling,
             Self::Nested,
             Self::Centralized,
@@ -219,11 +219,11 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_contained_sanitized_is_bare() {
-        let layout = BuiltinLayout::ContainedSanitized.to_layout();
+    fn test_builtin_contained_flat_is_bare() {
+        let layout = BuiltinLayout::ContainedFlat.to_layout();
         assert!(layout.needs_bare());
         assert!(!layout.needs_wrapper());
-        assert_eq!(layout.name, "contained-sanitized");
+        assert_eq!(layout.name, "contained-flat");
     }
 
     #[test]
@@ -233,8 +233,8 @@ mod tests {
             Some(BuiltinLayout::ContainedClassic)
         );
         assert_eq!(
-            BuiltinLayout::from_name("contained-sanitized"),
-            Some(BuiltinLayout::ContainedSanitized)
+            BuiltinLayout::from_name("contained-flat"),
+            Some(BuiltinLayout::ContainedFlat)
         );
     }
 
@@ -296,8 +296,8 @@ mod tests {
     }
 
     #[test]
-    fn test_contained_sanitized_worktree_path() {
-        let layout = BuiltinLayout::ContainedSanitized.to_layout();
+    fn test_contained_flat_worktree_path() {
+        let layout = BuiltinLayout::ContainedFlat.to_layout();
         let ctx = TemplateContext {
             repo_path: PathBuf::from("/home/user/myproject"),
             repo: "myproject".into(),
@@ -312,9 +312,7 @@ mod tests {
     fn test_needs_wrapper_only_for_classic() {
         assert!(!BuiltinLayout::Contained.to_layout().needs_wrapper());
         assert!(BuiltinLayout::ContainedClassic.to_layout().needs_wrapper());
-        assert!(!BuiltinLayout::ContainedSanitized
-            .to_layout()
-            .needs_wrapper());
+        assert!(!BuiltinLayout::ContainedFlat.to_layout().needs_wrapper());
         assert!(!BuiltinLayout::Sibling.to_layout().needs_wrapper());
         assert!(!BuiltinLayout::Nested.to_layout().needs_wrapper());
         assert!(!BuiltinLayout::Centralized.to_layout().needs_wrapper());
