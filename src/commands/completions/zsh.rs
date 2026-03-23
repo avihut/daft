@@ -299,7 +299,7 @@ _daft() {
                     return
                 fi
                 local -a layouts
-                layouts=("${(@f)$(daft __complete layout-$words[3] "$curword" 2>/dev/null)}")
+                layouts=("${(@f)$(daft __complete layout-$words[3] "$curword" 2>/dev/null | sed 's/\t/:/')}")
                 _describe 'layout' layouts
                 return
                 ;;
