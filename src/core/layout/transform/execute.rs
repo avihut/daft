@@ -181,6 +181,13 @@ fn exec_move_git_dir(from: &Path, to: &Path) -> Result<()> {
         })?;
     }
 
+    // If the target path exists as a file (e.g., a worktree's .git pointer
+    // file), remove it first — fs::rename can't overwrite a file with a dir.
+    if to.is_file() {
+        fs::remove_file(to)
+            .with_context(|| format!("Failed to remove existing .git file at {}", to.display()))?;
+    }
+
     fs::rename(from, to).with_context(|| {
         format!(
             "Failed to move .git directory from {} to {}",
@@ -190,6 +197,12 @@ fn exec_move_git_dir(from: &Path, to: &Path) -> Result<()> {
     })?;
 
     fixup_gitdir_references(to)?;
+
+    // CD to the new .git's parent so subsequent git commands can find the repo.
+    // After NestFromRoot + MoveGitDir, the old CWD may no longer contain .git.
+    if let Some(parent) = to.parent() {
+        crate::utils::change_directory(parent)?;
+    }
 
     Ok(())
 }
@@ -498,6 +511,13 @@ fn fixup_gitdir_references(new_git_dir: &Path) -> Result<()> {
         let worktree_git_path = PathBuf::from(worktree_git_path.trim());
 
         if !worktree_git_path.exists() {
+            continue;
+        }
+
+        // Skip if the path is a directory — this means .git moved INTO this
+        // worktree's location (e.g., contained-classic where the default
+        // branch directory IS where .git lives). No pointer file to update.
+        if worktree_git_path.is_dir() {
             continue;
         }
 
