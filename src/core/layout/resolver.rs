@@ -5,10 +5,20 @@
 //! 2. Per-repo store (repos.json)
 //! 3. daft.yml `layout` field (team convention)
 //! 4. Global config `defaults.layout`
-//! 5. Built-in default (sibling)
+//! 5. Detected (inferred from filesystem worktree layout)
+//! 6. Unresolved (nothing determined — caller applies built-in default)
 
 use super::{Layout, DEFAULT_LAYOUT};
 use crate::core::global_config::GlobalConfig;
+
+/// Result of filesystem-based layout detection.
+#[derive(Debug, Clone)]
+pub enum DetectionResult {
+    Detected(Layout),
+    Ambiguous,
+    NoWorktrees,
+    NoMatch,
+}
 
 /// Inputs for layout resolution.
 pub struct LayoutResolutionContext<'a> {
@@ -16,6 +26,7 @@ pub struct LayoutResolutionContext<'a> {
     pub repo_store_layout: Option<&'a str>,
     pub yaml_layout: Option<&'a str>,
     pub global_config: &'a GlobalConfig,
+    pub detection: Option<DetectionResult>,
 }
 
 /// Which level of the config chain provided the resolved layout.
@@ -25,7 +36,8 @@ pub enum LayoutSource {
     RepoStore,
     YamlConfig,
     GlobalConfig,
-    Default,
+    Detected,
+    Unresolved,
 }
 
 /// Resolve a layout from the configuration chain.
@@ -51,7 +63,10 @@ pub fn resolve_layout(ctx: &LayoutResolutionContext) -> (Layout, LayoutSource) {
     if let Some(layout) = ctx.global_config.default_layout() {
         return (layout, LayoutSource::GlobalConfig);
     }
-    (DEFAULT_LAYOUT.to_layout(), LayoutSource::Default)
+    if let Some(DetectionResult::Detected(layout)) = &ctx.detection {
+        return (layout.clone(), LayoutSource::Detected);
+    }
+    (DEFAULT_LAYOUT.to_layout(), LayoutSource::Unresolved)
 }
 
 /// Resolve a layout string (name or inline template) using global config for lookups.
@@ -82,6 +97,7 @@ mod tests {
             repo_store_layout: Some("sibling"),
             yaml_layout: Some("nested"),
             global_config: &global,
+            detection: None,
         };
         let (layout, source) = resolve_layout(&ctx);
         assert_eq!(layout.name, "contained");
@@ -96,6 +112,7 @@ mod tests {
             repo_store_layout: Some("nested"),
             yaml_layout: Some("sibling"),
             global_config: &global,
+            detection: None,
         };
         let (layout, source) = resolve_layout(&ctx);
         assert_eq!(layout.name, "nested");
@@ -110,6 +127,7 @@ mod tests {
             repo_store_layout: None,
             yaml_layout: Some("contained"),
             global_config: &global,
+            detection: None,
         };
         let (layout, source) = resolve_layout(&ctx);
         assert_eq!(layout.name, "contained");
@@ -130,6 +148,7 @@ layout = "nested"
             repo_store_layout: None,
             yaml_layout: None,
             global_config: &global,
+            detection: None,
         };
         let (layout, source) = resolve_layout(&ctx);
         assert_eq!(layout.name, "nested");
@@ -144,10 +163,11 @@ layout = "nested"
             repo_store_layout: None,
             yaml_layout: None,
             global_config: &global,
+            detection: None,
         };
         let (layout, source) = resolve_layout(&ctx);
         assert_eq!(layout.name, DEFAULT_LAYOUT.name());
-        assert_eq!(source, LayoutSource::Default);
+        assert_eq!(source, LayoutSource::Unresolved);
     }
 
     #[test]
@@ -158,6 +178,7 @@ layout = "nested"
             repo_store_layout: None,
             yaml_layout: None,
             global_config: &global,
+            detection: None,
         };
         let (layout, source) = resolve_layout(&ctx);
         assert_eq!(layout.template, "custom/{{ branch | sanitize }}");
@@ -172,6 +193,7 @@ layout = "nested"
             repo_store_layout: None,
             yaml_layout: Some("../custom/{{ branch | sanitize }}"),
             global_config: &global,
+            detection: None,
         };
         let (layout, source) = resolve_layout(&ctx);
         assert_eq!(layout.template, "../custom/{{ branch | sanitize }}");
@@ -186,6 +208,7 @@ layout = "nested"
             repo_store_layout: Some(".trees/{{ branch | sanitize }}"),
             yaml_layout: None,
             global_config: &global,
+            detection: None,
         };
         let (layout, source) = resolve_layout(&ctx);
         assert_eq!(layout.template, ".trees/{{ branch | sanitize }}");
@@ -209,6 +232,7 @@ template = "../.worktrees/{{ repo }}/{{ branch | sanitize }}"
             repo_store_layout: None,
             yaml_layout: None,
             global_config: &global,
+            detection: None,
         };
         let (layout, source) = resolve_layout(&ctx);
         assert_eq!(layout.name, "my-team");
@@ -217,5 +241,60 @@ template = "../.worktrees/{{ repo }}/{{ branch | sanitize }}"
             "../.worktrees/{{ repo }}/{{ branch | sanitize }}"
         );
         assert_eq!(source, LayoutSource::GlobalConfig);
+    }
+
+    #[test]
+    fn test_detection_after_global_config() {
+        let global = default_global();
+        let detected = Layout {
+            name: "sibling".to_string(),
+            template: "../{{ branch | sanitize }}".to_string(),
+            bare: None,
+        };
+        let ctx = LayoutResolutionContext {
+            cli_layout: None,
+            repo_store_layout: None,
+            yaml_layout: None,
+            global_config: &global,
+            detection: Some(DetectionResult::Detected(detected.clone())),
+        };
+        let (layout, source) = resolve_layout(&ctx);
+        assert_eq!(layout.name, detected.name);
+        assert_eq!(source, LayoutSource::Detected);
+    }
+
+    #[test]
+    fn test_detection_loses_to_repo_store() {
+        let global = default_global();
+        let detected = Layout {
+            name: "sibling".to_string(),
+            template: "../{{ branch | sanitize }}".to_string(),
+            bare: None,
+        };
+        let ctx = LayoutResolutionContext {
+            cli_layout: None,
+            repo_store_layout: Some("nested"),
+            yaml_layout: None,
+            global_config: &global,
+            detection: Some(DetectionResult::Detected(detected)),
+        };
+        let (layout, source) = resolve_layout(&ctx);
+        assert_eq!(layout.name, "nested");
+        assert_eq!(source, LayoutSource::RepoStore);
+    }
+
+    #[test]
+    fn test_ambiguous_detection_falls_to_unresolved() {
+        let global = default_global();
+        let ctx = LayoutResolutionContext {
+            cli_layout: None,
+            repo_store_layout: None,
+            yaml_layout: None,
+            global_config: &global,
+            detection: Some(DetectionResult::Ambiguous),
+        };
+        let (layout, source) = resolve_layout(&ctx);
+        assert_eq!(layout.name, DEFAULT_LAYOUT.name());
+        assert_eq!(source, LayoutSource::Unresolved);
     }
 }

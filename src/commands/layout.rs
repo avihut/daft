@@ -282,6 +282,7 @@ fn resolve_current_layout_name(global_config: &GlobalConfig) -> Option<String> {
         repo_store_layout: repo_store_layout.as_deref(),
         yaml_layout: yaml_layout.as_deref(),
         global_config,
+        detection: None,
     });
 
     Some(layout.name)
@@ -362,6 +363,7 @@ fn cmd_show(output: &mut dyn Output) -> Result<()> {
         repo_store_layout: repo_store_layout.as_deref(),
         yaml_layout: yaml_layout.as_deref(),
         global_config: &global_config,
+        detection: None,
     });
 
     let source_display = match source {
@@ -369,7 +371,8 @@ fn cmd_show(output: &mut dyn Output) -> Result<()> {
         LayoutSource::RepoStore => "repo setting",
         LayoutSource::YamlConfig => "daft.yml",
         LayoutSource::GlobalConfig => "global config",
-        LayoutSource::Default => "default",
+        LayoutSource::Detected => "detected",
+        LayoutSource::Unresolved => "default",
     };
 
     let use_color = styles::colors_enabled();

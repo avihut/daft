@@ -490,6 +490,7 @@ fn resolve_checkout_layout(
         repo_store_layout: repo_store_layout.as_deref(),
         yaml_layout: yaml_layout.as_deref(),
         global_config: &global_config,
+        detection: None,
     });
 
     // Graceful degradation: warn if layout needs bare but repo is not bare.

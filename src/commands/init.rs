@@ -134,6 +134,7 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
         repo_store_layout: None,
         yaml_layout: None,
         global_config: &global_config,
+        detection: None,
     });
 
     let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);

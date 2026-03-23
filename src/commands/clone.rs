@@ -225,6 +225,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         repo_store_layout: None,
         yaml_layout: yaml_layout.as_deref(),
         global_config: &global_config,
+        detection: None,
     });
 
     // Report layout decision
