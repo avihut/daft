@@ -103,7 +103,9 @@ after clone. If the first branch doesn't exist on remote, the next valid one in
 the list is used. If no valid branches from the original list exist but a base
 worktree was created (default branch injected for non-bare layouts), cd into the
 base worktree. For bare layouts with no valid branches, cd into the repo
-directory itself.
+directory itself. For `BranchSource::All`, the cd target is the base worktree
+(default branch, or first alphabetical branch if the default is absent on the
+remote).
 
 ## Clone Phases
 
@@ -294,7 +296,8 @@ Adding `Setup` requires updating all exhaustive matches on `OperationPhase`:
 - `sync_dag.rs` — `OperationPhase::label()` method: add
   `Setup => "Setting up worktrees"`
 - `state.rs` — `apply_event()` active label match: add `Setup => "setting up"`
-- Any `TaskId` enum usage that maps phases to task identifiers
+- `sync_dag.rs` — `TaskId` enum (line 24): add `Setup(String)` variant; update
+  all match sites in `sync.rs` and `prune.rs` task executor closures
 
 ### New TaskMessage variants
 
