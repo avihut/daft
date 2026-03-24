@@ -5,11 +5,13 @@
 
 mod columns;
 mod driver;
+pub mod operation_table;
 mod presenter;
 mod render;
 mod state;
 
 pub use columns::{select_columns, Column};
 pub use driver::TuiRenderer;
+pub use operation_table::{CompletedTable, OperationTable, TableConfig};
 pub use presenter::TuiPresenter;
 pub use state::{FinalStatus, PhaseState, PhaseStatus, TuiState, WorktreeRow, WorktreeStatus};
