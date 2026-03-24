@@ -474,11 +474,11 @@ fn create_satellite_worktrees(
 ) -> Result<clone::CloneResult> {
     // Derive the absolute repo root from git_dir (which is already canonical).
     // This is safe regardless of what cwd Phase 4 left us in.
-    let repo_path = base_result
-        .git_dir
-        .parent()
-        .expect("git_dir must have a parent")
-        .to_path_buf();
+    // Use parent_dir (the repo root) not git_dir.parent(). For contained-classic,
+    // git_dir moves into a branch subdirectory (e.g., repo/master/.git), so
+    // git_dir.parent() would give repo/master instead of repo.
+    let repo_path = std::fs::canonicalize(&base_result.parent_dir)
+        .unwrap_or_else(|_| base_result.parent_dir.clone());
 
     // cd back to the repo root so worktree-relative paths resolve correctly
     change_directory(&repo_path)?;
@@ -694,11 +694,11 @@ fn create_satellite_worktrees_tui(
 ) -> Result<clone::CloneResult> {
     use crate::core::worktree::list::Stat;
 
-    let repo_path = base_result
-        .git_dir
-        .parent()
-        .expect("git_dir must have a parent")
-        .to_path_buf();
+    // Use parent_dir (the repo root) not git_dir.parent(). For contained-classic,
+    // git_dir moves into a branch subdirectory (e.g., repo/master/.git), so
+    // git_dir.parent() would give repo/master instead of repo.
+    let repo_path = std::fs::canonicalize(&base_result.parent_dir)
+        .unwrap_or_else(|_| base_result.parent_dir.clone());
 
     // cd back to the repo root so worktree-relative paths resolve correctly
     change_directory(&repo_path)?;
