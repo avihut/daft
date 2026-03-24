@@ -28,7 +28,7 @@ use crate::{
     is_git_repository,
     logging::init_logging,
     output::{
-        tui::{TuiRenderer, TuiState},
+        tui::operation_table::{OperationTable, TableConfig},
         CliOutput, Output, OutputConfig,
     },
     remote::get_default_branch_local,
@@ -534,18 +534,45 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         })
     };
 
-    let state = TuiState::new(
-        phases,
-        worktree_infos,
-        project_root.clone(),
-        cwd,
-        stat,
-        args.verbose,
-        tui_columns,
-        columns_explicit,
-        unowned_start_index,
-        sort_spec,
+    // ── Build shared maps from worktree_infos before they move into OperationTable ──
+    // Shared worktree info map for live refresh after tasks complete
+    let shared_info_map: Arc<HashMap<String, list::WorktreeInfo>> = Arc::new(
+        worktree_infos
+            .iter()
+            .map(|info| (info.name.clone(), info.clone()))
+            .collect(),
     );
+    // Build worktree list including local-only branches (with None paths).
+    let worktree_branch_set: HashSet<String> =
+        all_worktrees.iter().map(|(_, b)| b.clone()).collect();
+    let orch_all_worktrees: Vec<(String, Option<PathBuf>)> = all_worktrees
+        .iter()
+        .map(|(p, b)| (b.clone(), Some(p.clone())))
+        .chain(
+            worktree_infos
+                .iter()
+                .filter(|info| {
+                    info.kind == list::EntryKind::LocalBranch
+                        && !worktree_branch_set.contains(&info.name)
+                })
+                .map(|info| (info.name.clone(), None)),
+        )
+        .collect();
+    // Build owner lookup from the worktree_infos collected before TUI started
+    let shared_owner_lookup: Arc<HashMap<String, Option<String>>> = Arc::new(
+        worktree_infos
+            .iter()
+            .map(|info| (info.name.clone(), info.owner_email.clone()))
+            .collect(),
+    );
+    // Budget hook + job sub-rows per worktree (2 hooks x ~3 jobs each).
+    // Not all worktrees will have hooks, but the ratatui inline viewport
+    // cannot grow after creation, so over-allocate.
+    let hook_extra_rows = if args.verbose >= 1 {
+        (worktree_infos.len() as u16) * 8
+    } else {
+        0
+    };
 
     // ── Create channel and spawn orchestrator ──────────────────────────
     let (tx, rx) = std::sync::mpsc::channel();
@@ -590,49 +617,16 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         Arc::new(std::sync::Mutex::new(None));
     let deferred_branch_writer = Arc::clone(&deferred_branch);
 
-    // Shared worktree info map for live refresh after tasks complete
-    let shared_info_map: Arc<HashMap<String, list::WorktreeInfo>> = Arc::new(
-        state
-            .worktrees
-            .iter()
-            .map(|wt| (wt.info.name.clone(), wt.info.clone()))
-            .collect(),
-    );
     let shared_base_branch = Arc::new(base_branch.clone());
 
     // Clone values needed by orchestrator
     let orch_settings = Arc::clone(&shared_settings);
-    // Build worktree list including local-only branches (with None paths).
-    let worktree_branch_set: HashSet<String> =
-        all_worktrees.iter().map(|(_, b)| b.clone()).collect();
-    let orch_all_worktrees: Vec<(String, Option<PathBuf>)> = all_worktrees
-        .iter()
-        .map(|(p, b)| (b.clone(), Some(p.clone())))
-        .chain(
-            state
-                .worktrees
-                .iter()
-                .filter(|wt| {
-                    wt.info.kind == list::EntryKind::LocalBranch
-                        && !worktree_branch_set.contains(&wt.info.name)
-                })
-                .map(|wt| (wt.info.name.clone(), None)),
-        )
-        .collect();
     let orch_info_map = Arc::clone(&shared_info_map);
     let orch_base_branch = Arc::clone(&shared_base_branch);
     let orch_stat = stat;
 
     // Ownership filtering for the orchestrator
     let shared_include: Arc<Vec<String>> = Arc::new(args.include.clone());
-    // Build owner lookup from the worktree_infos collected before TUI started
-    let shared_owner_lookup: Arc<HashMap<String, Option<String>>> = Arc::new(
-        state
-            .worktrees
-            .iter()
-            .map(|wt| (wt.info.name.clone(), wt.info.owner_email.clone()))
-            .collect(),
-    );
     let shared_user_email: Arc<Option<String>> =
         Arc::new(git.config_get("user.email").ok().flatten());
 
@@ -821,17 +815,24 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         );
     });
 
-    // ── Run TUI renderer on main thread ────────────────────────────────
-    // Budget hook + job sub-rows per worktree (2 hooks × ~3 jobs each).
-    // Not all worktrees will have hooks, but the ratatui inline viewport
-    // cannot grow after creation, so over-allocate.
-    let hook_extra_rows = if args.verbose >= 1 {
-        (state.worktrees.len() as u16) * 8
-    } else {
-        0
-    };
-    let renderer = TuiRenderer::new(state, rx).with_extra_rows(5 + hook_extra_rows);
-    let final_state = renderer.run()?;
+    // ── Run TUI via OperationTable on main thread ──────────────────────
+    let table = OperationTable::new(
+        phases,
+        worktree_infos,
+        project_root.clone(),
+        cwd,
+        stat,
+        rx,
+        TableConfig {
+            columns: tui_columns,
+            columns_explicit,
+            sort_spec,
+            extra_rows: 5 + hook_extra_rows,
+            verbosity: args.verbose,
+        },
+        unowned_start_index,
+    );
+    let completed = table.run()?;
 
     // Wait for orchestrator thread to finish
     orchestrator_handle
@@ -851,10 +852,10 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     );
 
     // ── Post-TUI: print hook summary ────────────────────────────────────
-    if !final_state.hook_summaries.is_empty() {
+    if !completed.hook_summaries.is_empty() {
         eprintln!();
         eprintln!("Hooks:");
-        for entry in &final_state.hook_summaries {
+        for entry in &completed.hook_summaries {
             let status_word = if entry.warned { "warned" } else { "failed" };
             let exit_str = entry
                 .exit_code
@@ -880,7 +881,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     }
 
     // ── Check for failures ────────────────────────────────────────────────
-    sync_shared::check_tui_failures(&final_state)?;
+    sync_shared::check_tui_failures(&completed.rows)?;
 
     Ok(())
 }

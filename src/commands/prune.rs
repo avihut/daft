@@ -488,7 +488,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     }
 
     // ── Check for failures ────────────────────────────────────────────────
-    sync_shared::check_tui_failures(&final_state)?;
+    sync_shared::check_tui_failures(&final_state.worktrees)?;
 
     Ok(())
 }
