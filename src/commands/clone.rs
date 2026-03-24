@@ -82,9 +82,10 @@ pub struct Args {
     #[arg(
         short = 'v',
         long = "verbose",
-        help = "Be verbose; show detailed progress"
+        action = clap::ArgAction::Count,
+        help = "Increase verbosity (-v for hook details, -vv for full sequential output)"
     )]
-    verbose: bool,
+    verbose: u8,
 
     #[arg(
         short = 'a',
@@ -131,14 +132,14 @@ pub struct Args {
 pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-clone"));
 
-    init_logging(args.verbose);
+    init_logging(args.verbose >= 2);
 
     validate_arg_combinations(&args)?;
 
     let settings = DaftSettings::load_global()?;
 
     let autocd = settings.autocd && !args.no_cd;
-    let config = OutputConfig::with_autocd(args.quiet, args.verbose, autocd);
+    let config = OutputConfig::with_autocd(args.quiet, args.verbose >= 2, autocd);
     let mut output = CliOutput::new(config);
 
     let original_dir = get_current_directory()?;
@@ -345,7 +346,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     // Phase 5: Create satellite worktrees for multi-branch clone
     let mut used_tui = false;
     let result = if is_multi_branch && !filtered_satellites.is_empty() {
-        if std::io::IsTerminal::is_terminal(&std::io::stderr()) && !args.verbose {
+        if std::io::IsTerminal::is_terminal(&std::io::stderr()) && args.verbose < 2 {
             used_tui = true;
             create_satellite_worktrees_tui(
                 &result,
@@ -357,6 +358,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
                 settings,
                 args.no_hooks,
                 args.trust_hooks,
+                args.verbose,
             )?
         } else {
             create_satellite_worktrees(
@@ -563,6 +565,7 @@ fn create_satellite_worktrees_tui(
     settings: &DaftSettings,
     no_hooks: bool,
     trust_hooks: bool,
+    verbosity: u8,
 ) -> Result<clone::CloneResult> {
     use crate::core::worktree::list::Stat;
 
@@ -863,7 +866,7 @@ fn create_satellite_worktrees_tui(
             columns_explicit: false,
             sort_spec: None,
             extra_rows: 5 + (satellite_count as u16) * 8,
-            verbosity: 0,
+            verbosity,
         },
         None,
     );

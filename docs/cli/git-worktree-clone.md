@@ -46,7 +46,7 @@ git worktree-clone [OPTIONS] <REPOSITORY_URL>
 | `-b, --branch <BRANCH>` | Branch to check out (repeatable; use HEAD or @ for default branch) |  |
 | `-n, --no-checkout` | Perform a bare clone only; do not create any worktree |  |
 | `-q, --quiet` | Operate quietly; suppress progress reporting |  |
-| `-v, --verbose` | Be verbose; show detailed progress |  |
+| `-v, --verbose` | Increase verbosity (-v for hook details, -vv for full sequential output) |  |
 | `-a, --all-branches` | Create a worktree for each remote branch, not just the default |  |
 | `--trust-hooks` | Trust the repository and allow hooks to run without prompting |  |
 | `--no-hooks` | Do not run any hooks from the repository |  |

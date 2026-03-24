@@ -4,7 +4,7 @@
 .SH NAME
 daft\-clone \- Clone a repository into a worktree\-based directory structure
 .SH SYNOPSIS
-\fBdaft\-clone\fR [\fB\-b\fR|\fB\-\-branch\fR] [\fB\-n\fR|\fB\-\-no\-checkout\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-a\fR|\fB\-\-all\-branches\fR] [\fB\-\-trust\-hooks\fR] [\fB\-\-no\-hooks\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-\-layout\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPOSITORY_URL\fR> 
+\fBdaft\-clone\fR [\fB\-b\fR|\fB\-\-branch\fR] [\fB\-n\fR|\fB\-\-no\-checkout\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-a\fR|\fB\-\-all\-branches\fR] [\fB\-\-trust\-hooks\fR] [\fB\-\-no\-hooks\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-\-layout\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPOSITORY_URL\fR> 
 .SH DESCRIPTION
 .PP
 Clones a repository into a directory structure optimized for worktree\-based
@@ -32,7 +32,7 @@ Perform a bare clone only; do not create any worktree
 Operate quietly; suppress progress reporting
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
-Be verbose; show detailed progress
+Increase verbosity (\-v for hook details, \-vv for full sequential output)
 .TP
 \fB\-a\fR, \fB\-\-all\-branches\fR
 Create a worktree for each remote branch, not just the default
