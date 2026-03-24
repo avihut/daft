@@ -377,12 +377,16 @@ fn create_satellite_worktrees(
     settings: &DaftSettings,
     output: &mut dyn Output,
 ) -> Result<clone::CloneResult> {
-    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    // Derive the absolute repo root from git_dir (which is already canonical).
+    // This is safe regardless of what cwd Phase 4 left us in.
+    let repo_path = base_result
+        .git_dir
+        .parent()
+        .expect("git_dir must have a parent")
+        .to_path_buf();
 
-    // We need to cd back to parent_dir to create worktrees from the repo root
-    change_directory(&base_result.parent_dir)?;
-
-    let repo_path = base_result.parent_dir.clone();
+    // cd back to the repo root so worktree-relative paths resolve correctly
+    change_directory(&repo_path)?;
 
     let mut created_count = 0;
     for branch in &branch_plan.satellites {
@@ -410,50 +414,32 @@ fn create_satellite_worktrees(
 
         output.start_spinner(&format!("Creating worktree for '{}'...", branch));
 
-        // Ensure parent directory exists
-        if let Some(parent) = worktree_path.parent() {
-            if !parent.as_os_str().is_empty() && !parent.exists() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    output.finish_spinner();
-                    output.warning(&format!(
-                        "Could not create directory '{}': {}",
-                        parent.display(),
-                        e
-                    ));
-                    continue;
-                }
-            }
-        }
+        let satellite_result = {
+            let mut sink = OutputSink(output);
+            clone::create_satellite_worktree(
+                branch,
+                &worktree_path,
+                &bare_params.remote_name,
+                settings.checkout_upstream,
+                settings.use_gitoxide,
+                &mut sink,
+            )
+        };
 
-        if let Err(e) = git.worktree_add(&worktree_path, branch) {
-            output.finish_spinner();
-            output.warning(&format!(
-                "Could not create worktree for branch '{}': {}",
-                branch, e
-            ));
-            continue;
-        }
-
-        // Set up upstream tracking
-        if settings.checkout_upstream {
-            let upstream_result = std::process::Command::new("git")
-                .args([
-                    "branch",
-                    &format!("--set-upstream-to={}/{}", bare_params.remote_name, branch),
-                ])
-                .current_dir(&worktree_path)
-                .output();
-
-            if let Err(e) = upstream_result {
+        match satellite_result {
+            Ok(_) => {
                 output.finish_spinner();
-                output.warning(&format!("Could not set upstream for '{}': {}", branch, e));
-                // Continue anyway -- worktree was created successfully
+                output.step(&format!("Created worktree for '{}'", branch));
+                created_count += 1;
+            }
+            Err(e) => {
+                output.finish_spinner();
+                output.warning(&format!(
+                    "Could not create worktree for branch '{}': {}",
+                    branch, e
+                ));
             }
         }
-
-        output.finish_spinner();
-        output.step(&format!("Created worktree for '{}'", branch));
-        created_count += 1;
     }
 
     // Determine cd_target path

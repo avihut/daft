@@ -84,7 +84,7 @@ impl GitCommand {
     pub fn set_upstream(&self, remote: &str, branch: &str) -> Result<()> {
         let upstream = format!("{remote}/{branch}");
         let output = Command::new("git")
-            .args(["branch", &format!("--set-upstream-to={upstream}")])
+            .args(["branch", &format!("--set-upstream-to={upstream}"), branch])
             .output()
             .context("Failed to execute git branch command")?;
 
