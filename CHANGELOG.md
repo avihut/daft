@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.1](https://github.com/avihut/daft/compare/v1.3.0...v1.3.1) - 2026-03-24
+
+### Bug Fixes
+
+- gate unix-only MetadataExt behind cfg(unix) for Windows build ([#321](https://github.com/avihut/daft/pull/321))
+
 ## [1.3.0](https://github.com/avihut/daft/compare/v1.2.1...v1.3.0) - 2026-03-24
 
 ### Features
