@@ -302,11 +302,11 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         }
     }
 
-    // Canonicalize parent_dir now (while cwd is still valid for the relative path).
-    // Phase 4 may change cwd (e.g., contained-classic moves into a branch subdir),
-    // so the relative parent_dir would be unreachable after that.
+    // After clone_bare_phase, cwd is inside the repo directory. Capture the
+    // absolute path now — Phase 4 may change cwd (e.g., contained-classic moves
+    // into a branch subdir), making the relative parent_dir unreachable.
     let canonical_parent_dir =
-        std::fs::canonicalize(&bare_result.parent_dir).unwrap_or(bare_result.parent_dir.clone());
+        std::env::current_dir().unwrap_or_else(|_| bare_result.parent_dir.clone());
 
     // Phase 4: Set up repo in the correct layout
     let result = if layout.needs_bare() {
