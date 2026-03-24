@@ -1,0 +1,67 @@
+name: Multi-branch clone fires post-clone hook
+description:
+  The post-clone hook fires once for the first created worktree even in
+  multi-branch clone mode. The hook is read from the cd_target branch (develop).
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+          - path: daft.yml
+            content: |
+              hooks:
+                post-clone:
+                  jobs:
+                    - name: clone-marker
+                      run: touch "$DAFT_WORKTREE_PATH/.clone-hook-ran"
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+        files:
+          - path: dev.txt
+            content: "dev"
+          - path: daft.yml
+            content: |
+              hooks:
+                post-clone:
+                  jobs:
+                    - name: clone-marker
+                      run: touch "$DAFT_WORKTREE_PATH/.clone-hook-ran"
+        commits:
+          - message: "Add dev"
+      - name: feature
+        from: main
+        files:
+          - path: feat.txt
+            content: "feat"
+          - path: daft.yml
+            content: |
+              hooks:
+                post-clone:
+                  jobs:
+                    - name: clone-marker
+                      run: touch "$DAFT_WORKTREE_PATH/.clone-hook-ran"
+        commits:
+          - message: "Add feat"
+
+steps:
+  - name: Clone with multiple branches and trust hooks
+    run:
+      git-worktree-clone --layout contained --trust-hooks -b develop -b feature
+      $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+        - "$WORK_DIR/test-repo/feature"
+
+  - name: Verify post-clone hook fired for base worktree (develop)
+    run: "true"
+    expect:
+      files_exist:
+        - "$WORK_DIR/test-repo/develop/.clone-hook-ran"

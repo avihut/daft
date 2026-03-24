@@ -1,0 +1,22 @@
+name: Clone with nonexistent branch
+description:
+  Nonexistent branches produce a warning but clone succeeds for valid ones.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with one valid and one invalid branch
+    run:
+      git-worktree-clone --layout contained -b develop -b nonexistent-branch
+      $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "not found on remote"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/develop"
+          branch: develop
