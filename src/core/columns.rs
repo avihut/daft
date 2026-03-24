@@ -80,6 +80,7 @@ impl ListColumn {
     pub fn clone_defaults() -> &'static [ListColumn] {
         &[
             ListColumn::Branch,
+            ListColumn::Path,
             ListColumn::Base,
             ListColumn::Age,
             ListColumn::LastCommit,
