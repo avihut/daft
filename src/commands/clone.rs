@@ -368,6 +368,8 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
                 &bare_params,
                 &layout,
                 settings,
+                args.no_hooks,
+                args.trust_hooks,
                 output,
             )?
         }
@@ -393,10 +395,10 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     // Run hooks and exec only if a worktree was created
     if result.worktree_dir.is_some() {
         run_post_clone_hook(args, &result, output)?;
-        // Skip worktree-post-create hook when the TUI path handled satellite
-        // hooks already — running it here would duplicate the hook for the
-        // cd_target worktree.
-        if !(layout.needs_bare() || is_multi_branch && used_tui) {
+        // For multi-branch TUI: hooks already ran inside TUI for all worktrees
+        // (including the base). For everything else: run post-create hook for
+        // the base worktree here.
+        if !(is_multi_branch && used_tui) {
             run_post_create_hook(args, &result, output)?;
         }
 
@@ -423,6 +425,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 /// After Phase 4 creates the base worktree, this function creates additional
 /// worktrees for each satellite branch in the plan. Returns an updated
 /// `CloneResult` with the cd_target adjusted to the branch plan's preference.
+#[allow(clippy::too_many_arguments)]
 fn create_satellite_worktrees(
     base_result: &clone::CloneResult,
     branch_plan: &crate::core::worktree::branch_source::BranchPlan,
@@ -430,6 +433,8 @@ fn create_satellite_worktrees(
     bare_params: &clone::BareCloneParams,
     layout: &crate::core::layout::Layout,
     settings: &DaftSettings,
+    no_hooks: bool,
+    trust_hooks: bool,
     output: &mut dyn Output,
 ) -> Result<clone::CloneResult> {
     // Derive the absolute repo root from git_dir (which is already canonical).
@@ -467,6 +472,55 @@ fn create_satellite_worktrees(
             }
         };
 
+        // For hooks, we need an absolute worktree path (bare layouts use
+        // relative paths for git worktree add).
+        let abs_worktree_path = if worktree_path.is_relative() {
+            repo_path.join(&worktree_path)
+        } else {
+            worktree_path.clone()
+        };
+
+        // Run worktree-pre-create hook
+        if !no_hooks {
+            let hooks_config = HooksConfig::default();
+            if let Ok(mut executor) = HookExecutor::new(hooks_config) {
+                if trust_hooks {
+                    if let Some(fp) = get_remote_url_for_git_dir(&base_result.git_dir) {
+                        let _ = executor.trust_repository_with_fingerprint(
+                            &base_result.git_dir,
+                            TrustLevel::Allow,
+                            fp,
+                        );
+                    } else {
+                        let _ = executor.trust_repository(&base_result.git_dir, TrustLevel::Allow);
+                    }
+                }
+
+                let ctx = HookContext::new(
+                    HookType::PreCreate,
+                    "clone",
+                    &base_result.parent_dir,
+                    &base_result.git_dir,
+                    &base_result.remote_name,
+                    &abs_worktree_path,
+                    &abs_worktree_path,
+                    branch,
+                )
+                .with_new_branch(false);
+
+                let presenter = CliPresenter::auto(&HookOutputConfig::default());
+                if let Ok(outcome) = executor.execute(&ctx, output, presenter) {
+                    if !outcome.success && !outcome.skipped {
+                        output.warning(&format!(
+                            "pre-create hook failed for '{}', skipping",
+                            branch
+                        ));
+                        continue;
+                    }
+                }
+            }
+        }
+
         output.start_spinner(&format!("Creating worktree for '{}'...", branch));
 
         let satellite_result = {
@@ -486,6 +540,40 @@ fn create_satellite_worktrees(
                 output.finish_spinner();
                 output.step(&format!("Created worktree for '{}'", branch));
                 created_count += 1;
+
+                // Run worktree-post-create hook
+                if !no_hooks {
+                    let hooks_config = HooksConfig::default();
+                    if let Ok(mut executor) = HookExecutor::new(hooks_config) {
+                        if trust_hooks {
+                            if let Some(fp) = get_remote_url_for_git_dir(&base_result.git_dir) {
+                                let _ = executor.trust_repository_with_fingerprint(
+                                    &base_result.git_dir,
+                                    TrustLevel::Allow,
+                                    fp,
+                                );
+                            } else {
+                                let _ = executor
+                                    .trust_repository(&base_result.git_dir, TrustLevel::Allow);
+                            }
+                        }
+
+                        let ctx = HookContext::new(
+                            HookType::PostCreate,
+                            "clone",
+                            &base_result.parent_dir,
+                            &base_result.git_dir,
+                            &base_result.remote_name,
+                            &abs_worktree_path,
+                            &abs_worktree_path,
+                            branch,
+                        )
+                        .with_new_branch(false);
+
+                        let presenter = CliPresenter::auto(&HookOutputConfig::default());
+                        let _ = executor.execute(&ctx, output, presenter);
+                    }
+                }
             }
             Err(e) => {
                 output.finish_spinner();
@@ -661,6 +749,8 @@ fn create_satellite_worktrees_tui(
     let shared_no_hooks = no_hooks;
     let shared_trust_hooks = trust_hooks;
     let shared_base_branch = base_branch.map(|s| s.to_string());
+    let shared_base_path: Option<std::path::PathBuf> =
+        worktree_infos.first().and_then(|info| info.path.clone());
     let orchestrator_handle = std::thread::spawn(move || {
         // Mark Fetch phase as already completed (bare clone happened before TUI)
         let _ = tx.send(DagEvent::TaskStarted {
@@ -675,12 +765,51 @@ fn create_satellite_worktrees_tui(
             updated_info: None,
         });
 
-        // Mark the base worktree as already completed (Phase 4 created it)
+        // Mark the base worktree as started, run post-create hook, then complete.
+        // Phase 4 already created the worktree, so only worktree-post-create fires
+        // (not worktree-pre-create).
         if let Some(ref base) = shared_base_branch {
             let _ = tx.send(DagEvent::TaskStarted {
                 phase: OperationPhase::Setup,
                 branch_name: base.clone(),
             });
+
+            // Run worktree-post-create hook for the base worktree via TuiBridge
+            if !shared_no_hooks {
+                let hooks_cfg = HooksConfig::default();
+                if let Ok(mut executor) = HookExecutor::new(hooks_cfg) {
+                    if shared_trust_hooks {
+                        if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
+                            let _ = executor.trust_repository_with_fingerprint(
+                                &shared_git_dir,
+                                TrustLevel::Allow,
+                                fp,
+                            );
+                        } else {
+                            let _ = executor.trust_repository(&shared_git_dir, TrustLevel::Allow);
+                        }
+                    }
+                    let base_worktree_path = shared_base_path
+                        .as_ref()
+                        .expect("base path must exist when base branch is set");
+                    let mut bridge = TuiBridge::new(executor, tx.clone(), base.clone());
+
+                    let ctx = HookContext::new(
+                        HookType::PostCreate,
+                        "clone",
+                        &*shared_parent_dir,
+                        &*shared_git_dir,
+                        &*shared_remote_name_for_hooks,
+                        base_worktree_path,
+                        base_worktree_path,
+                        base,
+                    )
+                    .with_new_branch(false);
+
+                    let _ = bridge.run_hook(&ctx);
+                }
+            }
+
             let _ = tx.send(DagEvent::TaskCompleted {
                 phase: OperationPhase::Setup,
                 branch_name: base.clone(),

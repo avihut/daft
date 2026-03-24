@@ -1,7 +1,7 @@
-name: Multi-branch clone fires post-clone hook
+name: Multi-branch clone fires hooks for all worktrees
 description:
-  The post-clone hook fires once for the first created worktree even in
-  multi-branch clone mode. The hook is read from the cd_target branch (develop).
+  post-clone fires once for the clone operation. worktree-post-create fires for
+  every worktree created during clone, including the base worktree.
 
 repos:
   - name: test-repo
@@ -18,6 +18,10 @@ repos:
                   jobs:
                     - name: clone-marker
                       run: touch "$DAFT_WORKTREE_PATH/.clone-hook-ran"
+                worktree-post-create:
+                  jobs:
+                    - name: create-marker
+                      run: touch "$DAFT_WORKTREE_PATH/.create-hook-ran"
         commits:
           - message: "Initial commit"
       - name: develop
@@ -32,6 +36,10 @@ repos:
                   jobs:
                     - name: clone-marker
                       run: touch "$DAFT_WORKTREE_PATH/.clone-hook-ran"
+                worktree-post-create:
+                  jobs:
+                    - name: create-marker
+                      run: touch "$DAFT_WORKTREE_PATH/.create-hook-ran"
         commits:
           - message: "Add dev"
       - name: feature
@@ -46,6 +54,10 @@ repos:
                   jobs:
                     - name: clone-marker
                       run: touch "$DAFT_WORKTREE_PATH/.clone-hook-ran"
+                worktree-post-create:
+                  jobs:
+                    - name: create-marker
+                      run: touch "$DAFT_WORKTREE_PATH/.create-hook-ran"
         commits:
           - message: "Add feat"
 
@@ -65,3 +77,15 @@ steps:
     expect:
       files_exist:
         - "$WORK_DIR/test-repo/develop/.clone-hook-ran"
+
+  - name: Verify worktree-post-create fired for base worktree (develop)
+    run: "true"
+    expect:
+      files_exist:
+        - "$WORK_DIR/test-repo/develop/.create-hook-ran"
+
+  - name: Verify worktree-post-create fired for satellite worktree (feature)
+    run: "true"
+    expect:
+      files_exist:
+        - "$WORK_DIR/test-repo/feature/.create-hook-ran"
