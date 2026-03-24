@@ -520,6 +520,45 @@ pub fn ls_remote_branch_exists(repo: &Repository, remote_name: &str, branch: &st
     Ok(!output.trim().is_empty())
 }
 
+// --- Group 7: Local Remote-Tracking Refs ---
+
+/// Check if a branch exists in the already-fetched remote refs (no network).
+///
+/// After `git clone --bare`, remote refs are available locally under
+/// `refs/remotes/<remote>/`. This avoids a network round-trip compared to
+/// `ls_remote_branch_exists`.
+pub fn validate_branch_in_remotes(
+    repo: &Repository,
+    remote_name: &str,
+    branch: &str,
+) -> Result<bool> {
+    let ref_name = format!("refs/remotes/{remote_name}/{branch}");
+    Ok(repo.try_find_reference(&ref_name)?.is_some())
+}
+
+/// List all branches available in the local remote-tracking refs (no network).
+///
+/// Returns branch names without the `refs/remotes/<remote>/` prefix.
+pub fn list_remote_branches_local(repo: &Repository, remote_name: &str) -> Result<Vec<String>> {
+    let prefix = format!("refs/remotes/{remote_name}/");
+    let platform = repo.references()?;
+    let references = platform.prefixed(prefix.as_str())?;
+    let mut branches = Vec::new();
+
+    for reference_result in references {
+        let reference =
+            reference_result.map_err(|e| anyhow::anyhow!("Failed to read reference: {e}"))?;
+        let full_name = reference.name().as_bstr().to_string();
+        if let Some(branch_name) = full_name.strip_prefix(&prefix) {
+            if branch_name != "HEAD" {
+                branches.push(branch_name.to_string());
+            }
+        }
+    }
+
+    Ok(branches)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1151,5 +1190,82 @@ mod tests {
             !local_line.contains('['),
             "Branch without tracking should not have tracking info. Got: {local_line}"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn test_validate_branch_in_remotes() {
+        let (dir, _repo) = create_test_repo();
+        let path = dir.path().canonicalize().unwrap();
+
+        git_cmd()
+            .args(["remote", "add", "origin", "https://example.com/repo.git"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["update-ref", "refs/remotes/origin/main", "refs/heads/main"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        git_cmd()
+            .args([
+                "update-ref",
+                "refs/remotes/origin/develop",
+                "refs/heads/main",
+            ])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        let saved_cwd = std::env::current_dir().ok();
+        std::env::set_current_dir(&path).unwrap();
+        let repo = gix::open(&path).unwrap();
+        if let Some(cwd) = saved_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
+
+        assert!(validate_branch_in_remotes(&repo, "origin", "main").unwrap());
+        assert!(validate_branch_in_remotes(&repo, "origin", "develop").unwrap());
+        assert!(!validate_branch_in_remotes(&repo, "origin", "nonexistent").unwrap());
+    }
+
+    #[test]
+    #[serial]
+    fn test_list_remote_branches_local() {
+        let (dir, _repo) = create_test_repo();
+        let path = dir.path().canonicalize().unwrap();
+
+        git_cmd()
+            .args(["remote", "add", "origin", "https://example.com/repo.git"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        git_cmd()
+            .args(["update-ref", "refs/remotes/origin/main", "refs/heads/main"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        git_cmd()
+            .args([
+                "update-ref",
+                "refs/remotes/origin/develop",
+                "refs/heads/main",
+            ])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        let saved_cwd = std::env::current_dir().ok();
+        std::env::set_current_dir(&path).unwrap();
+        let repo = gix::open(&path).unwrap();
+        if let Some(cwd) = saved_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
+
+        let branches = list_remote_branches_local(&repo, "origin").unwrap();
+        assert!(branches.contains(&"main".to_string()));
+        assert!(branches.contains(&"develop".to_string()));
+        assert_eq!(branches.len(), 2);
     }
 }
