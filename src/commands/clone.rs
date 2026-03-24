@@ -483,16 +483,22 @@ fn create_satellite_worktrees(
     trust_hooks: bool,
     output: &mut dyn Output,
 ) -> Result<clone::CloneResult> {
-    // Derive the absolute repo root from git_dir (which is already canonical).
-    // This is safe regardless of what cwd Phase 4 left us in.
-    // Use parent_dir (the repo root) not git_dir.parent(). For contained-classic,
-    // git_dir moves into a branch subdirectory (e.g., repo/master/.git), so
-    // git_dir.parent() would give repo/master instead of repo.
+    // Use parent_dir (the repo root) as the base for path resolution.
     let repo_path = std::fs::canonicalize(&base_result.parent_dir)
         .unwrap_or_else(|_| base_result.parent_dir.clone());
 
-    // cd back to the repo root so worktree-relative paths resolve correctly
-    change_directory(&repo_path)?;
+    // cd to a directory where git can find the repo. For contained-classic,
+    // .git lives inside the base worktree (e.g., repo/master/.git), so we must
+    // cd there. For other layouts, the repo root has .git directly.
+    if layout.needs_wrapper() {
+        if let Some(ref wt) = base_result.worktree_dir {
+            change_directory(wt)?;
+        } else {
+            change_directory(&repo_path)?;
+        }
+    } else {
+        change_directory(&repo_path)?;
+    }
 
     let mut created_count = 0;
     for branch in satellites {
@@ -711,8 +717,18 @@ fn create_satellite_worktrees_tui(
     let repo_path = std::fs::canonicalize(&base_result.parent_dir)
         .unwrap_or_else(|_| base_result.parent_dir.clone());
 
-    // cd back to the repo root so worktree-relative paths resolve correctly
-    change_directory(&repo_path)?;
+    // cd to a directory where git can find the repo. For contained-classic,
+    // .git lives inside the base worktree (e.g., repo/master/.git), so we must
+    // cd there. For other layouts, the repo root has .git directly.
+    if layout.needs_wrapper() {
+        if let Some(ref wt) = base_result.worktree_dir {
+            change_directory(wt)?;
+        } else {
+            change_directory(&repo_path)?;
+        }
+    } else {
+        change_directory(&repo_path)?;
+    }
 
     // Build WorktreeInfo stubs — start with the base/Phase-4 worktree (if any),
     // then add each satellite branch.
