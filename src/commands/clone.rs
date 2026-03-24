@@ -23,7 +23,10 @@ use crate::{
     },
     logging::init_logging,
     output::{
-        tui::operation_table::{OperationTable, TableConfig},
+        tui::{
+            operation_table::{OperationTable, TableConfig},
+            Column,
+        },
         CliOutput, Output, OutputConfig,
     },
     settings::{DaftSettings, HookOutputConfig},
@@ -120,6 +123,12 @@ pub struct Args {
     /// or an inline template string.
     #[arg(long, value_name = "LAYOUT")]
     layout: Option<String>,
+
+    #[arg(
+        long,
+        help = "Columns to display (comma-separated). Replace: branch,base,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit"
+    )]
+    columns: Option<String>,
 
     #[arg(
         short = 'x',
@@ -343,6 +352,30 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         branch_plan.base.clone()
     };
 
+    // Parse --columns for TUI table (default: branch, base, age, last-commit)
+    use crate::core::columns::{ColumnSelection, CommandKind};
+
+    let (tui_columns, columns_explicit) = match args.columns {
+        Some(ref input) => {
+            let resolved = ColumnSelection::parse(input, CommandKind::Clone)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let tui_cols: Vec<Column> = resolved
+                .columns
+                .iter()
+                .map(|c| Column::from_list_column(*c))
+                .collect();
+            (Some(tui_cols), resolved.explicit)
+        }
+        None => {
+            // Clone-specific defaults: base, age, last-commit
+            let defaults: Vec<Column> = crate::core::columns::ListColumn::clone_defaults()
+                .iter()
+                .map(|c| Column::from_list_column(*c))
+                .collect();
+            (Some(defaults), true)
+        }
+    };
+
     // Phase 5: Create satellite worktrees for multi-branch clone
     let mut used_tui = false;
     let result = if is_multi_branch && !filtered_satellites.is_empty() {
@@ -359,6 +392,8 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
                 args.no_hooks,
                 args.trust_hooks,
                 args.verbose,
+                tui_columns.clone(),
+                columns_explicit,
             )?
         } else {
             create_satellite_worktrees(
@@ -654,6 +689,8 @@ fn create_satellite_worktrees_tui(
     no_hooks: bool,
     trust_hooks: bool,
     verbosity: u8,
+    tui_columns: Option<Vec<Column>>,
+    columns_explicit: bool,
 ) -> Result<clone::CloneResult> {
     use crate::core::worktree::list::Stat;
 
@@ -991,8 +1028,8 @@ fn create_satellite_worktrees_tui(
         Stat::Summary,
         rx,
         TableConfig {
-            columns: None,
-            columns_explicit: false,
+            columns: tui_columns,
+            columns_explicit,
             sort_spec: None,
             extra_rows: 5 + (satellite_count as u16) * 8,
             verbosity,

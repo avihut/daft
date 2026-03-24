@@ -53,6 +53,7 @@ git worktree-clone [OPTIONS] <REPOSITORY_URL>
 | `-r, --remote <REMOTE>` | Organize worktree under this remote folder (enables multi-remote mode) |  |
 | `--no-cd` | Do not change directory to the new worktree |  |
 | `--layout <LAYOUT>` | Worktree layout to use for this repository |  |
+| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,base,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit |  |
 | `-x, --exec <EXEC>` | Run a command in the worktree after setup completes (repeatable) |  |
 
 ## Global Options
