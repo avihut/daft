@@ -319,12 +319,39 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         r?
     };
 
+    // Filter out the branch that Phase 4 already created (for bare layouts).
+    // For bare layouts, Phase 4 creates a worktree for bare_result.target_branch,
+    // but branch_plan.satellites includes it since branch_plan.base is None.
+    let filtered_satellites: Vec<String> = if layout.needs_bare() {
+        branch_plan
+            .satellites
+            .iter()
+            .filter(|b| *b != &bare_result.target_branch)
+            .cloned()
+            .collect()
+    } else {
+        branch_plan.satellites.clone()
+    };
+
+    // For bare layouts, the "base" shown in the TUI is the Phase 4-created branch.
+    // For non-bare layouts, it's branch_plan.base.
+    let tui_base_branch: Option<String> = if layout.needs_bare() {
+        // Phase 4 always creates a worktree for bare_result.target_branch
+        Some(bare_result.target_branch.clone())
+    } else {
+        branch_plan.base.clone()
+    };
+
     // Phase 5: Create satellite worktrees for multi-branch clone
-    let result = if is_multi_branch && !branch_plan.satellites.is_empty() {
+    let mut used_tui = false;
+    let result = if is_multi_branch && !filtered_satellites.is_empty() {
         if std::io::IsTerminal::is_terminal(&std::io::stderr()) && !args.verbose {
+            used_tui = true;
             create_satellite_worktrees_tui(
                 &result,
                 &branch_plan,
+                &filtered_satellites,
+                tui_base_branch.as_deref(),
                 &bare_params,
                 &layout,
                 settings,
@@ -335,6 +362,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             create_satellite_worktrees(
                 &result,
                 &branch_plan,
+                &filtered_satellites,
                 &bare_params,
                 &layout,
                 settings,
@@ -363,7 +391,10 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     // Run hooks and exec only if a worktree was created
     if result.worktree_dir.is_some() {
         run_post_clone_hook(args, &result, output)?;
-        if !layout.needs_bare() {
+        // Skip worktree-post-create hook when the TUI path handled satellite
+        // hooks already — running it here would duplicate the hook for the
+        // cd_target worktree.
+        if !(layout.needs_bare() || is_multi_branch && used_tui) {
             run_post_create_hook(args, &result, output)?;
         }
 
@@ -393,6 +424,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 fn create_satellite_worktrees(
     base_result: &clone::CloneResult,
     branch_plan: &crate::core::worktree::branch_source::BranchPlan,
+    satellites: &[String],
     bare_params: &clone::BareCloneParams,
     layout: &crate::core::layout::Layout,
     settings: &DaftSettings,
@@ -410,7 +442,7 @@ fn create_satellite_worktrees(
     change_directory(&repo_path)?;
 
     let mut created_count = 0;
-    for branch in &branch_plan.satellites {
+    for branch in satellites {
         let worktree_path = if layout.needs_bare() {
             // For bare layouts, worktrees are relative to parent_dir
             std::path::PathBuf::from(branch)
@@ -520,9 +552,12 @@ fn create_satellite_worktrees(
 /// Shows an `OperationTable` with per-worktree status and hook execution.
 /// Falls back to sequential `create_satellite_worktrees()` when stderr is not
 /// a TTY or verbose mode is enabled.
+#[allow(clippy::too_many_arguments)]
 fn create_satellite_worktrees_tui(
     base_result: &clone::CloneResult,
     branch_plan: &BranchPlan,
+    satellites: &[String],
+    base_branch: Option<&str>,
     bare_params: &clone::BareCloneParams,
     layout: &Layout,
     settings: &DaftSettings,
@@ -540,11 +575,31 @@ fn create_satellite_worktrees_tui(
     // cd back to the repo root so worktree-relative paths resolve correctly
     change_directory(&repo_path)?;
 
-    // Build WorktreeInfo stubs for each satellite branch
+    // Build WorktreeInfo stubs — start with the base/Phase-4 worktree (if any),
+    // then add each satellite branch.
     let mut worktree_infos: Vec<WorktreeInfo> = Vec::new();
     let mut satellite_paths: Vec<(String, std::path::PathBuf)> = Vec::new();
 
-    for branch in &branch_plan.satellites {
+    // Add the base worktree as the first row (already created by Phase 4)
+    if let Some(base) = base_branch {
+        let base_path = if layout.needs_bare() {
+            repo_path.join(base)
+        } else {
+            let ctx = TemplateContext {
+                repo_path: repo_path.clone(),
+                repo: base_result.repo_name.clone(),
+                branch: base.to_string(),
+            };
+            layout
+                .worktree_path(&ctx)
+                .unwrap_or_else(|_| repo_path.join(base))
+        };
+        let mut info = WorktreeInfo::empty(base);
+        info.path = Some(base_path);
+        worktree_infos.push(info);
+    }
+
+    for branch in satellites {
         let worktree_path = if layout.needs_bare() {
             std::path::PathBuf::from(branch)
         } else {
@@ -602,6 +657,7 @@ fn create_satellite_worktrees_tui(
     let shared_remote_name_for_hooks = Arc::new(base_result.remote_name.clone());
     let shared_no_hooks = no_hooks;
     let shared_trust_hooks = trust_hooks;
+    let shared_base_branch = base_branch.map(|s| s.to_string());
     let orchestrator_handle = std::thread::spawn(move || {
         // Mark Fetch phase as already completed (bare clone happened before TUI)
         let _ = tx.send(DagEvent::TaskStarted {
@@ -615,6 +671,21 @@ fn create_satellite_worktrees_tui(
             message: TaskMessage::Ok("cloned".into()),
             updated_info: None,
         });
+
+        // Mark the base worktree as already completed (Phase 4 created it)
+        if let Some(ref base) = shared_base_branch {
+            let _ = tx.send(DagEvent::TaskStarted {
+                phase: OperationPhase::Setup,
+                branch_name: base.clone(),
+            });
+            let _ = tx.send(DagEvent::TaskCompleted {
+                phase: OperationPhase::Setup,
+                branch_name: base.clone(),
+                status: TaskStatus::Succeeded,
+                message: TaskMessage::BaseCreated,
+                updated_info: None,
+            });
+        }
 
         // Prepare hooks config for per-satellite executor creation
         let hooks_config = if !shared_no_hooks {
