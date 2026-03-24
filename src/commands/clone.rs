@@ -3,7 +3,7 @@ use crate::{
     core::{
         global_config::GlobalConfig,
         layout::resolver::{resolve_layout, LayoutResolutionContext},
-        worktree::clone,
+        worktree::{branch_source::BranchSource, clone},
         OutputSink,
     },
     executor::cli_presenter::CliPresenter,
@@ -47,9 +47,11 @@ pub struct Args {
     #[arg(
         short = 'b',
         long = "branch",
-        help = "Check out <branch> instead of the remote's default branch"
+        value_name = "BRANCH",
+        action = clap::ArgAction::Append,
+        help = "Branch to check out (repeatable; use HEAD or @ for default branch)"
     )]
-    branch: Option<String>,
+    branch: Vec<String>,
 
     #[arg(
         short = 'n',
@@ -141,11 +143,14 @@ fn validate_arg_combinations(args: &Args) -> Result<()> {
     if args.no_checkout && args.all_branches {
         anyhow::bail!("--no-checkout and --all-branches cannot be used together.\nUse --no-checkout to create only the bare repository, or --all-branches to create worktrees for all branches.");
     }
-    if args.branch.is_some() && args.all_branches {
+    if !args.branch.is_empty() && args.all_branches {
         anyhow::bail!("--branch and --all-branches cannot be used together.\nUse --branch to checkout a specific branch, or --all-branches to create worktrees for all branches.");
     }
-    if args.branch.is_some() && args.no_checkout {
+    if !args.branch.is_empty() && args.no_checkout {
         anyhow::bail!("--branch and --no-checkout cannot be used together.\nUse --branch to checkout a specific branch, or --no-checkout to skip worktree creation.");
+    }
+    if args.remote.is_some() && args.branch.len() > 1 {
+        anyhow::bail!("--remote cannot be used with multiple -b flags.");
     }
     if args.trust_hooks && args.no_hooks {
         anyhow::bail!("--trust-hooks and --no-hooks cannot be used together.");
@@ -159,10 +164,18 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     let global_config = GlobalConfig::load().unwrap_or_default();
     let original_dir = get_current_directory()?;
 
+    let branch_source = BranchSource::from_args(&args.branch, args.all_branches);
+
+    // Extract a single branch for backward compatibility with BareCloneParams.
+    let bare_branch = match &branch_source {
+        BranchSource::Single(b) => Some(b.clone()),
+        _ => None,
+    };
+
     // Phase 1: Always clone bare first
     let bare_params = clone::BareCloneParams {
         repository_url: args.repository_url.clone(),
-        branch: args.branch.clone(),
+        branch: bare_branch.clone(),
         no_checkout: args.no_checkout,
         all_branches: args.all_branches,
         remote: args.remote.clone(),

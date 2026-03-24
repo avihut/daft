@@ -43,7 +43,7 @@ git worktree-clone [OPTIONS] <REPOSITORY_URL>
 
 | Option | Description | Default |
 |--------|-------------|----------|
-| `-b, --branch <BRANCH>` | Check out <branch> instead of the remote's default branch |  |
+| `-b, --branch <BRANCH>` | Branch to check out (repeatable; use HEAD or @ for default branch) |  |
 | `-n, --no-checkout` | Perform a bare clone only; do not create any worktree |  |
 | `-q, --quiet` | Operate quietly; suppress progress reporting |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
