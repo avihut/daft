@@ -26,15 +26,16 @@ are involved, with per-worktree hook presentation.
 
 ### New files
 
-| File                                                       | Responsibility                                                           |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `src/core/worktree/branch_source.rs`                       | `BranchSource` enum, `BranchPlan` struct, resolution logic               |
-| `src/output/tui/operation_table.rs`                        | `OperationTable`, `TableConfig`, `CompletedTable` — shared TUI component |
-| `tests/manual/scenarios/clone/multi-branch-contained.yml`  | YAML test: multi `-b` with contained layout                              |
-| `tests/manual/scenarios/clone/multi-branch-sibling.yml`    | YAML test: multi `-b` with sibling layout (default branch injection)     |
-| `tests/manual/scenarios/clone/multi-branch-head-token.yml` | YAML test: `HEAD`/`@` token resolution                                   |
-| `tests/manual/scenarios/clone/multi-branch-missing.yml`    | YAML test: warning for nonexistent branches                              |
-| `tests/manual/scenarios/clone/multi-branch-hooks.yml`      | YAML test: per-worktree hooks fire during multi-branch clone             |
+| File                                                            | Responsibility                                                           |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `src/core/worktree/branch_source.rs`                            | `BranchSource` enum, `BranchPlan` struct, resolution logic               |
+| `src/output/tui/operation_table.rs`                             | `OperationTable`, `TableConfig`, `CompletedTable` — shared TUI component |
+| `tests/manual/scenarios/clone/multi-branch-contained.yml`       | YAML test: multi `-b` with contained layout                              |
+| `tests/manual/scenarios/clone/multi-branch-sibling.yml`         | YAML test: multi `-b` with sibling layout (default branch injection)     |
+| `tests/manual/scenarios/clone/multi-branch-head-token.yml`      | YAML test: `HEAD`/`@` token resolution                                   |
+| `tests/manual/scenarios/clone/multi-branch-missing.yml`         | YAML test: warning for nonexistent branches                              |
+| `tests/manual/scenarios/clone/multi-branch-hooks.yml`           | YAML test: per-worktree hooks fire during multi-branch clone             |
+| `tests/manual/scenarios/clone/multi-branch-remote-conflict.yml` | YAML test: `--remote` + multiple `-b` is rejected                        |
 
 ### Modified files
 
@@ -45,7 +46,7 @@ are involved, with per-worktree hook presentation.
 | `src/core/worktree/sync_dag.rs`    | Add `Setup(String)` to `TaskId`, `Setup` to `OperationPhase`, `Created`/`BaseCreated`/`NotFound` to `TaskMessage` |
 | `src/core/worktree/mod.rs`         | Add `pub mod branch_source;`                                                                                      |
 | `src/output/tui/mod.rs`            | Add `pub mod operation_table;`, export `OperationTable`                                                           |
-| `src/output/tui/state.rs`          | Add `Setup => "setting up"` match arm, add `FinalStatus::Created`                                                 |
+| `src/output/tui/state.rs`          | Add `Setup => "setting up"` match arms in `apply_event()` and `check_phase_completion()`                          |
 | `src/output/tui/driver.rs`         | Extract render loop into `OperationTable::run()`                                                                  |
 | `src/commands/sync.rs`             | Refactor to use `OperationTable` instead of inline `TuiRenderer` wiring                                           |
 | `src/commands/prune.rs`            | Refactor to use `OperationTable` instead of inline `TuiRenderer` wiring                                           |
@@ -162,12 +163,41 @@ mod tests {
     }
 
     #[test]
-    fn all_branches_missing_non_bare_cd_target() {
+    fn multiple_all_invalid_non_bare_cd_falls_back_to_base() {
         let plan = BranchSource::Multiple(vec!["typo-a".into(), "typo-b".into()])
             .resolve("main", false, &["main"]);
         // Default injected as base, but no valid cd targets from original list
         assert_eq!(plan.base, Some("main".into()));
         assert_eq!(plan.cd_target, Some("main".into())); // falls back to base
+        assert_eq!(plan.not_found, vec!["typo-a", "typo-b"]);
+    }
+
+    #[test]
+    fn all_source_default_absent_non_bare_falls_back_to_first_alpha() {
+        // Default branch "main" is not in remote_branches
+        let plan = BranchSource::All
+            .resolve("main", false, &["develop", "feat-a"]);
+        // Falls back to first alphabetical as base
+        assert_eq!(plan.base, Some("develop".into()));
+        assert_eq!(plan.satellites, vec!["feat-a"]);
+        assert_eq!(plan.cd_target, Some("develop".into()));
+    }
+
+    #[test]
+    fn multiple_empty_remote_branches() {
+        // Empty repo — no remote branches at all
+        let plan = BranchSource::Multiple(vec!["feat-a".into()])
+            .resolve("main", false, &[]);
+        // All branches missing, default injected but also missing
+        assert_eq!(plan.not_found, vec!["feat-a"]);
+    }
+
+    #[test]
+    fn all_source_empty_remote_branches() {
+        let plan = BranchSource::All
+            .resolve("main", false, &[]);
+        assert!(plan.satellites.is_empty());
+        assert!(plan.base.is_none());
     }
 }
 ```
@@ -300,33 +330,33 @@ BaseCreated,
 NotFound,
 ```
 
-- [ ] **Step 4: Update FinalStatus**
-
-In `src/output/tui/state.rs`, add to `FinalStatus`:
-
-```rust
-Created,
-```
-
-- [ ] **Step 5: Update apply_event active_label match**
+- [ ] **Step 4: Update apply_event active_label match**
 
 In `src/output/tui/state.rs`, in `apply_event()`, add to the `active_label`
-match:
+match (around line 199-205):
 
 ```rust
 OperationPhase::Setup => "setting up",
 ```
 
-- [ ] **Step 6: Update TaskMessage → FinalStatus mapping**
+Also update `check_phase_completion()` (around line 424-430) which has a second
+exhaustive match on `OperationPhase` — add the same arm there.
+
+- [ ] **Step 5: Update TaskMessage → FinalStatus mapping**
 
 In `apply_event()`, in the `TaskCompleted` handler where `TaskMessage` is
 matched to `FinalStatus`, add:
 
 ```rust
-TaskMessage::Created => FinalStatus::Created,
-TaskMessage::BaseCreated => FinalStatus::Created,
+TaskMessage::Created => FinalStatus::Updated,
+TaskMessage::BaseCreated => FinalStatus::Updated,
 TaskMessage::NotFound => FinalStatus::Skipped,
 ```
+
+Note: per spec, `Created` and `BaseCreated` map to the existing
+`FinalStatus::Updated` (green checkmark). The annotation text ("Created" vs
+"Base worktree") is derived from the `TaskMessage` variant, not from
+`FinalStatus`. No new `FinalStatus` variant is needed.
 
 - [ ] **Step 7: Update any exhaustive match sites in sync.rs and prune.rs**
 
@@ -586,9 +616,11 @@ changing any command behavior.
 In `src/output/tui/operation_table.rs`:
 
 ```rust
-use super::state::{PhaseState, TuiState, WorktreeRow, HookSummaryEntry};
+use super::state::{TuiState, HookSummaryEntry, WorktreeRow};
 use super::columns::{Column, SortSpec};
-use crate::core::worktree::sync_dag::DagEvent;
+use super::driver::TuiRenderer;
+use crate::core::worktree::sync_dag::{DagEvent, OperationPhase};
+use crate::core::worktree::list::WorktreeInfo;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -598,7 +630,7 @@ pub struct TableConfig {
     pub columns_explicit: bool,
     pub sort_spec: Option<SortSpec>,
     pub extra_rows: u16,
-    pub show_hook_sub_rows: bool,
+    pub verbosity: u8,
 }
 
 /// Result returned after the TUI completes.
@@ -612,8 +644,10 @@ pub struct CompletedTable {
 /// Used by sync, prune, and clone commands. Each command provides its own
 /// phases, initial rows, and worker threads that send DagEvent messages.
 pub struct OperationTable {
-    phases: Vec<PhaseState>,
-    initial_rows: Vec<WorktreeRow>,
+    /// Phases shown in header (e.g., [Fetch, Prune] or [Setup]).
+    phases: Vec<OperationPhase>,
+    /// Initial worktree info rows. Can be empty if discovered dynamically.
+    initial_rows: Vec<WorktreeInfo>,
     receiver: mpsc::Receiver<DagEvent>,
     config: TableConfig,
     project_root: PathBuf,
@@ -622,13 +656,21 @@ pub struct OperationTable {
 }
 ```
 
+**Important**: `OperationTable::new()` accepts `Vec<OperationPhase>` and
+`Vec<WorktreeInfo>` — the same types that `TuiState::new()` takes internally.
+Commands construct `WorktreeInfo` for their rows (sync/prune already do this
+when collecting worktree info). `OperationTable` passes these through to
+`TuiState::new()` which creates `PhaseState` and `WorktreeRow` internally.
+
 Implement `OperationTable::new(...)` constructor and
 `OperationTable::run(self) -> Result<CompletedTable>` that:
 
-1. Constructs `TuiState` from the provided phases, rows, and config
-2. Constructs `TuiRenderer` with the state and receiver
-3. Calls `TuiRenderer::run()`
-4. Converts the returned `TuiState` into `CompletedTable`
+1. Computes `show_hook_sub_rows` from `config.verbosity >= 1`
+2. Constructs `TuiState::new()` with the provided phases, rows, and config
+3. Constructs `TuiRenderer` with the state, receiver, and extra_rows
+4. Calls `TuiRenderer::run()`
+5. Converts the returned `TuiState` into `CompletedTable` (extracting
+   `worktrees` and `hook_summaries`)
 
 - [ ] **Step 2: Register module and exports**
 
@@ -832,7 +874,12 @@ git commit -m "feat: make -b flag repeatable with Vec<String> and BranchSource"
 - [ ] **Step 1: Add branch resolution after bare clone**
 
 In `src/commands/clone.rs`, after `clone_bare_phase()` returns and layout is
-resolved, add Phase 2 — branch resolution:
+resolved, add branch resolution. Note: although the spec numbers this as "Phase
+2" and layout resolution as "Phase 3", in practice layout must be resolved first
+because `BranchSource::resolve()` needs `is_bare` from the layout. The execution
+order is: Phase 1 (bare clone) → layout resolution → branch resolution → Phase 4
+(worktree setup). This matches the current code structure where layout is
+resolved before worktree setup.
 
 ```rust
 // Phase 2: resolve BranchSource to BranchPlan
@@ -994,7 +1041,7 @@ let table = OperationTable::new(
         columns_explicit: /* from args */,
         sort_spec: None,
         extra_rows: 0,
-        show_hook_sub_rows: args.verbose >= 1,
+        verbosity: args.verbose,
     },
     project_root,
     cwd,
@@ -1272,16 +1319,38 @@ steps:
         - "$WORK_DIR/test-repo/feature/.create-hook-ran"
 ```
 
-- [ ] **Step 6: Run all new scenarios**
+- [ ] **Step 6: Write --remote + multiple -b conflict test**
+
+```yaml
+name: Clone rejects --remote with multiple -b
+description:
+  Using --remote with multiple -b flags is not supported and should fail.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with --remote and multiple -b
+    run:
+      git-worktree-clone --layout contained --remote origin -b develop -b
+      feature/test-feature $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "--remote cannot be used with multiple -b"
+```
+
+- [ ] **Step 7: Run all new scenarios**
 
 Run: `mise run test:manual -- --ci clone:multi-branch` Expected: all pass
 
-- [ ] **Step 7: Run full test suite**
+- [ ] **Step 8: Run full test suite**
 
 Run: `mise run test:unit && mise run test:manual -- --ci` Expected: all pass
 (new + existing)
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add tests/manual/scenarios/clone/multi-branch-*.yml
@@ -1290,7 +1359,112 @@ git commit -m "test: add YAML scenarios for multi-branch clone"
 
 ---
 
-## Task 12: Final integration pass
+## Task 12: Audit --all-branches hook firing
+
+**Files:**
+
+- Modify: `src/core/worktree/clone.rs` — ensure per-worktree hooks fire for
+  `--all-branches`
+
+The spec requires that `--all-branches` fires `worktree-pre-create` and
+`worktree-post-create` per worktree, same as the new multi-branch path. Today,
+`--all-branches` goes through `create_all_worktrees()` which may not fire these
+hooks.
+
+- [ ] **Step 1: Audit current --all-branches hook behavior**
+
+Read `src/core/worktree/clone.rs` function `create_all_worktrees()` (called from
+`setup_bare_worktrees()` at line 346) and check whether `worktree-pre-create`
+and `worktree-post-create` hooks are fired per worktree.
+
+- [ ] **Step 2: Add per-worktree hook calls if missing**
+
+If hooks are not fired per worktree, add calls following the same pattern used
+for the multi-branch satellite creation in Task 9. Each worktree should get
+`worktree-pre-create` before and `worktree-post-create` after its
+`git worktree add`.
+
+- [ ] **Step 3: Add YAML test verifying --all-branches hooks**
+
+Create `tests/manual/scenarios/clone/all-branches-hooks.yml` that verifies hooks
+fire for each worktree created by `--all-branches`.
+
+- [ ] **Step 4: Run tests**
+
+Run: `mise run test:manual -- --ci clone:all-branches` Expected: pass
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/core/worktree/clone.rs tests/manual/scenarios/clone/all-branches-hooks.yml
+git commit -m "feat: fire per-worktree hooks for --all-branches clone"
+```
+
+---
+
+## Task 13: Partial failure summary output
+
+**Files:**
+
+- Modify: `src/commands/clone.rs` — add summary rendering after TUI completes
+
+- [ ] **Step 1: Implement partial failure summary**
+
+After `OperationTable::run()` returns, check the `CompletedTable` rows for
+failures. If any exist, print a summary matching the spec's format:
+
+```
+Created 3 of 5 worktrees (2 failed)
+  ✗ feat-c: worktree-pre-create hook failed (exit 1)
+  ✗ typo-branch: branch not found on remote
+```
+
+Derive counts by filtering rows: `Updated` = success, `Failed` = failure,
+`Skipped` (from `NotFound`) = warning.
+
+- [ ] **Step 2: Verify with multi-branch-missing test**
+
+Run: `mise run test:manual -- --ci clone:multi-branch-missing` Expected: pass
+(output_contains "not found on remote")
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/commands/clone.rs
+git commit -m "feat: add partial failure summary for multi-branch clone"
+```
+
+---
+
+## Task 14: Update docs/cli reference page
+
+**Files:**
+
+- Modify: `docs/cli/git-worktree-clone.md` — document repeatable `-b` flag
+
+- [ ] **Step 1: Update the clone reference page**
+
+Add documentation for:
+
+- The `-b` flag is repeatable for multiple branches
+- `HEAD` and `@` tokens for the default branch
+- Layout-dependent behavior (base worktree vs equal worktrees)
+- Examples: `-b feat-a -b feat-b`, `-b @ -b feat-a`
+
+- [ ] **Step 2: Verify docs build**
+
+Run: `mise run docs:site:build` Expected: builds without errors
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add docs/cli/git-worktree-clone.md
+git commit -m "docs: document repeatable -b flag in clone reference"
+```
+
+---
+
+## Task 15: Final integration pass
 
 - [ ] **Step 1: Run full CI locally**
 
