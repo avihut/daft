@@ -1,0 +1,50 @@
+name: Transform with multiple worktrees
+description:
+  Transform from contained to sibling with 3 worktrees (main + 2 feature
+  branches). All should be correctly relocated.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone contained and create two additional worktrees
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      git-worktree-checkout -b feature/alpha
+      git-worktree-checkout -b feature/beta
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+        - "$WORK_DIR/test-repo/feature/alpha"
+        - "$WORK_DIR/test-repo/feature/beta"
+
+  - name: Transform to sibling layout
+    run: daft layout transform sibling 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "sibling"
+
+  - name: Verify all three worktrees relocated correctly
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.git"
+        - "$WORK_DIR/test-repo.feature-alpha"
+        - "$WORK_DIR/test-repo.feature-beta"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main"
+        - "$WORK_DIR/test-repo/feature/alpha"
+        - "$WORK_DIR/test-repo/feature/beta"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: main
+        - dir: "$WORK_DIR/test-repo.feature-alpha"
+          branch: feature/alpha
+        - dir: "$WORK_DIR/test-repo.feature-beta"
+          branch: feature/beta

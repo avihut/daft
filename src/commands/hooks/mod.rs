@@ -496,35 +496,88 @@ pub(super) fn styled_trust_level(level: TrustLevel) -> String {
 }
 
 /// Find project hooks in the current repository.
+///
+/// Checks for hooks in two forms:
+/// 1. YAML hooks defined in `daft.yml` (checked at repo root and worktree roots)
+/// 2. Legacy script hooks in `.daft/hooks/` directories
+///
+/// For non-bare repos, checks the repo root directly.
+/// For bare repos, checks worktree subdirectories.
 pub(super) fn find_project_hooks(git_dir: &Path) -> Result<Vec<std::path::PathBuf>> {
-    // Get the worktree path (parent of .git for bare repos, or current for regular)
-    // For daft's worktree structure, we need to find any worktree and check its .daft/hooks
     let project_root = git_dir.parent().context("Invalid git directory")?;
+    // Use config_get("core.bare") instead of path heuristics — the path-based
+    // check fails for contained layouts where git_dir is <repo>/.git (the parent
+    // check resolves back to itself).
+    let git = crate::git::GitCommand::new(false);
+    let is_bare = git
+        .config_get("core.bare")
+        .ok()
+        .flatten()
+        .is_some_and(|v| v.to_lowercase() == "true");
 
     let mut hooks = Vec::new();
+    let mut found_yaml = false;
 
-    // Check all worktrees for hooks
-    for entry in std::fs::read_dir(project_root)
-        .into_iter()
-        .flatten()
-        .flatten()
-    {
-        let path = entry.path();
-        if path.is_dir() && path.file_name().map(|n| n != ".git").unwrap_or(false) {
-            let hooks_dir = path.join(PROJECT_HOOKS_DIR);
-            if hooks_dir.exists() {
-                for hook_entry in std::fs::read_dir(&hooks_dir)
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                {
-                    let hook_path = hook_entry.path();
-                    if hook_path.is_file() {
-                        hooks.push(hook_path);
-                    }
+    // Directories to check for hooks
+    let dirs_to_check: Vec<std::path::PathBuf> = if is_bare {
+        // Bare repo: check worktree subdirectories
+        std::fs::read_dir(project_root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.is_dir() && path.file_name().map(|n| n != ".git").unwrap_or(false) {
+                    Some(path)
+                } else {
+                    None
                 }
-                break; // Found hooks in one worktree, that's enough
+            })
+            .collect()
+    } else {
+        // Non-bare repo: check the repo root itself
+        vec![project_root.to_path_buf()]
+    };
+
+    for dir in &dirs_to_check {
+        // Check for daft.yml (YAML hooks)
+        if !found_yaml {
+            for name in &["daft.yml", "daft.yaml", ".daft.yml", ".daft.yaml"] {
+                let yaml_path = dir.join(name);
+                if yaml_path.exists() {
+                    // Parse the YAML to find hook names
+                    if let Ok(contents) = std::fs::read_to_string(&yaml_path) {
+                        if let Ok(config) =
+                            serde_yaml::from_str::<crate::hooks::yaml_config::YamlConfig>(&contents)
+                        {
+                            for hook_name in config.hooks.keys() {
+                                hooks.push(std::path::PathBuf::from(hook_name));
+                            }
+                            found_yaml = true;
+                        }
+                    }
+                    break;
+                }
             }
+        }
+
+        // Check for legacy script hooks in .daft/hooks/
+        let hooks_dir = dir.join(PROJECT_HOOKS_DIR);
+        if hooks_dir.exists() {
+            for hook_entry in std::fs::read_dir(&hooks_dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                let hook_path = hook_entry.path();
+                if hook_path.is_file() {
+                    hooks.push(hook_path);
+                }
+            }
+        }
+
+        if found_yaml || !hooks.is_empty() {
+            break; // Found hooks in one location, that's enough
         }
     }
 
@@ -533,6 +586,13 @@ pub(super) fn find_project_hooks(git_dir: &Path) -> Result<Vec<std::path::PathBu
         a.file_name()
             .unwrap_or_default()
             .cmp(b.file_name().unwrap_or_default())
+    });
+
+    // Deduplicate (YAML hook names and legacy scripts might overlap)
+    hooks.dedup_by(|a, b| {
+        a.file_name()
+            .unwrap_or_default()
+            .eq(b.file_name().unwrap_or_default())
     });
 
     Ok(hooks)

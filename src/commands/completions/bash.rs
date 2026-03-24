@@ -38,6 +38,21 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
         output.push('\n');
     }
 
+    // Value completion for --layout flag
+    let has_layout = matches!(command_name, "git-worktree-clone" | "git-worktree-init");
+    if has_layout {
+        output.push_str("    # Layout name completion for --layout\n");
+        output.push_str("    if [[ \"$prev\" == \"--layout\" ]]; then\n");
+        output.push_str("        local layouts\n");
+        output.push_str(
+            "        layouts=$(daft __complete layout-value \"$cur\" 2>/dev/null | cut -f1)\n",
+        );
+        output.push_str("        COMPREPLY=( $(compgen -W \"$layouts\" -- \"$cur\") )\n");
+        output.push_str("        return 0\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
     // Value completion for --columns flag
     let has_columns = matches!(
         command_name,
@@ -201,6 +216,35 @@ _daft() {
         return 0
     fi
 
+    # layout: complete subcommands and arguments
+    if [[ $cword -ge 2 && "${words[1]}" == "layout" ]]; then
+        if [[ $cword -eq 2 ]]; then
+            COMPREPLY=( $(compgen -W "default list show transform" -- "$cur") )
+            return 0
+        fi
+        case "${words[2]}" in
+            show)
+                COMPREPLY=( $(compgen -d -- "$cur") )
+                return 0
+                ;;
+            transform|default)
+                if [[ "$cur" == -* ]]; then
+                    if [[ "${words[2]}" == "transform" ]]; then
+                        COMPREPLY=( $(compgen -W "--force -f --dry-run --include --include-all -h --help" -- "$cur") )
+                    else
+                        COMPREPLY=( $(compgen -W "--reset -h --help" -- "$cur") )
+                    fi
+                    return 0
+                fi
+                local layouts
+                layouts=$(daft __complete layout-"${words[2]}" "$cur" 2>/dev/null | cut -f1)
+                COMPREPLY=( $(compgen -W "$layouts" -- "$cur") )
+                return 0
+                ;;
+        esac
+        return 0
+    fi
+
     # multi-remote: complete subcommands
     if [[ $cword -eq 2 && "${words[1]}" == "multi-remote" ]]; then
         COMPREPLY=( $(compgen -W "enable disable status set-default move" -- "$cur") )
@@ -264,6 +308,18 @@ _daft() {
                 _git_worktree_prune
                 return 0
                 ;;
+            clone)
+                COMP_WORDS=("git-worktree-clone" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _git_worktree_clone
+                return 0
+                ;;
+            init)
+                COMP_WORDS=("git-worktree-init" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _git_worktree_init
+                return 0
+                ;;
         esac
     fi
 
@@ -272,7 +328,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor clone init go start carry update list prune rename sync remove adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout clone init go start carry update list prune rename sync remove adopt eject" -- "$cur") )
         fi
         return 0
     fi

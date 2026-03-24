@@ -1,12 +1,17 @@
 use crate::{
     core::{
+        global_config::GlobalConfig,
+        layout::{
+            resolver::{resolve_layout, LayoutResolutionContext, LayoutSource},
+            BuiltinLayout, Layout,
+        },
         worktree::{checkout, checkout_branch, previous},
         CommandBridge,
     },
     get_current_worktree_path, get_git_common_dir, get_project_root,
     git::{should_show_gitoxide_notice, GitCommand},
     hints::maybe_show_shell_hint,
-    hooks::{HookExecutor, HooksConfig},
+    hooks::{yaml_config_loader, HookExecutor, HooksConfig, TrustDatabase},
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -16,6 +21,8 @@ use crate::{
 };
 use anyhow::Result;
 use clap::Parser;
+use std::io::IsTerminal;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-checkout")]
@@ -109,6 +116,10 @@ pub struct Args {
         help = "Create a new worktree if the branch does not exist"
     )]
     start: bool,
+
+    /// Place the worktree at a specific path instead of using the layout template.
+    #[arg(short = '@', long, value_name = "PATH")]
+    at: Option<PathBuf>,
 }
 
 /// Daft-style args for `daft go`. Separate from `Args` so that `-h`/`--help`
@@ -202,6 +213,10 @@ pub struct GoArgs {
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
+
+    /// Place the worktree at a specific path instead of using the layout template.
+    #[arg(short = '@', long, value_name = "PATH")]
+    at: Option<PathBuf>,
 }
 
 /// Daft-style args for `daft start`. Separate from `Args` so that `-h`/`--help`
@@ -263,6 +278,10 @@ pub struct StartArgs {
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
+
+    /// Place the worktree at a specific path instead of using the layout template.
+    #[arg(short = '@', long, value_name = "PATH")]
+    at: Option<PathBuf>,
 }
 
 /// Entry point for `git-worktree-checkout`.
@@ -289,6 +308,7 @@ pub fn run_go() -> Result<()> {
         exec: go_args.exec,
         quiet: go_args.quiet,
         verbose: go_args.verbose,
+        at: go_args.at,
     };
     run_with_args(args)
 }
@@ -311,6 +331,7 @@ pub fn run_start() -> Result<()> {
         exec: start_args.exec,
         quiet: start_args.quiet,
         verbose: start_args.verbose,
+        at: start_args.at,
     };
     run_with_args(args)
 }
@@ -355,7 +376,20 @@ fn run_with_args(args: Args) -> Result<()> {
         run_create_branch(&args, &settings, &mut output)
     } else {
         match run_checkout(&args, &settings, &mut output) {
-            Ok(()) => Ok(()),
+            Ok(already_existed) => {
+                // --at is invalid when navigating to an existing worktree
+                // (it only applies when creating a new one)
+                if args.at.is_some() && already_existed {
+                    change_directory(&original_dir).ok();
+                    anyhow::bail!(
+                        "--at cannot be used: worktree already exists for '{}'. \
+                         Use 'daft go {}' without --at to navigate to it.",
+                        args.branch_name,
+                        args.branch_name
+                    );
+                }
+                Ok(())
+            }
             Err(checkout::CheckoutError::BranchNotFound {
                 ref branch,
                 ref remote,
@@ -370,10 +404,14 @@ fn run_with_args(args: Args) -> Result<()> {
                     run_create_branch(&args, &settings, &mut output)
                 } else {
                     change_directory(&original_dir).ok();
+                    // --at with a non-existent branch requires --start or autoStart
+                    if args.at.is_some() {
+                        anyhow::bail!(
+                            "--at requires --start (or daft.go.autoStart=true) \
+                             when branch '{branch}' does not exist"
+                        );
+                    }
                     render_branch_not_found_error(branch, remote, fetch_failed, &settings);
-                    // Exit directly: the error is already rendered to stderr with
-                    // custom formatting. Returning an anyhow error here would cause
-                    // main() to print a redundant "Error:" line.
                     std::process::exit(1);
                 }
             }
@@ -428,17 +466,231 @@ fn run_go_previous(output: &mut dyn Output) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the layout for checkout operations.
+///
+/// Loads the layout from the config chain: repo store > daft.yml > global config > detection > default.
+/// Also checks if the resolved layout requires a bare repo and warns if the current repo
+/// is not bare.
+fn resolve_checkout_layout(
+    git: &GitCommand,
+    output: &mut dyn Output,
+) -> (crate::core::layout::Layout, LayoutSource) {
+    let global_config = GlobalConfig::load().unwrap_or_default();
+    let git_dir = get_git_common_dir().ok();
+    let trust_db = TrustDatabase::load().unwrap_or_default();
+
+    // Load daft.yml layout field from the current worktree (best-effort)
+    let yaml_layout: Option<String> = get_current_worktree_path()
+        .ok()
+        .and_then(|wt| yaml_config_loader::load_merged_config(&wt).ok().flatten())
+        .and_then(|cfg| cfg.layout);
+
+    let repo_store_layout = git_dir
+        .as_ref()
+        .and_then(|d| trust_db.get_layout(d).map(String::from));
+
+    // Run detection when no explicit layout is set.
+    let detection = if repo_store_layout.is_none() && yaml_layout.is_none() {
+        git_dir
+            .as_ref()
+            .map(|d| crate::core::layout::detect::detect_layout(d, &global_config))
+    } else {
+        None
+    };
+
+    let (layout, source) = resolve_layout(&LayoutResolutionContext {
+        cli_layout: None, // checkout doesn't have --layout yet
+        repo_store_layout: repo_store_layout.as_deref(),
+        yaml_layout: yaml_layout.as_deref(),
+        global_config: &global_config,
+        detection,
+    });
+
+    // Graceful degradation: warn if layout needs bare but repo is not bare.
+    // Use config_get("core.bare") instead of rev_parse_is_bare_repository()
+    // because the latter returns false from inside a linked worktree of a
+    // bare repo — which is exactly where users run checkout from.
+    let is_bare = git
+        .config_get("core.bare")
+        .ok()
+        .flatten()
+        .is_some_and(|v| v.to_lowercase() == "true");
+    if layout.needs_bare() && !is_bare {
+        output.warning(&format!(
+            "Layout '{}' works best with a bare repository. \
+             Consider running `daft layout transform` to convert.",
+            layout.name
+        ));
+    }
+
+    (layout, source)
+}
+
+/// Decide whether to use the resolved layout as-is or to prompt the user.
+///
+/// Returns `(layout, should_persist)`:
+/// - `should_persist` is true when the layout should be saved to the repo store.
+fn interactive_layout_resolution(
+    layout: &Layout,
+    source: LayoutSource,
+    output: &mut dyn Output,
+) -> Result<(Layout, bool)> {
+    let is_testing = std::env::var("DAFT_TESTING").is_ok();
+    let is_interactive = std::io::stdin().is_terminal() && !is_testing;
+
+    match source {
+        // Explicitly configured — use as-is, never persist again.
+        LayoutSource::Cli
+        | LayoutSource::RepoStore
+        | LayoutSource::YamlConfig
+        | LayoutSource::GlobalConfig => Ok((layout.clone(), false)),
+
+        // Detection found a match — ask the user to confirm (interactive only).
+        LayoutSource::Detected => {
+            if !is_interactive {
+                // Non-interactive: use detected layout and persist it.
+                return Ok((layout.clone(), true));
+            }
+
+            output.info(&format!("Detected layout: {}", layout.name));
+
+            let confirmed =
+                dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
+                    .with_prompt("Use this layout?")
+                    .default(true)
+                    .interact()?;
+
+            if confirmed {
+                Ok((layout.clone(), true))
+            } else {
+                let picked = show_layout_picker(Some(layout))?;
+                maybe_consolidate(&picked, output)?;
+                Ok((picked, true))
+            }
+        }
+
+        // Nothing was detected — check if this is a repo with linked worktrees.
+        LayoutSource::Unresolved => {
+            // Check for linked worktrees (Flow A vs Flow C).
+            let git = GitCommand::new(true);
+            let has_linked_worktrees = git
+                .worktree_list_porcelain()
+                .ok()
+                .map(|porcelain| {
+                    crate::core::layout::detect::parse_worktree_list(&porcelain)
+                        .into_iter()
+                        .any(|w| !w.is_main)
+                })
+                .unwrap_or(false);
+
+            if !has_linked_worktrees {
+                // Flow A: plain git clone — silently use default and persist.
+                return Ok((layout.clone(), true));
+            }
+
+            // Flow C: worktrees exist in an unrecognized arrangement.
+            if !is_interactive {
+                // Non-interactive: use default layout, do not persist.
+                return Ok((layout.clone(), false));
+            }
+
+            output.info("Found worktrees in unrecognized arrangement.");
+            let picked = show_layout_picker(Some(layout))?;
+            maybe_consolidate(&picked, output)?;
+            Ok((picked, true))
+        }
+    }
+}
+
+/// Show a layout picker and return the selected layout.
+fn show_layout_picker(preselect: Option<&Layout>) -> Result<Layout> {
+    let global_config = GlobalConfig::load().unwrap_or_default();
+
+    // Build list: builtins first, then custom layouts.
+    let mut items: Vec<Layout> = BuiltinLayout::all().iter().map(|b| b.to_layout()).collect();
+    items.extend(global_config.custom_layouts());
+
+    // Format each item as "{name:<20}{template}"
+    let display: Vec<String> = items
+        .iter()
+        .map(|l| format!("{:<20}{}", l.name, l.template))
+        .collect();
+
+    // Pre-select the provided layout, or fall back to index 0.
+    let default_idx = preselect
+        .and_then(|pre| items.iter().position(|l| l.name == pre.name))
+        .unwrap_or(0);
+
+    let selection = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+        .with_prompt("Select a layout")
+        .items(&display)
+        .default(default_idx)
+        .interact()?;
+
+    Ok(items.remove(selection))
+}
+
+/// Ask whether to consolidate existing worktrees to the chosen layout.
+fn maybe_consolidate(chosen_layout: &Layout, output: &mut dyn Output) -> Result<()> {
+    if !std::io::stdin().is_terminal() || std::env::var("DAFT_TESTING").is_ok() {
+        return Ok(());
+    }
+
+    let git = GitCommand::new(true);
+    let porcelain = git.worktree_list_porcelain()?;
+    let worktrees = crate::core::layout::detect::parse_worktree_list(&porcelain);
+    let linked_count = worktrees.iter().filter(|wt| !wt.is_main).count();
+
+    if linked_count == 0 {
+        return Ok(());
+    }
+
+    let prompt = format!(
+        "Consolidate {} existing worktree{} to match \"{}\" layout?",
+        linked_count,
+        if linked_count == 1 { "" } else { "s" },
+        chosen_layout.name,
+    );
+
+    let consolidate = dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
+        .with_prompt(prompt)
+        .default(false)
+        .interact()?;
+
+    if consolidate {
+        output.info(&format!(
+            "Run `daft layout transform {}` to consolidate.",
+            chosen_layout.name,
+        ));
+    }
+
+    Ok(())
+}
+
+/// Returns `Ok(already_existed)` — true if the worktree already existed
+/// (navigation only, no creation).
 fn run_checkout(
     args: &Args,
     settings: &DaftSettings,
     output: &mut dyn Output,
-) -> Result<(), checkout::CheckoutError> {
+) -> Result<bool, checkout::CheckoutError> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
     };
     let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
+
+    let (resolved_layout, source) = resolve_checkout_layout(&git, output);
+    let (layout, should_persist) = interactive_layout_resolution(&resolved_layout, source, output)?;
+
+    if should_persist {
+        if let Ok(git_dir) = get_git_common_dir() {
+            let mut trust_db = TrustDatabase::load().unwrap_or_default();
+            trust_db.set_layout(&git_dir, layout.name.clone());
+            let _ = trust_db.save();
+        }
+    }
 
     let params = checkout::CheckoutParams {
         branch_name: args.branch_name.clone(),
@@ -450,6 +702,8 @@ fn run_checkout(
         multi_remote_default: settings.multi_remote_default.clone(),
         checkout_carry: settings.checkout_carry,
         checkout_upstream: settings.checkout_upstream,
+        layout: Some(layout),
+        at_path: args.at.clone(),
     };
 
     let hooks_config = HooksConfig::default();
@@ -488,7 +742,7 @@ fn run_checkout(
     // Propagate exec error after cd_path is written
     exec_result?;
 
-    Ok(())
+    Ok(result.already_existed)
 }
 
 fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
@@ -498,6 +752,17 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
     };
     let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
+
+    let (resolved_layout, source) = resolve_checkout_layout(&git, output);
+    let (layout, should_persist) = interactive_layout_resolution(&resolved_layout, source, output)?;
+
+    if should_persist {
+        if let Ok(git_dir) = get_git_common_dir() {
+            let mut trust_db = TrustDatabase::load().unwrap_or_default();
+            trust_db.set_layout(&git_dir, layout.name.clone());
+            let _ = trust_db.save();
+        }
+    }
 
     let params = checkout_branch::CheckoutBranchParams {
         new_branch_name: args.branch_name.clone(),
@@ -510,6 +775,8 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
         multi_remote_default: settings.multi_remote_default.clone(),
         checkout_branch_carry: settings.checkout_branch_carry,
         checkout_push: settings.checkout_push,
+        layout: Some(layout),
+        at_path: args.at.clone(),
     };
 
     let hooks_config = HooksConfig::default();

@@ -1,0 +1,26 @@
+name: Layout prompt not shown when global config sets default layout
+description:
+  When the user has configured a default layout in global config, the first-time
+  layout prompt should not appear (the user already chose).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Set global default layout
+    run: |
+      mkdir -p $DAFT_CONFIG_DIR
+      cat > $DAFT_CONFIG_DIR/config.toml << 'TOML'
+      [defaults]
+      layout = "sibling"
+      TOML
+    expect:
+      exit_code: 0
+
+  - name: Clone without --layout flag
+    run: git-worktree-clone $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "Use contained?"

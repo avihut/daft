@@ -1,0 +1,45 @@
+name: "Transform contained-flat to sibling"
+description: "Matrix test: contained-flat -> sibling"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with contained-flat layout
+    run: git-worktree-clone --layout contained-flat $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop branch
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Transform to sibling
+    run: daft layout transform sibling 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Transformed"
+
+  - name: Verify structure
+    run: |
+      cd $WORK_DIR/test-repo && git status --porcelain > /tmp/daft-status-main 2>&1
+      cd $WORK_DIR/test-repo.develop && git status --porcelain > /tmp/daft-status-develop 2>&1
+      cat /tmp/daft-status-main /tmp/daft-status-develop
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo.develop"
+      files_exist:
+        - "$WORK_DIR/test-repo/README.md"
+        - "$WORK_DIR/test-repo.develop/README.md"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: main
+        - dir: "$WORK_DIR/test-repo.develop"
+          branch: develop

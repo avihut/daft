@@ -98,6 +98,8 @@ pub struct WorktreeInfo {
     pub size_bytes: Option<u64>,
     /// Most recent mtime of changed/untracked files (None if clean or not computed).
     pub working_tree_mtime: Option<i64>,
+    /// Whether this is a detached HEAD sandbox (no branch).
+    pub is_sandbox: bool,
 }
 
 impl WorktreeInfo {
@@ -132,6 +134,7 @@ impl WorktreeInfo {
             owner_email: None,
             size_bytes: None,
             working_tree_mtime: None,
+            is_sandbox: false,
         }
     }
 
@@ -165,6 +168,7 @@ impl WorktreeInfo {
             owner_email,
             size_bytes: None,
             working_tree_mtime: None,
+            is_sandbox: false,
         }
     }
 
@@ -900,6 +904,7 @@ pub fn collect_worktree_info(
             owner_email,
             size_bytes,
             working_tree_mtime,
+            is_sandbox: entry.is_detached,
         });
     }
 
@@ -1002,6 +1007,7 @@ pub fn collect_branch_info(
                 owner_email,
                 size_bytes: None,
                 working_tree_mtime: None,
+                is_sandbox: false,
             });
         }
     }
@@ -1080,6 +1086,7 @@ pub fn collect_branch_info(
                 owner_email,
                 size_bytes: None,
                 working_tree_mtime: None,
+                is_sandbox: false,
             });
         }
     }

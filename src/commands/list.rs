@@ -145,7 +145,7 @@ struct TableRow {
     size: String,
     /// Ahead/behind base branch (e.g. "+3 -1").
     base: String,
-    /// Worktrunk-style status indicators (e.g. "+3 -2 ?1").
+    /// Status indicators (e.g. "+3 -2 ?1").
     head: String,
     /// Ahead/behind remote tracking branch (e.g. "⇡1 ⇣2").
     remote: String,
@@ -312,6 +312,7 @@ fn print_json(
                     "is_default_branch".into(),
                     serde_json::json!(info.is_default_branch),
                 );
+                obj.insert("is_sandbox".into(), serde_json::json!(info.is_sandbox));
             }
 
             if is_default_columns || selected_columns.contains(&ListColumn::Path) {
@@ -483,6 +484,7 @@ fn print_table(
     // Determine which annotation types exist across all rows
     let has_any_current = infos.iter().any(|i| i.is_current);
     let has_any_default = infos.iter().any(|i| i.is_default_branch);
+    let has_any_sandbox = infos.iter().any(|i| i.is_sandbox);
 
     let col_ctx = ColumnContext {
         project_root,
@@ -508,7 +510,8 @@ fn print_table(
         .iter()
         .zip(col_vals.iter())
         .map(|(info, vals)| {
-            // Build annotation: ">" first (cyan), then "✦" (bright purple)
+            // Build annotation: ">" first (cyan), then "✦" (bright purple),
+            // then "○" (dim) for sandbox
             let mut annotation = String::new();
             if has_any_current {
                 if info.is_current {
@@ -520,7 +523,7 @@ fn print_table(
                 } else {
                     annotation.push(' ');
                 }
-                if has_any_default {
+                if has_any_default || has_any_sandbox {
                     annotation.push(' ');
                 }
             }
@@ -530,6 +533,22 @@ fn print_table(
                         annotation.push_str(&styles::bright_purple(styles::DEFAULT_BRANCH_SYMBOL));
                     } else {
                         annotation.push_str(styles::DEFAULT_BRANCH_SYMBOL);
+                    }
+                } else if info.is_sandbox {
+                    if use_color {
+                        annotation.push_str(&styles::dim(styles::SANDBOX_SYMBOL));
+                    } else {
+                        annotation.push_str(styles::SANDBOX_SYMBOL);
+                    }
+                } else {
+                    annotation.push(' ');
+                }
+            } else if has_any_sandbox {
+                if info.is_sandbox {
+                    if use_color {
+                        annotation.push_str(&styles::dim(styles::SANDBOX_SYMBOL));
+                    } else {
+                        annotation.push_str(styles::SANDBOX_SYMBOL);
                     }
                 } else {
                     annotation.push(' ');
@@ -692,8 +711,8 @@ fn print_table(
         })
         .collect();
 
-    let show_annotations =
-        selected_columns.contains(&ListColumn::Annotation) && (has_any_current || has_any_default);
+    let show_annotations = selected_columns.contains(&ListColumn::Annotation)
+        && (has_any_current || has_any_default || has_any_sandbox);
 
     // Format a header cell: dim+underline for label, sort arrow with
     // brightness gradient based on sort priority rank.

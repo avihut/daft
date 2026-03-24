@@ -9,7 +9,7 @@ test_sync_basic() {
     local remote_repo=$(create_test_remote "test-repo-sync-basic" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-sync-basic"
 
     # Create worktrees
@@ -60,7 +60,7 @@ test_sync_nothing_to_prune() {
     local remote_repo=$(create_test_remote "test-repo-sync-noprune" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-sync-noprune"
 
     # Create a worktree
@@ -102,7 +102,7 @@ test_sync_verbose() {
     local remote_repo=$(create_test_remote "test-repo-sync-verbose" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-sync-verbose"
 
     # Run sync with --verbose (should not error)
@@ -129,7 +129,7 @@ test_sync_force() {
     rm -rf "$temp_clone"
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-sync-force"
 
     # Create worktree and make it dirty
@@ -178,7 +178,7 @@ test_sync_cd_target() {
     rm -rf "$temp_clone"
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-sync-cdtarget"
 
     # Create a feature worktree
@@ -235,7 +235,7 @@ test_sync_diverged_branch_with_rebase() {
     local remote_repo=$(create_test_remote "test-repo-sync-diverged-rebase" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-sync-diverged-rebase"
 
     # Create a feature worktree
@@ -270,7 +270,7 @@ test_sync_diverged_branch_no_rebase() {
     local remote_repo=$(create_test_remote "test-repo-sync-diverged-norebase" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-sync-diverged-norebase"
 
     # Create a feature worktree
@@ -310,7 +310,7 @@ test_sync_rebase_autostash() {
     local remote_repo=$(create_test_remote "test-repo-sync-autostash" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-sync-autostash"
 
     # Create a feature worktree
@@ -367,7 +367,7 @@ test_sync_autostash_without_rebase() {
     local remote_repo=$(create_test_remote "test-repo-sync-autostash-norebase" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-sync-autostash-norebase"
 
     # Run sync with --autostash but without --rebase — should fail
@@ -391,7 +391,7 @@ test_sync_rebase_conflict_skips_push() {
     local remote_repo=$(create_test_remote "test-repo-sync-conflict-push" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-sync-conflict-push"
 
     # Create a feature worktree

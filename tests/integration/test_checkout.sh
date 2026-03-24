@@ -9,7 +9,7 @@ test_checkout_basic() {
     local remote_repo=$(create_test_remote "test-repo-checkout" "main")
     
     # First clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     
     # Change to the repo directory
     cd "test-repo-checkout"
@@ -29,7 +29,7 @@ test_checkout_remote_branch() {
     local remote_repo=$(create_test_remote "test-repo-checkout-remote" "main")
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-remote"
     
     # Test checkout remote branch
@@ -47,7 +47,7 @@ test_checkout_from_subdirectory() {
     local remote_repo=$(create_test_remote "test-repo-checkout-subdir" "main")
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-subdir"
     
     # Create a subdirectory and test checkout from there
@@ -69,7 +69,7 @@ test_checkout_errors() {
     local remote_repo=$(create_test_remote "test-repo-checkout-errors" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-errors"
 
     # Test checkout nonexistent branch
@@ -83,7 +83,7 @@ test_checkout_existing_worktree() {
     local remote_repo=$(create_test_remote "test-repo-checkout-existing" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-existing"
 
     # First checkout creates the worktree
@@ -134,7 +134,7 @@ test_checkout_direnv() {
     local remote_repo=$(create_test_remote "test-repo-checkout-direnv" "main")
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-direnv"
     
     # Add .envrc to a branch
@@ -215,7 +215,7 @@ test_checkout_complex_branches() {
     rm -rf "$temp_clone"
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-complex"
     
     # Test checkout various branch types
@@ -239,7 +239,7 @@ test_checkout_performance() {
     local remote_repo=$(create_test_remote "test-repo-checkout-perf" "main")
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-perf"
     
     # Test checkout performance
@@ -284,7 +284,7 @@ test_checkout_large_repo() {
     rm -rf "$temp_clone"
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-large"
     
     # Test checkout large branch
@@ -303,7 +303,7 @@ test_checkout_with_uncommitted_changes() {
     local remote_repo=$(create_test_remote "test-repo-checkout-uncommitted" "main")
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-uncommitted"
     
     # Make uncommitted changes in main worktree
@@ -330,7 +330,7 @@ test_checkout_no_carry_default() {
     local repo_root
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-no-carry-default"
     repo_root=$(pwd)
 
@@ -358,7 +358,7 @@ test_checkout_carry_flag() {
     local repo_root
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-carry-flag"
     repo_root=$(pwd)
 
@@ -384,7 +384,7 @@ test_checkout_carry_shorthand() {
     local repo_root
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-carry-shorthand"
     repo_root=$(pwd)
 
@@ -409,7 +409,7 @@ test_checkout_no_carry_explicit() {
     local repo_root
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-no-carry-explicit"
     repo_root=$(pwd)
 
@@ -437,7 +437,7 @@ test_checkout_carry_staged() {
     local repo_root
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-carry-staged"
     repo_root=$(pwd)
 
@@ -463,7 +463,7 @@ test_checkout_carry_untracked() {
     local repo_root
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-carry-untracked"
     repo_root=$(pwd)
 
@@ -488,7 +488,7 @@ test_checkout_carry_mixed() {
     local repo_root
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-carry-mixed"
     repo_root=$(pwd)
 
@@ -518,7 +518,7 @@ test_checkout_carry_no_changes() {
     local repo_root
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-carry-clean"
     repo_root=$(pwd)
 
@@ -573,7 +573,7 @@ test_checkout_error_message() {
     local remote_repo=$(create_test_remote "test-repo-checkout-error-msg" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-error-msg"
 
     # Try to checkout a nonexistent branch and capture stderr
@@ -607,7 +607,7 @@ test_checkout_start_flag() {
     local remote_repo=$(create_test_remote "test-repo-checkout-start-flag" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-start-flag"
 
     # Use --start to create a worktree for a branch that does not exist
@@ -629,7 +629,7 @@ test_checkout_start_shorthand() {
     local remote_repo=$(create_test_remote "test-repo-checkout-start-short" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-start-short"
 
     # Use -s shorthand to create a worktree for a branch that does not exist
@@ -651,7 +651,7 @@ test_checkout_start_existing_branch() {
     local remote_repo=$(create_test_remote "test-repo-checkout-start-existing" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-start-existing"
 
     # Use --start with a branch that already exists on the remote (develop)
@@ -673,7 +673,7 @@ test_checkout_auto_start_config() {
     local remote_repo=$(create_test_remote "test-repo-checkout-autostart" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-autostart"
 
     # Set the auto-start config in the local git config
@@ -698,7 +698,7 @@ test_checkout_fuzzy_suggestions() {
     local remote_repo=$(create_test_remote "test-repo-checkout-fuzzy" "main")
 
     # Clone the repository — the remote already has "develop" branch
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-fuzzy"
 
     # Try a typo of "develop" and capture stderr
@@ -736,7 +736,7 @@ test_checkout_dash_no_previous() {
     local remote_repo=$(create_test_remote "test-repo-checkout-dash-noprev" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-dash-noprev"
 
     # Try `go -` with no previous — should fail
@@ -761,7 +761,7 @@ test_checkout_dash_toggle() {
     local remote_repo=$(create_test_remote "test-repo-checkout-dash-toggle" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-dash-toggle"
     local repo_root=$(pwd)
 
@@ -817,7 +817,7 @@ test_checkout_dash_deleted_previous() {
     local remote_repo=$(create_test_remote "test-repo-checkout-dash-deleted" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-dash-deleted"
     local repo_root=$(pwd)
 
@@ -852,7 +852,7 @@ test_checkout_dash_with_create_branch() {
     local remote_repo=$(create_test_remote "test-repo-checkout-dash-create" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-dash-create"
 
     # Try `go -b -` — should fail

@@ -3,10 +3,13 @@
 //! Creates a worktree with a new branch.
 
 use crate::config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT};
+use crate::core::layout::{auto_gitignore_if_needed, Layout};
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
 use crate::git::GitCommand;
 use crate::hooks::{HookContext, HookType};
-use crate::multi_remote::path::{calculate_worktree_path, resolve_remote_for_branch};
+use crate::multi_remote::path::{
+    build_template_context, calculate_worktree_path, resolve_remote_for_branch,
+};
 use crate::utils::*;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -33,6 +36,12 @@ pub struct CheckoutBranchParams {
     pub checkout_branch_carry: bool,
     /// Whether to push and set upstream (from settings).
     pub checkout_push: bool,
+    /// Optional layout for computing the worktree path.
+    /// When `Some`, uses `layout.worktree_path()` instead of `calculate_worktree_path()`.
+    pub layout: Option<Layout>,
+    /// Explicit path override for worktree placement (`--at` flag).
+    /// When `Some`, takes priority over both `layout` and the default path computation.
+    pub at_path: Option<PathBuf>,
 }
 
 /// Result of a checkout-branch operation.
@@ -63,19 +72,36 @@ pub fn execute(
     let git_dir = crate::core::repo::get_git_common_dir()?;
     let source_worktree = get_current_directory()?;
 
-    let remote_for_path = resolve_remote_for_branch(
-        git,
-        &params.new_branch_name,
-        params.remote.as_deref(),
-        &params.multi_remote_default,
-    )?;
-
-    let worktree_path = calculate_worktree_path(
-        project_root,
-        &params.new_branch_name,
-        &remote_for_path,
-        params.multi_remote_enabled,
-    );
+    let worktree_path = if let Some(ref at) = params.at_path {
+        at.clone()
+    } else if let Some(ref layout) = params.layout {
+        // For wrapped non-bare layouts (e.g., contained-classic), the project
+        // root from get_project_root() is the clone subdirectory (repo/main/),
+        // but the template expects the wrapper directory (repo/).
+        let effective_root = if layout.needs_wrapper() {
+            project_root
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| project_root.to_path_buf())
+        } else {
+            project_root.to_path_buf()
+        };
+        let ctx = build_template_context(&effective_root, &params.new_branch_name);
+        layout.worktree_path(&ctx)?
+    } else {
+        let remote_for_path = resolve_remote_for_branch(
+            git,
+            &params.new_branch_name,
+            params.remote.as_deref(),
+            &params.multi_remote_default,
+        )?;
+        calculate_worktree_path(
+            project_root,
+            &params.new_branch_name,
+            &remote_for_path,
+            params.multi_remote_enabled,
+        )
+    };
 
     // Fetch latest changes
     fetch_remote(git, &params.remote_name, sink);
@@ -124,6 +150,11 @@ pub fn execute(
             "Worktree directory was not created at '{}'",
             worktree_path.display()
         );
+    }
+
+    // Auto-add worktree parent directory to .gitignore for in-repo layouts
+    if let Err(e) = auto_gitignore_if_needed(project_root, &worktree_path, params.layout.as_ref()) {
+        sink.on_warning(&format!("Could not update .gitignore: {e}"));
     }
 
     sink.on_step(&format!(

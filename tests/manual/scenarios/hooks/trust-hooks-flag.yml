@@ -21,7 +21,9 @@ repos:
 
 steps:
   - name: Clone with --trust-hooks flag
-    run: git-worktree-clone --trust-hooks $REMOTE_TEST_CLONE_TRUST_HOOKS
+    run:
+      git-worktree-clone --trust-hooks --layout contained
+      $REMOTE_TEST_CLONE_TRUST_HOOKS
     expect:
       exit_code: 0
       dirs_exist:

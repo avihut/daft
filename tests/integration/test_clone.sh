@@ -9,7 +9,7 @@ test_clone_basic() {
     local remote_repo=$(create_test_remote "test-repo-basic" "main")
     
     # Test basic clone
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     
     # Verify structure
     assert_directory_exists "test-repo-basic" || return 1
@@ -28,7 +28,7 @@ test_clone_different_default_branch() {
     local remote_repo=$(create_test_remote "test-repo-develop" "develop")
     
     # Test clone with develop as default branch
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     
     # Verify structure
     assert_directory_exists "test-repo-develop" || return 1
@@ -44,7 +44,7 @@ test_clone_no_checkout() {
     local remote_repo=$(create_test_remote "test-repo-no-checkout" "main")
     
     # Test clone with --no-checkout
-    git-worktree-clone --no-checkout "$remote_repo" || return 1
+    git-worktree-clone --layout contained --no-checkout "$remote_repo" || return 1
     
     # Verify structure (should only have .git directory)
     assert_directory_exists "test-repo-no-checkout" || return 1
@@ -64,7 +64,7 @@ test_clone_quiet() {
     local remote_repo=$(create_test_remote "test-repo-quiet" "main")
     
     # Test clone with --quiet (should produce no output)
-    local output=$(git-worktree-clone --quiet "$remote_repo" 2>&1)
+    local output=$(git-worktree-clone --layout contained --quiet "$remote_repo" 2>&1)
     
     # Verify structure was created
     assert_directory_exists "test-repo-quiet" || return 1
@@ -84,7 +84,7 @@ test_clone_all_branches() {
     local remote_repo=$(create_test_remote "test-repo-all-branches" "main")
     
     # Test clone with --all-branches
-    git-worktree-clone --all-branches "$remote_repo" || return 1
+    git-worktree-clone --layout contained --all-branches "$remote_repo" || return 1
     
     # Verify structure
     assert_directory_exists "test-repo-all-branches" || return 1
@@ -107,7 +107,7 @@ test_clone_invalid_url() {
     # Note: HTTP URLs like "https://invalid-url.com/repo.git" may resolve to
     # parking pages or empty responses that git treats as empty repos, so we
     # use a local file path that definitely doesn't exist.
-    assert_command_failure "git-worktree-clone /nonexistent/path/to/repo.git" "Should fail with invalid URL"
+    assert_command_failure "git-worktree-clone --layout contained /nonexistent/path/to/repo.git" "Should fail with invalid URL"
 
     # Verify no directory was created
     if [[ -d "repo" ]]; then
@@ -126,7 +126,7 @@ test_clone_existing_directory() {
     mkdir -p "test-repo-existing"
     
     # Test clone should fail with existing directory
-    assert_command_failure "git-worktree-clone '$remote_repo'" "Should fail with existing directory"
+    assert_command_failure "git-worktree-clone --layout contained '$remote_repo'" "Should fail with existing directory"
     
     return 0
 }
@@ -139,7 +139,7 @@ test_clone_ssh_url() {
     local ssh_url="file://$remote_repo"
     
     # Test clone with SSH URL
-    git-worktree-clone "$ssh_url" || return 1
+    git-worktree-clone --layout contained "$ssh_url" || return 1
     
     # Verify structure
     assert_directory_exists "test-repo-ssh" || return 1
@@ -163,7 +163,7 @@ test_clone_direnv_integration() {
     local remote_repo=$(create_test_remote "test-repo-direnv" "main")
     
     # Test clone
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     
     # Add .envrc file to test direnv integration
     echo "export TEST_VAR=test_value" > "test-repo-direnv/main/.envrc"
@@ -198,7 +198,7 @@ test_clone_performance() {
     
     # Test clone performance
     local start_time=$(date +%s)
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
     
@@ -223,7 +223,7 @@ test_clone_empty_repo() {
     git init --bare "$empty_repo" >/dev/null 2>&1
 
     # Clone the empty repository
-    git-worktree-clone "$empty_repo" || return 1
+    git-worktree-clone --layout contained "$empty_repo" || return 1
 
     # Verify structure was created
     assert_directory_exists "empty-repo" || return 1
@@ -262,7 +262,7 @@ test_clone_empty_repo_with_branch() {
     git init --bare "$empty_repo" >/dev/null 2>&1
 
     # Clone with explicit branch name
-    git-worktree-clone --branch develop "$empty_repo" || return 1
+    git-worktree-clone --layout contained --branch develop "$empty_repo" || return 1
 
     # Verify structure was created
     assert_directory_exists "empty-repo-branch" || return 1
@@ -287,7 +287,7 @@ test_clone_empty_repo_no_checkout() {
     git init --bare "$empty_repo" >/dev/null 2>&1
 
     # Clone with no-checkout
-    git-worktree-clone --no-checkout "$empty_repo" || return 1
+    git-worktree-clone --layout contained --no-checkout "$empty_repo" || return 1
 
     # Verify only bare structure was created
     assert_directory_exists "empty-repo-bare" || return 1
@@ -311,7 +311,7 @@ test_clone_empty_repo_all_branches_fails() {
     git init --bare "$empty_repo" >/dev/null 2>&1
 
     # Clone with --all-branches should fail
-    if git-worktree-clone --all-branches "$empty_repo" 2>&1; then
+    if git-worktree-clone --layout contained --all-branches "$empty_repo" 2>&1; then
         log_error "Clone with --all-branches should fail for empty repository"
         return 1
     fi
@@ -327,7 +327,7 @@ test_clone_empty_repo_first_commit() {
     git init --bare "$empty_repo" >/dev/null 2>&1
 
     # Clone the empty repository
-    git-worktree-clone "$empty_repo" || return 1
+    git-worktree-clone --layout contained "$empty_repo" || return 1
 
     # Get the expected default branch
     local expected_branch=$(git config --global init.defaultBranch 2>/dev/null || echo "master")

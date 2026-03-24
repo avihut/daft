@@ -3,7 +3,7 @@ description: "Init without -x works normally"
 
 steps:
   - name: "Init repo without -x commands"
-    run: "git-worktree-init exec-no-cmd-repo"
+    run: "git-worktree-init --layout contained exec-no-cmd-repo"
     expect:
       exit_code: 0
       dirs_exist:

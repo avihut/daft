@@ -1,0 +1,28 @@
+name: Layout default reset reverts to built-in
+description: daft layout default --reset removes the config override.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Set default to contained
+    run: daft layout default contained 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Reset to built-in
+    run: daft layout default --reset 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "reset"
+        - "sibling"
+
+  - name: Verify default is sibling again
+    run: NO_COLOR=1 daft layout default 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "sibling"
+        - "default"

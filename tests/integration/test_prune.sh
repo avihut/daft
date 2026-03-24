@@ -9,7 +9,7 @@ test_prune_basic() {
     local remote_repo=$(create_test_remote "test-repo-prune-basic" "main")
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-basic"
     
     # Create some worktrees
@@ -51,7 +51,7 @@ test_prune_no_deletion() {
     local remote_repo=$(create_test_remote "test-repo-prune-no-deletion" "main")
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-no-deletion"
     
     # Create some worktrees
@@ -73,7 +73,7 @@ test_prune_multiple_deletions() {
     local remote_repo=$(create_test_remote "test-repo-prune-multiple" "main")
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-multiple"
     
     # Create some worktrees
@@ -148,7 +148,7 @@ test_prune_from_subdirectory() {
     local remote_repo=$(create_test_remote "test-repo-prune-subdir" "main")
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-subdir"
     
     # Create some worktrees
@@ -186,7 +186,7 @@ test_prune_errors() {
     local remote_repo=$(create_test_remote "test-repo-prune-errors" "main")
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-errors"
     
     # Test prune should work (no error expected)
@@ -217,7 +217,7 @@ test_prune_skips_untracked_files() {
     local remote_repo=$(create_test_remote "test-repo-prune-untracked" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-untracked"
 
     # Create worktree and add an untracked file
@@ -263,7 +263,7 @@ test_prune_skips_uncommitted_changes() {
     local remote_repo=$(create_test_remote "test-repo-prune-uncommitted" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-uncommitted"
 
     # Create worktree and modify a tracked file
@@ -302,7 +302,7 @@ test_prune_force_removes_dirty_worktree() {
     local remote_repo=$(create_test_remote "test-repo-prune-force" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-force"
 
     # Create worktree and add an untracked file
@@ -337,7 +337,7 @@ test_prune_removes_clean_worktree() {
     local remote_repo=$(create_test_remote "test-repo-prune-clean" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-clean"
 
     # Create worktree with NO local changes
@@ -371,7 +371,7 @@ test_prune_nested_directories() {
     local remote_repo=$(create_test_remote "test-repo-prune-nested" "main")
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-nested"
     
     # Create worktrees with nested directory structures
@@ -409,7 +409,7 @@ test_prune_performance() {
     local remote_repo=$(create_test_remote "test-repo-prune-performance" "main")
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-performance"
     
     # Create multiple worktrees
@@ -453,7 +453,7 @@ test_prune_many_worktrees() {
     rm -rf "$temp_clone"
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-many"
     
     # Fetch and checkout these branches
@@ -500,7 +500,7 @@ test_prune_plus_marker_branch() {
     local remote_repo=$(create_test_remote "test-repo-prune-plus" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-plus"
 
     # Create a worktree with a new branch - this branch will show with '+' prefix
@@ -573,7 +573,7 @@ test_prune_empty_parent_dir_cleanup() {
     rm -rf "$temp_clone"
 
     # Clone and checkout both branches
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-parent-cleanup"
 
     git fetch origin >/dev/null 2>&1
@@ -640,7 +640,7 @@ test_prune_from_current_worktree() {
     local remote_repo=$(create_test_remote "test-repo-prune-current-wt" "main")
 
     # Clone the repository (creates bare-repo worktree layout)
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-current-wt"
 
     # Create a worktree for a feature branch
@@ -708,7 +708,7 @@ test_prune_from_current_worktree_cd_default_branch() {
     local remote_repo=$(create_test_remote "test-repo-prune-cd-default" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-cd-default"
 
     # Set the cdTarget config to default-branch
@@ -904,7 +904,7 @@ test_prune_remote_config() {
     local remote_repo=$(create_test_remote "test-repo-prune-remote-config" "main")
     
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-remote-config"
     
     # Create worktree
@@ -980,7 +980,7 @@ HOOKEOF
     rm -rf "$setup_clone"
 
     # Step 2: Clone the repository (bare-repo worktree layout)
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-prune-hooks"
 
     # Step 3: Trust the repository from within the main worktree (must be in a

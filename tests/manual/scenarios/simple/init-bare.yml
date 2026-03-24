@@ -3,7 +3,7 @@ description: --bare mode creates bare repo without worktree
 
 steps:
   - name: Init with --bare flag
-    run: git-worktree-init --bare simple-bare-repo
+    run: git-worktree-init --bare --layout contained simple-bare-repo
     expect:
       exit_code: 0
       dirs_exist:

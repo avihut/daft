@@ -106,6 +106,11 @@ fn complete(command: &str, position: usize, word: &str, verbose: bool) -> Result
         // hooks run --job: complete job names for a hook type
         ("hooks-run-job", 1) => complete_hook_jobs(word, verbose),
 
+        // layout transform / layout default / clone --layout: complete layout names
+        ("layout-transform", 1) | ("layout-default", 1) | ("layout-value", 1) => {
+            complete_layouts(word)
+        }
+
         // Default: no completions
         _ => Ok(vec![]),
     }
@@ -231,6 +236,58 @@ fn complete_remote_branches(prefix: &str, verbose: bool) -> Result<Vec<String>> 
         .collect();
 
     Ok(branches)
+}
+
+/// Complete available layout names (built-in + custom from global config).
+///
+/// Output format: `name\tdescription — template` (tab-separated for shells
+/// that support descriptions).
+fn complete_layouts(prefix: &str) -> Result<Vec<String>> {
+    use crate::core::global_config::GlobalConfig;
+    use crate::core::layout::BuiltinLayout;
+
+    let mut entries: Vec<String> = Vec::new();
+
+    // Built-in layouts
+    let descriptions: &[(&str, &str)] = &[
+        ("contained", "Bare repo, worktrees inside"),
+        ("contained-classic", "Regular clone, worktrees beside it"),
+        ("contained-flat", "Bare repo, flat branch dirs"),
+        ("sibling", "Worktrees next to repo (default)"),
+        ("nested", "Hidden .worktrees/ subdir"),
+        ("centralized", "Worktrees in XDG data dir"),
+    ];
+
+    for builtin in BuiltinLayout::all() {
+        let name = builtin.name();
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        let desc = descriptions
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, d)| *d)
+            .unwrap_or("");
+        let layout = builtin.to_layout();
+        entries.push(format!("{name}\t{desc:<36}— {}", layout.template));
+    }
+
+    // Custom layouts from global config
+    if let Ok(config) = GlobalConfig::load() {
+        for (name, custom) in &config.layouts {
+            if !name.starts_with(prefix) {
+                continue;
+            }
+            // Skip if it shadows a built-in (already listed)
+            if BuiltinLayout::from_name(name).is_some() {
+                continue;
+            }
+            let desc = "custom";
+            entries.push(format!("{name}\t{desc:<36}— {}", custom.template));
+        }
+    }
+
+    Ok(entries)
 }
 
 /// Complete configured hook types from the current worktree's daft.yml.

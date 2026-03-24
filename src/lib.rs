@@ -21,6 +21,14 @@ pub const CD_FILE_ENV: &str = "DAFT_CD_FILE";
 /// this variable to prevent trust database hijacking via env injection.
 pub const CONFIG_DIR_ENV: &str = "DAFT_CONFIG_DIR";
 
+/// Environment variable to override the data directory path.
+///
+/// When set, centralized layout worktrees and other application data are stored
+/// in this directory instead of the XDG data directory (`~/.local/share/daft/`).
+///
+/// Only honored in dev builds (same policy as `DAFT_CONFIG_DIR`).
+pub const DATA_DIR_ENV: &str = "DAFT_DATA_DIR";
+
 /// Returns the daft config directory path.
 ///
 /// In dev builds, when `DAFT_CONFIG_DIR` is set to a non-empty absolute path,
@@ -42,6 +50,29 @@ pub fn daft_config_dir() -> anyhow::Result<std::path::PathBuf> {
     let config_dir = dirs::config_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
     Ok(config_dir.join("daft"))
+}
+
+/// Returns the daft data directory path.
+///
+/// In dev builds, when `DAFT_DATA_DIR` is set to a non-empty absolute path,
+/// uses that path directly (no `daft/` suffix appended). In release builds the
+/// env var is ignored. Always falls back to `dirs::data_dir()/daft`.
+pub fn daft_data_dir() -> anyhow::Result<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if cfg!(daft_dev_build) {
+        if let Ok(dir) = env::var(DATA_DIR_ENV) {
+            if !dir.is_empty() {
+                let path = PathBuf::from(&dir);
+                if path.is_relative() {
+                    anyhow::bail!("DAFT_DATA_DIR must be an absolute path, got: {dir}");
+                }
+                return Ok(path);
+            }
+        }
+    }
+    let data_dir =
+        dirs::data_dir().ok_or_else(|| anyhow::anyhow!("Could not determine data directory"))?;
+    Ok(data_dir.join("daft"))
 }
 
 /// Daft verb aliases that route through to worktree commands.
@@ -93,6 +124,7 @@ pub mod homebrew;
 pub mod hooks;
 pub mod logging;
 pub mod output;
+pub mod prompt;
 pub mod shortcuts;
 pub mod styles;
 pub mod suggest;
@@ -102,6 +134,8 @@ pub mod utils;
 
 // Re-exported from core
 pub use self::core::config;
+pub use self::core::global_config;
+pub use self::core::layout;
 pub use self::core::multi_remote;
 pub use self::core::remote;
 pub use self::core::repo::{
@@ -165,5 +199,54 @@ mod tests {
             .to_string()
             .contains("must be an absolute path"));
         env::remove_var(CONFIG_DIR_ENV);
+    }
+
+    #[test]
+    #[serial]
+    fn test_daft_data_dir_default() {
+        env::remove_var(DATA_DIR_ENV);
+        let dir = daft_data_dir().unwrap();
+        assert!(dir.ends_with("daft"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_daft_data_dir_override() {
+        env::set_var(DATA_DIR_ENV, "/tmp/test-daft-data");
+        let dir = daft_data_dir().unwrap();
+        assert_eq!(dir, PathBuf::from("/tmp/test-daft-data"));
+        env::remove_var(DATA_DIR_ENV);
+    }
+
+    #[test]
+    #[serial]
+    fn test_daft_data_dir_override_no_suffix() {
+        env::set_var(DATA_DIR_ENV, "/tmp/my-custom-data");
+        let dir = daft_data_dir().unwrap();
+        assert_eq!(dir, PathBuf::from("/tmp/my-custom-data"));
+        assert!(!dir.ends_with("daft"));
+        env::remove_var(DATA_DIR_ENV);
+    }
+
+    #[test]
+    #[serial]
+    fn test_daft_data_dir_empty_falls_back() {
+        env::set_var(DATA_DIR_ENV, "");
+        let dir = daft_data_dir().unwrap();
+        assert!(dir.ends_with("daft"));
+        env::remove_var(DATA_DIR_ENV);
+    }
+
+    #[test]
+    #[serial]
+    fn test_daft_data_dir_rejects_relative_path() {
+        env::set_var(DATA_DIR_ENV, "relative/path");
+        let result = daft_data_dir();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must be an absolute path"));
+        env::remove_var(DATA_DIR_ENV);
     }
 }

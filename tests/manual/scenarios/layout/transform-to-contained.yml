@@ -1,0 +1,33 @@
+name: Transform sibling to contained
+description:
+  Clone with sibling layout, then transform to contained. Verify the repo
+  structure changes to bare with worktrees inside the project root.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with sibling layout
+    run: git-worktree-clone --layout sibling $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.git"
+
+  - name: Transform to contained layout
+    run: daft layout transform contained 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "contained"
+
+  - name: Verify repo is now bare
+    run: git rev-parse --is-bare-repository
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "true"

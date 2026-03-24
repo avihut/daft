@@ -3,7 +3,7 @@ description: "Init a repo, commit content, then create additional worktrees"
 
 steps:
   - name: "Init a repo"
-    run: "git-worktree-init workflow-test"
+    run: "git-worktree-init --layout contained workflow-test"
     expect:
       exit_code: 0
       dirs_exist:

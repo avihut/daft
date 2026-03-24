@@ -3,7 +3,7 @@ description: "Init accepts various valid repository name formats"
 
 steps:
   - name: "Hyphenated name"
-    run: "git-worktree-init simple-repo"
+    run: "git-worktree-init --layout contained simple-repo"
     expect:
       exit_code: 0
       dirs_exist:
@@ -13,7 +13,7 @@ steps:
           branch: master
 
   - name: "Underscored name"
-    run: "git-worktree-init my_repo"
+    run: "git-worktree-init --layout contained my_repo"
     expect:
       exit_code: 0
       dirs_exist:
@@ -23,7 +23,7 @@ steps:
           branch: master
 
   - name: "Mixed case name"
-    run: "git-worktree-init MyRepo"
+    run: "git-worktree-init --layout contained MyRepo"
     expect:
       exit_code: 0
       dirs_exist:
@@ -33,7 +33,7 @@ steps:
           branch: master
 
   - name: "Name with numbers"
-    run: "git-worktree-init repo123"
+    run: "git-worktree-init --layout contained repo123"
     expect:
       exit_code: 0
       dirs_exist:
@@ -43,7 +43,7 @@ steps:
           branch: master
 
   - name: "Multi-hyphenated name"
-    run: "git-worktree-init my-awesome-project"
+    run: "git-worktree-init --layout contained my-awesome-project"
     expect:
       exit_code: 0
       dirs_exist:

@@ -1,0 +1,42 @@
+name: Re-clone resets repo store layout
+description:
+  When re-cloning to the same path with a different layout, the repo store
+  should reflect the new layout, not the stale previous one.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with contained layout
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Verify contained is stored
+    run: NO_COLOR=1 daft layout show 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "contained"
+
+  - name: Remove clone and re-clone with sibling
+    run: |
+      rm -rf $WORK_DIR/test-repo
+      git-worktree-clone --layout sibling $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.git"
+
+  - name: Verify layout is now sibling
+    run: NO_COLOR=1 daft layout show 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "sibling"

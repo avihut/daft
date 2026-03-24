@@ -35,6 +35,11 @@ my-project/
     └── ...
 ```
 
+::: tip Other layouts available This page shows the **contained** layout, where
+worktrees are subdirectories of the repo. daft supports several layouts that
+control where worktrees are placed. See [Layouts](/guide/layouts) to explore
+your options. :::
+
 Key properties:
 
 - `.git/` is a bare repository at the project root - it holds all shared Git
@@ -201,6 +206,7 @@ daft update master:test
 ## How Commands Find the Project Root
 
 daft commands use `git rev-parse --git-common-dir` to locate the shared `.git`
-directory regardless of which worktree you're in. This means you can run
-commands from any directory within any worktree - they always find the project
-root and create new worktrees as siblings.
+directory regardless of which worktree you're in or which
+[layout](/guide/layouts) the repository uses. This means you can run commands
+from any directory within any worktree — they always find the project root and
+place new worktrees according to the active layout.

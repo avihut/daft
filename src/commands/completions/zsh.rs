@@ -42,6 +42,20 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push('\n');
     }
 
+    // Value completion for --layout flag
+    let has_layout = matches!(command_name, "git-worktree-clone" | "git-worktree-init");
+    if has_layout {
+        output.push_str("    # Layout name completion for --layout\n");
+        output.push_str("    local prev_word=\"${words[$((CURRENT-1))]}\"\n");
+        output.push_str("    if [[ \"$prev_word\" == \"--layout\" ]]; then\n");
+        output.push_str("        local -a layouts\n");
+        output.push_str("        layouts=(\"${(@f)$(daft __complete layout-value \"$curword\" 2>/dev/null | sed 's/\\t/:/')}\")\n");
+        output.push_str("        _describe 'layout' layouts\n");
+        output.push_str("        return\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
     // Value completion for --columns flag
     let has_columns = matches!(
         command_name,
@@ -282,6 +296,35 @@ _daft() {
         return
     fi
 
+    # layout: complete subcommands and arguments
+    if (( CURRENT >= 3 )) && [[ "$words[2]" == "layout" ]]; then
+        if (( CURRENT == 3 )); then
+            compadd default list show transform
+            return
+        fi
+        case "$words[3]" in
+            show)
+                _files -/
+                return
+                ;;
+            transform|default)
+                if [[ "$curword" == -* ]]; then
+                    if [[ "$words[3]" == "transform" ]]; then
+                        compadd -- --force -f --dry-run --include --include-all -h --help
+                    else
+                        compadd -- --reset -h --help
+                    fi
+                    return
+                fi
+                local -a layouts
+                layouts=("${(@f)$(daft __complete layout-$words[3] "$curword" 2>/dev/null | sed 's/\t/:/')}")
+                _describe 'layout' layouts
+                return
+                ;;
+        esac
+        return
+    fi
+
     # multi-remote: complete subcommands
     if (( CURRENT == 3 )) && [[ "$words[2]" == "multi-remote" ]]; then
         compadd enable disable status set-default move
@@ -345,6 +388,18 @@ _daft() {
                 __git_worktree_prune_impl
                 return
                 ;;
+            clone)
+                words=("git-worktree-clone" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __git_worktree_clone_impl
+                return
+                ;;
+            init)
+                words=("git-worktree-init" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __git_worktree_init_impl
+                return
+                ;;
         esac
     fi
 
@@ -353,7 +408,7 @@ _daft() {
         if [[ "$curword" == -* ]]; then
             compadd -- --version -V --help -h
         else
-            compadd hooks shell-init setup multi-remote release-notes doctor \
+            compadd hooks shell-init setup multi-remote release-notes doctor layout \
                     clone init go start carry update list prune rename sync remove adopt eject
         fi
         return

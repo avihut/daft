@@ -1,0 +1,58 @@
+name: --at flag validation errors
+description:
+  Verify --at is rejected when worktree already exists or branch not found
+  without --start
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create a feature branch worktree
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      git-worktree-checkout -b feature/existing
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/existing"
+
+  - name: --at fails when worktree already exists (go)
+    run: daft go --at $WORK_DIR/other-path feature/existing 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "--at cannot be used"
+        - "worktree already exists"
+
+  - name: --at fails when branch not found and no --start (go)
+    run: daft go --at $WORK_DIR/new-path feature/nonexistent 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "--at requires --start"
+
+  - name: --at succeeds with --start for new branch (go)
+    run: daft go --start --at $WORK_DIR/started-path feature/started 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/started-path"
+      is_git_worktree:
+        - dir: "$WORK_DIR/started-path"
+          branch: feature/started
+
+  - name: --at succeeds for existing branch without worktree (go)
+    run: daft go --at $WORK_DIR/develop-path develop 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/develop-path"
+      is_git_worktree:
+        - dir: "$WORK_DIR/develop-path"
+          branch: develop

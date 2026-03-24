@@ -1,0 +1,36 @@
+name: "Transform nested to nested (no-op)"
+description: "Same-layout transform should be a no-op"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with nested layout
+    run: git-worktree-clone --layout nested $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Transform to same layout
+    run: daft layout transform nested 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Verify unchanged
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.worktrees/develop"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: main
+        - dir: "$WORK_DIR/test-repo/.worktrees/develop"
+          branch: develop

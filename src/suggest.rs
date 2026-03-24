@@ -14,6 +14,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "go",
     "hooks",
     "init",
+    "layout",
     "list",
     "multi-remote",
     "prune",

@@ -3,7 +3,7 @@ description: "Init handles .envrc files gracefully"
 
 steps:
   - name: "Init repo"
-    run: "git-worktree-init direnv-test-repo"
+    run: "git-worktree-init --layout contained direnv-test-repo"
     expect:
       exit_code: 0
       dirs_exist:

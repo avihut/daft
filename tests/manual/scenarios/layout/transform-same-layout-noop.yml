@@ -1,0 +1,40 @@
+name: Transform to same layout is a no-op
+description:
+  Transforming to the same layout should succeed without moving any worktrees.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone sibling and create a worktree
+    run: |
+      git-worktree-clone --layout sibling $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo.feature-test"
+
+  - name: Transform to sibling (same layout)
+    run: daft layout transform sibling 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "sibling"
+
+  - name: Verify worktrees unchanged
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.git"
+        - "$WORK_DIR/test-repo.feature-test"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: main
+        - dir: "$WORK_DIR/test-repo.feature-test"
+          branch: feature/test

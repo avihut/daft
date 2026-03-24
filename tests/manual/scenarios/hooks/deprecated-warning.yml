@@ -21,7 +21,7 @@ repos:
 
 steps:
   - name: Clone the repository
-    run: git-worktree-clone $REMOTE_TEST_HOOKS_DEPRECATED
+    run: git-worktree-clone --layout contained $REMOTE_TEST_HOOKS_DEPRECATED
     expect:
       exit_code: 0
       dirs_exist:

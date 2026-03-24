@@ -1,0 +1,45 @@
+name: Contained clone fires post-clone only
+description:
+  For bare clones (contained layout), post-clone should fire but
+  worktree-post-create should NOT fire during clone itself (it fires separately
+  when worktrees are created via checkout).
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        post-clone:
+          jobs:
+            - name: clone-marker
+              run: touch "$DAFT_WORKTREE_PATH/.clone-hook-ran"
+        worktree-post-create:
+          jobs:
+            - name: create-marker
+              run: touch "$DAFT_WORKTREE_PATH/.create-hook-ran"
+
+steps:
+  - name: Clone with contained layout and trust hooks
+    run:
+      git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Verify post-clone fired
+    run: "true"
+    expect:
+      files_exist:
+        - "$WORK_DIR/test-repo/main/.clone-hook-ran"
+
+  - name: Verify worktree-post-create did not fire during clone
+    run: "true"
+    expect:
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main/.create-hook-ran"

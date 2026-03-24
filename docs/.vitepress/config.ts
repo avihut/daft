@@ -238,6 +238,7 @@ export default defineConfig({
         text: "Guide",
         items: [
           { text: "Worktree Workflow", link: "/guide/worktree-workflow" },
+          { text: "Layouts", link: "/guide/layouts" },
           {
             text: "Adopting Existing Repos",
             link: "/guide/adopting-existing-repos",
@@ -295,6 +296,7 @@ export default defineConfig({
             text: "Configuration",
             items: [
               { text: "hooks", link: "/cli/git-daft-hooks" },
+              { text: "layout", link: "/cli/daft-layout" },
               { text: "multi-remote", link: "/cli/daft-multi-remote" },
             ],
           },

@@ -8,7 +8,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 test_branch_delete_basic() {
     local remote_repo=$(create_test_remote "test-repo-bd-basic" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-basic"
     local project_root=$(pwd)
 
@@ -54,7 +54,7 @@ test_branch_delete_basic() {
 test_branch_delete_refuses_unmerged() {
     local remote_repo=$(create_test_remote "test-repo-bd-unmerged" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-unmerged"
     local project_root=$(pwd)
 
@@ -84,7 +84,7 @@ test_branch_delete_refuses_unmerged() {
 test_branch_delete_force_unmerged() {
     local remote_repo=$(create_test_remote "test-repo-bd-force" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-force"
     local project_root=$(pwd)
 
@@ -113,7 +113,7 @@ test_branch_delete_force_unmerged() {
 test_branch_delete_refuses_default() {
     local remote_repo=$(create_test_remote "test-repo-bd-default" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-default"
 
     # Should fail WITHOUT --force
@@ -132,7 +132,7 @@ test_branch_delete_refuses_default() {
 test_branch_delete_refuses_dirty() {
     local remote_repo=$(create_test_remote "test-repo-bd-dirty" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-dirty"
     local project_root=$(pwd)
 
@@ -154,7 +154,7 @@ test_branch_delete_refuses_dirty() {
 test_branch_delete_multiple() {
     local remote_repo=$(create_test_remote "test-repo-bd-multi" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-multi"
     local project_root=$(pwd)
 
@@ -193,7 +193,7 @@ test_branch_delete_multiple() {
 test_branch_delete_no_worktree() {
     local remote_repo=$(create_test_remote "test-repo-bd-no-wt" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-no-wt"
     local project_root=$(pwd)
 
@@ -220,7 +220,7 @@ test_branch_delete_no_worktree() {
 test_branch_delete_nonexistent() {
     local remote_repo=$(create_test_remote "test-repo-bd-noexist" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-noexist"
 
     if git-worktree-branch-delete nonexistent-branch 2>/dev/null; then
@@ -235,7 +235,7 @@ test_branch_delete_nonexistent() {
 test_branch_delete_from_current_worktree_writes_cd() {
     local remote_repo=$(create_test_remote "test-repo-bd-cd" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-cd"
 
     # Create a branch with worktree
@@ -302,7 +302,7 @@ test_branch_delete_from_current_worktree_writes_cd() {
 test_branch_delete_from_current_worktree_cd_default_branch() {
     local remote_repo=$(create_test_remote "test-repo-bd-cd-default" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-cd-default"
 
     # Set the cdTarget config to default-branch
@@ -368,7 +368,7 @@ test_branch_delete_from_current_worktree_cd_default_branch() {
 test_branch_delete_local_behind_remote() {
     local remote_repo=$(create_test_remote "test-repo-bd-behind" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-behind"
     local project_root=$(pwd)
 
@@ -417,7 +417,7 @@ test_branch_delete_local_behind_remote() {
 test_branch_delete_by_relative_path() {
     local remote_repo=$(create_test_remote "test-repo-bd-relpath" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-relpath"
     local project_root=$(pwd)
 
@@ -462,7 +462,7 @@ test_branch_delete_by_relative_path() {
 test_branch_delete_by_absolute_path() {
     local remote_repo=$(create_test_remote "test-repo-bd-abspath" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-abspath"
     local project_root=$(pwd)
 
@@ -508,7 +508,7 @@ test_branch_delete_by_absolute_path() {
 test_branch_delete_by_dot() {
     local remote_repo=$(create_test_remote "test-repo-bd-dot" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-dot"
     local project_root
     project_root=$(cd "$(pwd)" && pwd -P)
@@ -562,7 +562,7 @@ test_branch_delete_by_dot() {
 test_worktree_branch_d_basic() {
     local remote_repo=$(create_test_remote "test-repo-wb-d-basic" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-wb-d-basic"
     local project_root=$(pwd)
 
@@ -596,7 +596,7 @@ test_worktree_branch_d_basic() {
 test_worktree_branch_D_force() {
     local remote_repo=$(create_test_remote "test-repo-wb-D-force" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-wb-D-force"
     local project_root=$(pwd)
 
@@ -624,7 +624,7 @@ test_worktree_branch_D_force() {
 test_worktree_branch_no_flag_fails() {
     local remote_repo=$(create_test_remote "test-repo-wb-noflag" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-wb-noflag"
 
     git-worktree-checkout -b feature/wb-noflag || return 1
@@ -642,7 +642,7 @@ test_worktree_branch_no_flag_fails() {
 test_branch_delete_deprecated_warning() {
     local remote_repo=$(create_test_remote "test-repo-bd-deprec" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-deprec"
     local project_root=$(pwd)
 
@@ -669,7 +669,7 @@ test_branch_delete_deprecated_warning() {
 test_branch_delete_default_force_worktree_only() {
     local remote_repo=$(create_test_remote "test-repo-bd-default-force" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-default-force"
     local project_root=$(pwd)
 
@@ -708,7 +708,7 @@ test_branch_delete_default_force_worktree_only() {
 test_branch_delete_default_no_worktree_force_fails() {
     local remote_repo=$(create_test_remote "test-repo-bd-default-nowt" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-default-nowt"
     local project_root=$(pwd)
 
@@ -738,7 +738,7 @@ test_branch_delete_default_no_worktree_force_fails() {
 test_branch_delete_default_from_current_worktree() {
     local remote_repo=$(create_test_remote "test-repo-bd-default-current" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-default-current"
     local project_root=$(pwd)
 
@@ -784,7 +784,7 @@ test_branch_delete_default_from_current_worktree() {
 test_daft_remove_default_force_worktree_only() {
     local remote_repo=$(create_test_remote "test-repo-bd-daft-remove" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-bd-daft-remove"
     local project_root=$(pwd)
 

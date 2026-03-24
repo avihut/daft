@@ -96,6 +96,7 @@ fn main() -> Result<()> {
                         return Ok(());
                     }
                     "hooks" => commands::hooks::run(),
+                    "layout" => commands::layout::run(),
                     "multi-remote" => commands::multi_remote::run(),
                     "release-notes" => commands::release_notes::run(),
                     "setup" => {

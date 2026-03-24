@@ -226,10 +226,26 @@ impl HookExecutor {
         output: &mut dyn Output,
         presenter: &Arc<dyn JobPresenter>,
     ) -> Result<Option<HookResult>> {
-        let yaml_config = match yaml_config_loader::load_merged_config(hook_source_worktree)? {
-            Some(config) => config,
-            None => {
-                return Ok(None);
+        let yaml_config = if ctx.hook_type == HookType::PreCreate {
+            // For PreCreate, the target worktree doesn't exist yet.
+            // Load config from the target branch via git show, falling back
+            // to the base branch and then the default branch.
+            match yaml_config_loader::load_config_from_branch(
+                &ctx.git_dir,
+                &ctx.branch_name,
+                ctx.base_branch.as_deref(),
+            )? {
+                Some(config) => config,
+                None => {
+                    return Ok(None);
+                }
+            }
+        } else {
+            match yaml_config_loader::load_merged_config(hook_source_worktree)? {
+                Some(config) => config,
+                None => {
+                    return Ok(None);
+                }
             }
         };
 

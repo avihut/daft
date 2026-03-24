@@ -4,8 +4,8 @@ description: "Failing -x command stops execution and propagates error"
 steps:
   - name: "Init repo with failing -x command"
     run:
-      "git-worktree-init -x 'echo before > marker.txt' -x 'false' -x 'echo after
-      >> marker.txt' exec-fail-repo 2>/dev/null"
+      "git-worktree-init --layout contained -x 'echo before > marker.txt' -x
+      'false' -x 'echo after >> marker.txt' exec-fail-repo 2>/dev/null"
     expect:
       files_exist:
         - "$WORK_DIR/exec-fail-repo/master/marker.txt"

@@ -6,7 +6,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 
 # Test single -x command runs in init worktree directory
 test_exec_init_single() {
-    git-worktree-init -x 'pwd > exec_output.txt' exec-init-repo || return 1
+    git-worktree-init --layout contained -x 'pwd > exec_output.txt' exec-init-repo || return 1
 
     # We should be in the worktree now
     cd exec-init-repo/master || return 1
@@ -26,7 +26,7 @@ test_exec_init_single() {
 
 # Test multiple -x commands run in order
 test_exec_init_multiple() {
-    git-worktree-init -x 'echo first > order.txt' -x 'echo second >> order.txt' exec-multi-repo || return 1
+    git-worktree-init --layout contained -x 'echo first > order.txt' -x 'echo second >> order.txt' exec-multi-repo || return 1
 
     cd exec-multi-repo/master || return 1
     assert_file_exists "order.txt" "exec commands should have created output file" || return 1
@@ -46,7 +46,7 @@ second" ]]; then
 # Test -x with failing command stops and propagates error
 test_exec_failing_command() {
     # The command should fail because 'false' returns exit code 1
-    if git-worktree-init -x 'echo before > marker.txt' -x 'false' -x 'echo after >> marker.txt' exec-fail-repo 2>/dev/null; then
+    if git-worktree-init --layout contained -x 'echo before > marker.txt' -x 'false' -x 'echo after >> marker.txt' exec-fail-repo 2>/dev/null; then
         log_error "Command should have failed due to 'false'"
         return 1
     fi
@@ -70,7 +70,7 @@ test_exec_clone_single() {
     local remote_repo
     remote_repo=$(create_test_remote "test-repo-exec-clone" "main")
 
-    git-worktree-clone "$remote_repo" -x 'pwd > exec_output.txt' || return 1
+    git-worktree-clone --layout contained "$remote_repo" -x 'pwd > exec_output.txt' || return 1
 
     cd test-repo-exec-clone/main || return 1
     assert_file_exists "exec_output.txt" "exec command should have created output file in clone worktree" || return 1
@@ -92,7 +92,7 @@ test_exec_checkout_single() {
     remote_repo=$(create_test_remote "test-repo-exec-co" "main")
 
     # First clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd test-repo-exec-co || return 1
 
     # Checkout with exec
@@ -118,7 +118,7 @@ test_exec_checkout_branch_single() {
     remote_repo=$(create_test_remote "test-repo-exec-cb" "main")
 
     # First clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd test-repo-exec-cb/main || return 1
 
     # Checkout -b with exec
@@ -144,7 +144,7 @@ test_exec_checkout_existing_worktree() {
     remote_repo=$(create_test_remote "test-repo-exec-existing" "main")
 
     # Clone and create a worktree for develop
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd test-repo-exec-existing || return 1
     git-worktree-checkout develop || return 1
 
@@ -168,7 +168,7 @@ test_exec_checkout_existing_worktree() {
 
 # Test -x with no commands (empty) works fine
 test_exec_no_commands() {
-    git-worktree-init exec-no-cmd-repo || return 1
+    git-worktree-init --layout contained exec-no-cmd-repo || return 1
 
     assert_directory_exists "exec-no-cmd-repo/master" || return 1
     assert_git_worktree "exec-no-cmd-repo/master" "master" || return 1

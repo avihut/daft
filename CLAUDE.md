@@ -51,6 +51,16 @@ mise run bench:tests:integration       # Benchmark bash vs YAML (TUI)
 IMPORTANT: Before committing, always run `mise run fmt`, `mise run clippy`, and
 `mise run test:unit`. These checks are required and enforced in CI.
 
+IMPORTANT: Every bug fix must include a regression test that reproduces the
+issue. Add a YAML scenario in `tests/manual/scenarios/` or a unit test that
+fails without the fix and passes with it.
+
+## XDG Conventions
+
+This project follows the XDG Base Directory Specification. Use the `dirs` crate
+for cross-platform path resolution. Never hardcode `~/` paths for config or data
+storage.
+
 ## Architecture
 
 **Multicall binary**: All commands route through a single `daft` binary
@@ -139,6 +149,32 @@ text:
 mise run man:gen      # Generate/update man pages
 mise run man:verify   # Check if man pages are up-to-date (also runs in CI)
 ```
+
+## Test Plans
+
+Manual test plans live in `test-plans/`. Each file is a markdown checklist tied
+to a branch via YAML frontmatter:
+
+```markdown
+---
+branch: feat/progressive-adoption
+---
+
+# Progressive Adoption
+
+## Layout resolution
+
+- [ ] Default layout is sibling when no config exists
+- [ ] CLI --layout flag overrides config
+```
+
+- **File name**: descriptive feature name, not the branch name
+  (`progressive-adoption.md`, not `feat-progressive-adoption.md`)
+- **`branch:` frontmatter**: must match the full branch name — used by the
+  sandbox `test-plan` command to auto-resolve the plan for the current worktree
+- **Committed to the repo**: serves as documentation of what was manually tested
+- In the sandbox: `test-plan` opens the current branch's plan in treemd,
+  `test-plan <name>` opens a specific plan by filename
 
 ## Documentation Site
 

@@ -7,7 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 # Test basic init functionality
 test_init_basic() {
     # Test basic init
-    git-worktree-init simple-test-repo || return 1
+    git-worktree-init --layout contained simple-test-repo || return 1
     
     # Verify structure
     assert_directory_exists "simple-test-repo" || return 1
@@ -22,7 +22,7 @@ test_init_basic() {
 # Test init with custom initial branch
 test_init_custom_branch() {
     # Test init with custom branch
-    git-worktree-init --initial-branch main simple-main-repo || return 1
+    git-worktree-init --layout contained --initial-branch main simple-main-repo || return 1
     
     # Verify structure
     assert_directory_exists "simple-main-repo" || return 1
@@ -37,7 +37,7 @@ test_init_custom_branch() {
 # Test init with bare mode
 test_init_bare() {
     # Test bare init
-    git-worktree-init --bare simple-bare-repo || return 1
+    git-worktree-init --layout contained --bare simple-bare-repo || return 1
     
     # Verify structure
     assert_directory_exists "simple-bare-repo" || return 1
@@ -56,18 +56,22 @@ test_init_bare() {
 # Test init with quiet mode
 test_init_quiet() {
     # Test quiet init (should produce minimal output)
-    local output=$(git-worktree-init --quiet quiet-repo 2>&1)
-    
+    # Filter the DAFT_CONFIG_DIR override warning — it's a dev-build diagnostic
+    # that prints before argument parsing and cannot respect --quiet.
+    local output=$(git-worktree-init --layout contained --quiet quiet-repo 2>&1 \
+        | grep -v "^warning: config directory overridden" \
+        | grep -v "^  -> ")
+
     # Verify structure was created
     assert_directory_exists "quiet-repo" || return 1
     assert_directory_exists "quiet-repo/master" || return 1
-    
+
     # Check output is minimal
     if [[ ${#output} -gt 100 ]]; then
         log_error "Quiet mode produced too much output (${#output} characters)"
         return 1
     fi
-    
+
     return 0
 }
 
@@ -78,10 +82,10 @@ test_init_errors() {
     
     # Test existing directory
     mkdir -p "existing-dir"
-    assert_command_failure "git-worktree-init existing-dir" "Should fail with existing directory"
+    assert_command_failure "git-worktree-init --layout contained existing-dir" "Should fail with existing directory"
     
     # Test invalid branch name
-    assert_command_failure "git-worktree-init --initial-branch 'invalid branch name' test-repo" "Should fail with invalid branch name"
+    assert_command_failure "git-worktree-init --layout contained --initial-branch 'invalid branch name' test-repo" "Should fail with invalid branch name"
     
     return 0
 }
@@ -97,7 +101,7 @@ test_init_branch_conventions() {
         local repo_name="test-repo-$i"
         
         cd "$original_dir"
-        git-worktree-init --initial-branch "$branch" "$repo_name" || return 1
+        git-worktree-init --layout contained --initial-branch "$branch" "$repo_name" || return 1
         
         cd "$original_dir"
         assert_directory_exists "$repo_name" || return 1
@@ -112,7 +116,7 @@ test_init_branch_conventions() {
 # Test init with direnv integration
 test_init_direnv_integration() {
     # Test init
-    git-worktree-init direnv-test-repo || return 1
+    git-worktree-init --layout contained direnv-test-repo || return 1
     
     # Add .envrc file
     echo "export TEST_VAR=test_value" > "direnv-test-repo/master/.envrc"
@@ -129,7 +133,7 @@ test_init_workflow() {
     local original_dir="$(pwd)"
     
     # Test init followed by adding content
-    git-worktree-init workflow-test || return 1
+    git-worktree-init --layout contained workflow-test || return 1
     
     # Add content to the repository
     cd "$original_dir/workflow-test/master"
@@ -161,13 +165,13 @@ test_init_paths() {
     local original_dir="$(pwd)"
     
     # Test with relative path
-    git-worktree-init relative-path-test || return 1
+    git-worktree-init --layout contained relative-path-test || return 1
     cd "$original_dir"
     assert_directory_exists "relative-path-test" || return 1
     
     # Test with absolute path (should fail - we don't support absolute paths)
     local abs_path="$(pwd)/absolute-path-test"
-    if git-worktree-init "$abs_path" >/dev/null 2>&1; then
+    if git-worktree-init --layout contained "$abs_path" >/dev/null 2>&1; then
         log_error "Absolute path should fail validation"
         return 1
     fi
@@ -189,7 +193,7 @@ test_init_help() {
 test_init_performance() {
     # Test init performance
     local start_time=$(date +%s)
-    git-worktree-init performance-test || return 1
+    git-worktree-init --layout contained performance-test || return 1
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
     
@@ -214,7 +218,7 @@ test_init_repo_name_formats() {
     for i in "${!repo_names[@]}"; do
         local repo_name="${repo_names[i]}"
         
-        git-worktree-init "$repo_name" || return 1
+        git-worktree-init --layout contained "$repo_name" || return 1
         
         assert_directory_exists "$repo_name" || return 1
         assert_directory_exists "$repo_name/master" || return 1
@@ -227,8 +231,8 @@ test_init_repo_name_formats() {
 # Test init security - path traversal prevention
 test_init_security() {
     # Test that path traversal attempts are handled safely
-    assert_command_failure "git-worktree-init ../../../etc/passwd" "Should fail with path traversal attempt"
-    assert_command_failure "git-worktree-init ..\\..\\..\\windows\\system32" "Should fail with Windows path traversal"
+    assert_command_failure "git-worktree-init --layout contained ../../../etc/passwd" "Should fail with path traversal attempt"
+    assert_command_failure "git-worktree-init --layout contained ..\\..\\..\\windows\\system32" "Should fail with Windows path traversal"
     
     # Verify no directories were created outside the test directory
     if [[ -d "../../../etc" ]] || [[ -d "..\\..\\..\\windows" ]]; then

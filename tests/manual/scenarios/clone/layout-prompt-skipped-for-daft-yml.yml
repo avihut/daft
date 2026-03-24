@@ -1,0 +1,35 @@
+name: daft.yml layout suppresses first-time prompt
+description:
+  When the cloned repo has a daft.yml with a layout field, the first-time layout
+  prompt should not appear. The daft.yml layout is used directly.
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      layout: contained
+
+steps:
+  - name: Clone (no prompt should appear, daft.yml takes over)
+    run: git-worktree-clone $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "Use contained?"
+        - "set as default"
+
+  - name: Verify contained layout used directly
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/main"
+          branch: main

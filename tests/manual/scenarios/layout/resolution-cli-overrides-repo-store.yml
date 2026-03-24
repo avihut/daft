@@ -1,0 +1,40 @@
+name: Clone --layout flag overrides global config
+description:
+  The --layout flag on clone should override the global config default. Verifies
+  CLI is highest priority in the resolution chain.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Set global default layout to nested
+    run: |
+      mkdir -p $DAFT_CONFIG_DIR
+      cat > $DAFT_CONFIG_DIR/config.toml << 'TOML'
+      [defaults]
+      layout = "nested"
+      TOML
+    expect:
+      exit_code: 0
+
+  - name: Clone with --layout contained overriding global default
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Verify contained layout was used (not nested from global config)
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/.worktrees"
+
+  - name: Verify repo store records contained
+    run: NO_COLOR=1 daft layout show 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "contained"

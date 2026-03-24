@@ -9,7 +9,7 @@ test_list_basic() {
     local remote_repo=$(create_test_remote "test-repo-list-basic" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-basic"
 
     # Create additional worktrees
@@ -53,7 +53,7 @@ test_list_current_marker() {
     local remote_repo=$(create_test_remote "test-repo-list-current" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-current"
 
     # Create another worktree
@@ -91,7 +91,7 @@ test_list_dirty_marker() {
     local remote_repo=$(create_test_remote "test-repo-list-dirty" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-dirty"
 
     # Create a worktree
@@ -128,7 +128,7 @@ test_list_json() {
     local remote_repo=$(create_test_remote "test-repo-list-json" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-json"
 
     # Create a worktree with dirty state
@@ -185,7 +185,7 @@ test_list_json() {
 
 # Test detached HEAD state
 test_list_detached_head() {
-    git-worktree-init detached-test || return 1
+    git-worktree-init --layout contained detached-test || return 1
     cd "detached-test"
 
     # Create an initial commit
@@ -223,7 +223,7 @@ test_list_ahead_behind() {
     local remote_repo=$(create_test_remote "test-repo-list-ahead" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-ahead"
 
     # Checkout develop and make additional commits ahead of main
@@ -271,7 +271,7 @@ test_list_help() {
 
 # Test JSON output for a single worktree (init creates one worktree)
 test_list_json_single() {
-    git-worktree-init json-single-test || return 1
+    git-worktree-init --layout contained json-single-test || return 1
     cd "json-single-test"
 
     # Create an initial commit so we have commit info
@@ -331,7 +331,7 @@ test_list_many_worktrees() {
     rm -rf "$temp_clone"
 
     # Clone and checkout all branches
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-many"
 
     git fetch origin >/dev/null 2>&1
@@ -366,7 +366,7 @@ test_list_many_worktrees() {
 
 # Test list shows last commit subject
 test_list_commit_subject() {
-    git-worktree-init subject-test || return 1
+    git-worktree-init --layout contained subject-test || return 1
     cd "subject-test"
 
     # Create a commit with a specific subject
@@ -397,7 +397,7 @@ test_list_from_subdirectory() {
     local remote_repo=$(create_test_remote "test-repo-list-subdir" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-subdir"
 
     # Create a worktree
@@ -435,7 +435,7 @@ test_list_json_ahead_behind() {
     local remote_repo=$(create_test_remote "test-repo-list-json-ab" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-json-ab"
 
     # Checkout develop and make commits
@@ -471,7 +471,7 @@ test_list_branch_age() {
     local remote_repo=$(create_test_remote "test-repo-list-age" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-age"
 
     # Run list from the main worktree
@@ -499,7 +499,7 @@ test_list_shorthand_age() {
     local remote_repo=$(create_test_remote "test-repo-list-shorthand" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-shorthand"
 
     # Run list from the main worktree
@@ -527,7 +527,7 @@ test_list_json_branch_age() {
     local remote_repo=$(create_test_remote "test-repo-list-json-age" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-json-age"
 
     # Run list with --json
@@ -550,7 +550,7 @@ test_list_json_branch_age() {
 test_list_head_column() {
     local remote_repo=$(create_test_remote "test-repo-list-head" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-head"
 
     # Create a worktree and make changes
@@ -587,7 +587,7 @@ test_list_head_column() {
 test_list_remote_column() {
     local remote_repo=$(create_test_remote "test-repo-list-remote" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-remote"
 
     # Create a worktree and make a local commit (ahead of remote)
@@ -621,7 +621,7 @@ test_list_remote_column() {
 test_list_relative_path() {
     local remote_repo=$(create_test_remote "test-repo-list-relpath" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-relpath"
 
     git-worktree-checkout develop || return 1
@@ -657,7 +657,7 @@ test_list_relative_path() {
 test_list_json_head_remote() {
     local remote_repo=$(create_test_remote "test-repo-list-json-hr" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-json-hr"
 
     cd main
@@ -701,7 +701,7 @@ test_list_json_head_remote() {
 test_list_stat_lines() {
     local remote_repo=$(create_test_remote "test-repo-list-unit-lines" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-unit-lines"
 
     git-worktree-checkout develop || return 1
@@ -739,7 +739,7 @@ test_list_stat_lines() {
 test_list_stat_lines_json() {
     local remote_repo=$(create_test_remote "test-repo-list-unit-lines-json" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-unit-lines-json"
 
     git-worktree-checkout develop || return 1
@@ -794,7 +794,7 @@ test_list_branches_flag() {
     ) >/dev/null 2>&1
     rm -rf "$temp_clone"
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-branches"
 
     # Fetch and create local branch without worktree
@@ -836,7 +836,7 @@ test_list_remotes_flag() {
     local remote_repo=$(create_test_remote "test-repo-list-remotes" "main")
 
     # Clone first (bare repo gets all existing branches in refs/heads/)
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-remotes"
     cd main
 
@@ -896,7 +896,7 @@ test_list_all_flag() {
     rm -rf "$temp_clone"
 
     # Clone (bare repo picks up feature/local-extra in refs/heads/)
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-all"
     cd main
 
@@ -961,7 +961,7 @@ test_list_branches_json() {
     ) >/dev/null 2>&1
     rm -rf "$temp_clone"
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-branches-json"
     cd main
     git fetch origin >/dev/null 2>&1
@@ -1021,7 +1021,7 @@ test_list_default_unchanged() {
     ) >/dev/null 2>&1
     rm -rf "$temp_clone"
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-default"
     cd main
     git fetch origin >/dev/null 2>&1
@@ -1052,7 +1052,7 @@ test_list_default_unchanged() {
 test_list_stat_config() {
     local remote_repo=$(create_test_remote "test-repo-list-stat-config" "main")
 
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-stat-config"
 
     git-worktree-checkout develop || return 1

@@ -1,0 +1,25 @@
+name: Layout show detects contained-classic layout
+description: >
+  A repo with .git inside a branch subdir is detected as contained-classic
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Set up contained-classic manually
+    run: |
+      mkdir test-repo
+      cd test-repo
+      git clone $REMOTE_TEST_REPO main
+    expect:
+      exit_code: 0
+
+  - name: Show layout detects contained-classic
+    run: NO_COLOR=1 daft layout show 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "contained-classic"
+        - "detected"

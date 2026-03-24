@@ -8,8 +8,8 @@ repos:
 steps:
   - name: "Clone repo with single -x command"
     run:
-      "git-worktree-clone $REMOTE_TEST_REPO_EXEC_CLONE -x 'pwd >
-      exec_output.txt'"
+      "git-worktree-clone --layout contained $REMOTE_TEST_REPO_EXEC_CLONE -x
+      'pwd > exec_output.txt'"
     expect:
       exit_code: 0
       files_exist:

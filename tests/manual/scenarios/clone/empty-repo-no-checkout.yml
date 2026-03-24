@@ -8,7 +8,9 @@ steps:
       exit_code: 0
 
   - name: Clone with no-checkout
-    run: git-worktree-clone --no-checkout $BASE_DIR/remotes/empty-bare-repo
+    run:
+      git-worktree-clone --no-checkout --layout contained
+      $BASE_DIR/remotes/empty-bare-repo
     expect:
       exit_code: 0
       dirs_exist:

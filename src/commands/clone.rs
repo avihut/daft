@@ -1,12 +1,17 @@
 use crate::{
     check_dependencies,
-    core::{worktree::clone, OutputSink},
+    core::{
+        global_config::GlobalConfig,
+        layout::resolver::{resolve_layout, LayoutResolutionContext},
+        worktree::clone,
+        OutputSink,
+    },
     executor::cli_presenter::CliPresenter,
     git::should_show_gitoxide_notice,
-    hints::maybe_show_shell_hint,
+    hints::{maybe_prompt_layout_choice, maybe_show_shell_hint, LayoutPromptResult},
     hooks::{
-        get_remote_url_for_git_dir, HookContext, HookExecutor, HookType, HooksConfig,
-        TrustDatabase, TrustLevel,
+        get_remote_url_for_git_dir, yaml_config_loader, HookContext, HookExecutor, HookType,
+        HooksConfig, TrustDatabase, TrustLevel,
     },
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -93,6 +98,14 @@ pub struct Args {
     #[arg(long, help = "Do not change directory to the new worktree")]
     no_cd: bool,
 
+    /// Worktree layout to use for this repository.
+    ///
+    /// Built-in layouts: contained, sibling, nested, centralized.
+    /// Can also be a custom layout name from ~/.config/daft/config.toml
+    /// or an inline template string.
+    #[arg(long, value_name = "LAYOUT")]
+    layout: Option<String>,
+
     #[arg(
         short = 'x',
         long = "exec",
@@ -143,7 +156,11 @@ fn validate_arg_combinations(args: &Args) -> Result<()> {
 fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
     check_dependencies()?;
 
-    let params = clone::CloneParams {
+    let global_config = GlobalConfig::load().unwrap_or_default();
+    let original_dir = get_current_directory()?;
+
+    // Phase 1: Always clone bare first
+    let bare_params = clone::BareCloneParams {
         repository_url: args.repository_url.clone(),
         branch: args.branch.clone(),
         no_checkout: args.no_checkout,
@@ -161,18 +178,96 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     }
 
     output.start_spinner("Cloning repository...");
-    let exec_result = {
+    let bare_result = {
         let mut sink = OutputSink(output);
-        clone::execute(&params, &mut sink)
+        clone::clone_bare_phase(&bare_params, &mut sink)
     };
     output.finish_spinner();
-    let result = exec_result?;
+    let bare_result = bare_result?;
 
-    render_clone_result(&result, output);
+    // Phase 2: Read daft.yml from the bare repo (if no --layout flag)
+    let yaml_layout = if args.layout.is_none() && !bare_result.is_empty {
+        match yaml_config_loader::load_config_from_bare(&bare_result.git_dir) {
+            Ok(Some(config)) => config.layout,
+            Ok(None) => None,
+            Err(e) => {
+                output.warning(&format!("Could not read daft.yml: {e}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Phase 3: Resolve layout with full context
+    let prompted_layout = if args.layout.is_none()
+        && yaml_layout.is_none()
+        && global_config.defaults.layout.is_none()
+    {
+        match maybe_prompt_layout_choice(output) {
+            LayoutPromptResult::Chosen(layout) => Some(layout),
+            LayoutPromptResult::Default => None,
+            LayoutPromptResult::Cancelled => {
+                // Clean up: we already cloned, so delete it
+                change_directory(&original_dir).ok();
+                remove_directory(&bare_result.parent_dir).ok();
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
+
+    let effective_cli_layout = args.layout.as_deref().or(prompted_layout.as_deref());
+
+    let (layout, _source) = resolve_layout(&LayoutResolutionContext {
+        cli_layout: effective_cli_layout,
+        repo_store_layout: None,
+        yaml_layout: yaml_layout.as_deref(),
+        global_config: &global_config,
+        detection: None,
+    });
+
+    // Report layout decision
+    if layout.needs_bare() {
+        output.step(&format!(
+            "Using layout '{}' (worktrees inside repo)",
+            layout.name
+        ));
+    } else {
+        output.step(&format!("Using layout '{}'", layout.name));
+    }
+
+    // Phase 4: Set up repo in the correct layout
+    let result = if layout.needs_bare() {
+        output.start_spinner("Setting up worktrees...");
+        let r = {
+            let mut sink = OutputSink(output);
+            clone::setup_bare_worktrees(&bare_result, &bare_params, &layout, &mut sink)
+        };
+        output.finish_spinner();
+        r?
+    } else if layout.needs_wrapper() {
+        output.start_spinner("Setting up wrapped repository...");
+        let r = {
+            let mut sink = OutputSink(output);
+            clone::setup_wrapped_nonbare(&bare_result, &bare_params, &layout, &mut sink)
+        };
+        output.finish_spinner();
+        r?
+    } else {
+        output.start_spinner("Setting up repository...");
+        let r = {
+            let mut sink = OutputSink(output);
+            clone::unbare_and_checkout(&bare_result, &bare_params, &layout, &mut sink)
+        };
+        output.finish_spinner();
+        r?
+    };
+
+    render_clone_result(&result, &layout, output);
 
     // Remove stale trust entry if cloning to a path that was previously trusted.
-    // The old repo at this path no longer exists (overwritten by clone), so the
-    // trust entry is for a different repo.
     if !args.trust_hooks {
         let mut trust_db = TrustDatabase::load().unwrap_or_default();
         if trust_db.has_explicit_trust(&result.git_dir) {
@@ -188,7 +283,9 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     // Run hooks and exec only if a worktree was created
     if result.worktree_dir.is_some() {
         run_post_clone_hook(args, &result, output)?;
-        run_post_create_hook(args, &result, output)?;
+        if !layout.needs_bare() {
+            run_post_create_hook(args, &result, output)?;
+        }
 
         let exec_result = crate::exec::run_exec_commands(&args.exec, output);
 
@@ -208,12 +305,20 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     Ok(())
 }
 
-fn render_clone_result(result: &clone::CloneResult, output: &mut dyn Output) {
+fn render_clone_result(
+    result: &clone::CloneResult,
+    layout: &crate::core::layout::Layout,
+    output: &mut dyn Output,
+) {
     if result.worktree_dir.is_some() {
-        output.result(&format!(
-            "Cloned into '{}/{}'",
-            result.repo_name, result.target_branch
-        ));
+        // For bare layouts, the worktree is a subdirectory: "repo/branch".
+        // For regular layouts, the repo IS the worktree: just "repo".
+        let display = if layout.needs_bare() {
+            format!("{}/{}", result.repo_name, result.target_branch)
+        } else {
+            result.repo_name.clone()
+        };
+        output.result(&format!("Cloned into '{display}'"));
     } else if result.branch_not_found {
         output.result(&format!(
             "Cloned '{}' (branch '{}' not found, no worktree created)",

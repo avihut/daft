@@ -141,21 +141,26 @@ pub struct TrustDatabase {
     /// Per-repository trust entries.
     #[serde(default)]
     pub repositories: HashMap<String, TrustEntry>,
+    /// Per-repository layout overrides (V3+). Skipped from direct serde
+    /// because we use custom V3 serialization via `save_to()`.
+    #[serde(skip)]
+    pub(crate) layouts: HashMap<String, String>,
     /// Pattern-based trust rules.
     #[serde(default)]
     pub patterns: Vec<TrustPattern>,
 }
 
 fn default_version() -> u32 {
-    2
+    3
 }
 
 impl Default for TrustDatabase {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             default_level: TrustLevel::Deny,
             repositories: HashMap::new(),
+            layouts: HashMap::new(),
             patterns: Vec::new(),
         }
     }
@@ -172,13 +177,16 @@ impl TrustDatabase {
     ///
     /// This method handles automatic migration from older schema versions:
     /// - V1: Original schema with string timestamps (ISO 8601)
-    /// - V2: Current schema with epoch timestamps (i64)
+    /// - V2: Schema with epoch timestamps (i64)
+    /// - V3: Unified repo store with trust + layout per entry
     ///
     /// The migration from V1 to V2 converts string timestamps to Unix epoch.
+    /// The migration from V2 to V3 wraps trust entries and adds layout support.
     ///
     /// Note: Due to a historical bug, some V2 databases may have version=1.
     /// We detect this by checking the granted_at field type.
     pub fn load_from(path: &Path) -> Result<Self> {
+        use super::trust_dto::RepoStoreV3_0_0;
         use version_migrate::{IntoDomain, MigratesTo};
 
         if !path.exists() {
@@ -195,58 +203,104 @@ impl TrustDatabase {
         // Determine version - default to 1 for legacy data without version field
         let stated_version = json.get("version").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
 
-        // Detect actual schema by checking granted_at field type in first repository entry
-        // V1 has string timestamps, V2 has integer timestamps
-        let actual_version = detect_schema_version(&json, stated_version);
-
-        let db = match actual_version {
-            1 => {
-                // V1: String timestamps - need migration
-                let v1: TrustDatabaseV1_0_0 = serde_json::from_value(json).with_context(|| {
-                    format!("Failed to parse V1 trust database from {}", path.display())
+        match stated_version {
+            3 => {
+                let v3: RepoStoreV3_0_0 = serde_json::from_value(json).with_context(|| {
+                    format!("Failed to parse V3 repo store from {}", path.display())
                 })?;
-                let v2: TrustDatabaseV2_0_0 = v1.migrate();
-                let db: TrustDatabase = v2.into_domain();
-
-                // Save migrated version
-                db.save_to(path)?;
-                db
+                Ok(v3.into_domain())
             }
             _ => {
-                // V2 or later: Load directly, then ensure version is updated
-                let mut db: TrustDatabase = serde_json::from_value(json).with_context(|| {
-                    format!("Failed to parse trust database from {}", path.display())
-                })?;
+                // Detect actual schema by checking granted_at field type
+                // V1 has string timestamps, V2 has integer timestamps
+                let actual_version = detect_schema_version(&json, stated_version);
 
-                // Update version if it was mislabeled
-                if db.version != 2 {
-                    db.version = 2;
+                let db = match actual_version {
+                    1 => {
+                        let v1: TrustDatabaseV1_0_0 =
+                            serde_json::from_value(json).with_context(|| {
+                                format!("Failed to parse V1 trust database from {}", path.display())
+                            })?;
+                        let v2: TrustDatabaseV2_0_0 = v1.migrate();
+                        let v3: RepoStoreV3_0_0 = v2.migrate();
+                        v3.into_domain()
+                    }
+                    _ => {
+                        let v2: TrustDatabaseV2_0_0 =
+                            serde_json::from_value(json).with_context(|| {
+                                format!("Failed to parse V2 trust database from {}", path.display())
+                            })?;
+                        let v3: RepoStoreV3_0_0 = v2.migrate();
+                        v3.into_domain()
+                    }
+                };
+
+                // Atomic migration: write repos.json, then remove trust.json
+                if path.file_name().and_then(|n| n.to_str()) == Some("trust.json") {
+                    let repos_path = path.with_file_name("repos.json");
+                    let tmp_path = path.with_file_name("repos.json.tmp");
+                    db.save_to(&tmp_path)?;
+                    fs::rename(&tmp_path, &repos_path)?;
+                    let _ = fs::remove_file(path);
+                } else {
                     db.save_to(path)?;
                 }
 
-                db
+                Ok(db)
             }
-        };
-
-        Ok(db)
+        }
     }
 
-    /// Save the trust database to the default location.
+    /// Save the trust database to the default location (`repos.json`).
     pub fn save(&self) -> Result<()> {
-        let path = Self::default_path()?;
-        self.save_to(&path)
+        Self::repos_path().and_then(|p| self.save_to(&p))
     }
 
-    /// Save the trust database to a specific path.
+    /// Save the trust database to a specific path in V3 format.
     pub fn save_to(&self, path: &Path) -> Result<()> {
+        use super::trust_dto::{RepoEntryV3_0_0, TrustEntryV2_0_0};
+
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create directory {}", parent.display()))?;
         }
 
+        let mut entries: HashMap<String, RepoEntryV3_0_0> = HashMap::new();
+
+        for (path_key, trust_entry) in &self.repositories {
+            entries
+                .entry(path_key.clone())
+                .or_insert_with(|| RepoEntryV3_0_0 {
+                    trust: None,
+                    layout: None,
+                })
+                .trust = Some(TrustEntryV2_0_0 {
+                level: trust_entry.level,
+                granted_at: trust_entry.granted_at,
+                granted_by: trust_entry.granted_by.clone(),
+                fingerprint: trust_entry.fingerprint.clone(),
+            });
+        }
+
+        for (path_key, layout) in &self.layouts {
+            entries
+                .entry(path_key.clone())
+                .or_insert_with(|| RepoEntryV3_0_0 {
+                    trust: None,
+                    layout: None,
+                })
+                .layout = Some(layout.clone());
+        }
+
+        let json = serde_json::json!({
+            "version": 3,
+            "repositories": serde_json::to_value(&entries)?,
+            "patterns": serde_json::to_value(&self.patterns)?,
+        });
+
         let contents =
-            serde_json::to_string_pretty(self).context("Failed to serialize trust database")?;
+            serde_json::to_string_pretty(&json).context("Failed to serialize trust database")?;
 
         fs::write(path, contents)
             .with_context(|| format!("Failed to write trust database to {}", path.display()))?;
@@ -255,8 +309,25 @@ impl TrustDatabase {
     }
 
     /// Get the default path for the trust database.
+    ///
+    /// Prefers `repos.json` if it exists, falls back to `trust.json` for
+    /// backwards compatibility, and defaults to `repos.json` for new installs.
     pub fn default_path() -> Result<PathBuf> {
-        Ok(crate::daft_config_dir()?.join("trust.json"))
+        let config_dir = crate::daft_config_dir()?;
+        let repos_path = config_dir.join("repos.json");
+        if repos_path.exists() {
+            return Ok(repos_path);
+        }
+        let trust_path = config_dir.join("trust.json");
+        if trust_path.exists() {
+            return Ok(trust_path);
+        }
+        Ok(repos_path)
+    }
+
+    /// Get the canonical path for the V3 repo store.
+    pub fn repos_path() -> Result<PathBuf> {
+        Ok(crate::daft_config_dir()?.join("repos.json"))
     }
 
     /// Get the trust level for a repository.
@@ -338,6 +409,42 @@ impl TrustDatabase {
         self.repositories.remove(git_dir_str.as_ref()).is_some()
     }
 
+    /// Get the layout override for a repository.
+    pub fn get_layout(&self, git_dir: &Path) -> Option<&str> {
+        let canonical = git_dir
+            .canonicalize()
+            .unwrap_or_else(|_| git_dir.to_path_buf());
+        self.layouts
+            .get(&*canonical.to_string_lossy())
+            .map(|s| s.as_str())
+    }
+
+    /// Set the layout override for a repository.
+    pub fn set_layout(&mut self, git_dir: &Path, layout: String) {
+        let canonical = git_dir
+            .canonicalize()
+            .unwrap_or_else(|_| git_dir.to_path_buf());
+        self.layouts
+            .insert(canonical.to_string_lossy().to_string(), layout);
+    }
+
+    /// Remove the layout override for a repository.
+    pub fn remove_layout(&mut self, git_dir: &Path) -> bool {
+        let canonical = git_dir
+            .canonicalize()
+            .unwrap_or_else(|_| git_dir.to_path_buf());
+        let git_dir_str = canonical.to_string_lossy();
+        self.layouts.remove(git_dir_str.as_ref()).is_some()
+    }
+
+    /// Reset all per-repo settings to defaults (trust, layout, and any future
+    /// fields). Use when a repo is re-cloned and stale config should not carry
+    /// over.
+    pub fn reset_repo(&mut self, git_dir: &Path) {
+        self.remove_trust(git_dir);
+        self.remove_layout(git_dir);
+    }
+
     /// Add a pattern-based trust rule.
     pub fn add_pattern(&mut self, pattern: String, level: TrustLevel, comment: Option<String>) {
         self.patterns.push(TrustPattern {
@@ -354,9 +461,10 @@ impl TrustDatabase {
         self.patterns.len() < initial_len
     }
 
-    /// Clear all trust entries and patterns.
+    /// Clear all trust entries, layouts, and patterns.
     pub fn clear(&mut self) {
         self.repositories.clear();
+        self.layouts.clear();
         self.patterns.clear();
     }
 
@@ -380,18 +488,23 @@ impl TrustDatabase {
 
     /// Remove entries whose paths no longer exist on disk.
     ///
-    /// Returns the list of paths that were removed. The caller is responsible
-    /// for calling `save()` to persist the changes.
+    /// Returns the list of paths that were removed (from both repositories
+    /// and layouts). The caller is responsible for calling `save()` to
+    /// persist the changes.
     pub fn prune(&mut self) -> Vec<String> {
         let stale: Vec<String> = self
             .repositories
             .keys()
+            .chain(self.layouts.keys())
             .filter(|path| !Path::new(path.as_str()).exists())
             .cloned()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
             .collect();
 
         for key in &stale {
             self.repositories.remove(key);
+            self.layouts.remove(key);
         }
 
         stale
@@ -571,9 +684,10 @@ mod tests {
     #[test]
     fn test_trust_database_default() {
         let db = TrustDatabase::default();
-        assert_eq!(db.version, 2);
+        assert_eq!(db.version, 3);
         assert_eq!(db.default_level, TrustLevel::Deny);
         assert!(db.repositories.is_empty());
+        assert!(db.layouts.is_empty());
         assert!(db.patterns.is_empty());
     }
 
@@ -597,7 +711,7 @@ mod tests {
     #[test]
     fn test_trust_database_save_and_load() {
         let temp_dir = tempdir().unwrap();
-        let path = temp_dir.path().join("trust.json");
+        let path = temp_dir.path().join("repos.json");
 
         let mut db = TrustDatabase::default();
         db.set_trust_level(Path::new("/project/.git"), TrustLevel::Allow);
@@ -616,6 +730,12 @@ mod tests {
         );
         assert_eq!(loaded.patterns.len(), 1);
         assert_eq!(loaded.patterns[0].pattern, "/trusted/*/.git");
+
+        // Verify V3 format on disk
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(saved["version"], 3);
+        assert!(saved["repositories"]["/project/.git"]["trust"].is_object());
     }
 
     #[test]
@@ -710,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_v1_format_migrates_to_v2() {
+    fn test_load_v1_format_migrates_to_v3() {
         let temp_dir = tempdir().unwrap();
         let path = temp_dir.path().join("trust.json");
 
@@ -729,9 +849,9 @@ mod tests {
         }"#;
         std::fs::write(&path, v1_json).unwrap();
 
-        // Load should migrate to V2
+        // Load should migrate V1 -> V2 -> V3
         let db = TrustDatabase::load_from(&path).unwrap();
-        assert_eq!(db.version, 2);
+        assert_eq!(db.version, 3);
         assert_eq!(db.default_level, TrustLevel::Deny);
 
         let entry = db.repositories.get("/path/to/repo/.git").unwrap();
@@ -740,12 +860,21 @@ mod tests {
         assert_eq!(entry.granted_at, 1738060200);
         assert_eq!(entry.granted_by, "user");
 
-        // Verify the file was updated to V2 format
-        let contents = std::fs::read_to_string(&path).unwrap();
+        // trust.json should be removed and repos.json created (atomic migration)
+        assert!(
+            !path.exists(),
+            "trust.json should be removed after migration"
+        );
+        let repos_path = temp_dir.path().join("repos.json");
+        assert!(repos_path.exists(), "repos.json should be created");
+
+        // Verify the migrated file is V3 format
+        let contents = std::fs::read_to_string(&repos_path).unwrap();
         let saved: serde_json::Value = serde_json::from_str(&contents).unwrap();
-        assert_eq!(saved["version"], 2);
-        // granted_at should now be an integer
-        assert!(saved["repositories"]["/path/to/repo/.git"]["granted_at"].is_number());
+        assert_eq!(saved["version"], 3);
+        // V3 format wraps trust entries
+        assert!(saved["repositories"]["/path/to/repo/.git"]["trust"].is_object());
+        assert!(saved["repositories"]["/path/to/repo/.git"]["trust"]["granted_at"].is_number());
     }
 
     #[test]
@@ -769,18 +898,19 @@ mod tests {
         }"#;
         std::fs::write(&path, mislabeled_json).unwrap();
 
-        // Load should detect it's actually V2 and load correctly
+        // Load should detect it's actually V2, migrate to V3
         let db = TrustDatabase::load_from(&path).unwrap();
-        assert_eq!(db.version, 2);
-        assert_eq!(db.default_level, TrustLevel::Allow);
+        assert_eq!(db.version, 3);
 
         let entry = db.repositories.get("/path/to/repo/.git").unwrap();
         assert_eq!(entry.granted_at, 1738060200);
 
-        // Verify the file was updated with correct version
-        let contents = std::fs::read_to_string(&path).unwrap();
+        // trust.json should be removed and repos.json created
+        assert!(!path.exists());
+        let repos_path = temp_dir.path().join("repos.json");
+        let contents = std::fs::read_to_string(&repos_path).unwrap();
         let saved: serde_json::Value = serde_json::from_str(&contents).unwrap();
-        assert_eq!(saved["version"], 2);
+        assert_eq!(saved["version"], 3);
     }
 
     #[test]
@@ -885,7 +1015,7 @@ mod tests {
     #[test]
     fn test_fingerprint_survives_serialization() {
         let temp_dir = tempdir().unwrap();
-        let path = temp_dir.path().join("trust.json");
+        let path = temp_dir.path().join("repos.json");
 
         let mut db = TrustDatabase::default();
         db.set_trust_level_with_fingerprint(
@@ -923,10 +1053,16 @@ mod tests {
         }"#;
         std::fs::write(&path, json).unwrap();
 
+        // V2 trust.json triggers migration to V3 repos.json
         let db = TrustDatabase::load_from(&path).unwrap();
+        assert_eq!(db.version, 3);
         let entry = db.repositories.get("/old/repo/.git").unwrap();
         assert_eq!(entry.level, TrustLevel::Allow);
         assert_eq!(entry.fingerprint, None);
+
+        // trust.json removed, repos.json created
+        assert!(!path.exists());
+        assert!(temp_dir.path().join("repos.json").exists());
     }
 
     #[test]
@@ -960,7 +1096,7 @@ mod tests {
     #[test]
     fn test_fingerprint_not_serialized_when_none() {
         let temp_dir = tempdir().unwrap();
-        let path = temp_dir.path().join("trust.json");
+        let path = temp_dir.path().join("repos.json");
 
         let mut db = TrustDatabase::default();
         db.set_trust_level(Path::new("/project/.git"), TrustLevel::Allow);
@@ -971,5 +1107,139 @@ mod tests {
             !contents.contains("fingerprint"),
             "fingerprint should not appear in JSON when None"
         );
+    }
+
+    #[test]
+    fn test_set_and_get_layout() {
+        let mut db = TrustDatabase::default();
+        let git_dir = Path::new("/path/to/repo/.git");
+
+        assert!(db.get_layout(git_dir).is_none());
+
+        db.set_layout(git_dir, "simple".to_string());
+        assert_eq!(db.get_layout(git_dir), Some("simple"));
+
+        db.set_layout(git_dir, "grouped".to_string());
+        assert_eq!(db.get_layout(git_dir), Some("grouped"));
+    }
+
+    #[test]
+    fn test_layout_survives_v3_round_trip() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("repos.json");
+
+        let mut db = TrustDatabase::default();
+        db.set_trust_level(Path::new("/project/.git"), TrustLevel::Allow);
+        db.set_layout(Path::new("/project/.git"), "simple".to_string());
+        db.set_layout(Path::new("/layout-only/.git"), "grouped".to_string());
+        db.save_to(&path).unwrap();
+
+        // Verify V3 JSON shape on disk
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(saved["version"], 3);
+        // /project/.git has both trust and layout
+        assert!(saved["repositories"]["/project/.git"]["trust"].is_object());
+        assert_eq!(saved["repositories"]["/project/.git"]["layout"], "simple");
+        // /layout-only/.git has only layout, no trust key
+        assert!(saved["repositories"]["/layout-only/.git"]["trust"].is_null());
+        assert_eq!(
+            saved["repositories"]["/layout-only/.git"]["layout"],
+            "grouped"
+        );
+
+        // Reload and verify
+        let loaded = TrustDatabase::load_from(&path).unwrap();
+        assert_eq!(loaded.version, 3);
+        assert_eq!(
+            loaded.get_trust_level(Path::new("/project/.git")),
+            TrustLevel::Allow
+        );
+        assert_eq!(
+            loaded.get_layout(Path::new("/project/.git")),
+            Some("simple")
+        );
+        assert_eq!(
+            loaded.get_layout(Path::new("/layout-only/.git")),
+            Some("grouped")
+        );
+        // layout-only entry should NOT have a trust entry
+        assert!(!loaded.repositories.contains_key("/layout-only/.git"));
+    }
+
+    #[test]
+    fn test_prune_cleans_layouts() {
+        let mut db = TrustDatabase::default();
+        db.set_layout(Path::new("/nonexistent/path/a/.git"), "simple".to_string());
+        db.set_layout(Path::new("/nonexistent/path/b/.git"), "grouped".to_string());
+
+        let removed = db.prune();
+        assert_eq!(removed.len(), 2);
+        assert!(db.layouts.is_empty());
+    }
+
+    #[test]
+    fn test_atomic_trust_json_migration() {
+        let temp_dir = tempdir().unwrap();
+        let trust_path = temp_dir.path().join("trust.json");
+        let repos_path = temp_dir.path().join("repos.json");
+
+        // Write V2 trust.json
+        let v2_json = r#"{
+            "version": 2,
+            "default_level": "deny",
+            "repositories": {
+                "/path/to/repo/.git": {
+                    "level": "allow",
+                    "granted_at": 1738060200,
+                    "granted_by": "user",
+                    "fingerprint": "https://github.com/user/repo.git"
+                }
+            },
+            "patterns": [
+                {
+                    "pattern": "/trusted/**/.git",
+                    "level": "allow"
+                }
+            ]
+        }"#;
+        std::fs::write(&trust_path, v2_json).unwrap();
+
+        // Load from trust.json — should trigger atomic migration
+        let db = TrustDatabase::load_from(&trust_path).unwrap();
+        assert_eq!(db.version, 3);
+
+        // trust.json should be removed
+        assert!(
+            !trust_path.exists(),
+            "trust.json should be removed after migration"
+        );
+
+        // repos.json should be created with V3 format
+        assert!(repos_path.exists(), "repos.json should be created");
+
+        let contents = std::fs::read_to_string(&repos_path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(saved["version"], 3);
+        assert!(saved["repositories"]["/path/to/repo/.git"]["trust"].is_object());
+        assert_eq!(
+            saved["repositories"]["/path/to/repo/.git"]["trust"]["level"],
+            "allow"
+        );
+        assert_eq!(
+            saved["repositories"]["/path/to/repo/.git"]["trust"]["fingerprint"],
+            "https://github.com/user/repo.git"
+        );
+        assert_eq!(saved["patterns"][0]["pattern"], "/trusted/**/.git");
+
+        // Verify trust data roundtrips correctly
+        let entry = db.repositories.get("/path/to/repo/.git").unwrap();
+        assert_eq!(entry.level, TrustLevel::Allow);
+        assert_eq!(entry.granted_at, 1738060200);
+        assert_eq!(
+            entry.fingerprint,
+            Some("https://github.com/user/repo.git".to_string())
+        );
+        assert_eq!(db.patterns.len(), 1);
     }
 }

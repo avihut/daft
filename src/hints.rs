@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 /// Environment variable to suppress all hints.
@@ -102,6 +103,9 @@ impl HintsState {
 /// Hint identifier for shell integration.
 pub const SHELL_INTEGRATION_HINT: &str = "shell-integration";
 
+/// Hint identifier for layout options on first clone.
+pub const LAYOUT_HINT: &str = "layout-options";
+
 /// Check if hints are globally disabled via environment variable.
 pub fn hints_disabled() -> bool {
     env::var(NO_HINTS_ENV).is_ok()
@@ -159,6 +163,157 @@ pub fn maybe_show_shell_hint(output: &mut dyn Output) -> Result<bool> {
     let _ = state.save();
 
     Ok(true)
+}
+
+/// Result of the layout prompt.
+pub enum LayoutPromptResult {
+    /// User chose a layout (e.g., "contained").
+    Chosen(String),
+    /// User declined or prompt was skipped — use default.
+    Default,
+    /// User cancelled (Ctrl+C/Ctrl+D) — abort the operation.
+    Cancelled,
+}
+
+/// Prompt the user to choose a layout on their first clone.
+///
+/// Called before clone starts when no `--layout` flag, no global config
+/// default, and this is the first time. Returns [`LayoutPromptResult`]
+/// indicating the user's choice.
+///
+/// The prompt is shown only once (tracked in hints.json). Ctrl+C does
+/// NOT mark as shown, so the prompt reappears next time.
+pub fn maybe_prompt_layout_choice(output: &mut dyn Output) -> LayoutPromptResult {
+    if hints_disabled() {
+        return LayoutPromptResult::Default;
+    }
+
+    if output.is_quiet() {
+        return LayoutPromptResult::Default;
+    }
+
+    let mut state = HintsState::load().unwrap_or_default();
+    if state.has_shown(LAYOUT_HINT) {
+        return LayoutPromptResult::Default;
+    }
+
+    // Only prompt on interactive terminals (or in test mode where stdin is piped)
+    let is_testing = env::var("DAFT_TESTING").is_ok();
+    if !is_testing && !std::io::stdin().is_terminal() {
+        return LayoutPromptResult::Default;
+    }
+
+    use crate::styles;
+    use std::io::Write;
+
+    let use_color = styles::colors_enabled_stderr();
+
+    output.info("");
+    if use_color {
+        output.info(&format!(
+            "Worktrees will be placed {}next to the repo{} (default):",
+            styles::BOLD,
+            styles::RESET,
+        ));
+        output.info(&format!(
+            "  {}myrepo/{reset}          {}myrepo.feature-login/{reset}",
+            styles::CYAN,
+            styles::CYAN,
+            reset = styles::RESET,
+        ));
+    } else {
+        output.info("Worktrees will be placed next to the repo (default):");
+        output.info("  myrepo/          myrepo.feature-login/");
+    }
+    output.info("");
+    if use_color {
+        output.info(&format!(
+            "Or {}inside the repo{} with the contained layout:",
+            styles::BOLD,
+            styles::RESET,
+        ));
+        output.info(&format!(
+            "  {}myrepo/{reset}main/     {}myrepo/{reset}feature-login/",
+            styles::CYAN,
+            styles::CYAN,
+            reset = styles::RESET,
+        ));
+    } else {
+        output.info("Or inside the repo with the contained layout:");
+        output.info("  myrepo/main/     myrepo/feature-login/");
+    }
+    // Print prompt inline — no trailing newline so cursor stays on same line
+    output.info("");
+    if use_color {
+        eprint!(
+            "Use contained? {dim}[y=this repo / d=set as default / N]{reset} ",
+            dim = styles::DIM,
+            reset = styles::RESET,
+        );
+    } else {
+        eprint!("Use contained? [y=this repo / d=set as default / N] ");
+    }
+
+    std::io::stderr().flush().ok();
+
+    let config = crate::prompt::PromptConfig {
+        options: vec![
+            crate::prompt::PromptOption {
+                key: 'n',
+                label: "no",
+                is_default: true,
+            },
+            crate::prompt::PromptOption {
+                key: 'y',
+                label: "yes, this repo",
+                is_default: false,
+            },
+            crate::prompt::PromptOption {
+                key: 'd',
+                label: "set as default",
+                is_default: false,
+            },
+        ],
+        cancel_message: Some("Clone cancelled. Nothing was changed.".to_string()),
+    };
+
+    let key = match crate::prompt::single_key_select(&config) {
+        crate::prompt::PromptResult::Selected(k) => k,
+        crate::prompt::PromptResult::Cancelled => {
+            eprintln!();
+            return LayoutPromptResult::Cancelled;
+        }
+    };
+
+    // Print the chosen label after the prompt
+    let label = config
+        .options
+        .iter()
+        .find(|o| o.key == key)
+        .map(|o| o.label)
+        .unwrap_or("no");
+    if use_color {
+        eprintln!("{}{}{}", styles::BOLD, label, styles::RESET);
+    } else {
+        eprintln!("{label}");
+    }
+
+    // User answered — mark as shown so we don't prompt again
+    state.mark_shown(LAYOUT_HINT);
+    let _ = state.save();
+
+    match key {
+        'd' => {
+            if let Err(e) =
+                crate::core::global_config::GlobalConfig::set_default_layout("contained")
+            {
+                output.warning(&format!("Could not save default layout: {e}"));
+            }
+            LayoutPromptResult::Chosen("contained".to_string())
+        }
+        'y' => LayoutPromptResult::Chosen("contained".to_string()),
+        _ => LayoutPromptResult::Default,
+    }
 }
 
 #[cfg(test)]

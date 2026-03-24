@@ -3,7 +3,9 @@ description: "Single -x command runs in init worktree directory"
 
 steps:
   - name: "Init repo with single -x command"
-    run: "git-worktree-init -x 'pwd > exec_output.txt' exec-init-repo"
+    run:
+      "git-worktree-init --layout contained -x 'pwd > exec_output.txt'
+      exec-init-repo"
     expect:
       exit_code: 0
       files_exist:

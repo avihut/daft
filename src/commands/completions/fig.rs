@@ -20,14 +20,14 @@ struct FigSpec {
     load_spec: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(untagged)]
 enum FigArgs {
     Single(FigArg),
     Multiple(Vec<FigArg>),
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct FigArg {
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -36,7 +36,7 @@ struct FigArg {
     generators: Option<FigGenerator>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct FigGenerator {
     script: Vec<String>,
     #[serde(rename = "splitOn")]
@@ -399,6 +399,80 @@ fn build_fig_multi_remote_subcommand() -> FigSubcommand {
     }
 }
 
+/// Build the layout subcommand with nested subcommands and dynamic completions
+fn build_fig_layout_subcommand() -> FigSubcommand {
+    let layout_arg = FigArgs::Single(FigArg {
+        name: "layout".to_string(),
+        description: Some("Target layout name or template".to_string()),
+        generators: Some(FigGenerator {
+            script: vec![
+                "daft".into(),
+                "__complete".into(),
+                "layout-transform".into(),
+                String::new(),
+            ],
+            split_on: "\n".to_string(),
+        }),
+    });
+
+    let transform = FigSubcommand {
+        name: "transform".to_string(),
+        description: Some("Convert repo between layouts".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(layout_arg.clone()),
+        options: Some(vec![
+            FigOption {
+                name: FigName::Multiple(vec!["--force".into(), "-f".into()]),
+                description: "Force transform even with uncommitted changes".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--dry-run".into()),
+                description: "Show plan without executing".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--include".into()),
+                description: "Also relocate non-conforming worktree".into(),
+                args: Some(FigOptionArg { suggestions: None }),
+            },
+            FigOption {
+                name: FigName::Single("--include-all".into()),
+                description: "Relocate all non-conforming worktrees".into(),
+                args: None,
+            },
+        ]),
+    };
+
+    let default = FigSubcommand {
+        name: "default".to_string(),
+        description: Some("View or change global default layout".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(layout_arg),
+        options: Some(vec![FigOption {
+            name: FigName::Single("--reset".into()),
+            description: "Reset to built-in default".into(),
+            args: None,
+        }]),
+    };
+
+    FigSubcommand {
+        name: "layout".to_string(),
+        description: Some("Manage worktree layouts".to_string()),
+        load_spec: None,
+        subcommands: Some(vec![
+            fig_subcommand("show", "Show resolved layout for current repo"),
+            fig_subcommand("list", "List all available layouts"),
+            transform,
+            default,
+        ]),
+        args: None,
+        options: None,
+    }
+}
+
 /// Generate the daft.js umbrella spec with subcommands
 pub(super) fn generate_fig_daft_spec() -> Result<String> {
     let simple_subcommands = [
@@ -410,6 +484,7 @@ pub(super) fn generate_fig_daft_spec() -> Result<String> {
     let mut subcommands: Vec<FigSubcommand> = vec![
         build_fig_hooks_subcommand(),
         build_fig_multi_remote_subcommand(),
+        build_fig_layout_subcommand(),
     ];
     subcommands.extend(
         simple_subcommands

@@ -24,7 +24,7 @@ repos:
 
 steps:
   - name: "Clone repo with hooks"
-    run: "git-worktree-clone $REMOTE_HOOKS_PROJECT"
+    run: "git-worktree-clone --layout contained $REMOTE_HOOKS_PROJECT"
     expect:
       exit_code: 0
       dirs_exist:

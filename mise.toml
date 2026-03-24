@@ -7,16 +7,22 @@ lefthook = "latest"
 cocogitto = "latest"
 bun = "latest"
 bat = "latest"
+neovim = "stable"
 
 [env]
 _.path = ["./target/release"]
 INTEGRATION_TESTS_DIR = "tests/integration"
 INTEGRATION_TEMP_DIR = "/tmp/git-worktree-integration-tests"
+# Isolate daft config to a project-local sandbox so dev usage doesn't
+# affect the user's real ~/.config/daft/ (trust, repos.json, config).
+# This directory starts empty, simulating a first-use experience.
+# Only honored in dev builds (release builds ignore DAFT_CONFIG_DIR).
+DAFT_CONFIG_DIR = "{{config_root}}/.daft-sandbox"
 
 # Auto-install JS dependencies (Prettier) when package.json changes
 [hooks]
 enter = """
-mkdir -p .mise
+mkdir -p .mise .daft-sandbox
 hashfile=".mise/deps_hash"
 current_hash=$(cat package.json bun.lock 2>/dev/null | md5 -q 2>/dev/null || cat package.json bun.lock 2>/dev/null | md5sum | cut -d' ' -f1)
 if [ ! -d "node_modules" ] || [ ! -f "$hashfile" ] || [ "$(cat "$hashfile" 2>/dev/null)" != "$current_hash" ]; then

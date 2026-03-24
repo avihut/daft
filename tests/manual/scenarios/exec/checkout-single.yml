@@ -7,7 +7,7 @@ repos:
 
 steps:
   - name: "Clone the repository"
-    run: "git-worktree-clone $REMOTE_TEST_REPO_EXEC_CO"
+    run: "git-worktree-clone --layout contained $REMOTE_TEST_REPO_EXEC_CO"
     expect:
       exit_code: 0
       dirs_exist:

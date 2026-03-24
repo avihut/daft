@@ -3,7 +3,7 @@ description: Converts worktree layout back to traditional repo
 
 steps:
   - name: Init a worktree-style repo
-    run: git-worktree-init eject-test
+    run: git-worktree-init --layout contained eject-test
     expect:
       exit_code: 0
       dirs_exist:

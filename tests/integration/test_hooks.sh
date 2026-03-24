@@ -13,7 +13,7 @@ test_hooks_untrusted_repo() {
     local remote_repo=$(create_test_remote "test-hooks-untrusted" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-hooks-untrusted/main"
 
     # Create a hook that would create a marker file if executed
@@ -48,7 +48,7 @@ test_hooks_trust_command() {
     local remote_repo=$(create_test_remote "test-hooks-trust-cmd" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-hooks-trust-cmd/main"
 
     # Check initial trust status (should show repository info and deny/not trusted)
@@ -69,7 +69,7 @@ test_hooks_trust_command() {
 # Test git-daft hooks status command
 test_hooks_status_command() {
     # Initialize a new repository
-    git-worktree-init hooks-status-test || return 1
+    git-worktree-init --layout contained hooks-status-test || return 1
     cd "hooks-status-test/master"
 
     # Create initial commit
@@ -133,7 +133,7 @@ EOF
     rm -rf "$temp_clone"
 
     # Clone with --no-hooks
-    git-worktree-clone --no-hooks "$remote_repo" || return 1
+    git-worktree-clone --layout contained --no-hooks "$remote_repo" || return 1
 
     # Verify the hook marker file was NOT created
     if [[ -f "test-clone-no-hooks/main/.hook-executed" ]]; then
@@ -167,7 +167,7 @@ EOF
     rm -rf "$temp_clone"
 
     # Clone with --trust-hooks
-    git-worktree-clone --trust-hooks "$remote_repo" || return 1
+    git-worktree-clone --layout contained --trust-hooks "$remote_repo" || return 1
 
     # Verify the hook marker file WAS created
     if [[ ! -f "test-clone-trust-hooks/main/.hook-executed" ]]; then
@@ -184,7 +184,7 @@ test_clone_hooks_flags_exclusive() {
     local remote_repo=$(create_test_remote "test-clone-exclusive" "main")
 
     # Try to use both flags
-    if git-worktree-clone --trust-hooks --no-hooks "$remote_repo" 2>&1; then
+    if git-worktree-clone --layout contained --trust-hooks --no-hooks "$remote_repo" 2>&1; then
         log_error "Should fail when both --trust-hooks and --no-hooks are specified"
         return 1
     fi
@@ -200,7 +200,7 @@ test_clone_hooks_flags_exclusive() {
 # Test post-create hook execution with trusted repository
 test_post_create_hook_execution() {
     # Initialize a new repository
-    git-worktree-init hooks-exec-test || return 1
+    git-worktree-init --layout contained hooks-exec-test || return 1
     cd "hooks-exec-test/master"
 
     # Create initial commit
@@ -249,7 +249,7 @@ EOF
 # Test pre-create hook can abort operation
 test_pre_create_hook_abort() {
     # Initialize a new repository
-    git-worktree-init hooks-abort-test || return 1
+    git-worktree-init --layout contained hooks-abort-test || return 1
     cd "hooks-abort-test/master"
 
     # Create initial commit
@@ -307,7 +307,7 @@ EOF
     rm -rf "$temp_clone"
 
     # Clone with --trust-hooks to execute the hook
-    git-worktree-clone --trust-hooks "$remote_repo" || return 1
+    git-worktree-clone --layout contained --trust-hooks "$remote_repo" || return 1
 
     # Check if environment was logged
     if [[ -f "test-hook-env/main/.daft-env" ]]; then
@@ -335,7 +335,7 @@ EOF
 # Test that deprecated hook names emit a warning but still execute
 test_deprecated_hook_warning() {
     # Initialize a new repository
-    git-worktree-init hooks-deprecated-test || return 1
+    git-worktree-init --layout contained hooks-deprecated-test || return 1
     cd "hooks-deprecated-test/master"
 
     # Create initial commit
@@ -374,7 +374,7 @@ EOF
 # Test hooks migrate --dry-run
 test_hooks_migrate_dry_run() {
     # Initialize a new repository
-    git-worktree-init hooks-migrate-dry-test || return 1
+    git-worktree-init --layout contained hooks-migrate-dry-test || return 1
     cd "hooks-migrate-dry-test/master"
 
     # Create initial commit
@@ -415,7 +415,7 @@ test_hooks_migrate_dry_run() {
 # Test hooks migrate actually renames files
 test_hooks_migrate_basic() {
     # Initialize a new repository
-    git-worktree-init hooks-migrate-basic-test || return 1
+    git-worktree-init --layout contained hooks-migrate-basic-test || return 1
     cd "hooks-migrate-basic-test/master"
 
     # Create initial commit
@@ -457,7 +457,7 @@ test_hooks_migrate_basic() {
 # Test hooks migrate with conflict (both old and new exist)
 test_hooks_migrate_conflict() {
     # Initialize a new repository
-    git-worktree-init hooks-migrate-conflict-test || return 1
+    git-worktree-init --layout contained hooks-migrate-conflict-test || return 1
     cd "hooks-migrate-conflict-test/master"
 
     # Create initial commit

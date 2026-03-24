@@ -35,7 +35,7 @@ repos:
 
 steps:
   - name: Clone the repository
-    run: git-worktree-clone $REMOTE_TEST_REPO
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
     expect:
       exit_code: 0
 

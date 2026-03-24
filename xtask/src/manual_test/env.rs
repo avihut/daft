@@ -25,6 +25,11 @@ pub struct TestEnv {
     pub binary_dir: PathBuf,
     /// Path to an empty gitconfig file that isolates tests from user config.
     pub git_config_path: PathBuf,
+    /// Isolated daft config directory (prevents global config leakage).
+    pub daft_config_dir: PathBuf,
+    /// Isolated daft data directory (prevents centralized worktrees from
+    /// polluting the real XDG data dir).
+    pub daft_data_dir: PathBuf,
     /// Variable store for `$VAR` expansion in step commands and paths.
     vars: HashMap<String, String>,
 }
@@ -52,11 +57,17 @@ impl TestEnv {
         let work_dir = base_dir.join("work");
         let binary_dir = project_root.join("target/release");
         let git_config_path = base_dir.join("gitconfig");
+        let daft_config_dir = base_dir.join("daft-config");
+        let daft_data_dir = base_dir.join("daft-data");
 
         std::fs::create_dir_all(&remotes_dir)
             .with_context(|| format!("creating remotes dir: {}", remotes_dir.display()))?;
         std::fs::create_dir_all(&work_dir)
             .with_context(|| format!("creating work dir: {}", work_dir.display()))?;
+        std::fs::create_dir_all(&daft_config_dir)
+            .with_context(|| format!("creating daft config dir: {}", daft_config_dir.display()))?;
+        std::fs::create_dir_all(&daft_data_dir)
+            .with_context(|| format!("creating daft data dir: {}", daft_data_dir.display()))?;
         std::fs::write(&git_config_path, "")
             .with_context(|| format!("creating gitconfig: {}", git_config_path.display()))?;
 
@@ -66,6 +77,10 @@ impl TestEnv {
         vars.insert(
             "BINARY_DIR".into(),
             binary_dir.to_string_lossy().into_owned(),
+        );
+        vars.insert(
+            "DAFT_DATA_DIR".into(),
+            daft_data_dir.to_string_lossy().into_owned(),
         );
 
         for (k, v) in &scenario.env {
@@ -79,6 +94,8 @@ impl TestEnv {
             work_dir,
             binary_dir,
             git_config_path,
+            daft_config_dir,
+            daft_data_dir,
             vars,
         })
     }
@@ -96,6 +113,8 @@ impl TestEnv {
             work_dir: PathBuf::from("/tmp/test-dummy/work"),
             binary_dir: PathBuf::from("/tmp/test-dummy/bin"),
             git_config_path: PathBuf::from("/tmp/test-dummy/gitconfig"),
+            daft_config_dir: PathBuf::from("/tmp/test-dummy/daft-config"),
+            daft_data_dir: PathBuf::from("/tmp/test-dummy/daft-data"),
             vars,
         }
     }
@@ -229,6 +248,14 @@ impl TestEnv {
         env.insert("DAFT_TESTING".into(), "1".into());
         env.insert("DAFT_NO_UPDATE_CHECK".into(), "1".into());
         env.insert("DAFT_NO_TRUST_PRUNE".into(), "1".into());
+        env.insert(
+            "DAFT_CONFIG_DIR".into(),
+            self.daft_config_dir.to_string_lossy().into_owned(),
+        );
+        env.insert(
+            "DAFT_DATA_DIR".into(),
+            self.daft_data_dir.to_string_lossy().into_owned(),
+        );
 
         // PATH — binary_dir first so locally-built daft wins.
         let existing_path = std::env::var("PATH").unwrap_or_default();

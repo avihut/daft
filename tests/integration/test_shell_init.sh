@@ -202,7 +202,7 @@ test_cd_file_output() {
     cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
 
     # Clone the repository with DAFT_CD_FILE set
-    DAFT_CD_FILE="$cd_file" git-worktree-clone "$remote_dir" 2>&1 || true
+    DAFT_CD_FILE="$cd_file" git-worktree-clone --layout contained "$remote_dir" 2>&1 || true
 
     # Check that the temp file is non-empty
     if [ -s "$cd_file" ]; then
@@ -225,7 +225,7 @@ test_no_cd_file_without_env() {
 
     # Clone the repository without DAFT_CD_FILE
     unset DAFT_CD_FILE
-    git-worktree-clone "$remote_dir" 2>&1 | tee /tmp/clone_output_no_env.txt || true
+    git-worktree-clone --layout contained "$remote_dir" 2>&1 | tee /tmp/clone_output_no_env.txt || true
 
     # Check that the output does NOT contain the old CD path marker
     if grep -q "^__DAFT_CD__:" /tmp/clone_output_no_env.txt; then
@@ -247,7 +247,7 @@ test_wrapper_cd_integration() {
     remote_dir=$(create_test_remote "test-repo-wrapper" "main")
 
     # Clone the repository first (without wrapper, just setup)
-    git-worktree-clone "$remote_dir" >/dev/null 2>&1
+    git-worktree-clone --layout contained "$remote_dir" >/dev/null 2>&1
 
     # Get the project directory
     local project_dir="$PWD/test-repo-wrapper"

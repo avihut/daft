@@ -4,7 +4,7 @@
 .SH NAME
 daft go \- Open a worktree for an existing branch, or create one with \-b
 .SH SYNOPSIS
-\fBdaft go\fR [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
+\fBdaft go\fR [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
 .SH DESCRIPTION
 .PP
 Opens a worktree for an existing local or remote branch. The worktree is
@@ -59,6 +59,9 @@ Operate quietly; suppress progress reporting
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Be verbose; show detailed progress
+.TP
+\fB\-@\fR, \fB\-\-at\fR \fI<PATH>\fR
+Place the worktree at a specific path instead of using the layout template
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

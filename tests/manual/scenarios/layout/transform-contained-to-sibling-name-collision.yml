@@ -1,0 +1,58 @@
+name: Transform contained to sibling with worktree name collision
+description:
+  Regression test for contained-to-sibling when the default branch has a
+  directory with the same name as a worktree branch (e.g., test/ dir in master
+  and a test branch worktree). Non-default worktrees must be relocated out
+  before collapsing the default branch.
+
+repos:
+  - name: test-repo
+    default_branch: master
+    branches:
+      - name: master
+        files:
+          - path: README.md
+            content: "# test-repo"
+          - path: test/fixtures.txt
+            content: "test fixtures"
+        commits:
+          - message: "Initial commit with test directory"
+
+steps:
+  - name: Clone contained and create worktree named "test"
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/master
+      git-worktree-checkout -b test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+        - "$WORK_DIR/test-repo/test"
+
+  - name: Transform to sibling (test/ dir collides with test worktree)
+    run: daft layout transform sibling 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "sibling"
+
+  - name: Verify correct structure
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.git"
+        - "$WORK_DIR/test-repo/test"
+        - "$WORK_DIR/test-repo.test"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/master"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: master
+        - dir: "$WORK_DIR/test-repo.test"
+          branch: test
+      file_contains:
+        - path: "$WORK_DIR/test-repo/test/fixtures.txt"
+          content: "test fixtures"

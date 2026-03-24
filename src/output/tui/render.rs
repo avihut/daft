@@ -819,11 +819,16 @@ fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
     // Spacer between the two sub-positions
     spans.push(Span::raw(" "));
 
-    // Sub-position 2: default branch marker (bright purple, matching `list`)
+    // Sub-position 2: default branch marker (bright purple) or sandbox marker (dim)
     if info.is_default_branch {
         spans.push(Span::styled(
             styles::DEFAULT_BRANCH_SYMBOL,
             Style::default().fg(Color::LightMagenta),
+        ));
+    } else if info.is_sandbox {
+        spans.push(Span::styled(
+            styles::SANDBOX_SYMBOL,
+            Style::default().fg(Color::DarkGray),
         ));
     } else {
         spans.push(Span::raw(" "));

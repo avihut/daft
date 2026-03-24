@@ -1,0 +1,53 @@
+name: Transform contained to sibling with master default branch
+description:
+  Regression test for bare detection from linked worktree. When running
+  transform from inside a worktree of a bare repo, git rev-parse
+  --is-bare-repository returns false. The transform must use core.bare config
+  instead.
+
+repos:
+  - name: test-repo
+    default_branch: master
+    branches:
+      - name: master
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+
+steps:
+  - name: Clone contained and create a worktree
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/master
+      git-worktree-checkout -b test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+        - "$WORK_DIR/test-repo/test"
+
+  - name: Transform to sibling from non-default worktree
+    run: daft layout transform sibling 2>&1
+    cwd: "$WORK_DIR/test-repo/test"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "sibling"
+
+  - name: Verify repo is non-bare with correct structure
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.git"
+        - "$WORK_DIR/test-repo.test"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/master"
+        - "$WORK_DIR/test-repo/test"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: master
+        - dir: "$WORK_DIR/test-repo.test"
+          branch: test

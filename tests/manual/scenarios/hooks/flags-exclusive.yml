@@ -15,7 +15,7 @@ repos:
 steps:
   - name: Clone with both flags fails
     run:
-      git-worktree-clone --trust-hooks --no-hooks $REMOTE_TEST_HOOKS_EXCLUSIVE
-      2>&1
+      git-worktree-clone --trust-hooks --no-hooks --layout contained
+      $REMOTE_TEST_HOOKS_EXCLUSIVE 2>&1
     expect:
       exit_code: 1

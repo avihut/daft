@@ -8,7 +8,7 @@ repos:
 
 steps:
   - name: Clone the repository
-    run: git-worktree-clone $REMOTE_INCLUDE_REPO
+    run: git-worktree-clone --layout contained $REMOTE_INCLUDE_REPO
     expect:
       exit_code: 0
       dirs_exist:

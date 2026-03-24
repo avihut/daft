@@ -1,0 +1,43 @@
+name: Transform nested to sibling
+description:
+  Transform between two non-bare layouts. Worktrees should move from .worktrees/
+  subdirectory to sibling positions.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone nested and create a worktree
+    run: |
+      git-worktree-clone --layout nested $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/test
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.worktrees/feature-test"
+
+  - name: Transform to sibling layout
+    run: daft layout transform sibling 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "sibling"
+
+  - name: Verify worktrees moved to sibling positions
+    run: "true"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.git"
+        - "$WORK_DIR/test-repo.feature-test"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/.worktrees/feature-test"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: main
+        - dir: "$WORK_DIR/test-repo.feature-test"
+          branch: feature/test

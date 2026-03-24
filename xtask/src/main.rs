@@ -29,6 +29,7 @@ const COMMANDS: &[&str] = &[
     "git-worktree-list",
     "git-worktree-sync",
     "daft-doctor",
+    "daft-layout",
     "daft-release-notes",
 ];
 
@@ -146,6 +147,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-worktree-list" => Some(daft::commands::list::Args::command()),
         "git-worktree-sync" => Some(daft::commands::sync::Args::command()),
         "daft-doctor" => Some(daft::commands::doctor::Args::command()),
+        "daft-layout" => Some(daft::commands::layout::LayoutArgs::command()),
         "daft-release-notes" => Some(daft::commands::release_notes::Args::command()),
         "daft-remove" => Some(daft::commands::worktree_branch::RemoveArgs::command()),
         "daft-rename" => Some(daft::commands::worktree_branch::RenameArgs::command()),

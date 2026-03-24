@@ -1,8 +1,14 @@
 use crate::{
     check_dependencies,
-    core::{worktree::init, OutputSink},
+    core::{
+        global_config::GlobalConfig,
+        layout::resolver::{resolve_layout, LayoutResolutionContext},
+        worktree::init,
+        OutputSink,
+    },
     git::{should_show_gitoxide_notice, GitCommand},
     hints::maybe_show_shell_hint,
+    hooks::TrustDatabase,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
@@ -73,6 +79,14 @@ pub struct Args {
     #[arg(long, help = "Do not change directory to the new worktree")]
     no_cd: bool,
 
+    /// Worktree layout to use for this repository.
+    ///
+    /// Built-in layouts: contained, sibling, nested, centralized.
+    /// Can also be a custom layout name from ~/.config/daft/config.toml
+    /// or an inline template string.
+    #[arg(long, value_name = "LAYOUT")]
+    layout: Option<String>,
+
     #[arg(
         short = 'x',
         long = "exec",
@@ -113,6 +127,16 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
     // Load global settings to check for multi-remote preferences
     let settings = DaftSettings::load_global()?;
 
+    // Resolve layout so checkout knows which layout this repo uses.
+    let global_config = GlobalConfig::load().unwrap_or_default();
+    let (layout, _source) = resolve_layout(&LayoutResolutionContext {
+        cli_layout: args.layout.as_deref(),
+        repo_store_layout: None,
+        yaml_layout: None,
+        global_config: &global_config,
+        detection: None,
+    });
+
     let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
 
     let params = init::InitParams {
@@ -135,6 +159,22 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
     };
     output.finish_spinner();
     let result = exec_result?;
+
+    // Store layout in repos.json so checkout uses the correct layout.
+    // After init, cwd is inside the worktree so use git to find the git dir.
+    if let Ok(git_dir) = crate::get_git_common_dir() {
+        match TrustDatabase::load() {
+            Ok(mut db) => {
+                db.set_layout(&git_dir, layout.name.clone());
+                if let Err(e) = db.save() {
+                    output.warning(&format!("Could not save layout to repos.json: {e}"));
+                }
+            }
+            Err(e) => {
+                output.warning(&format!("Could not load repos.json to save layout: {e}"));
+            }
+        }
+    }
 
     render_init_result(&result, output);
 
@@ -203,6 +243,7 @@ mod tests {
             initial_branch: Some("master".to_string()),
             remote: None,
             no_cd: false,
+            layout: None,
             exec: vec![],
         }
     }
@@ -282,6 +323,7 @@ mod tests {
             initial_branch: Some("master".to_string()),
             remote: None,
             no_cd: false,
+            layout: None,
             exec: vec![],
         };
         let mut output = TestOutput::new();
@@ -305,6 +347,7 @@ mod tests {
             initial_branch: Some("".to_string()),
             remote: None,
             no_cd: false,
+            layout: None,
             exec: vec![],
         };
         let mut output = TestOutput::new();

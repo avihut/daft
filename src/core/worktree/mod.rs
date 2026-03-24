@@ -3,6 +3,11 @@
 //! Each submodule contains the business logic for a daft command, separated
 //! from argument parsing and output rendering. Functions accept structured
 //! params, a `GitCommand`, and a `ProgressSink`, and return structured results.
+//!
+//! **Note:** `flow_adopt` and `flow_eject` are deprecated compatibility
+//! wrappers. The canonical bare/non-bare conversion logic lives in
+//! [`crate::core::layout::transform`]. New code should call that module
+//! directly.
 
 pub mod branch_delete;
 pub mod carry;

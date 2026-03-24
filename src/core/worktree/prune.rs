@@ -53,6 +53,8 @@ pub struct WorktreeEntry {
     pub path: PathBuf,
     pub branch: Option<String>,
     pub is_bare: bool,
+    /// True for detached HEAD worktrees (sandboxes created with `daft sandbox`).
+    pub is_detached: bool,
 }
 
 /// Bundles common state used throughout the prune operation.
@@ -117,8 +119,17 @@ pub fn execute(
     let is_bare_layout = worktree_entries.first().map(|e| e.is_bare).unwrap_or(false);
 
     // Build a map: branch_name -> (worktree_path, is_main_worktree)
+    // Skip detached HEAD worktrees (sandboxes) — they have no branch and must
+    // never be pruned based on remote-tracking branch state.
     let mut worktree_map: HashMap<String, (PathBuf, bool)> = HashMap::new();
     for (i, entry) in worktree_entries.iter().enumerate() {
+        if entry.is_detached {
+            sink.on_step(&format!(
+                "Skipping detached HEAD sandbox at {} during prune",
+                entry.path.display()
+            ));
+            continue;
+        }
         if let Some(ref branch) = entry.branch {
             worktree_map.insert(branch.clone(), (entry.path.clone(), i == 0));
         }
@@ -814,6 +825,7 @@ pub fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeEntry>> {
     let mut current_path: Option<PathBuf> = None;
     let mut current_branch: Option<String> = None;
     let mut current_is_bare = false;
+    let mut current_is_detached = false;
 
     for line in porcelain_output.lines() {
         if let Some(worktree_path) = line.strip_prefix("worktree ") {
@@ -822,15 +834,19 @@ pub fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeEntry>> {
                     path,
                     branch: current_branch.take(),
                     is_bare: current_is_bare,
+                    is_detached: current_is_detached,
                 });
             }
             current_path = Some(PathBuf::from(worktree_path));
             current_branch = None;
             current_is_bare = false;
+            current_is_detached = false;
         } else if let Some(branch_ref) = line.strip_prefix("branch ") {
             current_branch = branch_ref.strip_prefix("refs/heads/").map(String::from);
         } else if line == "bare" {
             current_is_bare = true;
+        } else if line == "detached" {
+            current_is_detached = true;
         }
     }
     if let Some(path) = current_path.take() {
@@ -838,6 +854,7 @@ pub fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeEntry>> {
             path,
             branch: current_branch.take(),
             is_bare: current_is_bare,
+            is_detached: current_is_detached,
         });
     }
 

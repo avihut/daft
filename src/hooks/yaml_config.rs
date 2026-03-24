@@ -47,6 +47,13 @@ pub struct YamlConfig {
     /// Directory for local (gitignored) script files (default: ".daft-local").
     pub source_dir_local: Option<String>,
 
+    /// Layout suggestion for this repository.
+    ///
+    /// Accepts a named layout (e.g., "contained") or an inline template string.
+    /// This is a team convention that can be overridden by the user's local
+    /// config in repos.json.
+    pub layout: Option<String>,
+
     /// Hook definitions, keyed by hook name.
     pub hooks: HashMap<String, HookDef>,
 }
@@ -894,5 +901,43 @@ hooks:
             }
             other => panic!("Expected Platform, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_yaml_config_with_layout() {
+        let yaml = r#"
+layout: contained
+hooks:
+  post-clone:
+    jobs:
+      - run: echo hello
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.layout, Some("contained".into()));
+    }
+
+    #[test]
+    fn test_yaml_config_without_layout() {
+        let yaml = r#"
+hooks:
+  post-clone:
+    jobs:
+      - run: echo hello
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.layout, None);
+    }
+
+    #[test]
+    fn test_yaml_config_with_inline_template_layout() {
+        let yaml = r#"
+layout: "../.worktrees/{{ repo }}/{{ branch | sanitize }}"
+hooks: {}
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            config.layout,
+            Some("../.worktrees/{{ repo }}/{{ branch | sanitize }}".into())
+        );
     }
 }

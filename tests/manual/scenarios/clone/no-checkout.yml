@@ -9,7 +9,9 @@ repos:
 
 steps:
   - name: "Clone with --no-checkout flag"
-    run: "git-worktree-clone --no-checkout $REMOTE_TEST_REPO_NO_CHECKOUT"
+    run:
+      "git-worktree-clone --no-checkout --layout contained
+      $REMOTE_TEST_REPO_NO_CHECKOUT"
     expect:
       exit_code: 0
       dirs_exist:

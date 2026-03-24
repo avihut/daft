@@ -13,7 +13,7 @@ test_config_defaults() {
     local remote_repo=$(create_test_remote "test-repo-config-defaults" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-config-defaults"
 
     # Verify default behavior works (remote=origin, push enabled, etc.)
@@ -40,7 +40,7 @@ test_config_checkout_push_false() {
     local remote_repo=$(create_test_remote "test-repo-config-push-false" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-config-push-false"
 
     # Set local config to disable push
@@ -70,7 +70,7 @@ test_config_remote_custom() {
     local remote_repo=$(create_test_remote "test-repo-config-remote" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-config-remote"
 
     # Add a second remote called "upstream"
@@ -106,7 +106,7 @@ test_config_checkout_branch_carry_false() {
     local repo_root
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-config-carry-false"
     repo_root=$(pwd)
 
@@ -137,7 +137,7 @@ test_config_checkout_carry_true() {
     local repo_root
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-config-checkout-carry"
     repo_root=$(pwd)
 
@@ -184,7 +184,7 @@ test_config_flag_overrides_carry_false() {
     local repo_root
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-config-override-carry"
     repo_root=$(pwd)
 
@@ -212,7 +212,7 @@ test_config_flag_overrides_carry_true() {
     local repo_root
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-config-override-no-carry"
     repo_root=$(pwd)
 
@@ -242,7 +242,7 @@ test_config_checkout_upstream_false() {
     local remote_repo=$(create_test_remote "test-repo-config-upstream-false" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-config-upstream-false"
 
     # Set local config to disable upstream tracking
@@ -272,7 +272,7 @@ test_config_bool_variants() {
     local remote_repo=$(create_test_remote "test-repo-config-bool" "main")
 
     # Clone the repository
-    git-worktree-clone "$remote_repo" || return 1
+    git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-config-bool"
 
     # Test various boolean representations

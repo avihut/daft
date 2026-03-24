@@ -3,7 +3,7 @@ description: Eject with -b branch option keeps specified branch content
 
 steps:
   - name: Init a worktree-style repo
-    run: git-worktree-init eject-branch-test
+    run: git-worktree-init --layout contained eject-branch-test
     expect:
       exit_code: 0
       dirs_exist:

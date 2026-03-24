@@ -100,6 +100,15 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
         }
     }
 
+    // Value completions for --layout flag
+    let has_layout = matches!(command_name, "git-worktree-clone" | "git-worktree-init");
+    if has_layout {
+        output.push_str(&format!(
+            "\n# Layout name completions for --layout\ncomplete -c {} -l layout -x -a \"(daft __complete layout-value '' 2>/dev/null)\"\n",
+            command_name
+        ));
+    }
+
     // Value completions for --columns flag
     let has_columns = matches!(
         command_name,
@@ -213,6 +222,7 @@ complete -c daft -n '__fish_use_subcommand' -a 'setup' -d 'Setup and configurati
 complete -c daft -n '__fish_use_subcommand' -a 'multi-remote' -d 'Multi-remote management'
 complete -c daft -n '__fish_use_subcommand' -a 'release-notes' -d 'Generate release notes'
 complete -c daft -n '__fish_use_subcommand' -a 'doctor' -d 'Check installation'
+complete -c daft -n '__fish_use_subcommand' -a 'layout' -d 'Manage worktree layouts'
 complete -c daft -n '__fish_use_subcommand' -a 'clone' -d 'Clone repo into worktree layout'
 complete -c daft -n '__fish_use_subcommand' -a 'init' -d 'Init new repo in worktree layout'
 complete -c daft -n '__fish_use_subcommand' -a 'go' -d 'Open existing branch worktree'
@@ -231,6 +241,15 @@ complete -c daft -n '__fish_seen_subcommand_from start' -f -a "(daft __complete 
 complete -c daft -n '__fish_seen_subcommand_from carry update' -f -a "(daft __complete git-worktree-checkout '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from rename' -f -a "(daft __complete daft-rename '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from layout; and not __fish_seen_subcommand_from default list show transform' -f -a 'default list show transform'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from show' -F
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -f -a "(daft __complete layout-transform '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l force -s f -d 'Force transform even with uncommitted changes'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l dry-run -d 'Show plan without executing'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l include -r -d 'Also relocate non-conforming worktree'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -l include-all -d 'Relocate all non-conforming worktrees'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from default' -f -a "(daft __complete layout-default '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from default' -l reset -d 'Reset to built-in default'
 complete -c daft -n '__fish_seen_subcommand_from multi-remote; and not __fish_seen_subcommand_from enable disable status set-default move' -f -a 'enable disable status set-default move'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and not __fish_seen_subcommand_from trust prompt deny status migrate install validate dump run' -f -a 'trust prompt deny status migrate install validate dump run'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -f -a "(daft __complete hooks-run '' 2>/dev/null)"

@@ -4,7 +4,8 @@ description:
 
 steps:
   - name: "Attempt to clone a nonexistent path"
-    run: "git-worktree-clone /nonexistent/path/to/repo.git 2>&1"
+    run:
+      "git-worktree-clone --layout contained /nonexistent/path/to/repo.git 2>&1"
     expect:
       exit_code: 1
 

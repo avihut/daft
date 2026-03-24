@@ -36,7 +36,7 @@ repos:
 
 steps:
   - name: "Clone repo with develop as default branch"
-    run: "git-worktree-clone $REMOTE_TEST_REPO_DEVELOP"
+    run: "git-worktree-clone --layout contained $REMOTE_TEST_REPO_DEVELOP"
     expect:
       exit_code: 0
       dirs_exist:

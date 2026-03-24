@@ -13,6 +13,6 @@ steps:
       exit_code: 0
 
   - name: "Attempt to clone into existing directory"
-    run: "git-worktree-clone $REMOTE_TEST_REPO_EXISTING 2>&1"
+    run: "git-worktree-clone --layout contained $REMOTE_TEST_REPO_EXISTING 2>&1"
     expect:
       exit_code: 1

@@ -29,6 +29,47 @@ git config --global daft.autocd false
 | `daft.experimental.gitoxide` | `false`    | Use gitoxide for supported Git operations               |
 | `daft.go.autoStart`          | `false`    | Auto-create worktree when branch not found in `daft go` |
 
+## Layout Settings
+
+Layout configuration uses `~/.config/daft/config.toml` (TOML format), not
+`git config`. This is different from the other settings on this page.
+
+See the [Layouts guide](./layouts.md) for detailed explanations of each layout.
+
+| Key                | File                 | Description                                 |
+| ------------------ | -------------------- | ------------------------------------------- |
+| `defaults.layout`  | `config.toml`        | Global default layout name or template      |
+| `layout`           | `daft.yml` (in repo) | Team-recommended layout for this repository |
+| `[layouts.<name>]` | `config.toml`        | Custom layout definition                    |
+
+### Global Default
+
+```toml
+# ~/.config/daft/config.toml
+[defaults]
+layout = "contained"
+```
+
+Or use the command: `daft layout default contained`
+
+### Custom Layouts
+
+```toml
+# ~/.config/daft/config.toml
+[layouts.my-team]
+template = "../.worktrees/{{ repo }}/{{ branch | sanitize }}"
+
+[layouts.isolated]
+template = "~/worktrees/{{ repo }}/{{ branch | sanitize }}"
+```
+
+### Team Convention (daft.yml)
+
+```yaml
+# daft.yml (committed to repository)
+layout: contained
+```
+
 ## Checkout Settings
 
 | Key                         | Default | Description                                                   |
