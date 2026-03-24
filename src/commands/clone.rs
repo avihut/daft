@@ -4,10 +4,15 @@ use crate::{
         global_config::GlobalConfig,
         layout::{
             resolver::{resolve_layout, LayoutResolutionContext},
-            TemplateContext,
+            Layout, TemplateContext,
         },
-        worktree::{branch_source::BranchSource, clone},
-        OutputSink,
+        worktree::{
+            branch_source::{BranchPlan, BranchSource},
+            clone,
+            list::WorktreeInfo,
+            sync_dag::{DagEvent, OperationPhase, TaskMessage, TaskStatus},
+        },
+        HookRunner, NullSink, OutputSink, TuiBridge,
     },
     executor::cli_presenter::CliPresenter,
     git::{should_show_gitoxide_notice, GitCommand},
@@ -17,12 +22,16 @@ use crate::{
         HooksConfig, TrustDatabase, TrustLevel,
     },
     logging::init_logging,
-    output::{CliOutput, Output, OutputConfig},
+    output::{
+        tui::operation_table::{OperationTable, TableConfig},
+        CliOutput, Output, OutputConfig,
+    },
     settings::{DaftSettings, HookOutputConfig},
     utils::*,
 };
 use anyhow::Result;
 use clap::Parser;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-clone")]
@@ -312,14 +321,26 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 
     // Phase 5: Create satellite worktrees for multi-branch clone
     let result = if is_multi_branch && !branch_plan.satellites.is_empty() {
-        create_satellite_worktrees(
-            &result,
-            &branch_plan,
-            &bare_params,
-            &layout,
-            settings,
-            output,
-        )?
+        if std::io::IsTerminal::is_terminal(&std::io::stderr()) && !args.verbose {
+            create_satellite_worktrees_tui(
+                &result,
+                &branch_plan,
+                &bare_params,
+                &layout,
+                settings,
+                args.no_hooks,
+                args.trust_hooks,
+            )?
+        } else {
+            create_satellite_worktrees(
+                &result,
+                &branch_plan,
+                &bare_params,
+                &layout,
+                settings,
+                output,
+            )?
+        }
     } else {
         result
     };
@@ -451,6 +472,354 @@ fn create_satellite_worktrees(
                 Some(target)
             } else {
                 // Fall back to base worktree or parent_dir
+                base_result.cd_target.clone()
+            }
+        } else {
+            let ctx = TemplateContext {
+                repo_path: repo_path.clone(),
+                repo: base_result.repo_name.clone(),
+                branch: cd_branch.clone(),
+            };
+            match layout.worktree_path(&ctx) {
+                Ok(p) if p.exists() => Some(p),
+                _ => base_result.cd_target.clone(),
+            }
+        }
+    } else {
+        base_result.cd_target.clone()
+    };
+
+    // cd to the target
+    if let Some(ref target) = cd_target_path {
+        change_directory(target)?;
+    }
+
+    let worktree_dir = cd_target_path.clone().or(base_result.worktree_dir.clone());
+
+    Ok(clone::CloneResult {
+        repo_name: base_result.repo_name.clone(),
+        target_branch: branch_plan
+            .cd_target
+            .clone()
+            .unwrap_or_else(|| base_result.target_branch.clone()),
+        default_branch: base_result.default_branch.clone(),
+        parent_dir: base_result.parent_dir.clone(),
+        git_dir: base_result.git_dir.clone(),
+        remote_name: base_result.remote_name.clone(),
+        repository_url: base_result.repository_url.clone(),
+        cd_target: cd_target_path,
+        worktree_dir,
+        branch_not_found: created_count == 0 && base_result.worktree_dir.is_none(),
+        is_empty: base_result.is_empty,
+        no_checkout: false,
+    })
+}
+
+/// TUI table path for creating satellite worktrees during multi-branch clone.
+///
+/// Shows an `OperationTable` with per-worktree status and hook execution.
+/// Falls back to sequential `create_satellite_worktrees()` when stderr is not
+/// a TTY or verbose mode is enabled.
+fn create_satellite_worktrees_tui(
+    base_result: &clone::CloneResult,
+    branch_plan: &BranchPlan,
+    bare_params: &clone::BareCloneParams,
+    layout: &Layout,
+    settings: &DaftSettings,
+    no_hooks: bool,
+    trust_hooks: bool,
+) -> Result<clone::CloneResult> {
+    use crate::core::worktree::list::Stat;
+
+    let repo_path = base_result
+        .git_dir
+        .parent()
+        .expect("git_dir must have a parent")
+        .to_path_buf();
+
+    // cd back to the repo root so worktree-relative paths resolve correctly
+    change_directory(&repo_path)?;
+
+    // Build WorktreeInfo stubs for each satellite branch
+    let mut worktree_infos: Vec<WorktreeInfo> = Vec::new();
+    let mut satellite_paths: Vec<(String, std::path::PathBuf)> = Vec::new();
+
+    for branch in &branch_plan.satellites {
+        let worktree_path = if layout.needs_bare() {
+            std::path::PathBuf::from(branch)
+        } else {
+            let ctx = TemplateContext {
+                repo_path: repo_path.clone(),
+                repo: base_result.repo_name.clone(),
+                branch: branch.clone(),
+            };
+            match layout.worktree_path(&ctx) {
+                Ok(p) => p,
+                Err(_) => continue,
+            }
+        };
+
+        let mut info = WorktreeInfo::empty(branch);
+        info.path = Some(worktree_path.clone());
+        worktree_infos.push(info);
+        satellite_paths.push((branch.clone(), worktree_path));
+    }
+
+    let satellite_count = satellite_paths.len();
+    if satellite_count == 0 {
+        // No satellites resolved — return the base result unchanged.
+        return Ok(clone::CloneResult {
+            repo_name: base_result.repo_name.clone(),
+            target_branch: base_result.target_branch.clone(),
+            default_branch: base_result.default_branch.clone(),
+            parent_dir: base_result.parent_dir.clone(),
+            git_dir: base_result.git_dir.clone(),
+            remote_name: base_result.remote_name.clone(),
+            repository_url: base_result.repository_url.clone(),
+            cd_target: base_result.cd_target.clone(),
+            worktree_dir: base_result.worktree_dir.clone(),
+            branch_not_found: base_result.branch_not_found,
+            is_empty: base_result.is_empty,
+            no_checkout: base_result.no_checkout,
+        });
+    }
+
+    // Phases: Fetch (pre-completed) + Setup (active)
+    let phases = vec![OperationPhase::Fetch, OperationPhase::Setup];
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| repo_path.clone());
+
+    // Create channel for TUI events
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    // Shared data for the worker thread
+    let shared_remote_name = Arc::new(bare_params.remote_name.clone());
+    let shared_checkout_upstream = settings.checkout_upstream;
+    let shared_use_gitoxide = settings.use_gitoxide;
+    let shared_satellite_paths = Arc::new(satellite_paths);
+    let shared_git_dir = Arc::new(base_result.git_dir.clone());
+    let shared_parent_dir = Arc::new(base_result.parent_dir.clone());
+    let shared_remote_name_for_hooks = Arc::new(base_result.remote_name.clone());
+    let shared_no_hooks = no_hooks;
+    let shared_trust_hooks = trust_hooks;
+    let orchestrator_handle = std::thread::spawn(move || {
+        // Mark Fetch phase as already completed (bare clone happened before TUI)
+        let _ = tx.send(DagEvent::TaskStarted {
+            phase: OperationPhase::Fetch,
+            branch_name: String::new(),
+        });
+        let _ = tx.send(DagEvent::TaskCompleted {
+            phase: OperationPhase::Fetch,
+            branch_name: String::new(),
+            status: TaskStatus::Succeeded,
+            message: TaskMessage::Ok("cloned".into()),
+            updated_info: None,
+        });
+
+        // Prepare hooks config for per-satellite executor creation
+        let hooks_config = if !shared_no_hooks {
+            Some(HooksConfig::default())
+        } else {
+            None
+        };
+
+        // Process each satellite branch
+        for (branch, worktree_path) in shared_satellite_paths.iter() {
+            // Send TaskStarted
+            let _ = tx.send(DagEvent::TaskStarted {
+                phase: OperationPhase::Setup,
+                branch_name: branch.clone(),
+            });
+
+            // Run worktree-pre-create hook via TuiBridge
+            let mut hook_failed = false;
+            if let Some(ref config) = hooks_config {
+                if let Ok(mut executor) = HookExecutor::new(config.clone()) {
+                    if shared_trust_hooks {
+                        if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
+                            let _ = executor.trust_repository_with_fingerprint(
+                                &shared_git_dir,
+                                TrustLevel::Allow,
+                                fp,
+                            );
+                        } else {
+                            let _ = executor.trust_repository(&shared_git_dir, TrustLevel::Allow);
+                        }
+                    }
+                    let mut bridge = TuiBridge::new(executor, tx.clone(), branch.clone());
+
+                    let ctx = HookContext::new(
+                        HookType::PreCreate,
+                        "clone",
+                        &*shared_parent_dir,
+                        &*shared_git_dir,
+                        &*shared_remote_name_for_hooks,
+                        worktree_path,
+                        worktree_path,
+                        branch,
+                    )
+                    .with_new_branch(false);
+
+                    if let Ok(outcome) = bridge.run_hook(&ctx) {
+                        if !outcome.success && !outcome.skipped {
+                            hook_failed = true;
+                        }
+                    }
+                }
+            }
+
+            if hook_failed {
+                let _ = tx.send(DagEvent::TaskCompleted {
+                    phase: OperationPhase::Setup,
+                    branch_name: branch.clone(),
+                    status: TaskStatus::Failed,
+                    message: TaskMessage::Failed("pre-create hook failed".into()),
+                    updated_info: None,
+                });
+                continue;
+            }
+
+            // Create the worktree
+            let result = {
+                let mut sink = NullSink;
+                clone::create_satellite_worktree(
+                    branch,
+                    worktree_path,
+                    &shared_remote_name,
+                    shared_checkout_upstream,
+                    shared_use_gitoxide,
+                    &mut sink,
+                )
+            };
+
+            match result {
+                Ok(_) => {
+                    // Run worktree-post-create hook via TuiBridge
+                    if let Some(ref config) = hooks_config {
+                        if let Ok(mut executor) = HookExecutor::new(config.clone()) {
+                            if shared_trust_hooks {
+                                if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
+                                    let _ = executor.trust_repository_with_fingerprint(
+                                        &shared_git_dir,
+                                        TrustLevel::Allow,
+                                        fp,
+                                    );
+                                } else {
+                                    let _ = executor
+                                        .trust_repository(&shared_git_dir, TrustLevel::Allow);
+                                }
+                            }
+                            let mut bridge = TuiBridge::new(executor, tx.clone(), branch.clone());
+
+                            let ctx = HookContext::new(
+                                HookType::PostCreate,
+                                "clone",
+                                &*shared_parent_dir,
+                                &*shared_git_dir,
+                                &*shared_remote_name_for_hooks,
+                                worktree_path,
+                                worktree_path,
+                                branch,
+                            )
+                            .with_new_branch(false);
+
+                            let _ = bridge.run_hook(&ctx);
+                        }
+                    }
+
+                    let _ = tx.send(DagEvent::TaskCompleted {
+                        phase: OperationPhase::Setup,
+                        branch_name: branch.clone(),
+                        status: TaskStatus::Succeeded,
+                        message: TaskMessage::Created,
+                        updated_info: None,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(DagEvent::TaskCompleted {
+                        phase: OperationPhase::Setup,
+                        branch_name: branch.clone(),
+                        status: TaskStatus::Failed,
+                        message: TaskMessage::Failed(format!("{e}")),
+                        updated_info: None,
+                    });
+                }
+            }
+        }
+
+        let _ = tx.send(DagEvent::AllDone);
+    });
+
+    // Run TUI on the main thread
+    let table = OperationTable::new(
+        phases,
+        worktree_infos,
+        repo_path.clone(),
+        cwd,
+        Stat::Summary,
+        rx,
+        TableConfig {
+            columns: None,
+            columns_explicit: false,
+            sort_spec: None,
+            extra_rows: 5 + (satellite_count as u16) * 8,
+            verbosity: 0,
+        },
+        None,
+    );
+    let completed = table.run()?;
+
+    // Wait for the worker thread to finish
+    orchestrator_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Clone worker thread panicked"))?;
+
+    // Print hook summaries (warnings/failures)
+    if !completed.hook_summaries.is_empty() {
+        eprintln!();
+        eprintln!("Hooks:");
+        for entry in &completed.hook_summaries {
+            let status_word = if entry.warned { "warned" } else { "failed" };
+            let exit_str = entry
+                .exit_code
+                .map(|c| format!("exit {c}"))
+                .unwrap_or_else(|| "error".to_string());
+            eprintln!(
+                "  {}: {} {} ({}, {}ms)",
+                entry.branch_name,
+                entry.hook_type.filename(),
+                status_word,
+                exit_str,
+                entry.duration.as_millis(),
+            );
+            if let Some(ref output) = entry.output {
+                for line in output.lines() {
+                    eprintln!("    {line}");
+                }
+            }
+        }
+    }
+
+    // Count successes (any terminal state that isn't Failed)
+    let created_count = completed
+        .rows
+        .iter()
+        .filter(|r| {
+            matches!(
+                &r.status,
+                crate::output::tui::WorktreeStatus::Done(s)
+                    if !matches!(s, crate::output::tui::FinalStatus::Failed)
+            )
+        })
+        .count();
+
+    // Determine cd_target path (same logic as sequential path)
+    let cd_target_path = if let Some(ref cd_branch) = branch_plan.cd_target {
+        if layout.needs_bare() {
+            let target = repo_path.join(cd_branch);
+            if target.exists() {
+                Some(target)
+            } else {
                 base_result.cd_target.clone()
             }
         } else {
