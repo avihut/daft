@@ -19,7 +19,7 @@ use crate::{
     is_git_repository,
     logging::init_logging,
     output::{
-        tui::{TuiRenderer, TuiState},
+        tui::operation_table::{OperationTable, TableConfig},
         CliOutput, Output, OutputConfig,
     },
     remote::get_default_branch_local,
@@ -308,18 +308,9 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     let phases = vec![OperationPhase::Fetch, OperationPhase::Prune];
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
-    let state = TuiState::new(
-        phases,
-        worktree_infos,
-        project_root.clone(),
-        cwd,
-        stat,
-        args.verbose,
-        tui_columns,
-        columns_explicit,
-        None,
-        sort_spec,
-    );
+
+    // Capture count before worktree_infos is moved into OperationTable.
+    let worktree_count = worktree_infos.len();
 
     let hooks_config = HooksConfig::default();
 
@@ -429,17 +420,32 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         );
     });
 
-    // ── Run TUI renderer on main thread ────────────────────────────────
+    // ── Run TUI via OperationTable on main thread ──────────────────────
     // Budget hook + job sub-rows per worktree (2 hooks × ~3 jobs each).
     // Not all worktrees will have hooks, but the ratatui inline viewport
     // cannot grow after creation, so over-allocate.
     let hook_extra_rows = if args.verbose >= 1 {
-        (state.worktrees.len() as u16) * 8
+        (worktree_count as u16) * 8
     } else {
         0
     };
-    let renderer = TuiRenderer::new(state, rx).with_extra_rows(5 + hook_extra_rows);
-    let final_state = renderer.run()?;
+    let table = OperationTable::new(
+        phases,
+        worktree_infos,
+        project_root.clone(),
+        cwd,
+        stat,
+        rx,
+        TableConfig {
+            columns: tui_columns,
+            columns_explicit,
+            sort_spec,
+            extra_rows: 5 + hook_extra_rows,
+            verbosity: args.verbose,
+        },
+        None,
+    );
+    let completed = table.run()?;
 
     // Wait for orchestrator thread to finish
     orchestrator_handle
@@ -459,10 +465,10 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     );
 
     // ── Print hook summaries (warnings/failures) ──────────────────────────
-    if !final_state.hook_summaries.is_empty() {
+    if !completed.hook_summaries.is_empty() {
         eprintln!();
         eprintln!("Hooks:");
-        for entry in &final_state.hook_summaries {
+        for entry in &completed.hook_summaries {
             let status_word = if entry.warned { "warned" } else { "failed" };
             let exit_str = entry
                 .exit_code
@@ -488,7 +494,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     }
 
     // ── Check for failures ────────────────────────────────────────────────
-    sync_shared::check_tui_failures(&final_state.worktrees)?;
+    sync_shared::check_tui_failures(&completed.rows)?;
 
     Ok(())
 }
