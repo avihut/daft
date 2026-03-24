@@ -634,35 +634,50 @@ fn create_satellite_worktrees_tui(
             // Run worktree-pre-create hook via TuiBridge
             let mut hook_failed = false;
             if let Some(ref config) = hooks_config {
-                if let Ok(mut executor) = HookExecutor::new(config.clone()) {
-                    if shared_trust_hooks {
-                        if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
-                            let _ = executor.trust_repository_with_fingerprint(
-                                &shared_git_dir,
-                                TrustLevel::Allow,
-                                fp,
-                            );
-                        } else {
-                            let _ = executor.trust_repository(&shared_git_dir, TrustLevel::Allow);
-                        }
+                match HookExecutor::new(config.clone()) {
+                    Err(e) => {
+                        let _ = tx.send(DagEvent::TaskCompleted {
+                            phase: OperationPhase::Setup,
+                            branch_name: branch.clone(),
+                            status: TaskStatus::Failed,
+                            message: TaskMessage::Failed(format!(
+                                "failed to initialize hook executor: {e}"
+                            )),
+                            updated_info: None,
+                        });
+                        continue;
                     }
-                    let mut bridge = TuiBridge::new(executor, tx.clone(), branch.clone());
+                    Ok(mut executor) => {
+                        if shared_trust_hooks {
+                            if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
+                                let _ = executor.trust_repository_with_fingerprint(
+                                    &shared_git_dir,
+                                    TrustLevel::Allow,
+                                    fp,
+                                );
+                            } else {
+                                let _ =
+                                    executor.trust_repository(&shared_git_dir, TrustLevel::Allow);
+                            }
+                        }
+                        let mut bridge = TuiBridge::new(executor, tx.clone(), branch.clone());
 
-                    let ctx = HookContext::new(
-                        HookType::PreCreate,
-                        "clone",
-                        &*shared_parent_dir,
-                        &*shared_git_dir,
-                        &*shared_remote_name_for_hooks,
-                        worktree_path,
-                        worktree_path,
-                        branch,
-                    )
-                    .with_new_branch(false);
+                        let ctx = HookContext::new(
+                            HookType::PreCreate,
+                            "clone",
+                            &*shared_parent_dir,
+                            &*shared_git_dir,
+                            &*shared_remote_name_for_hooks,
+                            worktree_path,
+                            worktree_path,
+                            branch,
+                        )
+                        .with_new_branch(false);
 
-                    if let Ok(outcome) = bridge.run_hook(&ctx) {
-                        if !outcome.success && !outcome.skipped {
-                            hook_failed = true;
+                        if let Ok(outcome) = bridge.run_hook(&ctx) {
+                            if !outcome.success && !outcome.skipped {
+                                hook_failed = true;
+                            }
                         }
                     }
                 }
@@ -696,34 +711,48 @@ fn create_satellite_worktrees_tui(
                 Ok(_) => {
                     // Run worktree-post-create hook via TuiBridge
                     if let Some(ref config) = hooks_config {
-                        if let Ok(mut executor) = HookExecutor::new(config.clone()) {
-                            if shared_trust_hooks {
-                                if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
-                                    let _ = executor.trust_repository_with_fingerprint(
-                                        &shared_git_dir,
-                                        TrustLevel::Allow,
-                                        fp,
-                                    );
-                                } else {
-                                    let _ = executor
-                                        .trust_repository(&shared_git_dir, TrustLevel::Allow);
-                                }
+                        match HookExecutor::new(config.clone()) {
+                            Err(e) => {
+                                let _ = tx.send(DagEvent::TaskCompleted {
+                                    phase: OperationPhase::Setup,
+                                    branch_name: branch.clone(),
+                                    status: TaskStatus::Failed,
+                                    message: TaskMessage::Failed(format!(
+                                        "failed to initialize hook executor for post-create: {e}"
+                                    )),
+                                    updated_info: None,
+                                });
                             }
-                            let mut bridge = TuiBridge::new(executor, tx.clone(), branch.clone());
+                            Ok(mut executor) => {
+                                if shared_trust_hooks {
+                                    if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
+                                        let _ = executor.trust_repository_with_fingerprint(
+                                            &shared_git_dir,
+                                            TrustLevel::Allow,
+                                            fp,
+                                        );
+                                    } else {
+                                        let _ = executor
+                                            .trust_repository(&shared_git_dir, TrustLevel::Allow);
+                                    }
+                                }
+                                let mut bridge =
+                                    TuiBridge::new(executor, tx.clone(), branch.clone());
 
-                            let ctx = HookContext::new(
-                                HookType::PostCreate,
-                                "clone",
-                                &*shared_parent_dir,
-                                &*shared_git_dir,
-                                &*shared_remote_name_for_hooks,
-                                worktree_path,
-                                worktree_path,
-                                branch,
-                            )
-                            .with_new_branch(false);
+                                let ctx = HookContext::new(
+                                    HookType::PostCreate,
+                                    "clone",
+                                    &*shared_parent_dir,
+                                    &*shared_git_dir,
+                                    &*shared_remote_name_for_hooks,
+                                    worktree_path,
+                                    worktree_path,
+                                    branch,
+                                )
+                                .with_new_branch(false);
 
-                            let _ = bridge.run_hook(&ctx);
+                                let _ = bridge.run_hook(&ctx);
+                            }
                         }
                     }
 
