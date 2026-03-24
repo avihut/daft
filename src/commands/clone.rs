@@ -829,18 +829,33 @@ fn create_satellite_worktrees_tui(
         }
     }
 
-    // Count successes (any terminal state that isn't Failed)
-    let created_count = completed
+    // Count successes and failures from completed rows
+    let failed_rows: Vec<&crate::output::tui::WorktreeRow> = completed
         .rows
         .iter()
         .filter(|r| {
             matches!(
                 &r.status,
-                crate::output::tui::WorktreeStatus::Done(s)
-                    if !matches!(s, crate::output::tui::FinalStatus::Failed)
+                crate::output::tui::WorktreeStatus::Done(crate::output::tui::FinalStatus::Failed)
             )
         })
-        .count();
+        .collect();
+    let total_count = satellite_count;
+    let failed_count = failed_rows.len();
+    let created_count = total_count - failed_count;
+
+    // Print partial failure summary if any worktrees failed
+    if failed_count > 0 {
+        eprintln!();
+        eprintln!(
+            "Created {} of {} worktrees ({} failed)",
+            created_count, total_count, failed_count
+        );
+        for row in &failed_rows {
+            let reason = row.failure_reason.as_deref().unwrap_or("unknown error");
+            eprintln!("  \u{2717} {}: {}", row.info.name, reason);
+        }
+    }
 
     // Determine cd_target path (same logic as sequential path)
     let cd_target_path = if let Some(ref cd_branch) = branch_plan.cd_target {
