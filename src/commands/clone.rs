@@ -1045,10 +1045,12 @@ fn create_satellite_worktrees_tui(
     });
 
     // Run TUI on the main thread
+    // Use parent of repo_path so paths render as "repo/branch" not just "branch"
+    let display_root = repo_path.parent().unwrap_or(&repo_path).to_path_buf();
     let table = OperationTable::new(
         phases,
         worktree_infos,
-        repo_path.clone(),
+        display_root,
         cwd,
         Stat::Summary,
         rx,
