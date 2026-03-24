@@ -1,0 +1,96 @@
+name: "--all-branches does NOT fire per-worktree hooks"
+description: |
+  Documents the current behavior: --all-branches creates worktrees via
+  create_all_worktrees() which calls git.worktree_add() directly, bypassing
+  the hook system entirely. Neither worktree-pre-create nor worktree-post-create
+  fires for any of the worktrees created by --all-branches.
+
+  This is a known limitation. The --all-branches path goes through Phase 4's
+  create_all_worktrees() helper (src/core/worktree/clone.rs) which does not
+  accept a hook runner. Only the multi-branch (-b b1 -b b2) TUI path fires
+  per-worktree hooks.
+
+  A future task will add hook support to the --all-branches path.
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+        files:
+          - path: dev.txt
+            content: "dev"
+        commits:
+          - message: "Add develop"
+      - name: feature
+        from: main
+        files:
+          - path: feat.txt
+            content: "feat"
+        commits:
+          - message: "Add feature"
+    daft_yml: |
+      hooks:
+        worktree-pre-create:
+          jobs:
+            - name: pre-create-marker
+              run: touch "$DAFT_WORKTREE_PATH/.pre-create-ran"
+        worktree-post-create:
+          jobs:
+            - name: post-create-marker
+              run: touch "$DAFT_WORKTREE_PATH/.post-create-ran"
+
+steps:
+  - name: Clone with --all-branches and trust hooks
+    run:
+      git-worktree-clone --all-branches --layout contained --trust-hooks
+      $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+        - "$WORK_DIR/test-repo/develop"
+        - "$WORK_DIR/test-repo/feature"
+
+  - name: Verify worktree-pre-create did NOT fire for main
+    run: "true"
+    expect:
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main/.pre-create-ran"
+
+  - name: Verify worktree-post-create did NOT fire for main
+    run: "true"
+    expect:
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main/.post-create-ran"
+
+  - name: Verify worktree-pre-create did NOT fire for develop
+    run: "true"
+    expect:
+      files_not_exist:
+        - "$WORK_DIR/test-repo/develop/.pre-create-ran"
+
+  - name: Verify worktree-post-create did NOT fire for develop
+    run: "true"
+    expect:
+      files_not_exist:
+        - "$WORK_DIR/test-repo/develop/.post-create-ran"
+
+  - name: Verify worktree-pre-create did NOT fire for feature
+    run: "true"
+    expect:
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/.pre-create-ran"
+
+  - name: Verify worktree-post-create did NOT fire for feature
+    run: "true"
+    expect:
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/.post-create-ran"
