@@ -708,20 +708,13 @@ fn create_satellite_worktrees_tui(
     let mut worktree_infos: Vec<WorktreeInfo> = Vec::new();
     let mut satellite_paths: Vec<(String, std::path::PathBuf)> = Vec::new();
 
-    // Add the base worktree as the first row (already created by Phase 4)
+    // Add the base worktree as the first row (already created by Phase 4).
+    // Use the actual worktree path from Phase 4, not a template guess.
     if let Some(base) = base_branch {
-        let base_path = if layout.needs_bare() {
-            repo_path.join(base)
-        } else {
-            let ctx = TemplateContext {
-                repo_path: repo_path.clone(),
-                repo: base_result.repo_name.clone(),
-                branch: base.to_string(),
-            };
-            layout
-                .worktree_path(&ctx)
-                .unwrap_or_else(|_| repo_path.join(base))
-        };
+        let base_path = base_result
+            .worktree_dir
+            .clone()
+            .unwrap_or_else(|| repo_path.join(base));
         let mut info = WorktreeInfo::empty(base);
         info.path = Some(base_path);
         worktree_infos.push(info);
