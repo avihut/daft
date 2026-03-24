@@ -2,12 +2,15 @@ use crate::{
     check_dependencies,
     core::{
         global_config::GlobalConfig,
-        layout::resolver::{resolve_layout, LayoutResolutionContext},
+        layout::{
+            resolver::{resolve_layout, LayoutResolutionContext},
+            TemplateContext,
+        },
         worktree::{branch_source::BranchSource, clone},
         OutputSink,
     },
     executor::cli_presenter::CliPresenter,
-    git::should_show_gitoxide_notice,
+    git::{should_show_gitoxide_notice, GitCommand},
     hints::{maybe_prompt_layout_choice, maybe_show_shell_hint, LayoutPromptResult},
     hooks::{
         get_remote_url_for_git_dir, yaml_config_loader, HookContext, HookExecutor, HookType,
@@ -251,6 +254,35 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         output.step(&format!("Using layout '{}'", layout.name));
     }
 
+    // Resolve branches against the remote
+    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let remote_branches = git.list_remote_branches(&bare_params.remote_name)?;
+    let remote_branch_refs: Vec<&str> = remote_branches.iter().map(|s| s.as_str()).collect();
+    let branch_plan = branch_source.resolve(
+        &bare_result.default_branch,
+        layout.needs_bare(),
+        &remote_branch_refs,
+    );
+
+    // Warn about missing branches
+    for branch in &branch_plan.not_found {
+        output.warning(&format!("Branch '{}' not found on remote", branch));
+    }
+
+    // Determine if this is a multi-branch clone (Multiple or All source with
+    // satellites to create beyond what Phase 4 handles).
+    let is_multi_branch = matches!(branch_source, BranchSource::Multiple(_));
+
+    // For multi-branch, override bare_result's target_branch to the base branch
+    // so that Phase 4 creates the correct base worktree.
+    let mut bare_result = bare_result;
+    if is_multi_branch {
+        if let Some(ref base) = branch_plan.base {
+            bare_result.target_branch = base.clone();
+            bare_result.branch_exists = remote_branches.contains(base);
+        }
+    }
+
     // Phase 4: Set up repo in the correct layout
     let result = if layout.needs_bare() {
         output.start_spinner("Setting up worktrees...");
@@ -276,6 +308,20 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         };
         output.finish_spinner();
         r?
+    };
+
+    // Phase 5: Create satellite worktrees for multi-branch clone
+    let result = if is_multi_branch && !branch_plan.satellites.is_empty() {
+        create_satellite_worktrees(
+            &result,
+            &branch_plan,
+            &bare_params,
+            &layout,
+            settings,
+            output,
+        )?
+    } else {
+        result
     };
 
     render_clone_result(&result, &layout, output);
@@ -316,6 +362,150 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     }
 
     Ok(())
+}
+
+/// Create satellite worktrees for a multi-branch clone.
+///
+/// After Phase 4 creates the base worktree, this function creates additional
+/// worktrees for each satellite branch in the plan. Returns an updated
+/// `CloneResult` with the cd_target adjusted to the branch plan's preference.
+fn create_satellite_worktrees(
+    base_result: &clone::CloneResult,
+    branch_plan: &crate::core::worktree::branch_source::BranchPlan,
+    bare_params: &clone::BareCloneParams,
+    layout: &crate::core::layout::Layout,
+    settings: &DaftSettings,
+    output: &mut dyn Output,
+) -> Result<clone::CloneResult> {
+    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+
+    // We need to cd back to parent_dir to create worktrees from the repo root
+    change_directory(&base_result.parent_dir)?;
+
+    let repo_path = base_result.parent_dir.clone();
+
+    let mut created_count = 0;
+    for branch in &branch_plan.satellites {
+        let worktree_path = if layout.needs_bare() {
+            // For bare layouts, worktrees are relative to parent_dir
+            std::path::PathBuf::from(branch)
+        } else {
+            // For non-bare layouts, resolve via template
+            let ctx = TemplateContext {
+                repo_path: repo_path.clone(),
+                repo: base_result.repo_name.clone(),
+                branch: branch.clone(),
+            };
+            match layout.worktree_path(&ctx) {
+                Ok(p) => p,
+                Err(e) => {
+                    output.warning(&format!(
+                        "Could not resolve path for branch '{}': {}",
+                        branch, e
+                    ));
+                    continue;
+                }
+            }
+        };
+
+        output.start_spinner(&format!("Creating worktree for '{}'...", branch));
+
+        // Ensure parent directory exists
+        if let Some(parent) = worktree_path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    output.finish_spinner();
+                    output.warning(&format!(
+                        "Could not create directory '{}': {}",
+                        parent.display(),
+                        e
+                    ));
+                    continue;
+                }
+            }
+        }
+
+        if let Err(e) = git.worktree_add(&worktree_path, branch) {
+            output.finish_spinner();
+            output.warning(&format!(
+                "Could not create worktree for branch '{}': {}",
+                branch, e
+            ));
+            continue;
+        }
+
+        // Set up upstream tracking
+        if settings.checkout_upstream {
+            let upstream_result = std::process::Command::new("git")
+                .args([
+                    "branch",
+                    &format!("--set-upstream-to={}/{}", bare_params.remote_name, branch),
+                ])
+                .current_dir(&worktree_path)
+                .output();
+
+            if let Err(e) = upstream_result {
+                output.finish_spinner();
+                output.warning(&format!("Could not set upstream for '{}': {}", branch, e));
+                // Continue anyway -- worktree was created successfully
+            }
+        }
+
+        output.finish_spinner();
+        output.step(&format!("Created worktree for '{}'", branch));
+        created_count += 1;
+    }
+
+    // Determine cd_target path
+    let cd_target_path = if let Some(ref cd_branch) = branch_plan.cd_target {
+        if layout.needs_bare() {
+            // For bare layouts, worktrees are direct children of parent_dir
+            let target = repo_path.join(cd_branch);
+            if target.exists() {
+                Some(target)
+            } else {
+                // Fall back to base worktree or parent_dir
+                base_result.cd_target.clone()
+            }
+        } else {
+            let ctx = TemplateContext {
+                repo_path: repo_path.clone(),
+                repo: base_result.repo_name.clone(),
+                branch: cd_branch.clone(),
+            };
+            match layout.worktree_path(&ctx) {
+                Ok(p) if p.exists() => Some(p),
+                _ => base_result.cd_target.clone(),
+            }
+        }
+    } else {
+        base_result.cd_target.clone()
+    };
+
+    // cd to the target
+    if let Some(ref target) = cd_target_path {
+        change_directory(target)?;
+    }
+
+    let worktree_dir = cd_target_path.clone().or(base_result.worktree_dir.clone());
+
+    Ok(clone::CloneResult {
+        repo_name: base_result.repo_name.clone(),
+        target_branch: branch_plan
+            .cd_target
+            .clone()
+            .unwrap_or_else(|| base_result.target_branch.clone()),
+        default_branch: base_result.default_branch.clone(),
+        parent_dir: base_result.parent_dir.clone(),
+        git_dir: base_result.git_dir.clone(),
+        remote_name: base_result.remote_name.clone(),
+        repository_url: base_result.repository_url.clone(),
+        cd_target: cd_target_path,
+        worktree_dir,
+        branch_not_found: created_count == 0 && base_result.worktree_dir.is_none(),
+        is_empty: base_result.is_empty,
+        no_checkout: false,
+    })
 }
 
 fn render_clone_result(
