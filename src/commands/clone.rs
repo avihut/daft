@@ -302,6 +302,12 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         }
     }
 
+    // Canonicalize parent_dir now (while cwd is still valid for the relative path).
+    // Phase 4 may change cwd (e.g., contained-classic moves into a branch subdir),
+    // so the relative parent_dir would be unreachable after that.
+    let canonical_parent_dir =
+        std::fs::canonicalize(&bare_result.parent_dir).unwrap_or(bare_result.parent_dir.clone());
+
     // Phase 4: Set up repo in the correct layout
     let result = if layout.needs_bare() {
         output.start_spinner("Setting up worktrees...");
@@ -375,6 +381,11 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             (Some(defaults), true)
         }
     };
+
+    // Ensure parent_dir is canonical for satellite creation (Phase 4 may have
+    // changed cwd, making the original relative parent_dir unreachable).
+    let mut result = result;
+    result.parent_dir = canonical_parent_dir;
 
     // Phase 5: Create satellite worktrees for multi-branch clone
     let mut used_tui = false;
