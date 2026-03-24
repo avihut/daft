@@ -202,6 +202,7 @@ impl TuiState {
                     OperationPhase::Update => "updating",
                     OperationPhase::Rebase(_) => "rebasing",
                     OperationPhase::Push => "pushing",
+                    OperationPhase::Setup => "setting up",
                 };
                 // Auto-create row for newly discovered branches (e.g., gone branches
                 // found after fetch completes while TUI is already running).
@@ -427,6 +428,7 @@ impl TuiState {
             OperationPhase::Update => "updating",
             OperationPhase::Rebase(_) => "rebasing",
             OperationPhase::Push => "pushing",
+            OperationPhase::Setup => "setting up",
         };
         let any_active = self.worktrees.iter().any(
             |w| matches!(&w.status, WorktreeStatus::Active(label) if label == phase_active_label),
@@ -478,6 +480,12 @@ impl TuiState {
                     _ => FinalStatus::Diverged,
                 },
                 OperationPhase::Fetch => FinalStatus::Updated,
+                OperationPhase::Setup => match message {
+                    TaskMessage::Created => FinalStatus::Updated,
+                    TaskMessage::BaseCreated => FinalStatus::Updated,
+                    TaskMessage::NotFound => FinalStatus::Skipped,
+                    _ => FinalStatus::Updated,
+                },
             },
             TaskStatus::PreconditionFailed => FinalStatus::Skipped,
             TaskStatus::Pending | TaskStatus::Running => FinalStatus::Failed,

@@ -423,6 +423,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         outcomes.clone(),
                         None,
                     ),
+                    TaskId::Setup(_) => unreachable!("Setup is only used by clone"),
                 }
             },
         );
