@@ -770,7 +770,8 @@ fn create_satellite_worktrees_tui(
     // Phases: Fetch (pre-completed) + Setup (active)
     let phases = vec![OperationPhase::Fetch, OperationPhase::Setup];
 
-    let cwd = std::env::current_dir().unwrap_or_else(|_| repo_path.clone());
+    // Use parent of repo_path as cwd so paths render as "repo/branch"
+    let cwd = repo_path.parent().unwrap_or(&repo_path).to_path_buf();
 
     // Create channel for TUI events
     let (tx, rx) = std::sync::mpsc::channel();
