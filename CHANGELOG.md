@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.0](https://github.com/avihut/daft/compare/v1.2.1...v1.3.0) - 2026-03-24
+
+### Features
+
+- progressive adoption layout system ([#320](https://github.com/avihut/daft/pull/320))
+- add --columns hash and gitoxide commit metadata fast path ([#319](https://github.com/avihut/daft/pull/319))
+- add --sort flag to list, prune, and sync commands ([#317](https://github.com/avihut/daft/pull/317))
+- add optional size column with summary footer ([#315](https://github.com/avihut/daft/pull/315))
+
 ## [1.2.1](https://github.com/avihut/daft/compare/v1.2.0...v1.2.1) - 2026-03-17
 
 ### Bug Fixes
