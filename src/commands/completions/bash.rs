@@ -38,6 +38,16 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
         output.push('\n');
     }
 
+    // Value completion for -b / --branch flag (clone only)
+    if command_name == "git-worktree-clone" {
+        output.push_str("    # Static value completion for -b / --branch\n");
+        output.push_str("    if [[ \"$prev\" == \"-b\" || \"$prev\" == \"--branch\" ]]; then\n");
+        output.push_str("        COMPREPLY=( $(compgen -W \"HEAD @\" -- \"$cur\") )\n");
+        output.push_str("        return 0\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
     // Value completion for --layout flag
     let has_layout = matches!(command_name, "git-worktree-clone" | "git-worktree-init");
     if has_layout {

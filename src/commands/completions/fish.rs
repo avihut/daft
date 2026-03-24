@@ -100,6 +100,15 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
         }
     }
 
+    // Value completions for -b / --branch flag (clone only)
+    if command_name == "git-worktree-clone" {
+        output.push_str("\n# Static value completions for -b / --branch\n");
+        output.push_str(&format!(
+            "complete -c {} -s b -l branch -x -a 'HEAD @' -d 'Branch to check out (HEAD or @ for default)'\n",
+            command_name
+        ));
+    }
+
     // Value completions for --layout flag
     let has_layout = matches!(command_name, "git-worktree-clone" | "git-worktree-init");
     if has_layout {
