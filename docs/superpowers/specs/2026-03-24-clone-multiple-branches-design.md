@@ -81,6 +81,10 @@ struct BranchPlan {
 | `Multiple(list)` | base = default (injected if missing), satellites = rest | base = None, satellites = list      |
 | `All`            | base = default, satellites = all others                 | base = None, satellites = all       |
 
+For `BranchSource::All` with non-bare layouts: if the default branch is not
+present in the remote's branch list, fall back to the first alphabetical branch
+as the base and warn.
+
 Key rules for `Multiple`:
 
 - **Single `-b`**: that branch goes in the base worktree regardless of which
@@ -96,7 +100,10 @@ Key rules for `Multiple`:
 
 The first valid branch from the original `-b` order determines where daft cds
 after clone. If the first branch doesn't exist on remote, the next valid one in
-the list is used. If no valid branches exist, cd into the repo directory itself.
+the list is used. If no valid branches from the original list exist but a base
+worktree was created (default branch injected for non-bare layouts), cd into the
+base worktree. For bare layouts with no valid branches, cd into the repo
+directory itself.
 
 ## Clone Phases
 
@@ -169,9 +176,12 @@ impl OperationTable {
 pub struct CompletedTable {
     pub rows: Vec<WorktreeRow>,
     pub hook_summaries: Vec<HookSummaryEntry>,
-    pub failures: Vec<(String, String)>,
 }
 ```
+
+`CompletedTable` wraps the final `TuiState` fields. Failures are derived
+post-run by filtering `rows` for entries with `FinalStatus::Failed` — no
+separate failure accumulation needed.
 
 ### What each command provides
 
@@ -279,6 +289,13 @@ pub enum OperationPhase {
 }
 ```
 
+Adding `Setup` requires updating all exhaustive matches on `OperationPhase`:
+
+- `sync_dag.rs` — `OperationPhase::label()` method: add
+  `Setup => "Setting up worktrees"`
+- `state.rs` — `apply_event()` active label match: add `Setup => "setting up"`
+- Any `TaskId` enum usage that maps phases to task identifiers
+
 ### New TaskMessage variants
 
 ```rust
@@ -289,6 +306,15 @@ pub enum TaskMessage {
     NotFound,     // branch didn't exist on remote (warning)
 }
 ```
+
+Mapping to `FinalStatus` in `state.rs` `apply_event()`:
+
+- `TaskMessage::Created` → `FinalStatus::Updated` (green checkmark, "Created"
+  annotation)
+- `TaskMessage::BaseCreated` → `FinalStatus::Updated` (green checkmark, "Base
+  worktree" annotation)
+- `TaskMessage::NotFound` → `FinalStatus::Skipped` (yellow warning, "Not found
+  on remote" annotation)
 
 ## CLI Surface
 
@@ -306,9 +332,27 @@ pub branch: Vec<String>,
 ```
 
 - `-b` and `--all-branches` remain mutually exclusive (`conflicts_with`)
+- `--no-checkout` conflicts with `-b` and `--all-branches` (unchanged from
+  today's single `-b` + `--no-checkout` conflict)
 - Empty Vec -> `BranchSource::Default`
 - Single element -> `BranchSource::Single` (backward compatible)
 - Two or more -> `BranchSource::Multiple`
+
+### Interaction with --remote (multi-remote mode)
+
+Multi-remote mode (`--remote`) organizes worktrees under a remote folder and is
+not supported with multiple `-b` flags in this iteration. The `conflicts_with`
+list will include `remote` for the `Multiple` case. `Single` `-b` + `--remote`
+continues to work as today. This can be revisited in a future iteration if
+needed.
+
+### Backward compatibility note
+
+The clap field changes from `Option<String>` to `Vec<String>`. Internally,
+`BareCloneParams.branch` remains `Option<String>` — it receives the resolved
+target branch for Phase 1 (either the single `-b` value or the default branch).
+The `Vec<String>` is consumed only by `BranchSource` construction, keeping Phase
+1 unchanged.
 
 ### Shell completions
 
@@ -334,10 +378,31 @@ Phase 2 branch resolution.
 After `git clone --bare`, all remote refs are fetched locally. Gitoxide
 validates branches by reading local refs with zero network round-trips.
 
+These are **new functions** in `oxide.rs`, not wrappers around the existing
+network-based `ls_remote_*` functions. The existing `oxide::ls_remote_heads` and
+`oxide::ls_remote_branch_exists` make live network connections via
+`remote.connect(Direction::Fetch)`. The new functions instead read from the
+local ref store (`refs/remotes/origin/`), which is populated after the bare
+clone:
+
+```rust
+/// Check if a branch exists in the already-fetched remote refs (no network).
+pub fn validate_branch_in_remotes(
+    repo: &Repository,
+    remote_name: &str,
+    branch: &str,
+) -> Result<bool> {
+    let ref_name = format!("refs/remotes/{remote_name}/{branch}");
+    Ok(repo.try_find_reference(&ref_name)?.is_some())
+}
+```
+
 ### Phase 4 fast paths
 
-- Upstream tracking setup: `repo.config_snapshot_mut()` to write
-  `branch.<name>.remote` and `branch.<name>.merge` directly
+- Upstream tracking setup: direct config file writes via the git CLI
+  (`git config branch.<name>.remote` / `git config branch.<name>.merge`), or via
+  gitoxide's config mutation API when available. The existing codebase uses CLI
+  for config writes, so this follows the same pattern.
 - Post-setup validation: existing gitoxide functions
 
 ### CLI-only operations
