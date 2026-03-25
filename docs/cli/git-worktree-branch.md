@@ -65,6 +65,13 @@ redirected to the new worktree location after the rename completes.
 
 Empty parent directories left behind by the move are automatically cleaned up.
 
+If the repository has hooks configured with the `tracks` field (or implicit
+tracking via template variables), rename triggers **move hooks** for the
+tracked jobs. daft runs pre-remove and post-remove hooks with the old identity,
+moves the worktree, then runs pre-create and post-create hooks with the new
+identity. Only jobs that track `path` or `branch` participate; untracked jobs
+are skipped. See [Hooks -- Move Hooks](/guide/hooks#move-hooks) for details.
+
 ## Usage
 
 ```

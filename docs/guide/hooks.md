@@ -188,26 +188,27 @@ hooks:
 
 Each job in the `jobs` list supports:
 
-| Field         | Type                 | Description                                                     |
-| ------------- | -------------------- | --------------------------------------------------------------- |
-| `name`        | string               | Job name (used for display, merging, and dependency references) |
-| `description` | string               | Human-readable description (shown in dry-run and completions)   |
-| `run`         | string               | Inline shell command to execute                                 |
-| `script`      | string               | Script file to run (relative to `source_dir`)                   |
-| `runner`      | string               | Interpreter for script files (e.g., `"bash"`, `"python"`)       |
-| `args`        | string               | Arguments to pass to the script                                 |
-| `root`        | string               | Working directory (relative to worktree root)                   |
-| `tags`        | list                 | Tags for filtering with `exclude_tags`                          |
-| `skip`        | bool / string / list | Skip condition                                                  |
-| `only`        | bool / string / list | Only condition                                                  |
-| `os`          | string / list        | Target OS (`macos`, `linux`, `windows`); skips if no match      |
-| `arch`        | string / list        | Target architecture (`x86_64`, `aarch64`); skips if no match    |
-| `env`         | map                  | Extra environment variables                                     |
-| `fail_text`   | string               | Custom failure message                                          |
-| `interactive` | bool                 | Job needs TTY/stdin (forces sequential execution)               |
-| `priority`    | int                  | Execution ordering (lower runs first)                           |
-| `needs`       | list                 | Names of jobs that must complete before this job runs           |
-| `group`       | object               | Nested group of jobs (see [Groups](#groups))                    |
+| Field         | Type                 | Description                                                                               |
+| ------------- | -------------------- | ----------------------------------------------------------------------------------------- |
+| `name`        | string               | Job name (used for display, merging, and dependency references)                           |
+| `description` | string               | Human-readable description (shown in dry-run and completions)                             |
+| `run`         | string               | Inline shell command to execute                                                           |
+| `script`      | string               | Script file to run (relative to `source_dir`)                                             |
+| `runner`      | string               | Interpreter for script files (e.g., `"bash"`, `"python"`)                                 |
+| `args`        | string               | Arguments to pass to the script                                                           |
+| `root`        | string               | Working directory (relative to worktree root)                                             |
+| `tags`        | list                 | Tags for filtering with `exclude_tags`                                                    |
+| `skip`        | bool / string / list | Skip condition                                                                            |
+| `only`        | bool / string / list | Only condition                                                                            |
+| `os`          | string / list        | Target OS (`macos`, `linux`, `windows`); skips if no match                                |
+| `arch`        | string / list        | Target architecture (`x86_64`, `aarch64`); skips if no match                              |
+| `env`         | map                  | Extra environment variables                                                               |
+| `fail_text`   | string               | Custom failure message                                                                    |
+| `interactive` | bool                 | Job needs TTY/stdin (forces sequential execution)                                         |
+| `priority`    | int                  | Execution ordering (lower runs first)                                                     |
+| `needs`       | list                 | Names of jobs that must complete before this job runs                                     |
+| `tracks`      | list                 | Worktree attributes this job depends on: `path`, `branch` (see [Move Hooks](#move-hooks)) |
+| `group`       | object               | Nested group of jobs (see [Groups](#groups))                                              |
 
 A job must have exactly one of `run`, `script`, or `group`.
 
@@ -445,6 +446,116 @@ completes successfully.
 | `piped`     | bool | Run group jobs sequentially, stop on first failure |
 | `jobs`      | list | Jobs within the group                              |
 
+## Move Hooks
+
+When a worktree is moved -- via rename (`git worktree-branch -m`), layout
+transform (`daft layout transform`), or adopt (`daft worktree-flow-adopt`) --
+identity-sensitive hooks need to tear down the old environment and set up the
+new one. daft automates this with **move hooks**.
+
+### How it works
+
+A move runs hooks in five steps (four hook phases plus the disk move):
+
+1. **`worktree-pre-remove`** -- teardown with the old worktree identity
+2. **`worktree-post-remove`** -- cleanup with the old worktree identity
+3. _(worktree is moved on disk)_
+4. **`worktree-pre-create`** -- setup with the new worktree identity
+5. **`worktree-post-create`** -- finalize with the new worktree identity
+
+Only jobs that **track** the changed attributes participate. Other jobs are
+skipped because their output would not change.
+
+### The `tracks` field
+
+The `tracks` field on a job declares which worktree attributes the job depends
+on:
+
+| Value    | Meaning                                                     |
+| -------- | ----------------------------------------------------------- |
+| `path`   | Job output depends on the worktree path (e.g., symlinks)    |
+| `branch` | Job output depends on the branch name (e.g., env variables) |
+
+You can track one or both:
+
+```yaml
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: symlink-artifacts
+        run: ln -sf {worktree_path}/dist /opt/builds/{branch}
+        tracks: [path, branch]
+      - name: register-env
+        run: echo "BRANCH={branch}" >> /tmp/active-envs
+        tracks: [branch]
+      - name: install-deps
+        run: npm install
+        # No tracks -- this job does not depend on path or branch,
+        # so it is skipped during moves.
+```
+
+### Implicit tracking
+
+If you omit the `tracks` field, daft infers tracking from template variable
+usage:
+
+- `{worktree_path}` in `run` or `args` implies `tracks: [path]`
+- `{branch}` or `{worktree_branch}` implies `tracks: [branch]`
+
+A job that uses both variables tracks both attributes. A job that uses neither
+has no tracking and does not run during moves.
+
+Explicit `tracks` always overrides implicit detection.
+
+### Dependency pull-in
+
+When a tracked job has `needs` dependencies, those dependencies are included in
+the move even if they are not tracked themselves. This ensures the dependency
+chain is satisfied.
+
+### Failure handling
+
+Hook failures during moves produce **warnings**, not errors. The move operation
+(rename, transform, adopt) always completes. This prevents a broken hook from
+leaving the worktree in a half-moved state.
+
+### Example: path-tracked and branch-tracked jobs
+
+```yaml
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: link-build-output
+        description: Symlink build artifacts to a shared directory
+        run: ln -sf {worktree_path}/dist /opt/project/builds/current
+        tracks: [path]
+
+      - name: set-branch-env
+        description: Write branch name to local env file
+        run: echo "CURRENT_BRANCH={branch}" > .env.branch
+        tracks: [branch]
+
+      - name: install-deps
+        description: Install project dependencies
+        run: npm install
+        # Not tracked -- only runs on initial worktree creation
+
+  worktree-pre-remove:
+    jobs:
+      - name: unlink-build-output
+        run: rm -f /opt/project/builds/current
+        tracks: [path]
+
+      - name: clear-branch-env
+        run: rm -f .env.branch
+        tracks: [branch]
+```
+
+When this worktree is renamed, daft runs `unlink-build-output` and
+`clear-branch-env` with the old identity, moves the worktree, then runs
+`link-build-output` and `set-branch-env` with the new identity. The
+`install-deps` job is skipped because it has no tracking.
+
 ## Template Variables
 
 Commands (`run`) support template variables that are replaced with values from
@@ -463,6 +574,13 @@ the execution context:
 | `{base_branch}`     | Base branch name (for `checkout -b` commands)           |
 | `{repository_url}`  | Repository URL (for `post-clone`)                       |
 | `{default_branch}`  | Default branch name (for `post-clone`)                  |
+
+**Move hooks only** (available when `DAFT_IS_MOVE` is `true`):
+
+| Variable              | Description                                         |
+| --------------------- | --------------------------------------------------- |
+| `{old_worktree_path}` | Previous worktree path (before the move)            |
+| `{old_branch}`        | Previous branch name (before the move, rename only) |
 
 ### Example
 
@@ -635,6 +753,17 @@ YAML jobs and shell script hooks.
 | Variable              | Description                                                                  |
 | --------------------- | ---------------------------------------------------------------------------- |
 | `DAFT_REMOVAL_REASON` | Why the worktree is being removed: `remote-deleted`, `manual`, or `ejecting` |
+
+### Move (move hooks only)
+
+These variables are set when hooks run as part of a worktree move (rename,
+layout transform, or adopt). They are available in all four move phases.
+
+| Variable                 | Description                                     |
+| ------------------------ | ----------------------------------------------- |
+| `DAFT_IS_MOVE`           | `true` when running as part of a move operation |
+| `DAFT_OLD_WORKTREE_PATH` | Worktree path before the move                   |
+| `DAFT_OLD_BRANCH_NAME`   | Branch name before the move (rename only)       |
 
 ## Fail Modes
 
