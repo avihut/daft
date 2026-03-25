@@ -17,7 +17,7 @@ pub use legacy::{
     ConvertToBareResult, ConvertToNonBareParams, ConvertToNonBareResult, WorktreeInfo,
 };
 
-pub use execute::{describe_op, execute_plan, ExecuteResult};
+pub use execute::{describe_op, execute_plan, ExecuteResult, ExecutionContext};
 
 pub use print::print_plan;
 

@@ -1,7 +1,7 @@
 use crate::{
     core::{
         worktree::{branch_delete, rename},
-        CommandBridge, OutputSink,
+        CommandBridge,
     },
     git::should_show_gitoxide_notice,
     hooks::{HookExecutor, HooksConfig},
@@ -258,6 +258,7 @@ pub fn run_rename() -> Result<()> {
         &rename_args.new_branch,
         rename_args.no_remote,
         rename_args.dry_run,
+        rename_args.verbose,
         &mut output,
         &settings,
     )
@@ -301,6 +302,7 @@ fn run_with_args(args: Args) -> Result<()> {
             &args.branches[1],
             args.no_remote,
             args.dry_run,
+            args.verbose,
             &mut output,
             &settings,
         )?;
@@ -413,6 +415,7 @@ fn run_rename_inner(
     new_branch: &str,
     no_remote: bool,
     dry_run: bool,
+    verbose: bool,
     output: &mut dyn Output,
     settings: &DaftSettings,
 ) -> Result<()> {
@@ -432,12 +435,19 @@ fn run_rename_inner(
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
+    let mut hooks_config = HooksConfig::default();
+    if verbose {
+        hooks_config.output.verbose = true;
+    }
+    let executor = HookExecutor::new(hooks_config.clone())?;
+
     if !params.dry_run {
         output.start_spinner("Renaming branch...");
     }
     let exec_result = {
-        let mut sink = OutputSink(output);
-        rename::execute(&params, &mut sink)
+        let mut bridge =
+            CommandBridge::with_output_config(output, executor, hooks_config.output.clone());
+        rename::execute(&params, &mut bridge)
     };
     output.finish_spinner();
     let result = exec_result?;

@@ -300,6 +300,7 @@ Set one per hook (default is `parallel`):
   os: linux # Target OS: macos, linux, windows (or list)
   arch: x86_64 # Target arch: x86_64, aarch64 (or list)
   needs: [install-npm] # Wait for these jobs to complete first
+  tracks: [path, branch] # Worktree attributes this job depends on (for move hooks)
   interactive: true # Needs TTY (forces sequential)
   priority: 1 # Lower runs first
   fail_text: "Setup failed" # Custom failure message
@@ -345,18 +346,20 @@ A job can contain a nested group with its own execution mode:
 
 Available in `run` commands:
 
-| Variable            | Description                            |
-| ------------------- | -------------------------------------- |
-| `{branch}`          | Target branch name                     |
-| `{worktree_path}`   | Path to the target worktree            |
-| `{worktree_root}`   | Project root directory                 |
-| `{source_worktree}` | Path to the source worktree            |
-| `{git_dir}`         | Path to the `.git` directory           |
-| `{remote}`          | Remote name (usually `origin`)         |
-| `{job_name}`        | Name of the current job                |
-| `{base_branch}`     | Base branch (for checkout -b commands) |
-| `{repository_url}`  | Repository URL (for post-clone)        |
-| `{default_branch}`  | Default branch name (for post-clone)   |
+| Variable              | Description                              |
+| --------------------- | ---------------------------------------- |
+| `{branch}`            | Target branch name                       |
+| `{worktree_path}`     | Path to the target worktree              |
+| `{worktree_root}`     | Project root directory                   |
+| `{source_worktree}`   | Path to the source worktree              |
+| `{git_dir}`           | Path to the `.git` directory             |
+| `{remote}`            | Remote name (usually `origin`)           |
+| `{job_name}`          | Name of the current job                  |
+| `{base_branch}`       | Base branch (for checkout -b commands)   |
+| `{repository_url}`    | Repository URL (for post-clone)          |
+| `{default_branch}`    | Default branch name (for post-clone)     |
+| `{old_worktree_path}` | Previous worktree path (move hooks only) |
+| `{old_branch}`        | Previous branch name (move hooks only)   |
 
 ### Skip and Only Conditions
 
@@ -406,6 +409,49 @@ daft hooks run worktree-post-create --verbose    # Show skipped jobs with reason
 Use cases: re-running after a failure, iterating during hook development, or
 bootstrapping existing worktrees that predate the hooks config.
 
+### Move Hooks
+
+When a worktree is moved (rename via `daft worktree-branch -m`, layout transform
+via `daft layout transform`, or adopt via `daft worktree-flow-adopt`), daft
+replays identity-tracked hooks to tear down the old environment and set up the
+new one.
+
+**Flow:** `worktree-pre-remove` (old identity) -> `worktree-post-remove` (old
+identity) -> move on disk -> `worktree-pre-create` (new identity) ->
+`worktree-post-create` (new identity). Only tracked jobs run.
+
+**`tracks` field:** Declares which attributes a job depends on.
+
+```yaml
+- name: link-output
+  run: ln -sf {worktree_path}/dist /opt/builds/current
+  tracks: [path] # Re-runs when worktree path changes
+
+- name: set-branch-env
+  run: echo "BRANCH={branch}" > .env.branch
+  tracks: [branch] # Re-runs when branch name changes
+
+- name: install-deps
+  run: npm install
+  # No tracks -- skipped during moves
+```
+
+**Implicit tracking:** If `tracks` is omitted, daft infers it from template
+usage -- `{worktree_path}` implies `path`, `{branch}`/`{worktree_branch}`
+implies `branch`. Explicit `tracks` overrides inference.
+
+**Dependency pull-in:** Jobs listed in `needs` of a tracked job are included in
+the move even if not tracked themselves.
+
+**Failure handling:** Hook failures during moves produce warnings, not errors.
+The move always completes.
+
+**Move-only template variables:** `{old_worktree_path}`, `{old_branch}` --
+available only when `DAFT_IS_MOVE` is `true`.
+
+**Move-only environment variables:** `DAFT_IS_MOVE` (`true` during move hooks),
+`DAFT_OLD_WORKTREE_PATH`, `DAFT_OLD_BRANCH_NAME`.
+
 ### Environment Variables in Hooks
 
 All hooks receive: `DAFT_HOOK`, `DAFT_COMMAND`, `DAFT_PROJECT_ROOT`,
@@ -419,6 +465,9 @@ Clone hooks add: `DAFT_REPOSITORY_URL`, `DAFT_DEFAULT_BRANCH`.
 
 Removal hooks add: `DAFT_REMOVAL_REASON` (`remote-deleted`, `manual`, or
 `ejecting`).
+
+Move hooks add: `DAFT_IS_MOVE`, `DAFT_OLD_WORKTREE_PATH`,
+`DAFT_OLD_BRANCH_NAME`.
 
 ## Environment Tool Detection and Setup
 

@@ -5,6 +5,7 @@
 //! unwound in reverse order to restore the repository to its pre-transform
 //! state (best-effort).
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -12,8 +13,23 @@ use std::process::Command;
 use anyhow::{Context, Result};
 
 use super::plan::{TransformOp, TransformPlan};
-use crate::core::ProgressSink;
+use crate::core::{HookRunner, ProgressSink};
 use crate::git::GitCommand;
+use crate::hooks::move_hooks::{run_setup_hooks, run_teardown_hooks, MoveHookParams};
+use crate::hooks::tracking::TrackedAttribute;
+
+// ── Execution context ────────────────────────────────────────────────────
+
+/// Context needed by move hooks during plan execution.
+///
+/// Callers must populate this from the available repository state so that
+/// `execute_plan` can build `MoveHookParams` for each `MoveWorktree` op.
+pub struct ExecutionContext {
+    pub project_root: PathBuf,
+    pub git_dir: PathBuf,
+    pub remote: String,
+    pub source_worktree: PathBuf,
+}
 
 // ── Public result type ─────────────────────────────────────────────────────
 
@@ -32,24 +48,86 @@ pub struct ExecuteResult {
 ///
 /// On failure the executor attempts to undo completed operations in reverse
 /// order, then propagates the original error. Progress messages are emitted
-/// via `progress` for each step.
+/// via `sink` for each step. Move hooks are fired around `MoveWorktree`
+/// operations using the provided `ExecutionContext`.
 pub fn execute_plan(
     plan: &TransformPlan,
     git: &GitCommand,
-    progress: &mut dyn ProgressSink,
+    ctx: &ExecutionContext,
+    sink: &mut (impl ProgressSink + HookRunner),
 ) -> Result<ExecuteResult> {
     let total = plan.ops.len();
     let mut rollback_stack: Vec<TransformOp> = Vec::new();
 
     for (i, op) in plan.ops.iter().enumerate() {
-        progress.on_step(&format!("[{}/{}] {}", i + 1, total, describe_op(op)));
+        sink.on_step(&format!("[{}/{}] {}", i + 1, total, describe_op(op)));
 
-        if let Err(e) = execute_op(op, git, progress) {
-            progress.on_warning(&format!("Operation failed: {e:#}"));
-            progress.on_warning("Attempting rollback of completed operations...");
+        // Build move hook params for any op that changes a worktree's path.
+        // This covers MoveWorktree, CollapseIntoRoot, and NestFromRoot.
+        let move_params = match op {
+            TransformOp::MoveWorktree { branch, from, to } => Some(MoveHookParams {
+                old_worktree_path: from.clone(),
+                new_worktree_path: to.clone(),
+                old_branch_name: branch.clone(),
+                new_branch_name: branch.clone(),
+                project_root: ctx.project_root.clone(),
+                git_dir: ctx.git_dir.clone(),
+                remote: ctx.remote.clone(),
+                source_worktree: ctx.source_worktree.clone(),
+                command: "layout-transform".to_string(),
+                changed_attributes: HashSet::from([TrackedAttribute::Path]),
+            }),
+            TransformOp::CollapseIntoRoot {
+                branch,
+                worktree_path,
+                root_path,
+            } => Some(MoveHookParams {
+                old_worktree_path: worktree_path.clone(),
+                new_worktree_path: root_path.clone(),
+                old_branch_name: branch.clone(),
+                new_branch_name: branch.clone(),
+                project_root: ctx.project_root.clone(),
+                git_dir: ctx.git_dir.clone(),
+                remote: ctx.remote.clone(),
+                source_worktree: ctx.source_worktree.clone(),
+                command: "layout-transform".to_string(),
+                changed_attributes: HashSet::from([TrackedAttribute::Path]),
+            }),
+            TransformOp::NestFromRoot {
+                branch,
+                root_path,
+                subdir_path,
+            } => Some(MoveHookParams {
+                old_worktree_path: root_path.clone(),
+                new_worktree_path: subdir_path.clone(),
+                old_branch_name: branch.clone(),
+                new_branch_name: branch.clone(),
+                project_root: ctx.project_root.clone(),
+                git_dir: ctx.git_dir.clone(),
+                remote: ctx.remote.clone(),
+                source_worktree: ctx.source_worktree.clone(),
+                command: "layout-transform".to_string(),
+                changed_attributes: HashSet::from([TrackedAttribute::Path]),
+            }),
+            _ => None,
+        };
 
-            if let Err(rb_err) = rollback(&rollback_stack, git, progress) {
-                progress.on_warning(&format!("Rollback encountered errors: {rb_err:#}"));
+        // Fire teardown hooks before a worktree move
+        if let Some(ref params) = move_params {
+            run_teardown_hooks(params, sink);
+        }
+
+        if let Err(e) = execute_op(op, git, sink) {
+            sink.on_warning(&format!("Operation failed: {e:#}"));
+            // Note: rollback does not fire inverse move hooks. Hook-managed
+            // state (e.g., direnv, mise trust) may be inconsistent after
+            // rollback. This is intentional: hooks are best-effort and
+            // non-transactional, consistent with how daft handles hook
+            // failures elsewhere.
+            sink.on_warning("Attempting rollback of completed operations...");
+
+            if let Err(rb_err) = rollback(&rollback_stack, git, sink) {
+                sink.on_warning(&format!("Rollback encountered errors: {rb_err:#}"));
             }
 
             return Err(e.context(format!(
@@ -58,6 +136,11 @@ pub fn execute_plan(
                 total,
                 describe_op(op)
             )));
+        }
+
+        // Fire setup hooks after a successful worktree move
+        if let Some(ref params) = move_params {
+            run_setup_hooks(params, sink);
         }
 
         if let Some(rev) = reverse_op(op) {
@@ -105,11 +188,13 @@ fn execute_op(op: &TransformOp, git: &GitCommand, progress: &mut dyn ProgressSin
         TransformOp::CollapseIntoRoot {
             worktree_path,
             root_path,
+            ..
         } => exec_collapse_into_root(worktree_path, root_path),
 
         TransformOp::NestFromRoot {
             root_path,
             subdir_path,
+            ..
         } => exec_nest_from_root(root_path, subdir_path),
 
         TransformOp::InitWorktreeIndex { path } => exec_init_worktree_index(path, progress),
@@ -560,17 +645,21 @@ fn reverse_op(op: &TransformOp) -> Option<TransformOp> {
         TransformOp::SetBare(bare) => Some(TransformOp::SetBare(!bare)),
 
         TransformOp::CollapseIntoRoot {
+            branch,
             worktree_path,
             root_path,
         } => Some(TransformOp::NestFromRoot {
+            branch: branch.clone(),
             root_path: root_path.clone(),
             subdir_path: worktree_path.clone(),
         }),
 
         TransformOp::NestFromRoot {
+            branch,
             root_path,
             subdir_path,
         } => Some(TransformOp::CollapseIntoRoot {
+            branch: branch.clone(),
             worktree_path: subdir_path.clone(),
             root_path: root_path.clone(),
         }),
@@ -664,6 +753,7 @@ pub fn describe_op(op: &TransformOp) -> String {
         TransformOp::CollapseIntoRoot {
             worktree_path,
             root_path,
+            ..
         } => {
             format!(
                 "Collapse {} into {}",
@@ -674,6 +764,7 @@ pub fn describe_op(op: &TransformOp) -> String {
         TransformOp::NestFromRoot {
             root_path,
             subdir_path,
+            ..
         } => {
             format!(
                 "Nest {} into {}",

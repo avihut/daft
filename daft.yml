@@ -35,6 +35,7 @@ hooks:
     jobs:
       - name: mise trust
         run: mise trust
+        tracks: [path]
       - name: mise install
         run: mise install
         needs: [mise trust]

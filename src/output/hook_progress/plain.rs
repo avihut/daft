@@ -11,11 +11,19 @@ pub struct PlainHookRenderer {
     output_lines: Vec<String>,
     finished_jobs: Vec<JobResultEntry>,
     jobs_with_output: std::collections::HashSet<String>,
+    verbose: bool,
 }
 
 impl PlainHookRenderer {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_verbose(verbose: bool) -> Self {
+        Self {
+            verbose,
+            ..Self::default()
+        }
     }
 
     pub fn print_header(&self, hook_name: &str) {
@@ -24,11 +32,16 @@ impl PlainHookRenderer {
         }
     }
 
-    pub fn start_job(&mut self, name: &str) {
-        self.start_job_with_description(name, None);
+    pub fn start_job(&mut self, name: &str, command_preview: Option<&str>) {
+        self.start_job_with_description(name, None, command_preview);
     }
 
-    pub fn start_job_with_description(&mut self, name: &str, description: Option<&str>) {
+    pub fn start_job_with_description(
+        &mut self,
+        name: &str,
+        description: Option<&str>,
+        command_preview: Option<&str>,
+    ) {
         let msg = format!("\u{2503}  {name} \u{276f}");
         eprintln!("{msg}");
         self.output_lines.push(msg);
@@ -36,6 +49,13 @@ impl PlainHookRenderer {
             let desc_msg = format!("\u{2503}    {desc}");
             eprintln!("{desc_msg}");
             self.output_lines.push(desc_msg);
+        }
+        if self.verbose {
+            if let Some(cmd) = command_preview {
+                let cmd_msg = format!("\u{2503}    {cmd}");
+                eprintln!("{cmd_msg}");
+                self.output_lines.push(cmd_msg);
+            }
         }
     }
 

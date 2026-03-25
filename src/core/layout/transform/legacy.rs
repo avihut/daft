@@ -5,16 +5,21 @@
 //! canonical implementation — both `daft layout transform` and the deprecated
 //! `daft adopt`/`daft eject` commands delegate here.
 
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+
 use crate::core::{HookRunner, ProgressSink};
 use crate::git::GitCommand;
+use crate::hooks::move_hooks::{run_setup_hooks, run_teardown_hooks, MoveHookParams};
+use crate::hooks::tracking::TrackedAttribute;
 use crate::hooks::{HookContext, HookType, RemovalReason};
 use crate::remote::get_default_branch_from_remote_head;
 use crate::settings::DaftSettings;
 use crate::utils::*;
 use crate::{get_current_branch, get_git_common_dir};
-use anyhow::{Context, Result};
-use std::fs;
-use std::path::{Path, PathBuf};
 
 // ── Convert to bare ────────────────────────────────────────────────────────
 
@@ -42,12 +47,12 @@ pub struct ConvertToBareResult {
 /// - The current directory is the main repo root (not a linked worktree)
 pub fn convert_to_bare(
     params: &ConvertToBareParams,
-    progress: &mut dyn ProgressSink,
+    sink: &mut (impl ProgressSink + HookRunner),
 ) -> Result<ConvertToBareResult> {
     let git = GitCommand::new(false).with_gitoxide(params.use_gitoxide);
 
     let current_branch = get_current_branch().context("Could not determine current branch")?;
-    progress.on_step(&format!("Current branch: '{current_branch}'"));
+    sink.on_step(&format!("Current branch: '{current_branch}'"));
 
     let git_dir = get_git_common_dir()?;
     let git_dir = std::fs::canonicalize(&git_dir)
@@ -57,11 +62,11 @@ pub fn convert_to_bare(
         .context("Could not determine project root")?
         .to_path_buf();
 
-    progress.on_step(&format!("Project root: '{}'", project_root.display()));
+    sink.on_step(&format!("Project root: '{}'", project_root.display()));
 
     let has_changes = git.has_uncommitted_changes()?;
     if has_changes {
-        progress.on_step("Uncommitted changes detected - will preserve them");
+        sink.on_step("Uncommitted changes detected - will preserve them");
     }
 
     let worktree_path = project_root.join(&current_branch);
@@ -75,7 +80,7 @@ pub fn convert_to_bare(
 
     // Stash changes
     if has_changes {
-        progress.on_step("Stashing uncommitted changes...");
+        sink.on_step("Stashing uncommitted changes...");
         git.stash_push_with_untracked("daft-layout-transform: temporary stash for conversion")
             .context("Failed to stash changes")?;
     }
@@ -91,17 +96,35 @@ pub fn convert_to_bare(
         .map(|wt| wt.path)
         .collect();
 
+    // Run teardown hooks before the filesystem relocation
+    let move_params = MoveHookParams {
+        old_worktree_path: project_root.clone(),
+        new_worktree_path: worktree_path.clone(),
+        old_branch_name: current_branch.clone(),
+        new_branch_name: current_branch.clone(),
+        project_root: project_root.clone(),
+        git_dir: git_dir.clone(),
+        remote: settings.remote.clone(),
+        source_worktree: project_root.clone(),
+        command: "adopt".to_string(),
+        changed_attributes: HashSet::from([TrackedAttribute::Path]),
+    };
+    run_teardown_hooks(&move_params, sink);
+
     // Move files via staging directory
     move_files_to_worktree(
         &project_root,
         &git_dir,
         &worktree_path,
         &linked_wt_paths,
-        progress,
+        sink,
     )?;
 
+    // Run setup hooks after the filesystem relocation
+    run_setup_hooks(&move_params, sink);
+
     // Convert to bare
-    progress.on_step("Converting to bare repository...");
+    sink.on_step("Converting to bare repository...");
     git.config_set("core.bare", "true")
         .context("Failed to set core.bare")?;
 
@@ -111,18 +134,18 @@ pub fn convert_to_bare(
     }
 
     // Setup fetch refspec
-    progress.on_step("Setting up fetch refspec for remote tracking...");
+    sink.on_step("Setting up fetch refspec for remote tracking...");
     if let Err(e) = git.setup_fetch_refspec(&settings.remote) {
-        progress.on_warning(&format!("Could not set fetch refspec: {e}"));
+        sink.on_warning(&format!("Could not set fetch refspec: {e}"));
     }
 
     // Register worktree
-    register_worktree(&git_dir, &worktree_path, &current_branch, progress)?;
+    register_worktree(&git_dir, &worktree_path, &current_branch, sink)?;
 
     change_directory(&worktree_path)?;
 
     // Initialize index
-    progress.on_step("Initializing worktree index...");
+    sink.on_step("Initializing worktree index...");
     let reset_result = std::process::Command::new("git")
         .args(["reset", "--mixed", "HEAD"])
         .current_dir(&worktree_path)
@@ -131,16 +154,15 @@ pub fn convert_to_bare(
 
     if !reset_result.status.success() {
         let stderr = String::from_utf8_lossy(&reset_result.stderr);
-        progress.on_warning(&format!("git reset warning: {}", stderr.trim()));
+        sink.on_warning(&format!("git reset warning: {}", stderr.trim()));
     }
 
     // Restore stashed changes
     let stash_conflict = if has_changes {
-        progress.on_step("Restoring uncommitted changes...");
+        sink.on_step("Restoring uncommitted changes...");
         if let Err(e) = git.stash_pop() {
-            progress.on_warning(&format!("Could not restore stashed changes: {e}"));
-            progress
-                .on_warning("Your changes are still in the stash. Run 'git stash pop' manually.");
+            sink.on_warning(&format!("Could not restore stashed changes: {e}"));
+            sink.on_warning("Your changes are still in the stash. Run 'git stash pop' manually.");
             true
         } else {
             false

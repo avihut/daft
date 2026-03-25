@@ -1,5 +1,5 @@
 use crate::{
-    core::{worktree::flow_adopt, OutputSink},
+    core::{worktree::flow_adopt, CommandBridge},
     executor::cli_presenter::CliPresenter,
     get_git_common_dir,
     git::should_show_gitoxide_notice,
@@ -152,9 +152,11 @@ fn run_adopt(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     if !params.dry_run {
         output.start_spinner("Converting to worktree layout...");
     }
+    let hooks_config = HooksConfig::default();
+    let executor = HookExecutor::new(hooks_config)?;
     let exec_result = {
-        let mut sink = OutputSink(output);
-        flow_adopt::execute(&params, &mut sink)
+        let mut bridge = CommandBridge::new(output, executor);
+        flow_adopt::execute(&params, &mut bridge)
     };
     output.finish_spinner();
     let result = exec_result?;

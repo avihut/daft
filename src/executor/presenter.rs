@@ -17,7 +17,10 @@ pub trait JobPresenter: Send + Sync {
     fn on_phase_start(&self, phase_name: &str);
 
     /// A job has started running.
-    fn on_job_start(&self, name: &str, description: Option<&str>);
+    ///
+    /// `command_preview` is the rendered shell command. When verbose mode is
+    /// enabled, implementations should display it below the job name.
+    fn on_job_start(&self, name: &str, description: Option<&str>, command_preview: Option<&str>);
 
     /// A running job produced an output line.
     fn on_job_output(&self, name: &str, line: &str);
@@ -59,7 +62,13 @@ impl NullPresenter {
 
 impl JobPresenter for NullPresenter {
     fn on_phase_start(&self, _phase_name: &str) {}
-    fn on_job_start(&self, _name: &str, _description: Option<&str>) {}
+    fn on_job_start(
+        &self,
+        _name: &str,
+        _description: Option<&str>,
+        _command_preview: Option<&str>,
+    ) {
+    }
     fn on_job_output(&self, _name: &str, _line: &str) {}
     fn on_job_success(&self, _name: &str, _duration: Duration) {}
     fn on_job_failure(&self, _name: &str, _duration: Duration) {}
@@ -99,8 +108,8 @@ mod tests {
     fn null_presenter_methods_are_no_ops() {
         let p = NullPresenter;
         p.on_phase_start("test");
-        p.on_job_start("job", Some("desc"));
-        p.on_job_start("job", None);
+        p.on_job_start("job", Some("desc"), None);
+        p.on_job_start("job", None, None);
         p.on_job_output("job", "line");
         p.on_job_success("job", Duration::from_secs(1));
         p.on_job_failure("job", Duration::from_secs(1));
@@ -127,7 +136,7 @@ mod tests {
     fn trait_object_from_null_presenter() {
         let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
         presenter.on_phase_start("phase");
-        presenter.on_job_start("job", None);
+        presenter.on_job_start("job", None, None);
         presenter.on_job_output("job", "output");
         presenter.on_job_success("job", Duration::from_secs(1));
         presenter.on_phase_complete(Duration::from_secs(2));
@@ -141,7 +150,7 @@ mod tests {
         let p = Arc::clone(&presenter);
 
         let handle = std::thread::spawn(move || {
-            p.on_job_start("threaded-job", Some("from another thread"));
+            p.on_job_start("threaded-job", Some("from another thread"), None);
             p.on_job_success("threaded-job", Duration::from_millis(100));
         });
 

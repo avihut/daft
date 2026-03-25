@@ -1,0 +1,57 @@
+name: Rename with path-tracked hooks
+description: Path-tracked hooks run teardown/setup when worktree is renamed
+
+repos:
+  - name: test-hooks-rename
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Hooks rename test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/old-name
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: mark-path
+              run: touch "$DAFT_WORKTREE_PATH/.path-marker"
+              tracks: [path]
+        worktree-pre-remove:
+          jobs:
+            - name: clean-marker
+              run: rm -f "$DAFT_WORKTREE_PATH/.path-marker"
+              tracks: [path]
+
+steps:
+  - name: Clone and checkout feature branch
+    run: |
+      git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_HOOKS_RENAME
+      cd $WORK_DIR/test-hooks-rename/main
+      git-worktree-checkout feature/old-name 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-hooks-rename/feature/old-name"
+
+  - name: Create marker file to simulate post-create hook state
+    run: touch "$WORK_DIR/test-hooks-rename/feature/old-name/.path-marker"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-hooks-rename/feature/old-name/.path-marker"
+
+  - name: Rename fires move hooks — marker recreated at new path
+    run: git-worktree-branch -m feature/old-name feature/new-name 2>&1
+    cwd: "$WORK_DIR/test-hooks-rename/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-hooks-rename/feature/new-name"
+      files_exist:
+        - "$WORK_DIR/test-hooks-rename/feature/new-name/.path-marker"
+      files_not_exist:
+        - "$WORK_DIR/test-hooks-rename/feature/old-name"

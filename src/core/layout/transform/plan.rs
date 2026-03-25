@@ -37,12 +37,14 @@ pub enum TransformOp {
     /// Move the default branch working tree from a subdirectory into the project
     /// root (bare/contained -> non-bare/sibling transition).
     CollapseIntoRoot {
+        branch: String,
         worktree_path: PathBuf,
         root_path: PathBuf,
     },
     /// Move the default branch working tree from the project root into a
     /// subdirectory (non-bare/sibling -> bare/contained transition).
     NestFromRoot {
+        branch: String,
         root_path: PathBuf,
         subdir_path: PathBuf,
     },
@@ -238,12 +240,14 @@ pub fn build_plan(
             if current_is_root && !target_is_root {
                 // Root -> subdirectory: nest
                 Some(TransformOp::NestFromRoot {
+                    branch: cw.branch.clone(),
                     root_path: cw.current_path.clone(),
                     subdir_path: cw.target_path.clone(),
                 })
             } else if !current_is_root && target_is_root {
                 // Subdirectory -> root: collapse
                 Some(TransformOp::CollapseIntoRoot {
+                    branch: cw.branch.clone(),
                     worktree_path: cw.current_path.clone(),
                     root_path: cw.target_path.clone(),
                 })

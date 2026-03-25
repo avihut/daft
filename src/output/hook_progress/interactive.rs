@@ -97,11 +97,16 @@ impl HookProgressRenderer {
         }
     }
 
-    pub fn start_job(&mut self, name: &str) {
-        self.start_job_with_description(name, None);
+    pub fn start_job(&mut self, name: &str, command_preview: Option<&str>) {
+        self.start_job_with_description(name, None, command_preview);
     }
 
-    pub fn start_job_with_description(&mut self, name: &str, description: Option<&str>) {
+    pub fn start_job_with_description(
+        &mut self,
+        name: &str,
+        description: Option<&str>,
+        command_preview: Option<&str>,
+    ) {
         let spinner = self.mp.add(ProgressBar::new_spinner());
         spinner.set_style(self.spinner_style.clone());
 
@@ -114,8 +119,9 @@ impl HookProgressRenderer {
         spinner.enable_steady_tick(Duration::from_millis(80));
 
         // Show description below the spinner if provided
+        let mut last_bar = spinner.clone();
         if let Some(desc) = description {
-            let desc_bar = self.mp.insert_after(&spinner, ProgressBar::new_spinner());
+            let desc_bar = self.mp.insert_after(&last_bar, ProgressBar::new_spinner());
             let desc_style =
                 ProgressStyle::with_template(&format!("{}  {{msg}}", self.pipe_str)).unwrap();
             desc_bar.set_style(desc_style);
@@ -125,6 +131,23 @@ impl HookProgressRenderer {
                 desc.to_string()
             };
             desc_bar.set_message(desc_msg);
+            last_bar = desc_bar;
+        }
+
+        // Show rendered command below the description/spinner when verbose
+        if self.config.verbose {
+            if let Some(cmd) = command_preview {
+                let cmd_bar = self.mp.insert_after(&last_bar, ProgressBar::new_spinner());
+                let cmd_style =
+                    ProgressStyle::with_template(&format!("{}  {{msg}}", self.pipe_str)).unwrap();
+                cmd_bar.set_style(cmd_style);
+                let cmd_msg = if self.use_color {
+                    format!("{DARK_GREY}{cmd}{}", styles::RESET)
+                } else {
+                    cmd.to_string()
+                };
+                cmd_bar.set_message(cmd_msg);
+            }
         }
 
         // Separator and tail bars are created lazily in update_job_output as output arrives.

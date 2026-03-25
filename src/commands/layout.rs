@@ -6,11 +6,11 @@ use crate::{
             resolver::{resolve_layout, DetectionResult, LayoutResolutionContext, LayoutSource},
             transform, BuiltinLayout, Layout, DEFAULT_LAYOUT,
         },
-        OutputSink,
+        CommandBridge,
     },
     get_current_worktree_path, get_git_common_dir,
     git::GitCommand,
-    hooks::{yaml_config_loader, TrustDatabase},
+    hooks::{yaml_config_loader, HookExecutor, HooksConfig, TrustDatabase},
     is_git_repository,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
@@ -91,6 +91,12 @@ struct TransformArgs {
     /// Relocate all non-conforming worktrees
     #[arg(long)]
     include_all: bool,
+    /// Operate quietly; suppress progress reporting
+    #[arg(short, long)]
+    quiet: bool,
+    /// Show detailed hook execution
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 #[derive(Args)]
@@ -120,7 +126,11 @@ pub fn run() -> Result<()> {
         Some(LayoutCommand::Show(show_args)) => cmd_show(&show_args, &mut output),
         None => cmd_show(&ShowArgs { path: None }, &mut output),
         Some(LayoutCommand::Transform(transform_args)) => {
-            cmd_transform(&transform_args, &mut output)
+            let mut transform_output = CliOutput::new(OutputConfig::new(
+                transform_args.quiet,
+                transform_args.verbose,
+            ));
+            cmd_transform(&transform_args, &mut transform_output)
         }
         Some(LayoutCommand::Default(default_args)) => cmd_default(&default_args, &mut output),
         Some(LayoutCommand::Reset(reset_args)) => cmd_reset(&reset_args, &mut output),
@@ -646,9 +656,21 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         target_layout.name
     ));
     output.start_spinner("Transforming layout...");
+    let exec_ctx = transform::ExecutionContext {
+        project_root: source.project_root.clone(),
+        git_dir: source.git_dir.clone(),
+        remote: settings.remote.clone(),
+        source_worktree: source.project_root.clone(),
+    };
+    let mut hooks_config = HooksConfig::default();
+    if args.verbose {
+        hooks_config.output.verbose = true;
+    }
+    let executor = HookExecutor::new(hooks_config.clone())?;
     let exec_result = {
-        let mut sink = OutputSink(output);
-        transform::execute_plan(&plan, &git, &mut sink)
+        let mut bridge =
+            CommandBridge::with_output_config(output, executor, hooks_config.output.clone());
+        transform::execute_plan(&plan, &git, &exec_ctx, &mut bridge)
     };
     output.finish_spinner();
     exec_result?;

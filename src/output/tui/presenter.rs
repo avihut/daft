@@ -81,7 +81,7 @@ impl JobPresenter for TuiPresenter {
         });
     }
 
-    fn on_job_start(&self, name: &str, _description: Option<&str>) {
+    fn on_job_start(&self, name: &str, _description: Option<&str>, _command_preview: Option<&str>) {
         let _ = self.sender.send(DagEvent::JobStarted {
             branch_name: self.branch_name.clone(),
             hook_type: self.hook_type,
@@ -261,7 +261,7 @@ mod tests {
         presenter.on_phase_start("worktree-pre-create");
 
         // Simulate a job failure.
-        presenter.on_job_start("build", Some("Build project"));
+        presenter.on_job_start("build", Some("Build project"), None);
         presenter.on_job_output("build", "error: compilation failed");
         presenter.on_job_failure("build", Duration::from_secs(1));
 
@@ -296,7 +296,7 @@ mod tests {
 
         presenter.on_phase_start("worktree-post-create");
 
-        presenter.on_job_start("install", None);
+        presenter.on_job_start("install", None, None);
         presenter.on_job_output("install", "fetching packages...");
         presenter.on_job_output("install", "error: network timeout");
         presenter.on_job_failure("install", Duration::from_secs(5));
@@ -334,7 +334,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let presenter = TuiPresenter::new(tx, "main", HookType::PostCreate);
 
-        presenter.on_job_start("build", Some("Build project"));
+        presenter.on_job_start("build", Some("Build project"), None);
 
         let event = rx.try_recv().expect("should receive JobStarted");
         match event {
@@ -429,7 +429,7 @@ mod tests {
         presenter.on_phase_start("worktree-post-create");
 
         // Job produces output but succeeds.
-        presenter.on_job_start("build", None);
+        presenter.on_job_start("build", None, None);
         presenter.on_job_output("build", "compiled 42 files");
         presenter.on_job_success("build", Duration::from_secs(1));
 
