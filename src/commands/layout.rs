@@ -6,11 +6,11 @@ use crate::{
             resolver::{resolve_layout, DetectionResult, LayoutResolutionContext, LayoutSource},
             transform, BuiltinLayout, Layout, DEFAULT_LAYOUT,
         },
-        OutputSink,
+        CommandBridge,
     },
     get_current_worktree_path, get_git_common_dir,
     git::GitCommand,
-    hooks::{yaml_config_loader, TrustDatabase},
+    hooks::{yaml_config_loader, HookExecutor, HooksConfig, TrustDatabase},
     is_git_repository,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
@@ -646,9 +646,17 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         target_layout.name
     ));
     output.start_spinner("Transforming layout...");
+    let exec_ctx = transform::ExecutionContext {
+        project_root: source.project_root.clone(),
+        git_dir: source.git_dir.clone(),
+        remote: settings.remote.clone(),
+        source_worktree: source.project_root.clone(),
+    };
+    let hooks_config = HooksConfig::default();
+    let executor = HookExecutor::new(hooks_config)?;
     let exec_result = {
-        let mut sink = OutputSink(output);
-        transform::execute_plan(&plan, &git, &mut sink)
+        let mut bridge = CommandBridge::new(output, executor);
+        transform::execute_plan(&plan, &git, &exec_ctx, &mut bridge)
     };
     output.finish_spinner();
     exec_result?;
