@@ -4,7 +4,8 @@
 //! environment variables passed to hooks during execution.
 
 use super::HookType;
-use std::collections::HashMap;
+use crate::hooks::tracking::TrackedAttribute;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Context information for hook execution.
@@ -51,6 +52,15 @@ pub struct HookContext {
 
     /// Reason for removal (for remove hooks).
     pub removal_reason: Option<RemovalReason>,
+
+    /// Whether this hook is executing as part of a move operation.
+    pub is_move: bool,
+    /// The worktree path before the move (set in all four move phases).
+    pub old_worktree_path: Option<PathBuf>,
+    /// The branch name before the move (set in all four move phases).
+    pub old_branch_name: Option<String>,
+    /// During move hooks, the set of changed attributes for job filtering.
+    pub changed_attributes: Option<HashSet<TrackedAttribute>>,
 }
 
 /// Reason why a worktree is being removed.
@@ -102,6 +112,10 @@ impl HookContext {
             repository_url: None,
             default_branch: None,
             removal_reason: None,
+            is_move: false,
+            old_worktree_path: None,
+            old_branch_name: None,
+            changed_attributes: None,
         }
     }
 
@@ -184,6 +198,17 @@ impl HookEnvironment {
         // Removal-specific variables
         if let Some(reason) = ctx.removal_reason {
             env.set("DAFT_REMOVAL_REASON", reason.as_str());
+        }
+
+        // Move-specific variables
+        if ctx.is_move {
+            env.set("DAFT_IS_MOVE", "true");
+            if let Some(ref old_path) = ctx.old_worktree_path {
+                env.set("DAFT_OLD_WORKTREE_PATH", old_path.display());
+            }
+            if let Some(ref old_branch) = ctx.old_branch_name {
+                env.set("DAFT_OLD_BRANCH_NAME", old_branch);
+            }
         }
 
         env
@@ -360,5 +385,65 @@ mod tests {
         assert_eq!(RemovalReason::RemoteDeleted.as_str(), "remote-deleted");
         assert_eq!(RemovalReason::Manual.as_str(), "manual");
         assert_eq!(RemovalReason::Ejecting.as_str(), "ejecting");
+    }
+
+    #[test]
+    fn test_move_env_vars_set() {
+        let ctx = HookContext {
+            hook_type: HookType::PostCreate,
+            command: "rename".to_string(),
+            project_root: PathBuf::from("/project"),
+            git_dir: PathBuf::from("/project/.git"),
+            remote: "origin".to_string(),
+            source_worktree: PathBuf::from("/project/old-wt"),
+            worktree_path: PathBuf::from("/project/new-wt"),
+            branch_name: "feat/new-name".to_string(),
+            is_new_branch: false,
+            base_branch: None,
+            repository_url: None,
+            default_branch: None,
+            removal_reason: None,
+            is_move: true,
+            old_worktree_path: Some(PathBuf::from("/project/old-wt")),
+            old_branch_name: Some("feat/old-name".to_string()),
+            changed_attributes: None,
+        };
+        let env = HookEnvironment::from_context(&ctx);
+        assert_eq!(env.vars.get("DAFT_IS_MOVE").unwrap(), "true");
+        assert_eq!(
+            env.vars.get("DAFT_OLD_WORKTREE_PATH").unwrap(),
+            "/project/old-wt"
+        );
+        assert_eq!(
+            env.vars.get("DAFT_OLD_BRANCH_NAME").unwrap(),
+            "feat/old-name"
+        );
+    }
+
+    #[test]
+    fn test_non_move_has_no_move_vars() {
+        let ctx = HookContext {
+            hook_type: HookType::PostCreate,
+            command: "checkout".to_string(),
+            project_root: PathBuf::from("/project"),
+            git_dir: PathBuf::from("/project/.git"),
+            remote: "origin".to_string(),
+            source_worktree: PathBuf::from("/project/src-wt"),
+            worktree_path: PathBuf::from("/project/new-wt"),
+            branch_name: "feat/new".to_string(),
+            is_new_branch: true,
+            base_branch: None,
+            repository_url: None,
+            default_branch: None,
+            removal_reason: None,
+            is_move: false,
+            old_worktree_path: None,
+            old_branch_name: None,
+            changed_attributes: None,
+        };
+        let env = HookEnvironment::from_context(&ctx);
+        assert!(!env.vars.contains_key("DAFT_IS_MOVE"));
+        assert!(!env.vars.contains_key("DAFT_OLD_WORKTREE_PATH"));
+        assert!(!env.vars.contains_key("DAFT_OLD_BRANCH_NAME"));
     }
 }
