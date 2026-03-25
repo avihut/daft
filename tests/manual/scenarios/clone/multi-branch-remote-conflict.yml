@@ -1,0 +1,17 @@
+name: Clone rejects --remote with multiple -b
+description:
+  Using --remote with multiple -b flags is not supported and should fail.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with --remote and multiple -b
+    run:
+      git-worktree-clone --layout contained --remote origin -b develop -b
+      feature/test-feature $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "--remote cannot be used with multiple -b"

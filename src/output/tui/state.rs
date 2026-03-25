@@ -126,6 +126,8 @@ pub struct WorktreeRow {
     pub hook_warned: bool,
     pub hook_failed: bool,
     pub hook_sub_rows: Vec<HookSubRow>,
+    /// Human-readable reason for a `FinalStatus::Failed` outcome, if available.
+    pub failure_reason: Option<String>,
 }
 
 impl TuiState {
@@ -151,6 +153,7 @@ impl TuiState {
                 hook_warned: false,
                 hook_failed: false,
                 hook_sub_rows: Vec::new(),
+                failure_reason: None,
             })
             .collect();
         worktrees.sort_by(|a, b| {
@@ -202,6 +205,7 @@ impl TuiState {
                     OperationPhase::Update => "updating",
                     OperationPhase::Rebase(_) => "rebasing",
                     OperationPhase::Push => "pushing",
+                    OperationPhase::Setup => "setting up",
                 };
                 // Auto-create row for newly discovered branches (e.g., gone branches
                 // found after fetch completes while TUI is already running).
@@ -221,6 +225,7 @@ impl TuiState {
                         hook_warned: false,
                         hook_failed: false,
                         hook_sub_rows: Vec::new(),
+                        failure_reason: None,
                     });
                 }
                 if let Some(row) = self.find_row_mut(branch_name) {
@@ -248,9 +253,21 @@ impl TuiState {
                     self.check_phase_completion(phase);
                 } else {
                     let final_status = Self::map_final_status(phase, *status, message);
+                    let failure_reason = if *status == TaskStatus::Failed {
+                        if let TaskMessage::Failed(reason) = message {
+                            Some(reason.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
                     if let Some(row) = self.find_row_mut(branch_name) {
                         row.prev_terminal_status = None;
                         row.status = WorktreeStatus::Done(final_status);
+                        if failure_reason.is_some() {
+                            row.failure_reason = failure_reason;
+                        }
                         if let Some(new_info) = updated_info {
                             row.info = *new_info.clone();
                         }
@@ -427,6 +444,7 @@ impl TuiState {
             OperationPhase::Update => "updating",
             OperationPhase::Rebase(_) => "rebasing",
             OperationPhase::Push => "pushing",
+            OperationPhase::Setup => "setting up",
         };
         let any_active = self.worktrees.iter().any(
             |w| matches!(&w.status, WorktreeStatus::Active(label) if label == phase_active_label),
@@ -478,6 +496,12 @@ impl TuiState {
                     _ => FinalStatus::Diverged,
                 },
                 OperationPhase::Fetch => FinalStatus::Updated,
+                OperationPhase::Setup => match message {
+                    TaskMessage::Created => FinalStatus::Updated,
+                    TaskMessage::BaseCreated => FinalStatus::Updated,
+                    TaskMessage::NotFound => FinalStatus::Skipped,
+                    _ => FinalStatus::Updated,
+                },
             },
             TaskStatus::PreconditionFailed => FinalStatus::Skipped,
             TaskStatus::Pending | TaskStatus::Running => FinalStatus::Failed,

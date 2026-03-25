@@ -42,11 +42,29 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push('\n');
     }
 
+    // Value completion for -b / --branch flag (clone only)
+    let has_branch_completions = command_name == "git-worktree-clone";
     // Value completion for --layout flag
     let has_layout = matches!(command_name, "git-worktree-clone" | "git-worktree-init");
+
+    // Emit the prev_word variable once if any prev-based completion is needed
+    if has_branch_completions || has_layout {
+        output.push_str("    local prev_word=\"${words[$((CURRENT-1))]}\"\n");
+    }
+
+    if has_branch_completions {
+        output.push_str("    # Static value completion for -b / --branch\n");
+        output.push_str(
+            "    if [[ \"$prev_word\" == \"-b\" || \"$prev_word\" == \"--branch\" ]]; then\n",
+        );
+        output.push_str("        compadd HEAD @\n");
+        output.push_str("        return\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
     if has_layout {
         output.push_str("    # Layout name completion for --layout\n");
-        output.push_str("    local prev_word=\"${words[$((CURRENT-1))]}\"\n");
         output.push_str("    if [[ \"$prev_word\" == \"--layout\" ]]; then\n");
         output.push_str("        local -a layouts\n");
         output.push_str("        layouts=(\"${(@f)$(daft __complete layout-value \"$curword\" 2>/dev/null | sed 's/\\t/:/')}\")\n");

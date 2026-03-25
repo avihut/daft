@@ -1,0 +1,22 @@
+name: Clone with multiple -b flags (sibling layout)
+description:
+  With sibling layout and multiple -b, default branch is implicitly checked out
+  in the base worktree.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with two branches (sibling layout)
+    run:
+      git-worktree-clone --layout sibling -b develop -b feature/test-feature
+      $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo"
+          branch: main
+      dirs_exist:
+        - "$WORK_DIR/test-repo.develop"
+        - "$WORK_DIR/test-repo.feature-test-feature"

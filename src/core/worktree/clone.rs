@@ -637,6 +637,36 @@ pub fn setup_wrapped_nonbare(
     }
 }
 
+/// Create a satellite worktree for an additional branch.
+///
+/// Used by multi-branch clone to create worktrees beyond the base.
+/// The caller must ensure CWD is `parent_dir` (the repo directory).
+pub fn create_satellite_worktree(
+    branch: &str,
+    worktree_path: &Path,
+    remote_name: &str,
+    checkout_upstream: bool,
+    use_gitoxide: bool,
+    progress: &mut dyn ProgressSink,
+) -> Result<PathBuf> {
+    progress.on_step(&format!("Creating worktree for '{}'", branch));
+
+    let git = GitCommand::new(false).with_gitoxide(use_gitoxide);
+
+    ensure_parent_dir(worktree_path)?;
+    git.worktree_add(worktree_path, branch)
+        .with_context(|| format!("Failed to create worktree for branch '{branch}'"))?;
+
+    // Set up upstream tracking
+    if checkout_upstream {
+        if let Err(e) = git.set_upstream(remote_name, branch) {
+            progress.on_warning(&format!("Could not set upstream for '{}': {e}", branch));
+        }
+    }
+
+    Ok(worktree_path.to_path_buf())
+}
+
 /// Set up remote tracking refs and upstream after worktree creation.
 fn setup_tracking(
     git: &GitCommand,

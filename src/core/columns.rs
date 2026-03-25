@@ -77,6 +77,16 @@ impl ListColumn {
         Self::list_defaults()
     }
 
+    pub fn clone_defaults() -> &'static [ListColumn] {
+        &[
+            ListColumn::Branch,
+            ListColumn::Path,
+            ListColumn::Base,
+            ListColumn::Age,
+            ListColumn::LastCommit,
+        ]
+    }
+
     /// Canonical display position (used to order columns in modifier mode).
     pub fn canonical_position(self) -> u8 {
         match self {
@@ -158,6 +168,7 @@ pub enum CommandKind {
     List,
     Sync,
     Prune,
+    Clone,
 }
 
 /// The resolved column list with mode information.
@@ -245,6 +256,7 @@ impl ColumnSelection {
         let defaults = match command {
             CommandKind::List => ListColumn::list_defaults(),
             CommandKind::Sync | CommandKind::Prune => ListColumn::tui_defaults(),
+            CommandKind::Clone => ListColumn::clone_defaults(),
         };
         let mut active: std::collections::HashSet<ListColumn> = defaults.iter().copied().collect();
 
@@ -292,7 +304,7 @@ impl ColumnSelection {
                 CommandKind::List => {
                     // Falls through to unknown column error via FromStr
                 }
-                CommandKind::Sync | CommandKind::Prune => {
+                CommandKind::Sync | CommandKind::Prune | CommandKind::Clone => {
                     return Err("'status' column cannot be controlled on this command\n  \
                          it is always shown as the first column"
                         .to_string());

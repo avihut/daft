@@ -1,0 +1,22 @@
+name: Clone with HEAD and @ tokens
+description: HEAD and @ resolve to the remote default branch in -b values.
+
+repos:
+  - name: test-repo-head
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with @ token
+    run:
+      git-worktree-clone --layout contained -b @ -b develop
+      $REMOTE_TEST_REPO_HEAD
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-head/main"
+        - "$WORK_DIR/test-repo-head/develop"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo-head/main"
+          branch: main
+        - dir: "$WORK_DIR/test-repo-head/develop"
+          branch: develop

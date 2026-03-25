@@ -84,7 +84,7 @@ impl GitCommand {
     pub fn set_upstream(&self, remote: &str, branch: &str) -> Result<()> {
         let upstream = format!("{remote}/{branch}");
         let output = Command::new("git")
-            .args(["branch", &format!("--set-upstream-to={upstream}")])
+            .args(["branch", &format!("--set-upstream-to={upstream}"), branch])
             .output()
             .context("Failed to execute git branch command")?;
 
@@ -442,5 +442,52 @@ impl GitCommand {
         String::from_utf8(output.stdout)
             .context("Failed to parse git remote get-url output")
             .map(|s| s.trim().to_string())
+    }
+
+    /// Validate which branches from a list exist on the remote.
+    /// Uses local refs when gitoxide is enabled (zero network), falls back to CLI.
+    pub fn validate_branches_exist(
+        &self,
+        remote_name: &str,
+        branches: &[String],
+    ) -> Result<Vec<(String, bool)>> {
+        if self.use_gitoxide {
+            if let Ok(repo) = self.gix_repo() {
+                return branches
+                    .iter()
+                    .map(|b| {
+                        oxide::validate_branch_in_remotes(&repo, remote_name, b)
+                            .map(|exists| (b.clone(), exists))
+                    })
+                    .collect();
+            }
+        }
+        branches
+            .iter()
+            .map(|b| {
+                self.ls_remote_branch_exists(remote_name, b)
+                    .map(|exists| (b.clone(), exists))
+            })
+            .collect()
+    }
+
+    /// List all branches on a remote using local refs.
+    /// Uses local refs when gitoxide is enabled (zero network), falls back to CLI.
+    pub fn list_remote_branches(&self, remote_name: &str) -> Result<Vec<String>> {
+        if self.use_gitoxide {
+            if let Ok(repo) = self.gix_repo() {
+                return oxide::list_remote_branches_local(&repo, remote_name);
+            }
+        }
+        let output = self.ls_remote_heads(remote_name, None)?;
+        Ok(output
+            .lines()
+            .filter_map(|line| {
+                line.split('\t')
+                    .nth(1)
+                    .and_then(|r| r.strip_prefix("refs/heads/"))
+                    .map(|s| s.to_string())
+            })
+            .collect())
     }
 }

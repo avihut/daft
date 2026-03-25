@@ -43,16 +43,17 @@ git worktree-clone [OPTIONS] <REPOSITORY_URL>
 
 | Option | Description | Default |
 |--------|-------------|----------|
-| `-b, --branch <BRANCH>` | Check out <branch> instead of the remote's default branch |  |
+| `-b, --branch <BRANCH>` | Branch to check out (repeatable; use HEAD or @ for default branch) |  |
 | `-n, --no-checkout` | Perform a bare clone only; do not create any worktree |  |
 | `-q, --quiet` | Operate quietly; suppress progress reporting |  |
-| `-v, --verbose` | Be verbose; show detailed progress |  |
+| `-v, --verbose` | Increase verbosity (-v for hook details, -vv for full sequential output) |  |
 | `-a, --all-branches` | Create a worktree for each remote branch, not just the default |  |
 | `--trust-hooks` | Trust the repository and allow hooks to run without prompting |  |
 | `--no-hooks` | Do not run any hooks from the repository |  |
 | `-r, --remote <REMOTE>` | Organize worktree under this remote folder (enables multi-remote mode) |  |
 | `--no-cd` | Do not change directory to the new worktree |  |
 | `--layout <LAYOUT>` | Worktree layout to use for this repository |  |
+| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,base,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit |  |
 | `-x, --exec <EXEC>` | Run a command in the worktree after setup completes (repeatable) |  |
 
 ## Global Options

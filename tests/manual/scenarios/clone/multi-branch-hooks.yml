@@ -1,0 +1,91 @@
+name: Multi-branch clone fires hooks for all worktrees
+description:
+  post-clone fires once for the clone operation. worktree-post-create fires for
+  every worktree created during clone, including the base worktree.
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+          - path: daft.yml
+            content: |
+              hooks:
+                post-clone:
+                  jobs:
+                    - name: clone-marker
+                      run: touch "$DAFT_WORKTREE_PATH/.clone-hook-ran"
+                worktree-post-create:
+                  jobs:
+                    - name: create-marker
+                      run: touch "$DAFT_WORKTREE_PATH/.create-hook-ran"
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+        files:
+          - path: dev.txt
+            content: "dev"
+          - path: daft.yml
+            content: |
+              hooks:
+                post-clone:
+                  jobs:
+                    - name: clone-marker
+                      run: touch "$DAFT_WORKTREE_PATH/.clone-hook-ran"
+                worktree-post-create:
+                  jobs:
+                    - name: create-marker
+                      run: touch "$DAFT_WORKTREE_PATH/.create-hook-ran"
+        commits:
+          - message: "Add dev"
+      - name: feature
+        from: main
+        files:
+          - path: feat.txt
+            content: "feat"
+          - path: daft.yml
+            content: |
+              hooks:
+                post-clone:
+                  jobs:
+                    - name: clone-marker
+                      run: touch "$DAFT_WORKTREE_PATH/.clone-hook-ran"
+                worktree-post-create:
+                  jobs:
+                    - name: create-marker
+                      run: touch "$DAFT_WORKTREE_PATH/.create-hook-ran"
+        commits:
+          - message: "Add feat"
+
+steps:
+  - name: Clone with multiple branches and trust hooks
+    run:
+      git-worktree-clone --layout contained --trust-hooks -b develop -b feature
+      $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+        - "$WORK_DIR/test-repo/feature"
+
+  - name: Verify post-clone hook fired for base worktree (develop)
+    run: "true"
+    expect:
+      files_exist:
+        - "$WORK_DIR/test-repo/develop/.clone-hook-ran"
+
+  - name: Verify worktree-post-create fired for base worktree (develop)
+    run: "true"
+    expect:
+      files_exist:
+        - "$WORK_DIR/test-repo/develop/.create-hook-ran"
+
+  - name: Verify worktree-post-create fired for satellite worktree (feature)
+    run: "true"
+    expect:
+      files_exist:
+        - "$WORK_DIR/test-repo/feature/.create-hook-ran"

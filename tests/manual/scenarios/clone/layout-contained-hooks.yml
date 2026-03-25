@@ -1,8 +1,8 @@
-name: Contained clone fires post-clone only
+name: Contained clone fires both hooks
 description:
-  For bare clones (contained layout), post-clone should fire but
-  worktree-post-create should NOT fire during clone itself (it fires separately
-  when worktrees are created via checkout).
+  For contained-layout clones, both post-clone and worktree-post-create should
+  fire. post-clone fires once for the clone operation, and worktree-post-create
+  fires for the worktree created during clone.
 
 repos:
   - name: test-repo
@@ -38,8 +38,8 @@ steps:
       files_exist:
         - "$WORK_DIR/test-repo/main/.clone-hook-ran"
 
-  - name: Verify worktree-post-create did not fire during clone
+  - name: Verify worktree-post-create fired during clone
     run: "true"
     expect:
-      files_not_exist:
+      files_exist:
         - "$WORK_DIR/test-repo/main/.create-hook-ran"

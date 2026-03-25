@@ -13,7 +13,7 @@ use crate::{
     git::GitCommand,
     hooks::{HookExecutor, HooksConfig},
     output::{
-        tui::{FinalStatus, TuiState, WorktreeStatus},
+        tui::{FinalStatus, WorktreeRow, WorktreeStatus},
         CliOutput, Output, OutputConfig,
     },
     settings::DaftSettings,
@@ -190,9 +190,8 @@ pub fn handle_post_tui_deferred(
 }
 
 /// Check if any TUI tasks failed and bail if so.
-pub fn check_tui_failures(final_state: &TuiState) -> anyhow::Result<()> {
-    let failed_count = final_state
-        .worktrees
+pub fn check_tui_failures(rows: &[WorktreeRow]) -> anyhow::Result<()> {
+    let failed_count = rows
         .iter()
         .filter(|w| matches!(&w.status, WorktreeStatus::Done(FinalStatus::Failed)))
         .count();

@@ -4,7 +4,7 @@
 .SH NAME
 daft\-clone \- Clone a repository into a worktree\-based directory structure
 .SH SYNOPSIS
-\fBdaft\-clone\fR [\fB\-b\fR|\fB\-\-branch\fR] [\fB\-n\fR|\fB\-\-no\-checkout\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-a\fR|\fB\-\-all\-branches\fR] [\fB\-\-trust\-hooks\fR] [\fB\-\-no\-hooks\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-\-layout\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPOSITORY_URL\fR> 
+\fBdaft\-clone\fR [\fB\-b\fR|\fB\-\-branch\fR] [\fB\-n\fR|\fB\-\-no\-checkout\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-a\fR|\fB\-\-all\-branches\fR] [\fB\-\-trust\-hooks\fR] [\fB\-\-no\-hooks\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-\-layout\fR] [\fB\-\-columns\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPOSITORY_URL\fR> 
 .SH DESCRIPTION
 .PP
 Clones a repository into a directory structure optimized for worktree\-based
@@ -23,7 +23,7 @@ trusted, lifecycle hooks are executed. See git\-daft(1) for hook management.
 .SH OPTIONS
 .TP
 \fB\-b\fR, \fB\-\-branch\fR \fI<BRANCH>\fR
-Check out <branch> instead of the remote\*(Aqs default branch
+Branch to check out (repeatable; use HEAD or @ for default branch)
 .TP
 \fB\-n\fR, \fB\-\-no\-checkout\fR
 Perform a bare clone only; do not create any worktree
@@ -32,7 +32,7 @@ Perform a bare clone only; do not create any worktree
 Operate quietly; suppress progress reporting
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
-Be verbose; show detailed progress
+Increase verbosity (\-v for hook details, \-vv for full sequential output)
 .TP
 \fB\-a\fR, \fB\-\-all\-branches\fR
 Create a worktree for each remote branch, not just the default
@@ -53,6 +53,9 @@ Do not change directory to the new worktree
 Worktree layout to use for this repository.
 
 Built\-in layouts: contained, sibling, nested, centralized. Can also be a custom layout name from ~/.config/daft/config.toml or an inline template string.
+.TP
+\fB\-\-columns\fR \fI<COLUMNS>\fR
+Columns to display (comma\-separated). Replace: branch,base,age. Modify defaults: +col,\-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last\-commit
 .TP
 \fB\-x\fR, \fB\-\-exec\fR \fI<EXEC>\fR
 Run a command in the worktree after setup completes (repeatable)

@@ -32,6 +32,8 @@ pub enum TaskId {
     Rebase(String),
     /// Push a worktree branch to its remote.
     Push(String),
+    /// Set up a worktree during clone.
+    Setup(String),
 }
 
 /// Execution status of a single task.
@@ -87,6 +89,12 @@ pub enum TaskMessage {
     NoPushUpstream,
     /// Task failed with error message.
     Failed(String),
+    /// Worktree was created during clone.
+    Created,
+    /// Base worktree was created during clone.
+    BaseCreated,
+    /// Branch was not found on remote.
+    NotFound,
 }
 
 /// A high-level operation phase shown in the operation header.
@@ -97,6 +105,7 @@ pub enum OperationPhase {
     Update,
     Rebase(String),
     Push,
+    Setup,
 }
 
 impl OperationPhase {
@@ -108,6 +117,7 @@ impl OperationPhase {
             Self::Update => "Updating worktrees".into(),
             Self::Rebase(branch) => format!("Rebasing onto {branch}"),
             Self::Push => "Pushing to remote".into(),
+            Self::Setup => "Setting up worktrees".to_string(),
         }
     }
 }

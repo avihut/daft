@@ -10,6 +10,7 @@
 //! directly.
 
 pub mod branch_delete;
+pub mod branch_source;
 pub mod carry;
 pub mod checkout;
 pub mod checkout_branch;
