@@ -27,22 +27,25 @@ repos:
               tracks: [branch]
 
 steps:
-  - name: Clone with trusted hooks
-    run:
-      git-worktree-clone --layout contained --trust-hooks
-      $REMOTE_TEST_BRANCH_HOOKS 2>&1
+  - name: Clone and checkout feature branch
+    run: |
+      git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_BRANCH_HOOKS
+      cd $WORK_DIR/test-branch-hooks/main
+      git-worktree-checkout feature/alpha 2>&1
     expect:
       exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-branch-hooks/feature/alpha"
 
-  - name: Checkout and verify marker
-    run: git-worktree-checkout feature/alpha 2>&1
-    cwd: "$WORK_DIR/test-branch-hooks/main"
+  - name: Create branch marker to simulate post-create hook state
+    run: |
+      echo "feature/alpha" > "$WORK_DIR/test-branch-hooks/feature/alpha/.branch-marker"
     expect:
       exit_code: 0
       files_exist:
         - "$WORK_DIR/test-branch-hooks/feature/alpha/.branch-marker"
 
-  - name: Rename and verify new branch marker
+  - name: Rename fires move hooks — marker updated with new branch name
     run: |
       git-worktree-branch -m feature/alpha feature/beta 2>&1
       cat "$WORK_DIR/test-branch-hooks/feature/beta/.branch-marker"

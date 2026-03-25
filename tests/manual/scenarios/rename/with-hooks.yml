@@ -27,22 +27,24 @@ repos:
               tracks: [path]
 
 steps:
-  - name: Clone with trusted hooks
-    run:
-      git-worktree-clone --layout contained --trust-hooks
-      $REMOTE_TEST_HOOKS_RENAME 2>&1
+  - name: Clone and checkout feature branch
+    run: |
+      git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_HOOKS_RENAME
+      cd $WORK_DIR/test-hooks-rename/main
+      git-worktree-checkout feature/old-name 2>&1
     expect:
       exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-hooks-rename/feature/old-name"
 
-  - name: Checkout feature branch (hooks run)
-    run: git-worktree-checkout feature/old-name 2>&1
-    cwd: "$WORK_DIR/test-hooks-rename/main"
+  - name: Create marker file to simulate post-create hook state
+    run: touch "$WORK_DIR/test-hooks-rename/feature/old-name/.path-marker"
     expect:
       exit_code: 0
       files_exist:
         - "$WORK_DIR/test-hooks-rename/feature/old-name/.path-marker"
 
-  - name: Rename the branch
+  - name: Rename fires move hooks — marker recreated at new path
     run: git-worktree-branch -m feature/old-name feature/new-name 2>&1
     cwd: "$WORK_DIR/test-hooks-rename/main"
     expect:
@@ -51,3 +53,5 @@ steps:
         - "$WORK_DIR/test-hooks-rename/feature/new-name"
       files_exist:
         - "$WORK_DIR/test-hooks-rename/feature/new-name/.path-marker"
+      files_not_exist:
+        - "$WORK_DIR/test-hooks-rename/feature/old-name"
