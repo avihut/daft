@@ -174,6 +174,14 @@ pub fn execute_yaml_hook_with_rc(
         }
     }
 
+    // Apply tracking filter when changed_attributes are present (move hooks)
+    if let Some(ref changed) = ctx.changed_attributes {
+        jobs = filter_tracked_jobs(&jobs, changed);
+        if jobs.is_empty() {
+            return Ok(HookResult::skipped("No jobs match changed attributes"));
+        }
+    }
+
     // Sort by priority if set
     jobs.sort_by_key(|j| j.priority.unwrap_or(0));
 

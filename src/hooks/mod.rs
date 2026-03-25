@@ -43,6 +43,7 @@ pub mod conditions;
 mod environment;
 mod executor;
 pub mod job_adapter;
+pub mod move_hooks;
 pub mod template;
 pub mod tracking;
 mod trust;
