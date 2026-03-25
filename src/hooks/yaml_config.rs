@@ -56,6 +56,13 @@ pub struct YamlConfig {
     /// config in repos.json.
     pub layout: Option<String>,
 
+    /// Paths to share across worktrees via symlinks.
+    ///
+    /// Each entry is a path relative to the worktree root (e.g., ".env",
+    /// ".idea", ".vscode/settings.json"). Daft centralizes these files in
+    /// `.git/.daft/shared/` and creates symlinks in each worktree.
+    pub shared: Option<Vec<String>>,
+
     /// Hook definitions, keyed by hook name.
     pub hooks: HashMap<String, HookDef>,
 }
@@ -975,5 +982,34 @@ hooks:
         );
         // bun-install has no tracks
         assert!(jobs[2].tracks.is_none());
+    }
+
+    #[test]
+    fn test_shared_files_parsing() {
+        let yaml = r#"
+shared:
+  - .env
+  - .idea
+  - .vscode/settings.json
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let shared = config.shared.unwrap();
+        assert_eq!(shared.len(), 3);
+        assert_eq!(shared[0], ".env");
+        assert_eq!(shared[1], ".idea");
+        assert_eq!(shared[2], ".vscode/settings.json");
+    }
+
+    #[test]
+    fn test_shared_files_empty_when_missing() {
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: test
+        run: echo hi
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.shared.is_none());
     }
 }
