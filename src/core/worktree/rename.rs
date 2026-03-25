@@ -6,10 +6,13 @@
 use crate::core::multi_remote::path::{
     calculate_worktree_path, extract_remote_from_path, resolve_remote_for_branch,
 };
-use crate::core::ProgressSink;
+use crate::core::{HookRunner, ProgressSink};
 use crate::git::GitCommand;
+use crate::hooks::move_hooks::{run_setup_hooks, run_teardown_hooks, MoveHookParams};
+use crate::hooks::tracking::TrackedAttribute;
 use crate::{get_git_common_dir, get_project_root};
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Input parameters for the rename operation.
@@ -67,10 +70,13 @@ struct WorktreeEntry {
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /// Execute the rename operation.
-pub fn execute(params: &RenameParams, sink: &mut dyn ProgressSink) -> Result<RenameResult> {
+pub fn execute(
+    params: &RenameParams,
+    sink: &mut (impl ProgressSink + HookRunner),
+) -> Result<RenameResult> {
     let git = GitCommand::new(params.is_quiet).with_gitoxide(params.use_gitoxide);
     let project_root = get_project_root()?;
-    let _git_dir = get_git_common_dir()?;
+    let git_dir = get_git_common_dir()?;
 
     // Step 1: Resolve source to branch name + worktree path.
     let worktree_entries = parse_worktree_list(&git)?;
@@ -192,6 +198,27 @@ pub fn execute(params: &RenameParams, sink: &mut dyn ProgressSink) -> Result<Ren
             )
         })?;
 
+    // Step 5b: Run teardown hooks (pre-remove + post-remove) with old identity.
+    let mut changed_attributes = HashSet::new();
+    if old_path != new_path {
+        changed_attributes.insert(TrackedAttribute::Path);
+    }
+    changed_attributes.insert(TrackedAttribute::Branch);
+
+    let move_params = MoveHookParams {
+        old_worktree_path: old_path.clone(),
+        new_worktree_path: new_path.clone(),
+        old_branch_name: old_branch.clone(),
+        new_branch_name: params.new_branch.clone(),
+        project_root: project_root.clone(),
+        git_dir: git_dir.clone(),
+        remote: params.remote_name.clone(),
+        source_worktree: old_path.clone(),
+        command: "rename".to_string(),
+        changed_attributes,
+    };
+    run_teardown_hooks(&move_params, sink);
+
     // Step 6: Create parent dirs if needed, then move the worktree.
     if let Some(parent) = new_path.parent() {
         if !parent.exists() {
@@ -212,6 +239,9 @@ pub fn execute(params: &RenameParams, sink: &mut dyn ProgressSink) -> Result<Ren
             new_path.display()
         )
     })?;
+
+    // Step 6b: Run setup hooks (pre-create + post-create) with new identity.
+    run_setup_hooks(&move_params, sink);
 
     // Step 7: Remote operations (if applicable and not --no-remote).
     let mut remote_renamed = false;

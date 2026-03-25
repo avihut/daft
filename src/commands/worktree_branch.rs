@@ -1,7 +1,7 @@
 use crate::{
     core::{
         worktree::{branch_delete, rename},
-        CommandBridge, OutputSink,
+        CommandBridge,
     },
     git::should_show_gitoxide_notice,
     hooks::{HookExecutor, HooksConfig},
@@ -432,12 +432,15 @@ fn run_rename_inner(
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
+    let hooks_config = HooksConfig::default();
+    let executor = HookExecutor::new(hooks_config)?;
+
     if !params.dry_run {
         output.start_spinner("Renaming branch...");
     }
     let exec_result = {
-        let mut sink = OutputSink(output);
-        rename::execute(&params, &mut sink)
+        let mut bridge = CommandBridge::new(output, executor);
+        rename::execute(&params, &mut bridge)
     };
     output.finish_spinner();
     let result = exec_result?;

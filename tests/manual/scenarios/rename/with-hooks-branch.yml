@@ -1,0 +1,52 @@
+name: Rename with branch-tracked hooks
+description: Branch-tracked hooks fire teardown and setup on rename
+
+repos:
+  - name: test-branch-hooks
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Branch hooks test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/alpha
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: record-branch
+              run: echo "{branch}" > "{worktree_path}/.branch-marker"
+              tracks: [branch]
+        worktree-pre-remove:
+          jobs:
+            - name: clean-branch
+              run: rm -f "{worktree_path}/.branch-marker"
+              tracks: [branch]
+
+steps:
+  - name: Clone and trust hooks
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_BRANCH_HOOKS
+      cd $WORK_DIR/test-branch-hooks/main
+      daft hooks trust --force
+    expect:
+      exit_code: 0
+
+  - name: Checkout and verify marker
+    run: git-worktree-checkout feature/alpha 2>&1
+    cwd: "$WORK_DIR/test-branch-hooks/main"
+    expect:
+      exit_code: 0
+
+  - name: Rename and verify new branch marker
+    run: |
+      git-worktree-branch -m feature/alpha feature/beta 2>&1
+      cat "$WORK_DIR/test-branch-hooks/feature/beta/.branch-marker"
+    cwd: "$WORK_DIR/test-branch-hooks/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature/beta"
