@@ -60,9 +60,9 @@ impl JobPresenter for CliPresenter {
         r.print_header(phase_name);
     }
 
-    fn on_job_start(&self, name: &str, description: Option<&str>) {
+    fn on_job_start(&self, name: &str, description: Option<&str>, command_preview: Option<&str>) {
         let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.start_job_with_description(name, description);
+        r.start_job_with_description(name, description, command_preview);
     }
 
     fn on_job_output(&self, name: &str, line: &str) {
@@ -137,7 +137,7 @@ mod tests {
         let presenter: Arc<dyn JobPresenter> = CliPresenter::from_renderer(renderer);
 
         presenter.on_phase_start("post-clone");
-        presenter.on_job_start("install", Some("Install dependencies"));
+        presenter.on_job_start("install", Some("Install dependencies"), None);
         presenter.on_job_output("install", "fetching packages...");
         presenter.on_job_success("install", Duration::from_secs(2));
         presenter.on_phase_complete(Duration::from_secs(3));
@@ -154,7 +154,7 @@ mod tests {
         let renderer = HookRenderer::new_hidden(&config);
         let presenter = CliPresenter::from_renderer(renderer);
 
-        presenter.on_job_start("build", None);
+        presenter.on_job_start("build", None, None);
         presenter.on_job_failure("build", Duration::from_secs(1));
 
         let results = presenter.take_results();
@@ -168,7 +168,7 @@ mod tests {
         let renderer = HookRenderer::new_hidden(&config);
         let presenter = CliPresenter::from_renderer(renderer);
 
-        presenter.on_job_start("lint", None);
+        presenter.on_job_start("lint", None, None);
         presenter.on_job_skipped("lint", "no files changed", Duration::from_millis(10), false);
 
         let results = presenter.take_results();
@@ -182,7 +182,7 @@ mod tests {
         let renderer = HookRenderer::new_hidden(&config);
         let presenter = CliPresenter::from_renderer(renderer);
 
-        presenter.on_job_start("a", None);
+        presenter.on_job_start("a", None, None);
         presenter.on_job_success("a", Duration::from_secs(1));
 
         let first = presenter.take_results();
@@ -247,7 +247,7 @@ mod tests {
         let p = Arc::clone(&presenter);
 
         let handle = std::thread::spawn(move || {
-            p.on_job_start("threaded", None);
+            p.on_job_start("threaded", None, None);
             p.on_job_success("threaded", Duration::from_millis(50));
         });
 

@@ -64,7 +64,7 @@ fn run_sequential(
     let mut results = Vec::with_capacity(jobs.len());
 
     for (i, job) in jobs.iter().enumerate() {
-        presenter.on_job_start(&job.name, job.description.as_deref());
+        presenter.on_job_start(&job.name, job.description.as_deref(), Some(&job.command));
         let start = Instant::now();
 
         let cr = execute_single_job(job, presenter)?;
@@ -159,7 +159,7 @@ fn run_dag_execution(
                 return NodeStatus::Failed;
             };
 
-            presenter.on_job_start(name, job.description.as_deref());
+            presenter.on_job_start(name, job.description.as_deref(), Some(&job.command));
             let start = Instant::now();
 
             let cr = execute_single_job(job, presenter);
@@ -219,7 +219,7 @@ fn run_dag_sequential_exec(
             return NodeStatus::Failed;
         };
 
-        presenter.on_job_start(name, job.description.as_deref());
+        presenter.on_job_start(name, job.description.as_deref(), Some(&job.command));
         let start = Instant::now();
 
         let cr = execute_single_job(job, presenter);
@@ -431,7 +431,12 @@ mod tests {
                 .push(format!("phase_start:{phase_name}"));
         }
 
-        fn on_job_start(&self, name: &str, description: Option<&str>) {
+        fn on_job_start(
+            &self,
+            name: &str,
+            description: Option<&str>,
+            _command_preview: Option<&str>,
+        ) {
             let desc = description.unwrap_or("none");
             self.events
                 .lock()

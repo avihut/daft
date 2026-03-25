@@ -52,7 +52,7 @@ impl HookRenderer {
         if std::io::stderr().is_terminal() {
             HookRenderer::Progress(Box::new(HookProgressRenderer::new(config)))
         } else {
-            HookRenderer::Plain(PlainHookRenderer::new())
+            HookRenderer::Plain(PlainHookRenderer::with_verbose(config.verbose))
         }
     }
 
@@ -70,15 +70,24 @@ impl HookRenderer {
 
     pub fn start_job(&mut self, name: &str) {
         match self {
-            HookRenderer::Progress(r) => r.start_job(name),
-            HookRenderer::Plain(r) => r.start_job(name),
+            HookRenderer::Progress(r) => r.start_job(name, None),
+            HookRenderer::Plain(r) => r.start_job(name, None),
         }
     }
 
-    pub fn start_job_with_description(&mut self, name: &str, description: Option<&str>) {
+    pub fn start_job_with_description(
+        &mut self,
+        name: &str,
+        description: Option<&str>,
+        command_preview: Option<&str>,
+    ) {
         match self {
-            HookRenderer::Progress(r) => r.start_job_with_description(name, description),
-            HookRenderer::Plain(r) => r.start_job_with_description(name, description),
+            HookRenderer::Progress(r) => {
+                r.start_job_with_description(name, description, command_preview);
+            }
+            HookRenderer::Plain(r) => {
+                r.start_job_with_description(name, description, command_preview);
+            }
         }
     }
 
@@ -154,7 +163,7 @@ mod tests {
     fn test_start_and_finish_job() {
         let config = HookOutputConfig::default();
         let mut renderer = HookProgressRenderer::new_hidden(&config);
-        renderer.start_job("test-job");
+        renderer.start_job("test-job", None);
         renderer.finish_job_success("test-job", Duration::from_secs(2));
         let jobs = renderer.take_finished_jobs();
         assert_eq!(jobs.len(), 1);
@@ -168,7 +177,7 @@ mod tests {
             ..Default::default()
         };
         let mut renderer = HookProgressRenderer::new_hidden(&config);
-        renderer.start_job("test-job");
+        renderer.start_job("test-job", None);
 
         for i in 0..10 {
             renderer.update_job_output("test-job", &format!("line {i}"));
@@ -187,7 +196,7 @@ mod tests {
             ..Default::default()
         };
         let mut renderer = HookProgressRenderer::new_hidden(&config);
-        renderer.start_job("test-job");
+        renderer.start_job("test-job", None);
         renderer.update_job_output("test-job", "should not show");
         renderer.finish_job_success("test-job", Duration::from_secs(1));
     }
@@ -196,7 +205,7 @@ mod tests {
     fn test_finish_job_failure() {
         let config = HookOutputConfig::default();
         let mut renderer = HookProgressRenderer::new_hidden(&config);
-        renderer.start_job("failing-job");
+        renderer.start_job("failing-job", None);
         renderer.update_job_output("failing-job", "error output");
         renderer.finish_job_failure("failing-job", Duration::from_secs(3));
         let jobs = renderer.take_finished_jobs();
@@ -252,7 +261,7 @@ mod tests {
     #[test]
     fn test_plain_renderer_lifecycle() {
         let mut renderer = PlainHookRenderer::new();
-        renderer.start_job("test-job");
+        renderer.start_job("test-job", None);
         renderer.update_job_output("test-job", "line 1");
         renderer.update_job_output("test-job", "line 2");
         renderer.finish_job_success("test-job", Duration::from_secs(2));
@@ -263,7 +272,7 @@ mod tests {
     #[test]
     fn test_plain_renderer_failure() {
         let mut renderer = PlainHookRenderer::new();
-        renderer.start_job("fail-job");
+        renderer.start_job("fail-job", None);
         renderer.finish_job_failure("fail-job", Duration::from_secs(3));
         let jobs = renderer.take_finished_jobs();
         assert_eq!(jobs.len(), 1);
@@ -274,9 +283,9 @@ mod tests {
     fn test_summary_tracking() {
         let config = HookOutputConfig::default();
         let mut renderer = HookProgressRenderer::new_hidden(&config);
-        renderer.start_job("job-a");
+        renderer.start_job("job-a", None);
         renderer.finish_job_success("job-a", Duration::from_millis(150));
-        renderer.start_job("job-b");
+        renderer.start_job("job-b", None);
         renderer.finish_job_failure("job-b", Duration::from_secs(2));
 
         let jobs = renderer.take_finished_jobs();
@@ -291,7 +300,7 @@ mod tests {
     fn test_take_finished_jobs() {
         let config = HookOutputConfig::default();
         let mut renderer = HookProgressRenderer::new_hidden(&config);
-        renderer.start_job("job-a");
+        renderer.start_job("job-a", None);
         renderer.finish_job_success("job-a", Duration::from_millis(100));
 
         let jobs = renderer.take_finished_jobs();
@@ -313,7 +322,7 @@ mod tests {
     fn test_print_summary() {
         let config = HookOutputConfig::default();
         let mut renderer = HookProgressRenderer::new_hidden(&config);
-        renderer.start_job("job-a");
+        renderer.start_job("job-a", None);
         renderer.finish_job_success("job-a", Duration::from_millis(150));
         // Just verify it doesn't panic
         renderer.print_summary(Duration::from_secs(1));
@@ -365,7 +374,7 @@ mod tests {
             ..Default::default()
         };
         let mut renderer = HookProgressRenderer::new_hidden(&config);
-        renderer.start_job("job");
+        renderer.start_job("job", None);
         // No output sent — tail line count must be 0
         assert_eq!(renderer.get_tail_line_count("job"), 0);
         renderer.finish_job_success("job", Duration::from_secs(1));
@@ -379,7 +388,7 @@ mod tests {
             ..Default::default()
         };
         let mut renderer = HookProgressRenderer::new_hidden(&config);
-        renderer.start_job("job");
+        renderer.start_job("job", None);
 
         for i in 1..=6 {
             renderer.update_job_output("job", &format!("line {i}"));
@@ -401,7 +410,7 @@ mod tests {
             ..Default::default()
         };
         let mut renderer = HookProgressRenderer::new_hidden(&config);
-        renderer.start_job("job");
+        renderer.start_job("job", None);
 
         for i in 0..10 {
             renderer.update_job_output("job", &format!("line {i}"));
@@ -423,7 +432,7 @@ mod tests {
             ..Default::default()
         };
         let mut renderer = HookProgressRenderer::new_hidden(&config);
-        renderer.start_job("silent-job");
+        renderer.start_job("silent-job", None);
         // finish without any output
         renderer.finish_job_success("silent-job", Duration::from_secs(1));
         let jobs = renderer.take_finished_jobs();
