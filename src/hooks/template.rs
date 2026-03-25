@@ -46,6 +46,16 @@ pub fn substitute(command: &str, ctx: &HookContext, job_name: Option<&str>) -> S
         result = result.replace("{default_branch}", branch);
     }
 
+    // Move-specific templates
+    let old_path = ctx
+        .old_worktree_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let old_branch = ctx.old_branch_name.as_deref().unwrap_or_default();
+    result = result.replace("{old_worktree_path}", &old_path);
+    result = result.replace("{old_branch}", old_branch);
+
     result
 }
 
@@ -111,5 +121,64 @@ mod tests {
         let ctx = make_ctx();
         let result = substitute("git diff {base_branch}", &ctx, None);
         assert_eq!(result, "git diff main");
+    }
+
+    #[test]
+    fn test_old_template_vars_during_move() {
+        use std::path::PathBuf;
+        let ctx = HookContext {
+            hook_type: HookType::PostCreate,
+            command: "rename".to_string(),
+            project_root: PathBuf::from("/project"),
+            git_dir: PathBuf::from("/project/.git"),
+            remote: "origin".to_string(),
+            source_worktree: PathBuf::from("/project/old-wt"),
+            worktree_path: PathBuf::from("/project/new-wt"),
+            branch_name: "feat/new".to_string(),
+            is_new_branch: false,
+            base_branch: None,
+            repository_url: None,
+            default_branch: None,
+            removal_reason: None,
+            is_move: true,
+            old_worktree_path: Some(PathBuf::from("/project/old-wt")),
+            old_branch_name: Some("feat/old".to_string()),
+            changed_attributes: None,
+        };
+        let result = substitute(
+            "from {old_worktree_path} to {worktree_path} branch {old_branch}",
+            &ctx,
+            None,
+        );
+        assert_eq!(
+            result,
+            "from /project/old-wt to /project/new-wt branch feat/old"
+        );
+    }
+
+    #[test]
+    fn test_old_template_vars_empty_when_not_move() {
+        use std::path::PathBuf;
+        let ctx = HookContext {
+            hook_type: HookType::PostCreate,
+            command: "checkout".to_string(),
+            project_root: PathBuf::from("/project"),
+            git_dir: PathBuf::from("/project/.git"),
+            remote: "origin".to_string(),
+            source_worktree: PathBuf::from("/project/src"),
+            worktree_path: PathBuf::from("/project/wt"),
+            branch_name: "feat/x".to_string(),
+            is_new_branch: true,
+            base_branch: None,
+            repository_url: None,
+            default_branch: None,
+            removal_reason: None,
+            is_move: false,
+            old_worktree_path: None,
+            old_branch_name: None,
+            changed_attributes: None,
+        };
+        let result = substitute("old={old_worktree_path} branch={old_branch}", &ctx, None);
+        assert_eq!(result, "old= branch=");
     }
 }
