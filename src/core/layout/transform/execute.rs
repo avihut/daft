@@ -62,9 +62,10 @@ pub fn execute_plan(
     for (i, op) in plan.ops.iter().enumerate() {
         sink.on_step(&format!("[{}/{}] {}", i + 1, total, describe_op(op)));
 
-        // Build move hook params for worktree moves (used for teardown + setup)
-        let move_params = if let TransformOp::MoveWorktree { branch, from, to } = op {
-            Some(MoveHookParams {
+        // Build move hook params for any op that changes a worktree's path.
+        // This covers MoveWorktree, CollapseIntoRoot, and NestFromRoot.
+        let move_params = match op {
+            TransformOp::MoveWorktree { branch, from, to } => Some(MoveHookParams {
                 old_worktree_path: from.clone(),
                 new_worktree_path: to.clone(),
                 old_branch_name: branch.clone(),
@@ -75,9 +76,40 @@ pub fn execute_plan(
                 source_worktree: ctx.source_worktree.clone(),
                 command: "layout-transform".to_string(),
                 changed_attributes: HashSet::from([TrackedAttribute::Path]),
-            })
-        } else {
-            None
+            }),
+            TransformOp::CollapseIntoRoot {
+                branch,
+                worktree_path,
+                root_path,
+            } => Some(MoveHookParams {
+                old_worktree_path: worktree_path.clone(),
+                new_worktree_path: root_path.clone(),
+                old_branch_name: branch.clone(),
+                new_branch_name: branch.clone(),
+                project_root: ctx.project_root.clone(),
+                git_dir: ctx.git_dir.clone(),
+                remote: ctx.remote.clone(),
+                source_worktree: ctx.source_worktree.clone(),
+                command: "layout-transform".to_string(),
+                changed_attributes: HashSet::from([TrackedAttribute::Path]),
+            }),
+            TransformOp::NestFromRoot {
+                branch,
+                root_path,
+                subdir_path,
+            } => Some(MoveHookParams {
+                old_worktree_path: root_path.clone(),
+                new_worktree_path: subdir_path.clone(),
+                old_branch_name: branch.clone(),
+                new_branch_name: branch.clone(),
+                project_root: ctx.project_root.clone(),
+                git_dir: ctx.git_dir.clone(),
+                remote: ctx.remote.clone(),
+                source_worktree: ctx.source_worktree.clone(),
+                command: "layout-transform".to_string(),
+                changed_attributes: HashSet::from([TrackedAttribute::Path]),
+            }),
+            _ => None,
         };
 
         // Fire teardown hooks before a worktree move
@@ -156,11 +188,13 @@ fn execute_op(op: &TransformOp, git: &GitCommand, progress: &mut dyn ProgressSin
         TransformOp::CollapseIntoRoot {
             worktree_path,
             root_path,
+            ..
         } => exec_collapse_into_root(worktree_path, root_path),
 
         TransformOp::NestFromRoot {
             root_path,
             subdir_path,
+            ..
         } => exec_nest_from_root(root_path, subdir_path),
 
         TransformOp::InitWorktreeIndex { path } => exec_init_worktree_index(path, progress),
@@ -611,17 +645,21 @@ fn reverse_op(op: &TransformOp) -> Option<TransformOp> {
         TransformOp::SetBare(bare) => Some(TransformOp::SetBare(!bare)),
 
         TransformOp::CollapseIntoRoot {
+            branch,
             worktree_path,
             root_path,
         } => Some(TransformOp::NestFromRoot {
+            branch: branch.clone(),
             root_path: root_path.clone(),
             subdir_path: worktree_path.clone(),
         }),
 
         TransformOp::NestFromRoot {
+            branch,
             root_path,
             subdir_path,
         } => Some(TransformOp::CollapseIntoRoot {
+            branch: branch.clone(),
             worktree_path: subdir_path.clone(),
             root_path: root_path.clone(),
         }),
@@ -715,6 +753,7 @@ pub fn describe_op(op: &TransformOp) -> String {
         TransformOp::CollapseIntoRoot {
             worktree_path,
             root_path,
+            ..
         } => {
             format!(
                 "Collapse {} into {}",
@@ -725,6 +764,7 @@ pub fn describe_op(op: &TransformOp) -> String {
         TransformOp::NestFromRoot {
             root_path,
             subdir_path,
+            ..
         } => {
             format!(
                 "Nest {} into {}",
