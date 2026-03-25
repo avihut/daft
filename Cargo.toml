@@ -85,11 +85,12 @@ serde_yaml = "0.9"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 termimad = "0.34"
 version-migrate = "0.18"
-gix = { version = "0.80", default-features = false, features = [
+gix = { version = "0.81", default-features = false, features = [
     "blocking-network-client",
     "blocking-http-transport-reqwest-rust-tls",
     "status",
     "revparse-regex",
+    "sha1",
 ] }
 globset = "0.4.18"
 indicatif = "0.18"
@@ -97,11 +98,11 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm"]
 crossterm = "0.29"
 tabled = { version = "0.20", default-features = false, features = ["std", "ansi"] }
 terminal_size = "0.4"
-toml = "0.8"
+toml = "1.1"
 pathdiff = "0.2.3"
 ctrlc = "3.5.2"
 console = "0.16.3"
-dialoguer = "0.11"
+dialoguer = "0.12"
 
 # pager is Unix-only (uses fork/pipes)
 [target.'cfg(unix)'.dependencies]
