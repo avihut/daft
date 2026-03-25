@@ -19,6 +19,7 @@ repos:
           jobs:
             - name: mark-path
               run: echo "{worktree_path}" > "{worktree_path}/.path-marker"
+              tracks: [path]
         worktree-pre-remove:
           jobs:
             - name: clean-marker

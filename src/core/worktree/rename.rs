@@ -185,20 +185,8 @@ pub fn execute(
 
     let mut warnings = Vec::new();
 
-    // Step 5: Rename the local branch.
-    sink.on_step(&format!(
-        "Renaming branch '{}' to '{}'...",
-        old_branch, params.new_branch
-    ));
-    git.branch_rename(&old_branch, &params.new_branch)
-        .with_context(|| {
-            format!(
-                "Failed to rename branch '{}' to '{}'",
-                old_branch, params.new_branch
-            )
-        })?;
-
-    // Step 5b: Run teardown hooks (pre-remove + post-remove) with old identity.
+    // Step 5: Run teardown hooks (pre-remove + post-remove) with old identity.
+    // Must run before branch rename so old git ref still exists.
     let mut changed_attributes = HashSet::new();
     if old_path != new_path {
         changed_attributes.insert(TrackedAttribute::Path);
@@ -219,7 +207,20 @@ pub fn execute(
     };
     run_teardown_hooks(&move_params, sink);
 
-    // Step 6: Create parent dirs if needed, then move the worktree.
+    // Step 6: Rename the local branch.
+    sink.on_step(&format!(
+        "Renaming branch '{}' to '{}'...",
+        old_branch, params.new_branch
+    ));
+    git.branch_rename(&old_branch, &params.new_branch)
+        .with_context(|| {
+            format!(
+                "Failed to rename branch '{}' to '{}'",
+                old_branch, params.new_branch
+            )
+        })?;
+
+    // Step 7: Create parent dirs if needed, then move the worktree.
     if let Some(parent) = new_path.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent)

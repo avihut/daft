@@ -40,6 +40,8 @@ steps:
     cwd: "$WORK_DIR/test-branch-hooks/main"
     expect:
       exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-branch-hooks/feature/alpha/.branch-marker"
 
   - name: Rename and verify new branch marker
     run: |
