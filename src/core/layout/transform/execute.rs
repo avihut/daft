@@ -62,9 +62,9 @@ pub fn execute_plan(
     for (i, op) in plan.ops.iter().enumerate() {
         sink.on_step(&format!("[{}/{}] {}", i + 1, total, describe_op(op)));
 
-        // Fire teardown hooks before a worktree move
-        if let TransformOp::MoveWorktree { branch, from, to } = op {
-            let move_params = MoveHookParams {
+        // Build move hook params for worktree moves (used for teardown + setup)
+        let move_params = if let TransformOp::MoveWorktree { branch, from, to } = op {
+            Some(MoveHookParams {
                 old_worktree_path: from.clone(),
                 new_worktree_path: to.clone(),
                 old_branch_name: branch.clone(),
@@ -75,12 +75,23 @@ pub fn execute_plan(
                 source_worktree: ctx.source_worktree.clone(),
                 command: "layout-transform".to_string(),
                 changed_attributes: HashSet::from([TrackedAttribute::Path]),
-            };
-            run_teardown_hooks(&move_params, sink);
+            })
+        } else {
+            None
+        };
+
+        // Fire teardown hooks before a worktree move
+        if let Some(ref params) = move_params {
+            run_teardown_hooks(params, sink);
         }
 
         if let Err(e) = execute_op(op, git, sink) {
             sink.on_warning(&format!("Operation failed: {e:#}"));
+            // Note: rollback does not fire inverse move hooks. Hook-managed
+            // state (e.g., direnv, mise trust) may be inconsistent after
+            // rollback. This is intentional: hooks are best-effort and
+            // non-transactional, consistent with how daft handles hook
+            // failures elsewhere.
             sink.on_warning("Attempting rollback of completed operations...");
 
             if let Err(rb_err) = rollback(&rollback_stack, git, sink) {
@@ -96,20 +107,8 @@ pub fn execute_plan(
         }
 
         // Fire setup hooks after a successful worktree move
-        if let TransformOp::MoveWorktree { branch, from, to } = op {
-            let move_params = MoveHookParams {
-                old_worktree_path: from.clone(),
-                new_worktree_path: to.clone(),
-                old_branch_name: branch.clone(),
-                new_branch_name: branch.clone(),
-                project_root: ctx.project_root.clone(),
-                git_dir: ctx.git_dir.clone(),
-                remote: ctx.remote.clone(),
-                source_worktree: ctx.source_worktree.clone(),
-                command: "layout-transform".to_string(),
-                changed_attributes: HashSet::from([TrackedAttribute::Path]),
-            };
-            run_setup_hooks(&move_params, sink);
+        if let Some(ref params) = move_params {
+            run_setup_hooks(params, sink);
         }
 
         if let Some(rev) = reverse_op(op) {
