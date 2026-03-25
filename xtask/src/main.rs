@@ -31,6 +31,7 @@ const COMMANDS: &[&str] = &[
     "daft-doctor",
     "daft-layout",
     "daft-release-notes",
+    "daft-shared",
 ];
 
 /// A daft verb command that maps to an existing git-worktree-* command for man page generation
@@ -149,6 +150,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "daft-doctor" => Some(daft::commands::doctor::Args::command()),
         "daft-layout" => Some(daft::commands::layout::LayoutArgs::command()),
         "daft-release-notes" => Some(daft::commands::release_notes::Args::command()),
+        "daft-shared" => Some(daft::commands::shared::Args::command()),
         "daft-remove" => Some(daft::commands::worktree_branch::RemoveArgs::command()),
         "daft-rename" => Some(daft::commands::worktree_branch::RenameArgs::command()),
         "daft-go" => Some(daft::commands::checkout::GoArgs::command()),
