@@ -12,9 +12,11 @@ use super::template;
 use super::yaml_config::{GroupDef, HookDef, JobDef};
 use super::yaml_config_loader::get_effective_jobs;
 use crate::executor::presenter::JobPresenter;
+use crate::hooks::tracking::{effective_tracks, TrackedAttribute};
 use crate::output::Output;
 use crate::settings::HookOutputConfig;
 use anyhow::Result;
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -238,6 +240,51 @@ fn job_results_to_hook_result(results: &[crate::executor::JobResult]) -> Result<
         )),
         None => Ok(HookResult::success()),
     }
+}
+
+/// Filter jobs to those whose effective tracking set intersects with the
+/// changed attributes, plus any jobs they depend on via `needs`.
+pub fn filter_tracked_jobs(jobs: &[JobDef], changed: &HashSet<TrackedAttribute>) -> Vec<JobDef> {
+    // 1. Find directly tracked jobs
+    let mut selected_names: HashSet<String> = HashSet::new();
+    for job in jobs {
+        let tracks = effective_tracks(job);
+        if !tracks.is_disjoint(changed) {
+            if let Some(ref name) = job.name {
+                selected_names.insert(name.clone());
+            }
+        }
+    }
+
+    // 2. Pull in needs dependencies (transitive)
+    let mut made_progress = true;
+    while made_progress {
+        made_progress = false;
+        for job in jobs {
+            if let Some(ref name) = job.name {
+                if selected_names.contains(name) {
+                    if let Some(ref needs) = job.needs {
+                        for dep in needs {
+                            if selected_names.insert(dep.clone()) {
+                                made_progress = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Return selected jobs in original order
+    jobs.iter()
+        .filter(|job| {
+            job.name
+                .as_ref()
+                .map(|n| selected_names.contains(n))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect()
 }
 
 /// Check if a job should be silently skipped due to platform mismatch.
@@ -955,5 +1002,81 @@ mod tests {
         .unwrap();
 
         assert!(result.success);
+    }
+}
+
+#[cfg(test)]
+mod tracking_filter_tests {
+    use super::*;
+    use crate::hooks::tracking::TrackedAttribute;
+    use crate::hooks::yaml_config::{JobDef, RunCommand};
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_filter_jobs_by_changed_path() {
+        let jobs = vec![
+            JobDef {
+                name: Some("path-job".to_string()),
+                run: Some(RunCommand::Simple("mise trust".to_string())),
+                tracks: Some(vec![TrackedAttribute::Path]),
+                ..Default::default()
+            },
+            JobDef {
+                name: Some("branch-job".to_string()),
+                run: Some(RunCommand::Simple("docker up".to_string())),
+                tracks: Some(vec![TrackedAttribute::Branch]),
+                ..Default::default()
+            },
+            JobDef {
+                name: Some("untracked".to_string()),
+                run: Some(RunCommand::Simple("bun install".to_string())),
+                ..Default::default()
+            },
+        ];
+        let changed = HashSet::from([TrackedAttribute::Path]);
+        let filtered = filter_tracked_jobs(&jobs, &changed);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name.as_deref(), Some("path-job"));
+    }
+
+    #[test]
+    fn test_filter_includes_implicit_tracking() {
+        let jobs = vec![JobDef {
+            name: Some("implicit-path".to_string()),
+            run: Some(RunCommand::Simple(
+                "direnv allow {worktree_path}".to_string(),
+            )),
+            ..Default::default()
+        }];
+        let changed = HashSet::from([TrackedAttribute::Path]);
+        let filtered = filter_tracked_jobs(&jobs, &changed);
+        assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn test_filter_pulls_in_needs_dependencies() {
+        let jobs = vec![
+            JobDef {
+                name: Some("dep".to_string()),
+                run: Some(RunCommand::Simple("mise install".to_string())),
+                ..Default::default()
+            },
+            JobDef {
+                name: Some("tracked".to_string()),
+                run: Some(RunCommand::Simple("mise trust".to_string())),
+                tracks: Some(vec![TrackedAttribute::Path]),
+                needs: Some(vec!["dep".to_string()]),
+                ..Default::default()
+            },
+        ];
+        let changed = HashSet::from([TrackedAttribute::Path]);
+        let filtered = filter_tracked_jobs(&jobs, &changed);
+        assert_eq!(filtered.len(), 2);
+        let names: Vec<_> = filtered
+            .iter()
+            .map(|j| j.name.as_deref().unwrap())
+            .collect();
+        assert!(names.contains(&"dep"));
+        assert!(names.contains(&"tracked"));
     }
 }
