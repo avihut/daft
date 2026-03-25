@@ -349,6 +349,12 @@ _daft() {
         return
     fi
 
+    # shared: complete subcommands
+    if (( CURRENT == 3 )) && [[ "$words[2]" == "shared" ]]; then
+        compadd add link materialize remove status sync
+        return
+    fi
+
     # verb aliases: delegate to underlying command completions
     if (( CURRENT >= 3 )); then
         case "$words[2]" in
@@ -426,7 +432,7 @@ _daft() {
         if [[ "$curword" == -* ]]; then
             compadd -- --version -V --help -h
         else
-            compadd hooks shell-init setup multi-remote release-notes doctor layout \
+            compadd hooks shell-init setup multi-remote release-notes doctor layout shared \
                     clone init go start carry update list prune rename sync remove adopt eject
         fi
         return

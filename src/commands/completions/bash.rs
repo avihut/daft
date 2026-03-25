@@ -261,6 +261,12 @@ _daft() {
         return 0
     fi
 
+    # shared: complete subcommands
+    if [[ $cword -eq 2 && "${words[1]}" == "shared" ]]; then
+        COMPREPLY=( $(compgen -W "add link materialize remove status sync" -- "$cur") )
+        return 0
+    fi
+
     # verb aliases: delegate to underlying command completions
     if [[ $cword -ge 2 ]]; then
         case "${words[1]}" in
@@ -338,7 +344,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout clone init go start carry update list prune rename sync remove adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout shared clone init go start carry update list prune rename sync remove adopt eject" -- "$cur") )
         fi
         return 0
     fi

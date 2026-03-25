@@ -245,6 +245,7 @@ complete -c daft -n '__fish_use_subcommand' -a 'adopt' -d 'Convert repo to workt
 complete -c daft -n '__fish_use_subcommand' -a 'sync' -d 'Synchronize worktrees with remote'
 complete -c daft -n '__fish_use_subcommand' -a 'list' -d 'List worktrees with status'
 complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to traditional layout'
+complete -c daft -n '__fish_use_subcommand' -a 'shared' -d 'Manage shared files across worktrees'
 complete -c daft -n '__fish_seen_subcommand_from go' -f -a "(daft __complete daft-go '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from start' -f -a "(daft __complete daft-start '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from carry update' -f -a "(daft __complete git-worktree-checkout '' 2>/dev/null)"
@@ -280,5 +281,7 @@ complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcomma
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from prompt deny' -s f -l force -d 'Do not ask for confirmation'
 # hooks migrate: flags
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from migrate' -l dry-run -d 'Preview renames without making changes'
+# shared: subcommands
+complete -c daft -n '__fish_seen_subcommand_from shared; and not __fish_seen_subcommand_from add link materialize remove status sync' -f -a 'add link materialize remove status sync'
 complete -c git-daft -w daft
 "#;

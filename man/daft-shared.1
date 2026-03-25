@@ -1,0 +1,46 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH daft-shared 1  "daft-shared 1.4.0" 
+.SH NAME
+daft\-shared \- Manage shared files across worktrees
+.SH SYNOPSIS
+\fBdaft\-shared\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+.PP
+Centralize untracked configuration files (.env, .idea/, .vscode/, etc.)
+so they are shared across worktrees via symlinks.
+.PP
+Files are stored in .git/.daft/shared/ and symlinked into each worktree.
+Use \*(Aqmaterialize\*(Aq to make a worktree\-local copy, and \*(Aqlink\*(Aq to rejoin
+the shared version.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH SUBCOMMANDS
+.TP
+daft\-shared\-add(1)
+Collect file/dir from current worktree into shared storage
+.TP
+daft\-shared\-remove(1)
+Stop sharing a file (materialize everywhere, then remove)
+.TP
+daft\-shared\-materialize(1)
+Replace symlink with a local copy in current worktree
+.TP
+daft\-shared\-link(1)
+Replace local copy with symlink to shared version
+.TP
+daft\-shared\-status(1)
+Show shared files and per\-worktree state
+.TP
+daft\-shared\-sync(1)
+Ensure all worktrees have symlinks for declared shared files
+.TP
+daft\-shared\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH VERSION
+v1.4.0
