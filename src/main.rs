@@ -113,6 +113,7 @@ fn main() -> Result<()> {
                     "hooks" => commands::hooks::run(),
                     "layout" => commands::layout::run(),
                     "multi-remote" => commands::multi_remote::run(),
+                    "shared" => commands::shared::run(),
                     "release-notes" => commands::release_notes::run(),
                     "setup" => {
                         // Check for setup subcommands
@@ -151,6 +152,7 @@ fn main() -> Result<()> {
                     "worktree-flow-eject" => commands::flow_eject::run(),
                     "worktree-list" => commands::list::run(),
                     "worktree-sync" => commands::sync::run(),
+                    "worktree-shared" => commands::shared::run(),
                     _ => daft::suggest::handle_unknown_subcommand(
                         label,
                         args[1].as_str(),

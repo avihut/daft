@@ -21,6 +21,7 @@ pub mod multi_remote;
 pub mod prune;
 pub mod release_notes;
 pub mod setup;
+pub mod shared;
 pub mod shell_init;
 pub mod shortcuts;
 pub mod sync;
