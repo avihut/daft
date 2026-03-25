@@ -44,6 +44,7 @@ mod environment;
 mod executor;
 pub mod job_adapter;
 pub mod template;
+pub mod tracking;
 mod trust;
 mod trust_dto;
 pub mod yaml_config;

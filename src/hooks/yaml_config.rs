@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::tracking::TrackedAttribute;
+
 /// Known hook names that are recognized by the system.
 pub const KNOWN_HOOK_NAMES: &[&str] = &[
     "post-clone",
@@ -264,6 +266,10 @@ pub struct JobDef {
 
     /// Nested group of jobs.
     pub group: Option<GroupDef>,
+
+    /// Worktree attributes this job tracks.
+    /// When a tracked attribute changes, the job is re-run with teardown/setup semantics.
+    pub tracks: Option<Vec<TrackedAttribute>>,
 }
 
 /// Legacy command definition (alias for JobDef).
@@ -939,5 +945,35 @@ hooks: {}
             config.layout,
             Some("../.worktrees/{{ repo }}/{{ branch | sanitize }}".into())
         );
+    }
+
+    #[test]
+    fn test_tracks_field_deserializes() {
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: mise-trust
+        run: mise trust
+        tracks: [path]
+      - name: docker-up
+        run: ./scripts/docker-up.sh
+        tracks: [path, branch]
+      - name: bun-install
+        run: bun install
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let hook = config.hooks.get("worktree-post-create").unwrap();
+        let jobs = hook.jobs.as_ref().unwrap();
+
+        // mise-trust tracks path
+        assert_eq!(jobs[0].tracks.as_ref().unwrap(), &[TrackedAttribute::Path]);
+        // docker-up tracks both
+        assert_eq!(
+            jobs[1].tracks.as_ref().unwrap(),
+            &[TrackedAttribute::Path, TrackedAttribute::Branch]
+        );
+        // bun-install has no tracks
+        assert!(jobs[2].tracks.is_none());
     }
 }
