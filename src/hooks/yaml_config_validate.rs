@@ -727,4 +727,33 @@ mod tests {
         let result = validate_config(&config).unwrap();
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn test_invalid_tracks_value_rejected() {
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: bad-job
+        run: echo hello
+        tracks: [path, invalid]
+"#;
+        // serde should reject "invalid" since TrackedAttribute only accepts path/branch
+        assert!(serde_yaml::from_str::<YamlConfig>(yaml).is_err());
+    }
+
+    #[test]
+    fn test_valid_tracks_accepted() {
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: good-job
+        run: echo hello
+        tracks: [path, branch]
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let result = validate_config(&config).unwrap();
+        assert!(result.errors.is_empty());
+    }
 }
