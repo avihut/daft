@@ -1,0 +1,62 @@
+name: Shared remove
+description:
+  daft shared remove materializes everywhere then deletes shared storage
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and setup
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      echo "VAL=1" > .env
+      daft shared add .env
+    expect:
+      exit_code: 0
+
+  - name: Create second worktree
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Remove .env from sharing
+    run: daft shared remove .env
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify main has a real file not a symlink
+    run: test ! -L .env
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify main .env content
+    run: "true"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/.env"
+          content: "VAL=1"
+
+  - name: Verify develop has a real file not a symlink
+    run: test ! -L .env
+    cwd: "$WORK_DIR/test-repo/develop"
+    expect:
+      exit_code: 0
+
+  - name: Verify develop .env content
+    run: "true"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/develop/.env"
+          content: "VAL=1"
+
+  - name: Verify shared storage is gone
+    run: test ! -e $WORK_DIR/test-repo/.git/.daft/shared/.env
+    expect:
+      exit_code: 0

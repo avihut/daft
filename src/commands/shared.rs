@@ -93,7 +93,11 @@ struct StatusArgs;
 struct SyncArgs;
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(crate::get_clap_args("daft-shared"));
+    // Skip argv[0] (binary name). When invoked as `daft shared <sub> <args>`,
+    // env::args() is ["daft", "shared", ...] and skip(1) gives ["shared", ...]
+    // so clap sees "shared" as the program name and parses the rest correctly.
+    let args_raw: Vec<String> = std::env::args().skip(1).collect();
+    let args = Args::parse_from(args_raw);
     let mut output = CliOutput::default_output();
 
     match args.command {
