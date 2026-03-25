@@ -18,20 +18,19 @@ repos:
         worktree-post-create:
           jobs:
             - name: record-branch
-              run: echo "{branch}" > "{worktree_path}/.branch-marker"
+              run: echo "$DAFT_BRANCH_NAME" > "$DAFT_WORKTREE_PATH/.branch-marker"
               tracks: [branch]
         worktree-pre-remove:
           jobs:
             - name: clean-branch
-              run: rm -f "{worktree_path}/.branch-marker"
+              run: rm -f "$DAFT_WORKTREE_PATH/.branch-marker"
               tracks: [branch]
 
 steps:
-  - name: Clone and trust hooks
-    run: |
-      git-worktree-clone --layout contained $REMOTE_TEST_BRANCH_HOOKS
-      cd $WORK_DIR/test-branch-hooks/main
-      daft hooks trust --force
+  - name: Clone with trusted hooks
+    run:
+      git-worktree-clone --layout contained --trust-hooks
+      $REMOTE_TEST_BRANCH_HOOKS 2>&1
     expect:
       exit_code: 0
 

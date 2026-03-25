@@ -18,20 +18,19 @@ repos:
         worktree-post-create:
           jobs:
             - name: mark-path
-              run: echo "{worktree_path}" > "{worktree_path}/.path-marker"
+              run: touch "$DAFT_WORKTREE_PATH/.path-marker"
               tracks: [path]
         worktree-pre-remove:
           jobs:
             - name: clean-marker
-              run: rm -f "{worktree_path}/.path-marker"
+              run: rm -f "$DAFT_WORKTREE_PATH/.path-marker"
               tracks: [path]
 
 steps:
-  - name: Clone and trust hooks
-    run: |
-      git-worktree-clone --layout contained $REMOTE_TEST_HOOKS_RENAME
-      cd $WORK_DIR/test-hooks-rename/main
-      daft hooks trust --force
+  - name: Clone with trusted hooks
+    run:
+      git-worktree-clone --layout contained --trust-hooks
+      $REMOTE_TEST_HOOKS_RENAME 2>&1
     expect:
       exit_code: 0
 
