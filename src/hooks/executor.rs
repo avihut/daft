@@ -115,6 +115,31 @@ impl HookResult {
 /// Callback for prompting the user for permission.
 pub type PromptCallback = Box<dyn Fn(&str) -> bool>;
 
+/// Get the worktree path to read hooks from based on hook type.
+///
+/// For moves, `PostRemove` reads hooks from the new worktree (which already
+/// exists at this point) rather than the source worktree (which is gone).
+pub(crate) fn get_hook_source_worktree(ctx: &HookContext) -> PathBuf {
+    match ctx.hook_type {
+        // Pre-create: target doesn't exist yet, use source
+        HookType::PreCreate => ctx.source_worktree.clone(),
+        // Post-create/clone: target now exists, use it
+        HookType::PostCreate | HookType::PostClone => ctx.worktree_path.clone(),
+        // Pre-remove: target still exists, use it
+        HookType::PreRemove => ctx.worktree_path.clone(),
+        // Post-remove: target is gone, use source (current worktree).
+        // Exception: during a move, the new worktree already exists at
+        // worktree_path, so use that instead.
+        HookType::PostRemove => {
+            if ctx.is_move {
+                ctx.worktree_path.clone()
+            } else {
+                ctx.source_worktree.clone()
+            }
+        }
+    }
+}
+
 /// Hook executor that manages hook discovery and execution.
 pub struct HookExecutor {
     config: HooksConfig,
@@ -197,7 +222,7 @@ impl HookExecutor {
         }
 
         // Determine the worktree to read hooks from
-        let hook_source_worktree = self.get_hook_source_worktree(ctx);
+        let hook_source_worktree = get_hook_source_worktree(ctx);
 
         // Try YAML config first
         match self.try_yaml_hook(ctx, &hook_source_worktree, hook_config, output, &presenter) {
@@ -434,20 +459,6 @@ impl HookExecutor {
         }
 
         Ok(HookResult::success())
-    }
-
-    /// Get the worktree path to read hooks from based on hook type.
-    fn get_hook_source_worktree(&self, ctx: &HookContext) -> PathBuf {
-        match ctx.hook_type {
-            // Pre-create: target doesn't exist yet, use source
-            HookType::PreCreate => ctx.source_worktree.clone(),
-            // Post-create/clone: target now exists, use it
-            HookType::PostCreate | HookType::PostClone => ctx.worktree_path.clone(),
-            // Pre-remove: target still exists, use it
-            HookType::PreRemove => ctx.worktree_path.clone(),
-            // Post-remove: target is gone, use source (current worktree)
-            HookType::PostRemove => ctx.source_worktree.clone(),
-        }
     }
 
     /// Prompt the user for permission to run hooks.
@@ -804,5 +815,46 @@ mod tests {
         let result = executor.execute(&ctx, &mut output, presenter).unwrap();
         assert!(result.success);
         assert!(!result.skipped);
+    }
+
+    #[test]
+    fn test_get_hook_source_worktree_post_remove_non_move_uses_source() {
+        let ctx = HookContext::new(
+            HookType::PostRemove,
+            "rename",
+            PathBuf::from("/project"),
+            PathBuf::from("/project/.git"),
+            "origin",
+            PathBuf::from("/project/source"),
+            PathBuf::from("/project/old-wt"),
+            "feat/old",
+        );
+        // Non-move: PostRemove should use source_worktree
+        assert_eq!(
+            get_hook_source_worktree(&ctx),
+            PathBuf::from("/project/source")
+        );
+    }
+
+    #[test]
+    fn test_get_hook_source_worktree_post_remove_move_uses_worktree_path() {
+        let ctx = HookContext {
+            is_move: true,
+            ..HookContext::new(
+                HookType::PostRemove,
+                "rename",
+                PathBuf::from("/project"),
+                PathBuf::from("/project/.git"),
+                "origin",
+                PathBuf::from("/project/source"),
+                PathBuf::from("/project/new-wt"),
+                "feat/new",
+            )
+        };
+        // Move: PostRemove should use worktree_path (the new location)
+        assert_eq!(
+            get_hook_source_worktree(&ctx),
+            PathBuf::from("/project/new-wt")
+        );
     }
 }

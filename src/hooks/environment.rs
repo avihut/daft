@@ -241,12 +241,12 @@ impl HookEnvironment {
     ///
     /// For most hooks, this is the target worktree path.
     /// For pre-create hooks, the target worktree doesn't exist yet,
-    /// so we use the source worktree.
+    /// so we use the source worktree — unless this is a move operation,
+    /// in which case the target already exists.
     pub fn working_directory<'a>(&self, ctx: &'a HookContext) -> &'a Path {
-        if ctx.hook_type == HookType::PreCreate {
-            &ctx.source_worktree
-        } else {
-            &ctx.worktree_path
+        match ctx.hook_type {
+            HookType::PreCreate if !ctx.is_move => &ctx.source_worktree,
+            _ => &ctx.worktree_path,
         }
     }
 }
@@ -385,6 +385,43 @@ mod tests {
         assert_eq!(RemovalReason::RemoteDeleted.as_str(), "remote-deleted");
         assert_eq!(RemovalReason::Manual.as_str(), "manual");
         assert_eq!(RemovalReason::Ejecting.as_str(), "ejecting");
+    }
+
+    #[test]
+    fn test_working_directory_pre_create_move_uses_worktree_path() {
+        // During a move pre-create, the target already exists — use worktree_path.
+        let ctx = HookContext {
+            is_move: true,
+            ..HookContext::new(
+                HookType::PreCreate,
+                "rename",
+                "/project",
+                "/project/.git",
+                "origin",
+                "/project/source",
+                "/project/new-wt",
+                "feat/new",
+            )
+        };
+        let env = HookEnvironment::from_context(&ctx);
+        assert_eq!(env.working_directory(&ctx), Path::new("/project/new-wt"));
+    }
+
+    #[test]
+    fn test_working_directory_pre_create_non_move_uses_source() {
+        // Regular pre-create: target doesn't exist yet, use source_worktree.
+        let ctx = HookContext::new(
+            HookType::PreCreate,
+            "checkout",
+            "/project",
+            "/project/.git",
+            "origin",
+            "/project/source",
+            "/project/new-wt",
+            "feat/new",
+        );
+        let env = HookEnvironment::from_context(&ctx);
+        assert_eq!(env.working_directory(&ctx), Path::new("/project/source"));
     }
 
     #[test]
