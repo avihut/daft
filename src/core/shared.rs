@@ -395,17 +395,28 @@ pub fn is_git_tracked(worktree_root: &Path, rel_path: &str) -> Result<bool> {
 
 // ── Lifecycle integration ─────────────────────────────────────────────────
 
+/// Message type for shared file linking progress.
+pub enum LinkMessage<'a> {
+    /// Informational message (shown in default mode).
+    Info(&'a str),
+    /// Verbose step detail (shown in verbose mode only).
+    Step(&'a str),
+    /// Warning (always shown).
+    Warning(&'a str),
+}
+
 /// Link all declared shared files in a worktree. Called during worktree creation,
 /// before PostCreate hooks.
 ///
 /// - Reads `shared:` from daft.yml found via `project_root`.
 /// - Creates symlinks for each path that exists in shared storage.
-/// - Warns (via `warn_fn`) about conflicts. Never errors fatally.
+/// - Reports progress and warnings via `on_message`.
+/// - Never errors fatally.
 pub fn link_shared_files_on_create(
     worktree_path: &Path,
     git_common_dir: &Path,
     project_root: &Path,
-    warn_fn: &mut dyn FnMut(&str),
+    on_message: &mut dyn FnMut(LinkMessage),
 ) {
     let shared_paths = match read_shared_paths(project_root) {
         Ok(paths) => paths,
@@ -417,6 +428,7 @@ pub fn link_shared_files_on_create(
     }
 
     let materialized = MaterializedState::load(git_common_dir).unwrap_or_default();
+    let mut linked_count = 0;
 
     for rel_path in &shared_paths {
         if materialized.is_materialized(rel_path, worktree_path) {
@@ -424,19 +436,32 @@ pub fn link_shared_files_on_create(
         }
 
         match create_shared_symlink(worktree_path, rel_path, git_common_dir) {
-            Ok(LinkResult::Created) => {}
-            Ok(LinkResult::AlreadyLinked) => {}
+            Ok(LinkResult::Created) => {
+                let msg = format!("  Linked shared file: {}", rel_path);
+                on_message(LinkMessage::Step(&msg));
+                linked_count += 1;
+            }
+            Ok(LinkResult::AlreadyLinked) => {
+                linked_count += 1;
+            }
             Ok(LinkResult::Conflict) => {
-                warn_fn(&format!(
+                let msg = format!(
                     "'{}' exists but is not shared. Run `daft shared link {}` to replace.",
                     rel_path, rel_path
-                ));
+                );
+                on_message(LinkMessage::Warning(&msg));
             }
             Ok(LinkResult::NoSource) => {} // Declared only, skip silently
             Err(e) => {
-                warn_fn(&format!("Failed to link shared file '{}': {}", rel_path, e));
+                let msg = format!("Failed to link shared file '{}': {}", rel_path, e);
+                on_message(LinkMessage::Warning(&msg));
             }
         }
+    }
+
+    if linked_count > 0 {
+        let msg = format!("Linked {} shared file(s)", linked_count);
+        on_message(LinkMessage::Info(&msg));
     }
 }
 

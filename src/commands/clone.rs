@@ -600,7 +600,11 @@ fn create_satellite_worktrees(
                         &abs_worktree_path,
                         &base_result.git_dir,
                         &base_result.parent_dir,
-                        &mut |msg| output.warning(msg),
+                        &mut |msg| match msg {
+                            crate::core::shared::LinkMessage::Info(s) => output.info(s),
+                            crate::core::shared::LinkMessage::Step(s) => output.step(s),
+                            crate::core::shared::LinkMessage::Warning(s) => output.warning(s),
+                        },
                     );
 
                     let hooks_config = HooksConfig::default();
@@ -864,7 +868,11 @@ fn create_satellite_worktrees_tui(
                         base_worktree_path,
                         &shared_git_dir,
                         &shared_parent_dir,
-                        &mut |msg| eprintln!("warning: {msg}"),
+                        &mut |msg| {
+                            if let crate::core::shared::LinkMessage::Warning(s) = msg {
+                                eprintln!("warning: {s}");
+                            }
+                        },
                     );
 
                     let mut bridge = TuiBridge::new(executor, tx.clone(), base.clone());
@@ -1033,7 +1041,11 @@ fn create_satellite_worktrees_tui(
                                     worktree_path,
                                     &shared_git_dir,
                                     &shared_parent_dir,
-                                    &mut |msg| eprintln!("warning: {msg}"),
+                                    &mut |msg| {
+                                        if let crate::core::shared::LinkMessage::Warning(s) = msg {
+                                            eprintln!("warning: {s}");
+                                        }
+                                    },
                                 );
 
                                 let mut bridge =
@@ -1324,7 +1336,11 @@ fn run_post_create_hook(
         worktree_path,
         &result.git_dir,
         &result.parent_dir,
-        &mut |msg| output.warning(msg),
+        &mut |msg| match msg {
+            crate::core::shared::LinkMessage::Info(s) => output.info(s),
+            crate::core::shared::LinkMessage::Step(s) => output.step(s),
+            crate::core::shared::LinkMessage::Warning(s) => output.warning(s),
+        },
     );
 
     let ctx = HookContext::new(

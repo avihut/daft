@@ -302,7 +302,11 @@ pub fn execute(
         &worktree_path,
         &git_dir,
         project_root,
-        &mut |msg| sink.on_warning(msg),
+        &mut |msg| match msg {
+            crate::core::shared::LinkMessage::Info(s) => eprintln!("{s}"),
+            crate::core::shared::LinkMessage::Step(s) => sink.on_step(s),
+            crate::core::shared::LinkMessage::Warning(s) => sink.on_warning(s),
+        },
     );
 
     // Run post-create hook
