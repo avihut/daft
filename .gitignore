@@ -29,10 +29,11 @@ Thumbs.db
 # JS dependencies (Prettier)
 node_modules/
 
-# Mise hook state
+# Mise hook state (except env.sh which is tracked)
 .mise/
+!.mise/env.sh
 
-# Daft dev sandbox (isolated config for development)
+# Daft dev sandbox (isolated config in git common dir, shared across worktrees)
 .daft-sandbox/
 
 # Docs site build artifacts
