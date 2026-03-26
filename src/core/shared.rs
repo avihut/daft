@@ -126,15 +126,38 @@ impl MaterializedState {
 // ── Worktree enumeration ──────────────────────────────────────────────────
 
 /// Return absolute paths of all worktrees in the repo.
+///
+/// Excludes the bare repo entry (which appears in `git worktree list`
+/// output but is not an actual worktree with a working tree).
 pub fn list_worktree_paths() -> Result<Vec<PathBuf>> {
     let git = GitCommand::new(true);
     let porcelain = git.worktree_list_porcelain()?;
     let mut paths = Vec::new();
+    let mut current_path: Option<String> = None;
+    let mut is_bare = false;
+
     for line in porcelain.lines() {
         if let Some(path_str) = line.strip_prefix("worktree ") {
-            paths.push(PathBuf::from(path_str));
+            // Flush previous entry if it wasn't bare
+            if let Some(prev) = current_path.take() {
+                if !is_bare {
+                    paths.push(PathBuf::from(prev));
+                }
+            }
+            current_path = Some(path_str.to_string());
+            is_bare = false;
+        } else if line == "bare" {
+            is_bare = true;
         }
     }
+
+    // Flush last entry
+    if let Some(prev) = current_path {
+        if !is_bare {
+            paths.push(PathBuf::from(prev));
+        }
+    }
+
     Ok(paths)
 }
 
