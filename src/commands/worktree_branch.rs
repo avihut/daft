@@ -338,6 +338,7 @@ fn run_branch_delete(
         use_gitoxide: settings.use_gitoxide,
         is_quiet: quiet,
         remote_name: settings.remote.clone(),
+        delete_remote: settings.branch_delete_remote,
         prune_cd_target: settings.prune_cd_target,
     };
 

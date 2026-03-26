@@ -702,6 +702,7 @@ fn run_checkout(
         multi_remote_default: settings.multi_remote_default.clone(),
         checkout_carry: settings.checkout_carry,
         checkout_upstream: settings.checkout_upstream,
+        checkout_fetch: settings.checkout_fetch,
         layout: Some(layout),
         at_path: args.at.clone(),
     };
@@ -775,6 +776,7 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
         multi_remote_default: settings.multi_remote_default.clone(),
         checkout_branch_carry: settings.checkout_branch_carry,
         checkout_push: settings.checkout_push,
+        checkout_fetch: settings.checkout_fetch,
         layout: Some(layout),
         at_path: args.at.clone(),
     };
