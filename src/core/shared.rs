@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+#[cfg(unix)]
 use std::os::unix;
 use std::path::{Path, PathBuf};
 
@@ -243,6 +244,7 @@ pub fn create_shared_symlink(
     // Create relative symlink
     let rel_target =
         relative_symlink_target(link_path.parent().unwrap_or(worktree_path), &shared_target)?;
+    #[cfg(unix)]
     unix::fs::symlink(&rel_target, &link_path).with_context(|| {
         format!(
             "Failed to create symlink {} → {}",
@@ -250,6 +252,11 @@ pub fn create_shared_symlink(
             rel_target.display()
         )
     })?;
+    #[cfg(not(unix))]
+    anyhow::bail!(
+        "Shared file symlinks are not supported on this platform ({})",
+        rel_path
+    );
 
     Ok(LinkResult::Created)
 }
