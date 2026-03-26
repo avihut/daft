@@ -436,7 +436,7 @@ impl LinkSharedResult {
 ///
 /// - Reads `shared:` from daft.yml found via `project_root`.
 /// - Creates symlinks for each path that exists in shared storage.
-/// - Returns outcomes for the command layer to render after the spinner.
+/// - Renders results immediately to stderr (before hooks take over).
 /// - Never errors fatally.
 pub fn link_shared_files_on_create(
     worktree_path: &Path,
@@ -477,7 +477,9 @@ pub fn link_shared_files_on_create(
         }
     }
 
-    LinkSharedResult { outcomes }
+    let result = LinkSharedResult { outcomes };
+    render_link_results(&result);
+    result
 }
 
 /// Render shared file linking results to stderr with colors.
