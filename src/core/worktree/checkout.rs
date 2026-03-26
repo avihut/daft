@@ -297,6 +297,9 @@ pub fn execute(
     // Set upstream tracking
     let (upstream_set, upstream_skipped) = set_upstream_if_enabled(params, git, sink)?;
 
+    // Link shared files before hooks so hooks can depend on .env etc.
+    crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
+
     // Run post-create hook
     let post_hook_ctx = HookContext::new(
         HookType::PostCreate,

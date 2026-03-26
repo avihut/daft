@@ -111,6 +111,12 @@ fn complete(command: &str, position: usize, word: &str, verbose: bool) -> Result
             complete_layouts(word)
         }
 
+        // shared-files: complete declared shared file paths from daft.yml
+        ("shared-files", _) => complete_shared_files(word),
+
+        // shared-worktrees: complete worktree directory names
+        ("shared-worktrees", _) => complete_worktree_names(word),
+
         // Default: no completions
         _ => Ok(vec![]),
     }
@@ -360,6 +366,60 @@ fn complete_hook_jobs(prefix: &str, _verbose: bool) -> Result<Vec<String>> {
     entries.sort();
     entries.dedup();
     Ok(entries)
+}
+
+/// Complete declared shared file paths from daft.yml.
+fn complete_shared_files(prefix: &str) -> Result<Vec<String>> {
+    let root = find_project_root().ok();
+    let root = match root {
+        Some(ref r) => r.as_path(),
+        None => return Ok(vec![]),
+    };
+
+    let paths = crate::core::shared::read_shared_paths(root).unwrap_or_default();
+    let mut entries: Vec<String> = paths
+        .into_iter()
+        .filter(|p| p.starts_with(prefix))
+        .collect();
+    entries.sort();
+    Ok(entries)
+}
+
+/// Complete worktree directory names.
+fn complete_worktree_names(prefix: &str) -> Result<Vec<String>> {
+    let paths = crate::core::shared::list_worktree_paths().unwrap_or_default();
+    let mut entries: Vec<String> = paths
+        .iter()
+        .filter_map(|p| {
+            let name = p.file_name()?.to_string_lossy().to_string();
+            if name.starts_with(prefix) {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .collect();
+    entries.sort();
+    entries.dedup();
+    Ok(entries)
+}
+
+/// Find the project root (parent of git common dir).
+fn find_project_root() -> Result<std::path::PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .output()?;
+
+    if !output.status.success() {
+        anyhow::bail!("Not in a git repository");
+    }
+
+    let common_dir = std::path::PathBuf::from(String::from_utf8(output.stdout)?.trim());
+    let canonical = common_dir.canonicalize()?;
+    canonical
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| anyhow::anyhow!("Git common dir has no parent"))
 }
 
 /// Find the worktree root directory (for completions).

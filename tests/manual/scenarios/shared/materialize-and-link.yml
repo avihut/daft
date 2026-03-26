@@ -1,0 +1,48 @@
+name: Shared materialize and link
+description: Materialize breaks the symlink, link restores it
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and setup shared file
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      echo "SHARED=val" > .env
+      daft shared add .env
+    expect:
+      exit_code: 0
+
+  - name: Materialize .env
+    run: daft shared materialize .env
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify .env is no longer a symlink
+    run: test ! -L .env
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify .env content after materialization
+    run: "true"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/.env"
+          content: "SHARED=val"
+
+  - name: Link .env back to shared
+    run: daft shared link .env
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify .env is a symlink again
+    run: test -L .env
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0

@@ -43,6 +43,9 @@ docs/.vitepress/cache/
 # Playwright MCP artifacts
 .playwright-mcp/
 
+# Superpowers brainstorming artifacts
+.superpowers/
+
 # Benchmark artifacts
 benches/results/
 benches/fixtures/cache/

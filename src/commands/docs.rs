@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::commands::{
     carry, checkout, clone, doctor, fetch, flow_adopt, flow_eject, hooks, init, layout, list,
-    multi_remote, prune, release_notes, shell_init, shortcuts, sync, worktree_branch,
+    multi_remote, prune, release_notes, shared, shell_init, shortcuts, sync, worktree_branch,
 };
 
 /// A category of commands with a title and list of commands.
@@ -85,6 +85,13 @@ fn get_command_categories() -> Vec<CommandCategory> {
                     command: flow_eject::Args::command(),
                 },
             ],
+        },
+        CommandCategory {
+            title: "share configuration across worktrees",
+            commands: vec![CommandEntry {
+                display_name: "daft shared",
+                command: shared::Args::command(),
+            }],
         },
         CommandCategory {
             title: "manage daft configuration",

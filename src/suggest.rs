@@ -22,6 +22,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "remove",
     "rename",
     "setup",
+    "shared",
     "shell-init",
     "start",
     "sync",
@@ -37,6 +38,8 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "worktree-init",
     "worktree-list",
     "worktree-prune",
+    "worktree-shared",
+    "worktree-sync",
 ];
 
 /// Compute Levenshtein edit distance between two strings.

@@ -1,0 +1,43 @@
+name: Shared sync
+description: daft shared sync propagates symlinks to all worktrees
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create two worktrees
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout develop
+    expect:
+      exit_code: 0
+
+  - name: Setup shared file from main
+    run: |
+      echo "SHARED=yes" > .env
+      daft shared add .env
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Sync to all worktrees
+    run: daft shared sync
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify develop has symlink
+    run: test -L .env
+    cwd: "$WORK_DIR/test-repo/develop"
+    expect:
+      exit_code: 0
+
+  - name: Verify develop .env content via symlink
+    run: "true"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/develop/.env"
+          content: "SHARED=yes"

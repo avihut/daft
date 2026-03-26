@@ -1,0 +1,43 @@
+name: Shared files linked on worktree create
+description:
+  Shared files declared in daft.yml are symlinked when creating a worktree
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create shared storage and daft.yml at project root
+    run: |
+      mkdir -p .git/.daft/shared
+      echo "SECRET=val" > .git/.daft/shared/.env
+      printf 'shared:\n  - .env\n' > daft.yml
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Create a new worktree
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify .env is symlinked in new worktree
+    run: test -L $WORK_DIR/test-repo/develop/.env
+    expect:
+      exit_code: 0
+
+  - name: Verify .env content in new worktree
+    run: true
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/develop/.env"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/develop/.env"
+          content: "SECRET=val"
