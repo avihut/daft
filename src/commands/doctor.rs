@@ -149,6 +149,7 @@ fn run_repository_checks(ctx: &repository::RepoContext) -> CheckCategory {
             repository::check_worktree_consistency(ctx),
             repository::check_fetch_refspec(ctx),
             repository::check_remote_head(ctx),
+            repository::check_remote_sync_config(ctx),
         ],
     }
 }
