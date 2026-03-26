@@ -77,8 +77,9 @@ pub fn run_prune_trust() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn maybe_prune_trust_inner() {
-    // Don't run inside the background prune process itself
-    if env::args().any(|a| a == "__prune-trust") {
+    // Don't run inside any background task process — otherwise __prune-trust
+    // spawns __check-update which spawns __prune-trust, creating a fork bomb.
+    if env::args().any(|a| a.starts_with("__")) {
         return;
     }
 

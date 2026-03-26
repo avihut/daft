@@ -147,8 +147,9 @@ pub fn print_notification(notification: &UpdateNotification) {
 // ---------------------------------------------------------------------------
 
 fn maybe_check_for_update_inner() -> Option<UpdateNotification> {
-    // Don't run inside the background check process itself
-    if env::args().any(|a| a == "__check-update") {
+    // Don't run inside any background task process — otherwise __check-update
+    // spawns __prune-trust which spawns __check-update, creating a fork bomb.
+    if env::args().any(|a| a.starts_with("__")) {
         return None;
     }
 
