@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.1](https://github.com/avihut/daft/compare/v1.5.0...v1.5.1) - 2026-03-26
+
+### Bug Fixes
+
+- gate unix symlink import with cfg(unix) to fix Windows build
+
 ## [1.5.0](https://github.com/avihut/daft/compare/v1.4.0...v1.5.0) - 2026-03-26
 
 ### Bug Fixes
