@@ -13,7 +13,7 @@ neovim = "stable"
 _.path = ["./target/release"]
 # Resolve DAFT_CONFIG_DIR dynamically to the git common dir so the
 # sandbox is shared across all worktrees (trust, repos.json, layout).
-_.source = [".mise/env.sh"]
+_.source = ["shared-env.sh"]
 INTEGRATION_TESTS_DIR = "tests/integration"
 INTEGRATION_TEMP_DIR = "/tmp/git-worktree-integration-tests"
 
