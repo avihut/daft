@@ -483,11 +483,19 @@ pub fn link_shared_files_on_create(
 }
 
 /// Render shared file linking results to stderr with colors.
+///
+/// Clears the current line first to avoid leaving spinner artifacts,
+/// since this may be called while a spinner is active.
 pub fn render_link_results(result: &LinkSharedResult) {
     use crate::styles;
 
     if result.is_empty() {
         return;
+    }
+
+    // Clear the current line (wipe spinner ghost) and move cursor to start
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        eprint!("\r\x1b[2K");
     }
 
     let use_color = styles::colors_enabled_stderr();
