@@ -261,6 +261,12 @@ _daft() {
         return 0
     fi
 
+    # config: complete subcommands
+    if [[ $cword -eq 2 && "${words[1]}" == "config" ]]; then
+        COMPREPLY=( $(compgen -W "remote-sync" -- "$cur") )
+        return 0
+    fi
+
     # shared: complete subcommands and their arguments
     if [[ "${words[1]}" == "shared" ]]; then
         if [[ $cword -eq 2 ]]; then
@@ -391,7 +397,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout shared clone init go start carry update list prune rename sync remove adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout shared config clone init go start carry update list prune rename sync remove adopt eject" -- "$cur") )
         fi
         return 0
     fi

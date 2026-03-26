@@ -1,0 +1,25 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "daft config remote-sync" 1  "daft config remote-sync " 
+.SH NAME
+daft config remote\-sync \- Configure remote sync behavior
+.SH SYNOPSIS
+\fBdaft config remote\-sync\fR [\fB\-\-on\fR] [\fB\-\-off\fR] [\fB\-\-status\fR] [\fB\-\-global\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Configure remote sync behavior
+.SH OPTIONS
+.TP
+\fB\-\-on\fR
+Enable all remote sync operations
+.TP
+\fB\-\-off\fR
+Disable all remote sync operations
+.TP
+\fB\-\-status\fR
+Show current remote sync settings
+.TP
+\fB\-\-global\fR
+Write to global git config instead of local
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

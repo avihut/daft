@@ -9,6 +9,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "carry",
     "clone",
     "completions",
+    "config",
     "doctor",
     "eject",
     "go",
