@@ -71,6 +71,7 @@ git worktree-checkout [OPTIONS] <BRANCH_NAME> [BASE_BRANCH_NAME]
 | `-x, --exec <EXEC>` | Run a command in the worktree after setup completes (repeatable) |  |
 | `-s, --start` | Create a new worktree if the branch does not exist |  |
 | `-@, --at <PATH>` | Place the worktree at a specific path instead of using the layout template |  |
+| `--local` | Skip all remote operations (no fetch, no push) |  |
 
 ## Global Options
 

@@ -120,6 +120,9 @@ pub struct Args {
     /// Place the worktree at a specific path instead of using the layout template.
     #[arg(short = '@', long, value_name = "PATH")]
     at: Option<PathBuf>,
+
+    #[arg(long, help = "Skip all remote operations (no fetch, no push)")]
+    local: bool,
 }
 
 /// Daft-style args for `daft go`. Separate from `Args` so that `-h`/`--help`
@@ -217,6 +220,9 @@ pub struct GoArgs {
     /// Place the worktree at a specific path instead of using the layout template.
     #[arg(short = '@', long, value_name = "PATH")]
     at: Option<PathBuf>,
+
+    #[arg(long, help = "Skip all remote operations (no fetch, no push)")]
+    local: bool,
 }
 
 /// Daft-style args for `daft start`. Separate from `Args` so that `-h`/`--help`
@@ -282,6 +288,9 @@ pub struct StartArgs {
     /// Place the worktree at a specific path instead of using the layout template.
     #[arg(short = '@', long, value_name = "PATH")]
     at: Option<PathBuf>,
+
+    #[arg(long, help = "Skip all remote operations (no fetch, no push)")]
+    local: bool,
 }
 
 /// Entry point for `git-worktree-checkout`.
@@ -309,6 +318,7 @@ pub fn run_go() -> Result<()> {
         quiet: go_args.quiet,
         verbose: go_args.verbose,
         at: go_args.at,
+        local: go_args.local,
     };
     run_with_args(args)
 }
@@ -332,6 +342,7 @@ pub fn run_start() -> Result<()> {
         quiet: start_args.quiet,
         verbose: start_args.verbose,
         at: start_args.at,
+        local: start_args.local,
     };
     run_with_args(args)
 }
@@ -702,7 +713,11 @@ fn run_checkout(
         multi_remote_default: settings.multi_remote_default.clone(),
         checkout_carry: settings.checkout_carry,
         checkout_upstream: settings.checkout_upstream,
-        checkout_fetch: settings.checkout_fetch,
+        checkout_fetch: if args.local {
+            false
+        } else {
+            settings.checkout_fetch
+        },
         layout: Some(layout),
         at_path: args.at.clone(),
     };
@@ -775,8 +790,16 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
         multi_remote_enabled: settings.multi_remote_enabled,
         multi_remote_default: settings.multi_remote_default.clone(),
         checkout_branch_carry: settings.checkout_branch_carry,
-        checkout_push: settings.checkout_push,
-        checkout_fetch: settings.checkout_fetch,
+        checkout_push: if args.local {
+            false
+        } else {
+            settings.checkout_push
+        },
+        checkout_fetch: if args.local {
+            false
+        } else {
+            settings.checkout_fetch
+        },
         layout: Some(layout),
         at_path: args.at.clone(),
     };

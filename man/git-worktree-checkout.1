@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-checkout \- Create a worktree for an existing branch, or a new branch with \-b
 .SH SYNOPSIS
-\fBgit\-worktree\-checkout\fR [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
+\fBgit\-worktree\-checkout\fR [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
 .SH DESCRIPTION
 .PP
 Creates a new worktree for an existing local or remote branch. The worktree
@@ -66,6 +66,9 @@ Create a new worktree if the branch does not exist
 .TP
 \fB\-@\fR, \fB\-\-at\fR \fI<PATH>\fR
 Place the worktree at a specific path instead of using the layout template
+.TP
+\fB\-\-local\fR
+Skip all remote operations (no fetch, no push)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

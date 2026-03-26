@@ -4,7 +4,7 @@
 .SH NAME
 daft remove \- Delete branches and their worktrees
 .SH SYNOPSIS
-\fBdaft remove\fR [\fB\-f\fR|\fB\-\-force\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCHES\fR> 
+\fBdaft remove\fR [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-local\fR] [\fB\-\-remote\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCHES\fR> 
 .SH DESCRIPTION
 .PP
 Deletes one or more local branches along with their associated worktrees and
@@ -40,6 +40,12 @@ removal if the repository is trusted. See daft\-hooks(1) for hook management.
 .TP
 \fB\-f\fR, \fB\-\-force\fR
 Force deletion even if not fully merged
+.TP
+\fB\-\-local\fR
+Only delete locally, keep remote branch
+.TP
+\fB\-\-remote\fR
+Only delete the remote branch, keep local worktree and branch
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 Operate quietly; suppress progress reporting

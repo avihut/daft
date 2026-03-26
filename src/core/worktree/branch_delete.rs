@@ -26,6 +26,8 @@ pub struct BranchDeleteParams {
     pub remote_name: String,
     /// Whether to delete the remote branch.
     pub delete_remote: bool,
+    /// Only delete the remote branch, keep local worktree and branch.
+    pub remote_only: bool,
     /// Where to cd after deleting the current worktree.
     pub prune_cd_target: PruneCdTarget,
 }
@@ -648,7 +650,14 @@ fn execute_deletions(
 
     // Process regular branches first
     for branch in &regular {
-        let result = delete_single_branch(ctx, branch, params.force, params.delete_remote, sink);
+        let result = delete_single_branch(
+            ctx,
+            branch,
+            params.force,
+            params.delete_remote,
+            params.remote_only,
+            sink,
+        );
         deletions.push(result);
     }
 
@@ -682,8 +691,14 @@ fn execute_deletions(
                 continue;
             }
 
-            let result =
-                delete_single_branch(ctx, branch, params.force, params.delete_remote, sink);
+            let result = delete_single_branch(
+                ctx,
+                branch,
+                params.force,
+                params.delete_remote,
+                params.remote_only,
+                sink,
+            );
 
             if result.worktree_removed {
                 cd_target = Some(target);
@@ -692,8 +707,14 @@ fn execute_deletions(
             deletions.push(result);
         } else {
             // No worktree, just delete branch and remote
-            let result =
-                delete_single_branch(ctx, branch, params.force, params.delete_remote, sink);
+            let result = delete_single_branch(
+                ctx,
+                branch,
+                params.force,
+                params.delete_remote,
+                params.remote_only,
+                sink,
+            );
             deletions.push(result);
         }
     }
@@ -711,6 +732,7 @@ fn delete_single_branch(
     branch: &ValidatedBranch,
     force: bool,
     delete_remote: bool,
+    remote_only: bool,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> DeletionResult {
     let mut result = DeletionResult {
@@ -730,7 +752,7 @@ fn delete_single_branch(
 
     // Step 2: Delete remote branch (hardest to recreate, do first)
     // Skipped for worktree-only removal (default branch) or when remote deletion is disabled.
-    if !branch.worktree_only && delete_remote {
+    if !branch.worktree_only && (delete_remote || remote_only) {
         if let (Some(ref remote), Some(ref remote_branch)) =
             (&branch.remote_name, &branch.remote_branch_name)
         {
@@ -753,6 +775,17 @@ fn delete_single_branch(
                 }
             }
         }
+    }
+
+    // When remote_only is set, skip local operations entirely.
+    if remote_only {
+        if branch.remote_name.is_none() || branch.remote_branch_name.is_none() {
+            result.errors.push(format!(
+                "Branch '{}' has no remote tracking branch",
+                branch.name
+            ));
+        }
+        return result;
     }
 
     // Step 3: Remove worktree (if one exists)

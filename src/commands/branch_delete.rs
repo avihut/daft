@@ -50,6 +50,16 @@ pub struct Args {
     #[arg(short = 'D', long, help = "Force deletion even if not fully merged")]
     force: bool,
 
+    #[arg(long, help = "Only delete locally, keep remote branch")]
+    local: bool,
+
+    #[arg(
+        long,
+        conflicts_with = "local",
+        help = "Only delete the remote branch, keep local worktree and branch"
+    )]
+    remote: bool,
+
     #[arg(short, long, help = "Operate quietly; suppress progress reporting")]
     quiet: bool,
 
@@ -81,7 +91,14 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
         use_gitoxide: settings.use_gitoxide,
         is_quiet: args.quiet,
         remote_name: settings.remote.clone(),
-        delete_remote: settings.branch_delete_remote,
+        delete_remote: if args.local {
+            false
+        } else if args.remote {
+            true
+        } else {
+            settings.branch_delete_remote
+        },
+        remote_only: args.remote,
         prune_cd_target: settings.prune_cd_target,
     };
 
