@@ -1,8 +1,9 @@
 //! Command: `daft shared` — manage shared files across worktrees.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
+use std::path::PathBuf;
 
 use crate::core::layout;
 use crate::core::repo;
@@ -66,9 +67,11 @@ struct RemoveArgs {
 
 #[derive(Parser)]
 struct MaterializeArgs {
-    /// Paths to materialize in current worktree
-    #[arg(required = true)]
-    paths: Vec<String>,
+    /// Shared file path to materialize
+    path: String,
+
+    /// Target worktree name or path (defaults to current worktree)
+    worktree: Option<String>,
 
     /// Force materialization even if a non-shared file exists
     #[arg(long = "override")]
@@ -77,9 +80,11 @@ struct MaterializeArgs {
 
 #[derive(Parser)]
 struct LinkArgs {
-    /// Paths to link back to shared version
-    #[arg(required = true)]
-    paths: Vec<String>,
+    /// Shared file path to link back to shared version
+    path: String,
+
+    /// Target worktree name or path (defaults to current worktree)
+    worktree: Option<String>,
 
     /// Replace local file even if it differs from shared version
     #[arg(long = "override")]
@@ -108,6 +113,48 @@ pub fn run() -> Result<()> {
         SharedCommand::Status(_) => run_status(&mut output),
         SharedCommand::Sync(_) => run_sync(&mut output),
     }
+}
+
+/// Resolve a worktree argument to an absolute path.
+///
+/// If `name` is None, returns the current worktree. Otherwise, matches
+/// against known worktree paths by directory name or full path.
+fn resolve_worktree(name: Option<&str>) -> Result<PathBuf> {
+    let Some(name) = name else {
+        return repo::get_current_worktree_path();
+    };
+
+    // If it's an absolute path that exists, use it directly
+    let as_path = PathBuf::from(name);
+    if as_path.is_absolute() && as_path.exists() {
+        return Ok(as_path);
+    }
+
+    // Match by directory name against known worktrees
+    let worktrees = shared::list_worktree_paths()?;
+    for wt in &worktrees {
+        let wt_name = wt.file_name().unwrap_or_default().to_string_lossy();
+        if wt_name == name {
+            return Ok(wt.clone());
+        }
+    }
+
+    // Try as a relative path from current directory
+    if as_path.exists() {
+        return as_path
+            .canonicalize()
+            .context(format!("Failed to resolve worktree path: {name}"));
+    }
+
+    bail!(
+        "Worktree '{}' not found. Known worktrees: {}",
+        name,
+        worktrees
+            .iter()
+            .filter_map(|w| w.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 }
 
 fn run_add(args: AddArgs, output: &mut dyn Output) -> Result<()> {
@@ -268,53 +315,33 @@ fn run_remove(args: RemoveArgs, output: &mut dyn Output) -> Result<()> {
 
 fn run_materialize(args: MaterializeArgs, output: &mut dyn Output) -> Result<()> {
     let git_common_dir = repo::get_git_common_dir()?;
-    let worktree_path = repo::get_current_worktree_path()?;
+    let worktree_path = resolve_worktree(args.worktree.as_deref())?;
     let mut materialized = shared::MaterializedState::load(&git_common_dir)?;
 
-    for rel_path in &args.paths {
-        let link = worktree_path.join(rel_path);
-        let shared_target = shared::shared_file_path(&git_common_dir, rel_path);
+    let rel_path = &args.path;
+    let link = worktree_path.join(rel_path);
+    let shared_target = shared::shared_file_path(&git_common_dir, rel_path);
 
-        if !shared_target.exists() {
-            bail!("'{}' has no shared file to materialize from.", rel_path);
-        }
+    if !shared_target.exists() {
+        bail!("'{}' has no shared file to materialize from.", rel_path);
+    }
 
-        if link.is_symlink() {
-            // Replace symlink with copy
-            fs::remove_file(&link)?;
-            if shared_target.is_dir() {
-                copy_dir_all(&shared_target, &link)?;
-            } else {
-                fs::copy(&shared_target, &link)?;
-            }
-            materialized.add(rel_path, &worktree_path);
-            output.success(&format!("Materialized: {} (copied from shared)", rel_path));
-        } else if link.exists() {
-            if args.force_override {
-                if link.is_dir() {
-                    fs::remove_dir_all(&link)?;
-                } else {
-                    fs::remove_file(&link)?;
-                }
-                if shared_target.is_dir() {
-                    copy_dir_all(&shared_target, &link)?;
-                } else {
-                    fs::copy(&shared_target, &link)?;
-                }
-                materialized.add(rel_path, &worktree_path);
-                output.success(&format!("Materialized: {} (overridden)", rel_path));
-            } else {
-                output.info(&format!(
-                    "'{}' is already a local file in this worktree.",
-                    rel_path
-                ));
-            }
+    if link.is_symlink() {
+        // Replace symlink with copy
+        fs::remove_file(&link)?;
+        if shared_target.is_dir() {
+            copy_dir_all(&shared_target, &link)?;
         } else {
-            // No file at all — copy from shared
-            if let Some(parent) = link.parent() {
-                if !parent.exists() {
-                    fs::create_dir_all(parent)?;
-                }
+            fs::copy(&shared_target, &link)?;
+        }
+        materialized.add(rel_path, &worktree_path);
+        output.success(&format!("Materialized: {} (copied from shared)", rel_path));
+    } else if link.exists() {
+        if args.force_override {
+            if link.is_dir() {
+                fs::remove_dir_all(&link)?;
+            } else {
+                fs::remove_file(&link)?;
             }
             if shared_target.is_dir() {
                 copy_dir_all(&shared_target, &link)?;
@@ -322,8 +349,27 @@ fn run_materialize(args: MaterializeArgs, output: &mut dyn Output) -> Result<()>
                 fs::copy(&shared_target, &link)?;
             }
             materialized.add(rel_path, &worktree_path);
-            output.success(&format!("Materialized: {} (copied from shared)", rel_path));
+            output.success(&format!("Materialized: {} (overridden)", rel_path));
+        } else {
+            output.info(&format!(
+                "'{}' is already a local file in this worktree.",
+                rel_path
+            ));
         }
+    } else {
+        // No file at all — copy from shared
+        if let Some(parent) = link.parent() {
+            if !parent.exists() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+        if shared_target.is_dir() {
+            copy_dir_all(&shared_target, &link)?;
+        } else {
+            fs::copy(&shared_target, &link)?;
+        }
+        materialized.add(rel_path, &worktree_path);
+        output.success(&format!("Materialized: {} (copied from shared)", rel_path));
     }
 
     materialized.save(&git_common_dir)?;
@@ -333,68 +379,68 @@ fn run_materialize(args: MaterializeArgs, output: &mut dyn Output) -> Result<()>
 
 fn run_link(args: LinkArgs, output: &mut dyn Output) -> Result<()> {
     let git_common_dir = repo::get_git_common_dir()?;
-    let worktree_path = repo::get_current_worktree_path()?;
+    let worktree_path = resolve_worktree(args.worktree.as_deref())?;
     let mut materialized = shared::MaterializedState::load(&git_common_dir)?;
 
-    for rel_path in &args.paths {
-        let link = worktree_path.join(rel_path);
-        let shared_target = shared::shared_file_path(&git_common_dir, rel_path);
+    let rel_path = &args.path;
+    let link = worktree_path.join(rel_path);
+    let shared_target = shared::shared_file_path(&git_common_dir, rel_path);
 
-        if !shared_target.exists() {
-            bail!("'{}' has no shared file to link to.", rel_path);
+    if !shared_target.exists() {
+        bail!("'{}' has no shared file to link to.", rel_path);
+    }
+
+    // Already a correct symlink?
+    if link.is_symlink() {
+        let target = fs::read_link(&link)?;
+        let expected = shared::relative_symlink_target(
+            link.parent().unwrap_or(&worktree_path),
+            &shared_target,
+        )?;
+        if target == expected {
+            output.info(&format!(
+                "'{}' is already linked to shared version.",
+                rel_path
+            ));
+            materialized.save(&git_common_dir)?;
+            return Ok(());
         }
+    }
 
-        // Already a correct symlink?
-        if link.is_symlink() {
-            let target = fs::read_link(&link)?;
-            let expected = shared::relative_symlink_target(
-                link.parent().unwrap_or(&worktree_path),
-                &shared_target,
-            )?;
-            if target == expected {
-                output.info(&format!(
-                    "'{}' is already linked to shared version.",
-                    rel_path
-                ));
-                continue;
-            }
-        }
-
-        // Real file exists — check for differences
-        if link.exists() && !link.is_symlink() {
-            if !args.force_override {
-                // Compare contents
-                let differs = if link.is_dir() {
-                    true // Directory diff is complex; require --override
-                } else {
-                    let local = fs::read(&link)?;
-                    let shared_content = fs::read(&shared_target)?;
-                    local != shared_content
-                };
-
-                if differs {
-                    bail!(
-                        "Local '{}' differs from shared version. Use `--override` to replace.",
-                        rel_path
-                    );
-                }
-            }
-
-            // Remove local file/dir to make way for symlink
-            if link.is_dir() {
-                fs::remove_dir_all(&link)?;
+    // Real file exists — check for differences
+    if link.exists() && !link.is_symlink() {
+        if !args.force_override {
+            // Compare contents
+            let differs = if link.is_dir() {
+                true // Directory diff is complex; require --override
             } else {
-                fs::remove_file(&link)?;
+                let local = fs::read(&link)?;
+                let shared_content = fs::read(&shared_target)?;
+                local != shared_content
+            };
+
+            if differs {
+                bail!(
+                    "Local '{}' differs from shared version. Use `--override` to replace.",
+                    rel_path
+                );
             }
-        } else if link.is_symlink() {
-            // Broken or wrong symlink — remove it
+        }
+
+        // Remove local file/dir to make way for symlink
+        if link.is_dir() {
+            fs::remove_dir_all(&link)?;
+        } else {
             fs::remove_file(&link)?;
         }
-
-        shared::create_shared_symlink(&worktree_path, rel_path, &git_common_dir)?;
-        materialized.remove(rel_path, &worktree_path);
-        output.success(&format!("Linked: {} → shared", rel_path));
+    } else if link.is_symlink() {
+        // Broken or wrong symlink — remove it
+        fs::remove_file(&link)?;
     }
+
+    shared::create_shared_symlink(&worktree_path, rel_path, &git_common_dir)?;
+    materialized.remove(rel_path, &worktree_path);
+    output.success(&format!("Linked: {} → shared", rel_path));
 
     materialized.save(&git_common_dir)?;
 
