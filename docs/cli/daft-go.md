@@ -53,6 +53,7 @@ Cannot be combined with `-b`/`--create-branch`.
 | Option | Description | Default |
 |--------|-------------|---------|
 | `-s, --start` | Create a new worktree if the branch does not exist | |
+| `--local` | Skip all remote operations (no fetch) for this invocation | |
 | `-x, --exec <EXEC>` | Run a command in the worktree after setup (repeatable) | |
 | `--no-cd` | Do not change directory to the new worktree | |
 | `-c, --carry` | Apply uncommitted changes from the current worktree | |
@@ -90,4 +91,5 @@ daft go feature/auth --no-cd
 ## See Also
 
 - [daft start](./daft-start.md) to create a new branch
+- [daft config](./daft-config.md) to configure remote sync behavior
 - [git worktree-checkout](./git-worktree-checkout.md) for the underlying git-native command

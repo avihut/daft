@@ -70,11 +70,46 @@ template = "~/worktrees/{{ repo }}/{{ branch | sanitize }}"
 layout: contained
 ```
 
+## Remote Sync Settings
+
+By default, daft does not contact the remote during worktree management. All
+remote operations are opt-in. Use `daft config remote-sync` to toggle these
+settings interactively, or set them directly with `git config`.
+
+| Key                        | Default | Description                                                         |
+| -------------------------- | ------- | ------------------------------------------------------------------- |
+| `daft.checkout.fetch`      | `false` | Fetch from remote before creating a worktree for an existing branch |
+| `daft.checkout.push`       | `false` | Push new branches to remote after creation                          |
+| `daft.branchDelete.remote` | `false` | Delete the remote branch when removing a local branch               |
+
+### Enabling Remote Sync
+
+Use the interactive command to toggle remote sync settings:
+
+```bash
+daft config remote-sync         # Open interactive TUI
+daft config remote-sync --on    # Enable all remote sync operations
+daft config remote-sync --off   # Disable all remote sync operations
+daft config remote-sync --status  # Show current settings
+```
+
+You can also set values directly:
+
+```bash
+# Enable all remote sync (opt in to old behavior)
+git config daft.checkout.fetch true
+git config daft.checkout.push true
+git config daft.branchDelete.remote true
+```
+
+Per-command overrides are available via `--local` (skip remote operations) and
+`--remote` (delete remote branch only, without removing local worktree or
+branch).
+
 ## Checkout Settings
 
 | Key                         | Default | Description                                                   |
 | --------------------------- | ------- | ------------------------------------------------------------- |
-| `daft.checkout.push`        | `true`  | Push new branches to remote after creation                    |
 | `daft.checkout.upstream`    | `true`  | Set upstream tracking for branches                            |
 | `daft.checkout.carry`       | `false` | Carry uncommitted changes when checking out existing branches |
 | `daft.checkoutBranch.carry` | `true`  | Carry uncommitted changes when creating new branches          |
@@ -164,8 +199,13 @@ reference.
 ## Examples
 
 ```bash
-# Don't push new branches automatically
-git config daft.checkout.push false
+# Enable remote sync (fetch on checkout, push on start, delete remote on remove)
+daft config remote-sync --on
+
+# Or enable individual settings
+git config daft.checkout.fetch true
+git config daft.checkout.push true
+git config daft.branchDelete.remote true
 
 # Use a different remote
 git config daft.remote upstream
@@ -207,12 +247,13 @@ side-effect of worktree management, not as user-initiated code pushes. Because
 of this, daft passes `--no-verify` on all `git push` calls, skipping any
 `pre-push` hooks configured in the repository.
 
-This affects three commands:
+Remote operations are disabled by default. When enabled (via
+`daft config remote-sync --on` or by setting the individual keys), this affects:
 
 - **`daft start` / `git worktree-checkout -b`** -- pushes the new branch to set
-  upstream tracking
+  upstream tracking (controlled by `daft.checkout.push`)
 - **`daft remove` / `git worktree-branch -d`** -- pushes `--delete` to remove
-  the remote branch
+  the remote branch (controlled by `daft.branchDelete.remote`)
 - **`daft multi-remote move --push`** -- pushes an existing branch to a new
   remote
 
@@ -220,8 +261,8 @@ If a push fails (due to network issues, auth errors, or remote rejection rules),
 daft treats it as non-fatal: the local worktree and branch remain usable, and a
 warning is shown with the manual recovery command.
 
-To disable pushing entirely for new branches, set `daft.checkout.push` to
-`false`.
+Use `--local` on any worktree command to skip all remote operations for that
+invocation, regardless of config.
 
 ::: tip This only applies to git's own hooks. daft's
 [lifecycle hooks](./hooks.md) (configured in `daft.yml` or `.daft/hooks/`) are
