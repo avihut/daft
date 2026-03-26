@@ -283,5 +283,15 @@ complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcomma
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from migrate' -l dry-run -d 'Preview renames without making changes'
 # shared: subcommands
 complete -c daft -n '__fish_seen_subcommand_from shared; and not __fish_seen_subcommand_from add link materialize remove status sync' -f -a 'add link materialize remove status sync'
+# shared add: file completion + --declare
+complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from add' -F
+complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from add' -l declare -d 'Declare without collecting'
+# shared remove: shared files + --delete
+complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from remove' -f -a "(daft __complete shared-files '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from remove' -l delete -d 'Delete everywhere instead of materializing'
+# shared link/materialize: shared files, then worktree names + --override
+complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from link materialize' -f -a "(daft __complete shared-files '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from link materialize' -f -a "(daft __complete shared-worktrees '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from link materialize' -l override -d 'Replace even if local differs'
 complete -c git-daft -w daft
 "#;

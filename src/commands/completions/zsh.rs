@@ -349,10 +349,53 @@ _daft() {
         return
     fi
 
-    # shared: complete subcommands
-    if (( CURRENT == 3 )) && [[ "$words[2]" == "shared" ]]; then
-        compadd add link materialize remove status sync
-        return
+    # shared: complete subcommands and their arguments
+    if [[ "$words[2]" == "shared" ]]; then
+        if (( CURRENT == 3 )); then
+            compadd add link materialize remove status sync
+            return
+        fi
+        local shared_sub="$words[3]"
+        case "$shared_sub" in
+            add)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --declare --help -h
+                else
+                    _files
+                fi
+                return
+                ;;
+            remove)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --delete --help -h
+                else
+                    local -a shared_files
+                    shared_files=(${(f)"$(daft __complete shared-files "$curword" 2>/dev/null)"})
+                    compadd -- $shared_files
+                fi
+                return
+                ;;
+            link|materialize)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --override --help -h
+                elif (( CURRENT == 4 )); then
+                    local -a shared_files
+                    shared_files=(${(f)"$(daft __complete shared-files "$curword" 2>/dev/null)"})
+                    compadd -- $shared_files
+                elif (( CURRENT == 5 )); then
+                    local -a worktrees
+                    worktrees=(${(f)"$(daft __complete shared-worktrees "$curword" 2>/dev/null)"})
+                    compadd -- $worktrees
+                fi
+                return
+                ;;
+            status|sync)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --help -h
+                fi
+                return
+                ;;
+        esac
     fi
 
     # verb aliases: delegate to underlying command completions

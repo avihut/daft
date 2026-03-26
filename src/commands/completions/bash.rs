@@ -261,10 +261,57 @@ _daft() {
         return 0
     fi
 
-    # shared: complete subcommands
-    if [[ $cword -eq 2 && "${words[1]}" == "shared" ]]; then
-        COMPREPLY=( $(compgen -W "add link materialize remove status sync" -- "$cur") )
-        return 0
+    # shared: complete subcommands and their arguments
+    if [[ "${words[1]}" == "shared" ]]; then
+        if [[ $cword -eq 2 ]]; then
+            COMPREPLY=( $(compgen -W "add link materialize remove status sync" -- "$cur") )
+            return 0
+        fi
+        local shared_sub="${words[2]}"
+        case "$shared_sub" in
+            add)
+                # File completion + --declare flag
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--declare --help -h" -- "$cur") )
+                else
+                    COMPREPLY=( $(compgen -f -- "$cur") )
+                fi
+                return 0
+                ;;
+            remove)
+                # Complete from shared files list + --delete flag
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--delete --help -h" -- "$cur") )
+                else
+                    local shared_files
+                    shared_files=$(daft __complete "shared-files" "$cur" 2>/dev/null)
+                    COMPREPLY=( $(compgen -W "$shared_files" -- "$cur") )
+                fi
+                return 0
+                ;;
+            link|materialize)
+                # Position 3: shared file, position 4: worktree name
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--override --help -h" -- "$cur") )
+                elif [[ $cword -eq 3 ]]; then
+                    local shared_files
+                    shared_files=$(daft __complete "shared-files" "$cur" 2>/dev/null)
+                    COMPREPLY=( $(compgen -W "$shared_files" -- "$cur") )
+                elif [[ $cword -eq 4 ]]; then
+                    local worktrees
+                    worktrees=$(daft __complete "shared-worktrees" "$cur" 2>/dev/null)
+                    COMPREPLY=( $(compgen -W "$worktrees" -- "$cur") )
+                fi
+                return 0
+                ;;
+            status|sync)
+                # No arguments
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--help -h" -- "$cur") )
+                fi
+                return 0
+                ;;
+        esac
     fi
 
     # verb aliases: delegate to underlying command completions
