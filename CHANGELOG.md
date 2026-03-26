@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.0](https://github.com/avihut/daft/compare/v1.4.0...v1.5.0) - 2026-03-26
+
+### Bug Fixes
+
+- move shared-env.sh out of gitignored .mise/ to fix release-plz
+- prevent fork bomb from recursive background task spawning ([#332](https://github.com/avihut/daft/pull/332))
+
+### Features
+
+- worktree shared files — centralize untracked config across worktrees ([#328](https://github.com/avihut/daft/pull/328)) ([#331](https://github.com/avihut/daft/pull/331))
+- move hooks — identity-tracked hook replay on worktree move ([#326](https://github.com/avihut/daft/pull/326))
+
 ## [1.4.0](https://github.com/avihut/daft/compare/v1.3.1...v1.4.0) - 2026-03-25
 
 ### Features
