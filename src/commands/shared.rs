@@ -402,6 +402,8 @@ fn run_link(args: LinkArgs, output: &mut dyn Output) -> Result<()> {
 }
 
 fn run_status(output: &mut dyn Output) -> Result<()> {
+    use crate::styles;
+
     let git_common_dir = repo::get_git_common_dir()?;
     let project_root = repo::get_project_root()?;
     let shared_paths = shared::read_shared_paths(&project_root)?;
@@ -413,6 +415,8 @@ fn run_status(output: &mut dyn Output) -> Result<()> {
         return Ok(());
     }
 
+    let use_color = styles::colors_enabled();
+
     println!("Shared files:\n");
 
     for rel_path in &shared_paths {
@@ -420,12 +424,27 @@ fn run_status(output: &mut dyn Output) -> Result<()> {
         let has_source = shared_target.exists();
 
         if !has_source {
-            println!("  {} (declared, not yet collected)", rel_path);
+            if use_color {
+                println!(
+                    "  {}{}{} {}(declared, not yet collected){}",
+                    styles::BOLD,
+                    rel_path,
+                    styles::RESET,
+                    styles::DIM,
+                    styles::RESET,
+                );
+            } else {
+                println!("  {} (declared, not yet collected)", rel_path);
+            }
             println!();
             continue;
         }
 
-        println!("  {}", rel_path);
+        if use_color {
+            println!("  {}{}{}", styles::BOLD, rel_path, styles::RESET);
+        } else {
+            println!("  {}", rel_path);
+        }
 
         for wt in &worktree_paths {
             let wt_name = wt.file_name().unwrap_or_default().to_string_lossy();
@@ -449,7 +468,20 @@ fn run_status(output: &mut dyn Output) -> Result<()> {
                 "missing"
             };
 
-            println!("    {:<24}{}", wt_name, state);
+            let colored_state = if use_color {
+                match state {
+                    "linked" => format!("{}{}{}", styles::GREEN, state, styles::RESET),
+                    "materialized" => format!("{}{}{}", styles::CYAN, state, styles::RESET),
+                    "missing" => format!("{}{}{}", styles::DIM, state, styles::RESET),
+                    "conflict" => format!("{}{}{}", styles::YELLOW, state, styles::RESET),
+                    "broken" => format!("{}{}{}", styles::YELLOW, state, styles::RESET),
+                    _ => state.to_string(),
+                }
+            } else {
+                state.to_string()
+            };
+
+            println!("    {:<24}{}", wt_name, colored_state);
         }
 
         println!();

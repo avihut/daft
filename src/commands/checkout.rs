@@ -722,6 +722,7 @@ fn run_checkout(
     output.finish_spinner();
     let result = checkout_result?;
 
+    crate::core::shared::render_link_results(&result.shared_link_result);
     render_checkout_result(&result, output);
 
     // Show hooks notice if skipped due to trust
@@ -795,6 +796,7 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
     output.finish_spinner();
     let result = checkout_result?;
 
+    crate::core::shared::render_link_results(&result.shared_link_result);
     render_create_result(&result, output);
 
     // Show hooks notice if skipped due to trust

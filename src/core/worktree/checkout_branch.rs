@@ -56,6 +56,7 @@ pub struct CheckoutBranchResult {
     pub push_skipped: bool,
     pub git_dir: PathBuf,
     pub post_hook_outcome: HookOutcome,
+    pub shared_link_result: crate::core::shared::LinkSharedResult,
 }
 
 /// Execute the checkout-branch operation.
@@ -170,16 +171,8 @@ pub fn execute(
     let (push_set, push_skipped) = push_if_enabled(params, git, sink);
 
     // Link shared files before hooks so hooks can depend on .env etc.
-    crate::core::shared::link_shared_files_on_create(
-        &worktree_path,
-        &git_dir,
-        project_root,
-        &mut |msg| match msg {
-            crate::core::shared::LinkMessage::Info(s) => eprintln!("{s}"),
-            crate::core::shared::LinkMessage::Step(s) => sink.on_step(s),
-            crate::core::shared::LinkMessage::Warning(s) => sink.on_warning(s),
-        },
-    );
+    let shared_link_result =
+        crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
 
     // Run post-create hook
     let post_hook_ctx = HookContext::new(
@@ -208,6 +201,7 @@ pub fn execute(
         push_skipped,
         git_dir,
         post_hook_outcome,
+        shared_link_result,
     })
 }
 

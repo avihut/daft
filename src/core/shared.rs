@@ -395,14 +395,40 @@ pub fn is_git_tracked(worktree_root: &Path, rel_path: &str) -> Result<bool> {
 
 // ── Lifecycle integration ─────────────────────────────────────────────────
 
-/// Message type for shared file linking progress.
-pub enum LinkMessage<'a> {
-    /// Informational message (shown in default mode).
-    Info(&'a str),
-    /// Verbose step detail (shown in verbose mode only).
-    Step(&'a str),
-    /// Warning (always shown).
-    Warning(&'a str),
+/// Outcome of linking a single shared file.
+pub enum LinkFileOutcome {
+    /// Symlink created successfully.
+    Linked(String),
+    /// File already correctly linked (no action needed).
+    AlreadyLinked(String),
+    /// A real file exists at the path (conflict).
+    Conflict(String),
+    /// Failed to create symlink.
+    Error(String, String),
+}
+
+/// Result of linking shared files during worktree creation.
+#[derive(Default)]
+pub struct LinkSharedResult {
+    pub outcomes: Vec<LinkFileOutcome>,
+}
+
+impl LinkSharedResult {
+    pub fn is_empty(&self) -> bool {
+        self.outcomes.is_empty()
+    }
+
+    pub fn linked_count(&self) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|o| {
+                matches!(
+                    o,
+                    LinkFileOutcome::Linked(_) | LinkFileOutcome::AlreadyLinked(_)
+                )
+            })
+            .count()
+    }
 }
 
 /// Link all declared shared files in a worktree. Called during worktree creation,
@@ -410,25 +436,24 @@ pub enum LinkMessage<'a> {
 ///
 /// - Reads `shared:` from daft.yml found via `project_root`.
 /// - Creates symlinks for each path that exists in shared storage.
-/// - Reports progress and warnings via `on_message`.
+/// - Returns outcomes for the command layer to render after the spinner.
 /// - Never errors fatally.
 pub fn link_shared_files_on_create(
     worktree_path: &Path,
     git_common_dir: &Path,
     project_root: &Path,
-    on_message: &mut dyn FnMut(LinkMessage),
-) {
+) -> LinkSharedResult {
     let shared_paths = match read_shared_paths(project_root) {
         Ok(paths) => paths,
-        Err(_) => return, // No daft.yml or parse error — skip silently
+        Err(_) => return LinkSharedResult::default(),
     };
 
     if shared_paths.is_empty() {
-        return;
+        return LinkSharedResult::default();
     }
 
     let materialized = MaterializedState::load(git_common_dir).unwrap_or_default();
-    let mut linked_count = 0;
+    let mut outcomes = Vec::new();
 
     for rel_path in &shared_paths {
         if materialized.is_materialized(rel_path, worktree_path) {
@@ -437,31 +462,74 @@ pub fn link_shared_files_on_create(
 
         match create_shared_symlink(worktree_path, rel_path, git_common_dir) {
             Ok(LinkResult::Created) => {
-                let msg = format!("  Linked shared file: {}", rel_path);
-                on_message(LinkMessage::Step(&msg));
-                linked_count += 1;
+                outcomes.push(LinkFileOutcome::Linked(rel_path.clone()));
             }
             Ok(LinkResult::AlreadyLinked) => {
-                linked_count += 1;
+                outcomes.push(LinkFileOutcome::AlreadyLinked(rel_path.clone()));
             }
             Ok(LinkResult::Conflict) => {
-                let msg = format!(
-                    "'{}' exists but is not shared. Run `daft shared link {}` to replace.",
-                    rel_path, rel_path
-                );
-                on_message(LinkMessage::Warning(&msg));
+                outcomes.push(LinkFileOutcome::Conflict(rel_path.clone()));
             }
             Ok(LinkResult::NoSource) => {} // Declared only, skip silently
             Err(e) => {
-                let msg = format!("Failed to link shared file '{}': {}", rel_path, e);
-                on_message(LinkMessage::Warning(&msg));
+                outcomes.push(LinkFileOutcome::Error(rel_path.clone(), e.to_string()));
             }
         }
     }
 
-    if linked_count > 0 {
-        let msg = format!("Linked {} shared file(s)", linked_count);
-        on_message(LinkMessage::Info(&msg));
+    LinkSharedResult { outcomes }
+}
+
+/// Render shared file linking results to stderr with colors.
+pub fn render_link_results(result: &LinkSharedResult) {
+    use crate::styles;
+
+    if result.is_empty() {
+        return;
+    }
+
+    let use_color = styles::colors_enabled_stderr();
+
+    for outcome in &result.outcomes {
+        match outcome {
+            LinkFileOutcome::Linked(path) => {
+                if use_color {
+                    eprintln!("{}Linked{} {}", styles::GREEN, styles::RESET, path,);
+                } else {
+                    eprintln!("Linked {}", path);
+                }
+            }
+            LinkFileOutcome::AlreadyLinked(_) => {} // Silent
+            LinkFileOutcome::Conflict(path) => {
+                if use_color {
+                    eprintln!(
+                        "{}warning:{} '{}' exists but is not shared. Run `daft shared link {}` to replace.",
+                        styles::YELLOW,
+                        styles::RESET,
+                        path,
+                        path,
+                    );
+                } else {
+                    eprintln!(
+                        "warning: '{}' exists but is not shared. Run `daft shared link {}` to replace.",
+                        path, path,
+                    );
+                }
+            }
+            LinkFileOutcome::Error(path, err) => {
+                if use_color {
+                    eprintln!(
+                        "{}warning:{} Failed to link shared file '{}': {}",
+                        styles::YELLOW,
+                        styles::RESET,
+                        path,
+                        err,
+                    );
+                } else {
+                    eprintln!("warning: Failed to link shared file '{}': {}", path, err);
+                }
+            }
+        }
     }
 }
 
