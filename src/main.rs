@@ -29,25 +29,40 @@ fn main() -> Result<()> {
         }
     }
 
+    // Detect background task invocations (__check-update, __prune-trust, etc.)
+    // to skip spawning further background processes — otherwise each background
+    // task recursively spawns more, creating an exponential fork bomb.
+    //
+    // If a fork bomb occurs (hundreds of daft processes consuming all CPU):
+    //   pkill -9 -f "daft.*__check-update"
+    //   pkill -9 -f "daft.*__prune-trust"
+    // Or more broadly:
+    //   pkill -9 -f "<worktree-path>/target/release"
+    // Repeat until `ps aux | grep __check-update | wc -l` returns 0.
+    let is_background_task = std::env::args().nth(1).is_some_and(|a| a.starts_with("__"));
+
     // Warn if config directory is overridden (security measure against trust DB hijacking).
     // Only in dev builds — release builds ignore DAFT_CONFIG_DIR entirely.
     if cfg!(daft_dev_build) {
         if let Ok(dir) = std::env::var(daft::CONFIG_DIR_ENV) {
-            if !dir.is_empty() {
-                let is_background = std::env::args().nth(1).is_some_and(|a| a.starts_with("__"));
-                if !is_background {
-                    eprintln!("warning: config directory overridden via DAFT_CONFIG_DIR");
-                    eprintln!("  -> {dir}");
-                }
+            if !dir.is_empty() && !is_background_task {
+                eprintln!("warning: config directory overridden via DAFT_CONFIG_DIR");
+                eprintln!("  -> {dir}");
             }
         }
     }
 
     // Check for updates (reads cache, spawns background check if stale)
-    let update_notification = daft::update_check::maybe_check_for_update();
+    let update_notification = if !is_background_task {
+        daft::update_check::maybe_check_for_update()
+    } else {
+        None
+    };
 
     // Prune stale trust entries (background, once per 24h)
-    daft::trust_prune::maybe_prune_trust();
+    if !is_background_task {
+        daft::trust_prune::maybe_prune_trust();
+    }
 
     // Route to the appropriate command based on invocation name
     let result = match resolved {
