@@ -9,7 +9,8 @@
 //! | Key | Default | Description |
 //! |-----|---------|-------------|
 //! | `daft.autocd` | `true` | CD into new worktrees (shell wrapper behavior) |
-//! | `daft.checkout.push` | `true` | Push new branches to remote |
+//! | `daft.checkout.push` | `false` | Push new branches to remote |
+//! | `daft.checkout.fetch` | `false` | Fetch from remote before creating worktrees |
 //! | `daft.checkout.upstream` | `true` | Set upstream tracking |
 //! | `daft.remote` | `"origin"` | Default remote name |
 //! | `daft.checkoutBranch.carry` | `true` | Default carry for checkout-branch |
@@ -21,6 +22,7 @@
 //! | `daft.sync.sort` | `branch` | Default sort order for sync command |
 //! | `daft.prune.sort` | `branch` | Default sort order for prune command |
 //! | `daft.updateCheck` | `true` | Enable/disable new version notifications |
+//! | `daft.branchDelete.remote` | `false` | Delete remote branch when removing |
 //!
 //! # Hooks Config Keys
 //!
@@ -87,7 +89,10 @@ pub mod defaults {
     pub const AUTOCD: bool = true;
 
     /// Default value for checkout.push setting.
-    pub const CHECKOUT_PUSH: bool = true;
+    pub const CHECKOUT_PUSH: bool = false;
+
+    /// Default value for checkout.fetch setting.
+    pub const CHECKOUT_FETCH: bool = false;
 
     /// Default value for checkout.upstream setting.
     pub const CHECKOUT_UPSTREAM: bool = true;
@@ -127,6 +132,9 @@ pub mod defaults {
 
     /// Default value for prune.stat setting.
     pub const PRUNE_STAT: Stat = Stat::Summary;
+
+    /// Default value for branchDelete.remote setting.
+    pub const BRANCH_DELETE_REMOTE: bool = false;
 }
 
 /// Git config keys for daft settings.
@@ -136,6 +144,9 @@ pub mod keys {
 
     /// Config key for checkout.push setting.
     pub const CHECKOUT_PUSH: &str = "daft.checkout.push";
+
+    /// Config key for checkout.fetch setting.
+    pub const CHECKOUT_FETCH: &str = "daft.checkout.fetch";
 
     /// Config key for checkout.upstream setting.
     pub const CHECKOUT_UPSTREAM: &str = "daft.checkout.upstream";
@@ -200,6 +211,9 @@ pub mod keys {
     /// Config key for prune.sort setting.
     pub const PRUNE_SORT: &str = "daft.prune.sort";
 
+    /// Config key for branchDelete.remote setting.
+    pub const BRANCH_DELETE_REMOTE: &str = "daft.branchDelete.remote";
+
     /// Experimental config keys.
     pub mod experimental {
         /// Config key for experimental.gitoxide setting.
@@ -255,6 +269,9 @@ pub struct DaftSettings {
 
     /// Push new branches to remote after creation.
     pub checkout_push: bool,
+
+    /// Fetch from remote before creating worktrees.
+    pub checkout_fetch: bool,
 
     /// Set upstream tracking for branches.
     pub checkout_upstream: bool,
@@ -312,6 +329,9 @@ pub struct DaftSettings {
 
     /// Sort specification for prune command (None = default branch ascending).
     pub prune_sort: Option<String>,
+
+    /// Delete remote branch when removing a branch/worktree.
+    pub branch_delete_remote: bool,
 }
 
 impl Default for DaftSettings {
@@ -319,6 +339,7 @@ impl Default for DaftSettings {
         Self {
             autocd: defaults::AUTOCD,
             checkout_push: defaults::CHECKOUT_PUSH,
+            checkout_fetch: defaults::CHECKOUT_FETCH,
             checkout_upstream: defaults::CHECKOUT_UPSTREAM,
             remote: defaults::REMOTE.to_string(),
             checkout_branch_carry: defaults::CHECKOUT_BRANCH_CARRY,
@@ -338,6 +359,7 @@ impl Default for DaftSettings {
             list_sort: None,
             sync_sort: None,
             prune_sort: None,
+            branch_delete_remote: defaults::BRANCH_DELETE_REMOTE,
         }
     }
 }
@@ -359,6 +381,10 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get(keys::CHECKOUT_PUSH)? {
             settings.checkout_push = parse_bool(&value, defaults::CHECKOUT_PUSH);
+        }
+
+        if let Some(value) = git.config_get(keys::CHECKOUT_FETCH)? {
+            settings.checkout_fetch = parse_bool(&value, defaults::CHECKOUT_FETCH);
         }
 
         if let Some(value) = git.config_get(keys::CHECKOUT_UPSTREAM)? {
@@ -466,6 +492,10 @@ impl DaftSettings {
             }
         }
 
+        if let Some(value) = git.config_get(keys::BRANCH_DELETE_REMOTE)? {
+            settings.branch_delete_remote = parse_bool(&value, defaults::BRANCH_DELETE_REMOTE);
+        }
+
         Ok(settings)
     }
 
@@ -483,6 +513,10 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get_global(keys::CHECKOUT_PUSH)? {
             settings.checkout_push = parse_bool(&value, defaults::CHECKOUT_PUSH);
+        }
+
+        if let Some(value) = git.config_get_global(keys::CHECKOUT_FETCH)? {
+            settings.checkout_fetch = parse_bool(&value, defaults::CHECKOUT_FETCH);
         }
 
         if let Some(value) = git.config_get_global(keys::CHECKOUT_UPSTREAM)? {
@@ -591,6 +625,10 @@ impl DaftSettings {
             }
         }
 
+        if let Some(value) = git.config_get_global(keys::BRANCH_DELETE_REMOTE)? {
+            settings.branch_delete_remote = parse_bool(&value, defaults::BRANCH_DELETE_REMOTE);
+        }
+
         Ok(settings)
     }
 }
@@ -602,7 +640,7 @@ impl DaftSettings {
 /// - false: `false`, `no`, `off`, `0`
 ///
 /// Returns the default value if parsing fails.
-fn parse_bool(value: &str, default: bool) -> bool {
+pub(crate) fn parse_bool(value: &str, default: bool) -> bool {
     match value.to_lowercase().as_str() {
         "true" | "yes" | "on" | "1" => true,
         "false" | "no" | "off" | "0" => false,
@@ -854,7 +892,8 @@ mod tests {
     fn test_default_settings() {
         let settings = DaftSettings::default();
         assert!(settings.autocd);
-        assert!(settings.checkout_push);
+        assert!(!settings.checkout_push);
+        assert!(!settings.checkout_fetch);
         assert!(settings.checkout_upstream);
         assert_eq!(settings.remote, "origin");
         assert!(settings.checkout_branch_carry);
@@ -866,6 +905,7 @@ mod tests {
         assert!(!settings.use_gitoxide);
         assert!(!settings.go_auto_start);
         assert_eq!(settings.list_stat, Stat::Summary);
+        assert!(!settings.branch_delete_remote);
     }
 
     #[test]
