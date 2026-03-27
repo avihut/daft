@@ -216,6 +216,22 @@ pub fn execute_yaml_hook_with_rc(
         return Ok(HookResult::skipped("All jobs skipped"));
     }
 
+    // Partition into foreground and background phases.
+    // Background jobs that are transitively depended on by foreground jobs
+    // are promoted to foreground to preserve DAG validity.
+    let (fg_specs, bg_specs) = partition_foreground_background(&specs);
+
+    // Warn about promoted jobs (background flag was true but they ended up
+    // in the foreground partition because a foreground job depends on them).
+    for spec in &fg_specs {
+        if spec.background {
+            presenter.on_message(&format!(
+                "⚠ Job '{}' promoted to foreground (required by a foreground job)",
+                spec.name,
+            ));
+        }
+    }
+
     // Clear any active spinner — the presenter writes directly to stderr.
     output.finish_spinner();
 
@@ -223,13 +239,60 @@ pub fn execute_yaml_hook_with_rc(
     presenter.on_phase_start(hook_name);
     let hook_start = std::time::Instant::now();
 
-    // Execute via the generic runner
-    let results = crate::executor::runner::run_jobs(&specs, exec_mode, presenter)?;
+    // Execute foreground jobs via the generic runner
+    let fg_results = crate::executor::runner::run_jobs(&fg_specs, exec_mode, presenter)?;
 
     presenter.on_phase_complete(hook_start.elapsed());
 
-    // Convert Vec<JobResult> to HookResult
-    job_results_to_hook_result(&results)
+    // If there are no background jobs, return the foreground results directly.
+    if bg_specs.is_empty() {
+        return job_results_to_hook_result(&fg_results);
+    }
+
+    // If DAFT_NO_BACKGROUND_JOBS is set, run background jobs inline as foreground.
+    if std::env::var("DAFT_NO_BACKGROUND_JOBS").is_ok() {
+        let bg_results = crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter)?;
+        let mut all_results = fg_results;
+        all_results.extend(bg_results);
+        return job_results_to_hook_result(&all_results);
+    }
+
+    // Dispatch background jobs to a forked coordinator process.
+    #[cfg(unix)]
+    {
+        let repo_hash = compute_repo_hash(&hook_env_obj);
+        let invocation_id = generate_invocation_id();
+        let store = crate::coordinator::log_store::LogStore::for_repo(&repo_hash)?;
+        let mut coord_state =
+            crate::coordinator::process::CoordinatorState::new(&repo_hash, &invocation_id);
+        for spec in bg_specs {
+            coord_state.add_job(spec);
+        }
+
+        let bg_count = coord_state.jobs.len();
+        crate::coordinator::process::fork_coordinator(coord_state, store)?;
+
+        presenter.on_message(&format!(
+            "⟳ {} background job{} running — daft hooks jobs to manage",
+            bg_count,
+            if bg_count == 1 { "" } else { "s" },
+        ));
+    }
+
+    // On non-Unix platforms, background coordinator is not available.
+    // Fall back to running background jobs inline.
+    #[cfg(not(unix))]
+    {
+        let bg_results = crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter)?;
+        let mut all_results = fg_results.clone();
+        all_results.extend(bg_results);
+        return job_results_to_hook_result(&all_results);
+    }
+
+    // Convert foreground results to HookResult (background jobs are now
+    // running in the forked coordinator and do not affect the hook outcome).
+    #[cfg(unix)]
+    job_results_to_hook_result(&fg_results)
 }
 
 /// Convert generic executor results into a `HookResult`.
@@ -296,6 +359,29 @@ pub fn filter_tracked_jobs(jobs: &[JobDef], changed: &HashSet<TrackedAttribute>)
         })
         .cloned()
         .collect()
+}
+
+/// Compute a stable hash of the project root for use as the coordinator's
+/// repo identifier. This ensures each repository gets its own log store
+/// directory and coordinator socket.
+fn compute_repo_hash(env: &super::environment::HookEnvironment) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let project_root = env.get("DAFT_PROJECT_ROOT").unwrap_or_default().to_string();
+    let mut hasher = DefaultHasher::new();
+    project_root.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Generate a unique invocation ID based on the current timestamp.
+/// Used to group background job logs under a single hook invocation.
+fn generate_invocation_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    format!("{ts:016x}")
 }
 
 /// Check if a job should be silently skipped due to platform mismatch.
