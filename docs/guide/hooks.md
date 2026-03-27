@@ -157,6 +157,7 @@ Additionally:
 | `source_dir`       | string      | Directory for script files (default: `".daft"`)                          |
 | `source_dir_local` | string      | Directory for local (gitignored) script files (default: `".daft-local"`) |
 | `hooks`            | map         | Hook definitions, keyed by hook name                                     |
+| `log`              | object      | Log configuration (see [Background Jobs](#background-jobs))              |
 
 ### Hook Definition
 
@@ -178,6 +179,7 @@ hooks:
 | `parallel`     | bool                 | `true`  | Run jobs in parallel                                                       |
 | `piped`        | bool                 |         | Run jobs sequentially, stop on first failure                               |
 | `follow`       | bool                 |         | Run jobs sequentially, continue on failure                                 |
+| `background`   | bool                 |         | Default background execution for all jobs in this hook                     |
 | `exclude_tags` | list                 |         | Tags to exclude at hook level                                              |
 | `exclude`      | list                 |         | Glob patterns to exclude                                                   |
 | `skip`         | bool / string / list |         | Skip condition (see [Skip and Only Conditions](#skip-and-only-conditions)) |
@@ -188,27 +190,30 @@ hooks:
 
 Each job in the `jobs` list supports:
 
-| Field         | Type                 | Description                                                                               |
-| ------------- | -------------------- | ----------------------------------------------------------------------------------------- |
-| `name`        | string               | Job name (used for display, merging, and dependency references)                           |
-| `description` | string               | Human-readable description (shown in dry-run and completions)                             |
-| `run`         | string               | Inline shell command to execute                                                           |
-| `script`      | string               | Script file to run (relative to `source_dir`)                                             |
-| `runner`      | string               | Interpreter for script files (e.g., `"bash"`, `"python"`)                                 |
-| `args`        | string               | Arguments to pass to the script                                                           |
-| `root`        | string               | Working directory (relative to worktree root)                                             |
-| `tags`        | list                 | Tags for filtering with `exclude_tags`                                                    |
-| `skip`        | bool / string / list | Skip condition                                                                            |
-| `only`        | bool / string / list | Only condition                                                                            |
-| `os`          | string / list        | Target OS (`macos`, `linux`, `windows`); skips if no match                                |
-| `arch`        | string / list        | Target architecture (`x86_64`, `aarch64`); skips if no match                              |
-| `env`         | map                  | Extra environment variables                                                               |
-| `fail_text`   | string               | Custom failure message                                                                    |
-| `interactive` | bool                 | Job needs TTY/stdin (forces sequential execution)                                         |
-| `priority`    | int                  | Execution ordering (lower runs first)                                                     |
-| `needs`       | list                 | Names of jobs that must complete before this job runs                                     |
-| `tracks`      | list                 | Worktree attributes this job depends on: `path`, `branch` (see [Move Hooks](#move-hooks)) |
-| `group`       | object               | Nested group of jobs (see [Groups](#groups))                                              |
+| Field               | Type                 | Description                                                                               |
+| ------------------- | -------------------- | ----------------------------------------------------------------------------------------- |
+| `name`              | string               | Job name (used for display, merging, and dependency references)                           |
+| `description`       | string               | Human-readable description (shown in dry-run and completions)                             |
+| `run`               | string               | Inline shell command to execute                                                           |
+| `script`            | string               | Script file to run (relative to `source_dir`)                                             |
+| `runner`            | string               | Interpreter for script files (e.g., `"bash"`, `"python"`)                                 |
+| `args`              | string               | Arguments to pass to the script                                                           |
+| `root`              | string               | Working directory (relative to worktree root)                                             |
+| `tags`              | list                 | Tags for filtering with `exclude_tags`                                                    |
+| `skip`              | bool / string / list | Skip condition                                                                            |
+| `only`              | bool / string / list | Only condition                                                                            |
+| `os`                | string / list        | Target OS (`macos`, `linux`, `windows`); skips if no match                                |
+| `arch`              | string / list        | Target architecture (`x86_64`, `aarch64`); skips if no match                              |
+| `env`               | map                  | Extra environment variables                                                               |
+| `fail_text`         | string               | Custom failure message                                                                    |
+| `interactive`       | bool                 | Job needs TTY/stdin (forces sequential execution)                                         |
+| `priority`          | int                  | Execution ordering (lower runs first)                                                     |
+| `needs`             | list                 | Names of jobs that must complete before this job runs                                     |
+| `tracks`            | list                 | Worktree attributes this job depends on: `path`, `branch` (see [Move Hooks](#move-hooks)) |
+| `group`             | object               | Nested group of jobs (see [Groups](#groups))                                              |
+| `background`        | bool                 | Run this job in the background (see [Background Jobs](#background-jobs))                  |
+| `background_output` | `log` / `silent`     | Output behavior for background jobs (default: `log`)                                      |
+| `log`               | object               | Log configuration (`retention`, `path`) for this job                                      |
 
 A job must have exactly one of `run`, `script`, or `group`.
 
@@ -345,6 +350,166 @@ In this example:
   `dep-failed` and do not run
 - If a dependency is **skipped**, downstream jobs still run (skipped deps are
   considered satisfied)
+
+## Background Jobs
+
+Jobs marked `background: true` run in the background after the command returns,
+so you can start working immediately while long-running tasks (builds, asset
+compilation, etc.) complete asynchronously.
+
+### Basic Usage
+
+```yaml
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: install deps
+        run: pnpm install
+      - name: warm build cache
+        run: cargo build
+        background: true
+        needs: [install deps]
+```
+
+`install deps` runs in the foreground (blocking). Once it completes, the command
+returns and you're back in your shell. `warm build cache` continues running in
+the background via a coordinator process.
+
+### Hook-Level Default
+
+Set `background: true` at the hook level to make all jobs background by default.
+Individual jobs can override with `background: false`:
+
+```yaml
+hooks:
+  worktree-post-create:
+    background: true
+    jobs:
+      - name: install deps
+        run: pnpm install
+        background: false # override: run in foreground
+      - name: warm build cache
+        run: cargo build # inherits background: true
+      - name: precompile assets
+        run: pnpm build:assets # inherits background: true
+```
+
+### Foreground Promotion
+
+Background jobs participate fully in the dependency graph. If a foreground job
+depends on a background job (via `needs`), the background job is automatically
+**promoted to foreground** so the dependency can be satisfied before the command
+returns.
+
+```yaml
+jobs:
+  - name: build
+    run: cargo build
+    background: true
+  - name: generate types
+    run: pnpm generate:types
+    needs: [build] # foreground job depends on background job
+```
+
+Here, `build` is promoted to foreground because `generate types` needs it. daft
+prints a warning when this happens:
+
+```
+! Job 'build' promoted to foreground (required by a foreground job)
+```
+
+This also appears as a warning in `git daft hooks validate`.
+
+### Output and Logging
+
+Background job output is written to log files in the XDG state directory
+(`~/.local/state/daft/jobs/`).
+
+The `background_output` field controls notification behavior:
+
+| Value    | Log file                | Terminal notification on failure |
+| -------- | ----------------------- | -------------------------------- |
+| `log`    | Always written          | Yes                              |
+| `silent` | Written only on failure | No                               |
+
+Default is `log`. When a background job fails, a one-line notification prints to
+the terminal where the command was run:
+
+```
+x Background job 'warm build cache' failed (exit 1) -- daft hooks jobs logs warm-build-cache
+```
+
+### Log Configuration
+
+The `log` field controls log file storage and retention:
+
+```yaml
+# Top-level default
+log:
+  retention: 14d
+
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: build
+        run: cargo build
+        background: true
+        log:
+          retention: 1d # per-job override
+          path: ./build-logs/build.log # custom log path
+```
+
+| Field       | Type   | Default       | Description                                      |
+| ----------- | ------ | ------------- | ------------------------------------------------ |
+| `retention` | string | `7d`          | How long to keep logs (e.g., `7d`, `24h`, `30m`) |
+| `path`      | string | XDG state dir | Override log file location                       |
+
+`retention` is resolved in precedence order: built-in default, global config,
+repository config (`daft.yml`), local config (`daft-local.yml`), per-job.
+
+Custom `path` values can be absolute or relative to the worktree root. Template
+variables (`{branch}`, `{worktree_path}`) are available. Retention cleanup
+(`daft hooks jobs clean`) only manages files in the XDG state directory --
+custom paths are the user's responsibility.
+
+### Managing Background Jobs
+
+Use `git daft hooks jobs` to interact with background work:
+
+```bash
+daft hooks jobs                # list running, completed, and failed jobs
+daft hooks jobs logs <job>     # view a job's output log
+daft hooks jobs cancel <job>   # stop a running job
+daft hooks jobs cancel --all   # stop all running jobs
+daft hooks jobs retry <job>    # re-run a failed job
+daft hooks jobs clean          # remove logs older than retention period
+```
+
+See [daft-hooks-jobs](../cli/daft-hooks-jobs.md) for the full CLI reference.
+
+### How It Works
+
+When a hook has background jobs, daft forks a single **coordinator process**
+that manages them. The coordinator runs jobs as threads (shell commands like
+`cargo build` are child processes of the coordinator). When all jobs finish, the
+coordinator exits.
+
+This design avoids orphaned processes -- killing the coordinator PID terminates
+all background work. An environment variable `DAFT_IS_COORDINATOR` prevents
+recursive background spawning (same pattern as the `__check-update` guard).
+
+When a worktree is removed, daft automatically cancels any running background
+jobs associated with it.
+
+### Disabling Background Execution
+
+Set `DAFT_NO_BACKGROUND_JOBS=1` to promote all background jobs to foreground.
+Useful for CI, debugging, or when you want all hooks to complete before
+proceeding:
+
+```bash
+DAFT_NO_BACKGROUND_JOBS=1 git worktree-checkout feat/my-branch
+```
 
 ## Skip and Only Conditions
 
