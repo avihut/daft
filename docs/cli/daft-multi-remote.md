@@ -46,6 +46,15 @@ daft multi-remote
 
 Enable multi-remote mode and migrate existing worktrees
 
+Enables multi-remote mode and migrates existing worktrees to the remote-prefixed
+directory structure.
+
+Each worktree is moved from `project/branch` to `project/remote/branch`, where
+the remote is determined by the branch's upstream tracking configuration or
+defaults to the specified default remote.
+
+Use --dry-run to preview the migration without making changes.
+
 ```
 daft multi-remote enable [OPTIONS]
 ```
@@ -61,6 +70,15 @@ daft multi-remote enable [OPTIONS]
 ### disable
 
 Disable multi-remote mode and flatten worktree structure
+
+Disables multi-remote mode and migrates worktrees back to the flat directory
+structure.
+
+Each worktree is moved from `project/remote/branch` back to `project/branch`.
+This command requires that only one remote is configured, as the flat structure
+cannot distinguish between worktrees from different remotes.
+
+Use --dry-run to preview the migration without making changes.
 
 ```
 daft multi-remote disable [OPTIONS]
@@ -98,6 +116,18 @@ daft multi-remote set-default <REMOTE>
 ### move
 
 Move a worktree to a different remote folder
+
+Moves a worktree from one remote folder to another. This is useful when:
+
+- You forked a branch and want to organize it under a different remote
+- You're transferring a feature branch from your fork to upstream
+- You want to reorganize worktrees after adding a new remote
+
+The worktree is physically moved on disk, and git's internal worktree
+records are updated accordingly.
+
+Options like --set-upstream can update the branch's tracking configuration
+to match the new remote organization.
 
 ```
 daft multi-remote move [OPTIONS] <BRANCH>

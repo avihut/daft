@@ -670,6 +670,16 @@ fn render_command_markdown(command_name: &str, cmd: &clap::Command) -> String {
                 md.push_str(&format!("{sub_about}\n\n"));
             }
 
+            // Render long_about for subcommands (matches top-level behavior)
+            let sub_long_about = sub
+                .get_long_about()
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            let sub_description = sub_long_about.trim();
+            if !sub_description.is_empty() {
+                md.push_str(&format!("{sub_description}\n\n"));
+            }
+
             // Usage line for subcommand
             md.push_str("```\n");
             md.push_str(&build_usage_string(
