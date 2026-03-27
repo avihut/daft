@@ -34,6 +34,9 @@ pub trait JobPresenter: Send + Sync {
     /// A job was skipped.
     fn on_job_skipped(&self, name: &str, reason: &str, duration: Duration, show_duration: bool);
 
+    /// A job was dispatched to run in the background.
+    fn on_job_background(&self, name: &str, description: Option<&str>);
+
     /// A general informational message (not tied to a specific job).
     fn on_message(&self, msg: &str);
 
@@ -80,6 +83,7 @@ impl JobPresenter for NullPresenter {
         _show_duration: bool,
     ) {
     }
+    fn on_job_background(&self, _name: &str, _description: Option<&str>) {}
     fn on_message(&self, _msg: &str) {}
     fn on_phase_complete(&self, _total_duration: Duration) {}
     fn take_results(&self) -> Vec<JobResult> {
