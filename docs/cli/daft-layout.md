@@ -36,6 +36,89 @@ Use `daft layout default` to view or change the global default layout.
 daft layout
 ```
 
+## Subcommands
+
+### list
+
+List all available layouts
+
+```
+daft layout list
+```
+
+### show
+
+Show the resolved layout for the current repo
+
+```
+daft layout show [PATH]
+```
+
+#### Arguments
+
+| Argument | Description | Required |
+|----------|-------------|----------|
+| `<PATH>` | Path to a git repository (defaults to current directory) | No |
+
+### transform
+
+Transform the current repo to a different layout
+
+```
+daft layout transform [OPTIONS] <LAYOUT>
+```
+
+#### Arguments
+
+| Argument | Description | Required |
+|----------|-------------|----------|
+| `<LAYOUT>` | Target layout name or template | Yes |
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `-f, --force` | Force transform even with uncommitted changes |  |
+| `--dry-run` | Show plan without executing |  |
+| `--include <BRANCH>` | Also relocate this non-conforming worktree (repeatable) |  |
+| `--include-all` | Relocate all non-conforming worktrees |  |
+| `-q, --quiet` | Operate quietly; suppress progress reporting |  |
+| `-v, --verbose` | Show detailed hook execution |  |
+
+### default
+
+View or set the global default layout
+
+```
+daft layout default [OPTIONS] [LAYOUT]
+```
+
+#### Arguments
+
+| Argument | Description | Required |
+|----------|-------------|----------|
+| `<LAYOUT>` | Layout name or template to set as the global default | No |
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `--reset` | Remove the global default, reverting to built-in (sibling) |  |
+
+### reset
+
+Clear the stored layout for a repo
+
+```
+daft layout reset [PATH]
+```
+
+#### Arguments
+
+| Argument | Description | Required |
+|----------|-------------|----------|
+| `<PATH>` | Path to a git repository (defaults to current directory) | No |
+
 ## Global Options
 
 | Option | Description |

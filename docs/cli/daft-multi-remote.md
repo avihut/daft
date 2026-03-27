@@ -40,6 +40,86 @@ to the flat layout.
 daft multi-remote
 ```
 
+## Subcommands
+
+### enable
+
+Enable multi-remote mode and migrate existing worktrees
+
+```
+daft multi-remote enable [OPTIONS]
+```
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `--default <DEFAULT>` | Default remote for new branches (defaults to 'origin') |  |
+| `--dry-run` | Preview changes without executing |  |
+| `-f, --force` | Skip confirmation |  |
+
+### disable
+
+Disable multi-remote mode and flatten worktree structure
+
+```
+daft multi-remote disable [OPTIONS]
+```
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `--dry-run` | Preview changes without executing |  |
+| `-f, --force` | Skip confirmation |  |
+
+### status
+
+Show current multi-remote configuration
+
+```
+daft multi-remote status
+```
+
+### set-default
+
+Change the default remote for new branches
+
+```
+daft multi-remote set-default <REMOTE>
+```
+
+#### Arguments
+
+| Argument | Description | Required |
+|----------|-------------|----------|
+| `<REMOTE>` | Remote name to use as default | Yes |
+
+### move
+
+Move a worktree to a different remote folder
+
+```
+daft multi-remote move [OPTIONS] <BRANCH>
+```
+
+#### Arguments
+
+| Argument | Description | Required |
+|----------|-------------|----------|
+| `<BRANCH>` | Branch name or worktree path to move | Yes |
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `--to <TO>` | Target remote folder |  |
+| `--set-upstream` | Also update the branch's upstream tracking to the new remote |  |
+| `--push` | Push the branch to the new remote |  |
+| `--delete-old` | Delete the branch from the old remote after pushing |  |
+| `--dry-run` | Preview changes without executing |  |
+| `-f, --force` | Skip confirmation |  |
+
 ## Global Options
 
 | Option | Description |

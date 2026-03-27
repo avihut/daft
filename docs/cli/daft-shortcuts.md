@@ -32,6 +32,87 @@ Examples:
 daft shortcuts
 ```
 
+## Subcommands
+
+### list
+
+List all shortcut styles and their aliases
+
+```
+daft shortcuts list
+```
+
+### status
+
+Show currently installed shortcuts (default)
+
+```
+daft shortcuts status
+```
+
+### enable
+
+Enable a shortcut style (creates symlinks)
+
+```
+daft shortcuts enable [OPTIONS] <STYLE>
+```
+
+#### Arguments
+
+| Argument | Description | Required |
+|----------|-------------|----------|
+| `<STYLE>` | The style to enable (git, shell, or legacy) | Yes |
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `--install-dir <INSTALL_DIR>` | Override installation directory |  |
+| `--dry-run` | Preview without making changes |  |
+
+### disable
+
+Disable a shortcut style (removes symlinks)
+
+```
+daft shortcuts disable [OPTIONS] <STYLE>
+```
+
+#### Arguments
+
+| Argument | Description | Required |
+|----------|-------------|----------|
+| `<STYLE>` | The style to disable (git, shell, or legacy) | Yes |
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `--install-dir <INSTALL_DIR>` | Override installation directory |  |
+| `--dry-run` | Preview without making changes |  |
+
+### only
+
+Enable only the specified style (disables others)
+
+```
+daft shortcuts only [OPTIONS] <STYLE>
+```
+
+#### Arguments
+
+| Argument | Description | Required |
+|----------|-------------|----------|
+| `<STYLE>` | The style to enable exclusively (git, shell, or legacy) | Yes |
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `--install-dir <INSTALL_DIR>` | Override installation directory |  |
+| `--dry-run` | Preview without making changes |  |
+
 ## Global Options
 
 | Option | Description |

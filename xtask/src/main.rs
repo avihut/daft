@@ -645,85 +645,48 @@ fn render_command_markdown(command_name: &str, cmd: &clap::Command) -> String {
     md.push_str("\n```\n\n");
 
     // Positional arguments
-    let positionals: Vec<_> = cmd
-        .get_arguments()
-        .filter(|a| a.is_positional() && a.get_id() != "version" && a.get_id() != "help")
-        .collect();
-
-    if !positionals.is_empty() {
-        md.push_str("## Arguments\n\n");
-        md.push_str("| Argument | Description | Required |\n");
-        md.push_str("|----------|-------------|----------|\n");
-
-        for arg in &positionals {
-            let id = arg.get_id().as_str();
-            let value_name = arg
-                .get_value_names()
-                .and_then(|v| v.first().map(|s| s.to_string()))
-                .unwrap_or_else(|| id.to_uppercase());
-
-            let help = arg.get_help().map(|s| s.to_string()).unwrap_or_default();
-
-            let required = if arg.is_required_set() { "Yes" } else { "No" };
-
-            md.push_str(&format!("| `<{value_name}>` | {help} | {required} |\n"));
-        }
-        md.push('\n');
-    }
+    let args_table = render_arguments_table(cmd.get_arguments(), "## Arguments");
+    md.push_str(&args_table);
 
     // Options (non-positional arguments)
-    let options: Vec<_> = cmd
-        .get_arguments()
-        .filter(|a| !a.is_positional() && a.get_id() != "version" && a.get_id() != "help")
+    let opts_table = render_options_table(cmd.get_arguments(), "## Options");
+    md.push_str(&opts_table);
+
+    // Subcommands
+    let subcommands: Vec<_> = cmd
+        .get_subcommands()
+        .filter(|sub| sub.get_name() != "help")
         .collect();
 
-    if !options.is_empty() {
-        md.push_str("## Options\n\n");
-        md.push_str("| Option | Description | Default |\n");
-        md.push_str("|--------|-------------|----------|\n");
+    if !subcommands.is_empty() {
+        md.push_str("## Subcommands\n\n");
 
-        for arg in &options {
-            let mut opt_str = String::new();
-            if let Some(short) = arg.get_short() {
-                opt_str.push_str(&format!("-{short}"));
-            }
-            if let Some(long) = arg.get_long() {
-                if !opt_str.is_empty() {
-                    opt_str.push_str(", ");
-                }
-                opt_str.push_str(&format!("--{long}"));
+        for sub in &subcommands {
+            let sub_name = sub.get_name();
+            let sub_about = sub.get_about().map(|s| s.to_string()).unwrap_or_default();
+
+            md.push_str(&format!("### {sub_name}\n\n"));
+            if !sub_about.is_empty() {
+                md.push_str(&format!("{sub_about}\n\n"));
             }
 
-            // Add value name if the option takes a value (skip for boolean flags)
-            let is_bool_flag = matches!(
-                arg.get_action(),
-                clap::ArgAction::SetTrue | clap::ArgAction::SetFalse | clap::ArgAction::Count
-            );
-            if !is_bool_flag {
-                if let Some(value_names) = arg.get_value_names() {
-                    if !value_names.is_empty() {
-                        let name = &value_names[0];
-                        opt_str.push_str(&format!(" <{name}>"));
-                    }
-                }
-            }
+            // Usage line for subcommand
+            md.push_str("```\n");
+            md.push_str(&build_usage_string(
+                command_name,
+                sub,
+                &format!("{display_name} {sub_name}"),
+            ));
+            md.push_str("\n```\n\n");
 
-            let help = arg.get_help().map(|s| s.to_string()).unwrap_or_default();
+            // Subcommand positional arguments
+            let sub_args = render_arguments_table(sub.get_arguments(), "#### Arguments");
+            md.push_str(&sub_args);
 
-            let defaults: Vec<_> = arg
-                .get_default_values()
-                .iter()
-                .map(|v| v.to_string_lossy().to_string())
-                .collect();
-            let default_str = if defaults.is_empty() {
-                String::new()
-            } else {
-                format!("`{}`", defaults.join(", "))
-            };
-
-            md.push_str(&format!("| `{opt_str}` | {help} | {default_str} |\n"));
+            // Subcommand options
+            let sub_opts = render_options_table(sub.get_arguments(), "#### Options");
+            md.push_str(&sub_opts);
         }
-        md.push('\n');
     }
 
     // Global options
@@ -743,6 +706,103 @@ fn render_command_markdown(command_name: &str, cmd: &clap::Command) -> String {
         }
         md.push('\n');
     }
+
+    md
+}
+
+/// Render a markdown table of positional arguments.
+///
+/// Returns an empty string if there are no positional arguments (excluding help/version).
+fn render_arguments_table<'a>(args: impl Iterator<Item = &'a clap::Arg>, heading: &str) -> String {
+    let positionals: Vec<_> = args
+        .filter(|a| a.is_positional() && a.get_id() != "version" && a.get_id() != "help")
+        .collect();
+
+    if positionals.is_empty() {
+        return String::new();
+    }
+
+    let mut md = String::new();
+    md.push_str(&format!("{heading}\n\n"));
+    md.push_str("| Argument | Description | Required |\n");
+    md.push_str("|----------|-------------|----------|\n");
+
+    for arg in &positionals {
+        let id = arg.get_id().as_str();
+        let value_name = arg
+            .get_value_names()
+            .and_then(|v| v.first().map(|s| s.to_string()))
+            .unwrap_or_else(|| id.to_uppercase());
+
+        let help = arg.get_help().map(|s| s.to_string()).unwrap_or_default();
+        let required = if arg.is_required_set() { "Yes" } else { "No" };
+
+        md.push_str(&format!("| `<{value_name}>` | {help} | {required} |\n"));
+    }
+    md.push('\n');
+
+    md
+}
+
+/// Render a markdown table of non-positional options.
+///
+/// Returns an empty string if there are no options (excluding help/version).
+fn render_options_table<'a>(args: impl Iterator<Item = &'a clap::Arg>, heading: &str) -> String {
+    let options: Vec<_> = args
+        .filter(|a| !a.is_positional() && a.get_id() != "version" && a.get_id() != "help")
+        .collect();
+
+    if options.is_empty() {
+        return String::new();
+    }
+
+    let mut md = String::new();
+    md.push_str(&format!("{heading}\n\n"));
+    md.push_str("| Option | Description | Default |\n");
+    md.push_str("|--------|-------------|----------|\n");
+
+    for arg in &options {
+        let mut opt_str = String::new();
+        if let Some(short) = arg.get_short() {
+            opt_str.push_str(&format!("-{short}"));
+        }
+        if let Some(long) = arg.get_long() {
+            if !opt_str.is_empty() {
+                opt_str.push_str(", ");
+            }
+            opt_str.push_str(&format!("--{long}"));
+        }
+
+        // Add value name if the option takes a value (skip for boolean flags)
+        let is_bool_flag = matches!(
+            arg.get_action(),
+            clap::ArgAction::SetTrue | clap::ArgAction::SetFalse | clap::ArgAction::Count
+        );
+        if !is_bool_flag {
+            if let Some(value_names) = arg.get_value_names() {
+                if !value_names.is_empty() {
+                    let name = &value_names[0];
+                    opt_str.push_str(&format!(" <{name}>"));
+                }
+            }
+        }
+
+        let help = arg.get_help().map(|s| s.to_string()).unwrap_or_default();
+
+        let defaults: Vec<_> = arg
+            .get_default_values()
+            .iter()
+            .map(|v| v.to_string_lossy().to_string())
+            .collect();
+        let default_str = if defaults.is_empty() {
+            String::new()
+        } else {
+            format!("`{}`", defaults.join(", "))
+        };
+
+        md.push_str(&format!("| `{opt_str}` | {help} | {default_str} |\n"));
+    }
+    md.push('\n');
 
     md
 }
