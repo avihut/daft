@@ -1,6 +1,6 @@
 //! Rich (indicatif) renderer for interactive terminals.
 
-use super::formatting::{DARK_GREY, ITALIC, ORANGE};
+use super::formatting::{BLUE, DARK_GREY, ITALIC, ORANGE};
 use super::{JobOutcome, JobResultEntry};
 use crate::settings::HookOutputConfig;
 use crate::styles;
@@ -391,6 +391,48 @@ impl HookProgressRenderer {
     /// Add a pre-built result entry (e.g., for background jobs).
     pub fn push_finished_job(&mut self, entry: JobResultEntry) {
         self.finished_jobs.push(entry);
+    }
+
+    /// Show a background job dispatch in the live progress area.
+    pub fn show_background_job(&mut self, name: &str, description: Option<&str>) {
+        let cyan = "\x1b[38;5;80m";
+
+        // Job name line (blue pipe, blue name, cyan status)
+        let blue_pipe = if self.use_color {
+            format!("{BLUE}\u{2503}{}", styles::RESET)
+        } else {
+            "\u{2503}".to_string()
+        };
+
+        let name_line = if self.use_color {
+            format!(
+                "{blue_pipe}  {BLUE}{name}{} {cyan}running in background{}",
+                styles::RESET,
+                styles::RESET
+            )
+        } else {
+            format!("{blue_pipe}  {name} running in background")
+        };
+
+        let bar = self.mp.add(ProgressBar::new_spinner());
+        bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
+        bar.set_message(name_line);
+        bar.finish();
+
+        // Description line below if provided
+        if let Some(desc) = description {
+            let desc_line = format!("{blue_pipe}  {desc}");
+            let desc_bar = self.mp.insert_after(&bar, ProgressBar::new_spinner());
+            desc_bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
+            desc_bar.set_message(desc_line);
+            desc_bar.finish();
+        }
+
+        // Empty line separator
+        let sep_bar = self.mp.add(ProgressBar::new_spinner());
+        sep_bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
+        sep_bar.set_message(String::new());
+        sep_bar.finish();
     }
 
     /// Extract finished job results (for use in callers that need them).

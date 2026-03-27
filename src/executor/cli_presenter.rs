@@ -88,6 +88,7 @@ impl JobPresenter for CliPresenter {
 
     fn on_job_background(&self, name: &str, description: Option<&str>) {
         let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
+        r.show_background_job(name, description);
         r.record_background_job(name, description);
     }
 
