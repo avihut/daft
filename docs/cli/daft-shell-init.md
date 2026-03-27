@@ -48,3 +48,8 @@ daft shell-init [OPTIONS] <SHELL>
 | `-h`, `--help` | Print help information |
 | `-V`, `--version` | Print version information |
 
+## See Also
+
+- [daft-setup](./daft-setup.md)
+- [daft-shortcuts](./daft-shortcuts.md)
+

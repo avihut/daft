@@ -120,3 +120,8 @@ daft shortcuts only [OPTIONS] <STYLE>
 | `-h`, `--help` | Print help information |
 | `-V`, `--version` | Print version information |
 
+## See Also
+
+- [daft-setup](./daft-setup.md)
+- [daft-shell-init](./daft-shell-init.md)
+

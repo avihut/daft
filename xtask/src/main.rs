@@ -268,6 +268,9 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
         // Config cluster
         "daft-doctor" => vec!["git-worktree-clone", "git-worktree-init"],
         "daft-release-notes" => vec![],
+        "daft-setup" => vec!["daft-shortcuts", "daft-shell-init"],
+        "daft-shortcuts" => vec!["daft-setup", "daft-shell-init"],
+        "daft-shell-init" => vec!["daft-setup", "daft-shortcuts"],
         _ => vec![],
     }
 }

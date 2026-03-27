@@ -45,3 +45,8 @@ daft setup [OPTIONS]
 | `-h`, `--help` | Print help information |
 | `-V`, `--version` | Print version information |
 
+## See Also
+
+- [daft-shortcuts](./daft-shortcuts.md)
+- [daft-shell-init](./daft-shell-init.md)
+
