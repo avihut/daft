@@ -406,12 +406,12 @@ impl HookProgressRenderer {
 
         let name_line = if self.use_color {
             format!(
-                "{blue_pipe}  {BLUE}{name}{} {cyan}running in background{}",
+                "{blue_pipe}  {BLUE}{name}{} {cyan}(background){}",
                 styles::RESET,
                 styles::RESET
             )
         } else {
-            format!("{blue_pipe}  {name} running in background")
+            format!("{blue_pipe}  {name} (background)")
         };
 
         let bar = self.mp.add(ProgressBar::new_spinner());
