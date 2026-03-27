@@ -541,13 +541,57 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
     let project_root = repo::get_project_root()?;
     let shared_paths = shared::read_shared_paths(&project_root)?;
     let worktree_paths = shared::list_worktree_paths()?;
-    let materialized = shared::MaterializedState::load(&git_common_dir)?;
+    let mut materialized = shared::MaterializedState::load(&git_common_dir)?;
 
     if shared_paths.is_empty() {
         output.info("No shared files declared.");
         return Ok(());
     }
 
+    // Phase 1: Detect declared-but-uncollected files
+    let uncollected = shared::detect_uncollected(&shared_paths, &worktree_paths, &git_common_dir);
+
+    if !uncollected.is_empty() {
+        let is_interactive = std::io::IsTerminal::is_terminal(&std::io::stderr())
+            && std::env::var("DAFT_TESTING").is_err();
+
+        if is_interactive {
+            use crate::output::tui::collect_picker::{run_collect_picker, PickerOutcome};
+
+            match run_collect_picker(uncollected)? {
+                PickerOutcome::Decisions(decisions) => {
+                    for decision in &decisions {
+                        shared::execute_collect(
+                            decision,
+                            &worktree_paths,
+                            &git_common_dir,
+                            &project_root,
+                            &mut materialized,
+                        )?;
+                        output.success(&format!("Collected: {}", decision.rel_path));
+                    }
+                    materialized.save(&git_common_dir)?;
+                }
+                PickerOutcome::Cancelled => {
+                    output.info("Sync cancelled.");
+                    return Ok(());
+                }
+            }
+        } else {
+            // Non-interactive: report what needs collection
+            let count = uncollected.len();
+            let files: Vec<&str> = uncollected.iter().map(|u| u.rel_path.as_str()).collect();
+            output.info(&format!(
+                "{} declared file{} not yet collected: {}",
+                count,
+                if count == 1 { "" } else { "s" },
+                files.join(", ")
+            ));
+            output.info("Run `daft shared sync` interactively to collect them.");
+        }
+    }
+
+    // Phase 2: Normal sync — ensure symlinks for all collected shared files
     for wt in &worktree_paths {
         let wt_name = wt
             .file_name()
@@ -562,12 +606,12 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
 
             match shared::create_shared_symlink(wt, rel_path, &git_common_dir)? {
                 shared::LinkResult::Created => {
-                    output.success(&format!("{}: {} → symlinked", wt_name, rel_path));
+                    output.success(&format!("{}: {} \u{2192} symlinked", wt_name, rel_path));
                 }
                 shared::LinkResult::AlreadyLinked => {}
                 shared::LinkResult::Conflict => {
                     output.warning(&format!(
-                        "{}: {} exists (not shared) — run `daft shared link {}` to replace",
+                        "{}: {} exists (not shared) \u{2014} run `daft shared link {}` to replace",
                         wt_name, rel_path, rel_path
                     ));
                 }
