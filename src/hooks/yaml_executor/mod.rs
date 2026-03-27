@@ -270,12 +270,7 @@ pub fn execute_yaml_hook_with_rc(
         }
 
         for spec in &coord_state.jobs {
-            let desc = spec
-                .description
-                .as_deref()
-                .map(|d| format!(" — {d}"))
-                .unwrap_or_default();
-            presenter.on_message(&format!("⟳ {} (background){desc}", spec.name));
+            presenter.on_job_background(&spec.name, spec.description.as_deref());
         }
 
         let bg_count = coord_state.jobs.len();
