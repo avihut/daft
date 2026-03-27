@@ -128,6 +128,13 @@ impl HookRenderer {
         }
     }
 
+    pub fn show_background_job(&mut self, name: &str, description: Option<&str>) {
+        match self {
+            HookRenderer::Progress(r) => r.show_background_job(name, description),
+            HookRenderer::Plain(r) => r.show_background_job(name, description),
+        }
+    }
+
     pub fn record_background_job(&mut self, name: &str, description: Option<&str>) {
         let entry = JobResultEntry {
             name: name.to_string(),

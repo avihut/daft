@@ -119,6 +119,12 @@ impl PlainHookRenderer {
         self.finished_jobs.push(entry);
     }
 
+    /// Show a background job dispatch in plain output.
+    pub fn show_background_job(&self, name: &str, description: Option<&str>) {
+        let desc = description.map(|d| format!(" -- {d}")).unwrap_or_default();
+        eprintln!("  {name} running in background{desc}");
+    }
+
     pub fn take_finished_jobs(&mut self) -> Vec<JobResultEntry> {
         std::mem::take(&mut self.finished_jobs)
     }
