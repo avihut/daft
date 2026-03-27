@@ -258,7 +258,7 @@ mod tests {
             initial_branch: Some("master".to_string()),
             remote: None,
             no_cd: false,
-            layout: None,
+            layout: Some("sibling".to_string()),
             exec: vec![],
         }
     }
@@ -338,7 +338,7 @@ mod tests {
             initial_branch: Some("master".to_string()),
             remote: None,
             no_cd: false,
-            layout: None,
+            layout: Some("sibling".to_string()),
             exec: vec![],
         };
         let mut output = TestOutput::new();
@@ -362,7 +362,7 @@ mod tests {
             initial_branch: Some("".to_string()),
             remote: None,
             no_cd: false,
-            layout: None,
+            layout: Some("sibling".to_string()),
             exec: vec![],
         };
         let mut output = TestOutput::new();
