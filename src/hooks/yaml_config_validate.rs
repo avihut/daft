@@ -105,6 +105,7 @@ fn validate_hook_def(name: &str, hook: &HookDef, result: &mut ValidationResult) 
                 format!("{path}.jobs[{i}]")
             };
             validate_job(&job_path, job, result);
+            validate_background_fields(job, hook, &job_path, result);
         }
 
         // Check for duplicate named jobs
@@ -118,6 +119,9 @@ fn validate_hook_def(name: &str, hook: &HookDef, result: &mut ValidationResult) 
 
         // Validate job dependencies (needs)
         validate_job_dependencies(&path, jobs, result);
+
+        // Detect foreground promotion of background jobs
+        detect_foreground_promotions(name, hook, result);
     }
 
     // Warn if both jobs and commands are set
@@ -185,6 +189,82 @@ fn validate_job(path: &str, job: &JobDef, result: &mut ValidationResult) {
         // A group job shouldn't also have run/script
         if has_run || has_script {
             result.error(path, "'group' cannot be combined with 'run' or 'script'");
+        }
+    }
+}
+
+/// Validate background-specific fields on a single job.
+fn validate_background_fields(
+    job: &JobDef,
+    hook_def: &HookDef,
+    path: &str,
+    result: &mut ValidationResult,
+) {
+    let is_bg = job.background.or(hook_def.background).unwrap_or(false);
+
+    if is_bg && job.interactive == Some(true) {
+        result.warnings.push(ValidationWarning {
+            path: path.to_string(),
+            message: format!(
+                "Job '{}' is marked as both interactive and background; \
+                 interactive jobs require a terminal and will be promoted to foreground",
+                job.name.as_deref().unwrap_or("<unnamed>")
+            ),
+        });
+    }
+
+    if !is_bg && job.background_output.is_some() {
+        result.warnings.push(ValidationWarning {
+            path: path.to_string(),
+            message: format!(
+                "Job '{}' has background_output set but is a foreground job; \
+                 background_output only applies to background jobs",
+                job.name.as_deref().unwrap_or("<unnamed>")
+            ),
+        });
+    }
+}
+
+/// Detect foreground promotion: a foreground job that depends on a background job
+/// forces the background job to run in the foreground.
+fn detect_foreground_promotions(
+    hook_name: &str,
+    hook_def: &HookDef,
+    result: &mut ValidationResult,
+) {
+    let jobs = match &hook_def.jobs {
+        Some(jobs) => jobs,
+        None => return,
+    };
+
+    let bg_map: std::collections::HashMap<&str, bool> = jobs
+        .iter()
+        .filter_map(|j| {
+            let name = j.name.as_deref()?;
+            let is_bg = j.background.or(hook_def.background).unwrap_or(false);
+            Some((name, is_bg))
+        })
+        .collect();
+
+    for job in jobs {
+        let is_bg = job.background.or(hook_def.background).unwrap_or(false);
+        if is_bg {
+            continue;
+        }
+        if let Some(ref needs) = job.needs {
+            for dep_name in needs {
+                if bg_map.get(dep_name.as_str()) == Some(&true) {
+                    result.warnings.push(ValidationWarning {
+                        path: format!("hooks.{}.jobs", hook_name),
+                        message: format!(
+                            "Background job '{}' will be promoted to foreground \
+                             (required by '{}')",
+                            dep_name,
+                            job.name.as_deref().unwrap_or("<unnamed>")
+                        ),
+                    });
+                }
+            }
         }
     }
 }
@@ -726,6 +806,86 @@ mod tests {
         };
         let result = validate_config(&config).unwrap();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_warn_background_job_promoted_to_foreground() {
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: bg-dep
+        run: echo dep
+        background: true
+      - name: fg-consumer
+        run: echo consume
+        needs: [bg-dep]
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let result = validate_config(&config).unwrap();
+        assert!(!result.warnings.is_empty());
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("promoted to foreground")));
+    }
+
+    #[test]
+    fn test_warn_interactive_job_cannot_be_background() {
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: interactive-bg
+        run: vim file.txt
+        background: true
+        interactive: true
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let result = validate_config(&config).unwrap();
+        assert!(!result.warnings.is_empty());
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("interactive") && w.message.contains("background")));
+    }
+
+    #[test]
+    fn test_valid_background_output_values() {
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: job1
+        run: echo hi
+        background: true
+        background_output: log
+      - name: job2
+        run: echo hi
+        background: true
+        background_output: silent
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let result = validate_config(&config).unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_warn_background_output_on_foreground_job() {
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: fg-job
+        run: echo hi
+        background_output: silent
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let result = validate_config(&config).unwrap();
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("background_output") && w.message.contains("foreground")));
     }
 
     #[test]
