@@ -81,24 +81,8 @@ pub enum OutputSetting {
     Hooks(Vec<String>),
 }
 
-/// Output behavior for background jobs.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BackgroundOutput {
-    /// Always write to log file; terminal notification on failure.
-    Log,
-    /// Write to log file only on failure; no terminal notification.
-    Silent,
-}
-
-/// Log configuration, applicable at top-level, hook-level, or job-level.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct LogConfig {
-    /// Log retention duration (e.g., "7d", "24h", "30m").
-    pub retention: Option<String>,
-    /// Override log file path. Absolute or relative to worktree root.
-    pub path: Option<String>,
-}
+// Re-export from executor so that format-agnostic types are defined once.
+pub use crate::executor::{BackgroundOutput, LogConfig};
 
 /// Definition for a single hook type.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

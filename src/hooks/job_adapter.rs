@@ -85,6 +85,9 @@ pub fn yaml_jobs_to_specs(
                 interactive: job.interactive == Some(true),
                 fail_text: job.fail_text.clone(),
                 timeout: JobSpec::DEFAULT_TIMEOUT,
+                background: job.background.unwrap_or(false),
+                background_output: job.background_output.clone(),
+                log_config: job.log.clone(),
             })
         })
         .collect()
@@ -383,6 +386,40 @@ mod tests {
     }
 
     // ── scripts_to_specs ────────────────────────────────────────────────
+
+    #[test]
+    fn test_background_fields_pass_through() {
+        use crate::hooks::yaml_config::{BackgroundOutput, LogConfig};
+
+        let jobs = vec![JobDef {
+            name: Some("bg-job".to_string()),
+            run: Some(RunCommand::Simple("echo hi".to_string())),
+            background: Some(true),
+            background_output: Some(BackgroundOutput::Silent),
+            log: Some(LogConfig {
+                retention: Some("14d".to_string()),
+                path: Some("./logs/bg.log".to_string()),
+            }),
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let specs = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            None,
+        );
+        assert_eq!(specs.len(), 1);
+        assert!(specs[0].background);
+        assert_eq!(specs[0].background_output, Some(BackgroundOutput::Silent));
+        assert_eq!(
+            specs[0].log_config.as_ref().unwrap().retention,
+            Some("14d".to_string())
+        );
+    }
 
     #[test]
     fn scripts_name_from_filename() {
