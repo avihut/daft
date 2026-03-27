@@ -394,10 +394,12 @@ impl HookProgressRenderer {
     }
 
     /// Show a background job dispatch in the live progress area.
-    pub fn show_background_job(&mut self, name: &str, description: Option<&str>) {
+    ///
+    /// Uses `mp.println()` for permanent output (same as `finish_job`),
+    /// so lines survive MultiProgress redraws and appear reliably.
+    pub fn show_background_job(&self, name: &str, description: Option<&str>) {
         let cyan = "\x1b[38;5;80m";
 
-        // Job name line (blue pipe, blue name, cyan status)
         let blue_pipe = if self.use_color {
             format!("{BLUE}\u{2503}{}", styles::RESET)
         } else {
@@ -413,26 +415,18 @@ impl HookProgressRenderer {
         } else {
             format!("{blue_pipe}  {name} (background)")
         };
+        self.mp.println(name_line).ok();
 
-        let bar = self.mp.add(ProgressBar::new_spinner());
-        bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
-        bar.set_message(name_line);
-        bar.finish();
-
-        // Description line below if provided
         if let Some(desc) = description {
-            let desc_line = format!("{blue_pipe}  {desc}");
-            let desc_bar = self.mp.insert_after(&bar, ProgressBar::new_spinner());
-            desc_bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
-            desc_bar.set_message(desc_line);
-            desc_bar.finish();
+            let desc_line = if self.use_color {
+                format!("{blue_pipe}  {DARK_GREY}{desc}{}", styles::RESET)
+            } else {
+                format!("{blue_pipe}  {desc}")
+            };
+            self.mp.println(desc_line).ok();
         }
 
-        // Empty line separator
-        let sep_bar = self.mp.add(ProgressBar::new_spinner());
-        sep_bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
-        sep_bar.set_message(String::new());
-        sep_bar.finish();
+        self.mp.println(String::new()).ok();
     }
 
     /// Extract finished job results (for use in callers that need them).
