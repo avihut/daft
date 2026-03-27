@@ -1,0 +1,86 @@
+name: Background hook jobs
+description:
+  "A worktree-post-create hook with both foreground and background jobs: the
+  foreground job completes before the command returns, the background job runs
+  asynchronously and its result is visible in 'daft hooks jobs'."
+
+repos:
+  - name: test-bg-jobs
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Background jobs test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/bg-test
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: fg-marker
+              run: echo "fg-done" > "$DAFT_WORKTREE_PATH/.fg-marker"
+            - name: bg-marker
+              background: true
+              run: sleep 1 && echo "bg-done" > "$DAFT_WORKTREE_PATH/.bg-marker"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_BG_JOBS
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-bg-jobs/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-bg-jobs/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (triggers worktree-post-create hooks)
+    run: git-worktree-checkout feature/bg-test 2>&1
+    cwd: "$WORK_DIR/test-bg-jobs/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-bg-jobs/feature/bg-test"
+
+  - name: Verify foreground job marker exists immediately after checkout
+    run: |
+      if [ -f "$WORK_DIR/test-bg-jobs/feature/bg-test/.fg-marker" ]; then
+        echo "FG_MARKER_PRESENT"
+      else
+        echo "FG_MARKER_MISSING"
+        exit 1
+      fi
+    expect:
+      exit_code: 0
+      output_contains:
+        - "FG_MARKER_PRESENT"
+
+  - name: Wait for background job to complete (poll for marker file)
+    run: |
+      for i in $(seq 1 20); do
+        if [ -f "$WORK_DIR/test-bg-jobs/feature/bg-test/.bg-marker" ]; then
+          echo "BG_MARKER_PRESENT"
+          exit 0
+        fi
+        sleep 0.5
+      done
+      echo "BG_MARKER_TIMEOUT"
+      exit 1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "BG_MARKER_PRESENT"
+
+  - name: Verify background job appears in daft hooks jobs history
+    run: daft hooks jobs 2>&1
+    cwd: "$WORK_DIR/test-bg-jobs/feature/bg-test"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "bg-marker"
