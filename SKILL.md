@@ -188,7 +188,8 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 | `daft worktree-list [--json] [-b\|-r\|-a] [--stat summary\|lines] [--columns COLS]` | List all worktrees with branch (`✦` = default), path (relative to cwd), base ahead/behind, file status (+N staged, -N unstaged, ?N untracked), remote status (⇡N unpushed, ⇣N unpulled), branch age, and commit info. Use `-b`/`-r`/`-a` to include local/remote branches without worktrees. JSON includes `is_default_branch`, `staged`, `unstaged`, `untracked`, `remote_ahead`, `remote_behind`, `branch_age`, `owner_email` fields. When `user.email` is configured, output is split into two sections (your branches / other branches). Use `--columns owner` or `--columns +owner` to show the Owner column (tip commit author email). |
 | `daft config remote-sync [--on\|--off\|--status\|--global]`                         | Configure remote sync behavior: toggle fetch, push, and remote delete globally or per-repo; no args opens interactive TUI                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `daft layout [show\|list\|transform\|default]`                                      | Manage worktree layouts: show current, list available, transform between layouts, set global default                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `daft hooks <subcommand>`                                                           | Manage hooks trust and configuration (`trust`, `prompt`, `deny`, `status`, `run`, `install`, `validate`, `dump`, `migrate`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `daft hooks <subcommand>`                                                           | Manage hooks trust and configuration (`trust`, `prompt`, `deny`, `status`, `run`, `install`, `validate`, `dump`, `migrate`, `jobs`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `daft hooks jobs [logs\|cancel\|retry\|clean]`                                      | Manage background hook jobs: list, view logs, cancel, retry, clean up                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `daft doctor`                                                                       | Diagnose installation and configuration issues; `--fix` auto-repairs symlinks, shortcuts, refspecs, hooks; `--fix --dry-run` previews fixes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `daft setup shortcuts <subcommand>`                                                 | Manage command shortcut symlinks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `daft shell-init <shell>`                                                           | Generate shell integration wrappers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -305,6 +306,11 @@ Set one per hook (default is `parallel`):
   interactive: true # Needs TTY (forces sequential)
   priority: 1 # Lower runs first
   fail_text: "Setup failed" # Custom failure message
+  background: true # Run in the background (non-blocking)
+  background_output: log # "log" (default) or "silent"
+  log: # Log configuration
+    retention: "7d" # How long to keep logs
+    path: "./logs/job.log" # Custom log path (absolute or relative)
 ```
 
 ### Job Dependencies
@@ -327,6 +333,38 @@ hooks:
 
 Independent jobs (`install-npm`, `install-pip`) run in parallel. Dependent jobs
 wait for their dependencies.
+
+### Background Jobs
+
+Jobs with `background: true` run asynchronously after the command returns, so
+the user can start working while long-running tasks complete. A coordinator
+process manages background jobs and writes output to log files.
+
+```yaml
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: install deps
+        run: pnpm install
+      - name: warm build cache
+        run: cargo build
+        background: true
+        needs: [install deps]
+```
+
+Key behaviors:
+
+- Background jobs participate in the DAG. If a foreground job depends on a
+  background job, the background job is promoted to foreground automatically.
+- `background: true` can be set at the hook level as a default for all jobs.
+- `DAFT_NO_BACKGROUND_JOBS=1` promotes all background jobs to foreground (useful
+  in CI or for debugging).
+- `daft hooks jobs` lists, cancels, retries, and cleans up background jobs.
+- When a worktree is removed, running background jobs for it are cancelled.
+
+When generating `daft.yml` configurations, mark jobs as `background: true` when
+they warm caches, pre-build, or perform other tasks whose results are not needed
+immediately.
 
 ### Groups
 
