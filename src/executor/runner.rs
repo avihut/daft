@@ -493,6 +493,13 @@ mod tests {
                 .push(format!("job_cancelled:{name}"));
         }
 
+        fn on_job_background(&self, name: &str, _description: Option<&str>) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("job_background:{name}"));
+        }
+
         fn on_message(&self, msg: &str) {
             self.events.lock().unwrap().push(format!("message:{msg}"));
         }

@@ -17,6 +17,7 @@ pub enum JobOutcome {
     Success,
     Failed,
     Skipped { reason: String, show_duration: bool },
+    Background { description: Option<String> },
 }
 
 /// Entry recording a completed job for the summary.
@@ -144,6 +145,20 @@ impl HookRenderer {
         match self {
             HookRenderer::Progress(r) => r.set_name_column_width(width),
             HookRenderer::Plain(r) => r.set_name_column_width(width),
+        }
+    }
+
+    pub fn record_background_job(&mut self, name: &str, description: Option<&str>) {
+        let entry = JobResultEntry {
+            name: name.to_string(),
+            outcome: JobOutcome::Background {
+                description: description.map(String::from),
+            },
+            duration: Duration::ZERO,
+        };
+        match self {
+            HookRenderer::Progress(r) => r.push_finished_job(entry),
+            HookRenderer::Plain(r) => r.push_finished_job(entry),
         }
     }
 
