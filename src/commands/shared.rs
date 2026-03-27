@@ -218,7 +218,7 @@ fn run_add(args: AddArgs, output: &mut dyn Output) -> Result<()> {
         if fs::rename(&full_path, &shared_target).is_err() {
             // rename fails across filesystems — fall back to copy + delete
             if full_path.is_dir() {
-                copy_dir_all(&full_path, &shared_target)?;
+                shared::copy_dir_all(&full_path, &shared_target)?;
                 fs::remove_dir_all(&full_path)?;
             } else {
                 fs::copy(&full_path, &shared_target)?;
@@ -280,7 +280,7 @@ fn run_remove(args: RemoveArgs, output: &mut dyn Output) -> Result<()> {
                     if link.is_symlink() {
                         fs::remove_file(&link)?;
                         if shared_target.is_dir() {
-                            copy_dir_all(&shared_target, &link)?;
+                            shared::copy_dir_all(&shared_target, &link)?;
                         } else {
                             fs::copy(&shared_target, &link)?;
                         }
@@ -330,7 +330,7 @@ fn run_materialize(args: MaterializeArgs, output: &mut dyn Output) -> Result<()>
         // Replace symlink with copy
         fs::remove_file(&link)?;
         if shared_target.is_dir() {
-            copy_dir_all(&shared_target, &link)?;
+            shared::copy_dir_all(&shared_target, &link)?;
         } else {
             fs::copy(&shared_target, &link)?;
         }
@@ -344,7 +344,7 @@ fn run_materialize(args: MaterializeArgs, output: &mut dyn Output) -> Result<()>
                 fs::remove_file(&link)?;
             }
             if shared_target.is_dir() {
-                copy_dir_all(&shared_target, &link)?;
+                shared::copy_dir_all(&shared_target, &link)?;
             } else {
                 fs::copy(&shared_target, &link)?;
             }
@@ -364,7 +364,7 @@ fn run_materialize(args: MaterializeArgs, output: &mut dyn Output) -> Result<()>
             }
         }
         if shared_target.is_dir() {
-            copy_dir_all(&shared_target, &link)?;
+            shared::copy_dir_all(&shared_target, &link)?;
         } else {
             fs::copy(&shared_target, &link)?;
         }
@@ -576,21 +576,5 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
         }
     }
 
-    Ok(())
-}
-
-/// Recursively copy a directory.
-fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let dest = dst.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_all(&entry.path(), &dest)?;
-        } else {
-            fs::copy(entry.path(), dest)?;
-        }
-    }
     Ok(())
 }

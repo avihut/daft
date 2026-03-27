@@ -455,6 +455,113 @@ pub fn detect_uncollected(
     uncollected
 }
 
+// ── Collection execution ─────────────────────────────────────────────────
+
+/// Where to source the shared file from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CollectSource {
+    /// Use the copy from this worktree.
+    FromWorktree(PathBuf),
+    /// No copy exists; create an empty stub.
+    Stub,
+}
+
+/// A decision about how to collect a declared-but-uncollected shared file.
+#[derive(Debug, Clone)]
+pub struct CollectDecision {
+    /// Path relative to the worktree root (e.g., ".env").
+    pub rel_path: String,
+    /// Where to get the file content from.
+    pub source: CollectSource,
+}
+
+/// Execute a single collection decision.
+///
+/// 1. Moves the file from the chosen worktree to `.git/.daft/shared/`, or
+///    creates an empty stub if `source` is `Stub`.
+/// 2. Creates symlinks in the source worktree and any worktrees missing the file.
+/// 3. Marks all other worktrees that have a real copy as materialized.
+/// 4. Ensures the `.gitignore` entry exists.
+pub fn execute_collect(
+    decision: &CollectDecision,
+    worktree_paths: &[PathBuf],
+    git_common_dir: &Path,
+    project_root: &Path,
+    materialized: &mut MaterializedState,
+) -> Result<()> {
+    let rel_path = &decision.rel_path;
+    let shared_target = shared_file_path(git_common_dir, rel_path);
+
+    // Ensure parent dirs in shared storage
+    if let Some(parent) = shared_target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    match &decision.source {
+        CollectSource::FromWorktree(source_wt) => {
+            let source_file = source_wt.join(rel_path);
+
+            // Move to shared storage (rename, fallback to copy+delete)
+            if fs::rename(&source_file, &shared_target).is_err() {
+                if source_file.is_dir() {
+                    copy_dir_all(&source_file, &shared_target)?;
+                    fs::remove_dir_all(&source_file)?;
+                } else {
+                    fs::copy(&source_file, &shared_target)?;
+                    fs::remove_file(&source_file)?;
+                }
+            }
+
+            // Create symlink in source worktree (file was moved out)
+            create_shared_symlink(source_wt, rel_path, git_common_dir)?;
+        }
+        CollectSource::Stub => {
+            // Create empty file
+            fs::write(&shared_target, "")
+                .with_context(|| format!("Failed to create stub for {rel_path}"))?;
+        }
+    }
+
+    // Process remaining worktrees
+    for wt in worktree_paths {
+        if let CollectSource::FromWorktree(source_wt) = &decision.source {
+            if wt == source_wt {
+                continue;
+            }
+        }
+
+        let file_path = wt.join(rel_path);
+        if file_path.exists() && !file_path.is_symlink() {
+            // Real copy exists — mark as materialized
+            materialized.add(rel_path, wt);
+        } else if !file_path.exists() {
+            // No file — create symlink
+            create_shared_symlink(wt, rel_path, git_common_dir)?;
+        }
+    }
+
+    // Ensure .gitignore entry
+    crate::core::layout::ensure_gitignore_entry(project_root, rel_path)?;
+
+    Ok(())
+}
+
+/// Recursively copy a directory tree.
+pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dest = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dest)?;
+        } else {
+            fs::copy(entry.path(), &dest)?;
+        }
+    }
+    Ok(())
+}
+
 // ── Git helpers ───────────────────────────────────────────────────────────
 
 /// Check if a path is tracked by git (would show up in `git ls-files`).
@@ -855,6 +962,84 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].rel_path, ".secrets");
         assert!(result[0].copies.is_empty());
+    }
+
+    // ── execute_collect tests ────────────────────────────────────────────
+
+    #[test]
+    fn execute_collect_moves_to_shared_and_links() {
+        let (_tmp, git_dir, root, wt_paths) = setup_test_repo(&["main", "develop", "feature"]);
+
+        fs::write(wt_paths[0].join(".env"), "FROM_MAIN=1").unwrap();
+        fs::write(wt_paths[1].join(".env"), "FROM_DEVELOP=1").unwrap();
+        // Create .gitignore so ensure_gitignore_entry doesn't fail
+        fs::write(root.join(".gitignore"), "").unwrap();
+
+        let decision = CollectDecision {
+            rel_path: ".env".to_string(),
+            source: CollectSource::FromWorktree(wt_paths[0].clone()),
+        };
+
+        let mut materialized = MaterializedState::default();
+        execute_collect(&decision, &wt_paths, &git_dir, &root, &mut materialized).unwrap();
+
+        // Shared storage should have the file from main
+        let shared = shared_file_path(&git_dir, ".env");
+        assert!(shared.exists());
+        assert_eq!(fs::read_to_string(&shared).unwrap(), "FROM_MAIN=1");
+
+        // main: should now be a symlink
+        let main_env = wt_paths[0].join(".env");
+        assert!(main_env.is_symlink());
+
+        // develop: should still be a real file, marked materialized
+        let dev_env = wt_paths[1].join(".env");
+        assert!(!dev_env.is_symlink());
+        assert!(materialized.is_materialized(".env", &wt_paths[1]));
+
+        // feature: should be a symlink (had no file)
+        let feat_env = wt_paths[2].join(".env");
+        assert!(feat_env.is_symlink());
+    }
+
+    #[test]
+    fn execute_collect_stubs_when_no_source() {
+        let (_tmp, git_dir, root, wt_paths) = setup_test_repo(&["main"]);
+        fs::write(root.join(".gitignore"), "").unwrap();
+
+        let decision = CollectDecision {
+            rel_path: ".secrets".to_string(),
+            source: CollectSource::Stub,
+        };
+
+        let mut materialized = MaterializedState::default();
+        execute_collect(&decision, &wt_paths, &git_dir, &root, &mut materialized).unwrap();
+
+        let shared = shared_file_path(&git_dir, ".secrets");
+        assert!(shared.exists());
+        assert_eq!(fs::read_to_string(&shared).unwrap(), "");
+
+        let main_secrets = wt_paths[0].join(".secrets");
+        assert!(main_secrets.is_symlink());
+    }
+
+    #[test]
+    fn execute_collect_ensures_gitignore_entry() {
+        let (_tmp, git_dir, root, wt_paths) = setup_test_repo(&["main"]);
+
+        fs::write(wt_paths[0].join(".env"), "VAL=1").unwrap();
+        fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+
+        let decision = CollectDecision {
+            rel_path: ".env".to_string(),
+            source: CollectSource::FromWorktree(wt_paths[0].clone()),
+        };
+
+        let mut materialized = MaterializedState::default();
+        execute_collect(&decision, &wt_paths, &git_dir, &root, &mut materialized).unwrap();
+
+        let gitignore = fs::read_to_string(root.join(".gitignore")).unwrap();
+        assert!(gitignore.contains(".env"));
     }
 
     #[test]
