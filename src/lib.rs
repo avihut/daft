@@ -29,6 +29,15 @@ pub const CONFIG_DIR_ENV: &str = "DAFT_CONFIG_DIR";
 /// Only honored in dev builds (same policy as `DAFT_CONFIG_DIR`).
 pub const DATA_DIR_ENV: &str = "DAFT_DATA_DIR";
 
+/// Environment variable to override the state directory path.
+///
+/// When set, coordinator sockets, background job logs, and other runtime
+/// state are stored in this directory instead of the XDG state directory
+/// (`~/.local/state/daft/`).
+///
+/// Only honored in dev builds (same policy as `DAFT_CONFIG_DIR`).
+pub const STATE_DIR_ENV: &str = "DAFT_STATE_DIR";
+
 /// Returns the daft config directory path.
 ///
 /// In dev builds, when `DAFT_CONFIG_DIR` is set to a non-empty absolute path,
@@ -73,6 +82,36 @@ pub fn daft_data_dir() -> anyhow::Result<std::path::PathBuf> {
     let data_dir =
         dirs::data_dir().ok_or_else(|| anyhow::anyhow!("Could not determine data directory"))?;
     Ok(data_dir.join("daft"))
+}
+
+/// Returns the daft state directory path.
+///
+/// In dev builds, when `DAFT_STATE_DIR` is set to a non-empty absolute path,
+/// uses that path directly (no `daft/` suffix appended). In release builds the
+/// env var is ignored. Always falls back to `dirs::state_dir()/daft`
+/// (macOS: `~/.local/state/daft`, Linux: `$XDG_STATE_HOME/daft`).
+pub fn daft_state_dir() -> anyhow::Result<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if cfg!(daft_dev_build) {
+        if let Ok(dir) = env::var(STATE_DIR_ENV) {
+            if !dir.is_empty() {
+                let path = PathBuf::from(&dir);
+                if path.is_relative() {
+                    anyhow::bail!("DAFT_STATE_DIR must be an absolute path, got: {dir}");
+                }
+                return Ok(path);
+            }
+        }
+    }
+    // dirs::state_dir() returns None on macOS (no native equivalent).
+    // Fall back to ~/.local/state which is the XDG convention.
+    let state_dir = dirs::state_dir().unwrap_or_else(|| {
+        dirs::home_dir()
+            .expect("Could not determine home directory")
+            .join(".local")
+            .join("state")
+    });
+    Ok(state_dir.join("daft"))
 }
 
 /// Daft verb aliases that route through to worktree commands.
@@ -248,5 +287,35 @@ mod tests {
             .to_string()
             .contains("must be an absolute path"));
         env::remove_var(DATA_DIR_ENV);
+    }
+
+    #[test]
+    #[serial]
+    fn test_daft_state_dir_default() {
+        env::remove_var("DAFT_STATE_DIR");
+        let dir = daft_state_dir().unwrap();
+        assert!(dir.ends_with("daft"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_daft_state_dir_override() {
+        env::set_var("DAFT_STATE_DIR", "/tmp/test-daft-state");
+        let dir = daft_state_dir().unwrap();
+        assert_eq!(dir, PathBuf::from("/tmp/test-daft-state"));
+        env::remove_var("DAFT_STATE_DIR");
+    }
+
+    #[test]
+    #[serial]
+    fn test_daft_state_dir_rejects_relative_path() {
+        env::set_var("DAFT_STATE_DIR", "relative/path");
+        let result = daft_state_dir();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must be an absolute path"));
+        env::remove_var("DAFT_STATE_DIR");
     }
 }
