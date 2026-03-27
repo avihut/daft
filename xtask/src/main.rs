@@ -30,9 +30,14 @@ const COMMANDS: &[&str] = &[
     "git-worktree-sync",
     "daft-config",
     "daft-doctor",
+    "daft-hooks",
     "daft-layout",
+    "daft-multi-remote",
     "daft-release-notes",
+    "daft-setup",
     "daft-shared",
+    "daft-shell-init",
+    "daft-shortcuts",
 ];
 
 /// A daft verb command that maps to an existing git-worktree-* command for man page generation
@@ -157,6 +162,11 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "daft-rename" => Some(daft::commands::worktree_branch::RenameArgs::command()),
         "daft-go" => Some(daft::commands::checkout::GoArgs::command()),
         "daft-start" => Some(daft::commands::checkout::StartArgs::command()),
+        "daft-hooks" => Some(daft::commands::hooks::Args::command()),
+        "daft-multi-remote" => Some(daft::commands::multi_remote::Args::command()),
+        "daft-setup" => Some(daft::commands::setup::Args::command()),
+        "daft-shell-init" => Some(daft::commands::shell_init::Args::command()),
+        "daft-shortcuts" => Some(daft::commands::shortcuts::Args::command()),
         _ => None,
     }
 }

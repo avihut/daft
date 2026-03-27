@@ -1,0 +1,34 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH setup 1  "setup " 
+.SH NAME
+setup \- Add daft shell integration to your shell config
+.SH SYNOPSIS
+\fBsetup\fR [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+.PP
+Automatically adds the daft shell\-init line to your shell configuration file.
+.PP
+This enables automatic cd into new worktrees when using daft commands.
+.PP
+The command will:
+  1. Detect your shell (bash, zsh, or fish)
+  2. Find the appropriate config file (~/.bashrc, ~/.zshrc, or ~/.config/fish/config.fish)
+  3. Check if daft is already configured (won\*(Aqt add duplicates)
+  4. Create a backup of your config file
+  5. Append the shell\-init line
+.PP
+Examples:
+  daft setup              # Interactive setup with confirmation
+  daft setup \-\-force      # Skip confirmation and re\-add if already configured
+  daft setup \-\-dry\-run    # Show what would be done without making changes
+.SH OPTIONS
+.TP
+\fB\-f\fR, \fB\-\-force\fR
+Skip confirmation and re\-add if already configured
+.TP
+\fB\-\-dry\-run\fR
+Show what would be done without making changes
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

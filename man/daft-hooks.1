@@ -1,0 +1,54 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH hooks 1  "hooks " 
+.SH NAME
+hooks \- Manage repository trust for hook execution
+.SH SYNOPSIS
+\fBhooks\fR [\fB\-h\fR|\fB\-\-help\fR] [\fIPATH\fR] [\fIsubcommands\fR]
+.SH DESCRIPTION
+Manage trust settings for repository hooks in .daft/hooks/.
+.PP
+Trust levels:
+  deny     Do not run hooks (default)
+  prompt   Prompt before each hook
+  allow    Run hooks automatically
+.PP
+Trust applies to all worktrees. Without a subcommand, shows status.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+[\fIPATH\fR] [default: .]
+Path to check (defaults to current directory)
+.SH SUBCOMMANDS
+.TP
+hooks\-trust(1)
+Trust repository to run hooks automatically
+.TP
+hooks\-prompt(1)
+Trust repository but prompt before each hook
+.TP
+hooks\-deny(1)
+Revoke trust from the current repository
+.TP
+hooks\-status(1)
+Display trust status and available hooks
+.TP
+hooks\-run(1)
+Run a hook manually
+.TP
+hooks\-install(1)
+Scaffold a daft.yml configuration with hook definitions
+.TP
+hooks\-validate(1)
+Validate the YAML hooks configuration
+.TP
+hooks\-dump(1)
+Dump the merged YAML hooks configuration
+.TP
+hooks\-migrate(1)
+Rename deprecated hook files to their new names
+.TP
+hooks\-help(1)
+Print this message or the help of the given subcommand(s)
