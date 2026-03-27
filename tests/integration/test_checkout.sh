@@ -136,7 +136,10 @@ test_checkout_direnv() {
     # Clone the repository
     git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-checkout-direnv"
-    
+
+    # Enable fetch so checkout picks up new remote content
+    git config daft.checkout.fetch true
+
     # Add .envrc to a branch
     local temp_clone="$TEMP_BASE_DIR/temp_envrc_clone"
     git clone "$remote_repo" "$temp_clone" >/dev/null 2>&1
