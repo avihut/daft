@@ -169,6 +169,7 @@ pub fn execute(
         &ctx,
         &resolved,
         params.force,
+        params.remote_only,
         &worktree_map,
         current_wt_path.as_ref(),
         current_branch.as_deref(),
@@ -333,6 +334,7 @@ fn validate_branches(
     ctx: &BranchDeleteContext,
     branches: &[String],
     force: bool,
+    remote_only: bool,
     worktree_map: &HashMap<String, PathBuf>,
     current_wt_path: Option<&PathBuf>,
     current_branch: Option<&str>,
@@ -343,6 +345,38 @@ fn validate_branches(
 
     for branch in branches {
         sink.on_step(&format!("Validating branch '{branch}'..."));
+
+        // Remote-only mode: skip local branch checks entirely.
+        // Just verify the remote branch exists and produce a ValidatedBranch
+        // with only remote info populated.
+        if remote_only {
+            let (remote_name, remote_branch_name) = resolve_remote_for_missing_local(ctx, branch);
+
+            if remote_name.is_none() || remote_branch_name.is_none() {
+                errors.push(ValidationError {
+                    branch: branch.clone(),
+                    message: format!(
+                        "no remote branch found for '{}' on '{}'",
+                        branch, ctx.remote_name
+                    ),
+                });
+                continue;
+            }
+
+            sink.on_step(&format!(
+                "Branch '{branch}' — remote-only deletion, skipping local checks"
+            ));
+
+            validated.push(ValidatedBranch {
+                name: branch.clone(),
+                worktree_path: None,
+                remote_name,
+                remote_branch_name,
+                is_current_worktree: false,
+                worktree_only: false,
+            });
+            continue;
+        }
 
         // Check 1: Branch exists locally
         match ctx.git.show_ref_exists(&format!("refs/heads/{branch}")) {
@@ -611,6 +645,30 @@ fn check_local_remote_sync(
         .context("failed to resolve remote branch SHA")?;
 
     Ok(local_sha == remote_sha)
+}
+
+/// Resolve remote info for a branch that may not exist locally.
+///
+/// First tries the normal tracking config lookup. If the local branch doesn't
+/// exist (so git config has no `branch.<name>.remote`), falls back to probing
+/// `refs/remotes/<default-remote>/<branch>`.
+fn resolve_remote_for_missing_local(
+    ctx: &BranchDeleteContext,
+    branch: &str,
+) -> (Option<String>, Option<String>) {
+    // Try normal tracking lookup first (works when local branch exists)
+    let result = resolve_remote_tracking(ctx, branch);
+    if result.0.is_some() {
+        return result;
+    }
+
+    // Fallback: check if the default remote has this branch
+    let remote_ref = format!("refs/remotes/{}/{branch}", ctx.remote_name);
+    if let Ok(true) = ctx.git.show_ref_exists(&remote_ref) {
+        return (Some(ctx.remote_name.clone()), Some(branch.to_string()));
+    }
+
+    (None, None)
 }
 
 /// Resolve the remote name and remote branch name for a given local branch.
