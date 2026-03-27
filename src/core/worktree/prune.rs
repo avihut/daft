@@ -702,6 +702,9 @@ fn remove_worktree(
         }
     }
 
+    // Cancel any running background jobs for this worktree (best-effort).
+    cancel_background_jobs_for_worktree(&ctx.project_root, wt_path, sink);
+
     // Pre-remove hook
     run_removal_hook(HookType::PreRemove, ctx, wt_path, branch_name, sink);
 
@@ -813,6 +816,57 @@ fn delete_branch(git: &GitCommand, branch_name: &str, sink: &mut dyn ProgressSin
     } else {
         sink.on_step(&format!("Branch {branch_name} deleted"));
         true
+    }
+}
+
+// ── Background job cancellation ────────────────────────────────────────────
+
+/// Cancel any running background jobs for a specific worktree.
+///
+/// This is best-effort: if no coordinator is running, or if the coordinator
+/// cannot be reached, the error is silently ignored so removal proceeds.
+fn cancel_background_jobs_for_worktree(
+    project_root: &Path,
+    worktree_path: &Path,
+    sink: &mut dyn ProgressSink,
+) {
+    use crate::coordinator::client::CoordinatorClient;
+    use crate::coordinator::log_store::JobStatus;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    // Compute repo hash (same algorithm as yaml_executor and jobs.rs).
+    let mut hasher = DefaultHasher::new();
+    project_root.display().to_string().hash(&mut hasher);
+    let repo_hash = format!("{:016x}", hasher.finish());
+
+    let client_opt = match CoordinatorClient::connect(&repo_hash) {
+        Ok(opt) => opt,
+        Err(_) => return, // No coordinator — nothing to cancel.
+    };
+
+    let mut client = match client_opt {
+        Some(c) => c,
+        None => return, // No coordinator running.
+    };
+
+    let jobs = match client.list_jobs() {
+        Ok(j) => j,
+        Err(_) => return,
+    };
+
+    let wt_str = worktree_path.to_string_lossy();
+    for job in jobs {
+        if matches!(job.status, JobStatus::Running) && job.worktree == wt_str.as_ref() {
+            sink.on_step(&format!("Stopping background job '{}'...", job.name));
+            match client.cancel_job(&job.name) {
+                Ok(_) => sink.on_step(&format!("Stopped background job '{}'", job.name)),
+                Err(e) => sink.on_warning(&format!(
+                    "Failed to cancel background job '{}': {e}",
+                    job.name
+                )),
+            }
+        }
     }
 }
 
