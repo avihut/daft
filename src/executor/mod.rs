@@ -15,6 +15,29 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 // ─────────────────────────────────────────────────────────────────────────
+// Background execution types
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Output behavior for background jobs.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackgroundOutput {
+    /// Always write to log file; terminal notification on failure.
+    Log,
+    /// Write to log file only on failure; no terminal notification.
+    Silent,
+}
+
+/// Log configuration for a job.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct LogConfig {
+    /// Log retention duration (e.g., "7d", "24h", "30m").
+    pub retention: Option<String>,
+    /// Override log file path. Absolute or relative to worktree root.
+    pub path: Option<String>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Core types
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -39,6 +62,12 @@ pub struct JobSpec {
     pub fail_text: Option<String>,
     /// Maximum time the job is allowed to run.
     pub timeout: Duration,
+    /// Whether this job should run in the background.
+    pub background: bool,
+    /// Output behavior for background execution.
+    pub background_output: Option<BackgroundOutput>,
+    /// Log configuration for this job.
+    pub log_config: Option<LogConfig>,
 }
 
 impl JobSpec {
@@ -58,6 +87,9 @@ impl Default for JobSpec {
             interactive: false,
             fail_text: None,
             timeout: JobSpec::DEFAULT_TIMEOUT,
+            background: false,
+            background_output: None,
+            log_config: None,
         }
     }
 }
@@ -143,6 +175,9 @@ mod tests {
         assert!(spec.fail_text.is_none());
         assert!(spec.description.is_none());
         assert_eq!(spec.timeout, JobSpec::DEFAULT_TIMEOUT);
+        assert!(!spec.background);
+        assert!(spec.background_output.is_none());
+        assert!(spec.log_config.is_none());
     }
 
     #[test]
@@ -165,6 +200,9 @@ mod tests {
             interactive: true,
             fail_text: Some("install failed".into()),
             timeout: Duration::from_secs(60),
+            background: false,
+            background_output: None,
+            log_config: None,
         };
 
         assert_eq!(spec.name, "install");
@@ -176,6 +214,9 @@ mod tests {
         assert!(spec.interactive);
         assert_eq!(spec.fail_text.as_deref(), Some("install failed"));
         assert_eq!(spec.timeout, Duration::from_secs(60));
+        assert!(!spec.background);
+        assert!(spec.background_output.is_none());
+        assert!(spec.log_config.is_none());
     }
 
     // ── ExecutionMode ───────────────────────────────────────────────────
