@@ -1,0 +1,50 @@
+name: Remote-only delete works when local branch does not exist
+description:
+  When --remote is used and the branch exists on the remote but not locally, the
+  remote branch should still be deleted.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Verify remote branch exists before test
+    run: git ls-remote --heads $REMOTE_TEST_REPO develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "refs/heads/develop"
+
+  - name: Delete the local branch to isolate the test
+    run: git branch -D develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify local branch does NOT exist
+    run: git branch --list develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "develop"
+
+  - name: Remove with --remote should succeed even without local branch
+    run: daft-remove --remote develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify remote branch was deleted
+    run: git ls-remote --heads $REMOTE_TEST_REPO develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "refs/heads/develop"
