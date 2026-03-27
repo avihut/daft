@@ -352,6 +352,36 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
         ]),
     };
 
+    let hooks_jobs = FigSubcommand {
+        name: "jobs".to_string(),
+        description: Some("View and manage background hook jobs".to_string()),
+        load_spec: None,
+        subcommands: Some(vec![
+            fig_subcommand("logs", "Show logs for a job"),
+            fig_subcommand("cancel", "Cancel a running job"),
+            fig_subcommand("retry", "Retry a failed job"),
+            fig_subcommand("clean", "Remove completed job records"),
+        ]),
+        args: None,
+        options: Some(vec![
+            FigOption {
+                name: FigName::Single("--all-repos".into()),
+                description: "Show jobs from all repos".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--worktree".into()),
+                description: "Filter by worktree name".into(),
+                args: Some(FigOptionArg { suggestions: None }),
+            },
+            FigOption {
+                name: FigName::Single("--json".into()),
+                description: "Output as JSON".into(),
+                args: None,
+            },
+        ]),
+    };
+
     FigSubcommand {
         name: "hooks".to_string(),
         description: Some("Manage lifecycle hooks".to_string()),
@@ -366,6 +396,7 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
             fig_subcommand("validate", "Validate hooks config"),
             fig_subcommand("dump", "Show merged config"),
             hooks_run,
+            hooks_jobs,
         ]),
         args: None,
         options: None,
