@@ -242,20 +242,28 @@ pub fn execute_yaml_hook_with_rc(
     // Execute foreground jobs via the generic runner
     let fg_results = crate::executor::runner::run_jobs(&fg_specs, exec_mode, presenter)?;
 
-    presenter.on_phase_complete(hook_start.elapsed());
-
-    // If there are no background jobs, return the foreground results directly.
+    // If there are no background jobs, print summary and return.
     if bg_specs.is_empty() {
+        presenter.on_phase_complete(hook_start.elapsed());
         return job_results_to_hook_result(&fg_results);
     }
 
     // If DAFT_NO_BACKGROUND_JOBS is set, run background jobs inline as foreground.
     if std::env::var("DAFT_NO_BACKGROUND_JOBS").is_ok() {
         let bg_results = crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter)?;
+        presenter.on_phase_complete(hook_start.elapsed());
         let mut all_results = fg_results;
         all_results.extend(bg_results);
         return job_results_to_hook_result(&all_results);
     }
+
+    // Register background jobs in the presenter (live progress + summary)
+    // BEFORE on_phase_complete so they appear in both sections.
+    for spec in &bg_specs {
+        presenter.on_job_background(&spec.name, spec.description.as_deref());
+    }
+
+    presenter.on_phase_complete(hook_start.elapsed());
 
     // Dispatch background jobs to a forked coordinator process.
     #[cfg(unix)]
@@ -267,10 +275,6 @@ pub fn execute_yaml_hook_with_rc(
             crate::coordinator::process::CoordinatorState::new(&repo_hash, &invocation_id);
         for spec in bg_specs {
             coord_state.add_job(spec);
-        }
-
-        for spec in &coord_state.jobs {
-            presenter.on_job_background(&spec.name, spec.description.as_deref());
         }
 
         let bg_count = coord_state.jobs.len();
