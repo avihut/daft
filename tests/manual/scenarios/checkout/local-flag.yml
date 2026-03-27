@@ -19,8 +19,8 @@ steps:
       exit_code: 0
 
   - name: Start with --local flag (should NOT push despite config)
-    run: daft-start --local my-local-feature
-    cwd: "$WORK_DIR/test-repo"
+    run: git-worktree-checkout -b --local my-local-feature
+    cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       dirs_exist:

@@ -12,8 +12,8 @@ steps:
       exit_code: 0
 
   - name: Start a new branch (local-first default, no push)
-    run: daft-start my-feature
-    cwd: "$WORK_DIR/test-repo"
+    run: git-worktree-checkout -b my-feature
+    cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       dirs_exist:

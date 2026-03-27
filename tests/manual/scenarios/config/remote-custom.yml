@@ -15,6 +15,8 @@ steps:
     run: |
       git remote add upstream $REMOTE_TEST_REPO
       git config daft.remote upstream
+      git config daft.checkout.push true
+      git config daft.checkout.fetch true
     cwd: "$WORK_DIR/test-repo"
     expect:
       exit_code: 0

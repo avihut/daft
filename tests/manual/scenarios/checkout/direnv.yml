@@ -29,6 +29,7 @@ steps:
     run: |
       cd $WORK_DIR/test-repo/main
       git fetch origin
+      git config daft.checkout.fetch true
       git-worktree-checkout develop
     expect:
       exit_code: 0
