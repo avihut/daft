@@ -261,6 +261,53 @@ pub fn dry_run_fetch_refspec() -> Vec<FixAction> {
     }]
 }
 
+/// Check if remote-sync settings have been explicitly configured.
+///
+/// Shows a one-time informational note when none of the three remote-sync
+/// keys are set, so users know the defaults have changed.
+pub fn check_remote_sync_config(_ctx: &RepoContext) -> CheckResult {
+    use crate::settings::keys;
+
+    let git = GitCommand::new(true);
+
+    let has_fetch = git
+        .config_get(keys::CHECKOUT_FETCH)
+        .ok()
+        .flatten()
+        .is_some()
+        || git
+            .config_get_global(keys::CHECKOUT_FETCH)
+            .ok()
+            .flatten()
+            .is_some();
+    let has_push = git.config_get(keys::CHECKOUT_PUSH).ok().flatten().is_some()
+        || git
+            .config_get_global(keys::CHECKOUT_PUSH)
+            .ok()
+            .flatten()
+            .is_some();
+    let has_delete = git
+        .config_get(keys::BRANCH_DELETE_REMOTE)
+        .ok()
+        .flatten()
+        .is_some()
+        || git
+            .config_get_global(keys::BRANCH_DELETE_REMOTE)
+            .ok()
+            .flatten()
+            .is_some();
+
+    if has_fetch || has_push || has_delete {
+        CheckResult::pass("Remote sync", "Remote sync settings are configured")
+    } else {
+        CheckResult::warning(
+            "Remote sync",
+            "Remote sync defaults have changed \u{2014} daft no longer fetches, pushes, or deletes remote branches by default",
+        )
+        .with_suggestion("Run `daft config remote-sync` to configure your preference.")
+    }
+}
+
 /// Check that remote HEAD (refs/remotes/origin/HEAD) is set.
 pub fn check_remote_head(ctx: &RepoContext) -> CheckResult {
     if !ctx.is_bare {

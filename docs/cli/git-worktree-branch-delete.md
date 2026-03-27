@@ -58,6 +58,8 @@ git worktree-branch-delete [OPTIONS] <BRANCHES>
 | Option | Description | Default |
 |--------|-------------|----------|
 | `-D, --force` | Force deletion even if not fully merged |  |
+| `--local` | Only delete locally, keep remote branch |  |
+| `--remote` | Only delete the remote branch, keep local worktree and branch |  |
 | `-q, --quiet` | Operate quietly; suppress progress reporting |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
 

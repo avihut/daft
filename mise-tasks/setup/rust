@@ -24,6 +24,8 @@ ln -sf daft git-worktree-list
 ln -sf daft git-daft
 ln -sf daft daft-remove
 ln -sf daft daft-rename
+ln -sf daft daft-start
+ln -sf daft daft-go
 # Git-style shortcuts (default for development)
 ln -sf daft gwtclone
 ln -sf daft gwtinit

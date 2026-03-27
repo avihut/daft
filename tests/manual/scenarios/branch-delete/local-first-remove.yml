@@ -1,0 +1,34 @@
+name: Remove local-first (no remote delete)
+description: With default settings, remove should not delete remote branch
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop branch
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Remove develop worktree (local-first default, keep remote)
+    run: daft-remove -f develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Verify remote branch still exists
+    run: git ls-remote --heads $REMOTE_TEST_REPO develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "refs/heads/develop"

@@ -1,0 +1,35 @@
+name: Start with --local flag overrides config
+description:
+  The --local flag skips fetch and push even when remote sync is enabled
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Enable remote sync
+    run: git config daft.checkout.push true
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Start with --local flag (should NOT push despite config)
+    run: git-worktree-checkout -b --local my-local-feature
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/my-local-feature"
+
+  - name: Verify branch was NOT pushed
+    run: git ls-remote --heads $REMOTE_TEST_REPO my-local-feature
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "refs/heads/my-local-feature"

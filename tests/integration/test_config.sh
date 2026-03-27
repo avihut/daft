@@ -16,21 +16,21 @@ test_config_defaults() {
     git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-config-defaults"
 
-    # Verify default behavior works (remote=origin, push enabled, etc.)
+    # Verify default behavior works (remote=origin, push disabled by default)
     git-worktree-checkout -b feature/test-defaults || return 1
 
     # Verify the worktree was created
     assert_directory_exists "feature/test-defaults" || return 1
 
-    # Verify the branch was pushed (default behavior)
+    # Verify the branch was NOT pushed (local-first default)
     cd "feature/test-defaults"
     local remote_branch
     remote_branch=$(git ls-remote --heads origin feature/test-defaults 2>/dev/null)
-    if [[ -z "$remote_branch" ]]; then
-        log_error "Branch was not pushed to remote (expected by default)"
+    if [[ -n "$remote_branch" ]]; then
+        log_error "Branch was pushed to remote (should NOT push by default in local-first mode)"
         return 1
     fi
-    log_success "Branch was pushed to remote (default behavior)"
+    log_success "Branch was not pushed to remote (local-first default)"
 
     return 0
 }
@@ -78,6 +78,8 @@ test_config_remote_custom() {
 
     # Set local config to use upstream
     git config daft.remote upstream
+    git config daft.checkout.push true
+    git config daft.checkout.fetch true
 
     # Create a new branch (should push to upstream, not origin)
     cd main

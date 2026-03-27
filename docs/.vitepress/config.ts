@@ -295,6 +295,7 @@ export default defineConfig({
           {
             text: "Configuration",
             items: [
+              { text: "config", link: "/cli/daft-config" },
               { text: "hooks", link: "/cli/git-daft-hooks" },
               { text: "layout", link: "/cli/daft-layout" },
               { text: "multi-remote", link: "/cli/daft-multi-remote" },

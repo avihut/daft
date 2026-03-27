@@ -83,6 +83,16 @@ pub struct Args {
     )]
     force_delete: bool,
 
+    #[arg(long, help = "Only delete locally, keep remote branch")]
+    local: bool,
+
+    #[arg(
+        long,
+        conflicts_with = "local",
+        help = "Only delete the remote branch, keep local worktree and branch"
+    )]
+    remote: bool,
+
     #[arg(
         short = 'm',
         long = "move",
@@ -165,6 +175,16 @@ pub struct RemoveArgs {
     )]
     force: bool,
 
+    #[arg(long, help = "Only delete locally, keep remote branch")]
+    local: bool,
+
+    #[arg(
+        long,
+        conflicts_with = "local",
+        help = "Only delete the remote branch, keep local worktree and branch"
+    )]
+    remote: bool,
+
     #[arg(short, long, help = "Operate quietly; suppress progress reporting")]
     quiet: bool,
 
@@ -192,6 +212,8 @@ pub fn run_remove() -> Result<()> {
         &remove_args.branches,
         remove_args.force,
         remove_args.quiet,
+        remove_args.local,
+        remove_args.remote,
         &mut output,
         &settings,
     )
@@ -318,6 +340,8 @@ fn run_with_args(args: Args) -> Result<()> {
             &args.branches,
             args.force_delete,
             args.quiet,
+            args.local,
+            args.remote,
             &mut output,
             &settings,
         )?;
@@ -329,6 +353,8 @@ fn run_branch_delete(
     branches: &[String],
     force: bool,
     quiet: bool,
+    local_only: bool,
+    remote_only: bool,
     output: &mut dyn Output,
     settings: &DaftSettings,
 ) -> Result<()> {
@@ -338,6 +364,14 @@ fn run_branch_delete(
         use_gitoxide: settings.use_gitoxide,
         is_quiet: quiet,
         remote_name: settings.remote.clone(),
+        delete_remote: if local_only {
+            false
+        } else if remote_only {
+            true
+        } else {
+            settings.branch_delete_remote
+        },
+        remote_only,
         prune_cd_target: settings.prune_cd_target,
     };
 

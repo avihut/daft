@@ -56,6 +56,21 @@ impl GitCommand {
         }
     }
 
+    /// Set a git config value in global config
+    pub fn config_set_global(&self, key: &str, value: &str) -> Result<()> {
+        let output = Command::new("git")
+            .args(["config", "--global", key, value])
+            .output()
+            .context("Failed to execute git config --global command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git config --global failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
     /// Get a git config value from global config only
     pub fn config_get_global(&self, key: &str) -> Result<Option<String>> {
         if self.use_gitoxide {

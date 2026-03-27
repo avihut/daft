@@ -8,6 +8,7 @@ pub mod checkout;
 pub mod clone;
 pub mod complete;
 pub mod completions;
+pub mod config;
 pub mod docs;
 pub mod doctor;
 pub mod fetch;

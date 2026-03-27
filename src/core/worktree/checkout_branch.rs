@@ -36,6 +36,8 @@ pub struct CheckoutBranchParams {
     pub checkout_branch_carry: bool,
     /// Whether to push and set upstream (from settings).
     pub checkout_push: bool,
+    /// Whether to fetch from remote before creating the worktree.
+    pub checkout_fetch: bool,
     /// Optional layout for computing the worktree path.
     /// When `Some`, uses `layout.worktree_path()` instead of `calculate_worktree_path()`.
     pub layout: Option<Layout>,
@@ -104,7 +106,9 @@ pub fn execute(
     };
 
     // Fetch latest changes
-    fetch_remote(git, &params.remote_name, sink);
+    if params.checkout_fetch {
+        fetch_remote(git, &params.remote_name, sink);
+    }
 
     // Determine the best checkout base (three-way branch selection)
     let checkout_base = select_checkout_base(git, &base_branch, &params.remote_name, sink)?;

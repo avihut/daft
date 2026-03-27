@@ -110,6 +110,7 @@ fn main() -> Result<()> {
                         let _ = daft::trust_prune::run_prune_trust();
                         return Ok(());
                     }
+                    "config" => commands::config::run(),
                     "hooks" => commands::hooks::run(),
                     "layout" => commands::layout::run(),
                     "multi-remote" => commands::multi_remote::run(),

@@ -69,6 +69,8 @@ pub struct CheckoutParams {
     pub checkout_carry: bool,
     /// Whether to set upstream tracking (from settings).
     pub checkout_upstream: bool,
+    /// Whether to fetch from remote before creating the worktree.
+    pub checkout_fetch: bool,
     /// Optional layout for computing the worktree path.
     /// When `Some`, uses `layout.worktree_path()` instead of `calculate_worktree_path()`.
     pub layout: Option<Layout>,
@@ -204,7 +206,11 @@ pub fn execute(
     }
 
     // Fetch latest changes from remote
-    let fetch_failed = !fetch_branch(git, &params.remote_name, &params.branch_name, sink);
+    let fetch_failed = if params.checkout_fetch {
+        !fetch_branch(git, &params.remote_name, &params.branch_name, sink)
+    } else {
+        false
+    };
 
     // Check if local and/or remote branch exists
     let (local_exists, remote_exists) =

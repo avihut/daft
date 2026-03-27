@@ -349,6 +349,12 @@ _daft() {
         return
     fi
 
+    # config: complete subcommands
+    if (( CURRENT == 3 )) && [[ "$words[2]" == "config" ]]; then
+        compadd remote-sync
+        return
+    fi
+
     # shared: complete subcommands and their arguments
     if [[ "$words[2]" == "shared" ]]; then
         if (( CURRENT == 3 )); then
@@ -476,7 +482,7 @@ _daft() {
             compadd -- --version -V --help -h
         else
             compadd hooks shell-init setup multi-remote release-notes doctor layout shared \
-                    clone init go start carry update list prune rename sync remove adopt eject
+                    config clone init go start carry update list prune rename sync remove adopt eject
         fi
         return
     fi

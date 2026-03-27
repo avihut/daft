@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-branch \- Delete or rename branches and their worktrees
 .SH SYNOPSIS
-\fBgit\-worktree\-branch\fR [\fB\-d\fR|\fB\-\-delete\fR] [\fB\-D\fR|\fB\-\-force\fR] [\fB\-m\fR|\fB\-\-move\fR] [\fB\-\-no\-remote\fR] [\fB\-\-dry\-run\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCHES\fR] 
+\fBgit\-worktree\-branch\fR [\fB\-d\fR|\fB\-\-delete\fR] [\fB\-D\fR|\fB\-\-force\fR] [\fB\-\-local\fR] [\fB\-\-remote\fR] [\fB\-m\fR|\fB\-\-move\fR] [\fB\-\-no\-remote\fR] [\fB\-\-dry\-run\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCHES\fR] 
 .SH DESCRIPTION
 .PP
 Manage branches and their associated worktrees. Supports deletion (\-d/\-D)
@@ -63,6 +63,12 @@ Delete branches (safe mode)
 .TP
 \fB\-D\fR, \fB\-\-force\fR
 Force deletion even if not fully merged
+.TP
+\fB\-\-local\fR
+Only delete locally, keep remote branch
+.TP
+\fB\-\-remote\fR
+Only delete the remote branch, keep local worktree and branch
 .TP
 \fB\-m\fR, \fB\-\-move\fR
 Rename a branch and move its worktree
