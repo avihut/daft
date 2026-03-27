@@ -63,6 +63,10 @@ pub struct YamlConfig {
     /// `.git/.daft/shared/` and creates symlinks in each worktree.
     pub shared: Option<Vec<String>>,
 
+    /// Log configuration (retention, etc.).
+    #[serde(default)]
+    pub log: Option<LogConfig>,
+
     /// Hook definitions, keyed by hook name.
     pub hooks: HashMap<String, HookDef>,
 }
@@ -77,10 +81,32 @@ pub enum OutputSetting {
     Hooks(Vec<String>),
 }
 
+/// Output behavior for background jobs.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackgroundOutput {
+    /// Always write to log file; terminal notification on failure.
+    Log,
+    /// Write to log file only on failure; no terminal notification.
+    Silent,
+}
+
+/// Log configuration, applicable at top-level, hook-level, or job-level.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct LogConfig {
+    /// Log retention duration (e.g., "7d", "24h", "30m").
+    pub retention: Option<String>,
+    /// Override log file path. Absolute or relative to worktree root.
+    pub path: Option<String>,
+}
+
 /// Definition for a single hook type.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct HookDef {
+    /// Whether jobs in this hook default to background execution.
+    pub background: Option<bool>,
+
     /// Run jobs in parallel.
     pub parallel: Option<bool>,
 
@@ -277,6 +303,15 @@ pub struct JobDef {
     /// Worktree attributes this job tracks.
     /// When a tracked attribute changes, the job is re-run with teardown/setup semantics.
     pub tracks: Option<Vec<TrackedAttribute>>,
+
+    /// Run this job in the background (overrides hook-level default).
+    pub background: Option<bool>,
+
+    /// Output behavior for background execution.
+    pub background_output: Option<BackgroundOutput>,
+
+    /// Log configuration for this job.
+    pub log: Option<LogConfig>,
 }
 
 /// Legacy command definition (alias for JobDef).
@@ -1011,5 +1046,63 @@ hooks:
 "#;
         let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.shared.is_none());
+    }
+
+    #[test]
+    fn test_deserialize_background_job() {
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    background: true
+    jobs:
+      - name: warm build
+        run: cargo build
+      - name: install deps
+        run: pnpm install
+        background: false
+        log:
+          retention: "14d"
+          path: "./build-logs/install.log"
+      - name: silent job
+        run: echo hello
+        background_output: silent
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let hook = config.hooks.get("worktree-post-create").unwrap();
+        assert_eq!(hook.background, Some(true));
+
+        let jobs = hook.jobs.as_ref().unwrap();
+        // Job 0: inherits hook-level background (no override)
+        assert_eq!(jobs[0].background, None);
+        // Job 1: explicit override
+        assert_eq!(jobs[1].background, Some(false));
+        assert_eq!(
+            jobs[1].log.as_ref().unwrap().retention,
+            Some("14d".to_string())
+        );
+        assert_eq!(
+            jobs[1].log.as_ref().unwrap().path,
+            Some("./build-logs/install.log".to_string())
+        );
+        // Job 2: background_output
+        assert_eq!(jobs[2].background_output, Some(BackgroundOutput::Silent));
+    }
+
+    #[test]
+    fn test_deserialize_top_level_log_config() {
+        let yaml = r#"
+log:
+  retention: "30d"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: test
+        run: echo hi
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            config.log.as_ref().unwrap().retention,
+            Some("30d".to_string())
+        );
     }
 }
