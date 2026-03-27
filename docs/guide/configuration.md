@@ -231,14 +231,15 @@ git config daft.hooks.worktreePostCreate.failMode abort
 
 ## Environment Variables
 
-| Variable               | Description                                                               |
-| ---------------------- | ------------------------------------------------------------------------- |
-| `DAFT_CD_FILE`         | Temp file path for shell wrapper CD communication (set by shell wrappers) |
-| `DAFT_NO_HINTS`        | Set to suppress contextual hint messages                                  |
-| `DAFT_NO_TRUST_PRUNE`  | Set to disable automatic trust database pruning                           |
-| `DAFT_NO_UPDATE_CHECK` | Set to disable version update notifications                               |
-| `NO_COLOR`             | Standard variable to disable colored output                               |
-| `PAGER`                | Override the pager for `daft release-notes`                               |
+| Variable                  | Description                                                               |
+| ------------------------- | ------------------------------------------------------------------------- |
+| `DAFT_CD_FILE`            | Temp file path for shell wrapper CD communication (set by shell wrappers) |
+| `DAFT_NO_HINTS`           | Set to suppress contextual hint messages                                  |
+| `DAFT_NO_TRUST_PRUNE`     | Set to disable automatic trust database pruning                           |
+| `DAFT_NO_UPDATE_CHECK`    | Set to disable version update notifications                               |
+| `DAFT_NO_BACKGROUND_JOBS` | Set to promote all background hook jobs to foreground                     |
+| `NO_COLOR`                | Standard variable to disable colored output                               |
+| `PAGER`                   | Override the pager for `daft release-notes`                               |
 
 ## Git Hooks
 
