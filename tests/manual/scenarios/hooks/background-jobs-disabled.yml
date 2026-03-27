@@ -1,0 +1,63 @@
+name: DAFT_NO_BACKGROUND_JOBS promotes background jobs to foreground
+description:
+  "When DAFT_NO_BACKGROUND_JOBS=1 is set, background jobs run synchronously in
+  the foreground. The marker file from a background job must exist immediately
+  after git-worktree-checkout returns — no polling required."
+
+repos:
+  - name: test-bg-disabled
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Background jobs disabled test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/bg-test
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          background: true
+          jobs:
+            - name: write-marker
+              run: touch "$DAFT_WORKTREE_PATH/.bg-job-ran"
+
+env:
+  DAFT_NO_BACKGROUND_JOBS: "1"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_BG_DISABLED
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-bg-disabled/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-bg-disabled/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch with DAFT_NO_BACKGROUND_JOBS set
+    run: git-worktree-checkout feature/bg-test 2>&1
+    cwd: "$WORK_DIR/test-bg-disabled/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-bg-disabled/feature/bg-test"
+
+  - name: Verify background job ran synchronously (marker exists immediately)
+    run: |
+      if [ -f "$WORK_DIR/test-bg-disabled/feature/bg-test/.bg-job-ran" ]; then
+        echo "MARKER_EXISTS"
+      else
+        echo "MARKER_MISSING"
+        exit 1
+      fi
+    expect:
+      exit_code: 0
+      output_contains:
+        - "MARKER_EXISTS"
