@@ -6,6 +6,9 @@
 //! Job execution is delegated to the generic executor (`crate::executor::runner`)
 //! via the job adapter (`crate::hooks::job_adapter`).
 
+pub mod partition;
+pub use partition::partition_foreground_background;
+
 use super::environment::HookContext;
 use super::executor::HookResult;
 use super::template;
