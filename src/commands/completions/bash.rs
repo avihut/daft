@@ -145,7 +145,7 @@ _daft() {
     if [[ $cword -ge 2 && "${words[1]}" == "hooks" ]]; then
         # hooks subcommand completion (position 2)
         if [[ $cword -eq 2 ]]; then
-            COMPREPLY=( $(compgen -W "trust prompt deny status migrate install validate dump run" -- "$cur") )
+            COMPREPLY=( $(compgen -W "trust prompt deny status migrate install validate dump run jobs" -- "$cur") )
             COMPREPLY+=( $(compgen -d -- "$cur") )
             return 0
         fi
@@ -219,6 +219,17 @@ _daft() {
             migrate)
                 if [[ "$cur" == -* ]]; then
                     COMPREPLY=( $(compgen -W "--dry-run -h --help" -- "$cur") )
+                fi
+                return 0
+                ;;
+            jobs)
+                if [[ $cword -eq 3 ]]; then
+                    COMPREPLY=( $(compgen -W "logs cancel retry clean" -- "$cur") )
+                    return 0
+                fi
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--all-repos --worktree --json -h --help" -- "$cur") )
+                    return 0
                 fi
                 return 0
                 ;;
