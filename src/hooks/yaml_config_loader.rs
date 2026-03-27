@@ -200,6 +200,15 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
         merged.layout = overlay.layout;
     }
 
+    // Merge log config (field-level merge)
+    merged.log = match (merged.log, overlay.log) {
+        (Some(b), Some(o)) => Some(crate::executor::LogConfig {
+            retention: o.retention.or(b.retention),
+            path: o.path.or(b.path),
+        }),
+        (base_log, overlay_log) => overlay_log.or(base_log),
+    };
+
     // Hooks: merge each hook definition
     for (name, overlay_hook) in overlay.hooks {
         if let Some(base_hook) = merged.hooks.remove(&name) {
@@ -836,6 +845,50 @@ hooks:
 
         let jobs = get_effective_jobs(&hook);
         assert_eq!(jobs.len(), 2);
+    }
+
+    // ── Tests for log config merging ─────────────────────────────────
+
+    #[test]
+    fn test_merge_log_config() {
+        let base = YamlConfig {
+            log: Some(crate::executor::LogConfig {
+                retention: Some("7d".to_string()),
+                path: None,
+            }),
+            ..Default::default()
+        };
+        let overlay = YamlConfig {
+            log: Some(crate::executor::LogConfig {
+                retention: Some("14d".to_string()),
+                path: None,
+            }),
+            ..Default::default()
+        };
+        let merged = merge_configs(base, overlay);
+        assert_eq!(merged.log.unwrap().retention, Some("14d".to_string()));
+    }
+
+    #[test]
+    fn test_merge_log_config_overlay_partial() {
+        let base = YamlConfig {
+            log: Some(crate::executor::LogConfig {
+                retention: Some("7d".to_string()),
+                path: Some("/base/path".to_string()),
+            }),
+            ..Default::default()
+        };
+        let overlay = YamlConfig {
+            log: Some(crate::executor::LogConfig {
+                retention: Some("14d".to_string()),
+                path: None,
+            }),
+            ..Default::default()
+        };
+        let merged = merge_configs(base, overlay);
+        let log = merged.log.unwrap();
+        assert_eq!(log.retention, Some("14d".to_string()));
+        assert_eq!(log.path, Some("/base/path".to_string()));
     }
 
     // ── Tests for parse_yaml_config_str ──────────────────────────────
