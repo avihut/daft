@@ -124,6 +124,14 @@ pub fn run() -> Result<()> {
 pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
     check_dependencies()?;
 
+    // Validate inputs early, before any interactive prompts.
+    validate_repo_name(&args.repository_name)?;
+    if let Some(ref branch) = args.initial_branch {
+        if branch.is_empty() {
+            anyhow::bail!("Initial branch name cannot be empty");
+        }
+    }
+
     // Load global settings to check for multi-remote preferences
     let settings = DaftSettings::load_global()?;
 
