@@ -3,6 +3,7 @@
 //! Uses ratatui with Viewport::Inline to render an operation header
 //! and worktree status table that update in-place as tasks execute.
 
+pub mod collect_picker;
 mod columns;
 mod driver;
 pub mod operation_table;
