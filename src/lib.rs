@@ -178,6 +178,7 @@ pub fn skip_startup_tasks_for(args: &[String]) -> bool {
 
 pub mod commands;
 pub mod completion_spinner;
+pub mod coordinator;
 pub mod core;
 pub mod doctor;
 pub mod exec;
