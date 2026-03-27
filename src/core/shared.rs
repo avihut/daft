@@ -388,6 +388,73 @@ fn load_yaml_config(root: &Path) -> Result<Option<crate::hooks::yaml_config::Yam
     Ok(Some(config))
 }
 
+// ── Uncollected file detection ───────────────────────────────────────────
+
+/// A worktree that has a real (non-symlink) copy of a declared shared file.
+#[derive(Debug, Clone)]
+pub struct WorktreeCopy {
+    /// Absolute path of the worktree directory.
+    pub worktree_path: PathBuf,
+    /// Worktree display name (directory basename).
+    pub worktree_name: String,
+}
+
+/// A declared shared file that has not yet been collected into shared storage.
+#[derive(Debug, Clone)]
+pub struct UncollectedFile {
+    /// Path relative to the worktree root (e.g., ".env").
+    pub rel_path: String,
+    /// Worktrees that have a real copy of this file.
+    /// Empty if no worktree has it (will be stubbed).
+    pub copies: Vec<WorktreeCopy>,
+}
+
+/// Scan worktrees for declared shared paths that are not yet in shared storage.
+///
+/// Returns one `UncollectedFile` per declared path that has no file in
+/// `.git/.daft/shared/`. Each entry lists the worktrees that have a real
+/// (non-symlink) copy of that file.
+pub fn detect_uncollected(
+    declared_paths: &[String],
+    worktree_paths: &[PathBuf],
+    git_common_dir: &Path,
+) -> Vec<UncollectedFile> {
+    let mut uncollected = Vec::new();
+
+    for rel_path in declared_paths {
+        let shared_target = shared_file_path(git_common_dir, rel_path);
+
+        // Already collected — skip
+        if shared_target.exists() {
+            continue;
+        }
+
+        let mut copies = Vec::new();
+        for wt in worktree_paths {
+            let file_path = wt.join(rel_path);
+            // Only count real files/dirs, not symlinks
+            if file_path.exists() && !file_path.is_symlink() {
+                let name = wt
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                copies.push(WorktreeCopy {
+                    worktree_path: wt.clone(),
+                    worktree_name: name,
+                });
+            }
+        }
+
+        uncollected.push(UncollectedFile {
+            rel_path: rel_path.clone(),
+            copies,
+        });
+    }
+
+    uncollected
+}
+
 // ── Git helpers ───────────────────────────────────────────────────────────
 
 /// Check if a path is tracked by git (would show up in `git ls-files`).
@@ -728,5 +795,80 @@ mod tests {
             fs::read_to_string(worktree.join(".vscode/settings.json")).unwrap(),
             "{}"
         );
+    }
+
+    // ── detect_uncollected tests ─────────────────────────────────────────
+
+    /// Helper: create a minimal directory structure for testing.
+    fn setup_test_repo(
+        worktree_names: &[&str],
+    ) -> (tempfile::TempDir, PathBuf, PathBuf, Vec<PathBuf>) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let git_dir = root.join(".git");
+        fs::create_dir_all(git_dir.join(".daft/shared")).unwrap();
+
+        let mut wt_paths = Vec::new();
+        for name in worktree_names {
+            let wt = root.join(name);
+            fs::create_dir_all(&wt).unwrap();
+            wt_paths.push(wt);
+        }
+
+        (tmp, git_dir, root, wt_paths)
+    }
+
+    #[test]
+    fn detect_uncollected_finds_copies_across_worktrees() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main", "develop"]);
+        fs::write(wt_paths[0].join(".env"), "FROM_MAIN=1").unwrap();
+        fs::write(wt_paths[1].join(".env"), "FROM_DEVELOP=1").unwrap();
+
+        let declared = vec![".env".to_string()];
+        let result = detect_uncollected(&declared, &wt_paths, &git_dir);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].rel_path, ".env");
+        assert_eq!(result[0].copies.len(), 2);
+        assert_eq!(result[0].copies[0].worktree_path, wt_paths[0]);
+        assert_eq!(result[0].copies[1].worktree_path, wt_paths[1]);
+    }
+
+    #[test]
+    fn detect_uncollected_skips_already_collected() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main"]);
+        fs::write(shared_file_path(&git_dir, ".env"), "SHARED=1").unwrap();
+        fs::write(wt_paths[0].join(".env"), "LOCAL=1").unwrap();
+
+        let declared = vec![".env".to_string()];
+        let result = detect_uncollected(&declared, &wt_paths, &git_dir);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn detect_uncollected_file_in_no_worktree() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main"]);
+
+        let declared = vec![".secrets".to_string()];
+        let result = detect_uncollected(&declared, &wt_paths, &git_dir);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].rel_path, ".secrets");
+        assert!(result[0].copies.is_empty());
+    }
+
+    #[test]
+    fn detect_uncollected_ignores_symlinked_worktrees() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main"]);
+        let shared_target = shared_file_path(&git_dir, ".env");
+        fs::write(&shared_target, "SHARED=1").unwrap();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&shared_target, wt_paths[0].join(".env")).unwrap();
+
+        let declared = vec![".env".to_string()];
+        let result = detect_uncollected(&declared, &wt_paths, &git_dir);
+        // .env IS in shared storage, so detect_uncollected skips it entirely
+        assert!(result.is_empty());
     }
 }
