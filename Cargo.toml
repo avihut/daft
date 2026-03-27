@@ -109,9 +109,10 @@ nucleo-matcher = "0.3"
 ignore = "0.4"
 edtui = { version = "0.11", features = ["syntax-highlighting"] }
 
-# pager is Unix-only (uses fork/pipes)
+# pager and libc are Unix-only (uses fork/pipes)
 [target.'cfg(unix)'.dependencies]
 pager = "0.16"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3.8"
