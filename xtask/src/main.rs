@@ -30,9 +30,14 @@ const COMMANDS: &[&str] = &[
     "git-worktree-sync",
     "daft-config",
     "daft-doctor",
+    "daft-hooks",
     "daft-layout",
+    "daft-multi-remote",
     "daft-release-notes",
+    "daft-setup",
     "daft-shared",
+    "daft-shell-init",
+    "daft-shortcuts",
 ];
 
 /// A daft verb command that maps to an existing git-worktree-* command for man page generation
@@ -157,6 +162,11 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "daft-rename" => Some(daft::commands::worktree_branch::RenameArgs::command()),
         "daft-go" => Some(daft::commands::checkout::GoArgs::command()),
         "daft-start" => Some(daft::commands::checkout::StartArgs::command()),
+        "daft-hooks" => Some(daft::commands::hooks::Args::command()),
+        "daft-multi-remote" => Some(daft::commands::multi_remote::Args::command()),
+        "daft-setup" => Some(daft::commands::setup::Args::command()),
+        "daft-shell-init" => Some(daft::commands::shell_init::Args::command()),
+        "daft-shortcuts" => Some(daft::commands::shortcuts::Args::command()),
         _ => None,
     }
 }
@@ -258,6 +268,9 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
         // Config cluster
         "daft-doctor" => vec!["git-worktree-clone", "git-worktree-init"],
         "daft-release-notes" => vec![],
+        "daft-setup" => vec!["daft-shortcuts", "daft-shell-init"],
+        "daft-shortcuts" => vec!["daft-setup", "daft-shell-init"],
+        "daft-shell-init" => vec!["daft-setup", "daft-shortcuts"],
         _ => vec![],
     }
 }
@@ -396,6 +409,63 @@ fn main() -> Result<()> {
     }
 }
 
+/// Build a top-level `daft` clap Command with all subcommands for man page generation.
+fn build_top_level_command() -> clap::Command {
+    use clap::CommandFactory;
+
+    clap::Command::new("daft")
+        .about("A Git extensions toolkit for worktree-based development")
+        .long_about(
+            "daft is a comprehensive Git extensions toolkit that enhances developer \
+             workflows with powerful worktree management. It provides both git-style \
+             subcommands (git worktree-clone, git worktree-checkout, ...) and short \
+             verb aliases (daft clone, daft go, daft start, ...).\n\n\
+             Run 'daft' with no arguments to see a categorized command overview.\n\n\
+             GETTING STARTED\n\n\
+             Clone a repository into a worktree layout:\n\n\
+             \tdaft clone <url>\n\n\
+             Or adopt an existing repository:\n\n\
+             \tdaft adopt\n\n\
+             Switch to a branch (each branch gets its own directory):\n\n\
+             \tdaft go <branch>\n\n\
+             Create a new branch:\n\n\
+             \tdaft start <branch>\n\n\
+             SHELL INTEGRATION\n\n\
+             Enable automatic cd into new worktrees:\n\n\
+             \teval \"$(daft shell-init zsh)\"\n\n\
+             See daft-shell-init(1) for details.",
+        )
+        .subcommand_required(false)
+        // Setup commands
+        .subcommand(daft::commands::clone::Args::command().name("clone"))
+        .subcommand(daft::commands::init::Args::command().name("init"))
+        .subcommand(daft::commands::flow_adopt::Args::command().name("adopt"))
+        // Branching commands
+        .subcommand(daft::commands::checkout::GoArgs::command().name("go"))
+        .subcommand(daft::commands::checkout::StartArgs::command().name("start"))
+        // Sharing commands
+        .subcommand(daft::commands::carry::Args::command().name("carry"))
+        // Maintenance commands
+        .subcommand(daft::commands::list::Args::command().name("list"))
+        .subcommand(daft::commands::worktree_branch::RemoveArgs::command().name("remove"))
+        .subcommand(daft::commands::worktree_branch::RenameArgs::command().name("rename"))
+        .subcommand(daft::commands::prune::Args::command().name("prune"))
+        .subcommand(daft::commands::fetch::Args::command().name("update"))
+        .subcommand(daft::commands::sync::Args::command().name("sync"))
+        .subcommand(daft::commands::flow_eject::Args::command().name("eject"))
+        // Configuration commands
+        .subcommand(daft::commands::shared::Args::command().name("shared"))
+        .subcommand(daft::commands::hooks::Args::command().name("hooks"))
+        .subcommand(daft::commands::layout::LayoutArgs::command().name("layout"))
+        .subcommand(daft::commands::multi_remote::Args::command().name("multi-remote"))
+        .subcommand(daft::commands::config::remote_sync::Args::command().name("config"))
+        .subcommand(daft::commands::doctor::Args::command().name("doctor"))
+        .subcommand(daft::commands::shell_init::Args::command().name("shell-init"))
+        .subcommand(daft::commands::setup::Args::command().name("setup"))
+        .subcommand(daft::commands::shortcuts::Args::command().name("shortcuts"))
+        .subcommand(daft::commands::release_notes::Args::command().name("release-notes"))
+}
+
 /// Generate man pages and write to a directory
 fn generate_man_pages(output_dir: &PathBuf, command: Option<&str>) -> Result<()> {
     fs::create_dir_all(output_dir).with_context(|| {
@@ -406,7 +476,12 @@ fn generate_man_pages(output_dir: &PathBuf, command: Option<&str>) -> Result<()>
     })?;
 
     let commands_to_generate: Vec<&str> = if let Some(cmd) = command {
-        vec![cmd]
+        // "daft" is handled separately as the top-level man page
+        if cmd == "daft" {
+            vec![]
+        } else {
+            vec![cmd]
+        }
     } else {
         COMMANDS.to_vec()
     };
@@ -457,6 +532,26 @@ fn generate_man_pages(output_dir: &PathBuf, command: Option<&str>) -> Result<()>
         let filename = format!("{}.1", verb.daft_name);
         let file_path = output_dir.join(&filename);
 
+        fs::write(&file_path, &buffer)
+            .with_context(|| format!("Failed to write man page: {}", file_path.display()))?;
+
+        eprintln!("Generated: {}", file_path.display());
+    }
+
+    // Generate top-level daft.1 man page
+    let should_generate_top_level = match command {
+        Some("daft") => true,
+        Some(_) => false,
+        None => true,
+    };
+
+    if should_generate_top_level {
+        let cmd = build_top_level_command();
+        let man = Man::new(cmd);
+        let mut buffer = Vec::new();
+        man.render(&mut buffer)?;
+
+        let file_path = output_dir.join("daft.1");
         fs::write(&file_path, &buffer)
             .with_context(|| format!("Failed to write man page: {}", file_path.display()))?;
 
@@ -553,85 +648,58 @@ fn render_command_markdown(command_name: &str, cmd: &clap::Command) -> String {
     md.push_str("\n```\n\n");
 
     // Positional arguments
-    let positionals: Vec<_> = cmd
-        .get_arguments()
-        .filter(|a| a.is_positional() && a.get_id() != "version" && a.get_id() != "help")
-        .collect();
-
-    if !positionals.is_empty() {
-        md.push_str("## Arguments\n\n");
-        md.push_str("| Argument | Description | Required |\n");
-        md.push_str("|----------|-------------|----------|\n");
-
-        for arg in &positionals {
-            let id = arg.get_id().as_str();
-            let value_name = arg
-                .get_value_names()
-                .and_then(|v| v.first().map(|s| s.to_string()))
-                .unwrap_or_else(|| id.to_uppercase());
-
-            let help = arg.get_help().map(|s| s.to_string()).unwrap_or_default();
-
-            let required = if arg.is_required_set() { "Yes" } else { "No" };
-
-            md.push_str(&format!("| `<{value_name}>` | {help} | {required} |\n"));
-        }
-        md.push('\n');
-    }
+    let args_table = render_arguments_table(cmd.get_arguments(), "## Arguments");
+    md.push_str(&args_table);
 
     // Options (non-positional arguments)
-    let options: Vec<_> = cmd
-        .get_arguments()
-        .filter(|a| !a.is_positional() && a.get_id() != "version" && a.get_id() != "help")
+    let opts_table = render_options_table(cmd.get_arguments(), "## Options");
+    md.push_str(&opts_table);
+
+    // Subcommands
+    let subcommands: Vec<_> = cmd
+        .get_subcommands()
+        .filter(|sub| sub.get_name() != "help")
         .collect();
 
-    if !options.is_empty() {
-        md.push_str("## Options\n\n");
-        md.push_str("| Option | Description | Default |\n");
-        md.push_str("|--------|-------------|----------|\n");
+    if !subcommands.is_empty() {
+        md.push_str("## Subcommands\n\n");
 
-        for arg in &options {
-            let mut opt_str = String::new();
-            if let Some(short) = arg.get_short() {
-                opt_str.push_str(&format!("-{short}"));
-            }
-            if let Some(long) = arg.get_long() {
-                if !opt_str.is_empty() {
-                    opt_str.push_str(", ");
-                }
-                opt_str.push_str(&format!("--{long}"));
+        for sub in &subcommands {
+            let sub_name = sub.get_name();
+            let sub_about = sub.get_about().map(|s| s.to_string()).unwrap_or_default();
+
+            md.push_str(&format!("### {sub_name}\n\n"));
+            if !sub_about.is_empty() {
+                md.push_str(&format!("{sub_about}\n\n"));
             }
 
-            // Add value name if the option takes a value (skip for boolean flags)
-            let is_bool_flag = matches!(
-                arg.get_action(),
-                clap::ArgAction::SetTrue | clap::ArgAction::SetFalse | clap::ArgAction::Count
-            );
-            if !is_bool_flag {
-                if let Some(value_names) = arg.get_value_names() {
-                    if !value_names.is_empty() {
-                        let name = &value_names[0];
-                        opt_str.push_str(&format!(" <{name}>"));
-                    }
-                }
+            // Render long_about for subcommands (matches top-level behavior)
+            let sub_long_about = sub
+                .get_long_about()
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            let sub_description = sub_long_about.trim();
+            if !sub_description.is_empty() {
+                md.push_str(&format!("{sub_description}\n\n"));
             }
 
-            let help = arg.get_help().map(|s| s.to_string()).unwrap_or_default();
+            // Usage line for subcommand
+            md.push_str("```\n");
+            md.push_str(&build_usage_string(
+                command_name,
+                sub,
+                &format!("{display_name} {sub_name}"),
+            ));
+            md.push_str("\n```\n\n");
 
-            let defaults: Vec<_> = arg
-                .get_default_values()
-                .iter()
-                .map(|v| v.to_string_lossy().to_string())
-                .collect();
-            let default_str = if defaults.is_empty() {
-                String::new()
-            } else {
-                format!("`{}`", defaults.join(", "))
-            };
+            // Subcommand positional arguments
+            let sub_args = render_arguments_table(sub.get_arguments(), "#### Arguments");
+            md.push_str(&sub_args);
 
-            md.push_str(&format!("| `{opt_str}` | {help} | {default_str} |\n"));
+            // Subcommand options
+            let sub_opts = render_options_table(sub.get_arguments(), "#### Options");
+            md.push_str(&sub_opts);
         }
-        md.push('\n');
     }
 
     // Global options
@@ -651,6 +719,103 @@ fn render_command_markdown(command_name: &str, cmd: &clap::Command) -> String {
         }
         md.push('\n');
     }
+
+    md
+}
+
+/// Render a markdown table of positional arguments.
+///
+/// Returns an empty string if there are no positional arguments (excluding help/version).
+fn render_arguments_table<'a>(args: impl Iterator<Item = &'a clap::Arg>, heading: &str) -> String {
+    let positionals: Vec<_> = args
+        .filter(|a| a.is_positional() && a.get_id() != "version" && a.get_id() != "help")
+        .collect();
+
+    if positionals.is_empty() {
+        return String::new();
+    }
+
+    let mut md = String::new();
+    md.push_str(&format!("{heading}\n\n"));
+    md.push_str("| Argument | Description | Required |\n");
+    md.push_str("|----------|-------------|----------|\n");
+
+    for arg in &positionals {
+        let id = arg.get_id().as_str();
+        let value_name = arg
+            .get_value_names()
+            .and_then(|v| v.first().map(|s| s.to_string()))
+            .unwrap_or_else(|| id.to_uppercase());
+
+        let help = arg.get_help().map(|s| s.to_string()).unwrap_or_default();
+        let required = if arg.is_required_set() { "Yes" } else { "No" };
+
+        md.push_str(&format!("| `<{value_name}>` | {help} | {required} |\n"));
+    }
+    md.push('\n');
+
+    md
+}
+
+/// Render a markdown table of non-positional options.
+///
+/// Returns an empty string if there are no options (excluding help/version).
+fn render_options_table<'a>(args: impl Iterator<Item = &'a clap::Arg>, heading: &str) -> String {
+    let options: Vec<_> = args
+        .filter(|a| !a.is_positional() && a.get_id() != "version" && a.get_id() != "help")
+        .collect();
+
+    if options.is_empty() {
+        return String::new();
+    }
+
+    let mut md = String::new();
+    md.push_str(&format!("{heading}\n\n"));
+    md.push_str("| Option | Description | Default |\n");
+    md.push_str("|--------|-------------|----------|\n");
+
+    for arg in &options {
+        let mut opt_str = String::new();
+        if let Some(short) = arg.get_short() {
+            opt_str.push_str(&format!("-{short}"));
+        }
+        if let Some(long) = arg.get_long() {
+            if !opt_str.is_empty() {
+                opt_str.push_str(", ");
+            }
+            opt_str.push_str(&format!("--{long}"));
+        }
+
+        // Add value name if the option takes a value (skip for boolean flags)
+        let is_bool_flag = matches!(
+            arg.get_action(),
+            clap::ArgAction::SetTrue | clap::ArgAction::SetFalse | clap::ArgAction::Count
+        );
+        if !is_bool_flag {
+            if let Some(value_names) = arg.get_value_names() {
+                if !value_names.is_empty() {
+                    let name = &value_names[0];
+                    opt_str.push_str(&format!(" <{name}>"));
+                }
+            }
+        }
+
+        let help = arg.get_help().map(|s| s.to_string()).unwrap_or_default();
+
+        let defaults: Vec<_> = arg
+            .get_default_values()
+            .iter()
+            .map(|v| v.to_string_lossy().to_string())
+            .collect();
+        let default_str = if defaults.is_empty() {
+            String::new()
+        } else {
+            format!("`{}`", defaults.join(", "))
+        };
+
+        md.push_str(&format!("| `{opt_str}` | {help} | {default_str} |\n"));
+    }
+    md.push('\n');
 
     md
 }

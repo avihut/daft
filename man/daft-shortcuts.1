@@ -1,0 +1,48 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH shortcuts 1  "shortcuts " 
+.SH NAME
+shortcuts \- Manage command shortcut symlinks
+.SH SYNOPSIS
+\fBshortcuts\fR [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
+.SH DESCRIPTION
+.PP
+Manage shortcut symlinks for daft commands.
+.PP
+Shortcuts provide short aliases for frequently used commands:
+  \- Git style:    gwtclone, gwtco, gwtcb, gwtprune, gwtcarry, gwtfetch, gwtinit, gwtbd
+  \- Shell style:  gwco, gwcob
+  \- Legacy style: gclone, gcw, gcbw, gprune
+.PP
+Default\-branch shortcuts (gwtcm, gwtcbm, gwcobd, gcbdw) are available
+via shell integration only (daft shell\-init).
+.PP
+Examples:
+  daft setup shortcuts                    # Show current status
+  daft setup shortcuts list               # List all shortcut styles
+  daft setup shortcuts enable git         # Enable git\-style shortcuts
+  daft setup shortcuts disable legacy     # Disable legacy shortcuts
+  daft setup shortcuts only shell         # Enable only shell shortcuts
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH SUBCOMMANDS
+.TP
+shortcuts\-list(1)
+List all shortcut styles and their aliases
+.TP
+shortcuts\-status(1)
+Show currently installed shortcuts (default)
+.TP
+shortcuts\-enable(1)
+Enable a shortcut style (creates symlinks)
+.TP
+shortcuts\-disable(1)
+Disable a shortcut style (removes symlinks)
+.TP
+shortcuts\-only(1)
+Enable only the specified style (disables others)
+.TP
+shortcuts\-help(1)
+Print this message or the help of the given subcommand(s)

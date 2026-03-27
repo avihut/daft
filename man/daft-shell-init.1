@@ -1,0 +1,44 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH shell-init 1  "shell-init " 
+.SH NAME
+shell\-init \- Generate shell wrapper functions for daft commands
+.SH SYNOPSIS
+\fBshell\-init\fR [\fB\-\-aliases\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fISHELL\fR> 
+.SH DESCRIPTION
+.PP
+Generate shell wrapper functions that enable automatic cd into new worktrees.
+.PP
+By default, when daft commands create or switch to a worktree, the process changes
+directory but the parent shell remains in the original directory. These wrappers
+solve this by reading the CD target from a temp file and using the shell\*(Aqs builtin cd.
+.PP
+Add to your shell config:
+  Bash (~/.bashrc):  eval "$(daft shell\-init bash)"
+  Zsh  (~/.zshrc):   eval "$(daft shell\-init zsh)"
+  Fish (~/.config/fish/config.fish): daft shell\-init fish | source
+.PP
+With short aliases (gwco, etc.):
+  eval "$(daft shell\-init bash \-\-aliases)"
+.SH OPTIONS
+.TP
+\fB\-\-aliases\fR
+Include short aliases (gwco, etc.)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fISHELL\fR>
+Target shell (bash, zsh, or fish)
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+bash
+.IP \(bu 2
+zsh
+.IP \(bu 2
+fish
+.RE

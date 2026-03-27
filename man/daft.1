@@ -1,0 +1,114 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH daft 1  "daft " 
+.SH NAME
+daft \- A Git extensions toolkit for worktree\-based development
+.SH SYNOPSIS
+\fBdaft\fR [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
+.SH DESCRIPTION
+daft is a comprehensive Git extensions toolkit that enhances developer workflows with powerful worktree management. It provides both git\-style subcommands (git worktree\-clone, git worktree\-checkout, ...) and short verb aliases (daft clone, daft go, daft start, ...).
+.PP
+Run \*(Aqdaft\*(Aq with no arguments to see a categorized command overview.
+.PP
+GETTING STARTED
+.PP
+Clone a repository into a worktree layout:
+.PP
+	daft clone <url>
+.PP
+Or adopt an existing repository:
+.PP
+	daft adopt
+.PP
+Switch to a branch (each branch gets its own directory):
+.PP
+	daft go <branch>
+.PP
+Create a new branch:
+.PP
+	daft start <branch>
+.PP
+SHELL INTEGRATION
+.PP
+Enable automatic cd into new worktrees:
+.PP
+	eval "$(daft shell\-init zsh)"
+.PP
+See daft\-shell\-init(1) for details.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH SUBCOMMANDS
+.TP
+daft\-clone(1)
+Clone a repository into a worktree\-based directory structure
+.TP
+daft\-init(1)
+Initialize a new repository in the worktree\-based directory structure
+.TP
+daft\-adopt(1)
+Convert a traditional repository to worktree\-based layout
+.TP
+daft\-go(1)
+Open a worktree for an existing branch, or create one with \-b
+.TP
+daft\-start(1)
+Create a new branch and worktree
+.TP
+daft\-carry(1)
+Transfer uncommitted changes to other worktrees
+.TP
+daft\-list(1)
+List all worktrees with status information
+.TP
+daft\-remove(1)
+Delete branches and their worktrees
+.TP
+daft\-rename(1)
+Rename a branch and move its worktree
+.TP
+daft\-prune(1)
+Remove worktrees and branches for deleted remote branches
+.TP
+daft\-update(1)
+Update worktree branches from their remote tracking branches
+.TP
+daft\-sync(1)
+Synchronize worktrees with remote (prune + update all)
+.TP
+daft\-eject(1)
+Convert a worktree\-based repository back to traditional layout
+.TP
+daft\-shared(1)
+Manage shared files across worktrees
+.TP
+daft\-hooks(1)
+Manage repository trust for hook execution
+.TP
+daft\-layout(1)
+Manage worktree layouts
+.TP
+daft\-multi\-remote(1)
+Manage multi\-remote worktree organization
+.TP
+daft\-config(1)
+Configure remote sync behavior
+.TP
+daft\-doctor(1)
+Diagnose daft installation and configuration issues
+.TP
+daft\-shell\-init(1)
+Generate shell wrapper functions for daft commands
+.TP
+daft\-setup(1)
+Add daft shell integration to your shell config
+.TP
+daft\-shortcuts(1)
+Manage command shortcut symlinks
+.TP
+daft\-release\-notes(1)
+Display release notes from the changelog
+.TP
+daft\-help(1)
+Print this message or the help of the given subcommand(s)
