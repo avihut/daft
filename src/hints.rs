@@ -175,15 +175,20 @@ pub enum LayoutPromptResult {
     Cancelled,
 }
 
-/// Prompt the user to choose a layout on their first clone.
+/// Prompt the user to choose a layout on their first clone or init.
 ///
-/// Called before clone starts when no `--layout` flag, no global config
-/// default, and this is the first time. Returns [`LayoutPromptResult`]
-/// indicating the user's choice.
+/// Called when no `--layout` flag, no global config default, and this
+/// is the first time. Returns [`LayoutPromptResult`] indicating the
+/// user's choice.
 ///
-/// The prompt is shown only once (tracked in hints.json). Ctrl+C does
-/// NOT mark as shown, so the prompt reappears next time.
-pub fn maybe_prompt_layout_choice(output: &mut dyn Output) -> LayoutPromptResult {
+/// The prompt is shown only once (tracked in hints.json) and is shared
+/// across commands — if shown during clone it won't appear for init,
+/// and vice versa. Ctrl+C does NOT mark as shown, so the prompt
+/// reappears next time.
+pub fn maybe_prompt_layout_choice(
+    output: &mut dyn Output,
+    cancel_message: &str,
+) -> LayoutPromptResult {
     if hints_disabled() {
         return LayoutPromptResult::Default;
     }
@@ -274,7 +279,7 @@ pub fn maybe_prompt_layout_choice(output: &mut dyn Output) -> LayoutPromptResult
                 is_default: false,
             },
         ],
-        cancel_message: Some("Clone cancelled. Nothing was changed.".to_string()),
+        cancel_message: Some(cancel_message.to_string()),
     };
 
     let key = match crate::prompt::single_key_select(&config) {

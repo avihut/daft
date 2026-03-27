@@ -7,7 +7,7 @@ use crate::{
         OutputSink,
     },
     git::{should_show_gitoxide_notice, GitCommand},
-    hints::maybe_show_shell_hint,
+    hints::{maybe_prompt_layout_choice, maybe_show_shell_hint, LayoutPromptResult},
     hooks::TrustDatabase,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -129,8 +129,23 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
 
     // Resolve layout so checkout knows which layout this repo uses.
     let global_config = GlobalConfig::load().unwrap_or_default();
+
+    let prompted_layout = if args.layout.is_none() && global_config.defaults.layout.is_none() {
+        match maybe_prompt_layout_choice(output, "Init cancelled. Nothing was changed.") {
+            LayoutPromptResult::Chosen(layout) => Some(layout),
+            LayoutPromptResult::Default => None,
+            LayoutPromptResult::Cancelled => {
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
+
+    let effective_cli_layout = args.layout.as_deref().or(prompted_layout.as_deref());
+
     let (layout, _source) = resolve_layout(&LayoutResolutionContext {
-        cli_layout: args.layout.as_deref(),
+        cli_layout: effective_cli_layout,
         repo_store_layout: None,
         yaml_layout: None,
         global_config: &global_config,

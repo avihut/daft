@@ -239,7 +239,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         && yaml_layout.is_none()
         && global_config.defaults.layout.is_none()
     {
-        match maybe_prompt_layout_choice(output) {
+        match maybe_prompt_layout_choice(output, "Clone cancelled. Nothing was changed.") {
             LayoutPromptResult::Chosen(layout) => Some(layout),
             LayoutPromptResult::Default => None,
             LayoutPromptResult::Cancelled => {
