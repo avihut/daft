@@ -153,6 +153,7 @@ pub fn get_clap_args(expected_cmd: &str) -> Vec<String> {
 }
 
 pub mod commands;
+pub mod coordinator;
 pub mod core;
 pub mod doctor;
 pub mod exec;
