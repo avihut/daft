@@ -269,6 +269,15 @@ pub fn execute_yaml_hook_with_rc(
             coord_state.add_job(spec);
         }
 
+        for spec in &coord_state.jobs {
+            let desc = spec
+                .description
+                .as_deref()
+                .map(|d| format!(" — {d}"))
+                .unwrap_or_default();
+            presenter.on_message(&format!("⟳ {} (background){desc}", spec.name));
+        }
+
         let bg_count = coord_state.jobs.len();
         crate::coordinator::process::fork_coordinator(coord_state, store)?;
 
