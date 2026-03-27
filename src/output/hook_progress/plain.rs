@@ -114,6 +114,11 @@ impl PlainHookRenderer {
         }
     }
 
+    /// Add a pre-built result entry (e.g., for background jobs).
+    pub fn push_finished_job(&mut self, entry: JobResultEntry) {
+        self.finished_jobs.push(entry);
+    }
+
     pub fn take_finished_jobs(&mut self) -> Vec<JobResultEntry> {
         std::mem::take(&mut self.finished_jobs)
     }

@@ -388,6 +388,11 @@ impl HookProgressRenderer {
         }
     }
 
+    /// Add a pre-built result entry (e.g., for background jobs).
+    pub fn push_finished_job(&mut self, entry: JobResultEntry) {
+        self.finished_jobs.push(entry);
+    }
+
     /// Extract finished job results (for use in callers that need them).
     pub fn take_finished_jobs(&mut self) -> Vec<JobResultEntry> {
         std::mem::take(&mut self.finished_jobs)
