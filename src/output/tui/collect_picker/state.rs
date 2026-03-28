@@ -1,6 +1,6 @@
 //! State management for the collect picker TUI.
 
-use crate::core::shared::{CollectDecision, CollectSource, UncollectedFile};
+use crate::core::shared::{CollectDecision, UncollectedFile};
 use std::path::PathBuf;
 
 /// Which panel has keyboard focus.
@@ -194,15 +194,22 @@ impl CollectPickerState {
         }
     }
 
+    /// How many non-stub files have a selection.
     pub fn decided_count(&self) -> usize {
         self.tabs
             .iter()
-            .filter(|t| t.selected.is_some() || t.is_stub)
+            .filter(|t| !t.is_stub && t.selected.is_some())
             .count()
     }
 
+    /// Total number of files that need a decision (excludes stubs).
+    pub fn decidable_count(&self) -> usize {
+        self.tabs.iter().filter(|t| !t.is_stub).count()
+    }
+
+    /// Whether all decidable files have a selection.
     pub fn all_decided(&self) -> bool {
-        self.decided_count() == self.tabs.len()
+        self.decidable_count() > 0 && self.decided_count() == self.decidable_count()
     }
 
     pub fn has_any_selection(&self) -> bool {
@@ -222,14 +229,11 @@ impl CollectPickerState {
             .into_iter()
             .filter_map(|tab| {
                 if tab.is_stub {
-                    Some(CollectDecision {
-                        rel_path: tab.rel_path,
-                        source: CollectSource::Stub,
-                    })
+                    None
                 } else {
                     tab.selected.map(|idx| CollectDecision {
                         rel_path: tab.rel_path,
-                        source: CollectSource::FromWorktree(tab.copies[idx].worktree_path.clone()),
+                        source_worktree: tab.copies[idx].worktree_path.clone(),
                     })
                 }
             })
@@ -335,14 +339,10 @@ mod tests {
         state.toggle_selection();
 
         let decisions = state.into_decisions();
-        assert_eq!(decisions.len(), 2);
+        // Only .env produces a decision; .secrets is a stub (skipped)
+        assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].rel_path, ".env");
-        assert_eq!(
-            decisions[0].source,
-            CollectSource::FromWorktree(PathBuf::from("/repo/dev"))
-        );
-        assert_eq!(decisions[1].rel_path, ".secrets");
-        assert_eq!(decisions[1].source, CollectSource::Stub);
+        assert_eq!(decisions[0].source_worktree, PathBuf::from("/repo/dev"));
     }
 
     #[test]

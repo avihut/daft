@@ -95,10 +95,13 @@ fn render_stub_body(tab: &FileTabState, frame: &mut Frame, area: Rect) {
         ),
         Line::raw(""),
         Line::styled(
-            "  This file will be created as an empty stub",
+            "  This path will be skipped. Use `daft shared add`",
             Style::default().fg(DIM),
         ),
-        Line::styled("  and linked to all worktrees.", Style::default().fg(DIM)),
+        Line::styled(
+            "  to collect it after creating it in a worktree.",
+            Style::default().fg(DIM),
+        ),
     ];
 
     let block = Block::default()
@@ -201,18 +204,25 @@ fn render_preview(
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(" Preview ", Style::default().fg(border_color)));
 
-    let content = if tab.copies.is_empty() {
-        String::new()
+    let highlighted_lines = if tab.copies.is_empty() {
+        vec![Line::styled("(empty file)", Style::default().fg(DIM))]
     } else {
         let wt = &tab.copies[tab.list_cursor];
         let file_path = wt.worktree_path.join(&tab.rel_path);
-        std::fs::read_to_string(&file_path).unwrap_or_else(|_| "(unable to read file)".into())
-    };
-
-    let highlighted_lines = if content.is_empty() {
-        vec![Line::styled("(empty file)", Style::default().fg(DIM))]
-    } else {
-        highlighter.highlight(&content, &tab.rel_path)
+        if file_path.is_dir() {
+            dir_listing_lines(&file_path)
+        } else {
+            match std::fs::read_to_string(&file_path) {
+                Ok(content) if content.is_empty() => {
+                    vec![Line::styled("(empty file)", Style::default().fg(DIM))]
+                }
+                Ok(content) => highlighter.highlight(&content, &tab.rel_path),
+                Err(_) => vec![Line::styled(
+                    "(unable to read file)",
+                    Style::default().fg(DIM),
+                )],
+            }
+        }
     };
 
     let paragraph = Paragraph::new(highlighted_lines)
@@ -220,6 +230,54 @@ fn render_preview(
         .scroll((tab.preview_scroll as u16, 0));
 
     frame.render_widget(paragraph, area);
+}
+
+/// Build preview lines for a directory, showing its contents as a tree.
+fn dir_listing_lines(dir: &std::path::Path) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(
+        "(directory)",
+        Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+    )];
+
+    let mut entries: Vec<_> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                (name, is_dir)
+            })
+            .collect(),
+        Err(_) => {
+            lines.push(Line::styled(
+                "(unable to read directory)",
+                Style::default().fg(DIM),
+            ));
+            return lines;
+        }
+    };
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (name, is_dir) in &entries {
+        let suffix = if *is_dir { "/" } else { "" };
+        lines.push(Line::from(Span::styled(
+            format!("  {name}{suffix}"),
+            Style::default().fg(if *is_dir {
+                Color::Indexed(208)
+            } else {
+                Color::White
+            }),
+        )));
+    }
+
+    if entries.is_empty() {
+        lines.push(Line::styled(
+            "  (empty directory)",
+            Style::default().fg(DIM),
+        ));
+    }
+
+    lines
 }
 
 /// Render the footer with Submit and Cancel buttons.
@@ -254,7 +312,11 @@ fn render_footer(state: &CollectPickerState, frame: &mut Frame, area: Rect) {
         Span::styled(" Cancel ", cancel_style),
         Span::raw("  "),
         Span::styled(
-            format!("{}/{} files ready", state.decided_count(), state.tabs.len()),
+            format!(
+                "{}/{} files ready",
+                state.decided_count(),
+                state.decidable_count()
+            ),
             Style::default().fg(DIM),
         ),
     ]);
