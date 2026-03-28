@@ -123,6 +123,7 @@ impl ManageMode {
         let entry_idx = tab.list_cursor;
         let status = self.statuses[tab_idx][entry_idx];
         let rel_path = &tab.rel_path;
+        let wt_name = &tab.entries[entry_idx].worktree_name;
         let wt_path = &tab.entries[entry_idx].worktree_path;
         let file_path = wt_path.join(rel_path);
         let shared_target = shared::shared_file_path(&self.git_common_dir, rel_path);
@@ -131,7 +132,7 @@ impl ManageMode {
             WorktreeStatus::Linked => {
                 // Linked -> Materialized: remove symlink, copy from shared
                 if let Err(e) = fs::remove_file(&file_path) {
-                    self.info_message = Some(format!("Failed to remove symlink: {e}"));
+                    self.info_message = Some(format!("{wt_name}: failed to remove symlink: {e}"));
                     return;
                 }
                 let copy_result = if shared_target.is_dir() {
@@ -142,12 +143,12 @@ impl ManageMode {
                         .map_err(|e| e.into())
                 };
                 if let Err(e) = copy_result {
-                    self.info_message = Some(format!("Failed to copy shared file: {e}"));
+                    self.info_message = Some(format!("{wt_name}: failed to copy shared file: {e}"));
                     return;
                 }
                 self.materialized.add(rel_path, wt_path);
                 let _ = self.materialized.save(&self.git_common_dir);
-                self.info_message = Some("Materialized (local copy created)".to_string());
+                self.info_message = Some(format!("{wt_name}: materialized (local copy created)"));
             }
             WorktreeStatus::Materialized => {
                 // Materialized -> Linked: remove file, create symlink
@@ -157,18 +158,19 @@ impl ManageMode {
                     fs::remove_file(&file_path)
                 };
                 if let Err(e) = remove_result {
-                    self.info_message = Some(format!("Failed to remove local copy: {e}"));
+                    self.info_message =
+                        Some(format!("{wt_name}: failed to remove local copy: {e}"));
                     return;
                 }
                 if let Err(e) =
                     shared::create_shared_symlink(wt_path, rel_path, &self.git_common_dir)
                 {
-                    self.info_message = Some(format!("Failed to create symlink: {e}"));
+                    self.info_message = Some(format!("{wt_name}: failed to create symlink: {e}"));
                     return;
                 }
                 self.materialized.remove(rel_path, wt_path);
                 let _ = self.materialized.save(&self.git_common_dir);
-                self.info_message = Some("Linked (symlink restored)".to_string());
+                self.info_message = Some(format!("{wt_name}: linked (symlink restored)"));
             }
             WorktreeStatus::Missing => {
                 // Missing -> Materialized: copy from shared into worktree
@@ -185,22 +187,26 @@ impl ManageMode {
                         .map_err(|e| e.into())
                 };
                 if let Err(e) = copy_result {
-                    self.info_message = Some(format!("Failed to copy shared file: {e}"));
+                    self.info_message = Some(format!("{wt_name}: failed to copy shared file: {e}"));
                     return;
                 }
                 self.materialized.add(rel_path, wt_path);
                 let _ = self.materialized.save(&self.git_common_dir);
-                self.info_message = Some("Materialized (copied from shared)".to_string());
+                self.info_message = Some(format!("{wt_name}: materialized (copied from shared)"));
             }
             WorktreeStatus::Conflict => {
-                self.info_message =
-                    Some("Conflict: use 'i' to fix symlink, or materialize manually".to_string());
+                self.info_message = Some(format!(
+                    "{wt_name}: conflict \u{2014} use 'i' to fix symlink, or materialize manually"
+                ));
             }
             WorktreeStatus::Broken => {
-                self.info_message = Some("Broken symlink: use 'i' to fix".to_string());
+                self.info_message =
+                    Some(format!("{wt_name}: broken symlink \u{2014} use 'i' to fix"));
             }
             WorktreeStatus::NotCollected => {
-                self.info_message = Some("Not collected: run 'daft shared sync' first".to_string());
+                self.info_message = Some(format!(
+                    "{wt_name}: not collected \u{2014} run 'daft shared sync' first"
+                ));
             }
         }
     }
@@ -217,6 +223,7 @@ impl ManageMode {
         let entry_idx = tab.list_cursor;
         let status = self.statuses[tab_idx][entry_idx];
         let rel_path = &tab.rel_path;
+        let wt_name = &tab.entries[entry_idx].worktree_name;
         let wt_path = &tab.entries[entry_idx].worktree_path;
         let file_path = wt_path.join(rel_path);
 
@@ -224,15 +231,16 @@ impl ManageMode {
             WorktreeStatus::Missing => {
                 match shared::create_shared_symlink(wt_path, rel_path, &self.git_common_dir) {
                     Ok(shared::LinkResult::Created) => {
-                        self.info_message = Some("Symlink created".to_string());
+                        self.info_message = Some(format!("{wt_name}: symlink created"));
                     }
                     Ok(shared::LinkResult::NoSource) => {
-                        self.info_message = Some("No shared file to link to".to_string());
+                        self.info_message = Some(format!("{wt_name}: no shared file to link to"));
                         return;
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        self.info_message = Some(format!("Failed to create symlink: {e}"));
+                        self.info_message =
+                            Some(format!("{wt_name}: failed to create symlink: {e}"));
                         return;
                     }
                 }
@@ -242,16 +250,18 @@ impl ManageMode {
             WorktreeStatus::Broken => {
                 // Remove bad symlink, then create correct one
                 if let Err(e) = fs::remove_file(&file_path) {
-                    self.info_message = Some(format!("Failed to remove broken symlink: {e}"));
+                    self.info_message =
+                        Some(format!("{wt_name}: failed to remove broken symlink: {e}"));
                     return;
                 }
                 match shared::create_shared_symlink(wt_path, rel_path, &self.git_common_dir) {
                     Ok(shared::LinkResult::Created) => {
-                        self.info_message = Some("Symlink fixed".to_string());
+                        self.info_message = Some(format!("{wt_name}: symlink fixed"));
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        self.info_message = Some(format!("Failed to create symlink: {e}"));
+                        self.info_message =
+                            Some(format!("{wt_name}: failed to create symlink: {e}"));
                         return;
                     }
                 }
@@ -266,16 +276,19 @@ impl ManageMode {
                     fs::remove_file(&file_path)
                 };
                 if let Err(e) = remove_result {
-                    self.info_message = Some(format!("Failed to remove conflicting file: {e}"));
+                    self.info_message =
+                        Some(format!("{wt_name}: failed to remove conflicting file: {e}"));
                     return;
                 }
                 match shared::create_shared_symlink(wt_path, rel_path, &self.git_common_dir) {
                     Ok(shared::LinkResult::Created) => {
-                        self.info_message = Some("Conflict resolved: symlink created".to_string());
+                        self.info_message =
+                            Some(format!("{wt_name}: conflict resolved, symlink created"));
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        self.info_message = Some(format!("Failed to create symlink: {e}"));
+                        self.info_message =
+                            Some(format!("{wt_name}: failed to create symlink: {e}"));
                         return;
                     }
                 }
@@ -283,13 +296,17 @@ impl ManageMode {
                 let _ = self.materialized.save(&self.git_common_dir);
             }
             WorktreeStatus::Linked => {
-                self.info_message = Some("Already linked".to_string());
+                self.info_message = Some(format!("{wt_name}: already linked"));
             }
             WorktreeStatus::Materialized => {
-                self.info_message = Some("Materialized: use 'm' to switch to linked".to_string());
+                self.info_message = Some(format!(
+                    "{wt_name}: materialized \u{2014} use 'm' to switch to linked"
+                ));
             }
             WorktreeStatus::NotCollected => {
-                self.info_message = Some("Not collected: run 'daft shared sync' first".to_string());
+                self.info_message = Some(format!(
+                    "{wt_name}: not collected \u{2014} run 'daft shared sync' first"
+                ));
             }
         }
     }
