@@ -176,7 +176,7 @@ fn render_remove_modal(
     let highlight_style = Style::default()
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
-    let normal_style = Style::default().fg(Color::DarkGray);
+    let normal_style = Style::default().fg(Color::Reset);
 
     if expanded {
         // Expanded materialize view
@@ -193,18 +193,21 @@ fn render_remove_modal(
         for (i, name) in worktree_names.iter().enumerate() {
             let check = if checks[i] { "\u{2713}" } else { " " };
             let is_focused = focused == ModalOption::Materialize && i == wt_cursor;
-            let style = if is_focused {
-                Style::default()
-                    .fg(Color::Black)
+            if is_focused {
+                let sel_style = Style::default()
+                    .fg(Color::White)
                     .bg(Color::Indexed(208))
-                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::BOLD);
+                lines.push(Line::from(vec![
+                    Span::styled("    ", Style::default()),
+                    Span::styled(format!("[{check}] {name}"), sel_style),
+                ]));
             } else {
-                normal_style
-            };
-            lines.push(Line::from(vec![Span::styled(
-                format!("    [{check}] {name}"),
-                style,
-            )]));
+                lines.push(Line::from(vec![Span::styled(
+                    format!("    [{check}] {name}"),
+                    normal_style,
+                )]));
+            }
         }
     } else {
         // Collapsed two-option view

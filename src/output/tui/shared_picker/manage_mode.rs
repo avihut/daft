@@ -559,44 +559,94 @@ impl ManageMode {
 
     /// Execute adding an existing file to shared storage.
     ///
-    /// Equivalent to `daft shared add <path>`:
-    /// - Move file to `.git/.daft/shared/`
-    /// - Create symlink in the worktree
-    /// - Add to `daft.yml`
-    /// - Add to `.gitignore`
+    /// Mirrors the sync/collect behavior using `compute_materialization_defaults`:
+    /// - Move selected file to `.git/.daft/shared/`
+    /// - Deep-compare each worktree's copy against the source
+    /// - Identical copies: remove and symlink (linked)
+    /// - Different copies: keep local copy (materialized)
+    /// - No copy: create symlink (linked)
+    /// - Add to `daft.yml` and `.gitignore`
     fn execute_add(&mut self, state: &mut PickerState, rel_path: &str) -> Result<()> {
         shared::ensure_shared_dir(&self.git_common_dir)?;
 
-        // Ensure gitignored
-        layout::ensure_gitignore_entry(&self.config_root, rel_path)?;
-
-        // Move to shared storage
-        let full_path = self.worktree_root.join(rel_path);
         let shared_target = shared::shared_file_path(&self.git_common_dir, rel_path);
         if let Some(parent) = shared_target.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        if fs::rename(&full_path, &shared_target).is_err() {
-            // rename fails across filesystems — fall back to copy + delete
-            if full_path.is_dir() {
-                shared::copy_dir_all(&full_path, &shared_target)?;
-                fs::remove_dir_all(&full_path)?;
+        // Compute materialization defaults BEFORE moving the source file
+        let source_idx = self
+            .worktree_paths
+            .iter()
+            .position(|p| p == &self.worktree_root)
+            .unwrap_or(0);
+        let source_path = self.worktree_root.join(rel_path);
+        let (mat, _timed_out) = shared::compute_materialization_defaults(
+            &source_path,
+            rel_path,
+            &self.worktree_paths,
+            source_idx,
+            std::time::Duration::from_secs(1),
+        );
+
+        // Move source file to shared storage
+        if fs::rename(&source_path, &shared_target).is_err() {
+            if source_path.is_dir() {
+                shared::copy_dir_all(&source_path, &shared_target)?;
+                fs::remove_dir_all(&source_path)?;
             } else {
-                fs::copy(&full_path, &shared_target)?;
-                fs::remove_file(&full_path)?;
+                fs::copy(&source_path, &shared_target)?;
+                fs::remove_file(&source_path)?;
             }
         }
 
-        // Create symlink
+        // Source worktree: create symlink (file was moved out)
         shared::create_shared_symlink(&self.worktree_root, rel_path, &self.git_common_dir)?;
 
-        // Update daft.yml
+        // Process all other worktrees using computed defaults
+        for (i, wt) in self.worktree_paths.iter().enumerate() {
+            if i == source_idx {
+                continue;
+            }
+            let file_path = wt.join(rel_path);
+            let has_file = file_path.exists() && !file_path.is_symlink();
+
+            if mat[i] {
+                // Different content — keep local copy, mark materialized
+                if has_file {
+                    self.materialized.add(rel_path, wt);
+                } else {
+                    // Shouldn't happen (mat=true only for has_file), but handle gracefully
+                    shared::create_shared_symlink(wt, rel_path, &self.git_common_dir)?;
+                }
+            } else {
+                // Identical or no file — remove existing copy if any, create symlink
+                if has_file {
+                    if file_path.is_dir() {
+                        fs::remove_dir_all(&file_path)?;
+                    } else {
+                        fs::remove_file(&file_path)?;
+                    }
+                }
+                if !file_path.exists() {
+                    if let Some(parent) = file_path.parent() {
+                        if parent != wt.as_path() && !parent.exists() {
+                            fs::create_dir_all(parent)?;
+                        }
+                    }
+                    shared::create_shared_symlink(wt, rel_path, &self.git_common_dir)?;
+                }
+            }
+        }
+
+        // Persist materialization state
+        let _ = self.materialized.save(&self.git_common_dir);
+
+        // Update daft.yml and .gitignore
+        layout::ensure_gitignore_entry(&self.config_root, rel_path)?;
         shared::add_to_daft_yml(&self.config_root, &[rel_path])?;
 
         self.info_message = Some(format!("Shared: {rel_path}"));
-
-        // Refresh tabs
         self.refresh_all(state);
 
         Ok(())

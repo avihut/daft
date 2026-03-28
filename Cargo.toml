@@ -105,6 +105,8 @@ console = "0.16.3"
 dialoguer = "0.12"
 syntect = { version = "5.2", default-features = false, features = ["default-syntaxes", "default-themes", "regex-onig"] }
 similar = "2.6"
+nucleo-matcher = "0.3"
+ignore = "0.4"
 
 # pager is Unix-only (uses fork/pipes)
 [target.'cfg(unix)'.dependencies]

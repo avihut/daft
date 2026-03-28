@@ -10,7 +10,7 @@ use ratatui::{
 };
 use std::time::Duration;
 
-use crate::core::shared::{self, CollectDecision, CompareResult, UncollectedFile};
+use crate::core::shared::{self, CollectDecision, UncollectedFile};
 
 use super::state::{FileTabState, FocusPanel, PickerState, WorktreeEntry};
 use super::{EntryDecoration, LoopAction, PickerMode};
@@ -130,37 +130,22 @@ impl CollectMode {
         } else {
             // Select new source — compute smart defaults via deep compare
             let source_path = tab.entries[cursor].worktree_path.join(&tab.rel_path);
-            let mut mat = vec![false; tab.entries.len()];
-            let mut timed_out = false;
+            let wt_paths: Vec<std::path::PathBuf> = tab
+                .entries
+                .iter()
+                .map(|e| e.worktree_path.clone())
+                .collect();
 
-            for (i, entry) in tab.entries.iter().enumerate() {
-                if i == cursor {
-                    continue; // Source gets linked
-                }
-                if entry.has_file {
-                    let other_path = entry.worktree_path.join(&tab.rel_path);
-                    match shared::deep_compare(&source_path, &other_path, COMPARE_TIMEOUT) {
-                        CompareResult::Identical => {
-                            mat[i] = false; // Same content -> link
-                        }
-                        CompareResult::Different => {
-                            mat[i] = true; // Different -> materialize to preserve
-                        }
-                        CompareResult::TimedOut => {
-                            timed_out = true;
-                            break;
-                        }
-                    }
-                }
-                // Worktrees without the file default to linked (false)
-            }
+            let (mat, timed_out) = shared::compute_materialization_defaults(
+                &source_path,
+                &tab.rel_path,
+                &wt_paths,
+                cursor,
+                COMPARE_TIMEOUT,
+            );
 
             let tab = &mut state.tabs[state.active_tab];
             if timed_out {
-                // Fallback: materialize all that have the file
-                for (i, entry) in tab.entries.iter().enumerate() {
-                    mat[i] = i != cursor && entry.has_file;
-                }
                 tab.compare_warning =
                     Some("File too large to compare — defaulting to materialize all copies".into());
             } else {

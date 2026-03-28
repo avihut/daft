@@ -218,22 +218,22 @@ fn render_worktree_list(
 
             let pointer = if is_cursor { "\u{25b8} " } else { "  " };
 
-            // Worktrees with the file get normal color, those without are muted
-            let style = if is_selected {
+            // Worktrees with the file get normal color, those without are muted.
+            // Cursor always gets bright text for legibility.
+            let style = if is_cursor {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(SELECTED_BG)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_selected {
                 Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
             } else if !entry.has_file {
                 Style::default().fg(DIM)
-            } else if is_cursor {
-                Style::default().fg(Color::White)
             } else {
                 Style::default().fg(Color::Reset)
             };
 
-            let bg_style = if is_cursor {
-                style.bg(SELECTED_BG)
-            } else {
-                style
-            };
+            let bg_style = style;
 
             let mut spans = vec![
                 Span::styled(pointer, bg_style),
@@ -243,10 +243,12 @@ fn render_worktree_list(
 
             // Show tag from mode (e.g. "materialized" / "linked")
             if let Some((tag_text, tag_color)) = decoration.tag {
-                spans.push(Span::styled(
-                    format!(" {tag_text}"),
-                    Style::default().fg(tag_color),
-                ));
+                let tag_style = if is_cursor {
+                    Style::default().fg(Color::White).bg(SELECTED_BG)
+                } else {
+                    Style::default().fg(tag_color)
+                };
+                spans.push(Span::styled(format!(" {tag_text}"), tag_style));
             }
 
             ListItem::new(Line::from(spans))

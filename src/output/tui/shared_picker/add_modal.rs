@@ -1,26 +1,37 @@
 //! Add-file modal for the manage picker TUI.
 //!
-//! Presents a centered overlay with an interactive file tree browser.
-//! The user can navigate the tree, search by typing, and select a file
-//! to share or declare a new shared file path.
+//! Combines a fast synchronous tree view (browse mode) with background-indexed
+//! fuzzy search (search mode). Uses `nucleo-matcher` for fuzzy matching and
+//! the `ignore` crate for gitignore-aware file discovery.
 
 use anyhow::Result;
 use crossterm::event::KeyCode;
+use ignore::WalkBuilder;
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config as MatcherConfig, Matcher, Utf32String};
 use ratatui::{
-    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph},
     Terminal,
 };
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Mutex,
+};
 use std::time::Duration;
+use std::{fs, thread};
 
 use super::input::poll_key;
 
-/// Maximum recursion depth when scanning the file tree.
-const MAX_DEPTH: usize = 5;
+const MAX_SCAN_DEPTH: usize = 12;
+const ACCENT: Color = Color::Indexed(208);
+const DIM: Color = Color::DarkGray;
+/// Muted color for tracked (non-ignored) entries.
+const MUTED: Color = Color::Indexed(243);
 
 /// Result of the add-file modal interaction.
 pub enum AddResult {
@@ -32,233 +43,213 @@ pub enum AddResult {
     Cancelled,
 }
 
-/// A single entry in the flattened file tree.
+// ---------------------------------------------------------------------------
+// Tree types (browse mode)
+// ---------------------------------------------------------------------------
+
 struct TreeEntry {
-    /// Path relative to worktree root.
-    path: PathBuf,
-    /// Display name (file/dir basename).
+    rel_path: String,
     name: String,
-    /// Nesting level (0 = top-level).
     depth: usize,
-    /// Whether this entry is a directory.
     is_dir: bool,
-    /// Whether this directory is expanded (only meaningful for dirs).
     expanded: bool,
-    /// Whether this path is already shared.
     is_shared: bool,
+    is_ignored: bool,
 }
 
-/// Internal state for the add-file modal.
+// ---------------------------------------------------------------------------
+// Search types (search mode)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct FileData {
+    rel_path: String,
+    is_dir: bool,
+    is_shared: bool,
+    is_ignored: bool,
+    match_text: Utf32String,
+}
+
+struct ScoredEntry {
+    entry_idx: usize,
+    score: u32,
+    indices: Vec<u32>,
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
 struct AddModalState {
-    /// Current search string.
     search: String,
-    /// All entries (flat, pre-sorted).
-    entries: Vec<TreeEntry>,
-    /// Indices into `entries` that are currently visible.
-    visible: Vec<usize>,
-    /// Cursor position within `visible`.
+
+    // Tree (browse mode) — loaded synchronously on open
+    tree_entries: Vec<TreeEntry>,
+    tree_visible: Vec<usize>,
+
+    // Search index (background)
+    search_entries: Vec<FileData>,
+    entry_rx: mpsc::Receiver<Vec<FileData>>,
+    indexing_done: Arc<AtomicBool>,
+    search_results: Vec<ScoredEntry>,
+    search_dirty: bool,
+
+    // Gitignore set from background (for tree expand)
+    non_ignored: Arc<Mutex<Option<HashSet<String>>>>,
+
+    // UI
     cursor: usize,
-    /// Scroll offset for the file list.
     scroll: usize,
-    /// Worktree root directory.
+    matcher: Matcher,
+    list_height: usize,
+
     worktree_root: PathBuf,
-    /// Already-shared paths (for dimming).
     shared_paths: Vec<String>,
 }
 
 impl AddModalState {
     fn new(worktree_root: &Path, shared_paths: &[String]) -> Self {
-        let mut state = Self {
-            search: String::new(),
-            entries: Vec::new(),
-            visible: Vec::new(),
-            cursor: 0,
-            scroll: 0,
-            worktree_root: worktree_root.to_path_buf(),
-            shared_paths: shared_paths.to_vec(),
-        };
-        state.scan_directory();
-        state.recompute_visible();
-        state
-    }
+        // Synchronous top-level scan (instant)
+        let tree_entries = scan_top_level(worktree_root, shared_paths);
+        let tree_visible = compute_tree_visible(&tree_entries);
 
-    /// Recursively scan the worktree directory and build the flat entry list.
-    fn scan_directory(&mut self) {
-        self.entries.clear();
-        self.scan_dir_recursive(&self.worktree_root.clone(), 0);
-    }
+        // Background indexing
+        let (tx, rx) = mpsc::channel();
+        let indexing_done = Arc::new(AtomicBool::new(false));
+        let non_ignored: Arc<Mutex<Option<HashSet<String>>>> = Arc::new(Mutex::new(None));
 
-    fn scan_dir_recursive(&mut self, dir: &Path, depth: usize) {
-        if depth > MAX_DEPTH {
-            return;
-        }
+        let done = indexing_done.clone();
+        let ni = non_ignored.clone();
+        let root = worktree_root.to_path_buf();
+        let shared = shared_paths.to_vec();
 
-        let mut children: Vec<(String, PathBuf, bool)> = Vec::new();
-
-        let read_dir = match std::fs::read_dir(dir) {
-            Ok(rd) => rd,
-            Err(_) => return,
-        };
-
-        for entry in read_dir.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-
-            // Skip .git directory
-            if name == ".git" {
-                continue;
-            }
-
-            let path = entry.path();
-            let is_dir = path.is_dir();
-            children.push((name, path, is_dir));
-        }
-
-        // Sort: directories first, then files, alphabetically within each group
-        children.sort_by(|(name_a, _, is_dir_a), (name_b, _, is_dir_b)| {
-            is_dir_b
-                .cmp(is_dir_a)
-                .then_with(|| name_a.to_lowercase().cmp(&name_b.to_lowercase()))
+        thread::spawn(move || {
+            index_files(&root, &shared, &ni, &tx);
+            done.store(true, Ordering::Release);
         });
 
-        for (name, full_path, is_dir) in children {
-            let rel_path = full_path
-                .strip_prefix(&self.worktree_root)
-                .unwrap_or(&full_path)
-                .to_path_buf();
-
-            let rel_str = rel_path.to_string_lossy().to_string();
-            let is_shared = self.shared_paths.iter().any(|s| s == &rel_str);
-
-            self.entries.push(TreeEntry {
-                path: rel_path,
-                name,
-                depth,
-                is_dir,
-                expanded: false,
-                is_shared,
-            });
-
-            // Don't recurse here — directories start collapsed.
-            // We scan children lazily when expanded.
+        Self {
+            search: String::new(),
+            tree_entries,
+            tree_visible,
+            search_entries: Vec::new(),
+            entry_rx: rx,
+            indexing_done,
+            search_results: Vec::new(),
+            search_dirty: true,
+            non_ignored,
+            cursor: 0,
+            scroll: 0,
+            matcher: Matcher::new(MatcherConfig::DEFAULT),
+            list_height: 20,
+            worktree_root: worktree_root.to_path_buf(),
+            shared_paths: shared_paths.to_vec(),
         }
     }
 
-    /// Recompute visible entries based on search and expansion state.
-    fn recompute_visible(&mut self) {
-        self.visible.clear();
-
+    /// Number of visible items in the current mode.
+    fn visible_count(&self) -> usize {
         if self.search.is_empty() {
-            // No search: show entries respecting collapsed/expanded state
-            self.compute_visible_tree();
+            self.tree_visible.len()
         } else {
-            // Search active: filter and auto-expand
-            self.compute_visible_search();
+            self.search_results.len()
+        }
+    }
+
+    fn receive_search_entries(&mut self) {
+        let mut received = false;
+        while let Ok(batch) = self.entry_rx.try_recv() {
+            self.search_entries.extend(batch);
+            received = true;
+        }
+        if received {
+            self.search_dirty = true;
+        }
+    }
+
+    fn recompute_search(&mut self) {
+        if !self.search_dirty || self.search.is_empty() {
+            return;
+        }
+        self.search_dirty = false;
+        let mut new_results = Vec::new();
+
+        let pattern = Pattern::parse(&self.search, CaseMatching::Ignore, Normalization::Smart);
+        let entries = &self.search_entries;
+        let matcher = &mut self.matcher;
+
+        for (idx, entry) in entries.iter().enumerate() {
+            let mut indices = Vec::new();
+            if let Some(score) = pattern.indices(entry.match_text.slice(..), matcher, &mut indices)
+            {
+                new_results.push(ScoredEntry {
+                    entry_idx: idx,
+                    score,
+                    indices,
+                });
+            }
         }
 
-        // Clamp cursor
-        if self.visible.is_empty() {
+        new_results.sort_by(|a, b| {
+            b.score.cmp(&a.score).then_with(|| {
+                self.search_entries[a.entry_idx]
+                    .rel_path
+                    .len()
+                    .cmp(&self.search_entries[b.entry_idx].rel_path.len())
+            })
+        });
+
+        self.search_results = new_results;
+
+        if self.search_results.is_empty() {
             self.cursor = 0;
-        } else if self.cursor >= self.visible.len() {
-            self.cursor = self.visible.len() - 1;
-        }
-        self.clamp_scroll();
-    }
-
-    /// Compute visible entries for the normal tree view (no search).
-    fn compute_visible_tree(&mut self) {
-        // We need to walk entries and only show those whose parent directories
-        // are all expanded. Since entries are flat with depth, an entry at
-        // depth N is visible if all ancestor dirs (depth 0..N-1) are expanded.
-        //
-        // Because our scan only produces top-level entries initially
-        // (children are added when expanded), we can simply show all entries
-        // at depth 0, and for deeper entries check if parent is expanded.
-
-        let mut visible_depth_stack: Vec<bool> = vec![true]; // depth 0 always visible
-
-        for (idx, entry) in self.entries.iter().enumerate() {
-            // Check visibility: all ancestor levels must be "visible"
-            let visible = if entry.depth == 0 {
-                true
-            } else {
-                entry.depth < visible_depth_stack.len() && visible_depth_stack[entry.depth]
-            };
-
-            if visible {
-                self.visible.push(idx);
-
-                // Update stack: if this is an expanded dir, children are visible
-                if entry.is_dir {
-                    let child_depth = entry.depth + 1;
-                    while visible_depth_stack.len() <= child_depth {
-                        visible_depth_stack.push(false);
-                    }
-                    visible_depth_stack[child_depth] = entry.expanded;
-                }
-            }
+        } else if self.cursor >= self.search_results.len() {
+            self.cursor = self.search_results.len() - 1;
         }
     }
 
-    /// Compute visible entries for search mode.
-    fn compute_visible_search(&mut self) {
-        let search_lower = self.search.to_lowercase();
-
-        for (idx, entry) in self.entries.iter().enumerate() {
-            let path_str = entry.path.to_string_lossy().to_lowercase();
-            if path_str.contains(&search_lower) {
-                self.visible.push(idx);
-            }
+    fn clamp_scroll(&mut self) {
+        let page = self.list_height.max(1);
+        if self.cursor < self.scroll {
+            self.scroll = self.cursor;
+        } else if self.cursor >= self.scroll + page {
+            self.scroll = self.cursor.saturating_sub(page - 1);
         }
     }
 
-    /// Toggle expand/collapse for the currently highlighted directory.
-    fn toggle_expand(&mut self) {
-        if self.visible.is_empty() {
+    // -- Tree operations (browse mode) --
+
+    fn expand_current(&mut self) {
+        if self.tree_visible.is_empty() {
             return;
         }
-        let entry_idx = self.visible[self.cursor];
-        if !self.entries[entry_idx].is_dir {
+        let entry_idx = self.tree_visible[self.cursor];
+        if !self.tree_entries[entry_idx].is_dir || self.tree_entries[entry_idx].expanded {
             return;
         }
+        self.tree_entries[entry_idx].expanded = true;
 
-        let was_expanded = self.entries[entry_idx].expanded;
-        self.entries[entry_idx].expanded = !was_expanded;
-
-        if !was_expanded {
-            // Expanding: insert children after this entry
-            self.expand_dir(entry_idx);
-        } else {
-            // Collapsing: remove all children from entries
-            self.collapse_dir(entry_idx);
-        }
-
-        self.recompute_visible();
-    }
-
-    /// Expand a directory: scan and insert its children after it in the entries list.
-    fn expand_dir(&mut self, dir_idx: usize) {
-        let dir_path = self.worktree_root.join(&self.entries[dir_idx].path);
-        let child_depth = self.entries[dir_idx].depth + 1;
-
-        if child_depth > MAX_DEPTH {
-            return;
-        }
-
-        // Check if children are already present (re-expanding after collapse)
+        let child_depth = self.tree_entries[entry_idx].depth + 1;
         let has_children = self
-            .entries
-            .get(dir_idx + 1)
+            .tree_entries
+            .get(entry_idx + 1)
             .is_some_and(|e| e.depth == child_depth);
 
-        if has_children {
-            // Children already in the list, just toggle expanded flag (already done)
-            return;
+        if !has_children {
+            self.insert_children(entry_idx);
         }
+        self.tree_visible = compute_tree_visible(&self.tree_entries);
+    }
+
+    fn insert_children(&mut self, dir_idx: usize) {
+        let dir_path = self
+            .worktree_root
+            .join(&self.tree_entries[dir_idx].rel_path);
+        let child_depth = self.tree_entries[dir_idx].depth + 1;
 
         let mut children: Vec<(String, PathBuf, bool)> = Vec::new();
-
-        if let Ok(read_dir) = std::fs::read_dir(&dir_path) {
-            for entry in read_dir.flatten() {
+        if let Ok(rd) = fs::read_dir(&dir_path) {
+            for entry in rd.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name == ".git" {
                     continue;
@@ -268,124 +259,243 @@ impl AddModalState {
                 children.push((name, path, is_dir));
             }
         }
+        sort_children(&mut children);
 
-        children.sort_by(|(name_a, _, is_dir_a), (name_b, _, is_dir_b)| {
-            is_dir_b
-                .cmp(is_dir_a)
-                .then_with(|| name_a.to_lowercase().cmp(&name_b.to_lowercase()))
-        });
+        let ni_guard = self.non_ignored.lock().unwrap();
+        let ni_set = ni_guard.as_ref();
+
+        let new_entries: Vec<TreeEntry> = children
+            .iter()
+            .map(|(name, full_path, is_dir)| {
+                let rel = full_path
+                    .strip_prefix(&self.worktree_root)
+                    .unwrap_or(full_path);
+                let rel_str = rel.to_string_lossy().to_string();
+                let is_shared = self.shared_paths.iter().any(|s| s == &rel_str);
+                let is_ignored = match ni_set {
+                    Some(set) => !set.contains(&rel_str),
+                    None => false,
+                };
+                TreeEntry {
+                    rel_path: rel_str,
+                    name: name.clone(),
+                    depth: child_depth,
+                    is_dir: *is_dir,
+                    expanded: false,
+                    is_shared,
+                    is_ignored,
+                }
+            })
+            .collect();
+        drop(ni_guard);
 
         let insert_pos = dir_idx + 1;
-        let mut new_entries: Vec<TreeEntry> = Vec::new();
-
-        for (name, full_path, is_dir) in children {
-            let rel_path = full_path
-                .strip_prefix(&self.worktree_root)
-                .unwrap_or(&full_path)
-                .to_path_buf();
-            let rel_str = rel_path.to_string_lossy().to_string();
-            let is_shared = self.shared_paths.iter().any(|s| s == &rel_str);
-
-            new_entries.push(TreeEntry {
-                path: rel_path,
-                name,
-                depth: child_depth,
-                is_dir,
-                expanded: false,
-                is_shared,
-            });
-        }
-
-        // Insert children into entries list
-        let tail = self.entries.split_off(insert_pos);
-        self.entries.extend(new_entries);
-        self.entries.extend(tail);
+        let tail = self.tree_entries.split_off(insert_pos);
+        self.tree_entries.extend(new_entries);
+        self.tree_entries.extend(tail);
     }
 
-    /// Collapse a directory: remove all descendant entries.
-    fn collapse_dir(&mut self, dir_idx: usize) {
-        let dir_depth = self.entries[dir_idx].depth;
-        let mut remove_count = 0;
-
-        for entry in &self.entries[dir_idx + 1..] {
-            if entry.depth > dir_depth {
-                remove_count += 1;
-            } else {
-                break;
-            }
-        }
-
-        if remove_count > 0 {
-            self.entries.drain(dir_idx + 1..dir_idx + 1 + remove_count);
-        }
-    }
-
-    /// Expand the currently highlighted directory (or do nothing for files).
-    fn expand_current(&mut self) {
-        if self.visible.is_empty() {
-            return;
-        }
-        let entry_idx = self.visible[self.cursor];
-        if self.entries[entry_idx].is_dir && !self.entries[entry_idx].expanded {
-            self.toggle_expand();
-        }
-    }
-
-    /// Collapse the currently highlighted entry's parent, or collapse it if it's a dir.
     fn collapse_current(&mut self) {
-        if self.visible.is_empty() {
+        if self.tree_visible.is_empty() {
             return;
         }
-        let entry_idx = self.visible[self.cursor];
+        let entry_idx = self.tree_visible[self.cursor];
 
-        // If it's an expanded dir, collapse it
-        if self.entries[entry_idx].is_dir && self.entries[entry_idx].expanded {
-            self.toggle_expand();
-            return;
-        }
-
-        // Otherwise, find the parent directory and move cursor to it
-        let current_depth = self.entries[entry_idx].depth;
-        if current_depth == 0 {
-            return;
-        }
-
-        // Walk backward in visible to find a dir at depth - 1
-        for i in (0..self.cursor).rev() {
-            let idx = self.visible[i];
-            if self.entries[idx].is_dir && self.entries[idx].depth < current_depth {
-                self.cursor = i;
-                self.clamp_scroll();
-                break;
+        if self.tree_entries[entry_idx].is_dir && self.tree_entries[entry_idx].expanded {
+            self.tree_entries[entry_idx].expanded = false;
+            let dir_depth = self.tree_entries[entry_idx].depth;
+            let remove_count = self.tree_entries[entry_idx + 1..]
+                .iter()
+                .take_while(|e| e.depth > dir_depth)
+                .count();
+            if remove_count > 0 {
+                self.tree_entries
+                    .drain(entry_idx + 1..entry_idx + 1 + remove_count);
+            }
+        } else {
+            // Navigate to parent directory
+            let current_depth = self.tree_entries[entry_idx].depth;
+            if current_depth == 0 {
+                return;
+            }
+            for i in (0..self.cursor).rev() {
+                let idx = self.tree_visible[i];
+                if self.tree_entries[idx].is_dir && self.tree_entries[idx].depth < current_depth {
+                    self.cursor = i;
+                    break;
+                }
             }
         }
-    }
-
-    /// Clamp scroll so the cursor is always in view.
-    fn clamp_scroll(&mut self) {
-        // We'll compute the visible height dynamically in render, but keep
-        // a reasonable default here.
-        let page_size = 15usize;
-        if self.cursor < self.scroll {
-            self.scroll = self.cursor;
-        } else if self.cursor >= self.scroll + page_size {
-            self.scroll = self.cursor.saturating_sub(page_size - 1);
-        }
-    }
-
-    /// Get the currently selected entry, if any.
-    fn current_entry(&self) -> Option<&TreeEntry> {
-        if self.visible.is_empty() {
-            return None;
-        }
-        Some(&self.entries[self.visible[self.cursor]])
+        self.tree_visible = compute_tree_visible(&self.tree_entries);
     }
 }
 
-/// Show the add-file modal and return the user's selection.
-///
-/// Renders as a centered overlay on top of the existing TUI content.
-/// Has its own event loop for key handling.
+// ---------------------------------------------------------------------------
+// Tree helpers
+// ---------------------------------------------------------------------------
+
+/// Sort children: directories first, then alphabetical.
+fn sort_children(children: &mut [(String, PathBuf, bool)]) {
+    children.sort_by(|(a_name, _, a_dir), (b_name, _, b_dir)| {
+        b_dir
+            .cmp(a_dir)
+            .then_with(|| a_name.to_lowercase().cmp(&b_name.to_lowercase()))
+    });
+}
+
+/// Synchronous top-level scan with gitignore awareness (instant).
+fn scan_top_level(root: &Path, shared_paths: &[String]) -> Vec<TreeEntry> {
+    // Quick gitignore check via ignore crate (only reads root dir)
+    let mut non_ignored_top = HashSet::new();
+    for entry in WalkBuilder::new(root)
+        .hidden(false)
+        .max_depth(Some(1))
+        .build()
+        .flatten()
+    {
+        if entry.path() == root {
+            continue;
+        }
+        if let Ok(rel) = entry.path().strip_prefix(root) {
+            non_ignored_top.insert(rel.to_string_lossy().to_string());
+        }
+    }
+
+    let mut children: Vec<(String, PathBuf, bool)> = Vec::new();
+    if let Ok(rd) = fs::read_dir(root) {
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == ".git" {
+                continue;
+            }
+            let path = entry.path();
+            let is_dir = path.is_dir();
+            children.push((name, path, is_dir));
+        }
+    }
+    sort_children(&mut children);
+
+    children
+        .iter()
+        .map(|(name, full_path, is_dir)| {
+            let rel = full_path.strip_prefix(root).unwrap_or(full_path);
+            let rel_str = rel.to_string_lossy().to_string();
+            let is_shared = shared_paths.iter().any(|s| s == &rel_str);
+            let is_ignored = !non_ignored_top.contains(&rel_str);
+            TreeEntry {
+                rel_path: rel_str,
+                name: name.clone(),
+                depth: 0,
+                is_dir: *is_dir,
+                expanded: false,
+                is_shared,
+                is_ignored,
+            }
+        })
+        .collect()
+}
+
+/// Compute which tree entries are visible given expansion state.
+fn compute_tree_visible(entries: &[TreeEntry]) -> Vec<usize> {
+    let mut visible = Vec::new();
+    let mut depth_visible: Vec<bool> = vec![true];
+
+    for (idx, entry) in entries.iter().enumerate() {
+        let is_vis = if entry.depth == 0 {
+            true
+        } else {
+            entry.depth < depth_visible.len() && depth_visible[entry.depth]
+        };
+        if is_vis {
+            visible.push(idx);
+            if entry.is_dir {
+                let child_depth = entry.depth + 1;
+                while depth_visible.len() <= child_depth {
+                    depth_visible.push(false);
+                }
+                depth_visible[child_depth] = entry.expanded;
+            }
+        }
+    }
+    visible
+}
+
+// ---------------------------------------------------------------------------
+// Background indexing (for search mode)
+// ---------------------------------------------------------------------------
+
+fn index_files(
+    root: &Path,
+    shared_paths: &[String],
+    non_ignored_out: &Arc<Mutex<Option<HashSet<String>>>>,
+    tx: &mpsc::Sender<Vec<FileData>>,
+) {
+    // Step 1: Walk with gitignore → build non-ignored set
+    let mut non_ignored = HashSet::new();
+    for entry in WalkBuilder::new(root)
+        .hidden(false)
+        .max_depth(Some(MAX_SCAN_DEPTH))
+        .build()
+        .flatten()
+    {
+        if entry.path() == root {
+            continue;
+        }
+        if let Ok(rel) = entry.path().strip_prefix(root) {
+            non_ignored.insert(rel.to_string_lossy().to_string());
+        }
+    }
+
+    // Share set with main thread immediately (for tree expand)
+    *non_ignored_out.lock().unwrap() = Some(non_ignored.clone());
+
+    // Step 2: Walk ALL files and build search entries
+    let mut all_entries: Vec<FileData> = Vec::new();
+
+    for entry in WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .max_depth(Some(MAX_SCAN_DEPTH))
+        .build()
+        .flatten()
+    {
+        if entry.path() == root {
+            continue;
+        }
+        let rel = match entry.path().strip_prefix(root) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let rel_str = rel.to_string_lossy().to_string();
+
+        if rel_str == ".git" || rel_str.starts_with(".git/") || rel_str.starts_with(".git\\") {
+            continue;
+        }
+
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let is_shared = shared_paths.iter().any(|s| s == &rel_str);
+        let is_ignored = !non_ignored.contains(&rel_str);
+        let match_text = Utf32String::from(rel_str.as_str());
+
+        all_entries.push(FileData {
+            rel_path: rel_str,
+            is_dir,
+            is_shared,
+            is_ignored,
+            match_text,
+        });
+    }
+
+    all_entries.sort_by(|a, b| a.rel_path.to_lowercase().cmp(&b.rel_path.to_lowercase()));
+    let _ = tx.send(all_entries);
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 pub fn show_add_modal(
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stderr>>,
     worktree_root: &Path,
@@ -394,13 +504,20 @@ pub fn show_add_modal(
     let mut modal = AddModalState::new(worktree_root, shared_paths);
 
     loop {
+        modal.receive_search_entries();
+        if !modal.search.is_empty() {
+            modal.recompute_search();
+        }
+
         terminal.draw(|frame| {
-            render_add_modal(frame, &modal);
+            render_add_modal(frame, &mut modal);
         })?;
 
-        let Some(key) = poll_key(Duration::from_millis(100)) else {
+        let Some(key) = poll_key(Duration::from_millis(50)) else {
             continue;
         };
+
+        let count = modal.visible_count();
 
         match key.code {
             KeyCode::Esc => return Ok(AddResult::Cancelled),
@@ -412,279 +529,162 @@ pub fn show_add_modal(
                 return Ok(AddResult::Cancelled);
             }
             KeyCode::Enter => {
-                if modal.visible.is_empty() && !modal.search.is_empty() {
-                    // No matches — declare mode
-                    return Ok(AddResult::Declared(modal.search.clone()));
-                }
-                if let Some(entry) = modal.current_entry() {
-                    if entry.is_dir {
-                        // Expand/collapse directory on Enter
-                        modal.toggle_expand();
-                    } else {
-                        return Ok(AddResult::Selected(entry.path.clone()));
+                if modal.search.is_empty() {
+                    // Browse mode: expand dir or select file
+                    if let Some(&idx) = modal.tree_visible.get(modal.cursor) {
+                        if modal.tree_entries[idx].is_dir {
+                            modal.expand_current();
+                        } else {
+                            return Ok(AddResult::Selected(PathBuf::from(
+                                &modal.tree_entries[idx].rel_path,
+                            )));
+                        }
+                    }
+                } else {
+                    // Search mode: select or declare
+                    if modal.search_results.is_empty() {
+                        if modal.indexing_done.load(Ordering::Acquire) {
+                            return Ok(AddResult::Declared(modal.search.clone()));
+                        }
+                    } else if let Some(r) = modal.search_results.get(modal.cursor) {
+                        return Ok(AddResult::Selected(PathBuf::from(
+                            &modal.search_entries[r.entry_idx].rel_path,
+                        )));
                     }
                 }
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if !modal.visible.is_empty() && modal.cursor > 0 {
+            KeyCode::Up => {
+                if count > 0 && modal.cursor > 0 {
                     modal.cursor -= 1;
                     modal.clamp_scroll();
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if !modal.visible.is_empty() && modal.cursor < modal.visible.len() - 1 {
+            KeyCode::Down => {
+                if count > 0 && modal.cursor < count - 1 {
                     modal.cursor += 1;
                     modal.clamp_scroll();
                 }
             }
-            KeyCode::Right | KeyCode::Char('l') => {
-                modal.expand_current();
+            KeyCode::Right => {
+                if modal.search.is_empty() {
+                    modal.expand_current();
+                }
             }
-            KeyCode::Left | KeyCode::Char('h') => {
-                modal.collapse_current();
+            KeyCode::Left => {
+                if modal.search.is_empty() {
+                    modal.collapse_current();
+                    modal.clamp_scroll();
+                }
+            }
+            KeyCode::PageUp => {
+                if count > 0 {
+                    let page = modal.list_height.max(1);
+                    modal.cursor = modal.cursor.saturating_sub(page);
+                    modal.clamp_scroll();
+                }
+            }
+            KeyCode::PageDown => {
+                if count > 0 {
+                    let page = modal.list_height.max(1);
+                    modal.cursor = (modal.cursor + page).min(count - 1);
+                    modal.clamp_scroll();
+                }
             }
             KeyCode::Backspace => {
                 if !modal.search.is_empty() {
                     modal.search.pop();
-                    // Re-scan when clearing search to get fresh tree state
-                    if modal.search.is_empty() {
-                        modal.scan_directory();
-                    }
-                    modal.recompute_visible();
+                    modal.search_dirty = true;
+                    modal.cursor = 0;
+                    modal.scroll = 0;
                 }
             }
             KeyCode::Char(c) => {
-                // j/k are navigation only, not search
-                if c == 'j' || c == 'k' {
-                    // Already handled above
-                } else {
-                    modal.search.push(c);
-                    // When search is active, re-scan to get all entries
-                    // (so search can find nested files)
-                    if modal.search.len() == 1 {
-                        // Just started typing: do a full deep scan
-                        modal.full_scan();
-                    }
-                    modal.recompute_visible();
-                }
+                modal.search.push(c);
+                modal.search_dirty = true;
+                modal.cursor = 0;
+                modal.scroll = 0;
             }
             _ => {}
         }
     }
 }
 
-impl AddModalState {
-    /// Full recursive scan of all entries (for search mode).
-    fn full_scan(&mut self) {
-        self.entries.clear();
-        self.full_scan_recursive(&self.worktree_root.clone(), 0);
-    }
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
 
-    fn full_scan_recursive(&mut self, dir: &Path, depth: usize) {
-        if depth > MAX_DEPTH {
-            return;
-        }
-
-        let mut children: Vec<(String, PathBuf, bool)> = Vec::new();
-
-        let read_dir = match std::fs::read_dir(dir) {
-            Ok(rd) => rd,
-            Err(_) => return,
-        };
-
-        for entry in read_dir.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name == ".git" {
-                continue;
-            }
-            let path = entry.path();
-            let is_dir = path.is_dir();
-            children.push((name, path, is_dir));
-        }
-
-        children.sort_by(|(name_a, _, is_dir_a), (name_b, _, is_dir_b)| {
-            is_dir_b
-                .cmp(is_dir_a)
-                .then_with(|| name_a.to_lowercase().cmp(&name_b.to_lowercase()))
-        });
-
-        for (name, full_path, is_dir) in children {
-            let rel_path = full_path
-                .strip_prefix(&self.worktree_root)
-                .unwrap_or(&full_path)
-                .to_path_buf();
-            let rel_str = rel_path.to_string_lossy().to_string();
-            let is_shared = self.shared_paths.iter().any(|s| s == &rel_str);
-
-            self.entries.push(TreeEntry {
-                path: rel_path,
-                name,
-                depth,
-                is_dir,
-                expanded: false,
-                is_shared,
-            });
-
-            if is_dir {
-                self.full_scan_recursive(&full_path, depth + 1);
-            }
-        }
-    }
-}
-
-/// Render the add-file modal overlay.
-fn render_add_modal(frame: &mut ratatui::Frame, modal: &AddModalState) {
+fn render_add_modal(frame: &mut ratatui::Frame, modal: &mut AddModalState) {
     let area = frame.area();
-
-    // ~70% of screen
-    let dialog_width = ((area.width as f32 * 0.7) as u16)
-        .max(40)
-        .min(area.width.saturating_sub(4));
-    let dialog_height = ((area.height as f32 * 0.7) as u16)
-        .max(12)
-        .min(area.height.saturating_sub(2));
-    let x = (area.width.saturating_sub(dialog_width)) / 2;
-    let y = (area.height.saturating_sub(dialog_height)) / 2;
-    let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
-
-    frame.render_widget(Clear, dialog_area);
+    frame.render_widget(Clear, area);
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Indexed(208)))
+        .border_style(Style::default().fg(ACCENT))
         .title(Span::styled(
             " Add Shared File ",
-            Style::default()
-                .fg(Color::Indexed(208))
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ));
 
-    // Inner area (inside border)
-    let inner = block.inner(dialog_area);
+    let inner = block.inner(area);
+    // inner height - search (1) - blank (1) - help (1) - count (1) - blank before help (1)
+    let list_height = inner.height.saturating_sub(5) as usize;
+    modal.list_height = list_height.max(1);
+    modal.clamp_scroll();
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Search bar
-    let search_display = if modal.search.is_empty() {
-        "Search: (type to filter)".to_string()
+    // -- Search bar --
+    if modal.search.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Search: (type to filter)",
+            Style::default().fg(DIM),
+        )));
     } else {
-        format!("Search: {}_", modal.search)
-    };
-    let search_style = if modal.search.is_empty() {
-        Style::default().fg(Color::DarkGray)
-    } else {
-        Style::default().fg(Color::White)
-    };
-    lines.push(Line::from(Span::styled(search_display, search_style)));
+        lines.push(Line::from(vec![
+            Span::styled("Search: ", Style::default().fg(DIM)),
+            Span::styled(&modal.search, Style::default().fg(Color::White)),
+            Span::styled("_", Style::default().fg(Color::White)),
+        ]));
+    }
     lines.push(Line::raw(""));
 
-    // File tree or no-results message
-    if modal.visible.is_empty() && !modal.search.is_empty() {
-        // No results — declare mode
-        lines.push(Line::styled(
-            "No matching files found",
-            Style::default().fg(Color::DarkGray),
-        ));
-        lines.push(Line::styled(
-            format!(
-                "Press Enter to declare '{}' as a new shared file",
-                modal.search
-            ),
-            Style::default().fg(Color::Yellow),
-        ));
-    } else if modal.visible.is_empty() {
-        lines.push(Line::styled(
-            "No files found",
-            Style::default().fg(Color::DarkGray),
-        ));
+    // -- Results area --
+    if modal.search.is_empty() {
+        render_tree_entries(&mut lines, modal, list_height);
     } else {
-        // How many lines are available for the file list
-        // inner height - search line (1) - blank (1) - help lines (2) - blank before help (1)
-        let list_height = inner.height.saturating_sub(6) as usize;
-
-        // Compute effective scroll for rendering
-        let scroll = if modal.cursor < modal.scroll {
-            modal.cursor
-        } else if modal.cursor >= modal.scroll + list_height {
-            modal.cursor.saturating_sub(list_height - 1)
-        } else {
-            modal.scroll
-        };
-
-        let visible_slice = &modal.visible[scroll..modal.visible.len().min(scroll + list_height)];
-
-        for (vis_offset, &entry_idx) in visible_slice.iter().enumerate() {
-            let entry = &modal.entries[entry_idx];
-            let is_cursor = scroll + vis_offset == modal.cursor;
-
-            let indent = "  ".repeat(entry.depth);
-            let prefix = if entry.is_dir {
-                if entry.expanded {
-                    "\u{25be} " // ▾
-                } else {
-                    "\u{25b8} " // ▸
-                }
-            } else {
-                "  "
-            };
-
-            let display = format!("{indent}{prefix}{}", entry.name);
-
-            let style = if is_cursor {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Indexed(208))
-                    .add_modifier(Modifier::BOLD)
-            } else if entry.is_shared {
-                Style::default().fg(Color::DarkGray)
-            } else if entry.is_dir {
-                Style::default().fg(Color::Indexed(208))
-            } else {
-                Style::default().fg(Color::White)
-            };
-
-            let mut spans = vec![Span::styled(display, style)];
-
-            if entry.is_shared {
-                spans.push(Span::styled(
-                    " (shared)",
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
-
-            lines.push(Line::from(spans));
-        }
-
-        // Pad remaining lines
-        let rendered = visible_slice.len();
-        for _ in rendered..list_height {
-            lines.push(Line::raw(""));
-        }
+        render_search_entries(&mut lines, modal, list_height);
     }
 
     lines.push(Line::raw(""));
 
-    // Help line
+    // -- Help & count --
     let key_style = Style::default().fg(Color::Cyan);
-    let dim_style = Style::default().fg(Color::DarkGray);
+    let dim_style = Style::default().fg(DIM);
 
-    if modal.visible.is_empty() && !modal.search.is_empty() {
+    if !modal.search.is_empty() && modal.search_results.is_empty() {
         lines.push(Line::from(vec![
             Span::styled("Enter", key_style),
             Span::styled(" declare  ", dim_style),
             Span::styled("Esc", key_style),
             Span::styled(" cancel", dim_style),
         ]));
+    } else if modal.search.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("\u{2191}\u{2193}", key_style),
+            Span::styled(" navigate  ", dim_style),
+            Span::styled("\u{2192}", key_style),
+            Span::styled(" expand  ", dim_style),
+            Span::styled("\u{2190}", key_style),
+            Span::styled(" collapse  ", dim_style),
+            Span::styled("Enter", key_style),
+            Span::styled(" select  ", dim_style),
+            Span::styled("Esc", key_style),
+            Span::styled(" cancel", dim_style),
+        ]));
     } else {
         lines.push(Line::from(vec![
-            Span::styled("jk/\u{2191}\u{2193}", key_style),
+            Span::styled("\u{2191}\u{2193}", key_style),
             Span::styled(" navigate  ", dim_style),
-            Span::styled("\u{2192}/l", key_style),
-            Span::styled(" expand  ", dim_style),
-            Span::styled("\u{2190}/h", key_style),
-            Span::styled(" collapse", dim_style),
-        ]));
-        lines.push(Line::from(vec![
             Span::styled("Enter", key_style),
             Span::styled(" select  ", dim_style),
             Span::styled("Esc", key_style),
@@ -692,9 +692,165 @@ fn render_add_modal(frame: &mut ratatui::Frame, modal: &AddModalState) {
         ]));
     }
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
+    // Count line (search mode only)
+    if !modal.search.is_empty() {
+        let count_text = format!(
+            "{}/{} matched",
+            modal.search_results.len(),
+            modal.search_entries.len()
+        );
+        lines.push(Line::from(Span::styled(count_text, dim_style)));
+    } else {
+        lines.push(Line::raw(""));
+    }
 
-    frame.render_widget(paragraph, dialog_area);
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+/// Render the tree view (browse mode).
+fn render_tree_entries(lines: &mut Vec<Line>, modal: &AddModalState, list_height: usize) {
+    if modal.tree_visible.is_empty() {
+        lines.push(Line::styled("No files found", Style::default().fg(DIM)));
+        for _ in 0..list_height.saturating_sub(1) {
+            lines.push(Line::raw(""));
+        }
+        return;
+    }
+
+    let end = modal.tree_visible.len().min(modal.scroll + list_height);
+    let visible = &modal.tree_visible[modal.scroll..end];
+
+    for (offset, &entry_idx) in visible.iter().enumerate() {
+        let entry = &modal.tree_entries[entry_idx];
+        let is_cursor = modal.scroll + offset == modal.cursor;
+
+        let indent = "  ".repeat(entry.depth);
+        let prefix = if entry.is_dir {
+            if entry.expanded {
+                "\u{25be} "
+            } else {
+                "\u{25b8} "
+            }
+        } else {
+            "  "
+        };
+        let suffix = if entry.is_dir { "/" } else { "" };
+        let display = format!("{indent}{prefix}{}{suffix}", entry.name);
+
+        let style = entry_style(is_cursor, entry.is_shared, entry.is_ignored, entry.is_dir);
+
+        let mut spans = vec![Span::styled(display, style)];
+
+        if entry.is_shared && !is_cursor {
+            spans.push(Span::styled(" (shared)", Style::default().fg(DIM)));
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    for _ in visible.len()..list_height {
+        lines.push(Line::raw(""));
+    }
+}
+
+/// Render fuzzy search results (search mode).
+fn render_search_entries(lines: &mut Vec<Line>, modal: &AddModalState, list_height: usize) {
+    if modal.search_results.is_empty() {
+        if modal.indexing_done.load(Ordering::Acquire) {
+            lines.push(Line::styled(
+                "No matching files found",
+                Style::default().fg(DIM),
+            ));
+            lines.push(Line::styled(
+                format!(
+                    "Press Enter to declare '{}' as a new shared file",
+                    modal.search
+                ),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        for _ in 0..list_height.saturating_sub(2) {
+            lines.push(Line::raw(""));
+        }
+        return;
+    }
+
+    let end = modal.search_results.len().min(modal.scroll + list_height);
+    let visible = &modal.search_results[modal.scroll..end];
+
+    for (offset, result) in visible.iter().enumerate() {
+        let entry = &modal.search_entries[result.entry_idx];
+        let is_cursor = modal.scroll + offset == modal.cursor;
+
+        let suffix = if entry.is_dir { "/" } else { "" };
+        let display = format!("{}{suffix}", entry.rel_path);
+
+        let style = entry_style(is_cursor, entry.is_shared, entry.is_ignored, entry.is_dir);
+
+        let mut spans: Vec<Span> = if !result.indices.is_empty() {
+            highlight_matches(&display, &result.indices, style)
+        } else {
+            vec![Span::styled(display, style)]
+        };
+
+        if entry.is_shared && !is_cursor {
+            spans.push(Span::styled(" (shared)", Style::default().fg(DIM)));
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    for _ in visible.len()..list_height {
+        lines.push(Line::raw(""));
+    }
+}
+
+/// Compute entry style based on state.
+///
+/// Colors: orange = ignored dir, white = ignored file, muted = tracked.
+fn entry_style(is_cursor: bool, is_shared: bool, is_ignored: bool, is_dir: bool) -> Style {
+    if is_cursor {
+        Style::default()
+            .fg(Color::Black)
+            .bg(ACCENT)
+            .add_modifier(Modifier::BOLD)
+    } else if is_shared {
+        Style::default().fg(DIM)
+    } else if is_ignored {
+        if is_dir {
+            Style::default().fg(ACCENT)
+        } else {
+            Style::default().fg(Color::White)
+        }
+    } else {
+        Style::default().fg(MUTED)
+    }
+}
+
+/// Render a string with matched positions underlined.
+fn highlight_matches(text: &str, indices: &[u32], base_style: Style) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    let match_set: HashSet<usize> = indices.iter().map(|&i| i as usize).collect();
+    let underline_style = base_style.add_modifier(Modifier::UNDERLINED);
+
+    let mut spans = Vec::new();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let is_match = match_set.contains(&i);
+        let style = if is_match {
+            underline_style
+        } else {
+            base_style
+        };
+        let start = i;
+        while i < chars.len() && match_set.contains(&i) == is_match {
+            i += 1;
+        }
+        let segment: String = chars[start..i].iter().collect();
+        spans.push(Span::styled(segment, style));
+    }
+
+    spans
 }

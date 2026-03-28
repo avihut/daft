@@ -636,6 +636,66 @@ pub fn deep_compare(a: &Path, b: &Path, timeout: std::time::Duration) -> Compare
     }
 }
 
+/// Compute per-worktree materialization defaults by deep-comparing each
+/// worktree's copy of a file against a source path.
+///
+/// Returns a `Vec<bool>` parallel to `worktree_paths`:
+/// - `true` (materialize) when the worktree has a different copy
+/// - `false` (link) when the worktree has an identical copy or no copy
+///
+/// The source worktree (at `source_idx`) is always `false` (linked).
+///
+/// If any comparison times out, falls back to materializing every worktree
+/// that has the file (preserving local copies). The returned bool indicates
+/// whether a timeout occurred.
+pub fn compute_materialization_defaults(
+    source_path: &Path,
+    rel_path: &str,
+    worktree_paths: &[PathBuf],
+    source_idx: usize,
+    timeout: std::time::Duration,
+) -> (Vec<bool>, bool) {
+    let n = worktree_paths.len();
+    let mut mat = vec![false; n];
+    let mut timed_out = false;
+
+    for (i, wt) in worktree_paths.iter().enumerate() {
+        if i == source_idx {
+            continue; // Source gets linked
+        }
+        let other_path = wt.join(rel_path);
+        let has_file = other_path.exists() && !other_path.is_symlink();
+        if has_file {
+            match deep_compare(source_path, &other_path, timeout) {
+                CompareResult::Identical => {
+                    mat[i] = false; // Same content → link
+                }
+                CompareResult::Different => {
+                    mat[i] = true; // Different → materialize to preserve
+                }
+                CompareResult::TimedOut => {
+                    timed_out = true;
+                    break;
+                }
+            }
+        }
+        // Worktrees without the file default to linked (false)
+    }
+
+    if timed_out {
+        // Fallback: materialize all that have the file
+        for (i, wt) in worktree_paths.iter().enumerate() {
+            if i == source_idx {
+                continue;
+            }
+            let other_path = wt.join(rel_path);
+            mat[i] = other_path.exists() && !other_path.is_symlink();
+        }
+    }
+
+    (mat, timed_out)
+}
+
 /// Inner recursive comparison.
 /// Returns `None` only on timeout. I/O errors yield `Some(false)` (treat as different).
 fn deep_compare_inner(a: &Path, b: &Path, deadline: std::time::Instant) -> Option<bool> {
