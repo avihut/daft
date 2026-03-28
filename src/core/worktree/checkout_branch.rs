@@ -156,6 +156,13 @@ pub fn execute(
         );
     }
 
+    // When push is disabled, remove any upstream tracking that git may have
+    // auto-configured via branch.autoSetupMerge (e.g. when the checkout base
+    // resolved to a remote-tracking ref like origin/master).
+    if !params.checkout_push {
+        let _ = git.unset_upstream(&params.new_branch_name);
+    }
+
     // Auto-add worktree parent directory to .gitignore for in-repo layouts
     if let Err(e) = auto_gitignore_if_needed(project_root, &worktree_path, params.layout.as_ref()) {
         sink.on_warning(&format!("Could not update .gitignore: {e}"));

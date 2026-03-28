@@ -81,6 +81,20 @@ impl GitCommand {
         Ok(())
     }
 
+    pub fn unset_upstream(&self, branch: &str) -> Result<()> {
+        let output = Command::new("git")
+            .args(["branch", "--unset-upstream", branch])
+            .output()
+            .context("Failed to execute git branch --unset-upstream command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git unset upstream failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
     pub fn set_upstream(&self, remote: &str, branch: &str) -> Result<()> {
         let upstream = format!("{remote}/{branch}");
         let output = Command::new("git")
