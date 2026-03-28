@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crossterm::event::KeyEvent;
 use edtui::{
-    EditorEventHandler, EditorMode, EditorState, EditorView, LineNumbers, Lines, SyntaxHighlighter,
+    EditorEventHandler, EditorState, EditorTheme, EditorView, LineNumbers, Lines, SyntaxHighlighter,
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -55,7 +55,7 @@ impl EditSession {
         let content = fs::read_to_string(&file_path).ok()?;
         let lines = Lines::from(content.as_str());
         let state = EditorState::new(lines);
-        let handler = EditorEventHandler::default();
+        let handler = EditorEventHandler::emacs_mode();
 
         Some(Self {
             state,
@@ -69,13 +69,10 @@ impl EditSession {
 
     /// Route a key event to the edtui handler.
     ///
-    /// Returns `true` when the user wants to exit the editor (Esc pressed
-    /// while already in Normal mode), signaling the caller to close the
-    /// editing session. All other keys are consumed by edtui.
+    /// Returns `true` when the user presses Esc, signaling the caller to
+    /// save and close the editing session.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
-        // Detect Esc in Normal mode *before* handing to edtui — that is our
-        // "exit editor" signal.
-        if key.code == crossterm::event::KeyCode::Esc && self.state.mode == EditorMode::Normal {
+        if key.code == crossterm::event::KeyCode::Esc {
             return true;
         }
 
@@ -106,52 +103,37 @@ impl EditSession {
         let block = ratatui::widgets::Block::default()
             .borders(ratatui::widgets::Borders::ALL)
             .border_style(Style::default().fg(ACCENT))
-            .title(Span::styled(
-                format!(" Edit \u{2014} {} ", self.state.mode.name()),
-                Style::default().fg(ACCENT),
-            ));
+            .title(Span::styled(" Edit ", Style::default().fg(ACCENT)));
         let inner = block.inner(chunks[1]);
         frame.render_widget(block, chunks[1]);
 
         self.render_editor(frame, inner);
     }
 
-    /// Render the header line.
+    /// Render the header line showing what's being edited.
     fn render_header(&self, frame: &mut Frame, area: Rect) {
-        let target = if self.is_shared {
-            "shared"
+        let (target, color) = if self.is_shared {
+            ("Editing shared copy", Color::Green)
         } else {
-            &self.worktree_name
+            ("Editing materialized copy", Color::Yellow)
         };
 
-        let mode_name = self.state.mode.name();
-        let mode_color = match self.state.mode {
-            EditorMode::Normal => DIM,
-            EditorMode::Insert => Color::Green,
-            EditorMode::Visual => Color::Yellow,
-            EditorMode::Search => Color::Cyan,
-        };
+        let mut spans = vec![Span::styled(
+            format!(" {target}"),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )];
 
-        let line = Line::from(vec![
-            Span::styled(
-                " EDIT ",
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled(target, Style::default().fg(Color::White)),
-            Span::styled(" | ", Style::default().fg(DIM)),
-            Span::styled(
-                mode_name,
-                Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" | ", Style::default().fg(DIM)),
-            Span::styled("Esc: save & exit", Style::default().fg(DIM)),
-        ]);
+        if !self.is_shared {
+            spans.push(Span::styled(
+                format!(" ({})", self.worktree_name),
+                Style::default().fg(color),
+            ));
+        }
 
-        frame.render_widget(Paragraph::new(line), area);
+        spans.push(Span::styled(" | ", Style::default().fg(DIM)));
+        spans.push(Span::styled("Esc: save & exit", Style::default().fg(DIM)));
+
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     /// Render the edtui editor view.
@@ -159,7 +141,11 @@ impl EditSession {
         // edtui bundles its own theme set with hyphenated names
         let highlighter = SyntaxHighlighter::new("base16-ocean-dark", &self.syntax_ext).ok();
 
+        let theme =
+            EditorTheme::default().line_numbers_style(Style::default().fg(Color::Indexed(239)));
+
         EditorView::new(&mut self.state)
+            .theme(theme)
             .wrap(true)
             .line_numbers(LineNumbers::Absolute)
             .syntax_highlighter(highlighter)
