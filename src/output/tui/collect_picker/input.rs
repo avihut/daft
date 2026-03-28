@@ -70,6 +70,8 @@ fn handle_preview(key: KeyEvent, state: &mut CollectPickerState) -> InputResult 
     match key.code {
         KeyCode::Down | KeyCode::Char('j') => state.move_down(),
         KeyCode::Up | KeyCode::Char('k') => state.move_up(),
+        KeyCode::PageDown => state.page_down(),
+        KeyCode::PageUp => state.page_up(),
         KeyCode::Right | KeyCode::Char('l') => state.next_tab(),
         KeyCode::Left | KeyCode::Char('h') => state.prev_tab(),
         KeyCode::Char('q') | KeyCode::Esc => state.focus = FocusPanel::Footer,

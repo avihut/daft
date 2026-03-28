@@ -4,7 +4,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Tabs,
+    },
     Frame,
 };
 
@@ -275,6 +278,7 @@ fn render_preview(
     // Viewport height = area minus 2 for border
     let viewport_height = area.height.saturating_sub(2);
     let scroll = tab.preview_scroll;
+    let is_scrollable = content_lines > viewport_height;
 
     // Update state with content dimensions for scroll clamping
     let tab_mut = &mut state.tabs[state.active_tab];
@@ -286,6 +290,23 @@ fn render_preview(
         .scroll((scroll, 0));
 
     frame.render_widget(paragraph, area);
+
+    // Show scrollbar when preview is focused and content is scrollable
+    if is_focused && is_scrollable {
+        let max_scroll = content_lines.saturating_sub(viewport_height);
+        let mut scrollbar_state =
+            ScrollbarState::new(max_scroll as usize).position(scroll as usize);
+        let scrollbar =
+            Scrollbar::new(ScrollbarOrientation::VerticalRight).style(Style::default().fg(DIM));
+        // Render inside the block's inner area (inset by 1 for borders)
+        let scrollbar_area = Rect {
+            x: area.x + 1,
+            y: area.y + 1,
+            width: area.width.saturating_sub(2),
+            height: viewport_height,
+        };
+        frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+    }
 }
 
 /// Build preview lines for a directory, showing its contents as a tree.
@@ -394,6 +415,8 @@ fn render_footer(state: &CollectPickerState, frame: &mut Frame, area: Rect) {
         Span::styled(" navigate  ", desc_style),
         Span::styled("hl/\u{2190}\u{2192}", key_style),
         Span::styled(hl_desc, desc_style),
+        Span::styled("PgUp/PgDn", key_style),
+        Span::styled(" scroll  ", desc_style),
         Span::styled("Space", key_style),
         Span::styled(" select  ", desc_style),
         Span::styled("m", key_style),

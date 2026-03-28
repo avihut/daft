@@ -250,6 +250,29 @@ impl CollectPickerState {
         }
     }
 
+    /// Scroll the preview pane down by one page.
+    pub fn page_down(&mut self) {
+        if self.focus != FocusPanel::Preview {
+            return;
+        }
+        let tab = &mut self.tabs[self.active_tab];
+        let page = tab.preview_viewport_height.max(1);
+        let max_scroll = tab
+            .preview_content_lines
+            .saturating_sub(tab.preview_viewport_height);
+        tab.preview_scroll = tab.preview_scroll.saturating_add(page).min(max_scroll);
+    }
+
+    /// Scroll the preview pane up by one page.
+    pub fn page_up(&mut self) {
+        if self.focus != FocusPanel::Preview {
+            return;
+        }
+        let tab = &mut self.tabs[self.active_tab];
+        let page = tab.preview_viewport_height.max(1);
+        tab.preview_scroll = tab.preview_scroll.saturating_sub(page);
+    }
+
     pub fn toggle_panel(&mut self) {
         if self.current_tab().is_stub {
             return;
