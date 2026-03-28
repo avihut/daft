@@ -264,7 +264,7 @@ pub fn execute(
         git.worktree_add(&worktree_path, &params.branch_name)
     } else {
         let remote_ref = format!("{}/{}", params.remote_name, params.branch_name);
-        git.worktree_add_new_branch(&worktree_path, &params.branch_name, &remote_ref)
+        git.worktree_add_new_branch(&worktree_path, &params.branch_name, &remote_ref, false)
     };
 
     if let Err(e) = worktree_result {

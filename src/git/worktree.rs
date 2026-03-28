@@ -56,12 +56,17 @@ impl GitCommand {
         path: &Path,
         new_branch: &str,
         base_branch: &str,
+        no_track: bool,
     ) -> Result<()> {
         let mut cmd = Command::new("git");
         cmd.args(["worktree", "add"]);
 
         if self.quiet {
             cmd.arg("--quiet");
+        }
+
+        if no_track {
+            cmd.arg("--no-track");
         }
 
         cmd.arg(path).arg("-b").arg(new_branch).arg(base_branch);

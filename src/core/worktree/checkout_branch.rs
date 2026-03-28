@@ -142,9 +142,17 @@ pub fn execute(
         checkout_base
     ));
 
-    if let Err(e) =
-        git.worktree_add_new_branch(&worktree_path, &params.new_branch_name, &checkout_base)
-    {
+    // When push is disabled, pass --no-track to prevent git's
+    // branch.autoSetupMerge from auto-configuring upstream tracking
+    // (the checkout base may be a remote-tracking ref like origin/master).
+    let no_track = !params.checkout_push;
+
+    if let Err(e) = git.worktree_add_new_branch(
+        &worktree_path,
+        &params.new_branch_name,
+        &checkout_base,
+        no_track,
+    ) {
         restore_stash_on_failure(stash_created, carry_source.as_deref(), git, sink);
         anyhow::bail!("Failed to create git worktree: {}", e);
     }
