@@ -219,19 +219,23 @@ fn render_worktree_list(
         .iter()
         .enumerate()
         .map(|(idx, entry)| {
-            let is_cursor = idx == tab.list_cursor && is_focused;
+            let is_current = idx == tab.list_cursor;
+            let is_cursor = is_current && is_focused;
             let decoration = mode.entry_decoration(tab, tab_idx, idx);
             let is_selected = tab.selected == Some(idx);
 
-            let pointer = if is_cursor { "\u{25b8} " } else { "  " };
+            let pointer = if is_current { "\u{25b8} " } else { "  " };
 
             // Worktrees with the file get normal color, those without are muted.
-            // Cursor always gets bright text for legibility.
+            // Active cursor: bright with background. Inactive cursor: subtle indicator.
             let style = if is_cursor {
                 Style::default()
                     .fg(Color::White)
                     .bg(SELECTED_BG)
                     .add_modifier(Modifier::BOLD)
+            } else if is_current && !is_focused {
+                // Show which entry is selected even when focus is elsewhere
+                Style::default().fg(Color::White)
             } else if is_selected {
                 Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
             } else if !entry.has_file {
