@@ -276,17 +276,43 @@ pub enum LinkResult {
 
 // ── daft.yml manipulation ─────────────────────────────────────────────────
 
-/// Read the `shared:` list from daft.yml in the given worktree root.
-/// Returns empty vec if no daft.yml or no shared section.
+/// Resolve the directory where `daft.yml` and `.gitignore` live.
+///
+/// Checks the worktree root first (sibling layout), then falls back to
+/// the project root / git common dir parent (contained layout).
+/// When no `daft.yml` exists anywhere, returns the project root (where
+/// new config files should be created).
+pub fn resolve_config_root(worktree_root: &Path) -> PathBuf {
+    if find_daft_yml(worktree_root).is_some() {
+        return worktree_root.to_path_buf();
+    }
+    if let Ok(git_common_dir) = crate::core::repo::get_git_common_dir() {
+        if let Some(project_root) = git_common_dir.parent() {
+            // In contained layout, project_root is the container dir
+            // In sibling layout, project_root is the common parent
+            return project_root.to_path_buf();
+        }
+    }
+    worktree_root.to_path_buf()
+}
+
+/// Read the `shared:` list from daft.yml.
+///
+/// Searches for daft.yml in `worktree_root` first (sibling layout), then
+/// falls back to the project root (contained layout where daft.yml lives
+/// at the repo container level, not inside individual worktrees).
 pub fn read_shared_paths(worktree_root: &Path) -> Result<Vec<String>> {
-    let config = load_yaml_config(worktree_root)?;
+    let config = load_yaml_config_with_fallback(worktree_root)?;
     Ok(config.and_then(|c| c.shared).unwrap_or_default())
 }
 
 /// Add paths to the `shared:` list in daft.yml.
 /// Creates daft.yml if it doesn't exist. Avoids duplicates.
-pub fn add_to_daft_yml(worktree_root: &Path, paths: &[&str]) -> Result<()> {
-    let config_path = find_or_create_daft_yml(worktree_root)?;
+///
+/// The `root` parameter should be the resolved config root (from
+/// `resolve_config_root`), not a raw worktree path.
+pub fn add_to_daft_yml(root: &Path, paths: &[&str]) -> Result<()> {
+    let config_path = find_or_create_daft_yml(root)?;
     let contents = fs::read_to_string(&config_path).unwrap_or_default();
 
     let mut config: serde_yaml::Value = if contents.trim().is_empty() {
@@ -324,8 +350,11 @@ pub fn add_to_daft_yml(worktree_root: &Path, paths: &[&str]) -> Result<()> {
 }
 
 /// Remove paths from the `shared:` list in daft.yml.
-pub fn remove_from_daft_yml(worktree_root: &Path, paths: &[&str]) -> Result<()> {
-    let config_path = find_daft_yml(worktree_root);
+///
+/// The `root` parameter should be the resolved config root (from
+/// `resolve_config_root`), not a raw worktree path.
+pub fn remove_from_daft_yml(root: &Path, paths: &[&str]) -> Result<()> {
+    let config_path = find_daft_yml(root);
     let Some(config_path) = config_path else {
         return Ok(()); // No daft.yml, nothing to remove from
     };
@@ -388,6 +417,295 @@ fn load_yaml_config(root: &Path) -> Result<Option<crate::hooks::yaml_config::Yam
     Ok(Some(config))
 }
 
+/// Load YamlConfig, checking `worktree_root` first, then the project root
+/// (git_common_dir parent) as fallback for contained layouts.
+fn load_yaml_config_with_fallback(
+    worktree_root: &Path,
+) -> Result<Option<crate::hooks::yaml_config::YamlConfig>> {
+    // Try worktree root first (works for sibling layout where daft.yml is tracked)
+    if let Some(config) = load_yaml_config(worktree_root)? {
+        return Ok(Some(config));
+    }
+
+    // Fall back to project root (contained layout: daft.yml at repo container level)
+    if let Ok(git_common_dir) = crate::core::repo::get_git_common_dir() {
+        if let Some(project_root) = git_common_dir.parent() {
+            if project_root != worktree_root {
+                return load_yaml_config(project_root);
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+// ── Uncollected file detection ───────────────────────────────────────────
+
+/// A worktree entry for an uncollected shared file.
+#[derive(Debug, Clone)]
+pub struct WorktreeCopy {
+    /// Absolute path of the worktree directory.
+    pub worktree_path: PathBuf,
+    /// Worktree display name (directory basename).
+    pub worktree_name: String,
+    /// Whether this worktree has a real (non-symlink) copy of the file.
+    pub has_file: bool,
+}
+
+/// A declared shared file that has not yet been collected into shared storage.
+#[derive(Debug, Clone)]
+pub struct UncollectedFile {
+    /// Path relative to the worktree root (e.g., ".env").
+    pub rel_path: String,
+    /// All worktrees, with `has_file` indicating which have a real copy.
+    pub worktrees: Vec<WorktreeCopy>,
+}
+
+impl UncollectedFile {
+    /// Whether any worktree has a real copy of this file.
+    pub fn has_any_copy(&self) -> bool {
+        self.worktrees.iter().any(|w| w.has_file)
+    }
+}
+
+/// Scan worktrees for declared shared paths that are not yet in shared storage.
+///
+/// Returns one `UncollectedFile` per declared path that has no file in
+/// `.git/.daft/shared/`. Each entry includes all worktrees, marking which
+/// have a real (non-symlink) copy of the file.
+pub fn detect_uncollected(
+    declared_paths: &[String],
+    worktree_paths: &[PathBuf],
+    git_common_dir: &Path,
+) -> Vec<UncollectedFile> {
+    let mut uncollected = Vec::new();
+
+    for rel_path in declared_paths {
+        let shared_target = shared_file_path(git_common_dir, rel_path);
+
+        // Already collected — skip
+        if shared_target.exists() {
+            continue;
+        }
+
+        let mut worktrees = Vec::new();
+        for wt in worktree_paths {
+            let file_path = wt.join(rel_path);
+            let has_file = file_path.exists() && !file_path.is_symlink();
+            let name = wt
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            worktrees.push(WorktreeCopy {
+                worktree_path: wt.clone(),
+                worktree_name: name,
+                has_file,
+            });
+        }
+
+        uncollected.push(UncollectedFile {
+            rel_path: rel_path.clone(),
+            worktrees,
+        });
+    }
+
+    uncollected
+}
+
+// ── Deep comparison ──────────────────────────────────────────────────────
+
+/// Result of a timed deep comparison.
+#[derive(Debug, PartialEq)]
+pub enum CompareResult {
+    Identical,
+    Different,
+    TimedOut,
+}
+
+/// Deep-compare two paths (files or directories) with a timeout.
+///
+/// Returns `Identical` if the content is byte-for-byte equal, `Different`
+/// if not, or `TimedOut` if the comparison exceeds the given duration.
+pub fn deep_compare(a: &Path, b: &Path, timeout: std::time::Duration) -> CompareResult {
+    let deadline = std::time::Instant::now() + timeout;
+    match deep_compare_inner(a, b, deadline) {
+        Some(true) => CompareResult::Identical,
+        Some(false) => CompareResult::Different,
+        None => CompareResult::TimedOut,
+    }
+}
+
+/// Inner recursive comparison.
+/// Returns `None` only on timeout. I/O errors yield `Some(false)` (treat as different).
+fn deep_compare_inner(a: &Path, b: &Path, deadline: std::time::Instant) -> Option<bool> {
+    if std::time::Instant::now() > deadline {
+        return None;
+    }
+
+    let a_is_dir = a.is_dir();
+    let b_is_dir = b.is_dir();
+
+    if a_is_dir != b_is_dir {
+        return Some(false);
+    }
+
+    if a_is_dir {
+        // Compare directory trees — I/O errors on either side → different
+        let Ok(a_rd) = fs::read_dir(a) else {
+            return Some(false);
+        };
+        let Ok(b_rd) = fs::read_dir(b) else {
+            return Some(false);
+        };
+        let mut a_entries: Vec<_> = a_rd.filter_map(|e| e.ok()).collect();
+        let mut b_entries: Vec<_> = b_rd.filter_map(|e| e.ok()).collect();
+        a_entries.sort_by_key(|e| e.file_name());
+        b_entries.sort_by_key(|e| e.file_name());
+
+        if a_entries.len() != b_entries.len() {
+            return Some(false);
+        }
+
+        for (ae, be) in a_entries.iter().zip(b_entries.iter()) {
+            if ae.file_name() != be.file_name() {
+                return Some(false);
+            }
+            let result = deep_compare_inner(&ae.path(), &be.path(), deadline)?;
+            if !result {
+                return Some(false);
+            }
+        }
+        Some(true)
+    } else {
+        // Compare file contents — I/O errors → different
+        let (Ok(a_content), Ok(b_content)) = (fs::read(a), fs::read(b)) else {
+            return Some(false);
+        };
+        Some(a_content == b_content)
+    }
+}
+
+// ── Collection execution ─────────────────────────────────────────────────
+
+/// A decision about how to collect a declared-but-uncollected shared file.
+#[derive(Debug, Clone)]
+pub struct CollectDecision {
+    /// Path relative to the worktree root (e.g., ".env").
+    pub rel_path: String,
+    /// Absolute path of the worktree to collect from.
+    pub source_worktree: PathBuf,
+    /// Worktrees that should keep their local copy (materialized).
+    /// Other worktrees with real copies will have them removed and replaced
+    /// with symlinks. Worktrees without the file always get symlinks.
+    pub materialize_in: Vec<PathBuf>,
+}
+
+/// Execute a single collection decision.
+///
+/// 1. Moves the file/dir from the chosen worktree to `.git/.daft/shared/`.
+/// 2. Creates a symlink in the source worktree.
+/// 3. For each other worktree: respects `materialize_in` — worktrees in the
+///    list keep their local copy; others have it removed and replaced with a
+///    symlink. Worktrees without the file always get symlinks.
+/// 4. Ensures the `.gitignore` entry exists.
+pub fn execute_collect(
+    decision: &CollectDecision,
+    worktree_paths: &[PathBuf],
+    git_common_dir: &Path,
+    project_root: &Path,
+    materialized: &mut MaterializedState,
+) -> Result<()> {
+    let rel_path = &decision.rel_path;
+    let shared_target = shared_file_path(git_common_dir, rel_path);
+
+    // Ensure parent dirs in shared storage
+    if let Some(parent) = shared_target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let source_file = decision.source_worktree.join(rel_path);
+
+    // Move to shared storage (rename, fallback to copy+delete)
+    if fs::rename(&source_file, &shared_target).is_err() {
+        if source_file.is_dir() {
+            copy_dir_all(&source_file, &shared_target)?;
+            fs::remove_dir_all(&source_file)?;
+        } else {
+            fs::copy(&source_file, &shared_target)?;
+            fs::remove_file(&source_file)?;
+        }
+    }
+
+    // Create symlink in source worktree (file was moved out)
+    create_shared_symlink(&decision.source_worktree, rel_path, git_common_dir)?;
+
+    // Process remaining worktrees
+    for wt in worktree_paths {
+        if wt == &decision.source_worktree {
+            continue;
+        }
+
+        let file_path = wt.join(rel_path);
+        let should_materialize = decision.materialize_in.contains(wt);
+        let has_file = file_path.exists() && !file_path.is_symlink();
+
+        if should_materialize {
+            if has_file {
+                // Keep existing local copy
+                materialized.add(rel_path, wt);
+            } else {
+                // Copy shared file into this worktree as a materialized copy
+                if let Some(parent) = file_path.parent() {
+                    if parent != wt.as_path() && !parent.exists() {
+                        fs::create_dir_all(parent)?;
+                    }
+                }
+                if shared_target.is_dir() {
+                    copy_dir_all(&shared_target, &file_path)?;
+                } else {
+                    fs::copy(&shared_target, &file_path)?;
+                }
+                materialized.add(rel_path, wt);
+            }
+        } else {
+            // Remove existing copy if present (user chose linking)
+            if has_file {
+                if file_path.is_dir() {
+                    fs::remove_dir_all(&file_path)?;
+                } else {
+                    fs::remove_file(&file_path)?;
+                }
+            }
+            // Create symlink if not already linked
+            if !file_path.exists() {
+                create_shared_symlink(wt, rel_path, git_common_dir)?;
+            }
+        }
+    }
+
+    // Ensure .gitignore entry
+    crate::core::layout::ensure_gitignore_entry(project_root, rel_path)?;
+
+    Ok(())
+}
+
+/// Recursively copy a directory tree.
+pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dest = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dest)?;
+        } else {
+            fs::copy(entry.path(), &dest)?;
+        }
+    }
+    Ok(())
+}
+
 // ── Git helpers ───────────────────────────────────────────────────────────
 
 /// Check if a path is tracked by git (would show up in `git ls-files`).
@@ -448,9 +766,9 @@ impl LinkSharedResult {
 pub fn link_shared_files_on_create(
     worktree_path: &Path,
     git_common_dir: &Path,
-    project_root: &Path,
+    _project_root: &Path,
 ) -> LinkSharedResult {
-    let shared_paths = match read_shared_paths(project_root) {
+    let shared_paths = match read_shared_paths(worktree_path) {
         Ok(paths) => paths,
         Err(_) => return LinkSharedResult::default(),
     };
@@ -728,5 +1046,206 @@ mod tests {
             fs::read_to_string(worktree.join(".vscode/settings.json")).unwrap(),
             "{}"
         );
+    }
+
+    // ── detect_uncollected tests ─────────────────────────────────────────
+
+    /// Helper: create a minimal directory structure for testing.
+    fn setup_test_repo(
+        worktree_names: &[&str],
+    ) -> (tempfile::TempDir, PathBuf, PathBuf, Vec<PathBuf>) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let git_dir = root.join(".git");
+        fs::create_dir_all(git_dir.join(".daft/shared")).unwrap();
+
+        let mut wt_paths = Vec::new();
+        for name in worktree_names {
+            let wt = root.join(name);
+            fs::create_dir_all(&wt).unwrap();
+            wt_paths.push(wt);
+        }
+
+        (tmp, git_dir, root, wt_paths)
+    }
+
+    #[test]
+    fn detect_uncollected_includes_all_worktrees() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main", "develop", "feature"]);
+        fs::write(wt_paths[0].join(".env"), "FROM_MAIN=1").unwrap();
+        fs::write(wt_paths[1].join(".env"), "FROM_DEVELOP=1").unwrap();
+        // feature has no .env
+
+        let declared = vec![".env".to_string()];
+        let result = detect_uncollected(&declared, &wt_paths, &git_dir);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].rel_path, ".env");
+        assert_eq!(result[0].worktrees.len(), 3);
+        assert!(result[0].worktrees[0].has_file);
+        assert!(result[0].worktrees[1].has_file);
+        assert!(!result[0].worktrees[2].has_file);
+        assert!(result[0].has_any_copy());
+    }
+
+    #[test]
+    fn detect_uncollected_skips_already_collected() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main"]);
+        fs::write(shared_file_path(&git_dir, ".env"), "SHARED=1").unwrap();
+        fs::write(wt_paths[0].join(".env"), "LOCAL=1").unwrap();
+
+        let declared = vec![".env".to_string()];
+        let result = detect_uncollected(&declared, &wt_paths, &git_dir);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn detect_uncollected_file_in_no_worktree() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main"]);
+
+        let declared = vec![".secrets".to_string()];
+        let result = detect_uncollected(&declared, &wt_paths, &git_dir);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].rel_path, ".secrets");
+        assert!(!result[0].has_any_copy());
+    }
+
+    #[test]
+    fn deep_compare_identical_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let a = tmp.path().join("a.txt");
+        let b = tmp.path().join("b.txt");
+        fs::write(&a, "hello").unwrap();
+        fs::write(&b, "hello").unwrap();
+        assert_eq!(
+            deep_compare(&a, &b, std::time::Duration::from_secs(1)),
+            CompareResult::Identical
+        );
+    }
+
+    #[test]
+    fn deep_compare_different_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let a = tmp.path().join("a.txt");
+        let b = tmp.path().join("b.txt");
+        fs::write(&a, "hello").unwrap();
+        fs::write(&b, "world").unwrap();
+        assert_eq!(
+            deep_compare(&a, &b, std::time::Duration::from_secs(1)),
+            CompareResult::Different
+        );
+    }
+
+    #[test]
+    fn deep_compare_identical_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        fs::create_dir_all(a.join("sub")).unwrap();
+        fs::create_dir_all(b.join("sub")).unwrap();
+        fs::write(a.join("f1"), "x").unwrap();
+        fs::write(b.join("f1"), "x").unwrap();
+        fs::write(a.join("sub/f2"), "y").unwrap();
+        fs::write(b.join("sub/f2"), "y").unwrap();
+        assert_eq!(
+            deep_compare(&a, &b, std::time::Duration::from_secs(1)),
+            CompareResult::Identical
+        );
+    }
+
+    // ── execute_collect tests ────────────────────────────────────────────
+
+    #[test]
+    fn execute_collect_materializes_selected_worktrees() {
+        let (_tmp, git_dir, root, wt_paths) = setup_test_repo(&["main", "develop", "feature"]);
+
+        fs::write(wt_paths[0].join(".env"), "FROM_MAIN=1").unwrap();
+        fs::write(wt_paths[1].join(".env"), "FROM_DEVELOP=1").unwrap();
+        fs::write(root.join(".gitignore"), "").unwrap();
+
+        // Collect from main, materialize develop
+        let decision = CollectDecision {
+            rel_path: ".env".to_string(),
+            source_worktree: wt_paths[0].clone(),
+            materialize_in: vec![wt_paths[1].clone()],
+        };
+
+        let mut materialized = MaterializedState::default();
+        execute_collect(&decision, &wt_paths, &git_dir, &root, &mut materialized).unwrap();
+
+        // Shared storage has main's content
+        let shared = shared_file_path(&git_dir, ".env");
+        assert_eq!(fs::read_to_string(&shared).unwrap(), "FROM_MAIN=1");
+
+        // main: symlink (source)
+        assert!(wt_paths[0].join(".env").is_symlink());
+
+        // develop: materialized (kept its copy)
+        let dev_env = wt_paths[1].join(".env");
+        assert!(!dev_env.is_symlink());
+        assert!(materialized.is_materialized(".env", &wt_paths[1]));
+
+        // feature: symlink (no file, not materialized)
+        assert!(wt_paths[2].join(".env").is_symlink());
+    }
+
+    #[test]
+    fn execute_collect_removes_non_materialized_copies() {
+        let (_tmp, git_dir, root, wt_paths) = setup_test_repo(&["main", "develop"]);
+
+        fs::write(wt_paths[0].join(".env"), "FROM_MAIN=1").unwrap();
+        fs::write(wt_paths[1].join(".env"), "FROM_DEVELOP=1").unwrap();
+        fs::write(root.join(".gitignore"), "").unwrap();
+
+        // Collect from main, do NOT materialize develop
+        let decision = CollectDecision {
+            rel_path: ".env".to_string(),
+            source_worktree: wt_paths[0].clone(),
+            materialize_in: vec![],
+        };
+
+        let mut materialized = MaterializedState::default();
+        execute_collect(&decision, &wt_paths, &git_dir, &root, &mut materialized).unwrap();
+
+        // develop: local copy removed, replaced with symlink
+        let dev_env = wt_paths[1].join(".env");
+        assert!(dev_env.is_symlink());
+        assert!(!materialized.is_materialized(".env", &wt_paths[1]));
+    }
+
+    #[test]
+    fn execute_collect_ensures_gitignore_entry() {
+        let (_tmp, git_dir, root, wt_paths) = setup_test_repo(&["main"]);
+
+        fs::write(wt_paths[0].join(".env"), "VAL=1").unwrap();
+        fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+
+        let decision = CollectDecision {
+            rel_path: ".env".to_string(),
+            source_worktree: wt_paths[0].clone(),
+            materialize_in: vec![],
+        };
+
+        let mut materialized = MaterializedState::default();
+        execute_collect(&decision, &wt_paths, &git_dir, &root, &mut materialized).unwrap();
+
+        let gitignore = fs::read_to_string(root.join(".gitignore")).unwrap();
+        assert!(gitignore.contains(".env"));
+    }
+
+    #[test]
+    fn detect_uncollected_ignores_symlinked_worktrees() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main"]);
+        let shared_target = shared_file_path(&git_dir, ".env");
+        fs::write(&shared_target, "SHARED=1").unwrap();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&shared_target, wt_paths[0].join(".env")).unwrap();
+
+        let declared = vec![".env".to_string()];
+        let result = detect_uncollected(&declared, &wt_paths, &git_dir);
+        // .env IS in shared storage, so detect_uncollected skips it entirely
+        assert!(result.is_empty());
     }
 }

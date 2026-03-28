@@ -1,0 +1,56 @@
+name: Shared sync respects materialized state
+description: >
+  After a file is collected from one worktree, other worktrees that had their
+  own copy keep their local version via materialized tracking.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create worktrees
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout develop
+    expect:
+      exit_code: 0
+
+  - name: Simulate collection from main with develop materialized
+    run: |
+      printf 'shared:\n  - .env\n' > daft.yml
+      echo ".env" >> .gitignore
+      mkdir -p .git/.daft/shared
+      echo "FROM_MAIN=1" > .git/.daft/shared/.env
+      echo "FROM_DEVELOP=1" > develop/.env
+      printf '{ ".env": ["%s"] }' "$WORK_DIR/test-repo/develop" > .git/.daft/materialized.json
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Sync respects materialized state
+    run: daft shared sync
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Main has symlink
+    run: test -L .env
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Develop still has its local copy (not a symlink)
+    run: |
+      test -f .env && ! test -L .env
+    cwd: "$WORK_DIR/test-repo/develop"
+    expect:
+      exit_code: 0
+
+  - name: Develop local copy has original content
+    run: "true"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/develop/.env"
+          content: "FROM_DEVELOP=1"

@@ -160,11 +160,11 @@ fn resolve_worktree(name: Option<&str>) -> Result<PathBuf> {
 fn run_add(args: AddArgs, output: &mut dyn Output) -> Result<()> {
     let git_common_dir = repo::get_git_common_dir()?;
     let worktree_path = repo::get_current_worktree_path()?;
-    let project_root = repo::get_project_root()?;
+    let config_root = shared::resolve_config_root(&worktree_path);
 
     shared::ensure_shared_dir(&git_common_dir)?;
 
-    let existing_shared = shared::read_shared_paths(&project_root)?;
+    let existing_shared = shared::read_shared_paths(&worktree_path)?;
     let mut added_paths = Vec::new();
 
     for rel_path in &args.paths {
@@ -183,7 +183,7 @@ fn run_add(args: AddArgs, output: &mut dyn Output) -> Result<()> {
 
         if args.declare {
             // --declare: just add to daft.yml and .gitignore
-            layout::ensure_gitignore_entry(&project_root, rel_path)?;
+            layout::ensure_gitignore_entry(&config_root, rel_path)?;
             added_paths.push(rel_path.as_str());
             output.success(&format!("Declared: {}", rel_path));
             continue;
@@ -208,7 +208,7 @@ fn run_add(args: AddArgs, output: &mut dyn Output) -> Result<()> {
         }
 
         // Ensure gitignored
-        layout::ensure_gitignore_entry(&project_root, rel_path)?;
+        layout::ensure_gitignore_entry(&config_root, rel_path)?;
 
         // Move to shared storage
         let shared_target = shared::shared_file_path(&git_common_dir, rel_path);
@@ -218,7 +218,7 @@ fn run_add(args: AddArgs, output: &mut dyn Output) -> Result<()> {
         if fs::rename(&full_path, &shared_target).is_err() {
             // rename fails across filesystems — fall back to copy + delete
             if full_path.is_dir() {
-                copy_dir_all(&full_path, &shared_target)?;
+                shared::copy_dir_all(&full_path, &shared_target)?;
                 fs::remove_dir_all(&full_path)?;
             } else {
                 fs::copy(&full_path, &shared_target)?;
@@ -238,7 +238,7 @@ fn run_add(args: AddArgs, output: &mut dyn Output) -> Result<()> {
 
     // Update daft.yml
     if !added_paths.is_empty() {
-        shared::add_to_daft_yml(&project_root, &added_paths)?;
+        shared::add_to_daft_yml(&config_root, &added_paths)?;
     }
 
     Ok(())
@@ -246,7 +246,8 @@ fn run_add(args: AddArgs, output: &mut dyn Output) -> Result<()> {
 
 fn run_remove(args: RemoveArgs, output: &mut dyn Output) -> Result<()> {
     let git_common_dir = repo::get_git_common_dir()?;
-    let project_root = repo::get_project_root()?;
+    let worktree_path = repo::get_current_worktree_path()?;
+    let config_root = shared::resolve_config_root(&worktree_path);
     let worktree_paths = shared::list_worktree_paths()?;
     let mut materialized = shared::MaterializedState::load(&git_common_dir)?;
 
@@ -280,7 +281,7 @@ fn run_remove(args: RemoveArgs, output: &mut dyn Output) -> Result<()> {
                     if link.is_symlink() {
                         fs::remove_file(&link)?;
                         if shared_target.is_dir() {
-                            copy_dir_all(&shared_target, &link)?;
+                            shared::copy_dir_all(&shared_target, &link)?;
                         } else {
                             fs::copy(&shared_target, &link)?;
                         }
@@ -308,7 +309,7 @@ fn run_remove(args: RemoveArgs, output: &mut dyn Output) -> Result<()> {
     materialized.save(&git_common_dir)?;
 
     let path_refs: Vec<&str> = args.paths.iter().map(|s| s.as_str()).collect();
-    shared::remove_from_daft_yml(&project_root, &path_refs)?;
+    shared::remove_from_daft_yml(&config_root, &path_refs)?;
 
     Ok(())
 }
@@ -330,7 +331,7 @@ fn run_materialize(args: MaterializeArgs, output: &mut dyn Output) -> Result<()>
         // Replace symlink with copy
         fs::remove_file(&link)?;
         if shared_target.is_dir() {
-            copy_dir_all(&shared_target, &link)?;
+            shared::copy_dir_all(&shared_target, &link)?;
         } else {
             fs::copy(&shared_target, &link)?;
         }
@@ -344,7 +345,7 @@ fn run_materialize(args: MaterializeArgs, output: &mut dyn Output) -> Result<()>
                 fs::remove_file(&link)?;
             }
             if shared_target.is_dir() {
-                copy_dir_all(&shared_target, &link)?;
+                shared::copy_dir_all(&shared_target, &link)?;
             } else {
                 fs::copy(&shared_target, &link)?;
             }
@@ -364,7 +365,7 @@ fn run_materialize(args: MaterializeArgs, output: &mut dyn Output) -> Result<()>
             }
         }
         if shared_target.is_dir() {
-            copy_dir_all(&shared_target, &link)?;
+            shared::copy_dir_all(&shared_target, &link)?;
         } else {
             fs::copy(&shared_target, &link)?;
         }
@@ -451,8 +452,8 @@ fn run_status(output: &mut dyn Output) -> Result<()> {
     use crate::styles;
 
     let git_common_dir = repo::get_git_common_dir()?;
-    let project_root = repo::get_project_root()?;
-    let shared_paths = shared::read_shared_paths(&project_root)?;
+    let worktree_path = repo::get_current_worktree_path()?;
+    let shared_paths = shared::read_shared_paths(&worktree_path)?;
     let worktree_paths = shared::list_worktree_paths()?;
     let materialized = shared::MaterializedState::load(&git_common_dir)?;
 
@@ -538,16 +539,71 @@ fn run_status(output: &mut dyn Output) -> Result<()> {
 
 fn run_sync(output: &mut dyn Output) -> Result<()> {
     let git_common_dir = repo::get_git_common_dir()?;
-    let project_root = repo::get_project_root()?;
-    let shared_paths = shared::read_shared_paths(&project_root)?;
+    let worktree_path = repo::get_current_worktree_path()?;
+    let config_root = shared::resolve_config_root(&worktree_path);
+    let shared_paths = shared::read_shared_paths(&worktree_path)?;
     let worktree_paths = shared::list_worktree_paths()?;
-    let materialized = shared::MaterializedState::load(&git_common_dir)?;
+    let mut materialized = shared::MaterializedState::load(&git_common_dir)?;
 
     if shared_paths.is_empty() {
         output.info("No shared files declared.");
         return Ok(());
     }
 
+    // Phase 1: Detect declared-but-uncollected files
+    let uncollected = shared::detect_uncollected(&shared_paths, &worktree_paths, &git_common_dir);
+
+    // Only launch TUI if there are decidable files (not just stubs)
+    let has_decidable = uncollected.iter().any(|u| u.has_any_copy());
+
+    if !uncollected.is_empty() {
+        let is_interactive = has_decidable
+            && std::io::IsTerminal::is_terminal(&std::io::stderr())
+            && std::env::var("DAFT_TESTING").is_err();
+
+        if is_interactive {
+            use crate::output::tui::collect_picker::{run_collect_picker, PickerOutcome};
+
+            match run_collect_picker(uncollected)? {
+                PickerOutcome::Decisions(decisions) => {
+                    for decision in &decisions {
+                        shared::execute_collect(
+                            decision,
+                            &worktree_paths,
+                            &git_common_dir,
+                            &config_root,
+                            &mut materialized,
+                        )?;
+                        print_collect_summary(decision, &worktree_paths, output);
+                    }
+                }
+                PickerOutcome::Cancelled => {
+                    output.info("Sync cancelled.");
+                    return Ok(());
+                }
+            }
+        } else {
+            // Non-interactive (or all stubs): report what needs collection
+            let collectible: Vec<&str> = uncollected
+                .iter()
+                .filter(|u| u.has_any_copy())
+                .map(|u| u.rel_path.as_str())
+                .collect();
+            if !collectible.is_empty() {
+                let count = collectible.len();
+                output.info(&format!(
+                    "{} declared file{} not yet collected: {}",
+                    count,
+                    if count == 1 { "" } else { "s" },
+                    collectible.join(", ")
+                ));
+                output.info("Run `daft shared sync` interactively to collect them.");
+            }
+            // Stubs (no copies anywhere) are silently skipped
+        }
+    }
+
+    // Phase 2: Normal sync — ensure symlinks for all collected shared files
     for wt in &worktree_paths {
         let wt_name = wt
             .file_name()
@@ -562,13 +618,12 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
 
             match shared::create_shared_symlink(wt, rel_path, &git_common_dir)? {
                 shared::LinkResult::Created => {
-                    output.success(&format!("{}: {} → symlinked", wt_name, rel_path));
+                    output.success(&format!("{wt_name}: {rel_path} \u{2192} symlinked"));
                 }
                 shared::LinkResult::AlreadyLinked => {}
                 shared::LinkResult::Conflict => {
                     output.warning(&format!(
-                        "{}: {} exists (not shared) — run `daft shared link {}` to replace",
-                        wt_name, rel_path, rel_path
+                        "{wt_name}: {rel_path} exists (not shared) \u{2014} run `daft shared link {rel_path}` to replace",
                     ));
                 }
                 shared::LinkResult::NoSource => {}
@@ -576,21 +631,37 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
         }
     }
 
+    // Save materialized state (may have been updated by execute_collect)
+    materialized.save(&git_common_dir)?;
+
     Ok(())
 }
 
-/// Recursively copy a directory.
-fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let dest = dst.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_all(&entry.path(), &dest)?;
+/// Print a detailed summary of a collection decision.
+fn print_collect_summary(
+    decision: &shared::CollectDecision,
+    worktree_paths: &[std::path::PathBuf],
+    output: &mut dyn Output,
+) {
+    let source_name = decision
+        .source_worktree
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    output.success(&format!(
+        "Collected: {} (from {})",
+        decision.rel_path, source_name
+    ));
+
+    for wt in worktree_paths {
+        if wt == &decision.source_worktree {
+            continue;
+        }
+        let wt_name = wt.file_name().unwrap_or_default().to_string_lossy();
+        if decision.materialize_in.contains(wt) {
+            output.detail(&format!("  {wt_name}"), "materialized");
         } else {
-            fs::copy(entry.path(), dest)?;
+            output.detail(&format!("  {wt_name}"), "linked");
         }
     }
-    Ok(())
 }
