@@ -35,38 +35,34 @@ pub fn render(
 
     frame.render_widget(Clear, area);
 
-    let has_warning = !state.is_virtual_tab() && mode.tab_warning(state.current_tab()).is_some();
-    let warning_height = if has_warning { 1 } else { 0 };
     let footer_height = mode.footer_height();
 
-    // Layout: tabs (2) | warning (0-1) | body (fill) | footer
+    // Layout: tabs (1) | info/spacer (1, always present) | body (fill) | footer
+    // The info row doubles as the spacer between tabs and body. When a
+    // warning/info message is active it fills this row; otherwise it stays
+    // blank. This avoids pushing the body down when a message appears.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
-            Constraint::Length(warning_height),
+            Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(5),
             Constraint::Length(footer_height),
         ])
         .split(area);
 
     render_tabs(state, mode, frame, chunks[0]);
-    if has_warning {
-        render_warning(state.current_tab(), mode, frame, chunks[1]);
+    if !state.is_virtual_tab() {
+        if let Some(msg) = mode.tab_warning(state.current_tab()) {
+            let line = Line::from(Span::styled(
+                format!(" {msg}"),
+                Style::default().fg(Color::Yellow),
+            ));
+            frame.render_widget(Paragraph::new(line), chunks[1]);
+        }
     }
     render_body(state, mode, highlighter, frame, chunks[2]);
     mode.render_footer(state, frame, chunks[3]);
-}
-
-/// Render a warning between tabs and body.
-fn render_warning(tab: &FileTabState, mode: &mut dyn PickerMode, frame: &mut Frame, area: Rect) {
-    if let Some(msg) = mode.tab_warning(tab) {
-        let line = Line::from(Span::styled(
-            format!(" {msg}"),
-            Style::default().fg(Color::Yellow),
-        ));
-        frame.render_widget(Paragraph::new(line), area);
-    }
 }
 
 /// Render the tab bar at the top.
