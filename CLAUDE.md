@@ -79,6 +79,9 @@ Hook types: `post-clone`, `worktree-pre-create`, `worktree-post-create`,
 `worktree-pre-remove`, `worktree-post-remove`. Old names without `worktree-`
 prefix are deprecated (removed in v2.0.0).
 
+**TUI navigation**: All interactive TUI interfaces that support arrow key
+navigation must also support Vim-style `hjkl` keys.
+
 ## Branch Naming & PRs
 
 - Branch names: `daft-<issue number>/<shortened issue name>`
