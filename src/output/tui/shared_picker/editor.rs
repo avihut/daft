@@ -138,42 +138,18 @@ impl EditSession {
 
     /// Render the edtui editor view.
     fn render_editor(&mut self, frame: &mut Frame, area: Rect) {
-        if area.width < 3 || area.height == 0 {
-            return;
-        }
-
-        // edtui's gutter background
-        let gutter_bg = Color::Rgb(30, 30, 30);
-        let line_num_style = Style::default().fg(Color::Indexed(239)).bg(gutter_bg);
-
-        // 1-column leading spacer with the same background as the gutter
-        let spacer_area = Rect {
-            x: area.x,
-            y: area.y,
-            width: 1,
-            height: area.height,
-        };
-        let editor_area = Rect {
-            x: area.x + 1,
-            y: area.y,
-            width: area.width.saturating_sub(1),
-            height: area.height,
-        };
-        frame
-            .buffer_mut()
-            .set_style(spacer_area, Style::default().bg(gutter_bg));
-
         // edtui bundles its own theme set with hyphenated names
         let highlighter = SyntaxHighlighter::new("base16-ocean-dark", &self.syntax_ext).ok();
 
-        let theme = EditorTheme::default().line_numbers_style(line_num_style);
+        let theme =
+            EditorTheme::default().line_numbers_style(Style::default().fg(Color::Indexed(239)));
 
         EditorView::new(&mut self.state)
             .theme(theme)
             .wrap(true)
             .line_numbers(LineNumbers::Absolute)
             .syntax_highlighter(highlighter)
-            .render(editor_area, frame.buffer_mut());
+            .render(area, frame.buffer_mut());
     }
 }
 

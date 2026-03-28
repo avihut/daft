@@ -328,7 +328,7 @@ fn render_preview(
         .into_iter()
         .enumerate()
         .map(|(i, mut line)| {
-            let num = format!(" {:>width$} ", i + 1, width = num_width);
+            let num = format!("{:>width$} ", i + 1, width = num_width);
             line.spans.insert(0, Span::styled(num, line_num_style));
             line
         })
