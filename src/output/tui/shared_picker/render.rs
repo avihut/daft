@@ -250,10 +250,12 @@ fn render_worktree_list(
                 Span::styled(entry.worktree_name.clone(), style),
             ];
 
-            // Right-align the status tag
+            // Right-align the status tag (use char count for correct Unicode width)
             if let Some((tag_text, tag_color)) = decoration.tag {
-                let left_len = pointer.len() + decoration.marker.len() + entry.worktree_name.len();
-                let tag_len = tag_text.len();
+                let left_len = pointer.chars().count()
+                    + decoration.marker.chars().count()
+                    + entry.worktree_name.chars().count();
+                let tag_len = tag_text.chars().count();
                 let padding = inner_width.saturating_sub(left_len + tag_len);
 
                 let pad_style = if is_cursor {
