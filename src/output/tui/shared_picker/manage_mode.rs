@@ -12,6 +12,7 @@ use ratatui::{
     widgets::Paragraph,
     Frame,
 };
+use similar::{ChangeTag, TextDiff};
 use std::fs;
 use std::path::PathBuf;
 
@@ -36,6 +37,8 @@ pub struct ManageMode {
     pub worktree_paths: Vec<PathBuf>,
     /// Temporary info/warning message for the user.
     pub info_message: Option<String>,
+    /// If `Some`, diff mode is active. The value is `(tab_idx, entry_idx)` of the pivot.
+    pub diff_pivot: Option<(usize, usize)>,
 }
 
 impl ManageMode {
@@ -253,6 +256,86 @@ impl ManageMode {
         }
     }
 
+    /// Toggle diff mode. If off, enter with current entry as pivot.
+    /// If on and `d` is pressed again, exit.
+    fn toggle_diff_mode(&mut self, state: &PickerState) {
+        if self.diff_pivot.is_some() {
+            self.diff_pivot = None;
+            self.info_message = None;
+        } else {
+            self.diff_pivot = Some((state.active_tab, state.current_tab().list_cursor));
+            self.info_message = Some("Diff mode: navigate to compare against pivot".to_string());
+        }
+    }
+
+    /// Compute diff preview lines for the current entry against the pivot.
+    fn diff_preview_lines(&self, state: &PickerState) -> Vec<Line<'static>> {
+        let Some((pivot_tab, pivot_entry)) = self.diff_pivot else {
+            return vec![];
+        };
+
+        let tab = state.current_tab();
+        let current_entry = tab.list_cursor;
+
+        // Same entry as pivot
+        if state.active_tab == pivot_tab && current_entry == pivot_entry {
+            return vec![Line::styled(
+                "(pivot \u{2014} select another worktree to compare)",
+                Style::default().fg(Color::DarkGray),
+            )];
+        }
+
+        // Different tab than pivot
+        if state.active_tab != pivot_tab {
+            return vec![Line::styled(
+                "(diff not available \u{2014} pivot is on a different file)",
+                Style::default().fg(Color::DarkGray),
+            )];
+        }
+
+        let pivot_wt = &tab.entries[pivot_entry].worktree_path;
+        let current_wt = &tab.entries[current_entry].worktree_path;
+        let rel_path = &tab.rel_path;
+
+        let pivot_path = pivot_wt.join(rel_path);
+        let current_path = current_wt.join(rel_path);
+
+        let pivot_content = fs::read_to_string(&pivot_path).unwrap_or_default();
+        let current_content = match fs::read_to_string(&current_path) {
+            Ok(c) => c,
+            Err(_) => {
+                return vec![Line::styled(
+                    "(no file in this worktree)",
+                    Style::default().fg(Color::DarkGray),
+                )];
+            }
+        };
+
+        if pivot_content == current_content {
+            return vec![Line::styled(
+                "(identical to pivot)",
+                Style::default().fg(Color::Green),
+            )];
+        }
+
+        // Compute line-level diff
+        let diff = TextDiff::from_lines(&pivot_content, &current_content);
+        let mut lines = Vec::new();
+
+        for change in diff.iter_all_changes() {
+            let (style, prefix) = match change.tag() {
+                ChangeTag::Delete => (Style::default().fg(Color::Red), "-"),
+                ChangeTag::Insert => (Style::default().fg(Color::Green), "+"),
+                ChangeTag::Equal => (Style::default().fg(Color::DarkGray), " "),
+            };
+            let text = change.to_string_lossy();
+            let text = text.trim_end_matches('\n');
+            lines.push(Line::from(Span::styled(format!("{prefix} {text}"), style)));
+        }
+
+        lines
+    }
+
     /// Re-detect the status of all entries in a single tab.
     fn refresh_tab_status(&mut self, state: &PickerState, tab_idx: usize) {
         let tab = &state.tabs[tab_idx];
@@ -303,8 +386,20 @@ impl PickerMode for ManageMode {
         true
     }
 
+    fn pre_handle_key(&mut self, key: KeyCode, _state: &mut PickerState) -> bool {
+        if self.diff_pivot.is_some() && key == KeyCode::Esc {
+            self.diff_pivot = None;
+            self.info_message = None;
+            return true; // Consume Esc — don't navigate to footer
+        }
+        false
+    }
+
     fn handle_list_key(&mut self, key: KeyCode, state: &mut PickerState) -> LoopAction {
         match key {
+            KeyCode::Char('d') => {
+                self.toggle_diff_mode(state);
+            }
             KeyCode::Char('m') | KeyCode::Enter | KeyCode::Char(' ') => {
                 self.info_message = None;
                 self.toggle_materialize(state);
@@ -385,8 +480,18 @@ impl PickerMode for ManageMode {
         let key_style = Style::default().fg(Color::Cyan);
         let desc_style = Style::default().fg(DIM);
 
+        let diff_active = self.diff_pivot.is_some();
+        let diff_desc = if diff_active {
+            " exit diff  "
+        } else {
+            " diff  "
+        };
+        let esc_desc = if diff_active { " exit diff" } else { " quit" };
+
         let help = Line::from(vec![
             Span::raw("  "),
+            Span::styled("d", key_style),
+            Span::styled(diff_desc, desc_style),
             Span::styled("m", key_style),
             Span::styled(" materialize/link  ", desc_style),
             Span::styled("i", key_style),
@@ -394,7 +499,7 @@ impl PickerMode for ManageMode {
             Span::styled("Tab", key_style),
             Span::styled(" panel  ", desc_style),
             Span::styled("Esc", key_style),
-            Span::styled(" quit", desc_style),
+            Span::styled(esc_desc, desc_style),
         ]);
 
         let nav_help = Line::from(vec![
@@ -433,5 +538,13 @@ impl PickerMode for ManageMode {
 
     fn footer_height(&self) -> u16 {
         6
+    }
+
+    fn preview_override(&self, state: &PickerState) -> Option<Vec<Line<'static>>> {
+        if self.diff_pivot.is_some() {
+            Some(self.diff_preview_lines(state))
+        } else {
+            None
+        }
     }
 }

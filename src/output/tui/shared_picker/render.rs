@@ -170,7 +170,7 @@ fn render_split_body(
 
     let tab = state.current_tab();
     render_worktree_list(state.focus, tab, state.active_tab, mode, frame, chunks[0]);
-    render_preview(state, highlighter, frame, chunks[1]);
+    render_preview(state, mode, highlighter, frame, chunks[1]);
 }
 
 /// Render the worktree list panel (left).
@@ -246,6 +246,7 @@ fn render_worktree_list(
 /// Render the file preview panel (right).
 fn render_preview(
     state: &mut PickerState,
+    mode: &dyn PickerMode,
     highlighter: &Highlighter,
     frame: &mut Frame,
     area: Rect,
@@ -259,26 +260,30 @@ fn render_preview(
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(" Preview ", Style::default().fg(border_color)));
 
-    let entry = &tab.entries[tab.list_cursor];
-    let highlighted_lines = if !entry.has_file {
-        vec![Line::styled(
-            "(no file in this worktree)",
-            Style::default().fg(DIM),
-        )]
+    let highlighted_lines = if let Some(lines) = mode.preview_override(state) {
+        lines
     } else {
-        let file_path = entry.worktree_path.join(&tab.rel_path);
-        if file_path.is_dir() {
-            dir_listing_lines(&file_path)
+        let entry = &tab.entries[tab.list_cursor];
+        if !entry.has_file {
+            vec![Line::styled(
+                "(no file in this worktree)",
+                Style::default().fg(DIM),
+            )]
         } else {
-            match std::fs::read_to_string(&file_path) {
-                Ok(content) if content.is_empty() => {
-                    vec![Line::styled("(empty file)", Style::default().fg(DIM))]
+            let file_path = entry.worktree_path.join(&tab.rel_path);
+            if file_path.is_dir() {
+                dir_listing_lines(&file_path)
+            } else {
+                match std::fs::read_to_string(&file_path) {
+                    Ok(content) if content.is_empty() => {
+                        vec![Line::styled("(empty file)", Style::default().fg(DIM))]
+                    }
+                    Ok(content) => highlighter.highlight(&content, &tab.rel_path),
+                    Err(_) => vec![Line::styled(
+                        "(unable to read file)",
+                        Style::default().fg(DIM),
+                    )],
                 }
-                Ok(content) => highlighter.highlight(&content, &tab.rel_path),
-                Err(_) => vec![Line::styled(
-                    "(unable to read file)",
-                    Style::default().fg(DIM),
-                )],
             }
         }
     };

@@ -19,7 +19,7 @@ use crossterm::{
     execute,
     terminal::{self, EnterAlternateScreen},
 };
-use ratatui::{layout::Rect, style::Color, Frame, Terminal};
+use ratatui::{layout::Rect, style::Color, text::Line, Frame, Terminal};
 use std::io;
 use std::time::Duration;
 
@@ -60,6 +60,16 @@ pub trait PickerMode {
     /// Whether all worktree entries are traversable (vs. only those with files).
     fn all_entries_traversable(&self, tab: &FileTabState) -> bool;
 
+    /// Pre-process a key before the shell handles navigation.
+    /// Return `true` to consume the key (shell won't process it).
+    fn pre_handle_key(
+        &mut self,
+        _key: crossterm::event::KeyCode,
+        _state: &mut PickerState,
+    ) -> bool {
+        false
+    }
+
     /// Handle a key press while focused on the worktree list.
     /// Called for keys not consumed by the shell (navigation).
     fn handle_list_key(
@@ -95,6 +105,12 @@ pub trait PickerMode {
 
     /// Height of the footer in terminal rows.
     fn footer_height(&self) -> u16;
+
+    /// Override preview content. If `Some`, these lines are shown instead of
+    /// the normal syntax-highlighted file content.
+    fn preview_override(&self, _state: &PickerState) -> Option<Vec<Line<'static>>> {
+        None
+    }
 }
 
 /// Run the interactive collect picker TUI.
@@ -282,6 +298,7 @@ fn run_manage_picker_inner(
         statuses: Vec::new(),
         worktree_paths,
         info_message: None,
+        diff_pivot: None,
     };
     mode.set_statuses(&infos);
 

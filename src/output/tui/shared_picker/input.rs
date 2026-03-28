@@ -26,6 +26,11 @@ pub fn handle_key(key: KeyEvent, state: &mut PickerState, mode: &mut dyn PickerM
         return LoopAction::Exit;
     }
 
+    // Let the mode intercept keys before shell navigation handling.
+    if mode.pre_handle_key(key.code, state) {
+        return LoopAction::Continue;
+    }
+
     match state.focus {
         FocusPanel::TabBar => handle_tab_bar(key, state, mode),
         FocusPanel::WorktreeList => handle_worktree_list(key, state, mode),
