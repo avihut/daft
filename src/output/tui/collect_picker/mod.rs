@@ -11,6 +11,7 @@ pub mod state;
 
 use anyhow::Result;
 use crossterm::{
+    cursor,
     event::{DisableMouseCapture, EnableMouseCapture, KeyCode},
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
@@ -38,11 +39,38 @@ pub enum PickerOutcome {
     Cancelled,
 }
 
+/// Restore the terminal to its normal state.
+fn restore_terminal() {
+    let _ = terminal::disable_raw_mode();
+    let _ = execute!(
+        io::stderr(),
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        cursor::Show
+    );
+}
+
 /// Run the interactive collect picker TUI.
 ///
 /// Enters alternate screen mode, runs the event loop, and returns the user's
-/// decisions. Restores the terminal on exit (including on panic).
+/// decisions. Restores the terminal on exit, including on panic.
 pub fn run_collect_picker(uncollected: Vec<UncollectedFile>) -> Result<PickerOutcome> {
+    // Install panic hook that restores the terminal before printing the panic
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        prev_hook(info);
+    }));
+
+    let outcome = run_collect_picker_inner(uncollected);
+
+    // Restore the default panic hook
+    let _ = std::panic::take_hook();
+
+    outcome
+}
+
+fn run_collect_picker_inner(uncollected: Vec<UncollectedFile>) -> Result<PickerOutcome> {
     // Set up terminal
     terminal::enable_raw_mode()?;
     let mut stderr = io::stderr();
@@ -55,14 +83,8 @@ pub fn run_collect_picker(uncollected: Vec<UncollectedFile>) -> Result<PickerOut
 
     let result = run_event_loop(&mut terminal, &mut state, &highlighter);
 
-    // Restore terminal
-    terminal::disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    // Restore terminal (use let _ to ensure all steps run)
+    restore_terminal();
 
     match result {
         Ok(true) => Ok(PickerOutcome::Decisions(state.into_decisions())),

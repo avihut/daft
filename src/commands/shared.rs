@@ -618,12 +618,12 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
 
             match shared::create_shared_symlink(wt, rel_path, &git_common_dir)? {
                 shared::LinkResult::Created => {
-                    output.success(&format!("{wt_name}: {rel_path} -> symlinked"));
+                    output.success(&format!("{wt_name}: {rel_path} \u{2192} symlinked"));
                 }
                 shared::LinkResult::AlreadyLinked => {}
                 shared::LinkResult::Conflict => {
                     output.warning(&format!(
-                        "{wt_name}: {rel_path} exists (not shared) -- run `daft shared link {rel_path}` to replace",
+                        "{wt_name}: {rel_path} exists (not shared) \u{2014} run `daft shared link {rel_path}` to replace",
                     ));
                 }
                 shared::LinkResult::NoSource => {}

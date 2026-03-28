@@ -111,6 +111,13 @@ impl CollectPickerState {
         }
     }
 
+    /// Set the list cursor for the active tab, resetting preview scroll.
+    fn set_cursor(&mut self, idx: usize) {
+        let tab = &mut self.tabs[self.active_tab];
+        tab.list_cursor = idx;
+        tab.preview_scroll = 0;
+    }
+
     pub fn current_tab(&self) -> &FileTabState {
         &self.tabs[self.active_tab]
     }
@@ -173,7 +180,7 @@ impl CollectPickerState {
                 };
 
                 match next {
-                    Some(idx) => self.tabs[self.active_tab].list_cursor = idx,
+                    Some(idx) => self.set_cursor(idx),
                     None => self.focus = FocusPanel::Footer,
                 }
             }
@@ -216,7 +223,7 @@ impl CollectPickerState {
                 };
 
                 if let Some(idx) = prev {
-                    self.tabs[self.active_tab].list_cursor = idx;
+                    self.set_cursor(idx);
                 }
             }
             FocusPanel::Preview => {
@@ -230,21 +237,18 @@ impl CollectPickerState {
                     self.focus = FocusPanel::WorktreeList;
                     // Place cursor on the last traversable entry
                     let tab = &self.tabs[self.active_tab];
-                    if tab.selected.is_none() {
-                        if let Some(last) = tab
-                            .entries
+                    let last = if tab.selected.is_none() {
+                        tab.entries
                             .iter()
                             .enumerate()
                             .rev()
                             .find(|(_, e)| e.has_file)
                             .map(|(i, _)| i)
-                        {
-                            self.tabs[self.active_tab].list_cursor = last;
-                        }
+                            .unwrap_or(0)
                     } else {
-                        self.tabs[self.active_tab].list_cursor =
-                            tab.entries.len().saturating_sub(1);
-                    }
+                        tab.entries.len().saturating_sub(1)
+                    };
+                    self.set_cursor(last);
                 }
             }
         }

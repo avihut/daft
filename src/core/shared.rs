@@ -536,7 +536,8 @@ pub fn deep_compare(a: &Path, b: &Path, timeout: std::time::Duration) -> Compare
     }
 }
 
-/// Inner recursive comparison. Returns `None` on timeout.
+/// Inner recursive comparison.
+/// Returns `None` only on timeout. I/O errors yield `Some(false)` (treat as different).
 fn deep_compare_inner(a: &Path, b: &Path, deadline: std::time::Instant) -> Option<bool> {
     if std::time::Instant::now() > deadline {
         return None;
@@ -550,9 +551,15 @@ fn deep_compare_inner(a: &Path, b: &Path, deadline: std::time::Instant) -> Optio
     }
 
     if a_is_dir {
-        // Compare directory trees
-        let mut a_entries: Vec<_> = fs::read_dir(a).ok()?.filter_map(|e| e.ok()).collect();
-        let mut b_entries: Vec<_> = fs::read_dir(b).ok()?.filter_map(|e| e.ok()).collect();
+        // Compare directory trees — I/O errors on either side → different
+        let Ok(a_rd) = fs::read_dir(a) else {
+            return Some(false);
+        };
+        let Ok(b_rd) = fs::read_dir(b) else {
+            return Some(false);
+        };
+        let mut a_entries: Vec<_> = a_rd.filter_map(|e| e.ok()).collect();
+        let mut b_entries: Vec<_> = b_rd.filter_map(|e| e.ok()).collect();
         a_entries.sort_by_key(|e| e.file_name());
         b_entries.sort_by_key(|e| e.file_name());
 
@@ -571,9 +578,10 @@ fn deep_compare_inner(a: &Path, b: &Path, deadline: std::time::Instant) -> Optio
         }
         Some(true)
     } else {
-        // Compare file contents
-        let a_content = fs::read(a).ok()?;
-        let b_content = fs::read(b).ok()?;
+        // Compare file contents — I/O errors → different
+        let (Ok(a_content), Ok(b_content)) = (fs::read(a), fs::read(b)) else {
+            return Some(false);
+        };
         Some(a_content == b_content)
     }
 }
