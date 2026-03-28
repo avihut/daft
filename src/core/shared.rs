@@ -276,17 +276,43 @@ pub enum LinkResult {
 
 // ── daft.yml manipulation ─────────────────────────────────────────────────
 
-/// Read the `shared:` list from daft.yml in the given worktree root.
-/// Returns empty vec if no daft.yml or no shared section.
+/// Resolve the directory where `daft.yml` and `.gitignore` live.
+///
+/// Checks the worktree root first (sibling layout), then falls back to
+/// the project root / git common dir parent (contained layout).
+/// When no `daft.yml` exists anywhere, returns the project root (where
+/// new config files should be created).
+pub fn resolve_config_root(worktree_root: &Path) -> PathBuf {
+    if find_daft_yml(worktree_root).is_some() {
+        return worktree_root.to_path_buf();
+    }
+    if let Ok(git_common_dir) = crate::core::repo::get_git_common_dir() {
+        if let Some(project_root) = git_common_dir.parent() {
+            // In contained layout, project_root is the container dir
+            // In sibling layout, project_root is the common parent
+            return project_root.to_path_buf();
+        }
+    }
+    worktree_root.to_path_buf()
+}
+
+/// Read the `shared:` list from daft.yml.
+///
+/// Searches for daft.yml in `worktree_root` first (sibling layout), then
+/// falls back to the project root (contained layout where daft.yml lives
+/// at the repo container level, not inside individual worktrees).
 pub fn read_shared_paths(worktree_root: &Path) -> Result<Vec<String>> {
-    let config = load_yaml_config(worktree_root)?;
+    let config = load_yaml_config_with_fallback(worktree_root)?;
     Ok(config.and_then(|c| c.shared).unwrap_or_default())
 }
 
 /// Add paths to the `shared:` list in daft.yml.
 /// Creates daft.yml if it doesn't exist. Avoids duplicates.
-pub fn add_to_daft_yml(worktree_root: &Path, paths: &[&str]) -> Result<()> {
-    let config_path = find_or_create_daft_yml(worktree_root)?;
+///
+/// The `root` parameter should be the resolved config root (from
+/// `resolve_config_root`), not a raw worktree path.
+pub fn add_to_daft_yml(root: &Path, paths: &[&str]) -> Result<()> {
+    let config_path = find_or_create_daft_yml(root)?;
     let contents = fs::read_to_string(&config_path).unwrap_or_default();
 
     let mut config: serde_yaml::Value = if contents.trim().is_empty() {
@@ -324,8 +350,11 @@ pub fn add_to_daft_yml(worktree_root: &Path, paths: &[&str]) -> Result<()> {
 }
 
 /// Remove paths from the `shared:` list in daft.yml.
-pub fn remove_from_daft_yml(worktree_root: &Path, paths: &[&str]) -> Result<()> {
-    let config_path = find_daft_yml(worktree_root);
+///
+/// The `root` parameter should be the resolved config root (from
+/// `resolve_config_root`), not a raw worktree path.
+pub fn remove_from_daft_yml(root: &Path, paths: &[&str]) -> Result<()> {
+    let config_path = find_daft_yml(root);
     let Some(config_path) = config_path else {
         return Ok(()); // No daft.yml, nothing to remove from
     };
@@ -386,6 +415,28 @@ fn load_yaml_config(root: &Path) -> Result<Option<crate::hooks::yaml_config::Yam
     let contents = fs::read_to_string(&path)?;
     let config = serde_yaml::from_str(&contents)?;
     Ok(Some(config))
+}
+
+/// Load YamlConfig, checking `worktree_root` first, then the project root
+/// (git_common_dir parent) as fallback for contained layouts.
+fn load_yaml_config_with_fallback(
+    worktree_root: &Path,
+) -> Result<Option<crate::hooks::yaml_config::YamlConfig>> {
+    // Try worktree root first (works for sibling layout where daft.yml is tracked)
+    if let Some(config) = load_yaml_config(worktree_root)? {
+        return Ok(Some(config));
+    }
+
+    // Fall back to project root (contained layout: daft.yml at repo container level)
+    if let Ok(git_common_dir) = crate::core::repo::get_git_common_dir() {
+        if let Some(project_root) = git_common_dir.parent() {
+            if project_root != worktree_root {
+                return load_yaml_config(project_root);
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 // ── Uncollected file detection ───────────────────────────────────────────
@@ -622,9 +673,9 @@ impl LinkSharedResult {
 pub fn link_shared_files_on_create(
     worktree_path: &Path,
     git_common_dir: &Path,
-    project_root: &Path,
+    _project_root: &Path,
 ) -> LinkSharedResult {
-    let shared_paths = match read_shared_paths(project_root) {
+    let shared_paths = match read_shared_paths(worktree_path) {
         Ok(paths) => paths,
         Err(_) => return LinkSharedResult::default(),
     };

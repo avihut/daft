@@ -160,11 +160,11 @@ fn resolve_worktree(name: Option<&str>) -> Result<PathBuf> {
 fn run_add(args: AddArgs, output: &mut dyn Output) -> Result<()> {
     let git_common_dir = repo::get_git_common_dir()?;
     let worktree_path = repo::get_current_worktree_path()?;
-    let project_root = repo::get_project_root()?;
+    let config_root = shared::resolve_config_root(&worktree_path);
 
     shared::ensure_shared_dir(&git_common_dir)?;
 
-    let existing_shared = shared::read_shared_paths(&project_root)?;
+    let existing_shared = shared::read_shared_paths(&worktree_path)?;
     let mut added_paths = Vec::new();
 
     for rel_path in &args.paths {
@@ -183,7 +183,7 @@ fn run_add(args: AddArgs, output: &mut dyn Output) -> Result<()> {
 
         if args.declare {
             // --declare: just add to daft.yml and .gitignore
-            layout::ensure_gitignore_entry(&project_root, rel_path)?;
+            layout::ensure_gitignore_entry(&config_root, rel_path)?;
             added_paths.push(rel_path.as_str());
             output.success(&format!("Declared: {}", rel_path));
             continue;
@@ -208,7 +208,7 @@ fn run_add(args: AddArgs, output: &mut dyn Output) -> Result<()> {
         }
 
         // Ensure gitignored
-        layout::ensure_gitignore_entry(&project_root, rel_path)?;
+        layout::ensure_gitignore_entry(&config_root, rel_path)?;
 
         // Move to shared storage
         let shared_target = shared::shared_file_path(&git_common_dir, rel_path);
@@ -238,7 +238,7 @@ fn run_add(args: AddArgs, output: &mut dyn Output) -> Result<()> {
 
     // Update daft.yml
     if !added_paths.is_empty() {
-        shared::add_to_daft_yml(&project_root, &added_paths)?;
+        shared::add_to_daft_yml(&config_root, &added_paths)?;
     }
 
     Ok(())
@@ -246,7 +246,8 @@ fn run_add(args: AddArgs, output: &mut dyn Output) -> Result<()> {
 
 fn run_remove(args: RemoveArgs, output: &mut dyn Output) -> Result<()> {
     let git_common_dir = repo::get_git_common_dir()?;
-    let project_root = repo::get_project_root()?;
+    let worktree_path = repo::get_current_worktree_path()?;
+    let config_root = shared::resolve_config_root(&worktree_path);
     let worktree_paths = shared::list_worktree_paths()?;
     let mut materialized = shared::MaterializedState::load(&git_common_dir)?;
 
@@ -308,7 +309,7 @@ fn run_remove(args: RemoveArgs, output: &mut dyn Output) -> Result<()> {
     materialized.save(&git_common_dir)?;
 
     let path_refs: Vec<&str> = args.paths.iter().map(|s| s.as_str()).collect();
-    shared::remove_from_daft_yml(&project_root, &path_refs)?;
+    shared::remove_from_daft_yml(&config_root, &path_refs)?;
 
     Ok(())
 }
@@ -451,8 +452,8 @@ fn run_status(output: &mut dyn Output) -> Result<()> {
     use crate::styles;
 
     let git_common_dir = repo::get_git_common_dir()?;
-    let project_root = repo::get_project_root()?;
-    let shared_paths = shared::read_shared_paths(&project_root)?;
+    let worktree_path = repo::get_current_worktree_path()?;
+    let shared_paths = shared::read_shared_paths(&worktree_path)?;
     let worktree_paths = shared::list_worktree_paths()?;
     let materialized = shared::MaterializedState::load(&git_common_dir)?;
 
@@ -538,8 +539,9 @@ fn run_status(output: &mut dyn Output) -> Result<()> {
 
 fn run_sync(output: &mut dyn Output) -> Result<()> {
     let git_common_dir = repo::get_git_common_dir()?;
-    let project_root = repo::get_project_root()?;
-    let shared_paths = shared::read_shared_paths(&project_root)?;
+    let worktree_path = repo::get_current_worktree_path()?;
+    let config_root = shared::resolve_config_root(&worktree_path);
+    let shared_paths = shared::read_shared_paths(&worktree_path)?;
     let worktree_paths = shared::list_worktree_paths()?;
     let mut materialized = shared::MaterializedState::load(&git_common_dir)?;
 
@@ -565,7 +567,7 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
                             decision,
                             &worktree_paths,
                             &git_common_dir,
-                            &project_root,
+                            &config_root,
                             &mut materialized,
                         )?;
                         output.success(&format!("Collected: {}", decision.rel_path));
