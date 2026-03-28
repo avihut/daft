@@ -1,0 +1,29 @@
+name: Shared manage requires interactive terminal
+description: >
+  daft shared manage in non-interactive mode prints an error message.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Setup shared file
+    run: |
+      echo "VAL=1" > .env
+      daft shared add .env
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Manage in non-interactive mode reports error
+    run: DAFT_TESTING=1 daft shared manage
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "interactive terminal"
