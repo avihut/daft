@@ -13,17 +13,14 @@ use edtui::{
     EditorEventHandler, EditorState, EditorTheme, EditorView, LineNumbers, Lines, SyntaxHighlighter,
 };
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Widget},
+    widgets::Widget,
     Frame,
 };
 
 use crate::core::shared::{self, WorktreeStatus};
-
-const ACCENT: Color = Color::Indexed(208);
-const DIM: Color = Color::DarkGray;
 
 /// An active inline editing session for a shared file.
 pub struct EditSession {
@@ -39,6 +36,8 @@ pub struct EditSession {
     worktree_name: String,
     /// File extension used for syntax highlighting (e.g. "rs", "sh", "toml").
     syntax_ext: String,
+    /// Original file content at load time (for skip-save-if-unchanged).
+    original_content: String,
 }
 
 impl EditSession {
@@ -65,6 +64,7 @@ impl EditSession {
             is_shared,
             worktree_name,
             syntax_ext,
+            original_content: content,
         })
     }
 
@@ -87,60 +87,43 @@ impl EditSession {
         false
     }
 
-    /// Write the current buffer contents back to disk.
+    /// Write the current buffer contents back to disk if changed.
     pub fn save(&self) -> std::io::Result<()> {
         let content = lines_to_string(&self.state.lines);
-        fs::write(&self.file_path, content)
+        if content != self.original_content {
+            fs::write(&self.file_path, content)?;
+        }
+        Ok(())
     }
 
     /// Render the editor into the given area.
     ///
-    /// Layout (top to bottom):
-    /// 1. A one-line header showing the file target and current editor mode.
-    /// 2. The edtui `EditorView` inside a bordered block (matching the preview frame).
+    /// The block title shows the editing target (shared/materialized) on the
+    /// left and "Esc: save & exit" on the right, all in the frame color.
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(1)])
-            .split(area);
-
-        self.render_header(frame, chunks[0]);
-
-        // Bordered block matching the preview pane frame
-        let block = ratatui::widgets::Block::default()
-            .borders(ratatui::widgets::Borders::ALL)
-            .border_style(Style::default().fg(ACCENT))
-            .title(Span::styled(" Edit ", Style::default().fg(ACCENT)));
-        let inner = block.inner(chunks[1]);
-        frame.render_widget(block, chunks[1]);
-
-        self.render_editor(frame, inner);
-    }
-
-    /// Render the header line showing what's being edited.
-    fn render_header(&self, frame: &mut Frame, area: Rect) {
-        let (target, color) = if self.is_shared {
-            ("Editing shared copy", Color::Green)
+        let (title, color) = if self.is_shared {
+            (" Editing shared copy ".to_string(), Color::Green)
         } else {
-            ("Editing materialized copy", Color::Yellow)
+            (
+                format!(" Editing {} (materialized) ", self.worktree_name),
+                Color::Yellow,
+            )
         };
 
-        let mut spans = vec![Span::styled(
-            format!(" {target}"),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )];
+        let title_style = Style::default().fg(color).add_modifier(Modifier::BOLD);
+        let hint_style = Style::default().fg(color);
 
-        if !self.is_shared {
-            spans.push(Span::styled(
-                format!(" ({})", self.worktree_name),
-                Style::default().fg(color),
-            ));
-        }
+        let block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_style(Style::default().fg(color))
+            .title(Span::styled(title, title_style))
+            .title_bottom(
+                Line::from(Span::styled(" Esc: save & exit ", hint_style)).right_aligned(),
+            );
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
 
-        spans.push(Span::styled(" | ", Style::default().fg(DIM)));
-        spans.push(Span::styled("Esc: save & exit", Style::default().fg(DIM)));
-
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        self.render_editor(frame, inner);
     }
 
     /// Render the edtui editor view.
