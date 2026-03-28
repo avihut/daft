@@ -72,6 +72,12 @@ impl EditSession {
     /// Returns `true` when the user presses Esc, signaling the caller to
     /// save and close the editing session.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        // Only handle key press events — ignore Release/Repeat which can
+        // cause double-processing or unresponsive behavior.
+        if key.kind != crossterm::event::KeyEventKind::Press {
+            return false;
+        }
+
         if key.code == crossterm::event::KeyCode::Esc {
             return true;
         }
