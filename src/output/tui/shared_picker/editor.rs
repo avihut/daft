@@ -9,7 +9,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crossterm::event::KeyEvent;
-use edtui::{EditorEventHandler, EditorMode, EditorState, EditorView, Lines, SyntaxHighlighter};
+use edtui::{
+    EditorEventHandler, EditorMode, EditorState, EditorView, LineNumbers, Lines, SyntaxHighlighter,
+};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -91,7 +93,7 @@ impl EditSession {
     ///
     /// Layout (top to bottom):
     /// 1. A one-line header showing the file target and current editor mode.
-    /// 2. The edtui `EditorView` filling the remaining space.
+    /// 2. The edtui `EditorView` inside a bordered block (matching the preview frame).
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -99,7 +101,19 @@ impl EditSession {
             .split(area);
 
         self.render_header(frame, chunks[0]);
-        self.render_editor(frame, chunks[1]);
+
+        // Bordered block matching the preview pane frame
+        let block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_style(Style::default().fg(ACCENT))
+            .title(Span::styled(
+                format!(" Edit \u{2014} {} ", self.state.mode.name()),
+                Style::default().fg(ACCENT),
+            ));
+        let inner = block.inner(chunks[1]);
+        frame.render_widget(block, chunks[1]);
+
+        self.render_editor(frame, inner);
     }
 
     /// Render the header line.
@@ -134,7 +148,7 @@ impl EditSession {
                 Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
             ),
             Span::styled(" | ", Style::default().fg(DIM)),
-            Span::styled("Esc(normal): exit  :w: save", Style::default().fg(DIM)),
+            Span::styled("Esc: save & exit", Style::default().fg(DIM)),
         ]);
 
         frame.render_widget(Paragraph::new(line), area);
@@ -142,10 +156,12 @@ impl EditSession {
 
     /// Render the edtui editor view.
     fn render_editor(&mut self, frame: &mut Frame, area: Rect) {
-        let highlighter = SyntaxHighlighter::new("base16-ocean.dark", &self.syntax_ext).ok();
+        // edtui bundles its own theme set with hyphenated names
+        let highlighter = SyntaxHighlighter::new("base16-ocean-dark", &self.syntax_ext).ok();
 
         EditorView::new(&mut self.state)
             .wrap(true)
+            .line_numbers(LineNumbers::Absolute)
             .syntax_highlighter(highlighter)
             .render(area, frame.buffer_mut());
     }
