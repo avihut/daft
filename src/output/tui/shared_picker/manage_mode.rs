@@ -4,20 +4,24 @@
 //! shared files across worktrees: toggle between linked/materialized,
 //! fix broken symlinks, and resolve conflicts.
 
+use anyhow::Result;
 use crossterm::event::KeyCode;
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
+    Frame, Terminal,
 };
 use similar::{ChangeTag, TextDiff};
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 
 use crate::core::shared::{self, MaterializedState, SharedFileInfo, WorktreeStatus};
 
+use super::dialog::show_confirm_dialog;
+use super::remove_modal::{show_remove_modal, RemoveDecision};
 use super::state::{FileTabState, FocusPanel, PickerState, WorktreeEntry};
 use super::{EntryDecoration, LoopAction, PickerMode};
 
@@ -39,6 +43,8 @@ pub struct ManageMode {
     pub info_message: Option<String>,
     /// If `Some`, diff mode is active. The value is `(tab_idx, entry_idx)` of the pivot.
     pub diff_pivot: Option<(usize, usize)>,
+    /// When true, the event loop will call `show_modal` to display the remove confirmation.
+    pub pending_remove: bool,
 }
 
 impl ManageMode {
@@ -336,6 +342,127 @@ impl ManageMode {
         lines
     }
 
+    /// Execute the removal of a shared file.
+    ///
+    /// If `materialize_checks` is `Some`, the file is materialized (copied)
+    /// into checked worktrees and symlinks are removed from unchecked ones.
+    /// If `None` (delete everywhere), all copies and symlinks are removed.
+    ///
+    /// After removal:
+    /// - Shared storage file/dir is deleted
+    /// - `materialized.json` is updated
+    /// - `daft.yml` is updated
+    /// - The tab is removed from the tab bar
+    fn execute_remove(
+        &mut self,
+        state: &mut PickerState,
+        tab_idx: usize,
+        rel_path: &str,
+        materialize_checks: Option<&[bool]>,
+    ) -> Result<()> {
+        let shared_target = shared::shared_file_path(&self.git_common_dir, rel_path);
+        let entries: Vec<(PathBuf, String)> = state.tabs[tab_idx]
+            .entries
+            .iter()
+            .map(|e| (e.worktree_path.clone(), e.worktree_name.clone()))
+            .collect();
+
+        for (i, (wt_path, _wt_name)) in entries.iter().enumerate() {
+            let file_path = wt_path.join(rel_path);
+
+            match materialize_checks {
+                Some(checks) if checks[i] => {
+                    // Materialize: ensure a real copy exists in the worktree.
+                    if file_path.is_symlink() {
+                        // Remove symlink, copy from shared storage
+                        let _ = fs::remove_file(&file_path);
+                        if shared_target.is_dir() {
+                            let _ = shared::copy_dir_all(&shared_target, &file_path);
+                        } else {
+                            let _ = fs::copy(&shared_target, &file_path);
+                        }
+                    } else if !file_path.exists() {
+                        // Missing — copy from shared
+                        if let Some(parent) = file_path.parent() {
+                            if !parent.exists() {
+                                let _ = fs::create_dir_all(parent);
+                            }
+                        }
+                        if shared_target.is_dir() {
+                            let _ = shared::copy_dir_all(&shared_target, &file_path);
+                        } else {
+                            let _ = fs::copy(&shared_target, &file_path);
+                        }
+                    }
+                    // If it's already a real file (materialized/conflict), leave it.
+                }
+                Some(_) => {
+                    // Not checked — remove any symlink or file
+                    if file_path.is_symlink() {
+                        let _ = fs::remove_file(&file_path);
+                    }
+                    // If the file is materialized (real), leave it — user unchecked means
+                    // "don't materialize", but the file may already be a local copy.
+                    // For unchecked worktrees we only clean up symlinks.
+                }
+                None => {
+                    // Delete everywhere — remove file/symlink/dir
+                    if file_path.is_symlink() || file_path.is_file() {
+                        let _ = fs::remove_file(&file_path);
+                    } else if file_path.is_dir() {
+                        let _ = fs::remove_dir_all(&file_path);
+                    }
+                }
+            }
+        }
+
+        // Remove shared storage file/dir
+        if shared_target.is_dir() {
+            let _ = fs::remove_dir_all(&shared_target);
+        } else if shared_target.exists() {
+            let _ = fs::remove_file(&shared_target);
+        }
+
+        // Update materialized.json — remove all entries for this path
+        self.materialized.remove_all(rel_path);
+        let _ = self.materialized.save(&self.git_common_dir);
+
+        // Update daft.yml — remove this path from the shared list
+        let _ = shared::remove_from_daft_yml(&self.config_root, &[rel_path]);
+
+        // Remove the tab and its statuses
+        state.tabs.remove(tab_idx);
+        self.statuses.remove(tab_idx);
+
+        // Adjust active tab if needed
+        if state.tabs.is_empty() {
+            // No tabs left — will show empty state
+            state.active_tab = 0;
+        } else if tab_idx >= state.tabs.len() {
+            // Removed the last tab — move to the new last tab
+            state.active_tab = state.tabs.len() - 1;
+        }
+        // else: tab_idx is still valid (we removed a tab before the end)
+
+        // Reset diff pivot if it referenced the removed tab
+        if let Some((pivot_tab, _)) = self.diff_pivot {
+            if pivot_tab == tab_idx {
+                self.diff_pivot = None;
+            } else if pivot_tab > tab_idx {
+                // Shift pivot index down
+                self.diff_pivot = Some((pivot_tab - 1, self.diff_pivot.unwrap().1));
+            }
+        }
+
+        if state.tabs.is_empty() {
+            self.info_message = Some("No shared files remaining".to_string());
+        } else {
+            self.info_message = Some(format!("Removed {rel_path}"));
+        }
+
+        Ok(())
+    }
+
     /// Re-detect the status of all entries in a single tab.
     fn refresh_tab_status(&mut self, state: &PickerState, tab_idx: usize) {
         let tab = &state.tabs[tab_idx];
@@ -411,6 +538,10 @@ impl PickerMode for ManageMode {
                 self.link_entry(state);
                 let tab_idx = state.active_tab;
                 self.refresh_tab_status(state, tab_idx);
+            }
+            KeyCode::Char('r') | KeyCode::Delete | KeyCode::Backspace => {
+                self.info_message = None;
+                self.pending_remove = true;
             }
             _ => {}
         }
@@ -496,6 +627,8 @@ impl PickerMode for ManageMode {
             Span::styled(" materialize/link  ", desc_style),
             Span::styled("i", key_style),
             Span::styled(" fix symlink  ", desc_style),
+            Span::styled("r", key_style),
+            Span::styled(" remove  ", desc_style),
             Span::styled("Tab", key_style),
             Span::styled(" panel  ", desc_style),
             Span::styled("Esc", key_style),
@@ -546,5 +679,54 @@ impl PickerMode for ManageMode {
         } else {
             None
         }
+    }
+
+    fn needs_modal(&self) -> bool {
+        self.pending_remove
+    }
+
+    fn show_modal(
+        &mut self,
+        terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stderr>>,
+        state: &mut PickerState,
+    ) -> Result<()> {
+        self.pending_remove = false;
+
+        if state.tabs.is_empty() {
+            return Ok(());
+        }
+
+        let tab_idx = state.active_tab;
+        let rel_path = state.tabs[tab_idx].rel_path.clone();
+        let worktree_names: Vec<String> = state.tabs[tab_idx]
+            .entries
+            .iter()
+            .map(|e| e.worktree_name.clone())
+            .collect();
+
+        let decision = show_remove_modal(terminal, &rel_path, &worktree_names)?;
+
+        match decision {
+            RemoveDecision::Cancelled => {}
+            RemoveDecision::DeleteAll => {
+                // Secondary confirmation
+                let confirmed = show_confirm_dialog(
+                    terminal,
+                    "Confirm deletion",
+                    &[
+                        &format!("This will delete {rel_path} from all worktrees."),
+                        "Are you sure?",
+                    ],
+                )?;
+                if confirmed {
+                    self.execute_remove(state, tab_idx, &rel_path, None)?;
+                }
+            }
+            RemoveDecision::Materialize(checks) => {
+                self.execute_remove(state, tab_idx, &rel_path, Some(&checks))?;
+            }
+        }
+
+        Ok(())
     }
 }

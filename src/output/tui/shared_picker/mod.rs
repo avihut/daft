@@ -9,6 +9,7 @@ mod dialog;
 mod highlight;
 pub mod input;
 pub mod manage_mode;
+mod remove_modal;
 mod render;
 mod shell;
 pub mod state;
@@ -110,6 +111,20 @@ pub trait PickerMode {
     /// the normal syntax-highlighted file content.
     fn preview_override(&self, _state: &PickerState) -> Option<Vec<Line<'static>>> {
         None
+    }
+
+    /// Whether the mode needs to show a modal dialog on the next frame.
+    fn needs_modal(&self) -> bool {
+        false
+    }
+
+    /// Run a modal dialog. Called with terminal access when `needs_modal()` returns true.
+    fn show_modal(
+        &mut self,
+        _terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stderr>>,
+        _state: &mut PickerState,
+    ) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -299,6 +314,7 @@ fn run_manage_picker_inner(
         worktree_paths,
         info_message: None,
         diff_pivot: None,
+        pending_remove: false,
     };
     mode.set_statuses(&infos);
 
@@ -329,6 +345,11 @@ fn run_manage_event_loop(
         match input::handle_key(key, state, mode) {
             LoopAction::Continue => {}
             LoopAction::Exit => return Ok(()),
+        }
+
+        // Check if the mode needs to show a modal (e.g. remove confirmation).
+        if mode.needs_modal() {
+            mode.show_modal(terminal, state)?;
         }
     }
 }
