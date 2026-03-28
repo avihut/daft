@@ -150,11 +150,14 @@ fn show_partial_submit_confirm(
 }
 
 /// Generic yes/no confirmation dialog rendered as an overlay.
+/// Supports h/l and arrow keys to toggle focus, Enter to confirm selection.
 fn show_confirm_dialog(
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stderr>>,
     title: &str,
     body_lines: &[&str],
 ) -> Result<bool> {
+    let mut yes_focused = true;
+
     loop {
         terminal.draw(|frame| {
             let area = frame.area();
@@ -177,21 +180,32 @@ fn show_confirm_dialog(
                         .add_modifier(Modifier::BOLD),
                 ));
 
+            let yes_style = if yes_focused {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            let no_style = if yes_focused {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            };
+
             let mut text_lines: Vec<Line> = body_lines
                 .iter()
                 .map(|&line| Line::raw(line.to_string()))
                 .collect();
             text_lines.push(Line::raw(""));
             text_lines.push(Line::from(vec![
-                Span::styled(
-                    " [Y]es ",
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(" [Y]es ", yes_style),
                 Span::raw("  "),
-                Span::styled(" [N]o ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" [N]o ", no_style),
             ]));
 
             let paragraph = Paragraph::new(text_lines)
@@ -203,8 +217,12 @@ fn show_confirm_dialog(
 
         if let Some(key) = input::poll_key(Duration::from_millis(100)) {
             match key.code {
-                KeyCode::Char('y') | KeyCode::Enter => return Ok(true),
+                KeyCode::Char('y') => return Ok(true),
                 KeyCode::Char('n') | KeyCode::Esc => return Ok(false),
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::Right | KeyCode::Char('l') => {
+                    yes_focused = !yes_focused;
+                }
+                KeyCode::Enter | KeyCode::Char(' ') => return Ok(yes_focused),
                 _ => {}
             }
         }
