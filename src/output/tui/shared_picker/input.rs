@@ -39,15 +39,25 @@ pub fn handle_key(key: KeyEvent, state: &mut PickerState, mode: &mut dyn PickerM
     }
 }
 
-fn handle_tab_bar(key: KeyEvent, state: &mut PickerState, mode: &dyn PickerMode) -> LoopAction {
+fn extra(mode: &dyn PickerMode) -> usize {
+    mode.extra_tab_labels().len()
+}
+
+fn handle_tab_bar(key: KeyEvent, state: &mut PickerState, mode: &mut dyn PickerMode) -> LoopAction {
     match key.code {
-        KeyCode::Right | KeyCode::Char('l') => state.next_tab(),
-        KeyCode::Left | KeyCode::Char('h') => state.prev_tab(),
+        KeyCode::Right | KeyCode::Char('l') => state.next_tab(extra(mode)),
+        KeyCode::Left | KeyCode::Char('h') => state.prev_tab(extra(mode)),
         KeyCode::Down | KeyCode::Char('j') => {
-            let all = mode.all_entries_traversable(state.current_tab());
-            state.move_down(all);
+            if !state.is_virtual_tab() {
+                let all = mode.all_entries_traversable(state.current_tab());
+                state.move_down(all);
+            }
         }
         KeyCode::Char('q') | KeyCode::Esc => state.focus = FocusPanel::Footer,
+        // On virtual tab, delegate Enter/Space/a to mode
+        KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('a') if state.is_virtual_tab() => {
+            return mode.handle_list_key(KeyCode::Char('a'), state);
+        }
         _ => {}
     }
     LoopAction::Continue
@@ -67,8 +77,8 @@ fn handle_worktree_list(
             let all = mode.all_entries_traversable(state.current_tab());
             state.move_up(all);
         }
-        KeyCode::Right | KeyCode::Char('l') => state.next_tab(),
-        KeyCode::Left | KeyCode::Char('h') => state.prev_tab(),
+        KeyCode::Right | KeyCode::Char('l') => state.next_tab(extra(mode)),
+        KeyCode::Left | KeyCode::Char('h') => state.prev_tab(extra(mode)),
         KeyCode::Char('q') | KeyCode::Esc => state.focus = FocusPanel::Footer,
         KeyCode::Tab => state.toggle_panel(),
         _ => return mode.handle_list_key(key.code, state),
@@ -88,8 +98,8 @@ fn handle_preview(key: KeyEvent, state: &mut PickerState, mode: &dyn PickerMode)
         }
         KeyCode::PageDown => state.page_down(),
         KeyCode::PageUp => state.page_up(),
-        KeyCode::Right | KeyCode::Char('l') => state.next_tab(),
-        KeyCode::Left | KeyCode::Char('h') => state.prev_tab(),
+        KeyCode::Right | KeyCode::Char('l') => state.next_tab(extra(mode)),
+        KeyCode::Left | KeyCode::Char('h') => state.prev_tab(extra(mode)),
         KeyCode::Char('q') | KeyCode::Esc => state.focus = FocusPanel::Footer,
         KeyCode::Tab => state.toggle_panel(),
         _ => {}

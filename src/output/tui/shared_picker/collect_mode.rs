@@ -441,11 +441,11 @@ mod tests {
         let mut state = make_state(files);
 
         assert_eq!(state.active_tab, 0);
-        state.next_tab();
+        state.next_tab(0);
         assert_eq!(state.active_tab, 1);
-        state.next_tab();
+        state.next_tab(0);
         assert_eq!(state.active_tab, 0);
-        state.prev_tab();
+        state.prev_tab(0);
         assert_eq!(state.active_tab, 1);
     }
 
@@ -457,14 +457,14 @@ mod tests {
         ];
         let mut state = make_state(files);
 
-        state.next_tab();
+        state.next_tab(0);
         assert_eq!(state.focus, FocusPanel::TabBar);
         // Stub tab — no selection, so all_traversable = false
         state.move_down(false);
         assert_eq!(state.focus, FocusPanel::Footer);
         state.move_up(false);
         assert_eq!(state.focus, FocusPanel::TabBar);
-        state.prev_tab();
+        state.prev_tab(0);
         assert_eq!(state.focus, FocusPanel::WorktreeList);
     }
 

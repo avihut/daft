@@ -696,6 +696,10 @@ impl PickerMode for ManageMode {
         LoopAction::Continue
     }
 
+    fn extra_tab_labels(&self) -> Vec<String> {
+        vec!["+".to_string()]
+    }
+
     fn tab_decided(&self, _tab: &FileTabState) -> bool {
         false
     }

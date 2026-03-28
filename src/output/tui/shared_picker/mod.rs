@@ -108,6 +108,14 @@ pub trait PickerMode {
     /// Height of the footer in terminal rows.
     fn footer_height(&self) -> u16;
 
+    /// Extra tab labels appended after real file tabs (e.g., "+" for add).
+    /// These are virtual — no corresponding `FileTabState` exists.
+    /// When a virtual tab is active (`active_tab >= tabs.len()`), the mode
+    /// handles body rendering via `preview_override`.
+    fn extra_tab_labels(&self) -> Vec<String> {
+        vec![]
+    }
+
     /// Override preview content. If `Some`, these lines are shown instead of
     /// the normal syntax-highlighted file content.
     fn preview_override(&self, _state: &PickerState) -> Option<Vec<Line<'static>>> {

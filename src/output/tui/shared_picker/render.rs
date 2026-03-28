@@ -35,7 +35,7 @@ pub fn render(
 
     frame.render_widget(Clear, area);
 
-    let has_warning = mode.tab_warning(state.current_tab()).is_some();
+    let has_warning = !state.is_virtual_tab() && mode.tab_warning(state.current_tab()).is_some();
     let warning_height = if has_warning { 1 } else { 0 };
     let footer_height = mode.footer_height();
 
@@ -73,7 +73,7 @@ fn render_warning(tab: &FileTabState, mode: &dyn PickerMode, frame: &mut Frame, 
 fn render_tabs(state: &PickerState, mode: &dyn PickerMode, frame: &mut Frame, area: Rect) {
     let tab_bar_focused = state.focus == FocusPanel::TabBar;
 
-    let titles: Vec<Line> = state
+    let mut titles: Vec<Line> = state
         .tabs
         .iter()
         .map(|tab| {
@@ -87,6 +87,14 @@ fn render_tabs(state: &PickerState, mode: &dyn PickerMode, frame: &mut Frame, ar
             Line::from(Span::styled(format!(" {}{} ", tab.rel_path, icon), style))
         })
         .collect();
+
+    // Append extra virtual tabs from the mode
+    for label in mode.extra_tab_labels() {
+        titles.push(Line::from(Span::styled(
+            format!(" {label} "),
+            Style::default().fg(DIM),
+        )));
+    }
 
     let highlight_style = if tab_bar_focused {
         Style::default()
@@ -116,7 +124,21 @@ fn render_body(
     frame: &mut Frame,
     area: Rect,
 ) {
-    if state.current_tab().is_stub {
+    if state.is_virtual_tab() {
+        // Virtual tab (e.g., "+") — show a simple message
+        let text = vec![
+            Line::raw(""),
+            Line::styled(
+                "  Press Enter or 'a' to add a shared file.",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ];
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(DIM));
+        let paragraph = Paragraph::new(text).block(block);
+        frame.render_widget(paragraph, area);
+    } else if state.current_tab().is_stub {
         let tab = state.current_tab();
         render_stub_body(tab, frame, area);
     } else {

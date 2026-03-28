@@ -95,10 +95,13 @@ impl PickerState {
         &self.tabs[self.active_tab]
     }
 
-    pub fn next_tab(&mut self) {
-        if !self.tabs.is_empty() {
-            self.active_tab = (self.active_tab + 1) % self.tabs.len();
-            self.focus = if self.current_tab().is_stub {
+    /// Navigate to the next tab. `extra_tabs` is the number of virtual tabs
+    /// appended by the mode (e.g., the "+" tab in manage mode).
+    pub fn next_tab(&mut self, extra_tabs: usize) {
+        let total = self.tabs.len() + extra_tabs;
+        if total > 0 {
+            self.active_tab = (self.active_tab + 1) % total;
+            self.focus = if self.is_virtual_tab() || self.current_tab().is_stub {
                 FocusPanel::TabBar
             } else {
                 FocusPanel::WorktreeList
@@ -106,19 +109,26 @@ impl PickerState {
         }
     }
 
-    pub fn prev_tab(&mut self) {
-        if !self.tabs.is_empty() {
+    /// Navigate to the previous tab.
+    pub fn prev_tab(&mut self, extra_tabs: usize) {
+        let total = self.tabs.len() + extra_tabs;
+        if total > 0 {
             self.active_tab = if self.active_tab == 0 {
-                self.tabs.len() - 1
+                total - 1
             } else {
                 self.active_tab - 1
             };
-            self.focus = if self.current_tab().is_stub {
+            self.focus = if self.is_virtual_tab() || self.current_tab().is_stub {
                 FocusPanel::TabBar
             } else {
                 FocusPanel::WorktreeList
             };
         }
+    }
+
+    /// Whether the active tab is a virtual (extra) tab beyond the real tabs.
+    pub fn is_virtual_tab(&self) -> bool {
+        self.active_tab >= self.tabs.len()
     }
 
     /// Move down. `all_traversable` controls whether entries without files are
