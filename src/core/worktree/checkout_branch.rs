@@ -142,9 +142,17 @@ pub fn execute(
         checkout_base
     ));
 
-    if let Err(e) =
-        git.worktree_add_new_branch(&worktree_path, &params.new_branch_name, &checkout_base)
-    {
+    // When push is disabled, pass --no-track to prevent git's
+    // branch.autoSetupMerge from auto-configuring upstream tracking
+    // (the checkout base may be a remote-tracking ref like origin/master).
+    let no_track = !params.checkout_push;
+
+    if let Err(e) = git.worktree_add_new_branch(
+        &worktree_path,
+        &params.new_branch_name,
+        &checkout_base,
+        no_track,
+    ) {
         restore_stash_on_failure(stash_created, carry_source.as_deref(), git, sink);
         anyhow::bail!("Failed to create git worktree: {}", e);
     }
@@ -154,13 +162,6 @@ pub fn execute(
             "Worktree directory was not created at '{}'",
             worktree_path.display()
         );
-    }
-
-    // When push is disabled, remove any upstream tracking that git may have
-    // auto-configured via branch.autoSetupMerge (e.g. when the checkout base
-    // resolved to a remote-tracking ref like origin/master).
-    if !params.checkout_push {
-        let _ = git.unset_upstream(&params.new_branch_name);
     }
 
     // Auto-add worktree parent directory to .gitignore for in-repo layouts
