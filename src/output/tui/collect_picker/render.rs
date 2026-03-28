@@ -18,7 +18,7 @@ const GREEN: Color = Color::Green;
 const SELECTED_BG: Color = Color::Indexed(236);
 
 /// Render the entire collect picker UI.
-pub fn render(state: &CollectPickerState, highlighter: &Highlighter, frame: &mut Frame) {
+pub fn render(state: &mut CollectPickerState, highlighter: &Highlighter, frame: &mut Frame) {
     let area = frame.area();
 
     // Clear the screen
@@ -71,17 +71,16 @@ fn render_tabs(state: &CollectPickerState, frame: &mut Frame, area: Rect) {
 
 /// Render the main body.
 fn render_body(
-    state: &CollectPickerState,
+    state: &mut CollectPickerState,
     highlighter: &Highlighter,
     frame: &mut Frame,
     area: Rect,
 ) {
-    let tab = state.current_tab();
-
-    if tab.is_stub {
+    if state.current_tab().is_stub {
+        let tab = state.current_tab();
         render_stub_body(tab, frame, area);
     } else {
-        render_split_body(state, tab, highlighter, frame, area);
+        render_split_body(state, highlighter, frame, area);
     }
 }
 
@@ -118,8 +117,7 @@ fn render_stub_body(tab: &FileTabState, frame: &mut Frame, area: Rect) {
 
 /// Render the split body with worktree list (left) and preview (right).
 fn render_split_body(
-    state: &CollectPickerState,
-    tab: &FileTabState,
+    state: &mut CollectPickerState,
     highlighter: &Highlighter,
     frame: &mut Frame,
     area: Rect,
@@ -129,18 +127,14 @@ fn render_split_body(
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(area);
 
-    render_worktree_list(state, tab, frame, chunks[0]);
-    render_preview(state, tab, highlighter, frame, chunks[1]);
+    let tab = state.current_tab();
+    render_worktree_list(state.focus, tab, frame, chunks[0]);
+    render_preview(state, highlighter, frame, chunks[1]);
 }
 
 /// Render the worktree list panel (left).
-fn render_worktree_list(
-    state: &CollectPickerState,
-    tab: &FileTabState,
-    frame: &mut Frame,
-    area: Rect,
-) {
-    let is_focused = state.focus == FocusPanel::WorktreeList;
+fn render_worktree_list(focus: FocusPanel, tab: &FileTabState, frame: &mut Frame, area: Rect) {
+    let is_focused = focus == FocusPanel::WorktreeList;
     let border_color = if is_focused { ACCENT } else { DIM };
 
     let items: Vec<ListItem> = tab
@@ -209,12 +203,12 @@ fn render_worktree_list(
 
 /// Render the file preview panel (right).
 fn render_preview(
-    state: &CollectPickerState,
-    tab: &FileTabState,
+    state: &mut CollectPickerState,
     highlighter: &Highlighter,
     frame: &mut Frame,
     area: Rect,
 ) {
+    let tab = state.current_tab();
     let is_focused = state.focus == FocusPanel::Preview;
     let border_color = if is_focused { ACCENT } else { DIM };
 
@@ -244,9 +238,19 @@ fn render_preview(
         }
     };
 
+    let content_lines = highlighted_lines.len() as u16;
+    // Viewport height = area minus 2 for border
+    let viewport_height = area.height.saturating_sub(2);
+    let scroll = tab.preview_scroll;
+
+    // Update state with content dimensions for scroll clamping
+    let tab_mut = &mut state.tabs[state.active_tab];
+    tab_mut.preview_content_lines = content_lines;
+    tab_mut.preview_viewport_height = viewport_height;
+
     let paragraph = Paragraph::new(highlighted_lines)
         .block(block)
-        .scroll((tab.preview_scroll, 0));
+        .scroll((scroll, 0));
 
     frame.render_widget(paragraph, area);
 }

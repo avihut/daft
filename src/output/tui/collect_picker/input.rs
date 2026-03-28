@@ -27,16 +27,9 @@ pub fn poll_key(timeout: Duration) -> Option<KeyEvent> {
 
 /// Handle a key event and update state. Returns what the main loop should do.
 pub fn handle_key(key: KeyEvent, state: &mut CollectPickerState) -> InputResult {
-    // Global shortcuts
-    match key.code {
-        KeyCode::Esc => return InputResult::Cancel,
-        KeyCode::Char('q') if state.focus != FocusPanel::Preview => {
-            return InputResult::Cancel;
-        }
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            return InputResult::Cancel;
-        }
-        _ => {}
+    // Ctrl+C always cancels
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return InputResult::Cancel;
     }
 
     match state.focus {
@@ -54,6 +47,7 @@ fn handle_worktree_list(key: KeyEvent, state: &mut CollectPickerState) -> InputR
         KeyCode::Left | KeyCode::Char('h') => state.prev_tab(),
         KeyCode::Char(' ') | KeyCode::Enter => state.toggle_selection(),
         KeyCode::Char('m') => state.toggle_materialized(),
+        KeyCode::Char('q') | KeyCode::Esc => state.focus = FocusPanel::Footer,
         KeyCode::Tab => state.toggle_panel(),
         _ => {}
     }
@@ -66,6 +60,7 @@ fn handle_preview(key: KeyEvent, state: &mut CollectPickerState) -> InputResult 
         KeyCode::Up | KeyCode::Char('k') => state.move_up(),
         KeyCode::Right | KeyCode::Char('l') => state.next_tab(),
         KeyCode::Left | KeyCode::Char('h') => state.prev_tab(),
+        KeyCode::Char('q') | KeyCode::Esc => state.focus = FocusPanel::Footer,
         KeyCode::Tab => state.toggle_panel(),
         _ => {}
     }
@@ -79,6 +74,7 @@ fn handle_footer(key: KeyEvent, state: &mut CollectPickerState) -> InputResult {
             state.footer_next();
         }
         KeyCode::Tab => state.toggle_panel(),
+        KeyCode::Char('q') | KeyCode::Esc => return InputResult::Cancel,
         KeyCode::Enter | KeyCode::Char(' ') => {
             state.activate_footer();
             match state.footer_cursor {

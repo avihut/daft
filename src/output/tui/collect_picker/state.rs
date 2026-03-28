@@ -31,6 +31,11 @@ pub struct FileTabState {
     /// Only meaningful when `selected` is `Some`.
     pub materialized: Vec<bool>,
     pub preview_scroll: u16,
+    /// Number of content lines in the preview (set by the renderer).
+    /// Used to clamp scroll when content is shorter than the viewport.
+    pub preview_content_lines: u16,
+    /// Height of the preview viewport (set by the renderer).
+    pub preview_viewport_height: u16,
     pub is_stub: bool,
 }
 
@@ -74,6 +79,8 @@ impl CollectPickerState {
                     selected: None,
                     materialized: vec![false; len],
                     preview_scroll: 0,
+                    preview_content_lines: 0,
+                    preview_viewport_height: 0,
                     is_stub,
                 }
             })
@@ -134,8 +141,14 @@ impl CollectPickerState {
                 }
             }
             FocusPanel::Preview => {
-                self.tabs[self.active_tab].preview_scroll =
-                    self.tabs[self.active_tab].preview_scroll.saturating_add(1);
+                let tab = &mut self.tabs[self.active_tab];
+                // Only scroll if content is taller than viewport
+                let max_scroll = tab
+                    .preview_content_lines
+                    .saturating_sub(tab.preview_viewport_height);
+                if tab.preview_scroll < max_scroll {
+                    tab.preview_scroll = tab.preview_scroll.saturating_add(1);
+                }
             }
             FocusPanel::Footer => {}
         }
@@ -450,18 +463,42 @@ mod tests {
     }
 
     #[test]
-    fn preview_scroll_uses_saturating_arithmetic() {
+    fn preview_scroll_clamps_to_content() {
         let files = vec![make_uncollected(".env", &[("main", "/repo/main")])];
         let mut state = CollectPickerState::new(files);
         state.focus = FocusPanel::Preview;
 
-        // Scroll down
+        // Simulate content taller than viewport
+        state.tabs[0].preview_content_lines = 30;
+        state.tabs[0].preview_viewport_height = 10;
+
+        // Can scroll down
         state.move_down();
         assert_eq!(state.current_tab().preview_scroll, 1);
 
-        // Scroll up past zero
+        // Scroll up past zero saturates
         state.move_up();
         state.move_up();
+        assert_eq!(state.current_tab().preview_scroll, 0);
+
+        // Cannot scroll past max (content - viewport = 20)
+        for _ in 0..25 {
+            state.move_down();
+        }
+        assert_eq!(state.current_tab().preview_scroll, 20);
+    }
+
+    #[test]
+    fn preview_scroll_blocked_when_content_fits() {
+        let files = vec![make_uncollected(".env", &[("main", "/repo/main")])];
+        let mut state = CollectPickerState::new(files);
+        state.focus = FocusPanel::Preview;
+
+        // Content shorter than viewport
+        state.tabs[0].preview_content_lines = 5;
+        state.tabs[0].preview_viewport_height = 20;
+
+        state.move_down();
         assert_eq!(state.current_tab().preview_scroll, 0);
     }
 

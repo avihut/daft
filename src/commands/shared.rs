@@ -574,7 +574,7 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
                             &config_root,
                             &mut materialized,
                         )?;
-                        output.success(&format!("Collected: {}", decision.rel_path));
+                        print_collect_summary(decision, &worktree_paths, output);
                     }
                 }
                 PickerOutcome::Cancelled => {
@@ -635,4 +635,33 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
     materialized.save(&git_common_dir)?;
 
     Ok(())
+}
+
+/// Print a detailed summary of a collection decision.
+fn print_collect_summary(
+    decision: &shared::CollectDecision,
+    worktree_paths: &[std::path::PathBuf],
+    output: &mut dyn Output,
+) {
+    let source_name = decision
+        .source_worktree
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    output.success(&format!(
+        "Collected: {} (from {})",
+        decision.rel_path, source_name
+    ));
+
+    for wt in worktree_paths {
+        if wt == &decision.source_worktree {
+            continue;
+        }
+        let wt_name = wt.file_name().unwrap_or_default().to_string_lossy();
+        if decision.materialize_in.contains(wt) {
+            output.detail(&format!("  {wt_name}"), "materialized");
+        } else {
+            output.detail(&format!("  {wt_name}"), "linked");
+        }
+    }
 }
