@@ -441,13 +441,15 @@ fn load_yaml_config_with_fallback(
 
 // ── Uncollected file detection ───────────────────────────────────────────
 
-/// A worktree that has a real (non-symlink) copy of a declared shared file.
+/// A worktree entry for an uncollected shared file.
 #[derive(Debug, Clone)]
 pub struct WorktreeCopy {
     /// Absolute path of the worktree directory.
     pub worktree_path: PathBuf,
     /// Worktree display name (directory basename).
     pub worktree_name: String,
+    /// Whether this worktree has a real (non-symlink) copy of the file.
+    pub has_file: bool,
 }
 
 /// A declared shared file that has not yet been collected into shared storage.
@@ -455,16 +457,22 @@ pub struct WorktreeCopy {
 pub struct UncollectedFile {
     /// Path relative to the worktree root (e.g., ".env").
     pub rel_path: String,
-    /// Worktrees that have a real copy of this file.
-    /// Empty if no worktree has it (will be stubbed).
-    pub copies: Vec<WorktreeCopy>,
+    /// All worktrees, with `has_file` indicating which have a real copy.
+    pub worktrees: Vec<WorktreeCopy>,
+}
+
+impl UncollectedFile {
+    /// Whether any worktree has a real copy of this file.
+    pub fn has_any_copy(&self) -> bool {
+        self.worktrees.iter().any(|w| w.has_file)
+    }
 }
 
 /// Scan worktrees for declared shared paths that are not yet in shared storage.
 ///
 /// Returns one `UncollectedFile` per declared path that has no file in
-/// `.git/.daft/shared/`. Each entry lists the worktrees that have a real
-/// (non-symlink) copy of that file.
+/// `.git/.daft/shared/`. Each entry includes all worktrees, marking which
+/// have a real (non-symlink) copy of the file.
 pub fn detect_uncollected(
     declared_paths: &[String],
     worktree_paths: &[PathBuf],
@@ -480,30 +488,94 @@ pub fn detect_uncollected(
             continue;
         }
 
-        let mut copies = Vec::new();
+        let mut worktrees = Vec::new();
         for wt in worktree_paths {
             let file_path = wt.join(rel_path);
-            // Only count real files/dirs, not symlinks
-            if file_path.exists() && !file_path.is_symlink() {
-                let name = wt
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                copies.push(WorktreeCopy {
-                    worktree_path: wt.clone(),
-                    worktree_name: name,
-                });
-            }
+            let has_file = file_path.exists() && !file_path.is_symlink();
+            let name = wt
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            worktrees.push(WorktreeCopy {
+                worktree_path: wt.clone(),
+                worktree_name: name,
+                has_file,
+            });
         }
 
         uncollected.push(UncollectedFile {
             rel_path: rel_path.clone(),
-            copies,
+            worktrees,
         });
     }
 
     uncollected
+}
+
+// ── Deep comparison ──────────────────────────────────────────────────────
+
+/// Result of a timed deep comparison.
+#[derive(Debug, PartialEq)]
+pub enum CompareResult {
+    Identical,
+    Different,
+    TimedOut,
+}
+
+/// Deep-compare two paths (files or directories) with a timeout.
+///
+/// Returns `Identical` if the content is byte-for-byte equal, `Different`
+/// if not, or `TimedOut` if the comparison exceeds the given duration.
+pub fn deep_compare(a: &Path, b: &Path, timeout: std::time::Duration) -> CompareResult {
+    let deadline = std::time::Instant::now() + timeout;
+    match deep_compare_inner(a, b, deadline) {
+        Some(true) => CompareResult::Identical,
+        Some(false) => CompareResult::Different,
+        None => CompareResult::TimedOut,
+    }
+}
+
+/// Inner recursive comparison. Returns `None` on timeout.
+fn deep_compare_inner(a: &Path, b: &Path, deadline: std::time::Instant) -> Option<bool> {
+    if std::time::Instant::now() > deadline {
+        return None;
+    }
+
+    let a_is_dir = a.is_dir();
+    let b_is_dir = b.is_dir();
+
+    if a_is_dir != b_is_dir {
+        return Some(false);
+    }
+
+    if a_is_dir {
+        // Compare directory trees
+        let mut a_entries: Vec<_> = fs::read_dir(a).ok()?.filter_map(|e| e.ok()).collect();
+        let mut b_entries: Vec<_> = fs::read_dir(b).ok()?.filter_map(|e| e.ok()).collect();
+        a_entries.sort_by_key(|e| e.file_name());
+        b_entries.sort_by_key(|e| e.file_name());
+
+        if a_entries.len() != b_entries.len() {
+            return Some(false);
+        }
+
+        for (ae, be) in a_entries.iter().zip(b_entries.iter()) {
+            if ae.file_name() != be.file_name() {
+                return Some(false);
+            }
+            let result = deep_compare_inner(&ae.path(), &be.path(), deadline)?;
+            if !result {
+                return Some(false);
+            }
+        }
+        Some(true)
+    } else {
+        // Compare file contents
+        let a_content = fs::read(a).ok()?;
+        let b_content = fs::read(b).ok()?;
+        Some(a_content == b_content)
+    }
 }
 
 // ── Collection execution ─────────────────────────────────────────────────
@@ -568,13 +640,29 @@ pub fn execute_collect(
 
         let file_path = wt.join(rel_path);
         let should_materialize = decision.materialize_in.contains(wt);
+        let has_file = file_path.exists() && !file_path.is_symlink();
 
-        if should_materialize && file_path.exists() && !file_path.is_symlink() {
-            // User wants this worktree to keep its local copy
-            materialized.add(rel_path, wt);
+        if should_materialize {
+            if has_file {
+                // Keep existing local copy
+                materialized.add(rel_path, wt);
+            } else {
+                // Copy shared file into this worktree as a materialized copy
+                if let Some(parent) = file_path.parent() {
+                    if parent != wt.as_path() && !parent.exists() {
+                        fs::create_dir_all(parent)?;
+                    }
+                }
+                if shared_target.is_dir() {
+                    copy_dir_all(&shared_target, &file_path)?;
+                } else {
+                    fs::copy(&shared_target, &file_path)?;
+                }
+                materialized.add(rel_path, wt);
+            }
         } else {
-            // Remove existing copy if present (user chose linking over materializing)
-            if file_path.exists() && !file_path.is_symlink() {
+            // Remove existing copy if present (user chose linking)
+            if has_file {
                 if file_path.is_dir() {
                     fs::remove_dir_all(&file_path)?;
                 } else {
@@ -974,19 +1062,22 @@ mod tests {
     }
 
     #[test]
-    fn detect_uncollected_finds_copies_across_worktrees() {
-        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main", "develop"]);
+    fn detect_uncollected_includes_all_worktrees() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main", "develop", "feature"]);
         fs::write(wt_paths[0].join(".env"), "FROM_MAIN=1").unwrap();
         fs::write(wt_paths[1].join(".env"), "FROM_DEVELOP=1").unwrap();
+        // feature has no .env
 
         let declared = vec![".env".to_string()];
         let result = detect_uncollected(&declared, &wt_paths, &git_dir);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].rel_path, ".env");
-        assert_eq!(result[0].copies.len(), 2);
-        assert_eq!(result[0].copies[0].worktree_path, wt_paths[0]);
-        assert_eq!(result[0].copies[1].worktree_path, wt_paths[1]);
+        assert_eq!(result[0].worktrees.len(), 3);
+        assert!(result[0].worktrees[0].has_file);
+        assert!(result[0].worktrees[1].has_file);
+        assert!(!result[0].worktrees[2].has_file);
+        assert!(result[0].has_any_copy());
     }
 
     #[test]
@@ -1009,7 +1100,50 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].rel_path, ".secrets");
-        assert!(result[0].copies.is_empty());
+        assert!(!result[0].has_any_copy());
+    }
+
+    #[test]
+    fn deep_compare_identical_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let a = tmp.path().join("a.txt");
+        let b = tmp.path().join("b.txt");
+        fs::write(&a, "hello").unwrap();
+        fs::write(&b, "hello").unwrap();
+        assert_eq!(
+            deep_compare(&a, &b, std::time::Duration::from_secs(1)),
+            CompareResult::Identical
+        );
+    }
+
+    #[test]
+    fn deep_compare_different_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let a = tmp.path().join("a.txt");
+        let b = tmp.path().join("b.txt");
+        fs::write(&a, "hello").unwrap();
+        fs::write(&b, "world").unwrap();
+        assert_eq!(
+            deep_compare(&a, &b, std::time::Duration::from_secs(1)),
+            CompareResult::Different
+        );
+    }
+
+    #[test]
+    fn deep_compare_identical_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        fs::create_dir_all(a.join("sub")).unwrap();
+        fs::create_dir_all(b.join("sub")).unwrap();
+        fs::write(a.join("f1"), "x").unwrap();
+        fs::write(b.join("f1"), "x").unwrap();
+        fs::write(a.join("sub/f2"), "y").unwrap();
+        fs::write(b.join("sub/f2"), "y").unwrap();
+        assert_eq!(
+            deep_compare(&a, &b, std::time::Duration::from_secs(1)),
+            CompareResult::Identical
+        );
     }
 
     // ── execute_collect tests ────────────────────────────────────────────

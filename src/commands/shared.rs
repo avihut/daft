@@ -554,7 +554,7 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
     let uncollected = shared::detect_uncollected(&shared_paths, &worktree_paths, &git_common_dir);
 
     // Only launch TUI if there are decidable files (not just stubs)
-    let has_decidable = uncollected.iter().any(|u| !u.copies.is_empty());
+    let has_decidable = uncollected.iter().any(|u| u.has_any_copy());
 
     if !uncollected.is_empty() {
         let is_interactive = has_decidable
@@ -586,7 +586,7 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
             // Non-interactive (or all stubs): report what needs collection
             let collectible: Vec<&str> = uncollected
                 .iter()
-                .filter(|u| !u.copies.is_empty())
+                .filter(|u| u.has_any_copy())
                 .map(|u| u.rel_path.as_str())
                 .collect();
             if !collectible.is_empty() {

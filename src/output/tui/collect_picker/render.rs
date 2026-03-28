@@ -21,22 +21,39 @@ const SELECTED_BG: Color = Color::Indexed(236);
 pub fn render(state: &mut CollectPickerState, highlighter: &Highlighter, frame: &mut Frame) {
     let area = frame.area();
 
-    // Clear the screen
     frame.render_widget(Clear, area);
 
-    // Layout: tabs (2 rows) | body (fill) | footer (5 rows: buttons + spacer + help)
+    let has_warning = state.current_tab().compare_warning.is_some();
+    let warning_height = if has_warning { 1 } else { 0 };
+
+    // Layout: tabs (2) | warning (0-1) | body (fill) | footer (5)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // Tabs
-            Constraint::Min(5),    // Body
-            Constraint::Length(5), // Footer
+            Constraint::Length(2),
+            Constraint::Length(warning_height),
+            Constraint::Min(5),
+            Constraint::Length(5),
         ])
         .split(area);
 
     render_tabs(state, frame, chunks[0]);
-    render_body(state, highlighter, frame, chunks[1]);
-    render_footer(state, frame, chunks[2]);
+    if has_warning {
+        render_warning(state.current_tab(), frame, chunks[1]);
+    }
+    render_body(state, highlighter, frame, chunks[2]);
+    render_footer(state, frame, chunks[3]);
+}
+
+/// Render a compare-timeout warning between tabs and body.
+fn render_warning(tab: &FileTabState, frame: &mut Frame, area: Rect) {
+    if let Some(ref msg) = tab.compare_warning {
+        let line = Line::from(Span::styled(
+            format!(" {msg}"),
+            Style::default().fg(Color::Yellow),
+        ));
+        frame.render_widget(Paragraph::new(line), area);
+    }
 }
 
 /// Render the tab bar at the top.
@@ -145,15 +162,16 @@ fn render_split_body(
 fn render_worktree_list(focus: FocusPanel, tab: &FileTabState, frame: &mut Frame, area: Rect) {
     let is_focused = focus == FocusPanel::WorktreeList;
     let border_color = if is_focused { ACCENT } else { DIM };
+    let has_selection = tab.selected.is_some();
 
     let items: Vec<ListItem> = tab
-        .copies
+        .entries
         .iter()
         .enumerate()
-        .map(|(idx, copy)| {
+        .map(|(idx, entry)| {
             let is_cursor = idx == tab.list_cursor && is_focused;
             let is_selected = tab.selected == Some(idx);
-            let is_materialized = tab.selected.is_some() && tab.materialized[idx];
+            let is_materialized = has_selection && tab.materialized[idx];
 
             let pointer = if is_cursor { "\u{25b8} " } else { "  " };
             let marker = if is_selected {
@@ -164,8 +182,12 @@ fn render_worktree_list(focus: FocusPanel, tab: &FileTabState, frame: &mut Frame
                 "  "
             };
 
+            // Worktrees without the file are muted when no source is selected yet
             let style = if is_selected {
                 Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
+            } else if !entry.has_file && !has_selection {
+                // Muted — can't be selected as source
+                Style::default().fg(Color::Indexed(240))
             } else if is_cursor {
                 Style::default().fg(Color::White)
             } else {
@@ -181,17 +203,22 @@ fn render_worktree_list(focus: FocusPanel, tab: &FileTabState, frame: &mut Frame
             let mut spans = vec![
                 Span::styled(pointer, bg_style),
                 Span::styled(marker, bg_style),
-                Span::styled(copy.worktree_name.clone(), bg_style),
+                Span::styled(entry.worktree_name.clone(), bg_style),
             ];
 
-            // Show materialized/linked tag after the name
-            if tab.selected.is_some() && !is_selected {
+            // Show status tag after the name
+            if has_selection && !is_selected {
                 let tag = if is_materialized {
                     Span::styled(" materialized", Style::default().fg(Color::Yellow))
                 } else {
                     Span::styled(" linked", Style::default().fg(Color::Cyan))
                 };
                 spans.push(tag);
+            } else if !entry.has_file && !has_selection {
+                spans.push(Span::styled(
+                    " (no file)",
+                    Style::default().fg(Color::Indexed(240)),
+                ));
             }
 
             ListItem::new(Line::from(spans))
@@ -226,11 +253,14 @@ fn render_preview(
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(" Preview ", Style::default().fg(border_color)));
 
-    let highlighted_lines = if tab.copies.is_empty() {
-        vec![Line::styled("(empty file)", Style::default().fg(DIM))]
+    let entry = &tab.entries[tab.list_cursor];
+    let highlighted_lines = if !entry.has_file {
+        vec![Line::styled(
+            "(no file in this worktree)",
+            Style::default().fg(DIM),
+        )]
     } else {
-        let wt = &tab.copies[tab.list_cursor];
-        let file_path = wt.worktree_path.join(&tab.rel_path);
+        let file_path = entry.worktree_path.join(&tab.rel_path);
         if file_path.is_dir() {
             dir_listing_lines(&file_path)
         } else {
