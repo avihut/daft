@@ -1,4 +1,7 @@
-//! Ratatui rendering for the collect picker TUI.
+//! Ratatui rendering for the shared picker TUI.
+//!
+//! Uses `PickerMode` for tab decorations, entry markers/tags, warnings,
+//! and footer rendering.
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -12,7 +15,8 @@ use ratatui::{
 };
 
 use super::highlight::Highlighter;
-use super::state::{CollectPickerState, FileTabState, FocusPanel, FooterButton};
+use super::state::{FileTabState, FocusPanel, PickerState};
+use super::PickerMode;
 
 /// Accent color matching the project's ACCENT_COLOR_INDEX (orange 208).
 const ACCENT: Color = Color::Indexed(208);
@@ -20,37 +24,43 @@ const DIM: Color = Color::DarkGray;
 const GREEN: Color = Color::Green;
 const SELECTED_BG: Color = Color::Indexed(236);
 
-/// Render the entire collect picker UI.
-pub fn render(state: &mut CollectPickerState, highlighter: &Highlighter, frame: &mut Frame) {
+/// Render the entire picker UI.
+pub fn render(
+    state: &mut PickerState,
+    mode: &dyn PickerMode,
+    highlighter: &Highlighter,
+    frame: &mut Frame,
+) {
     let area = frame.area();
 
     frame.render_widget(Clear, area);
 
-    let has_warning = state.current_tab().compare_warning.is_some();
+    let has_warning = mode.tab_warning(state.current_tab()).is_some();
     let warning_height = if has_warning { 1 } else { 0 };
+    let footer_height = mode.footer_height();
 
-    // Layout: tabs (2) | warning (0-1) | body (fill) | footer (5)
+    // Layout: tabs (2) | warning (0-1) | body (fill) | footer
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2),
             Constraint::Length(warning_height),
             Constraint::Min(5),
-            Constraint::Length(5),
+            Constraint::Length(footer_height),
         ])
         .split(area);
 
-    render_tabs(state, frame, chunks[0]);
+    render_tabs(state, mode, frame, chunks[0]);
     if has_warning {
-        render_warning(state.current_tab(), frame, chunks[1]);
+        render_warning(state.current_tab(), mode, frame, chunks[1]);
     }
-    render_body(state, highlighter, frame, chunks[2]);
-    render_footer(state, frame, chunks[3]);
+    render_body(state, mode, highlighter, frame, chunks[2]);
+    mode.render_footer(state, frame, chunks[3]);
 }
 
-/// Render a compare-timeout warning between tabs and body.
-fn render_warning(tab: &FileTabState, frame: &mut Frame, area: Rect) {
-    if let Some(ref msg) = tab.compare_warning {
+/// Render a warning between tabs and body.
+fn render_warning(tab: &FileTabState, mode: &dyn PickerMode, frame: &mut Frame, area: Rect) {
+    if let Some(msg) = mode.tab_warning(tab) {
         let line = Line::from(Span::styled(
             format!(" {msg}"),
             Style::default().fg(Color::Yellow),
@@ -60,14 +70,14 @@ fn render_warning(tab: &FileTabState, frame: &mut Frame, area: Rect) {
 }
 
 /// Render the tab bar at the top.
-fn render_tabs(state: &CollectPickerState, frame: &mut Frame, area: Rect) {
+fn render_tabs(state: &PickerState, mode: &dyn PickerMode, frame: &mut Frame, area: Rect) {
     let tab_bar_focused = state.focus == FocusPanel::TabBar;
 
     let titles: Vec<Line> = state
         .tabs
         .iter()
         .map(|tab| {
-            let has_decision = tab.selected.is_some() || tab.is_stub;
+            let has_decision = mode.tab_decided(tab);
             let icon = if has_decision { " \u{2713}" } else { "" };
             let style = if has_decision {
                 Style::default().fg(GREEN)
@@ -100,7 +110,8 @@ fn render_tabs(state: &CollectPickerState, frame: &mut Frame, area: Rect) {
 
 /// Render the main body.
 fn render_body(
-    state: &mut CollectPickerState,
+    state: &mut PickerState,
+    mode: &dyn PickerMode,
     highlighter: &Highlighter,
     frame: &mut Frame,
     area: Rect,
@@ -109,7 +120,7 @@ fn render_body(
         let tab = state.current_tab();
         render_stub_body(tab, frame, area);
     } else {
-        render_split_body(state, highlighter, frame, area);
+        render_split_body(state, mode, highlighter, frame, area);
     }
 }
 
@@ -146,7 +157,8 @@ fn render_stub_body(tab: &FileTabState, frame: &mut Frame, area: Rect) {
 
 /// Render the split body with worktree list (left) and preview (right).
 fn render_split_body(
-    state: &mut CollectPickerState,
+    state: &mut PickerState,
+    mode: &dyn PickerMode,
     highlighter: &Highlighter,
     frame: &mut Frame,
     area: Rect,
@@ -157,15 +169,20 @@ fn render_split_body(
         .split(area);
 
     let tab = state.current_tab();
-    render_worktree_list(state.focus, tab, frame, chunks[0]);
+    render_worktree_list(state.focus, tab, mode, frame, chunks[0]);
     render_preview(state, highlighter, frame, chunks[1]);
 }
 
 /// Render the worktree list panel (left).
-fn render_worktree_list(focus: FocusPanel, tab: &FileTabState, frame: &mut Frame, area: Rect) {
+fn render_worktree_list(
+    focus: FocusPanel,
+    tab: &FileTabState,
+    mode: &dyn PickerMode,
+    frame: &mut Frame,
+    area: Rect,
+) {
     let is_focused = focus == FocusPanel::WorktreeList;
     let border_color = if is_focused { ACCENT } else { DIM };
-    let has_selection = tab.selected.is_some();
 
     let items: Vec<ListItem> = tab
         .entries
@@ -173,17 +190,10 @@ fn render_worktree_list(focus: FocusPanel, tab: &FileTabState, frame: &mut Frame
         .enumerate()
         .map(|(idx, entry)| {
             let is_cursor = idx == tab.list_cursor && is_focused;
+            let decoration = mode.entry_decoration(tab, idx);
             let is_selected = tab.selected == Some(idx);
-            let is_materialized = has_selection && tab.materialized[idx];
 
             let pointer = if is_cursor { "\u{25b8} " } else { "  " };
-            let marker = if is_selected {
-                "\u{2713} "
-            } else if is_materialized {
-                "M "
-            } else {
-                "  "
-            };
 
             // Worktrees with the file get normal color, those without are muted
             let style = if is_selected {
@@ -204,18 +214,16 @@ fn render_worktree_list(focus: FocusPanel, tab: &FileTabState, frame: &mut Frame
 
             let mut spans = vec![
                 Span::styled(pointer, bg_style),
-                Span::styled(marker, bg_style),
+                Span::styled(decoration.marker, bg_style),
                 Span::styled(entry.worktree_name.clone(), bg_style),
             ];
 
-            // Show materialized/linked tag when a source is selected
-            if has_selection && !is_selected {
-                let tag = if is_materialized {
-                    Span::styled(" materialized", Style::default().fg(Color::Yellow))
-                } else {
-                    Span::styled(" linked", Style::default().fg(Color::Cyan))
-                };
-                spans.push(tag);
+            // Show tag from mode (e.g. "materialized" / "linked")
+            if let Some((tag_text, tag_color)) = decoration.tag {
+                spans.push(Span::styled(
+                    format!(" {tag_text}"),
+                    Style::default().fg(tag_color),
+                ));
             }
 
             ListItem::new(Line::from(spans))
@@ -236,7 +244,7 @@ fn render_worktree_list(focus: FocusPanel, tab: &FileTabState, frame: &mut Frame
 
 /// Render the file preview panel (right).
 fn render_preview(
-    state: &mut CollectPickerState,
+    state: &mut PickerState,
     highlighter: &Highlighter,
     frame: &mut Frame,
     area: Rect,
@@ -355,82 +363,4 @@ fn dir_listing_lines(dir: &std::path::Path) -> Vec<Line<'static>> {
     }
 
     lines
-}
-
-/// Render the footer with Submit and Cancel buttons.
-fn render_footer(state: &CollectPickerState, frame: &mut Frame, area: Rect) {
-    let is_focused = state.focus == FocusPanel::Footer;
-    let all_decided = state.all_decided();
-
-    let submit_check = if all_decided { " \u{2713}" } else { "" };
-
-    let submit_style = if is_focused && state.footer_cursor == FooterButton::Submit {
-        Style::default()
-            .fg(Color::Black)
-            .bg(ACCENT)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(ACCENT)
-    };
-
-    let cancel_style = if is_focused && state.footer_cursor == FooterButton::Cancel {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Red)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(DIM)
-    };
-
-    let buttons = Line::from(vec![
-        Span::raw("  "),
-        Span::styled(format!(" Submit{submit_check} "), submit_style),
-        Span::raw("  "),
-        Span::styled(" Cancel ", cancel_style),
-        Span::raw("  "),
-        Span::styled(
-            format!(
-                "{}/{} files ready",
-                state.decided_count(),
-                state.decidable_count()
-            ),
-            Style::default().fg(DIM),
-        ),
-    ]);
-
-    let key_style = Style::default().fg(Color::Cyan);
-    let desc_style = Style::default().fg(DIM);
-
-    // Context-sensitive description for hl/arrows
-    let hl_desc = match state.focus {
-        FocusPanel::TabBar => " tabs  ",
-        FocusPanel::WorktreeList => " tabs  ",
-        FocusPanel::Preview => " tabs  ",
-        FocusPanel::Footer => " buttons  ",
-    };
-
-    let help = Line::from(vec![
-        Span::raw("  "),
-        Span::styled("jk/\u{2191}\u{2193}", key_style),
-        Span::styled(" navigate  ", desc_style),
-        Span::styled("hl/\u{2190}\u{2192}", key_style),
-        Span::styled(hl_desc, desc_style),
-        Span::styled("PgUp/PgDn", key_style),
-        Span::styled(" scroll  ", desc_style),
-        Span::styled("Space", key_style),
-        Span::styled(" select  ", desc_style),
-        Span::styled("m", key_style),
-        Span::styled(" materialize  ", desc_style),
-        Span::styled("Tab", key_style),
-        Span::styled(" panel  ", desc_style),
-        Span::styled("Esc", key_style),
-        Span::styled(" footer/cancel", desc_style),
-    ]);
-
-    let block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(Style::default().fg(DIM));
-
-    let paragraph = Paragraph::new(vec![buttons, Line::raw(""), help]).block(block);
-    frame.render_widget(paragraph, area);
 }

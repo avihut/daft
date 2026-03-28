@@ -1,18 +1,26 @@
-//! State management for the collect picker TUI.
+//! CollectMode — implements PickerMode for the collect (sync) workflow.
 
-use crate::core::shared::{self, CollectDecision, CompareResult, UncollectedFile};
-use std::path::PathBuf;
+use crossterm::event::KeyCode;
+use ratatui::{
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::Paragraph,
+    Frame,
+};
 use std::time::Duration;
 
-/// Which panel has keyboard focus.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FocusPanel {
-    /// Tab bar at the top — used on stub tabs where there is no worktree list.
-    TabBar,
-    WorktreeList,
-    Preview,
-    Footer,
-}
+use crate::core::shared::{self, CollectDecision, CompareResult, UncollectedFile};
+
+use super::state::{FileTabState, FocusPanel, PickerState, WorktreeEntry};
+use super::{EntryDecoration, LoopAction, PickerMode};
+
+/// Timeout for deep file comparison.
+const COMPARE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Accent color matching the project's ACCENT_COLOR_INDEX (orange 208).
+const ACCENT: Color = Color::Indexed(208);
+const DIM: Color = Color::DarkGray;
 
 /// A footer button.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -21,60 +29,33 @@ pub enum FooterButton {
     Cancel,
 }
 
-/// State for a single file tab.
-#[derive(Debug, Clone)]
-pub struct FileTabState {
-    pub rel_path: String,
-    /// All worktrees — `has_file` indicates which have a real copy.
-    pub entries: Vec<WorktreeEntry>,
-    pub list_cursor: usize,
-    /// Index of the worktree selected as the collection source.
-    pub selected: Option<usize>,
-    /// Per-worktree materialization preference (parallel to `entries`).
-    /// `true` = materialized, `false` = linked.
-    /// Only meaningful when `selected` is `Some`.
-    pub materialized: Vec<bool>,
-    pub preview_scroll: u16,
-    /// Number of content lines in the preview (set by the renderer).
-    pub preview_content_lines: u16,
-    /// Height of the preview viewport (set by the renderer).
-    pub preview_viewport_height: u16,
-    /// Whether no worktree has a copy of this file.
-    pub is_stub: bool,
-    /// Warning message from timed-out deep comparison, if any.
-    pub compare_warning: Option<String>,
-}
-
-/// A single entry in the worktree list.
-#[derive(Debug, Clone)]
-pub struct WorktreeEntry {
-    pub worktree_name: String,
-    pub worktree_path: PathBuf,
-    /// Whether this worktree has a real copy of the file.
-    pub has_file: bool,
-}
-
-/// Top-level state for the collect picker.
-#[derive(Debug)]
-pub struct CollectPickerState {
-    pub tabs: Vec<FileTabState>,
-    pub active_tab: usize,
-    pub focus: FocusPanel,
+/// Collect-specific mode state.
+pub struct CollectMode {
     pub footer_cursor: FooterButton,
     pub submitted: bool,
     pub cancelled: bool,
 }
 
-/// Timeout for deep file comparison.
-const COMPARE_TIMEOUT: Duration = Duration::from_secs(1);
+impl Default for CollectMode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-impl CollectPickerState {
-    pub fn new(uncollected: Vec<UncollectedFile>) -> Self {
-        let tabs: Vec<FileTabState> = uncollected
+impl CollectMode {
+    pub fn new() -> Self {
+        Self {
+            footer_cursor: FooterButton::Submit,
+            submitted: false,
+            cancelled: false,
+        }
+    }
+
+    /// Build `FileTabState` tabs from uncollected files.
+    pub fn build_tabs(uncollected: Vec<UncollectedFile>) -> Vec<FileTabState> {
+        uncollected
             .into_iter()
             .map(|uf| {
-                let is_stub = !uf.has_any_copy();
-                let len = uf.worktrees.len();
                 let entries: Vec<WorktreeEntry> = uf
                     .worktrees
                     .into_iter()
@@ -84,344 +65,15 @@ impl CollectPickerState {
                         has_file: w.has_file,
                     })
                     .collect();
-                // Start cursor on the first entry that has a file
-                let initial_cursor = entries.iter().position(|e| e.has_file).unwrap_or(0);
-                FileTabState {
-                    rel_path: uf.rel_path,
-                    entries,
-                    list_cursor: initial_cursor,
-                    selected: None,
-                    materialized: vec![false; len],
-                    preview_scroll: 0,
-                    preview_content_lines: 0,
-                    preview_viewport_height: 0,
-                    is_stub,
-                    compare_warning: None,
-                }
+                FileTabState::new(uf.rel_path, entries)
             })
-            .collect();
-
-        Self {
-            tabs,
-            active_tab: 0,
-            focus: FocusPanel::WorktreeList,
-            footer_cursor: FooterButton::Submit,
-            submitted: false,
-            cancelled: false,
-        }
-    }
-
-    /// Set the list cursor for the active tab, resetting preview scroll.
-    fn set_cursor(&mut self, idx: usize) {
-        let tab = &mut self.tabs[self.active_tab];
-        tab.list_cursor = idx;
-        tab.preview_scroll = 0;
-    }
-
-    pub fn current_tab(&self) -> &FileTabState {
-        &self.tabs[self.active_tab]
-    }
-
-    pub fn next_tab(&mut self) {
-        if !self.tabs.is_empty() {
-            self.active_tab = (self.active_tab + 1) % self.tabs.len();
-            self.focus = if self.current_tab().is_stub {
-                FocusPanel::TabBar
-            } else {
-                FocusPanel::WorktreeList
-            };
-        }
-    }
-
-    pub fn prev_tab(&mut self) {
-        if !self.tabs.is_empty() {
-            self.active_tab = if self.active_tab == 0 {
-                self.tabs.len() - 1
-            } else {
-                self.active_tab - 1
-            };
-            self.focus = if self.current_tab().is_stub {
-                FocusPanel::TabBar
-            } else {
-                FocusPanel::WorktreeList
-            };
-        }
-    }
-
-    pub fn move_down(&mut self) {
-        let tab = &self.tabs[self.active_tab];
-        match self.focus {
-            FocusPanel::TabBar => {
-                self.focus = FocusPanel::Footer;
-            }
-            FocusPanel::WorktreeList => {
-                if tab.is_stub {
-                    return;
-                }
-                let has_selection = tab.selected.is_some();
-                let current = tab.list_cursor;
-
-                // Find the next traversable entry
-                let next = if has_selection {
-                    // All entries traversable when source is selected
-                    if current < tab.entries.len() - 1 {
-                        Some(current + 1)
-                    } else {
-                        None
-                    }
-                } else {
-                    // Skip entries without files
-                    tab.entries
-                        .iter()
-                        .enumerate()
-                        .skip(current + 1)
-                        .find(|(_, e)| e.has_file)
-                        .map(|(i, _)| i)
-                };
-
-                match next {
-                    Some(idx) => self.set_cursor(idx),
-                    None => self.focus = FocusPanel::Footer,
-                }
-            }
-            FocusPanel::Preview => {
-                let tab = &mut self.tabs[self.active_tab];
-                let max_scroll = tab
-                    .preview_content_lines
-                    .saturating_sub(tab.preview_viewport_height);
-                if tab.preview_scroll < max_scroll {
-                    tab.preview_scroll = tab.preview_scroll.saturating_add(1);
-                }
-            }
-            FocusPanel::Footer => {}
-        }
-    }
-
-    pub fn move_up(&mut self) {
-        match self.focus {
-            FocusPanel::TabBar => {}
-            FocusPanel::WorktreeList => {
-                let tab = &self.tabs[self.active_tab];
-                let has_selection = tab.selected.is_some();
-                let current = tab.list_cursor;
-
-                let prev = if has_selection {
-                    // All entries traversable
-                    if current > 0 {
-                        Some(current - 1)
-                    } else {
-                        None
-                    }
-                } else {
-                    // Skip entries without files
-                    tab.entries[..current]
-                        .iter()
-                        .enumerate()
-                        .rev()
-                        .find(|(_, e)| e.has_file)
-                        .map(|(i, _)| i)
-                };
-
-                if let Some(idx) = prev {
-                    self.set_cursor(idx);
-                }
-            }
-            FocusPanel::Preview => {
-                self.tabs[self.active_tab].preview_scroll =
-                    self.tabs[self.active_tab].preview_scroll.saturating_sub(1);
-            }
-            FocusPanel::Footer => {
-                if self.current_tab().is_stub {
-                    self.focus = FocusPanel::TabBar;
-                } else {
-                    self.focus = FocusPanel::WorktreeList;
-                    // Place cursor on the last traversable entry
-                    let tab = &self.tabs[self.active_tab];
-                    let last = if tab.selected.is_none() {
-                        tab.entries
-                            .iter()
-                            .enumerate()
-                            .rev()
-                            .find(|(_, e)| e.has_file)
-                            .map(|(i, _)| i)
-                            .unwrap_or(0)
-                    } else {
-                        tab.entries.len().saturating_sub(1)
-                    };
-                    self.set_cursor(last);
-                }
-            }
-        }
-    }
-
-    /// Scroll the preview pane down by one page.
-    pub fn page_down(&mut self) {
-        if self.focus != FocusPanel::Preview {
-            return;
-        }
-        let tab = &mut self.tabs[self.active_tab];
-        let page = tab.preview_viewport_height.max(1);
-        let max_scroll = tab
-            .preview_content_lines
-            .saturating_sub(tab.preview_viewport_height);
-        tab.preview_scroll = tab.preview_scroll.saturating_add(page).min(max_scroll);
-    }
-
-    /// Scroll the preview pane up by one page.
-    pub fn page_up(&mut self) {
-        if self.focus != FocusPanel::Preview {
-            return;
-        }
-        let tab = &mut self.tabs[self.active_tab];
-        let page = tab.preview_viewport_height.max(1);
-        tab.preview_scroll = tab.preview_scroll.saturating_sub(page);
-    }
-
-    pub fn toggle_panel(&mut self) {
-        if self.current_tab().is_stub {
-            return;
-        }
-        self.focus = match self.focus {
-            FocusPanel::TabBar => FocusPanel::WorktreeList,
-            FocusPanel::WorktreeList => FocusPanel::Preview,
-            FocusPanel::Preview => FocusPanel::WorktreeList,
-            FocusPanel::Footer => FocusPanel::WorktreeList,
-        };
-    }
-
-    /// Select or deselect the highlighted worktree as the collection source.
-    /// Only works on worktrees that have the file.
-    /// When selecting, uses deep comparison to set smart materialization defaults.
-    /// Changing or clearing selection resets preferences and clears the compare warning.
-    pub fn toggle_selection(&mut self) {
-        if self.focus != FocusPanel::WorktreeList || self.current_tab().is_stub {
-            return;
-        }
-        let tab = &self.tabs[self.active_tab];
-        let cursor = tab.list_cursor;
-
-        // Can only select worktrees that have the file
-        if !tab.entries[cursor].has_file {
-            return;
-        }
-
-        if tab.selected == Some(cursor) {
-            // Deselect — clear everything
-            let tab = &mut self.tabs[self.active_tab];
-            tab.selected = None;
-            tab.materialized.fill(false);
-            tab.compare_warning = None;
-        } else {
-            // Select new source — compute smart defaults via deep compare
-            let source_path = tab.entries[cursor].worktree_path.join(&tab.rel_path);
-            let mut mat = vec![false; tab.entries.len()];
-            let mut timed_out = false;
-
-            for (i, entry) in tab.entries.iter().enumerate() {
-                if i == cursor {
-                    continue; // Source gets linked
-                }
-                if entry.has_file {
-                    let other_path = entry.worktree_path.join(&tab.rel_path);
-                    match shared::deep_compare(&source_path, &other_path, COMPARE_TIMEOUT) {
-                        CompareResult::Identical => {
-                            mat[i] = false; // Same content → link
-                        }
-                        CompareResult::Different => {
-                            mat[i] = true; // Different → materialize to preserve
-                        }
-                        CompareResult::TimedOut => {
-                            timed_out = true;
-                            break;
-                        }
-                    }
-                }
-                // Worktrees without the file default to linked (false)
-            }
-
-            let tab = &mut self.tabs[self.active_tab];
-            if timed_out {
-                // Fallback: materialize all that have the file
-                for (i, entry) in tab.entries.iter().enumerate() {
-                    mat[i] = i != cursor && entry.has_file;
-                }
-                tab.compare_warning =
-                    Some("File too large to compare — defaulting to materialize all copies".into());
-            } else {
-                tab.compare_warning = None;
-            }
-            tab.selected = Some(cursor);
-            tab.materialized = mat;
-        }
-    }
-
-    /// Toggle materialization for the highlighted worktree.
-    /// Available when a source is selected and the cursor is not on the source.
-    /// Works on all worktrees (including those without the file).
-    /// Cannot select worktrees without the file as source (Enter/Space handles that).
-    pub fn toggle_materialized(&mut self) {
-        let tab = &mut self.tabs[self.active_tab];
-        let Some(selected) = tab.selected else {
-            return;
-        };
-        if tab.list_cursor == selected || tab.is_stub {
-            return;
-        }
-        let idx = tab.list_cursor;
-        tab.materialized[idx] = !tab.materialized[idx];
-    }
-
-    pub fn activate_footer(&mut self) {
-        if self.focus != FocusPanel::Footer {
-            return;
-        }
-        match self.footer_cursor {
-            FooterButton::Submit => self.submitted = true,
-            FooterButton::Cancel => self.cancelled = true,
-        }
-    }
-
-    pub fn footer_next(&mut self) {
-        if self.focus == FocusPanel::Footer {
-            self.footer_cursor = match self.footer_cursor {
-                FooterButton::Submit => FooterButton::Cancel,
-                FooterButton::Cancel => FooterButton::Submit,
-            };
-        }
-    }
-
-    /// How many non-stub files have a selection.
-    pub fn decided_count(&self) -> usize {
-        self.tabs
-            .iter()
-            .filter(|t| !t.is_stub && t.selected.is_some())
-            .count()
-    }
-
-    /// Total number of files that need a decision (excludes stubs).
-    pub fn decidable_count(&self) -> usize {
-        self.tabs.iter().filter(|t| !t.is_stub).count()
-    }
-
-    /// Whether all decidable files have a selection.
-    pub fn all_decided(&self) -> bool {
-        self.decided_count() == self.decidable_count()
-    }
-
-    pub fn has_any_selection(&self) -> bool {
-        self.tabs.iter().any(|t| t.selected.is_some())
-    }
-
-    pub fn undecided_files(&self) -> Vec<&str> {
-        self.tabs
-            .iter()
-            .filter(|t| !t.is_stub && t.selected.is_none())
-            .map(|t| t.rel_path.as_str())
             .collect()
     }
 
-    pub fn into_decisions(self) -> Vec<CollectDecision> {
-        self.tabs
+    /// Extract decisions from the picker state after the user submits.
+    pub fn into_decisions(state: PickerState) -> Vec<CollectDecision> {
+        state
+            .tabs
             .into_iter()
             .filter_map(|tab| {
                 if tab.is_stub {
@@ -444,12 +96,289 @@ impl CollectPickerState {
             })
             .collect()
     }
+
+    pub fn is_submitted(&self) -> bool {
+        self.submitted
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled
+    }
+
+    /// Select or deselect the highlighted worktree as the collection source.
+    /// Only works on worktrees that have the file.
+    /// When selecting, uses deep comparison to set smart materialization defaults.
+    /// Changing or clearing selection resets preferences and clears the compare warning.
+    fn toggle_selection(state: &mut PickerState) {
+        if state.focus != FocusPanel::WorktreeList || state.current_tab().is_stub {
+            return;
+        }
+        let tab = &state.tabs[state.active_tab];
+        let cursor = tab.list_cursor;
+
+        // Can only select worktrees that have the file
+        if !tab.entries[cursor].has_file {
+            return;
+        }
+
+        if tab.selected == Some(cursor) {
+            // Deselect — clear everything
+            let tab = &mut state.tabs[state.active_tab];
+            tab.selected = None;
+            tab.materialized.fill(false);
+            tab.compare_warning = None;
+        } else {
+            // Select new source — compute smart defaults via deep compare
+            let source_path = tab.entries[cursor].worktree_path.join(&tab.rel_path);
+            let mut mat = vec![false; tab.entries.len()];
+            let mut timed_out = false;
+
+            for (i, entry) in tab.entries.iter().enumerate() {
+                if i == cursor {
+                    continue; // Source gets linked
+                }
+                if entry.has_file {
+                    let other_path = entry.worktree_path.join(&tab.rel_path);
+                    match shared::deep_compare(&source_path, &other_path, COMPARE_TIMEOUT) {
+                        CompareResult::Identical => {
+                            mat[i] = false; // Same content -> link
+                        }
+                        CompareResult::Different => {
+                            mat[i] = true; // Different -> materialize to preserve
+                        }
+                        CompareResult::TimedOut => {
+                            timed_out = true;
+                            break;
+                        }
+                    }
+                }
+                // Worktrees without the file default to linked (false)
+            }
+
+            let tab = &mut state.tabs[state.active_tab];
+            if timed_out {
+                // Fallback: materialize all that have the file
+                for (i, entry) in tab.entries.iter().enumerate() {
+                    mat[i] = i != cursor && entry.has_file;
+                }
+                tab.compare_warning =
+                    Some("File too large to compare — defaulting to materialize all copies".into());
+            } else {
+                tab.compare_warning = None;
+            }
+            tab.selected = Some(cursor);
+            tab.materialized = mat;
+        }
+    }
+
+    /// Toggle materialization for the highlighted worktree.
+    /// Available when a source is selected and the cursor is not on the source.
+    fn toggle_materialized(state: &mut PickerState) {
+        let tab = &mut state.tabs[state.active_tab];
+        let Some(selected) = tab.selected else {
+            return;
+        };
+        if tab.list_cursor == selected || tab.is_stub {
+            return;
+        }
+        let idx = tab.list_cursor;
+        tab.materialized[idx] = !tab.materialized[idx];
+    }
+
+    /// How many non-stub files have a selection.
+    fn decided_count(state: &PickerState) -> usize {
+        state
+            .tabs
+            .iter()
+            .filter(|t| !t.is_stub && t.selected.is_some())
+            .count()
+    }
+
+    /// Total number of files that need a decision (excludes stubs).
+    fn decidable_count(state: &PickerState) -> usize {
+        state.tabs.iter().filter(|t| !t.is_stub).count()
+    }
+
+    /// Whether all decidable files have a selection.
+    pub fn all_decided(state: &PickerState) -> bool {
+        Self::decided_count(state) == Self::decidable_count(state)
+    }
+
+    pub fn has_any_selection(state: &PickerState) -> bool {
+        state.tabs.iter().any(|t| t.selected.is_some())
+    }
+
+    pub fn undecided_files(state: &PickerState) -> Vec<&str> {
+        state
+            .tabs
+            .iter()
+            .filter(|t| !t.is_stub && t.selected.is_none())
+            .map(|t| t.rel_path.as_str())
+            .collect()
+    }
+}
+
+impl PickerMode for CollectMode {
+    fn all_entries_traversable(&self, tab: &FileTabState) -> bool {
+        tab.selected.is_some()
+    }
+
+    fn handle_list_key(&mut self, key: KeyCode, state: &mut PickerState) -> LoopAction {
+        match key {
+            KeyCode::Char(' ') | KeyCode::Enter => Self::toggle_selection(state),
+            KeyCode::Char('m') => Self::toggle_materialized(state),
+            _ => {}
+        }
+        LoopAction::Continue
+    }
+
+    fn handle_footer_key(&mut self, key: KeyCode, state: &mut PickerState) -> LoopAction {
+        match key {
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Right | KeyCode::Char('l') => {
+                self.footer_cursor = match self.footer_cursor {
+                    FooterButton::Submit => FooterButton::Cancel,
+                    FooterButton::Cancel => FooterButton::Submit,
+                };
+            }
+            KeyCode::Char('q') | KeyCode::Esc => return LoopAction::Exit,
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                match self.footer_cursor {
+                    FooterButton::Submit => self.submitted = true,
+                    FooterButton::Cancel => self.cancelled = true,
+                }
+                return LoopAction::Exit;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let all = self.all_entries_traversable(state.current_tab());
+                state.move_up(all);
+            }
+            KeyCode::Tab => state.toggle_panel(),
+            _ => {}
+        }
+        LoopAction::Continue
+    }
+
+    fn tab_decided(&self, tab: &FileTabState) -> bool {
+        tab.selected.is_some() || tab.is_stub
+    }
+
+    fn tab_warning<'a>(&'a self, tab: &'a FileTabState) -> Option<&'a str> {
+        tab.compare_warning.as_deref()
+    }
+
+    fn entry_decoration(&self, tab: &FileTabState, entry_idx: usize) -> EntryDecoration {
+        let has_selection = tab.selected.is_some();
+        let is_selected = tab.selected == Some(entry_idx);
+        let is_materialized = has_selection && tab.materialized[entry_idx];
+
+        let marker = if is_selected {
+            "\u{2713} ".to_string()
+        } else if is_materialized {
+            "M ".to_string()
+        } else {
+            "  ".to_string()
+        };
+
+        let tag = if has_selection && !is_selected {
+            if is_materialized {
+                Some(("materialized".to_string(), Color::Yellow))
+            } else {
+                Some(("linked".to_string(), Color::Cyan))
+            }
+        } else {
+            None
+        };
+
+        EntryDecoration { marker, tag }
+    }
+
+    fn render_footer(&self, state: &PickerState, frame: &mut Frame, area: Rect) {
+        let is_focused = state.focus == FocusPanel::Footer;
+        let all_decided = Self::all_decided(state);
+
+        let submit_check = if all_decided { " \u{2713}" } else { "" };
+
+        let submit_style = if is_focused && self.footer_cursor == FooterButton::Submit {
+            Style::default()
+                .fg(Color::Black)
+                .bg(ACCENT)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ACCENT)
+        };
+
+        let cancel_style = if is_focused && self.footer_cursor == FooterButton::Cancel {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Red)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(DIM)
+        };
+
+        let buttons = Line::from(vec![
+            Span::raw("  "),
+            Span::styled(format!(" Submit{submit_check} "), submit_style),
+            Span::raw("  "),
+            Span::styled(" Cancel ", cancel_style),
+            Span::raw("  "),
+            Span::styled(
+                format!(
+                    "{}/{} files ready",
+                    Self::decided_count(state),
+                    Self::decidable_count(state)
+                ),
+                Style::default().fg(DIM),
+            ),
+        ]);
+
+        let key_style = Style::default().fg(Color::Cyan);
+        let desc_style = Style::default().fg(DIM);
+
+        // Context-sensitive description for hl/arrows
+        let hl_desc = match state.focus {
+            FocusPanel::TabBar => " tabs  ",
+            FocusPanel::WorktreeList => " tabs  ",
+            FocusPanel::Preview => " tabs  ",
+            FocusPanel::Footer => " buttons  ",
+        };
+
+        let help = Line::from(vec![
+            Span::raw("  "),
+            Span::styled("jk/\u{2191}\u{2193}", key_style),
+            Span::styled(" navigate  ", desc_style),
+            Span::styled("hl/\u{2190}\u{2192}", key_style),
+            Span::styled(hl_desc, desc_style),
+            Span::styled("PgUp/PgDn", key_style),
+            Span::styled(" scroll  ", desc_style),
+            Span::styled("Space", key_style),
+            Span::styled(" select  ", desc_style),
+            Span::styled("m", key_style),
+            Span::styled(" materialize  ", desc_style),
+            Span::styled("Tab", key_style),
+            Span::styled(" panel  ", desc_style),
+            Span::styled("Esc", key_style),
+            Span::styled(" footer/cancel", desc_style),
+        ]);
+
+        let block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::TOP)
+            .border_style(Style::default().fg(DIM));
+
+        let paragraph = Paragraph::new(vec![buttons, Line::raw(""), help]).block(block);
+        frame.render_widget(paragraph, area);
+    }
+
+    fn footer_height(&self) -> u16 {
+        5
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::shared::WorktreeCopy;
+    use std::path::PathBuf;
 
     fn make_uncollected(rel_path: &str, worktrees: &[(&str, &str, bool)]) -> UncollectedFile {
         UncollectedFile {
@@ -463,6 +392,11 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    fn make_state(files: Vec<UncollectedFile>) -> PickerState {
+        let tabs = CollectMode::build_tabs(files);
+        PickerState::from_tabs(tabs)
     }
 
     #[test]
@@ -481,7 +415,7 @@ mod tests {
                 &[("main", "/repo/main", false), ("dev", "/repo/dev", false)],
             ),
         ];
-        let state = CollectPickerState::new(files);
+        let state = make_state(files);
 
         assert_eq!(state.tabs.len(), 2);
         assert_eq!(state.active_tab, 0);
@@ -499,7 +433,7 @@ mod tests {
             make_uncollected(".env", &[("main", "/repo/main", true)]),
             make_uncollected(".idea", &[("main", "/repo/main", true)]),
         ];
-        let mut state = CollectPickerState::new(files);
+        let mut state = make_state(files);
 
         assert_eq!(state.active_tab, 0);
         state.next_tab();
@@ -516,13 +450,14 @@ mod tests {
             make_uncollected(".env", &[("main", "/repo/main", true)]),
             make_uncollected(".secrets", &[("main", "/repo/main", false)]),
         ];
-        let mut state = CollectPickerState::new(files);
+        let mut state = make_state(files);
 
         state.next_tab();
         assert_eq!(state.focus, FocusPanel::TabBar);
-        state.move_down();
+        // Stub tab — no selection, so all_traversable = false
+        state.move_down(false);
         assert_eq!(state.focus, FocusPanel::Footer);
-        state.move_up();
+        state.move_up(false);
         assert_eq!(state.focus, FocusPanel::TabBar);
         state.prev_tab();
         assert_eq!(state.focus, FocusPanel::WorktreeList);
@@ -534,16 +469,16 @@ mod tests {
             ".env",
             &[("main", "/repo/main", true), ("feat", "/repo/feat", false)],
         )];
-        let mut state = CollectPickerState::new(files);
+        let mut state = make_state(files);
 
         // Move cursor to feat (no file) and try to select
         state.tabs[0].list_cursor = 1;
-        state.toggle_selection();
+        CollectMode::toggle_selection(&mut state);
         assert_eq!(state.current_tab().selected, None);
 
         // Select main (has file) — works
         state.tabs[0].list_cursor = 0;
-        state.toggle_selection();
+        CollectMode::toggle_selection(&mut state);
         assert_eq!(state.current_tab().selected, Some(0));
     }
 
@@ -558,26 +493,27 @@ mod tests {
                 ("dev", "/repo/dev", true),
             ],
         )];
-        let mut state = CollectPickerState::new(files);
+        let mut state = make_state(files);
 
         // Initial cursor should be on main (first with file)
         assert_eq!(state.current_tab().list_cursor, 0);
 
+        // No selection → all_traversable = false
         // Move down — should skip empty1 and empty2, land on dev
-        state.move_down();
+        state.move_down(false);
         assert_eq!(state.current_tab().list_cursor, 3);
 
         // Move down again — should go to footer (no more entries with files)
-        state.move_down();
+        state.move_down(false);
         assert_eq!(state.focus, FocusPanel::Footer);
 
         // Move up from footer — back to list at last entry with file (dev)
-        state.move_up();
+        state.move_up(false);
         assert_eq!(state.focus, FocusPanel::WorktreeList);
         assert_eq!(state.current_tab().list_cursor, 3);
 
         // Move up — should skip empty2 and empty1, land on main
-        state.move_up();
+        state.move_up(false);
         assert_eq!(state.current_tab().list_cursor, 0);
     }
 
@@ -590,7 +526,7 @@ mod tests {
                 ("main", "/repo/main", true),
             ],
         )];
-        let state = CollectPickerState::new(files);
+        let state = make_state(files);
         assert_eq!(state.current_tab().list_cursor, 1);
     }
 
@@ -600,53 +536,53 @@ mod tests {
             ".env",
             &[("main", "/repo/main", true), ("feat", "/repo/feat", false)],
         )];
-        let mut state = CollectPickerState::new(files);
+        let mut state = make_state(files);
 
         // Select main as source
-        state.toggle_selection();
+        CollectMode::toggle_selection(&mut state);
         // feat defaults to linked (no file)
         assert!(!state.current_tab().materialized[1]);
         // Toggle feat to materialized
         state.tabs[0].list_cursor = 1;
-        state.toggle_materialized();
+        CollectMode::toggle_materialized(&mut state);
         assert!(state.current_tab().materialized[1]);
     }
 
     #[test]
     fn move_down_navigates_to_footer() {
         let files = vec![make_uncollected(".env", &[("main", "/repo/main", true)])];
-        let mut state = CollectPickerState::new(files);
+        let mut state = make_state(files);
 
-        state.move_down();
+        state.move_down(false);
         assert_eq!(state.focus, FocusPanel::Footer);
     }
 
     #[test]
     fn move_up_from_footer_returns_to_list() {
         let files = vec![make_uncollected(".env", &[("main", "/repo/main", true)])];
-        let mut state = CollectPickerState::new(files);
+        let mut state = make_state(files);
 
         state.focus = FocusPanel::Footer;
-        state.move_up();
+        state.move_up(false);
         assert_eq!(state.focus, FocusPanel::WorktreeList);
     }
 
     #[test]
     fn preview_scroll_clamps_to_content() {
         let files = vec![make_uncollected(".env", &[("main", "/repo/main", true)])];
-        let mut state = CollectPickerState::new(files);
+        let mut state = make_state(files);
         state.focus = FocusPanel::Preview;
         state.tabs[0].preview_content_lines = 30;
         state.tabs[0].preview_viewport_height = 10;
 
-        state.move_down();
+        state.move_down(false);
         assert_eq!(state.current_tab().preview_scroll, 1);
-        state.move_up();
-        state.move_up();
+        state.move_up(false);
+        state.move_up(false);
         assert_eq!(state.current_tab().preview_scroll, 0);
 
         for _ in 0..25 {
-            state.move_down();
+            state.move_down(false);
         }
         assert_eq!(state.current_tab().preview_scroll, 20);
     }
@@ -654,12 +590,12 @@ mod tests {
     #[test]
     fn preview_scroll_blocked_when_content_fits() {
         let files = vec![make_uncollected(".env", &[("main", "/repo/main", true)])];
-        let mut state = CollectPickerState::new(files);
+        let mut state = make_state(files);
         state.focus = FocusPanel::Preview;
         state.tabs[0].preview_content_lines = 5;
         state.tabs[0].preview_viewport_height = 20;
 
-        state.move_down();
+        state.move_down(false);
         assert_eq!(state.current_tab().preview_scroll, 0);
     }
 
@@ -703,18 +639,18 @@ mod tests {
                 &[("main", "/repo/main", false), ("dev", "/repo/dev", false)],
             ),
         ];
-        let mut state = CollectPickerState::new(files);
+        let mut state = make_state(files);
 
         // Select main for .env — deep compare finds dev is different → materialized
-        state.toggle_selection();
+        CollectMode::toggle_selection(&mut state);
         assert!(state.tabs[0].materialized[1]); // dev: different → materialized
         assert!(!state.tabs[0].materialized[2]); // feat: no file → linked
 
         // Toggle feat to materialized
         state.tabs[0].list_cursor = 2;
-        state.toggle_materialized();
+        CollectMode::toggle_materialized(&mut state);
 
-        let decisions = state.into_decisions();
+        let decisions = CollectMode::into_decisions(state);
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].rel_path, ".env");
         assert_eq!(decisions[0].source_worktree, main_dir);
@@ -750,10 +686,10 @@ mod tests {
                 },
             ],
         }];
-        let mut state = CollectPickerState::new(files);
+        let mut state = make_state(files);
 
         // Select main — dev has identical content → should default to linked
-        state.toggle_selection();
+        CollectMode::toggle_selection(&mut state);
         assert!(!state.tabs[0].materialized[1]);
     }
 
@@ -763,8 +699,8 @@ mod tests {
             make_uncollected(".secrets", &[("main", "/repo/main", false)]),
             make_uncollected(".tokens", &[("main", "/repo/main", false)]),
         ];
-        let state = CollectPickerState::new(files);
-        assert!(state.all_decided());
+        let state = make_state(files);
+        assert!(CollectMode::all_decided(&state));
     }
 
     #[test]
@@ -777,10 +713,10 @@ mod tests {
                 &[("main", "/repo/main", false), ("dev", "/repo/dev", false)],
             ),
         ];
-        let mut state = CollectPickerState::new(files);
+        let mut state = make_state(files);
 
-        state.toggle_selection(); // Select .env
-        let undecided = state.undecided_files();
+        CollectMode::toggle_selection(&mut state); // Select .env
+        let undecided = CollectMode::undecided_files(&state);
         assert_eq!(undecided, vec![".idea"]);
     }
 }

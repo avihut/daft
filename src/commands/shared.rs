@@ -562,7 +562,7 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
             && std::env::var("DAFT_TESTING").is_err();
 
         if is_interactive {
-            use crate::output::tui::collect_picker::{run_collect_picker, PickerOutcome};
+            use crate::output::tui::shared_picker::{run_collect_picker, PickerOutcome};
 
             match run_collect_picker(uncollected)? {
                 PickerOutcome::Decisions(decisions) => {
