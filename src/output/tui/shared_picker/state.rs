@@ -131,6 +131,14 @@ impl PickerState {
         self.active_tab >= self.tabs.len()
     }
 
+    /// Adjust initial focus when extra (virtual) tabs exist.
+    /// Call after construction if the mode provides extra tabs.
+    pub fn adjust_for_extra_tabs(&mut self, extra_tabs: usize) {
+        if self.tabs.is_empty() && extra_tabs > 0 {
+            self.focus = FocusPanel::TabBar;
+        }
+    }
+
     /// Move down. `all_traversable` controls whether entries without files are
     /// skipped (false) or traversable (true).
     pub fn move_down(&mut self, all_traversable: bool) {

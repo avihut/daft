@@ -48,7 +48,9 @@ fn handle_tab_bar(key: KeyEvent, state: &mut PickerState, mode: &mut dyn PickerM
         KeyCode::Right | KeyCode::Char('l') => state.next_tab(extra(mode)),
         KeyCode::Left | KeyCode::Char('h') => state.prev_tab(extra(mode)),
         KeyCode::Down | KeyCode::Char('j') => {
-            if !state.is_virtual_tab() {
+            if state.is_virtual_tab() {
+                state.focus = FocusPanel::Footer;
+            } else {
                 let all = mode.all_entries_traversable(state.current_tab());
                 state.move_down(all);
             }

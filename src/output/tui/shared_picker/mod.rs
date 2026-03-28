@@ -318,6 +318,7 @@ fn run_manage_picker_inner(
     let highlighter = Highlighter::new();
     let tabs = ManageMode::build_tabs(&infos);
     let mut state = PickerState::from_tabs(tabs);
+    state.adjust_for_extra_tabs(1); // "+" tab
     let mut mode = ManageMode {
         git_common_dir,
         config_root,

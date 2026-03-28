@@ -687,10 +687,18 @@ impl PickerMode for ManageMode {
         match key {
             KeyCode::Char('q') | KeyCode::Esc => return LoopAction::Exit,
             KeyCode::Up | KeyCode::Char('k') => {
-                let all = self.all_entries_traversable(state.current_tab());
-                state.move_up(all);
+                if state.is_virtual_tab() {
+                    state.focus = FocusPanel::TabBar;
+                } else {
+                    let all = self.all_entries_traversable(state.current_tab());
+                    state.move_up(all);
+                }
             }
-            KeyCode::Tab => state.toggle_panel(),
+            KeyCode::Tab => {
+                if !state.is_virtual_tab() {
+                    state.toggle_panel();
+                }
+            }
             _ => {}
         }
         LoopAction::Continue
