@@ -316,7 +316,25 @@ fn render_preview(
         }
     };
 
-    let content_lines = highlighted_lines.len() as u16;
+    // Prepend line numbers
+    let line_count = highlighted_lines.len();
+    let num_width = if line_count == 0 {
+        1
+    } else {
+        (line_count as f64).log10().floor() as usize + 1
+    };
+    let line_num_style = Style::default().fg(Color::Indexed(239));
+    let numbered_lines: Vec<Line> = highlighted_lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut line)| {
+            let num = format!(" {:>width$} ", i + 1, width = num_width);
+            line.spans.insert(0, Span::styled(num, line_num_style));
+            line
+        })
+        .collect();
+
+    let content_lines = numbered_lines.len() as u16;
     // Viewport height = area minus 2 for border
     let viewport_height = area.height.saturating_sub(2);
     let scroll = tab.preview_scroll;
@@ -327,7 +345,7 @@ fn render_preview(
     tab_mut.preview_content_lines = content_lines;
     tab_mut.preview_viewport_height = viewport_height;
 
-    let paragraph = Paragraph::new(highlighted_lines)
+    let paragraph = Paragraph::new(numbered_lines)
         .block(block)
         .scroll((scroll, 0));
 
