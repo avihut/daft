@@ -207,6 +207,17 @@ fn render_worktree_list(
     let is_focused = focus == FocusPanel::WorktreeList;
     let border_color = if is_focused { ACCENT } else { DIM };
 
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .title(Span::styled(
+            " Worktrees ",
+            Style::default().fg(border_color),
+        ));
+
+    // Inner width for right-aligning tags
+    let inner_width = block.inner(area).width as usize;
+
     let items: Vec<ListItem> = tab
         .entries
         .iter()
@@ -233,35 +244,36 @@ fn render_worktree_list(
                 Style::default().fg(Color::Reset)
             };
 
-            let bg_style = style;
-
             let mut spans = vec![
-                Span::styled(pointer, bg_style),
-                Span::styled(decoration.marker, bg_style),
-                Span::styled(entry.worktree_name.clone(), bg_style),
+                Span::styled(pointer, style),
+                Span::styled(decoration.marker.clone(), style),
+                Span::styled(entry.worktree_name.clone(), style),
             ];
 
-            // Show tag from mode (e.g. "materialized" / "linked")
+            // Right-align the status tag
             if let Some((tag_text, tag_color)) = decoration.tag {
+                let left_len = pointer.len() + decoration.marker.len() + entry.worktree_name.len();
+                let tag_len = tag_text.len();
+                let padding = inner_width.saturating_sub(left_len + tag_len);
+
+                let pad_style = if is_cursor {
+                    Style::default().bg(SELECTED_BG)
+                } else {
+                    Style::default()
+                };
                 let tag_style = if is_cursor {
                     Style::default().fg(Color::White).bg(SELECTED_BG)
                 } else {
                     Style::default().fg(tag_color)
                 };
-                spans.push(Span::styled(format!(" {tag_text}"), tag_style));
+
+                spans.push(Span::styled(" ".repeat(padding), pad_style));
+                spans.push(Span::styled(tag_text, tag_style));
             }
 
             ListItem::new(Line::from(spans))
         })
         .collect();
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color))
-        .title(Span::styled(
-            " Worktrees ",
-            Style::default().fg(border_color),
-        ));
 
     let list = List::new(items).block(block);
     frame.render_widget(list, area);
