@@ -643,18 +643,13 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
     Ok(())
 }
 
-fn run_manage(output: &mut dyn Output) -> Result<()> {
+fn run_manage(_output: &mut dyn Output) -> Result<()> {
     let git_common_dir = repo::get_git_common_dir()?;
     let worktree_path = repo::get_current_worktree_path()?;
     let config_root = shared::resolve_config_root(&worktree_path);
     let shared_paths = shared::read_shared_paths(&worktree_path)?;
     let worktree_paths = shared::list_worktree_paths()?;
     let materialized = shared::MaterializedState::load(&git_common_dir)?;
-
-    if shared_paths.is_empty() {
-        output.info("No shared files declared.");
-        return Ok(());
-    }
 
     let is_interactive = std::io::IsTerminal::is_terminal(&std::io::stderr())
         && std::env::var("DAFT_TESTING").is_err();

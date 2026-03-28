@@ -270,7 +270,7 @@ _daft() {
     # shared: complete subcommands and their arguments
     if [[ "${words[1]}" == "shared" ]]; then
         if [[ $cword -eq 2 ]]; then
-            COMPREPLY=( $(compgen -W "add link materialize remove status sync" -- "$cur") )
+            COMPREPLY=( $(compgen -W "add link manage materialize remove status sync" -- "$cur") )
             return 0
         fi
         local shared_sub="${words[2]}"

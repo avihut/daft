@@ -284,7 +284,7 @@ complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcomma
 # hooks migrate: flags
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from migrate' -l dry-run -d 'Preview renames without making changes'
 # shared: subcommands
-complete -c daft -n '__fish_seen_subcommand_from shared; and not __fish_seen_subcommand_from add link materialize remove status sync' -f -a 'add link materialize remove status sync'
+complete -c daft -n '__fish_seen_subcommand_from shared; and not __fish_seen_subcommand_from add link manage materialize remove status sync' -f -a 'add link manage materialize remove status sync'
 # shared add: file completion + --declare
 complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from add' -F
 complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from add' -l declare -d 'Declare without collecting'
