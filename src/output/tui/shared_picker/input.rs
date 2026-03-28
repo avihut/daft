@@ -82,7 +82,7 @@ fn handle_worktree_list(
         KeyCode::Right | KeyCode::Char('l') => state.next_tab(extra(mode)),
         KeyCode::Left | KeyCode::Char('h') => state.prev_tab(extra(mode)),
         KeyCode::Char('q') | KeyCode::Esc => state.focus = FocusPanel::Footer,
-        KeyCode::Tab => state.toggle_panel(),
+        KeyCode::Tab | KeyCode::BackTab => state.toggle_panel(),
         _ => return mode.handle_list_key(key.code, state),
     }
     LoopAction::Continue
@@ -103,7 +103,7 @@ fn handle_preview(key: KeyEvent, state: &mut PickerState, mode: &dyn PickerMode)
         KeyCode::Right | KeyCode::Char('l') => state.next_tab(extra(mode)),
         KeyCode::Left | KeyCode::Char('h') => state.prev_tab(extra(mode)),
         KeyCode::Char('q') | KeyCode::Esc => state.focus = FocusPanel::Footer,
-        KeyCode::Tab => state.toggle_panel(),
+        KeyCode::Tab | KeyCode::BackTab => state.toggle_panel(),
         _ => {}
     }
     LoopAction::Continue
