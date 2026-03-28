@@ -7,6 +7,7 @@
 mod add_modal;
 pub mod collect_mode;
 mod dialog;
+pub mod editor;
 mod highlight;
 pub mod input;
 pub mod manage_mode;
@@ -114,6 +115,12 @@ pub trait PickerMode {
     /// handles body rendering via `preview_override`.
     fn extra_tab_labels(&self) -> Vec<String> {
         vec![]
+    }
+
+    /// Render an inline editor in place of the preview pane.
+    /// Returns `true` if an editor was rendered (preview should be skipped).
+    fn render_editor(&mut self, _frame: &mut Frame, _area: Rect) -> bool {
+        false
     }
 
     /// Override preview content. If `Some`, these lines are shown instead of
@@ -330,6 +337,7 @@ fn run_manage_picker_inner(
         diff_pivot: None,
         pending_remove: false,
         pending_add: false,
+        edit_state: None,
     };
     mode.set_statuses(&infos);
 
@@ -356,6 +364,16 @@ fn run_manage_event_loop(
         let Some(key) = input::poll_key(Duration::from_millis(100)) else {
             continue;
         };
+
+        // When editing, route all keys to the editor
+        if let Some(ref mut session) = mode.edit_state {
+            if session.handle_key(key) {
+                // Editor requested exit — save and close
+                let _ = session.save();
+                mode.edit_state = None;
+            }
+            continue;
+        }
 
         match input::handle_key(key, state, mode) {
             LoopAction::Continue => {}

@@ -27,7 +27,7 @@ const SELECTED_BG: Color = Color::Indexed(236);
 /// Render the entire picker UI.
 pub fn render(
     state: &mut PickerState,
-    mode: &dyn PickerMode,
+    mode: &mut dyn PickerMode,
     highlighter: &Highlighter,
     frame: &mut Frame,
 ) {
@@ -59,7 +59,7 @@ pub fn render(
 }
 
 /// Render a warning between tabs and body.
-fn render_warning(tab: &FileTabState, mode: &dyn PickerMode, frame: &mut Frame, area: Rect) {
+fn render_warning(tab: &FileTabState, mode: &mut dyn PickerMode, frame: &mut Frame, area: Rect) {
     if let Some(msg) = mode.tab_warning(tab) {
         let line = Line::from(Span::styled(
             format!(" {msg}"),
@@ -70,7 +70,7 @@ fn render_warning(tab: &FileTabState, mode: &dyn PickerMode, frame: &mut Frame, 
 }
 
 /// Render the tab bar at the top.
-fn render_tabs(state: &PickerState, mode: &dyn PickerMode, frame: &mut Frame, area: Rect) {
+fn render_tabs(state: &PickerState, mode: &mut dyn PickerMode, frame: &mut Frame, area: Rect) {
     let tab_bar_focused = state.focus == FocusPanel::TabBar;
 
     let mut titles: Vec<Line> = state
@@ -119,7 +119,7 @@ fn render_tabs(state: &PickerState, mode: &dyn PickerMode, frame: &mut Frame, ar
 /// Render the main body.
 fn render_body(
     state: &mut PickerState,
-    mode: &dyn PickerMode,
+    mode: &mut dyn PickerMode,
     highlighter: &Highlighter,
     frame: &mut Frame,
     area: Rect,
@@ -180,7 +180,7 @@ fn render_stub_body(tab: &FileTabState, frame: &mut Frame, area: Rect) {
 /// Render the split body with worktree list (left) and preview (right).
 fn render_split_body(
     state: &mut PickerState,
-    mode: &dyn PickerMode,
+    mode: &mut dyn PickerMode,
     highlighter: &Highlighter,
     frame: &mut Frame,
     area: Rect,
@@ -200,7 +200,7 @@ fn render_worktree_list(
     focus: FocusPanel,
     tab: &FileTabState,
     tab_idx: usize,
-    mode: &dyn PickerMode,
+    mode: &mut dyn PickerMode,
     frame: &mut Frame,
     area: Rect,
 ) {
@@ -270,11 +270,15 @@ fn render_worktree_list(
 /// Render the file preview panel (right).
 fn render_preview(
     state: &mut PickerState,
-    mode: &dyn PickerMode,
+    mode: &mut dyn PickerMode,
     highlighter: &Highlighter,
     frame: &mut Frame,
     area: Rect,
 ) {
+    if mode.render_editor(frame, area) {
+        return;
+    }
+
     let tab = state.current_tab();
     let is_focused = state.focus == FocusPanel::Preview;
     let border_color = if is_focused { ACCENT } else { DIM };

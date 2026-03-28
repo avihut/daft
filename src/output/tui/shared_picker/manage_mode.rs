@@ -51,6 +51,8 @@ pub struct ManageMode {
     pub pending_remove: bool,
     /// When true, the event loop will call `show_modal` to display the add-file modal.
     pub pending_add: bool,
+    /// Active inline file editor session, if any.
+    pub edit_state: Option<super::editor::EditSession>,
 }
 
 impl ManageMode {
@@ -82,6 +84,30 @@ impl ManageMode {
             .iter()
             .map(|info| info.statuses.iter().map(|(_, _, s)| *s).collect())
             .collect();
+    }
+
+    /// Start an inline editing session for the currently highlighted entry.
+    fn start_edit(&mut self, state: &PickerState) {
+        if state.is_virtual_tab() || state.tabs.is_empty() {
+            return;
+        }
+        let tab = state.current_tab();
+        let tab_idx = state.active_tab;
+        let entry_idx = tab.list_cursor;
+        let status = self
+            .statuses
+            .get(tab_idx)
+            .and_then(|t| t.get(entry_idx))
+            .copied()
+            .unwrap_or(WorktreeStatus::Missing);
+        let entry = &tab.entries[entry_idx];
+        self.edit_state = super::editor::try_start_edit(
+            status,
+            &tab.rel_path,
+            &entry.worktree_path,
+            &entry.worktree_name,
+            &self.git_common_dir,
+        );
     }
 
     /// Toggle between linked and materialized for the currently highlighted entry.
@@ -710,6 +736,10 @@ impl PickerMode for ManageMode {
     }
 
     fn handle_list_key(&mut self, key: KeyCode, state: &mut PickerState) -> LoopAction {
+        if key == KeyCode::Enter && state.focus == FocusPanel::Preview {
+            self.start_edit(state);
+            return LoopAction::Continue;
+        }
         match key {
             KeyCode::Char('d') => {
                 self.toggle_diff_mode(state);
@@ -876,6 +906,15 @@ impl PickerMode for ManageMode {
 
     fn footer_height(&self) -> u16 {
         6
+    }
+
+    fn render_editor(&mut self, frame: &mut Frame, area: Rect) -> bool {
+        if let Some(ref mut session) = self.edit_state {
+            session.render(frame, area);
+            true
+        } else {
+            false
+        }
     }
 
     fn preview_override(&self, state: &PickerState) -> Option<Vec<Line<'static>>> {

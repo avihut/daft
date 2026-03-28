@@ -88,7 +88,7 @@ fn handle_worktree_list(
     LoopAction::Continue
 }
 
-fn handle_preview(key: KeyEvent, state: &mut PickerState, mode: &dyn PickerMode) -> LoopAction {
+fn handle_preview(key: KeyEvent, state: &mut PickerState, mode: &mut dyn PickerMode) -> LoopAction {
     match key.code {
         KeyCode::Down | KeyCode::Char('j') => {
             let all = mode.all_entries_traversable(state.current_tab());
@@ -104,6 +104,7 @@ fn handle_preview(key: KeyEvent, state: &mut PickerState, mode: &dyn PickerMode)
         KeyCode::Left | KeyCode::Char('h') => state.prev_tab(extra(mode)),
         KeyCode::Char('q') | KeyCode::Esc => state.focus = FocusPanel::Footer,
         KeyCode::Tab | KeyCode::BackTab => state.toggle_panel(),
+        KeyCode::Enter => return mode.handle_list_key(KeyCode::Enter, state),
         _ => {}
     }
     LoopAction::Continue
