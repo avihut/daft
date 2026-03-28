@@ -24,13 +24,13 @@ pub fn render(state: &mut CollectPickerState, highlighter: &Highlighter, frame: 
     // Clear the screen
     frame.render_widget(Clear, area);
 
-    // Layout: tabs (2 rows) | body (fill) | footer (4 rows)
+    // Layout: tabs (2 rows) | body (fill) | footer (5 rows: buttons + spacer + help)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2), // Tabs
             Constraint::Min(5),    // Body
-            Constraint::Length(4), // Footer (buttons + help)
+            Constraint::Length(5), // Footer
         ])
         .split(area);
 
@@ -353,15 +353,23 @@ fn render_footer(state: &CollectPickerState, frame: &mut Frame, area: Rect) {
         ),
     ]);
 
-    let key_style = Style::default().fg(ACCENT);
+    let key_style = Style::default().fg(Color::Cyan);
     let desc_style = Style::default().fg(DIM);
+
+    // Context-sensitive description for hl/arrows
+    let hl_desc = match state.focus {
+        FocusPanel::TabBar => " tabs  ",
+        FocusPanel::WorktreeList => " tabs  ",
+        FocusPanel::Preview => " tabs  ",
+        FocusPanel::Footer => " buttons  ",
+    };
 
     let help = Line::from(vec![
         Span::raw("  "),
         Span::styled("jk/\u{2191}\u{2193}", key_style),
-        Span::styled(" nav  ", desc_style),
+        Span::styled(" navigate  ", desc_style),
         Span::styled("hl/\u{2190}\u{2192}", key_style),
-        Span::styled(" tabs  ", desc_style),
+        Span::styled(hl_desc, desc_style),
         Span::styled("Space", key_style),
         Span::styled(" select  ", desc_style),
         Span::styled("m", key_style),
@@ -369,13 +377,13 @@ fn render_footer(state: &CollectPickerState, frame: &mut Frame, area: Rect) {
         Span::styled("Tab", key_style),
         Span::styled(" panel  ", desc_style),
         Span::styled("Esc", key_style),
-        Span::styled(" cancel", desc_style),
+        Span::styled(" footer/cancel", desc_style),
     ]);
 
     let block = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(DIM));
 
-    let paragraph = Paragraph::new(vec![buttons, help]).block(block);
+    let paragraph = Paragraph::new(vec![buttons, Line::raw(""), help]).block(block);
     frame.render_widget(paragraph, area);
 }
