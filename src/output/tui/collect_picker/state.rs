@@ -6,6 +6,8 @@ use std::path::PathBuf;
 /// Which panel has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FocusPanel {
+    /// Tab bar at the top — used on stub tabs where there is no worktree list.
+    TabBar,
     WorktreeList,
     Preview,
     Footer,
@@ -104,7 +106,7 @@ impl CollectPickerState {
         if !self.tabs.is_empty() {
             self.active_tab = (self.active_tab + 1) % self.tabs.len();
             self.focus = if self.current_tab().is_stub {
-                FocusPanel::Footer
+                FocusPanel::TabBar
             } else {
                 FocusPanel::WorktreeList
             };
@@ -119,7 +121,7 @@ impl CollectPickerState {
                 self.active_tab - 1
             };
             self.focus = if self.current_tab().is_stub {
-                FocusPanel::Footer
+                FocusPanel::TabBar
             } else {
                 FocusPanel::WorktreeList
             };
@@ -129,6 +131,9 @@ impl CollectPickerState {
     pub fn move_down(&mut self) {
         let tab = &self.tabs[self.active_tab];
         match self.focus {
+            FocusPanel::TabBar => {
+                self.focus = FocusPanel::Footer;
+            }
             FocusPanel::WorktreeList => {
                 if tab.is_stub {
                     return;
@@ -142,7 +147,6 @@ impl CollectPickerState {
             }
             FocusPanel::Preview => {
                 let tab = &mut self.tabs[self.active_tab];
-                // Only scroll if content is taller than viewport
                 let max_scroll = tab
                     .preview_content_lines
                     .saturating_sub(tab.preview_viewport_height);
@@ -156,6 +160,7 @@ impl CollectPickerState {
 
     pub fn move_up(&mut self) {
         match self.focus {
+            FocusPanel::TabBar => {} // Already at top
             FocusPanel::WorktreeList => {
                 let cursor = &mut self.tabs[self.active_tab].list_cursor;
                 *cursor = cursor.saturating_sub(1);
@@ -165,7 +170,9 @@ impl CollectPickerState {
                     self.tabs[self.active_tab].preview_scroll.saturating_sub(1);
             }
             FocusPanel::Footer => {
-                if !self.current_tab().is_stub {
+                if self.current_tab().is_stub {
+                    self.focus = FocusPanel::TabBar;
+                } else {
                     self.focus = FocusPanel::WorktreeList;
                 }
             }
@@ -177,6 +184,7 @@ impl CollectPickerState {
             return;
         }
         self.focus = match self.focus {
+            FocusPanel::TabBar => FocusPanel::WorktreeList,
             FocusPanel::WorktreeList => FocusPanel::Preview,
             FocusPanel::Preview => FocusPanel::WorktreeList,
             FocusPanel::Footer => FocusPanel::WorktreeList,
@@ -347,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn stub_tab_gets_footer_focus() {
+    fn stub_tab_gets_tab_bar_focus() {
         let files = vec![
             make_uncollected(".env", &[("main", "/repo/main")]),
             make_uncollected(".secrets", &[]),
@@ -356,8 +364,15 @@ mod tests {
 
         assert_eq!(state.focus, FocusPanel::WorktreeList);
         state.next_tab(); // switch to stub tab
+        assert_eq!(state.focus, FocusPanel::TabBar);
+        // Down from tab bar goes to footer
+        state.move_down();
         assert_eq!(state.focus, FocusPanel::Footer);
-        state.prev_tab(); // back to non-stub
+        // Up from footer on stub goes back to tab bar
+        state.move_up();
+        assert_eq!(state.focus, FocusPanel::TabBar);
+        // Navigate back to non-stub
+        state.prev_tab();
         assert_eq!(state.focus, FocusPanel::WorktreeList);
     }
 

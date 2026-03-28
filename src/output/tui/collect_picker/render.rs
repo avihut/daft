@@ -41,6 +41,8 @@ pub fn render(state: &mut CollectPickerState, highlighter: &Highlighter, frame: 
 
 /// Render the tab bar at the top.
 fn render_tabs(state: &CollectPickerState, frame: &mut Frame, area: Rect) {
+    let tab_bar_focused = state.focus == FocusPanel::TabBar;
+
     let titles: Vec<Line> = state
         .tabs
         .iter()
@@ -56,14 +58,21 @@ fn render_tabs(state: &CollectPickerState, frame: &mut Frame, area: Rect) {
         })
         .collect();
 
+    let highlight_style = if tab_bar_focused {
+        Style::default()
+            .fg(Color::Black)
+            .bg(ACCENT)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(ACCENT)
+            .add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::UNDERLINED)
+    };
+
     let tabs = Tabs::new(titles)
         .select(state.active_tab)
-        .highlight_style(
-            Style::default()
-                .fg(ACCENT)
-                .add_modifier(Modifier::BOLD)
-                .add_modifier(Modifier::UNDERLINED),
-        )
+        .highlight_style(highlight_style)
         .divider(Span::raw(" | "));
 
     frame.render_widget(tabs, area);

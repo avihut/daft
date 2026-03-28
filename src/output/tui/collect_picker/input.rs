@@ -33,10 +33,22 @@ pub fn handle_key(key: KeyEvent, state: &mut CollectPickerState) -> InputResult 
     }
 
     match state.focus {
+        FocusPanel::TabBar => handle_tab_bar(key, state),
         FocusPanel::WorktreeList => handle_worktree_list(key, state),
         FocusPanel::Preview => handle_preview(key, state),
         FocusPanel::Footer => handle_footer(key, state),
     }
+}
+
+fn handle_tab_bar(key: KeyEvent, state: &mut CollectPickerState) -> InputResult {
+    match key.code {
+        KeyCode::Right | KeyCode::Char('l') => state.next_tab(),
+        KeyCode::Left | KeyCode::Char('h') => state.prev_tab(),
+        KeyCode::Down | KeyCode::Char('j') => state.move_down(),
+        KeyCode::Char('q') | KeyCode::Esc => state.focus = FocusPanel::Footer,
+        _ => {}
+    }
+    InputResult::Continue
 }
 
 fn handle_worktree_list(key: KeyEvent, state: &mut CollectPickerState) -> InputResult {
