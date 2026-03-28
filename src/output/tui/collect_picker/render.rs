@@ -182,16 +182,15 @@ fn render_worktree_list(focus: FocusPanel, tab: &FileTabState, frame: &mut Frame
                 "  "
             };
 
-            // Worktrees without the file are muted when no source is selected yet
+            // Worktrees with the file get normal color, those without are muted
             let style = if is_selected {
                 Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
-            } else if !entry.has_file && !has_selection {
-                // Muted — can't be selected as source
-                Style::default().fg(Color::Indexed(240))
+            } else if !entry.has_file {
+                Style::default().fg(DIM)
             } else if is_cursor {
                 Style::default().fg(Color::White)
             } else {
-                Style::default().fg(DIM)
+                Style::default().fg(Color::Reset)
             };
 
             let bg_style = if is_cursor {
@@ -206,7 +205,7 @@ fn render_worktree_list(focus: FocusPanel, tab: &FileTabState, frame: &mut Frame
                 Span::styled(entry.worktree_name.clone(), bg_style),
             ];
 
-            // Show status tag after the name
+            // Show materialized/linked tag when a source is selected
             if has_selection && !is_selected {
                 let tag = if is_materialized {
                     Span::styled(" materialized", Style::default().fg(Color::Yellow))
@@ -214,11 +213,6 @@ fn render_worktree_list(focus: FocusPanel, tab: &FileTabState, frame: &mut Frame
                     Span::styled(" linked", Style::default().fg(Color::Cyan))
                 };
                 spans.push(tag);
-            } else if !entry.has_file && !has_selection {
-                spans.push(Span::styled(
-                    " (no file)",
-                    Style::default().fg(Color::Indexed(240)),
-                ));
             }
 
             ListItem::new(Line::from(spans))

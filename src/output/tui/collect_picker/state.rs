@@ -84,10 +84,12 @@ impl CollectPickerState {
                         has_file: w.has_file,
                     })
                     .collect();
+                // Start cursor on the first entry that has a file
+                let initial_cursor = entries.iter().position(|e| e.has_file).unwrap_or(0);
                 FileTabState {
                     rel_path: uf.rel_path,
                     entries,
-                    list_cursor: 0,
+                    list_cursor: initial_cursor,
                     selected: None,
                     materialized: vec![false; len],
                     preview_scroll: 0,
@@ -149,11 +151,30 @@ impl CollectPickerState {
                 if tab.is_stub {
                     return;
                 }
-                let max = tab.entries.len().saturating_sub(1);
-                if self.tabs[self.active_tab].list_cursor >= max {
-                    self.focus = FocusPanel::Footer;
+                let has_selection = tab.selected.is_some();
+                let current = tab.list_cursor;
+
+                // Find the next traversable entry
+                let next = if has_selection {
+                    // All entries traversable when source is selected
+                    if current < tab.entries.len() - 1 {
+                        Some(current + 1)
+                    } else {
+                        None
+                    }
                 } else {
-                    self.tabs[self.active_tab].list_cursor += 1;
+                    // Skip entries without files
+                    tab.entries
+                        .iter()
+                        .enumerate()
+                        .skip(current + 1)
+                        .find(|(_, e)| e.has_file)
+                        .map(|(i, _)| i)
+                };
+
+                match next {
+                    Some(idx) => self.tabs[self.active_tab].list_cursor = idx,
+                    None => self.focus = FocusPanel::Footer,
                 }
             }
             FocusPanel::Preview => {
@@ -173,8 +194,30 @@ impl CollectPickerState {
         match self.focus {
             FocusPanel::TabBar => {}
             FocusPanel::WorktreeList => {
-                let cursor = &mut self.tabs[self.active_tab].list_cursor;
-                *cursor = cursor.saturating_sub(1);
+                let tab = &self.tabs[self.active_tab];
+                let has_selection = tab.selected.is_some();
+                let current = tab.list_cursor;
+
+                let prev = if has_selection {
+                    // All entries traversable
+                    if current > 0 {
+                        Some(current - 1)
+                    } else {
+                        None
+                    }
+                } else {
+                    // Skip entries without files
+                    tab.entries[..current]
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find(|(_, e)| e.has_file)
+                        .map(|(i, _)| i)
+                };
+
+                if let Some(idx) = prev {
+                    self.tabs[self.active_tab].list_cursor = idx;
+                }
             }
             FocusPanel::Preview => {
                 self.tabs[self.active_tab].preview_scroll =
@@ -185,6 +228,23 @@ impl CollectPickerState {
                     self.focus = FocusPanel::TabBar;
                 } else {
                     self.focus = FocusPanel::WorktreeList;
+                    // Place cursor on the last traversable entry
+                    let tab = &self.tabs[self.active_tab];
+                    if tab.selected.is_none() {
+                        if let Some(last) = tab
+                            .entries
+                            .iter()
+                            .enumerate()
+                            .rev()
+                            .find(|(_, e)| e.has_file)
+                            .map(|(i, _)| i)
+                        {
+                            self.tabs[self.active_tab].list_cursor = last;
+                        }
+                    } else {
+                        self.tabs[self.active_tab].list_cursor =
+                            tab.entries.len().saturating_sub(1);
+                    }
                 }
             }
         }
@@ -458,6 +518,53 @@ mod tests {
         state.tabs[0].list_cursor = 0;
         state.toggle_selection();
         assert_eq!(state.current_tab().selected, Some(0));
+    }
+
+    #[test]
+    fn cursor_skips_worktrees_without_file_before_selection() {
+        let files = vec![make_uncollected(
+            ".env",
+            &[
+                ("main", "/repo/main", true),
+                ("empty1", "/repo/empty1", false),
+                ("empty2", "/repo/empty2", false),
+                ("dev", "/repo/dev", true),
+            ],
+        )];
+        let mut state = CollectPickerState::new(files);
+
+        // Initial cursor should be on main (first with file)
+        assert_eq!(state.current_tab().list_cursor, 0);
+
+        // Move down — should skip empty1 and empty2, land on dev
+        state.move_down();
+        assert_eq!(state.current_tab().list_cursor, 3);
+
+        // Move down again — should go to footer (no more entries with files)
+        state.move_down();
+        assert_eq!(state.focus, FocusPanel::Footer);
+
+        // Move up from footer — back to list at last entry with file (dev)
+        state.move_up();
+        assert_eq!(state.focus, FocusPanel::WorktreeList);
+        assert_eq!(state.current_tab().list_cursor, 3);
+
+        // Move up — should skip empty2 and empty1, land on main
+        state.move_up();
+        assert_eq!(state.current_tab().list_cursor, 0);
+    }
+
+    #[test]
+    fn initial_cursor_skips_to_first_entry_with_file() {
+        let files = vec![make_uncollected(
+            ".env",
+            &[
+                ("empty", "/repo/empty", false),
+                ("main", "/repo/main", true),
+            ],
+        )];
+        let state = CollectPickerState::new(files);
+        assert_eq!(state.current_tab().list_cursor, 1);
     }
 
     #[test]
