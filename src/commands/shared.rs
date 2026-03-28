@@ -677,6 +677,7 @@ fn run_manage(output: &mut dyn Output) -> Result<()> {
         config_root,
         materialized,
         worktree_paths,
+        worktree_path,
     )?;
 
     Ok(())

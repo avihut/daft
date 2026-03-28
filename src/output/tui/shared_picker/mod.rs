@@ -4,6 +4,7 @@
 //! file. The generic shell handles navigation and rendering while mode-specific
 //! logic (e.g. collect, manage) is injected via the `PickerMode` trait.
 
+mod add_modal;
 pub mod collect_mode;
 mod dialog;
 mod highlight;
@@ -267,6 +268,7 @@ pub fn run_manage_picker(
     config_root: std::path::PathBuf,
     materialized: MaterializedState,
     worktree_paths: Vec<std::path::PathBuf>,
+    worktree_root: std::path::PathBuf,
 ) -> Result<()> {
     // Install panic hook that restores the terminal before printing the panic
     let prev_hook = std::panic::take_hook();
@@ -281,6 +283,7 @@ pub fn run_manage_picker(
         config_root,
         materialized,
         worktree_paths,
+        worktree_root,
     );
 
     // Restore the default panic hook
@@ -295,6 +298,7 @@ fn run_manage_picker_inner(
     config_root: std::path::PathBuf,
     materialized: MaterializedState,
     worktree_paths: Vec<std::path::PathBuf>,
+    worktree_root: std::path::PathBuf,
 ) -> Result<()> {
     // Set up terminal
     terminal::enable_raw_mode()?;
@@ -312,9 +316,11 @@ fn run_manage_picker_inner(
         materialized,
         statuses: Vec::new(),
         worktree_paths,
+        worktree_root,
         info_message: None,
         diff_pivot: None,
         pending_remove: false,
+        pending_add: false,
     };
     mode.set_statuses(&infos);
 

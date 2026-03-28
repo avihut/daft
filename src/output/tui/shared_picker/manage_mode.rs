@@ -18,8 +18,10 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+use crate::core::layout;
 use crate::core::shared::{self, MaterializedState, SharedFileInfo, WorktreeStatus};
 
+use super::add_modal::{show_add_modal, AddResult};
 use super::dialog::show_confirm_dialog;
 use super::remove_modal::{show_remove_modal, RemoveDecision};
 use super::state::{FileTabState, FocusPanel, PickerState, WorktreeEntry};
@@ -39,12 +41,16 @@ pub struct ManageMode {
     pub statuses: Vec<Vec<WorktreeStatus>>,
     /// Absolute paths of all worktrees (parallel to entries within each tab).
     pub worktree_paths: Vec<PathBuf>,
+    /// Root of the current worktree (for add-file modal).
+    pub worktree_root: PathBuf,
     /// Temporary info/warning message for the user.
     pub info_message: Option<String>,
     /// If `Some`, diff mode is active. The value is `(tab_idx, entry_idx)` of the pivot.
     pub diff_pivot: Option<(usize, usize)>,
     /// When true, the event loop will call `show_modal` to display the remove confirmation.
     pub pending_remove: bool,
+    /// When true, the event loop will call `show_modal` to display the add-file modal.
+    pub pending_add: bool,
 }
 
 impl ManageMode {
@@ -506,6 +512,131 @@ impl ManageMode {
             })
             .collect();
     }
+
+    /// Show the add-file modal and execute the result.
+    fn show_add_modal(
+        &mut self,
+        terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stderr>>,
+        state: &mut PickerState,
+    ) -> Result<()> {
+        let shared_paths = shared::read_shared_paths(&self.worktree_root).unwrap_or_default();
+
+        let result = show_add_modal(terminal, &self.worktree_root, &shared_paths)?;
+
+        match result {
+            AddResult::Selected(rel_path) => {
+                let rel_str = rel_path.to_string_lossy().to_string();
+
+                // Already shared?
+                if shared_paths.contains(&rel_str) {
+                    self.info_message = Some(format!("{rel_str} is already shared"));
+                    return Ok(());
+                }
+
+                // Git-tracked?
+                if shared::is_git_tracked(&self.worktree_root, &rel_str)? {
+                    self.info_message = Some(format!(
+                        "{rel_str} is tracked by git. Untrack it first with: git rm --cached {rel_str}"
+                    ));
+                    return Ok(());
+                }
+
+                self.execute_add(state, &rel_str)?;
+            }
+            AddResult::Declared(name) => {
+                if shared_paths.contains(&name) {
+                    self.info_message = Some(format!("{name} is already shared"));
+                    return Ok(());
+                }
+
+                self.execute_declare(state, &name)?;
+            }
+            AddResult::Cancelled => {}
+        }
+
+        Ok(())
+    }
+
+    /// Execute adding an existing file to shared storage.
+    ///
+    /// Equivalent to `daft shared add <path>`:
+    /// - Move file to `.git/.daft/shared/`
+    /// - Create symlink in the worktree
+    /// - Add to `daft.yml`
+    /// - Add to `.gitignore`
+    fn execute_add(&mut self, state: &mut PickerState, rel_path: &str) -> Result<()> {
+        shared::ensure_shared_dir(&self.git_common_dir)?;
+
+        // Ensure gitignored
+        layout::ensure_gitignore_entry(&self.config_root, rel_path)?;
+
+        // Move to shared storage
+        let full_path = self.worktree_root.join(rel_path);
+        let shared_target = shared::shared_file_path(&self.git_common_dir, rel_path);
+        if let Some(parent) = shared_target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        if fs::rename(&full_path, &shared_target).is_err() {
+            // rename fails across filesystems — fall back to copy + delete
+            if full_path.is_dir() {
+                shared::copy_dir_all(&full_path, &shared_target)?;
+                fs::remove_dir_all(&full_path)?;
+            } else {
+                fs::copy(&full_path, &shared_target)?;
+                fs::remove_file(&full_path)?;
+            }
+        }
+
+        // Create symlink
+        shared::create_shared_symlink(&self.worktree_root, rel_path, &self.git_common_dir)?;
+
+        // Update daft.yml
+        shared::add_to_daft_yml(&self.config_root, &[rel_path])?;
+
+        self.info_message = Some(format!("Shared: {rel_path}"));
+
+        // Refresh tabs
+        self.refresh_all(state);
+
+        Ok(())
+    }
+
+    /// Execute declaring a file as shared (without collecting).
+    ///
+    /// Equivalent to `daft shared add --declare <path>`:
+    /// - Add to `daft.yml`
+    /// - Add to `.gitignore`
+    fn execute_declare(&mut self, state: &mut PickerState, rel_path: &str) -> Result<()> {
+        layout::ensure_gitignore_entry(&self.config_root, rel_path)?;
+        shared::add_to_daft_yml(&self.config_root, &[rel_path])?;
+
+        self.info_message = Some(format!("Declared: {rel_path}"));
+
+        // Refresh tabs
+        self.refresh_all(state);
+
+        Ok(())
+    }
+
+    /// Re-read shared paths, re-detect statuses, and rebuild tabs.
+    fn refresh_all(&mut self, state: &mut PickerState) {
+        let shared_paths = shared::read_shared_paths(&self.worktree_root).unwrap_or_default();
+        let infos = shared::detect_shared_statuses(
+            &shared_paths,
+            &self.worktree_paths,
+            &self.git_common_dir,
+            &self.materialized,
+        );
+        let new_tabs = Self::build_tabs(&infos);
+        self.set_statuses(&infos);
+        state.tabs = new_tabs;
+
+        // Clamp active_tab
+        if !state.tabs.is_empty() && state.active_tab >= state.tabs.len() {
+            state.active_tab = state.tabs.len().saturating_sub(1);
+        }
+    }
 }
 
 impl PickerMode for ManageMode {
@@ -542,6 +673,10 @@ impl PickerMode for ManageMode {
             KeyCode::Char('r') | KeyCode::Delete | KeyCode::Backspace => {
                 self.info_message = None;
                 self.pending_remove = true;
+            }
+            KeyCode::Char('a') => {
+                self.info_message = None;
+                self.pending_add = true;
             }
             _ => {}
         }
@@ -621,6 +756,8 @@ impl PickerMode for ManageMode {
 
         let help = Line::from(vec![
             Span::raw("  "),
+            Span::styled("a", key_style),
+            Span::styled(" add  ", desc_style),
             Span::styled("d", key_style),
             Span::styled(diff_desc, desc_style),
             Span::styled("m", key_style),
@@ -682,7 +819,7 @@ impl PickerMode for ManageMode {
     }
 
     fn needs_modal(&self) -> bool {
-        self.pending_remove
+        self.pending_remove || self.pending_add
     }
 
     fn show_modal(
@@ -690,6 +827,11 @@ impl PickerMode for ManageMode {
         terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stderr>>,
         state: &mut PickerState,
     ) -> Result<()> {
+        if self.pending_add {
+            self.pending_add = false;
+            return self.show_add_modal(terminal, state);
+        }
+
         self.pending_remove = false;
 
         if state.tabs.is_empty() {
