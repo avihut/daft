@@ -553,8 +553,12 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
     // Phase 1: Detect declared-but-uncollected files
     let uncollected = shared::detect_uncollected(&shared_paths, &worktree_paths, &git_common_dir);
 
+    // Only launch TUI if there are decidable files (not just stubs)
+    let has_decidable = uncollected.iter().any(|u| !u.copies.is_empty());
+
     if !uncollected.is_empty() {
-        let is_interactive = std::io::IsTerminal::is_terminal(&std::io::stderr())
+        let is_interactive = has_decidable
+            && std::io::IsTerminal::is_terminal(&std::io::stderr())
             && std::env::var("DAFT_TESTING").is_err();
 
         if is_interactive {
@@ -572,7 +576,6 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
                         )?;
                         output.success(&format!("Collected: {}", decision.rel_path));
                     }
-                    materialized.save(&git_common_dir)?;
                 }
                 PickerOutcome::Cancelled => {
                     output.info("Sync cancelled.");
@@ -580,16 +583,23 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
                 }
             }
         } else {
-            // Non-interactive: report what needs collection
-            let count = uncollected.len();
-            let files: Vec<&str> = uncollected.iter().map(|u| u.rel_path.as_str()).collect();
-            output.info(&format!(
-                "{} declared file{} not yet collected: {}",
-                count,
-                if count == 1 { "" } else { "s" },
-                files.join(", ")
-            ));
-            output.info("Run `daft shared sync` interactively to collect them.");
+            // Non-interactive (or all stubs): report what needs collection
+            let collectible: Vec<&str> = uncollected
+                .iter()
+                .filter(|u| !u.copies.is_empty())
+                .map(|u| u.rel_path.as_str())
+                .collect();
+            if !collectible.is_empty() {
+                let count = collectible.len();
+                output.info(&format!(
+                    "{} declared file{} not yet collected: {}",
+                    count,
+                    if count == 1 { "" } else { "s" },
+                    collectible.join(", ")
+                ));
+                output.info("Run `daft shared sync` interactively to collect them.");
+            }
+            // Stubs (no copies anywhere) are silently skipped
         }
     }
 
@@ -608,19 +618,21 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
 
             match shared::create_shared_symlink(wt, rel_path, &git_common_dir)? {
                 shared::LinkResult::Created => {
-                    output.success(&format!("{}: {} \u{2192} symlinked", wt_name, rel_path));
+                    output.success(&format!("{wt_name}: {rel_path} -> symlinked"));
                 }
                 shared::LinkResult::AlreadyLinked => {}
                 shared::LinkResult::Conflict => {
                     output.warning(&format!(
-                        "{}: {} exists (not shared) \u{2014} run `daft shared link {}` to replace",
-                        wt_name, rel_path, rel_path
+                        "{wt_name}: {rel_path} exists (not shared) -- run `daft shared link {rel_path}` to replace",
                     ));
                 }
                 shared::LinkResult::NoSource => {}
             }
         }
     }
+
+    // Save materialized state (may have been updated by execute_collect)
+    materialized.save(&git_common_dir)?;
 
     Ok(())
 }

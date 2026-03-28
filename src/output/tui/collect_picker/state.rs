@@ -24,8 +24,13 @@ pub struct FileTabState {
     pub rel_path: String,
     pub copies: Vec<CopyEntry>,
     pub list_cursor: usize,
+    /// Index of the worktree selected as the collection source.
     pub selected: Option<usize>,
-    pub preview_scroll: usize,
+    /// Per-worktree materialization preference (parallel to `copies`).
+    /// `true` = keep local copy (materialized), `false` = replace with symlink.
+    /// Only meaningful when `selected` is `Some`.
+    pub materialized: Vec<bool>,
+    pub preview_scroll: u16,
     pub is_stub: bool,
 }
 
@@ -53,6 +58,7 @@ impl CollectPickerState {
             .into_iter()
             .map(|uf| {
                 let is_stub = uf.copies.is_empty();
+                let len = uf.copies.len();
                 let copies: Vec<CopyEntry> = uf
                     .copies
                     .into_iter()
@@ -66,6 +72,7 @@ impl CollectPickerState {
                     copies,
                     list_cursor: 0,
                     selected: None,
+                    materialized: vec![false; len],
                     preview_scroll: 0,
                     is_stub,
                 }
@@ -86,16 +93,14 @@ impl CollectPickerState {
         &self.tabs[self.active_tab]
     }
 
-    pub fn current_tab_mut(&mut self) -> &mut FileTabState {
-        &mut self.tabs[self.active_tab]
-    }
-
     pub fn next_tab(&mut self) {
         if !self.tabs.is_empty() {
             self.active_tab = (self.active_tab + 1) % self.tabs.len();
-            if !self.current_tab().is_stub {
-                self.focus = FocusPanel::WorktreeList;
-            }
+            self.focus = if self.current_tab().is_stub {
+                FocusPanel::Footer
+            } else {
+                FocusPanel::WorktreeList
+            };
         }
     }
 
@@ -106,9 +111,11 @@ impl CollectPickerState {
             } else {
                 self.active_tab - 1
             };
-            if !self.current_tab().is_stub {
-                self.focus = FocusPanel::WorktreeList;
-            }
+            self.focus = if self.current_tab().is_stub {
+                FocusPanel::Footer
+            } else {
+                FocusPanel::WorktreeList
+            };
         }
     }
 
@@ -127,7 +134,8 @@ impl CollectPickerState {
                 }
             }
             FocusPanel::Preview => {
-                self.tabs[self.active_tab].preview_scroll += 1;
+                self.tabs[self.active_tab].preview_scroll =
+                    self.tabs[self.active_tab].preview_scroll.saturating_add(1);
             }
             FocusPanel::Footer => {}
         }
@@ -140,8 +148,8 @@ impl CollectPickerState {
                 *cursor = cursor.saturating_sub(1);
             }
             FocusPanel::Preview => {
-                let scroll = &mut self.tabs[self.active_tab].preview_scroll;
-                *scroll = scroll.saturating_sub(1);
+                self.tabs[self.active_tab].preview_scroll =
+                    self.tabs[self.active_tab].preview_scroll.saturating_sub(1);
             }
             FocusPanel::Footer => {
                 if !self.current_tab().is_stub {
@@ -162,6 +170,9 @@ impl CollectPickerState {
         };
     }
 
+    /// Select or deselect the highlighted worktree as the collection source.
+    /// When selecting, all other worktrees default to materialized.
+    /// Changing or clearing selection resets materialization preferences.
     pub fn toggle_selection(&mut self) {
         if self.focus != FocusPanel::WorktreeList || self.current_tab().is_stub {
             return;
@@ -169,10 +180,29 @@ impl CollectPickerState {
         let tab = &mut self.tabs[self.active_tab];
         let cursor = tab.list_cursor;
         if tab.selected == Some(cursor) {
+            // Deselect — clear everything
             tab.selected = None;
+            tab.materialized.fill(false);
         } else {
+            // Select new source — all others default to materialized
             tab.selected = Some(cursor);
+            tab.materialized.fill(true);
+            tab.materialized[cursor] = false; // source gets linked, not materialized
         }
+    }
+
+    /// Toggle materialization for the highlighted worktree.
+    /// Only available when a source is selected and the cursor is not on the source.
+    pub fn toggle_materialized(&mut self) {
+        let tab = &mut self.tabs[self.active_tab];
+        let Some(selected) = tab.selected else {
+            return;
+        };
+        if tab.list_cursor == selected || tab.is_stub {
+            return;
+        }
+        let idx = tab.list_cursor;
+        tab.materialized[idx] = !tab.materialized[idx];
     }
 
     pub fn activate_footer(&mut self) {
@@ -208,8 +238,9 @@ impl CollectPickerState {
     }
 
     /// Whether all decidable files have a selection.
+    /// Returns true when there are no decidable files (all stubs).
     pub fn all_decided(&self) -> bool {
-        self.decidable_count() > 0 && self.decided_count() == self.decidable_count()
+        self.decided_count() == self.decidable_count()
     }
 
     pub fn has_any_selection(&self) -> bool {
@@ -229,13 +260,22 @@ impl CollectPickerState {
             .into_iter()
             .filter_map(|tab| {
                 if tab.is_stub {
-                    None
-                } else {
-                    tab.selected.map(|idx| CollectDecision {
+                    return None;
+                }
+                tab.selected.map(|idx| {
+                    let materialize_in = tab
+                        .copies
+                        .iter()
+                        .enumerate()
+                        .filter(|&(i, _)| i != idx && tab.materialized[i])
+                        .map(|(_, c)| c.worktree_path.clone())
+                        .collect();
+                    CollectDecision {
                         rel_path: tab.rel_path,
                         source_worktree: tab.copies[idx].worktree_path.clone(),
-                    })
-                }
+                        materialize_in,
+                    }
+                })
             })
             .collect()
     }
@@ -273,6 +313,7 @@ mod tests {
         assert!(!state.tabs[0].is_stub);
         assert!(state.tabs[1].is_stub);
         assert_eq!(state.tabs[0].copies.len(), 2);
+        assert_eq!(state.tabs[0].materialized, vec![false, false]);
     }
 
     #[test]
@@ -293,18 +334,99 @@ mod tests {
     }
 
     #[test]
-    fn toggle_selection_sets_and_clears() {
+    fn stub_tab_gets_footer_focus() {
+        let files = vec![
+            make_uncollected(".env", &[("main", "/repo/main")]),
+            make_uncollected(".secrets", &[]),
+        ];
+        let mut state = CollectPickerState::new(files);
+
+        assert_eq!(state.focus, FocusPanel::WorktreeList);
+        state.next_tab(); // switch to stub tab
+        assert_eq!(state.focus, FocusPanel::Footer);
+        state.prev_tab(); // back to non-stub
+        assert_eq!(state.focus, FocusPanel::WorktreeList);
+    }
+
+    #[test]
+    fn toggle_selection_sets_materialized_defaults() {
+        let files = vec![make_uncollected(
+            ".env",
+            &[
+                ("main", "/repo/main"),
+                ("dev", "/repo/dev"),
+                ("feat", "/repo/feat"),
+            ],
+        )];
+        let mut state = CollectPickerState::new(files);
+
+        // Select main (index 0) as source
+        state.toggle_selection();
+        assert_eq!(state.current_tab().selected, Some(0));
+        // Source is not materialized, others are
+        assert_eq!(state.current_tab().materialized, vec![false, true, true]);
+
+        // Deselect clears everything
+        state.toggle_selection();
+        assert_eq!(state.current_tab().selected, None);
+        assert_eq!(state.current_tab().materialized, vec![false, false, false]);
+    }
+
+    #[test]
+    fn changing_selection_resets_materialized() {
         let files = vec![make_uncollected(
             ".env",
             &[("main", "/repo/main"), ("dev", "/repo/dev")],
         )];
         let mut state = CollectPickerState::new(files);
 
-        assert_eq!(state.current_tab().selected, None);
+        // Select main
         state.toggle_selection();
-        assert_eq!(state.current_tab().selected, Some(0));
+        assert_eq!(state.current_tab().materialized, vec![false, true]);
+
+        // Toggle materialization on dev
+        state.tabs[0].list_cursor = 1;
+        state.toggle_materialized();
+        assert_eq!(state.current_tab().materialized, vec![false, false]);
+
+        // Now select dev instead — materialization resets
         state.toggle_selection();
-        assert_eq!(state.current_tab().selected, None);
+        assert_eq!(state.current_tab().selected, Some(1));
+        assert_eq!(state.current_tab().materialized, vec![true, false]);
+    }
+
+    #[test]
+    fn toggle_materialized_only_works_on_non_source() {
+        let files = vec![make_uncollected(
+            ".env",
+            &[("main", "/repo/main"), ("dev", "/repo/dev")],
+        )];
+        let mut state = CollectPickerState::new(files);
+
+        // Select main
+        state.toggle_selection();
+
+        // Try to toggle materialization on the source — should be no-op
+        state.tabs[0].list_cursor = 0;
+        state.toggle_materialized();
+        assert_eq!(state.current_tab().materialized, vec![false, true]);
+
+        // Toggle on dev — should work
+        state.tabs[0].list_cursor = 1;
+        state.toggle_materialized();
+        assert_eq!(state.current_tab().materialized, vec![false, false]);
+    }
+
+    #[test]
+    fn toggle_materialized_noop_without_selection() {
+        let files = vec![make_uncollected(
+            ".env",
+            &[("main", "/repo/main"), ("dev", "/repo/dev")],
+        )];
+        let mut state = CollectPickerState::new(files);
+
+        state.toggle_materialized();
+        assert_eq!(state.current_tab().materialized, vec![false, false]);
     }
 
     #[test]
@@ -313,7 +435,7 @@ mod tests {
         let mut state = CollectPickerState::new(files);
 
         assert_eq!(state.focus, FocusPanel::WorktreeList);
-        state.move_down(); // cursor at max (only 1 entry) → footer
+        state.move_down();
         assert_eq!(state.focus, FocusPanel::Footer);
     }
 
@@ -328,21 +450,62 @@ mod tests {
     }
 
     #[test]
-    fn into_decisions_builds_correctly() {
+    fn preview_scroll_uses_saturating_arithmetic() {
+        let files = vec![make_uncollected(".env", &[("main", "/repo/main")])];
+        let mut state = CollectPickerState::new(files);
+        state.focus = FocusPanel::Preview;
+
+        // Scroll down
+        state.move_down();
+        assert_eq!(state.current_tab().preview_scroll, 1);
+
+        // Scroll up past zero
+        state.move_up();
+        state.move_up();
+        assert_eq!(state.current_tab().preview_scroll, 0);
+    }
+
+    #[test]
+    fn into_decisions_includes_materialization() {
         let files = vec![
-            make_uncollected(".env", &[("main", "/repo/main"), ("dev", "/repo/dev")]),
+            make_uncollected(
+                ".env",
+                &[
+                    ("main", "/repo/main"),
+                    ("dev", "/repo/dev"),
+                    ("feat", "/repo/feat"),
+                ],
+            ),
             make_uncollected(".secrets", &[]),
         ];
         let mut state = CollectPickerState::new(files);
 
+        // Select dev (index 1) for .env
         state.tabs[0].list_cursor = 1;
         state.toggle_selection();
+        // Un-materialize feat
+        state.tabs[0].list_cursor = 2;
+        state.toggle_materialized();
 
         let decisions = state.into_decisions();
-        // Only .env produces a decision; .secrets is a stub (skipped)
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].rel_path, ".env");
         assert_eq!(decisions[0].source_worktree, PathBuf::from("/repo/dev"));
+        // Only main is materialized (feat was toggled off)
+        assert_eq!(
+            decisions[0].materialize_in,
+            vec![PathBuf::from("/repo/main")]
+        );
+    }
+
+    #[test]
+    fn all_decided_true_when_only_stubs() {
+        let files = vec![
+            make_uncollected(".secrets", &[]),
+            make_uncollected(".tokens", &[]),
+        ];
+        let state = CollectPickerState::new(files);
+        assert!(state.all_decided());
     }
 
     #[test]

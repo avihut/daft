@@ -515,13 +515,19 @@ pub struct CollectDecision {
     pub rel_path: String,
     /// Absolute path of the worktree to collect from.
     pub source_worktree: PathBuf,
+    /// Worktrees that should keep their local copy (materialized).
+    /// Other worktrees with real copies will have them removed and replaced
+    /// with symlinks. Worktrees without the file always get symlinks.
+    pub materialize_in: Vec<PathBuf>,
 }
 
 /// Execute a single collection decision.
 ///
 /// 1. Moves the file/dir from the chosen worktree to `.git/.daft/shared/`.
-/// 2. Creates a symlink in the source worktree and any worktrees missing the path.
-/// 3. Marks all other worktrees that have a real copy as materialized.
+/// 2. Creates a symlink in the source worktree.
+/// 3. For each other worktree: respects `materialize_in` — worktrees in the
+///    list keep their local copy; others have it removed and replaced with a
+///    symlink. Worktrees without the file always get symlinks.
 /// 4. Ensures the `.gitignore` entry exists.
 pub fn execute_collect(
     decision: &CollectDecision,
@@ -561,12 +567,24 @@ pub fn execute_collect(
         }
 
         let file_path = wt.join(rel_path);
-        if file_path.exists() && !file_path.is_symlink() {
-            // Real copy exists — mark as materialized
+        let should_materialize = decision.materialize_in.contains(wt);
+
+        if should_materialize && file_path.exists() && !file_path.is_symlink() {
+            // User wants this worktree to keep its local copy
             materialized.add(rel_path, wt);
-        } else if !file_path.exists() {
-            // No file — create symlink
-            create_shared_symlink(wt, rel_path, git_common_dir)?;
+        } else {
+            // Remove existing copy if present (user chose linking over materializing)
+            if file_path.exists() && !file_path.is_symlink() {
+                if file_path.is_dir() {
+                    fs::remove_dir_all(&file_path)?;
+                } else {
+                    fs::remove_file(&file_path)?;
+                }
+            }
+            // Create symlink if not already linked
+            if !file_path.exists() {
+                create_shared_symlink(wt, rel_path, git_common_dir)?;
+            }
         }
     }
 
@@ -997,39 +1015,61 @@ mod tests {
     // ── execute_collect tests ────────────────────────────────────────────
 
     #[test]
-    fn execute_collect_moves_to_shared_and_links() {
+    fn execute_collect_materializes_selected_worktrees() {
         let (_tmp, git_dir, root, wt_paths) = setup_test_repo(&["main", "develop", "feature"]);
 
         fs::write(wt_paths[0].join(".env"), "FROM_MAIN=1").unwrap();
         fs::write(wt_paths[1].join(".env"), "FROM_DEVELOP=1").unwrap();
-        // Create .gitignore so ensure_gitignore_entry doesn't fail
         fs::write(root.join(".gitignore"), "").unwrap();
 
+        // Collect from main, materialize develop
         let decision = CollectDecision {
             rel_path: ".env".to_string(),
             source_worktree: wt_paths[0].clone(),
+            materialize_in: vec![wt_paths[1].clone()],
         };
 
         let mut materialized = MaterializedState::default();
         execute_collect(&decision, &wt_paths, &git_dir, &root, &mut materialized).unwrap();
 
-        // Shared storage should have the file from main
+        // Shared storage has main's content
         let shared = shared_file_path(&git_dir, ".env");
-        assert!(shared.exists());
         assert_eq!(fs::read_to_string(&shared).unwrap(), "FROM_MAIN=1");
 
-        // main: should now be a symlink
-        let main_env = wt_paths[0].join(".env");
-        assert!(main_env.is_symlink());
+        // main: symlink (source)
+        assert!(wt_paths[0].join(".env").is_symlink());
 
-        // develop: should still be a real file, marked materialized
+        // develop: materialized (kept its copy)
         let dev_env = wt_paths[1].join(".env");
         assert!(!dev_env.is_symlink());
         assert!(materialized.is_materialized(".env", &wt_paths[1]));
 
-        // feature: should be a symlink (had no file)
-        let feat_env = wt_paths[2].join(".env");
-        assert!(feat_env.is_symlink());
+        // feature: symlink (no file, not materialized)
+        assert!(wt_paths[2].join(".env").is_symlink());
+    }
+
+    #[test]
+    fn execute_collect_removes_non_materialized_copies() {
+        let (_tmp, git_dir, root, wt_paths) = setup_test_repo(&["main", "develop"]);
+
+        fs::write(wt_paths[0].join(".env"), "FROM_MAIN=1").unwrap();
+        fs::write(wt_paths[1].join(".env"), "FROM_DEVELOP=1").unwrap();
+        fs::write(root.join(".gitignore"), "").unwrap();
+
+        // Collect from main, do NOT materialize develop
+        let decision = CollectDecision {
+            rel_path: ".env".to_string(),
+            source_worktree: wt_paths[0].clone(),
+            materialize_in: vec![],
+        };
+
+        let mut materialized = MaterializedState::default();
+        execute_collect(&decision, &wt_paths, &git_dir, &root, &mut materialized).unwrap();
+
+        // develop: local copy removed, replaced with symlink
+        let dev_env = wt_paths[1].join(".env");
+        assert!(dev_env.is_symlink());
+        assert!(!materialized.is_materialized(".env", &wt_paths[1]));
     }
 
     #[test]
@@ -1042,6 +1082,7 @@ mod tests {
         let decision = CollectDecision {
             rel_path: ".env".to_string(),
             source_worktree: wt_paths[0].clone(),
+            materialize_in: vec![],
         };
 
         let mut materialized = MaterializedState::default();

@@ -53,6 +53,7 @@ fn handle_worktree_list(key: KeyEvent, state: &mut CollectPickerState) -> InputR
         KeyCode::Right | KeyCode::Char('l') => state.next_tab(),
         KeyCode::Left | KeyCode::Char('h') => state.prev_tab(),
         KeyCode::Char(' ') | KeyCode::Enter => state.toggle_selection(),
+        KeyCode::Char('m') => state.toggle_materialized(),
         KeyCode::Tab => state.toggle_panel(),
         _ => {}
     }

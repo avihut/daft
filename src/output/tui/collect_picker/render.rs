@@ -24,13 +24,13 @@ pub fn render(state: &CollectPickerState, highlighter: &Highlighter, frame: &mut
     // Clear the screen
     frame.render_widget(Clear, area);
 
-    // Layout: tabs (2 rows) | body (fill) | footer (3 rows)
+    // Layout: tabs (2 rows) | body (fill) | footer (4 rows)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2), // Tabs
             Constraint::Min(5),    // Body
-            Constraint::Length(3), // Footer
+            Constraint::Length(4), // Footer (buttons + help)
         ])
         .split(area);
 
@@ -150,9 +150,16 @@ fn render_worktree_list(
         .map(|(idx, copy)| {
             let is_cursor = idx == tab.list_cursor && is_focused;
             let is_selected = tab.selected == Some(idx);
+            let is_materialized = tab.selected.is_some() && tab.materialized[idx];
 
-            let marker = if is_selected { "\u{2713} " } else { "  " };
             let pointer = if is_cursor { "\u{25b8} " } else { "  " };
+            let marker = if is_selected {
+                "\u{2713} "
+            } else if is_materialized {
+                "M "
+            } else {
+                "  "
+            };
 
             let style = if is_selected {
                 Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
@@ -168,11 +175,23 @@ fn render_worktree_list(
                 style
             };
 
-            ListItem::new(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(pointer, bg_style),
                 Span::styled(marker, bg_style),
                 Span::styled(copy.worktree_name.clone(), bg_style),
-            ]))
+            ];
+
+            // Show materialized/linked tag after the name
+            if tab.selected.is_some() && !is_selected {
+                let tag = if is_materialized {
+                    Span::styled(" materialized", Style::default().fg(Color::Yellow))
+                } else {
+                    Span::styled(" linked", Style::default().fg(Color::Cyan))
+                };
+                spans.push(tag);
+            }
+
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
@@ -227,7 +246,7 @@ fn render_preview(
 
     let paragraph = Paragraph::new(highlighted_lines)
         .block(block)
-        .scroll((tab.preview_scroll as u16, 0));
+        .scroll((tab.preview_scroll, 0));
 
     frame.render_widget(paragraph, area);
 }
@@ -305,7 +324,7 @@ fn render_footer(state: &CollectPickerState, frame: &mut Frame, area: Rect) {
         Style::default().fg(DIM)
     };
 
-    let line = Line::from(vec![
+    let buttons = Line::from(vec![
         Span::raw("  "),
         Span::styled(format!(" Submit{submit_check} "), submit_style),
         Span::raw("  "),
@@ -321,10 +340,29 @@ fn render_footer(state: &CollectPickerState, frame: &mut Frame, area: Rect) {
         ),
     ]);
 
+    let key_style = Style::default().fg(ACCENT);
+    let desc_style = Style::default().fg(DIM);
+
+    let help = Line::from(vec![
+        Span::raw("  "),
+        Span::styled("jk/\u{2191}\u{2193}", key_style),
+        Span::styled(" nav  ", desc_style),
+        Span::styled("hl/\u{2190}\u{2192}", key_style),
+        Span::styled(" tabs  ", desc_style),
+        Span::styled("Space", key_style),
+        Span::styled(" select  ", desc_style),
+        Span::styled("m", key_style),
+        Span::styled(" materialize  ", desc_style),
+        Span::styled("Tab", key_style),
+        Span::styled(" panel  ", desc_style),
+        Span::styled("Esc", key_style),
+        Span::styled(" cancel", desc_style),
+    ]);
+
     let block = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(DIM));
 
-    let paragraph = Paragraph::new(line).block(block);
+    let paragraph = Paragraph::new(vec![buttons, help]).block(block);
     frame.render_widget(paragraph, area);
 }

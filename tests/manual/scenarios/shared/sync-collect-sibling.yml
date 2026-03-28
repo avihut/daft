@@ -1,0 +1,45 @@
+name: Shared sync works in sibling layout
+description: >
+  Verifies that daft shared sync correctly finds daft.yml in sibling layout
+  where the config file lives inside each worktree, not at the project root.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with sibling layout and create worktree
+    run: |
+      git-worktree-clone --layout sibling $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout develop
+    expect:
+      exit_code: 0
+
+  - name: Setup shared file via daft shared add
+    run: |
+      echo "SHARED=yes" > .env
+      daft shared add .env
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Sync from develop worktree
+    run: daft shared sync
+    cwd: "$WORK_DIR/test-repo.develop"
+    expect:
+      exit_code: 0
+
+  - name: Verify develop has symlink
+    run: test -L .env
+    cwd: "$WORK_DIR/test-repo.develop"
+    expect:
+      exit_code: 0
+
+  - name: Verify develop .env content via symlink
+    run: "true"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo.develop/.env"
+          content: "SHARED=yes"
