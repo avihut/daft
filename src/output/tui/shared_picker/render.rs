@@ -259,12 +259,12 @@ fn render_worktree_list(
                 let right_margin = 1;
                 let padding = inner_width.saturating_sub(left_len + tag_len + right_margin);
 
-                let pad_style = if is_cursor {
+                let pad_style = if is_current {
                     Style::default().bg(SELECTED_BG)
                 } else {
                     Style::default()
                 };
-                let tag_style = if is_cursor {
+                let tag_style = if is_current {
                     Style::default().fg(Color::White).bg(SELECTED_BG)
                 } else {
                     Style::default().fg(tag_color)
