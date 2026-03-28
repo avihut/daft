@@ -256,7 +256,8 @@ fn render_worktree_list(
                     + decoration.marker.chars().count()
                     + entry.worktree_name.chars().count();
                 let tag_len = tag_text.chars().count();
-                let padding = inner_width.saturating_sub(left_len + tag_len);
+                let right_margin = 1;
+                let padding = inner_width.saturating_sub(left_len + tag_len + right_margin);
 
                 let pad_style = if is_cursor {
                     Style::default().bg(SELECTED_BG)
