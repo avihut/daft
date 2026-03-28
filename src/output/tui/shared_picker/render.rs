@@ -169,7 +169,7 @@ fn render_split_body(
         .split(area);
 
     let tab = state.current_tab();
-    render_worktree_list(state.focus, tab, mode, frame, chunks[0]);
+    render_worktree_list(state.focus, tab, state.active_tab, mode, frame, chunks[0]);
     render_preview(state, highlighter, frame, chunks[1]);
 }
 
@@ -177,6 +177,7 @@ fn render_split_body(
 fn render_worktree_list(
     focus: FocusPanel,
     tab: &FileTabState,
+    tab_idx: usize,
     mode: &dyn PickerMode,
     frame: &mut Frame,
     area: Rect,
@@ -190,7 +191,7 @@ fn render_worktree_list(
         .enumerate()
         .map(|(idx, entry)| {
             let is_cursor = idx == tab.list_cursor && is_focused;
-            let decoration = mode.entry_decoration(tab, idx);
+            let decoration = mode.entry_decoration(tab, tab_idx, idx);
             let is_selected = tab.selected == Some(idx);
 
             let pointer = if is_cursor { "\u{25b8} " } else { "  " };

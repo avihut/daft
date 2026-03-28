@@ -8,6 +8,7 @@ pub mod collect_mode;
 mod dialog;
 mod highlight;
 pub mod input;
+pub mod manage_mode;
 mod render;
 mod shell;
 pub mod state;
@@ -22,10 +23,11 @@ use ratatui::{layout::Rect, style::Color, Frame, Terminal};
 use std::io;
 use std::time::Duration;
 
-use crate::core::shared::{CollectDecision, UncollectedFile};
+use crate::core::shared::{CollectDecision, MaterializedState, SharedFileInfo, UncollectedFile};
 use collect_mode::CollectMode;
 use dialog::show_confirm_dialog;
 use highlight::Highlighter;
+use manage_mode::ManageMode;
 use shell::restore_terminal;
 use state::{FileTabState, PickerState};
 
@@ -81,7 +83,12 @@ pub trait PickerMode {
     fn tab_warning<'a>(&'a self, tab: &'a FileTabState) -> Option<&'a str>;
 
     /// Decoration (marker + optional tag) for a worktree entry.
-    fn entry_decoration(&self, tab: &FileTabState, entry_idx: usize) -> EntryDecoration;
+    fn entry_decoration(
+        &self,
+        tab: &FileTabState,
+        tab_idx: usize,
+        entry_idx: usize,
+    ) -> EntryDecoration;
 
     /// Render the footer area.
     fn render_footer(&self, state: &PickerState, frame: &mut Frame, area: Rect);
@@ -215,4 +222,96 @@ fn show_partial_submit_confirm(
 
     let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
     show_confirm_dialog(terminal, "Partial submit", &line_refs)
+}
+
+/// Run the interactive manage picker TUI.
+///
+/// Enters alternate screen mode, runs the event loop, and exits when the
+/// user presses Esc/q. All actions (materialize, link) are performed
+/// immediately during the session. Restores the terminal on exit, including
+/// on panic.
+pub fn run_manage_picker(
+    infos: Vec<SharedFileInfo>,
+    git_common_dir: std::path::PathBuf,
+    config_root: std::path::PathBuf,
+    materialized: MaterializedState,
+    worktree_paths: Vec<std::path::PathBuf>,
+) -> Result<()> {
+    // Install panic hook that restores the terminal before printing the panic
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        prev_hook(info);
+    }));
+
+    let result = run_manage_picker_inner(
+        infos,
+        git_common_dir,
+        config_root,
+        materialized,
+        worktree_paths,
+    );
+
+    // Restore the default panic hook
+    let _ = std::panic::take_hook();
+
+    result
+}
+
+fn run_manage_picker_inner(
+    infos: Vec<SharedFileInfo>,
+    git_common_dir: std::path::PathBuf,
+    config_root: std::path::PathBuf,
+    materialized: MaterializedState,
+    worktree_paths: Vec<std::path::PathBuf>,
+) -> Result<()> {
+    // Set up terminal
+    terminal::enable_raw_mode()?;
+    let mut stderr = io::stderr();
+    execute!(stderr, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = ratatui::backend::CrosstermBackend::new(stderr);
+    let mut terminal = Terminal::new(backend)?;
+
+    let highlighter = Highlighter::new();
+    let tabs = ManageMode::build_tabs(&infos);
+    let mut state = PickerState::from_tabs(tabs);
+    let mut mode = ManageMode {
+        git_common_dir,
+        config_root,
+        materialized,
+        statuses: Vec::new(),
+        worktree_paths,
+        info_message: None,
+    };
+    mode.set_statuses(&infos);
+
+    run_manage_event_loop(&mut terminal, &mut state, &mut mode, &highlighter)?;
+
+    // Restore terminal
+    restore_terminal();
+
+    Ok(())
+}
+
+/// Manage event loop — exits on LoopAction::Exit (Esc/q/Ctrl+C).
+fn run_manage_event_loop(
+    terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stderr>>,
+    state: &mut PickerState,
+    mode: &mut ManageMode,
+    highlighter: &Highlighter,
+) -> Result<()> {
+    loop {
+        terminal.draw(|frame| {
+            render::render(state, mode, highlighter, frame);
+        })?;
+
+        let Some(key) = input::poll_key(Duration::from_millis(100)) else {
+            continue;
+        };
+
+        match input::handle_key(key, state, mode) {
+            LoopAction::Continue => {}
+            LoopAction::Exit => return Ok(()),
+        }
+    }
 }

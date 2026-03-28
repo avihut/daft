@@ -266,7 +266,12 @@ impl PickerMode for CollectMode {
         tab.compare_warning.as_deref()
     }
 
-    fn entry_decoration(&self, tab: &FileTabState, entry_idx: usize) -> EntryDecoration {
+    fn entry_decoration(
+        &self,
+        tab: &FileTabState,
+        _tab_idx: usize,
+        entry_idx: usize,
+    ) -> EntryDecoration {
         let has_selection = tab.selected.is_some();
         let is_selected = tab.selected == Some(entry_idx);
         let is_materialized = has_selection && tab.materialized[entry_idx];

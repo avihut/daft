@@ -122,6 +122,14 @@ Ensure all worktrees have symlinks for declared shared files
 daft shared sync
 ```
 
+### manage
+
+Interactive TUI for managing shared file state across worktrees
+
+```
+daft shared manage
+```
+
 ## Global Options
 
 | Option | Description |

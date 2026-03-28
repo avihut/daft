@@ -513,6 +513,106 @@ pub fn detect_uncollected(
     uncollected
 }
 
+// ── Shared file status detection ─────────────────────────────────────
+
+/// Status of a shared file in a single worktree.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WorktreeStatus {
+    /// Symlink pointing to the correct shared target.
+    Linked,
+    /// Real file tracked in materialized.json.
+    Materialized,
+    /// File/dir does not exist in this worktree.
+    Missing,
+    /// Real file exists but is NOT tracked in materialized.json.
+    Conflict,
+    /// Symlink exists but points to the wrong target.
+    Broken,
+    /// File has not been collected into shared storage yet.
+    NotCollected,
+}
+
+/// Per-file status information across all worktrees.
+pub struct SharedFileInfo {
+    /// Relative path of the shared file (e.g., ".env").
+    pub rel_path: String,
+    /// Whether the file has been collected into shared storage.
+    pub collected: bool,
+    /// Per-worktree status: (worktree path, worktree name, status).
+    pub statuses: Vec<(PathBuf, String, WorktreeStatus)>,
+}
+
+/// Detect the status of every declared shared file in every worktree.
+pub fn detect_shared_statuses(
+    declared_paths: &[String],
+    worktree_paths: &[PathBuf],
+    git_common_dir: &Path,
+    materialized: &MaterializedState,
+) -> Vec<SharedFileInfo> {
+    declared_paths
+        .iter()
+        .map(|rel_path| {
+            let shared_target = shared_file_path(git_common_dir, rel_path);
+            let collected = shared_target.exists();
+
+            let statuses: Vec<(PathBuf, String, WorktreeStatus)> = worktree_paths
+                .iter()
+                .map(|wt| {
+                    let name = wt
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let status = if !collected {
+                        WorktreeStatus::NotCollected
+                    } else {
+                        detect_single_status(wt, rel_path, &shared_target, materialized)
+                    };
+                    (wt.clone(), name, status)
+                })
+                .collect();
+
+            SharedFileInfo {
+                rel_path: rel_path.clone(),
+                collected,
+                statuses,
+            }
+        })
+        .collect()
+}
+
+/// Detect the status of a single shared file in a single worktree.
+fn detect_single_status(
+    worktree_path: &Path,
+    rel_path: &str,
+    shared_target: &Path,
+    materialized: &MaterializedState,
+) -> WorktreeStatus {
+    let file_path = worktree_path.join(rel_path);
+
+    if file_path.is_symlink() {
+        // It's a symlink — check if it points to the right place
+        let actual = fs::read_link(&file_path).ok();
+        let expected =
+            relative_symlink_target(file_path.parent().unwrap_or(worktree_path), shared_target)
+                .ok();
+        if actual == expected {
+            WorktreeStatus::Linked
+        } else {
+            WorktreeStatus::Broken
+        }
+    } else if file_path.exists() {
+        // Real file/dir — check materialized state
+        if materialized.is_materialized(rel_path, worktree_path) {
+            WorktreeStatus::Materialized
+        } else {
+            WorktreeStatus::Conflict
+        }
+    } else {
+        WorktreeStatus::Missing
+    }
+}
+
 // ── Deep comparison ──────────────────────────────────────────────────────
 
 /// Result of a timed deep comparison.
@@ -1247,5 +1347,124 @@ mod tests {
         let result = detect_uncollected(&declared, &wt_paths, &git_dir);
         // .env IS in shared storage, so detect_uncollected skips it entirely
         assert!(result.is_empty());
+    }
+
+    // ── detect_shared_statuses tests ────────────────────────────────────
+
+    #[test]
+    fn detect_status_linked() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main"]);
+        let shared_target = shared_file_path(&git_dir, ".env");
+        fs::write(&shared_target, "SHARED=1").unwrap();
+
+        // Create correct symlink
+        create_shared_symlink(&wt_paths[0], ".env", &git_dir).unwrap();
+
+        let materialized = MaterializedState::default();
+        let declared = vec![".env".to_string()];
+        let infos = detect_shared_statuses(&declared, &wt_paths, &git_dir, &materialized);
+
+        assert_eq!(infos.len(), 1);
+        assert!(infos[0].collected);
+        assert_eq!(infos[0].statuses[0].2, WorktreeStatus::Linked);
+    }
+
+    #[test]
+    fn detect_status_missing() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main"]);
+        let shared_target = shared_file_path(&git_dir, ".env");
+        fs::write(&shared_target, "SHARED=1").unwrap();
+        // Worktree has no file at all
+
+        let materialized = MaterializedState::default();
+        let declared = vec![".env".to_string()];
+        let infos = detect_shared_statuses(&declared, &wt_paths, &git_dir, &materialized);
+
+        assert_eq!(infos[0].statuses[0].2, WorktreeStatus::Missing);
+    }
+
+    #[test]
+    fn detect_status_not_collected() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main"]);
+        // No file in shared storage
+        fs::write(wt_paths[0].join(".env"), "LOCAL=1").unwrap();
+
+        let materialized = MaterializedState::default();
+        let declared = vec![".env".to_string()];
+        let infos = detect_shared_statuses(&declared, &wt_paths, &git_dir, &materialized);
+
+        assert_eq!(infos.len(), 1);
+        assert!(!infos[0].collected);
+        assert_eq!(infos[0].statuses[0].2, WorktreeStatus::NotCollected);
+    }
+
+    #[test]
+    fn detect_status_materialized() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main"]);
+        let shared_target = shared_file_path(&git_dir, ".env");
+        fs::write(&shared_target, "SHARED=1").unwrap();
+        // Real file + tracked in materialized
+        fs::write(wt_paths[0].join(".env"), "LOCAL=1").unwrap();
+
+        let mut materialized = MaterializedState::default();
+        materialized.add(".env", &wt_paths[0]);
+
+        let declared = vec![".env".to_string()];
+        let infos = detect_shared_statuses(&declared, &wt_paths, &git_dir, &materialized);
+
+        assert_eq!(infos[0].statuses[0].2, WorktreeStatus::Materialized);
+    }
+
+    #[test]
+    fn detect_status_conflict() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main"]);
+        let shared_target = shared_file_path(&git_dir, ".env");
+        fs::write(&shared_target, "SHARED=1").unwrap();
+        // Real file but NOT in materialized state
+        fs::write(wt_paths[0].join(".env"), "LOCAL=1").unwrap();
+
+        let materialized = MaterializedState::default();
+        let declared = vec![".env".to_string()];
+        let infos = detect_shared_statuses(&declared, &wt_paths, &git_dir, &materialized);
+
+        assert_eq!(infos[0].statuses[0].2, WorktreeStatus::Conflict);
+    }
+
+    #[test]
+    fn detect_status_broken_symlink() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main"]);
+        let shared_target = shared_file_path(&git_dir, ".env");
+        fs::write(&shared_target, "SHARED=1").unwrap();
+
+        // Create a symlink pointing to the wrong place
+        #[cfg(unix)]
+        unix::fs::symlink("/nonexistent/wrong/target", wt_paths[0].join(".env")).unwrap();
+
+        let materialized = MaterializedState::default();
+        let declared = vec![".env".to_string()];
+        let infos = detect_shared_statuses(&declared, &wt_paths, &git_dir, &materialized);
+
+        assert_eq!(infos[0].statuses[0].2, WorktreeStatus::Broken);
+    }
+
+    #[test]
+    fn detect_status_multiple_worktrees_mixed() {
+        let (_tmp, git_dir, _root, wt_paths) = setup_test_repo(&["main", "dev", "feat"]);
+        let shared_target = shared_file_path(&git_dir, ".env");
+        fs::write(&shared_target, "SHARED=1").unwrap();
+
+        // main: linked
+        create_shared_symlink(&wt_paths[0], ".env", &git_dir).unwrap();
+        // dev: missing (no file)
+        // feat: conflict (real file, not tracked)
+        fs::write(wt_paths[2].join(".env"), "FEAT_LOCAL=1").unwrap();
+
+        let materialized = MaterializedState::default();
+        let declared = vec![".env".to_string()];
+        let infos = detect_shared_statuses(&declared, &wt_paths, &git_dir, &materialized);
+
+        assert_eq!(infos[0].statuses[0].2, WorktreeStatus::Linked);
+        assert_eq!(infos[0].statuses[1].2, WorktreeStatus::Missing);
+        assert_eq!(infos[0].statuses[2].2, WorktreeStatus::Conflict);
     }
 }

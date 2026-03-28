@@ -41,6 +41,8 @@ enum SharedCommand {
     Status(StatusArgs),
     /// Ensure all worktrees have symlinks for declared shared files
     Sync(SyncArgs),
+    /// Interactive TUI for managing shared file state across worktrees
+    Manage(ManageArgs),
 }
 
 #[derive(Parser)]
@@ -97,6 +99,9 @@ struct StatusArgs;
 #[derive(Parser)]
 struct SyncArgs;
 
+#[derive(Parser)]
+struct ManageArgs;
+
 pub fn run() -> Result<()> {
     // Skip argv[0] (binary name). When invoked as `daft shared <sub> <args>`,
     // env::args() is ["daft", "shared", ...] and skip(1) gives ["shared", ...]
@@ -112,6 +117,7 @@ pub fn run() -> Result<()> {
         SharedCommand::Link(link_args) => run_link(link_args, &mut output),
         SharedCommand::Status(_) => run_status(&mut output),
         SharedCommand::Sync(_) => run_sync(&mut output),
+        SharedCommand::Manage(_) => run_manage(&mut output),
     }
 }
 
@@ -633,6 +639,45 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
 
     // Save materialized state (may have been updated by execute_collect)
     materialized.save(&git_common_dir)?;
+
+    Ok(())
+}
+
+fn run_manage(output: &mut dyn Output) -> Result<()> {
+    let git_common_dir = repo::get_git_common_dir()?;
+    let worktree_path = repo::get_current_worktree_path()?;
+    let config_root = shared::resolve_config_root(&worktree_path);
+    let shared_paths = shared::read_shared_paths(&worktree_path)?;
+    let worktree_paths = shared::list_worktree_paths()?;
+    let materialized = shared::MaterializedState::load(&git_common_dir)?;
+
+    if shared_paths.is_empty() {
+        output.info("No shared files declared.");
+        return Ok(());
+    }
+
+    let is_interactive = std::io::IsTerminal::is_terminal(&std::io::stderr())
+        && std::env::var("DAFT_TESTING").is_err();
+
+    if !is_interactive {
+        bail!("daft shared manage requires an interactive terminal. Use `daft shared status` for non-interactive output.");
+    }
+
+    let infos = shared::detect_shared_statuses(
+        &shared_paths,
+        &worktree_paths,
+        &git_common_dir,
+        &materialized,
+    );
+
+    use crate::output::tui::shared_picker::run_manage_picker;
+    run_manage_picker(
+        infos,
+        git_common_dir,
+        config_root,
+        materialized,
+        worktree_paths,
+    )?;
 
     Ok(())
 }
