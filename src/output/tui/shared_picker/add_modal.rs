@@ -73,7 +73,6 @@ struct FileData {
 struct ScoredEntry {
     entry_idx: usize,
     score: u32,
-    indices: Vec<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -175,28 +174,29 @@ impl AddModalState {
         let mut new_results = Vec::new();
 
         let pattern = Pattern::parse(&self.search, CaseMatching::Ignore, Normalization::Smart);
+        let search_len = self.search.len();
         let entries = &self.search_entries;
         let matcher = &mut self.matcher;
 
+        // Score only (cheap) — indices computed lazily during render
         for (idx, entry) in entries.iter().enumerate() {
-            let mut indices = Vec::new();
-            if let Some(score) = pattern.indices(entry.match_text.slice(..), matcher, &mut indices)
-            {
+            if let Some(score) = pattern.score(entry.match_text.slice(..), matcher) {
                 new_results.push(ScoredEntry {
                     entry_idx: idx,
                     score,
-                    indices,
                 });
             }
         }
 
+        // Sort by effective score: nucleo score weighted by match density and
+        // path depth. This elevates short, dense matches like ".env" for query
+        // "env" over longer paths like "src/environment.rs".
         new_results.sort_by(|a, b| {
-            b.score.cmp(&a.score).then_with(|| {
-                self.search_entries[a.entry_idx]
-                    .rel_path
-                    .len()
-                    .cmp(&self.search_entries[b.entry_idx].rel_path.len())
-            })
+            let ea = &self.search_entries[a.entry_idx];
+            let eb = &self.search_entries[b.entry_idx];
+            let sa = effective_score(a.score, search_len, &ea.rel_path);
+            let sb = effective_score(b.score, search_len, &eb.rel_path);
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
 
         self.search_results = new_results;
@@ -642,7 +642,7 @@ fn render_add_modal(frame: &mut ratatui::Frame, modal: &mut AddModalState) {
     } else {
         lines.push(Line::from(vec![
             Span::styled("Search: ", Style::default().fg(DIM)),
-            Span::styled(&modal.search, Style::default().fg(Color::White)),
+            Span::styled(modal.search.clone(), Style::default().fg(Color::White)),
             Span::styled("_", Style::default().fg(Color::White)),
         ]));
     }
@@ -755,7 +755,8 @@ fn render_tree_entries(lines: &mut Vec<Line>, modal: &AddModalState, list_height
 }
 
 /// Render fuzzy search results (search mode).
-fn render_search_entries(lines: &mut Vec<Line>, modal: &AddModalState, list_height: usize) {
+/// Computes match indices lazily for only the visible items.
+fn render_search_entries(lines: &mut Vec<Line>, modal: &mut AddModalState, list_height: usize) {
     if modal.search_results.is_empty() {
         if modal.indexing_done.load(Ordering::Acquire) {
             lines.push(Line::styled(
@@ -776,20 +777,25 @@ fn render_search_entries(lines: &mut Vec<Line>, modal: &AddModalState, list_heig
         return;
     }
 
+    // Compute match indices lazily for only visible items
+    let pattern = Pattern::parse(&modal.search, CaseMatching::Ignore, Normalization::Smart);
     let end = modal.search_results.len().min(modal.scroll + list_height);
-    let visible = &modal.search_results[modal.scroll..end];
 
-    for (offset, result) in visible.iter().enumerate() {
+    for vis_idx in modal.scroll..end {
+        let result = &modal.search_results[vis_idx];
         let entry = &modal.search_entries[result.entry_idx];
-        let is_cursor = modal.scroll + offset == modal.cursor;
+        let is_cursor = vis_idx == modal.cursor;
 
         let suffix = if entry.is_dir { "/" } else { "" };
         let display = format!("{}{suffix}", entry.rel_path);
 
         let style = entry_style(is_cursor, entry.is_shared, entry.is_ignored, entry.is_dir);
 
-        let mut spans: Vec<Span> = if !result.indices.is_empty() {
-            highlight_matches(&display, &result.indices, style)
+        let mut indices = Vec::new();
+        pattern.indices(entry.match_text.slice(..), &mut modal.matcher, &mut indices);
+
+        let mut spans: Vec<Span> = if !indices.is_empty() {
+            highlight_matches(&display, &indices, style)
         } else {
             vec![Span::styled(display, style)]
         };
@@ -801,7 +807,8 @@ fn render_search_entries(lines: &mut Vec<Line>, modal: &AddModalState, list_heig
         lines.push(Line::from(spans));
     }
 
-    for _ in visible.len()..list_height {
+    let rendered = end.saturating_sub(modal.scroll);
+    for _ in rendered..list_height {
         lines.push(Line::raw(""));
     }
 }
@@ -826,6 +833,23 @@ fn entry_style(is_cursor: bool, is_shared: bool, is_ignored: bool, is_dir: bool)
     } else {
         Style::default().fg(MUTED)
     }
+}
+
+/// Compute an effective score that blends nucleo's raw score with match
+/// density (matched chars / path length) and path depth.
+///
+/// This ensures short, high-density matches like ".env" for query "env"
+/// rank above longer paths like "src/environment.rs" that happen to contain
+/// the same characters at a word boundary.
+fn effective_score(raw_score: u32, matched_chars: usize, rel_path: &str) -> f64 {
+    let score = raw_score as f64;
+    // Match density: fraction of the path that matched (0.0–1.0)
+    let density = matched_chars as f64 / rel_path.len().max(1) as f64;
+    // Depth: number of directory separators
+    let depth = rel_path.matches('/').count() as f64;
+    let depth_factor = 1.0 / (1.0 + depth * 0.3);
+    // Blend: base score boosted by density and penalized by depth
+    score * (0.5 + density) * depth_factor
 }
 
 /// Render a string with matched positions underlined.
