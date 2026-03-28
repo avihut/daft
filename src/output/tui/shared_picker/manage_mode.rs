@@ -682,9 +682,15 @@ impl ManageMode {
         self.set_statuses(&infos);
         state.tabs = new_tabs;
 
-        // Clamp active_tab
-        if !state.tabs.is_empty() && state.active_tab >= state.tabs.len() {
-            state.active_tab = state.tabs.len().saturating_sub(1);
+        // Clamp active_tab and ensure focus is on the worktree list
+        if !state.tabs.is_empty() {
+            if state.active_tab >= state.tabs.len() {
+                state.active_tab = state.tabs.len().saturating_sub(1);
+            }
+            state.focus = FocusPanel::WorktreeList;
+        } else {
+            state.active_tab = 0;
+            state.focus = FocusPanel::TabBar;
         }
     }
 }
