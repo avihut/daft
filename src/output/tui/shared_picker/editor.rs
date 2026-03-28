@@ -138,6 +138,18 @@ impl EditSession {
 
     /// Render the edtui editor view.
     fn render_editor(&mut self, frame: &mut Frame, area: Rect) {
+        if area.width < 3 || area.height == 0 {
+            return;
+        }
+
+        // 1-column leading spacer before line numbers (matching preview style)
+        let editor_area = Rect {
+            x: area.x + 1,
+            y: area.y,
+            width: area.width.saturating_sub(1),
+            height: area.height,
+        };
+
         // edtui bundles its own theme set with hyphenated names
         let highlighter = SyntaxHighlighter::new("base16-ocean-dark", &self.syntax_ext).ok();
 
@@ -149,7 +161,7 @@ impl EditSession {
             .wrap(true)
             .line_numbers(LineNumbers::Absolute)
             .syntax_highlighter(highlighter)
-            .render(area, frame.buffer_mut());
+            .render(editor_area, frame.buffer_mut());
     }
 }
 
