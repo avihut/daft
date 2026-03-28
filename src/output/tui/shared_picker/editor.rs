@@ -54,7 +54,8 @@ impl EditSession {
     ) -> Option<Self> {
         let content = fs::read_to_string(&file_path).ok()?;
         let lines = Lines::from(content.as_str());
-        let state = EditorState::new(lines);
+        let mut state = EditorState::new(lines);
+        state.mode = edtui::EditorMode::Insert; // Emacs mode requires Insert mode
         let handler = EditorEventHandler::emacs_mode();
 
         Some(Self {
