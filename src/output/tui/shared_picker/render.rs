@@ -235,7 +235,7 @@ fn render_worktree_list(
                     .add_modifier(Modifier::BOLD)
             } else if is_current && !is_focused {
                 // Show which entry is selected even when focus is elsewhere
-                Style::default().fg(Color::White)
+                Style::default().fg(Color::White).bg(SELECTED_BG)
             } else if is_selected {
                 Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
             } else if !entry.has_file {
