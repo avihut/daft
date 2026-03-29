@@ -79,11 +79,17 @@ impl EditSession {
             return false;
         }
 
-        // Only exit on plain Esc (no modifiers). Some terminals send Shift+Tab
-        // as Esc-prefixed sequences that could be misinterpreted.
-        if key.code == crossterm::event::KeyCode::Esc
-            && key.modifiers == crossterm::event::KeyModifiers::NONE
-        {
+        if key.code == crossterm::event::KeyCode::Esc {
+            // Some terminals send Shift+Tab (and other keys) as an Esc-prefixed
+            // escape sequence that crossterm may split into a bare Esc event
+            // followed by additional characters. Peek for a follow-up event
+            // within a short window — if one arrives, this Esc was part of a
+            // sequence, not a standalone press.
+            if crossterm::event::poll(std::time::Duration::from_millis(20)).unwrap_or(false) {
+                // Consume the follow-up (part of the escape sequence)
+                let _ = crossterm::event::read();
+                return false;
+            }
             return true;
         }
 
