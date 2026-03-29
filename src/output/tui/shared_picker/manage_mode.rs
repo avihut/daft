@@ -994,13 +994,13 @@ impl PickerMode for ManageMode {
                 terminal,
                 "Overwrite local changes?",
                 &[
-                    &format!("The materialized copy in '{wt_name}' differs from the shared file."),
-                    "Switching to linked will replace it with a symlink,",
-                    "discarding local changes.",
+                    &format!("'{wt_name}' has a materialized copy that differs"),
+                    "from the shared file. Switching to linked will",
+                    "discard local changes.",
                     "",
                     "Continue?",
                 ],
-                false, // Default to No
+                false,
             )?;
             if confirmed {
                 self.execute_link(state);

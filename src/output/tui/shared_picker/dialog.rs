@@ -6,8 +6,8 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
-    Terminal,
+    widgets::{Block, Borders, Clear, Paragraph},
+    Frame, Terminal,
 };
 use std::io;
 use std::time::Duration;
@@ -21,7 +21,7 @@ pub fn show_confirm_dialog(
     title: &str,
     body_lines: &[&str],
 ) -> Result<bool> {
-    show_confirm_dialog_with_default(terminal, title, body_lines, true)
+    show_confirm_dialog_inner(terminal, title, body_lines, true)
 }
 
 /// Confirmation dialog with configurable default focus.
@@ -31,75 +31,20 @@ pub fn show_confirm_dialog_with_default(
     body_lines: &[&str],
     default_yes: bool,
 ) -> Result<bool> {
+    show_confirm_dialog_inner(terminal, title, body_lines, default_yes)
+}
+
+fn show_confirm_dialog_inner(
+    terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stderr>>,
+    title: &str,
+    body_lines: &[&str],
+    default_yes: bool,
+) -> Result<bool> {
     let mut yes_focused = default_yes;
 
     loop {
         terminal.draw(|frame| {
-            let area = frame.area();
-
-            // Dialog sizing: body + 2 border + 2 vertical padding + 1 blank + 1 buttons
-            let content_height = body_lines.len() as u16 + 4;
-            let dialog_width = 54u16.min(area.width.saturating_sub(4));
-            let dialog_height = (content_height + 2).min(area.height.saturating_sub(2));
-            let x = (area.width.saturating_sub(dialog_width)) / 2;
-            let y = (area.height.saturating_sub(dialog_height)) / 2;
-            let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
-
-            frame.render_widget(Clear, dialog_area);
-
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow))
-                .title(Span::styled(
-                    format!(" {title} "),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ));
-
-            let yes_style = if yes_focused {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            let no_style = if yes_focused {
-                Style::default().fg(Color::DarkGray)
-            } else {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            };
-
-            let mut text_lines: Vec<Line> = Vec::new();
-
-            // Top padding
-            text_lines.push(Line::raw(""));
-
-            // Body lines with left padding
-            for &line in body_lines {
-                text_lines.push(Line::from(Span::raw(format!("  {line}"))));
-            }
-
-            // Blank line before buttons
-            text_lines.push(Line::raw(""));
-
-            // Buttons with padding
-            text_lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(" [Y]es ", yes_style),
-                Span::raw("  "),
-                Span::styled(" [N]o ", no_style),
-            ]));
-
-            let paragraph = Paragraph::new(text_lines)
-                .block(block)
-                .wrap(Wrap { trim: false });
-
-            frame.render_widget(paragraph, dialog_area);
+            render_dialog(frame, title, body_lines, yes_focused);
         })?;
 
         if let Some(key) = poll_key(Duration::from_millis(100)) {
@@ -114,4 +59,76 @@ pub fn show_confirm_dialog_with_default(
             }
         }
     }
+}
+
+/// Render the dialog overlay. Can be called from any draw context.
+fn render_dialog(frame: &mut Frame, title: &str, body_lines: &[&str], yes_focused: bool) {
+    let area = frame.area();
+
+    // Width: fit the longest line + padding (4 chars indent) + 2 for border
+    let max_line_len = body_lines.iter().map(|l| l.len()).max().unwrap_or(0);
+    let min_width = (max_line_len as u16 + 6).max(30);
+    let dialog_width = min_width.min(area.width.saturating_sub(4));
+
+    // Content: top pad (1) + body lines + blank (1) + buttons (1) + bottom pad (1)
+    let inner_height = body_lines.len() as u16 + 4;
+    // Total: inner + 2 for border
+    let dialog_height = (inner_height + 2).min(area.height.saturating_sub(2));
+    let x = (area.width.saturating_sub(dialog_width)) / 2;
+    let y = (area.height.saturating_sub(dialog_height)) / 2;
+    let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+    frame.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let yes_style = if yes_focused {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let no_style = if yes_focused {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    };
+
+    let mut text_lines: Vec<Line> = Vec::new();
+
+    // Top padding
+    text_lines.push(Line::raw(""));
+
+    // Body lines with left padding
+    for &line in body_lines {
+        text_lines.push(Line::from(Span::raw(format!("  {line}"))));
+    }
+
+    // Blank line before buttons
+    text_lines.push(Line::raw(""));
+
+    // Buttons with padding
+    text_lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(" [Y]es ", yes_style),
+        Span::raw("  "),
+        Span::styled(" [N]o ", no_style),
+    ]));
+
+    let paragraph = Paragraph::new(text_lines).block(block);
+
+    frame.render_widget(paragraph, dialog_area);
 }
