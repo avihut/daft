@@ -268,13 +268,20 @@ fn render_worktree_list(
                 let right_margin = 1;
                 let padding = inner_width.saturating_sub(left_len + tag_len + right_margin);
 
-                let pad_style = if is_current {
+                let highlight_row = is_current || is_co_edited;
+                let pad_style = if highlight_row {
                     Style::default().bg(SELECTED_BG)
                 } else {
                     Style::default()
                 };
-                let tag_style = if is_current {
-                    Style::default().fg(Color::White).bg(SELECTED_BG)
+                let tag_style = if highlight_row {
+                    Style::default()
+                        .fg(if is_co_edited {
+                            Color::Green
+                        } else {
+                            Color::White
+                        })
+                        .bg(SELECTED_BG)
                 } else {
                     Style::default().fg(tag_color)
                 };
