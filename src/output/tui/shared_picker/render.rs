@@ -213,6 +213,7 @@ fn render_worktree_list(
 
     // Inner width for right-aligning tags
     let inner_width = block.inner(area).width as usize;
+    let editing_shared = mode.is_editing_shared();
 
     let items: Vec<ListItem> = tab
         .entries
@@ -223,6 +224,11 @@ fn render_worktree_list(
             let is_cursor = is_current && is_focused;
             let decoration = mode.entry_decoration(tab, tab_idx, idx);
             let is_selected = tab.selected == Some(idx);
+
+            // When editing a shared file, highlight all linked worktrees
+            let is_co_edited = editing_shared
+                && !is_current
+                && decoration.tag.as_ref().is_some_and(|(t, _)| t == "linked");
 
             let pointer = if is_current { "\u{25b8} " } else { "  " };
 
@@ -236,6 +242,9 @@ fn render_worktree_list(
             } else if is_current && !is_focused {
                 // Show which entry is selected even when focus is elsewhere
                 Style::default().fg(Color::White).bg(SELECTED_BG)
+            } else if is_co_edited {
+                // Other linked worktrees affected by the shared edit
+                Style::default().fg(Color::Green)
             } else if is_selected {
                 Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
             } else if !entry.has_file {

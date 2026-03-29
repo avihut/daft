@@ -934,6 +934,10 @@ impl PickerMode for ManageMode {
         }
     }
 
+    fn is_editing_shared(&self) -> bool {
+        self.edit_state.as_ref().is_some_and(|s| s.is_shared)
+    }
+
     fn preview_override(&self, state: &PickerState) -> Option<Vec<Line<'static>>> {
         if self.diff_pivot.is_some() {
             Some(self.diff_preview_lines(state))

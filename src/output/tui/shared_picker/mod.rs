@@ -123,6 +123,12 @@ pub trait PickerMode {
         false
     }
 
+    /// Whether the editor is active on a shared (linked) copy.
+    /// When true, all linked worktrees should be highlighted in the list.
+    fn is_editing_shared(&self) -> bool {
+        false
+    }
+
     /// Override preview content. If `Some`, these lines are shown instead of
     /// the normal syntax-highlighted file content.
     fn preview_override(&self, _state: &PickerState) -> Option<Vec<Line<'static>>> {

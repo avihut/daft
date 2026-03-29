@@ -31,7 +31,7 @@ pub struct EditSession {
     /// Absolute path of the file being edited.
     file_path: PathBuf,
     /// Whether the file is the shared copy (true) or a local materialized copy (false).
-    is_shared: bool,
+    pub is_shared: bool,
     /// Display name of the worktree (shown in the header).
     worktree_name: String,
     /// File extension used for syntax highlighting (e.g. "rs", "sh", "toml").
