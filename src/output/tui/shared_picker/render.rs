@@ -244,7 +244,7 @@ fn render_worktree_list(
                 Style::default().fg(Color::White).bg(SELECTED_BG)
             } else if is_co_edited {
                 // Other linked worktrees affected by the shared edit
-                Style::default().fg(Color::Green)
+                Style::default().fg(Color::Green).bg(SELECTED_BG)
             } else if is_selected {
                 Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
             } else if !entry.has_file {

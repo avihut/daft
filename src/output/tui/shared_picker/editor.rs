@@ -79,7 +79,11 @@ impl EditSession {
             return false;
         }
 
-        if key.code == crossterm::event::KeyCode::Esc {
+        // Only exit on plain Esc (no modifiers). Some terminals send Shift+Tab
+        // as Esc-prefixed sequences that could be misinterpreted.
+        if key.code == crossterm::event::KeyCode::Esc
+            && key.modifiers == crossterm::event::KeyModifiers::NONE
+        {
             return true;
         }
 
