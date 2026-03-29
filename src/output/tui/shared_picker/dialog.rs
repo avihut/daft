@@ -16,12 +16,23 @@ use super::input::poll_key;
 
 /// Generic yes/no confirmation dialog rendered as an overlay.
 /// Supports h/l and arrow keys to toggle focus, Enter to confirm selection.
+/// `default_yes` controls which button is initially focused.
 pub fn show_confirm_dialog(
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stderr>>,
     title: &str,
     body_lines: &[&str],
 ) -> Result<bool> {
-    let mut yes_focused = true;
+    show_confirm_dialog_with_default(terminal, title, body_lines, true)
+}
+
+/// Confirmation dialog with configurable default focus.
+pub fn show_confirm_dialog_with_default(
+    terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stderr>>,
+    title: &str,
+    body_lines: &[&str],
+    default_yes: bool,
+) -> Result<bool> {
+    let mut yes_focused = default_yes;
 
     loop {
         terminal.draw(|frame| {

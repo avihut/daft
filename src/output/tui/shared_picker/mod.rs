@@ -343,6 +343,7 @@ fn run_manage_picker_inner(
         diff_pivot: None,
         pending_remove: false,
         pending_add: false,
+        pending_link_confirm: false,
         edit_state: None,
     };
     mode.set_statuses(&infos);

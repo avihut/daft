@@ -22,7 +22,7 @@ use crate::core::layout;
 use crate::core::shared::{self, MaterializedState, SharedFileInfo, WorktreeStatus};
 
 use super::add_modal::{show_add_modal, AddResult};
-use super::dialog::show_confirm_dialog;
+use super::dialog::{show_confirm_dialog, show_confirm_dialog_with_default};
 use super::remove_modal::{show_remove_modal, RemoveDecision};
 use super::state::{FileTabState, FocusPanel, PickerState, WorktreeEntry};
 use super::{EntryDecoration, LoopAction, PickerMode};
@@ -51,6 +51,9 @@ pub struct ManageMode {
     pub pending_remove: bool,
     /// When true, the event loop will call `show_modal` to display the add-file modal.
     pub pending_add: bool,
+    /// When true, the event loop will show a confirmation dialog before
+    /// switching a materialized file to linked (overwriting local changes).
+    pub pending_link_confirm: bool,
     /// Active inline file editor session, if any.
     pub edit_state: Option<super::editor::EditSession>,
 }
@@ -151,26 +154,19 @@ impl ManageMode {
                 self.info_message = Some(format!("{wt_name}: materialized (local copy created)"));
             }
             WorktreeStatus::Materialized => {
-                // Materialized -> Linked: remove file, create symlink
-                let remove_result = if file_path.is_dir() {
-                    fs::remove_dir_all(&file_path)
-                } else {
-                    fs::remove_file(&file_path)
-                };
-                if let Err(e) = remove_result {
-                    self.info_message =
-                        Some(format!("{wt_name}: failed to remove local copy: {e}"));
+                // If the local copy differs from the shared copy, defer to a
+                // confirmation dialog (needs terminal access via show_modal).
+                let compare = shared::deep_compare(
+                    &shared_target,
+                    &file_path,
+                    std::time::Duration::from_secs(1),
+                );
+                if compare != shared::CompareResult::Identical {
+                    self.pending_link_confirm = true;
                     return;
                 }
-                if let Err(e) =
-                    shared::create_shared_symlink(wt_path, rel_path, &self.git_common_dir)
-                {
-                    self.info_message = Some(format!("{wt_name}: failed to create symlink: {e}"));
-                    return;
-                }
-                self.materialized.remove(rel_path, wt_path);
-                let _ = self.materialized.save(&self.git_common_dir);
-                self.info_message = Some(format!("{wt_name}: linked (symlink restored)"));
+                // Identical — safe to link without confirmation
+                self.execute_link(state);
             }
             WorktreeStatus::Missing => {
                 // Missing -> Materialized: copy from shared into worktree
@@ -209,6 +205,36 @@ impl ManageMode {
                 ));
             }
         }
+    }
+
+    /// Execute the Materialized -> Linked conversion for the current entry.
+    /// Removes the local copy and creates a symlink to the shared file.
+    fn execute_link(&mut self, state: &PickerState) {
+        let tab = state.current_tab();
+        let tab_idx = state.active_tab;
+        let entry_idx = tab.list_cursor;
+        let rel_path = &tab.rel_path;
+        let wt_name = &tab.entries[entry_idx].worktree_name;
+        let wt_path = &tab.entries[entry_idx].worktree_path;
+        let file_path = wt_path.join(rel_path);
+
+        let remove_result = if file_path.is_dir() {
+            fs::remove_dir_all(&file_path)
+        } else {
+            fs::remove_file(&file_path)
+        };
+        if let Err(e) = remove_result {
+            self.info_message = Some(format!("{wt_name}: failed to remove local copy: {e}"));
+            return;
+        }
+        if let Err(e) = shared::create_shared_symlink(wt_path, rel_path, &self.git_common_dir) {
+            self.info_message = Some(format!("{wt_name}: failed to create symlink: {e}"));
+            return;
+        }
+        self.materialized.remove(rel_path, wt_path);
+        let _ = self.materialized.save(&self.git_common_dir);
+        self.statuses[tab_idx][entry_idx] = WorktreeStatus::Linked;
+        self.info_message = Some(format!("{wt_name}: linked (symlink restored)"));
     }
 
     /// Fix symlink for the currently highlighted entry.
@@ -947,7 +973,7 @@ impl PickerMode for ManageMode {
     }
 
     fn needs_modal(&self) -> bool {
-        self.pending_remove || self.pending_add
+        self.pending_remove || self.pending_add || self.pending_link_confirm
     }
 
     fn show_modal(
@@ -958,6 +984,32 @@ impl PickerMode for ManageMode {
         if self.pending_add {
             self.pending_add = false;
             return self.show_add_modal(terminal, state);
+        }
+
+        if self.pending_link_confirm {
+            self.pending_link_confirm = false;
+            let tab = state.current_tab();
+            let wt_name = tab.entries[tab.list_cursor].worktree_name.clone();
+            let confirmed = show_confirm_dialog_with_default(
+                terminal,
+                "Overwrite local changes?",
+                &[
+                    &format!("The materialized copy in '{wt_name}' differs from the shared file."),
+                    "Switching to linked will replace it with a symlink,",
+                    "discarding local changes.",
+                    "",
+                    "Continue?",
+                ],
+                false, // Default to No
+            )?;
+            if confirmed {
+                self.execute_link(state);
+                let tab_idx = state.active_tab;
+                self.refresh_tab_status(state, tab_idx);
+            } else {
+                self.info_message = Some(format!("{wt_name}: link cancelled"));
+            }
+            return Ok(());
         }
 
         self.pending_remove = false;
