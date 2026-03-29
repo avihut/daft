@@ -16,7 +16,6 @@ use super::input::poll_key;
 
 /// Generic yes/no confirmation dialog rendered as an overlay.
 /// Supports h/l and arrow keys to toggle focus, Enter to confirm selection.
-/// `default_yes` controls which button is initially focused.
 pub fn show_confirm_dialog(
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stderr>>,
     title: &str,
@@ -38,8 +37,10 @@ pub fn show_confirm_dialog_with_default(
         terminal.draw(|frame| {
             let area = frame.area();
 
-            let dialog_width = 50u16.min(area.width.saturating_sub(4));
-            let dialog_height = (body_lines.len() as u16 + 5).min(area.height.saturating_sub(2));
+            // Dialog sizing: body + 2 border + 2 vertical padding + 1 blank + 1 buttons
+            let content_height = body_lines.len() as u16 + 4;
+            let dialog_width = 54u16.min(area.width.saturating_sub(4));
+            let dialog_height = (content_height + 2).min(area.height.saturating_sub(2));
             let x = (area.width.saturating_sub(dialog_width)) / 2;
             let y = (area.height.saturating_sub(dialog_height)) / 2;
             let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
@@ -73,12 +74,22 @@ pub fn show_confirm_dialog_with_default(
                     .add_modifier(Modifier::BOLD)
             };
 
-            let mut text_lines: Vec<Line> = body_lines
-                .iter()
-                .map(|&line| Line::raw(line.to_string()))
-                .collect();
+            let mut text_lines: Vec<Line> = Vec::new();
+
+            // Top padding
             text_lines.push(Line::raw(""));
+
+            // Body lines with left padding
+            for &line in body_lines {
+                text_lines.push(Line::from(Span::raw(format!("  {line}"))));
+            }
+
+            // Blank line before buttons
+            text_lines.push(Line::raw(""));
+
+            // Buttons with padding
             text_lines.push(Line::from(vec![
+                Span::raw("  "),
                 Span::styled(" [Y]es ", yes_style),
                 Span::raw("  "),
                 Span::styled(" [N]o ", no_style),
