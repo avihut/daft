@@ -21,29 +21,43 @@ pub fn show_confirm_dialog(
     title: &str,
     body_lines: &[&str],
 ) -> Result<bool> {
-    show_confirm_dialog_inner(terminal, title, body_lines, true)
+    run_dialog(terminal, title, body_lines, true, &mut |_| {})
 }
 
 /// Confirmation dialog with configurable default focus.
+#[allow(dead_code)]
 pub fn show_confirm_dialog_with_default(
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stderr>>,
     title: &str,
     body_lines: &[&str],
     default_yes: bool,
 ) -> Result<bool> {
-    show_confirm_dialog_inner(terminal, title, body_lines, default_yes)
+    run_dialog(terminal, title, body_lines, default_yes, &mut |_| {})
 }
 
-fn show_confirm_dialog_inner(
+/// Confirmation dialog overlaid on top of a background rendered by `bg`.
+pub fn show_confirm_dialog_over(
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stderr>>,
     title: &str,
     body_lines: &[&str],
     default_yes: bool,
+    bg: &mut dyn FnMut(&mut Frame),
+) -> Result<bool> {
+    run_dialog(terminal, title, body_lines, default_yes, bg)
+}
+
+fn run_dialog(
+    terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stderr>>,
+    title: &str,
+    body_lines: &[&str],
+    default_yes: bool,
+    bg: &mut dyn FnMut(&mut Frame),
 ) -> Result<bool> {
     let mut yes_focused = default_yes;
 
     loop {
         terminal.draw(|frame| {
+            bg(frame);
             render_dialog(frame, title, body_lines, yes_focused);
         })?;
 
@@ -61,7 +75,7 @@ fn show_confirm_dialog_inner(
     }
 }
 
-/// Render the dialog overlay. Can be called from any draw context.
+/// Render the dialog overlay on top of the current frame content.
 fn render_dialog(frame: &mut Frame, title: &str, body_lines: &[&str], yes_focused: bool) {
     let area = frame.area();
 

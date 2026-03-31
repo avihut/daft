@@ -22,7 +22,7 @@ use crate::core::layout;
 use crate::core::shared::{self, MaterializedState, SharedFileInfo, WorktreeStatus};
 
 use super::add_modal::{show_add_modal, AddResult};
-use super::dialog::{show_confirm_dialog, show_confirm_dialog_with_default};
+use super::dialog::show_confirm_dialog;
 use super::remove_modal::{show_remove_modal, RemoveDecision};
 use super::state::{FileTabState, FocusPanel, PickerState, WorktreeEntry};
 use super::{EntryDecoration, LoopAction, PickerMode};
@@ -209,7 +209,7 @@ impl ManageMode {
 
     /// Execute the Materialized -> Linked conversion for the current entry.
     /// Removes the local copy and creates a symlink to the shared file.
-    fn execute_link(&mut self, state: &PickerState) {
+    pub fn execute_link(&mut self, state: &PickerState) {
         let tab = state.current_tab();
         let tab_idx = state.active_tab;
         let entry_idx = tab.list_cursor;
@@ -539,7 +539,7 @@ impl ManageMode {
     }
 
     /// Re-detect the status of all entries in a single tab.
-    fn refresh_tab_status(&mut self, state: &PickerState, tab_idx: usize) {
+    pub fn refresh_tab_status(&mut self, state: &PickerState, tab_idx: usize) {
         let tab = &state.tabs[tab_idx];
         let rel_path = &tab.rel_path;
         let shared_target = shared::shared_file_path(&self.git_common_dir, rel_path);
@@ -984,32 +984,6 @@ impl PickerMode for ManageMode {
         if self.pending_add {
             self.pending_add = false;
             return self.show_add_modal(terminal, state);
-        }
-
-        if self.pending_link_confirm {
-            self.pending_link_confirm = false;
-            let tab = state.current_tab();
-            let wt_name = tab.entries[tab.list_cursor].worktree_name.clone();
-            let confirmed = show_confirm_dialog_with_default(
-                terminal,
-                "Overwrite local changes?",
-                &[
-                    &format!("'{wt_name}' has a materialized copy that differs"),
-                    "from the shared file. Switching to linked will",
-                    "discard local changes.",
-                    "",
-                    "Continue?",
-                ],
-                false,
-            )?;
-            if confirmed {
-                self.execute_link(state);
-                let tab_idx = state.active_tab;
-                self.refresh_tab_status(state, tab_idx);
-            } else {
-                self.info_message = Some(format!("{wt_name}: link cancelled"));
-            }
-            return Ok(());
         }
 
         self.pending_remove = false;

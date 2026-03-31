@@ -387,6 +387,38 @@ fn run_manage_event_loop(
             LoopAction::Exit => return Ok(()),
         }
 
+        // Handle link confirmation overlaid on the current UI
+        if mode.pending_link_confirm {
+            mode.pending_link_confirm = false;
+            let tab = state.current_tab();
+            let wt_name = tab.entries[tab.list_cursor].worktree_name.clone();
+            // Render the UI as background, then overlay the dialog on each frame
+            let hl = highlighter;
+            let confirmed = dialog::show_confirm_dialog_over(
+                terminal,
+                "Overwrite local changes?",
+                &[
+                    &format!("'{wt_name}' has a materialized copy that differs"),
+                    "from the shared file. Switching to linked will",
+                    "discard local changes.",
+                    "",
+                    "Continue?",
+                ],
+                false,
+                &mut |frame| {
+                    render::render(state, mode, hl, frame);
+                },
+            )?;
+            if confirmed {
+                mode.execute_link(state);
+                let tab_idx = state.active_tab;
+                mode.refresh_tab_status(state, tab_idx);
+            } else {
+                mode.info_message = Some(format!("{wt_name}: link cancelled"));
+            }
+            continue;
+        }
+
         // Check if the mode needs to show a modal (e.g. remove confirmation).
         if mode.needs_modal() {
             mode.show_modal(terminal, state)?;
