@@ -358,7 +358,7 @@ _daft() {
     # shared: complete subcommands and their arguments
     if [[ "$words[2]" == "shared" ]]; then
         if (( CURRENT == 3 )); then
-            compadd add link materialize remove status sync
+            compadd add link manage materialize remove status sync
             return
         fi
         local shared_sub="$words[3]"
