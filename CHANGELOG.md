@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.0](https://github.com/avihut/daft/compare/v1.5.1...v1.6.0) - 2026-03-31
+
+### Bug Fixes
+
+- prevent auto-upstream tracking on new local-first branches ([#342](https://github.com/avihut/daft/pull/342))
+- allow --remote delete when local branch does not exist ([#341](https://github.com/avihut/daft/pull/341))
+- *(ci)* update homebrew test for sibling layout and new commands
+
+### Features
+
+- shared file manage TUI with inline editor ([#344](https://github.com/avihut/daft/pull/344))
+- interactive sync for declared-but-uncollected shared files ([#343](https://github.com/avihut/daft/pull/343))
+- add layout prompt to init command ([#338](https://github.com/avihut/daft/pull/338))
+- local-first remote sync ([#337](https://github.com/avihut/daft/pull/337))
+
 ## [1.5.1](https://github.com/avihut/daft/compare/v1.5.0...v1.5.1) - 2026-03-26
 
 ### Bug Fixes
