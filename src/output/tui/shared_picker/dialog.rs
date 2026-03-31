@@ -75,8 +75,21 @@ fn run_dialog(
     }
 }
 
+/// Dim all cells in the frame buffer to create a modal backdrop effect.
+fn dim_background(frame: &mut Frame) {
+    let area = frame.area();
+    let buf = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buf[(x, y)];
+            cell.set_style(cell.style().add_modifier(Modifier::DIM));
+        }
+    }
+}
+
 /// Render the dialog overlay on top of the current frame content.
 fn render_dialog(frame: &mut Frame, title: &str, body_lines: &[&str], yes_focused: bool) {
+    dim_background(frame);
     let area = frame.area();
 
     // Width: fit the longest line + padding (4 chars indent) + 2 for border
