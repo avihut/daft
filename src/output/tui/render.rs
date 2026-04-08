@@ -1,4 +1,4 @@
-use super::columns::{column_content_width, select_columns, Column};
+use super::columns::{column_content_width, select_columns, Column, ALL_COLUMNS};
 use super::state::{FinalStatus, PhaseStatus, TuiState, WorktreeStatus};
 use crate::core::sort::SortSpec;
 use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
@@ -133,13 +133,21 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         // Replace mode: user explicitly chose columns, don't responsively drop.
         (Some(user_cols), true) => user_cols.clone(),
         // Modifier mode: user tweaked defaults, responsive dropping still applies.
+        // Opt-in columns (not in ALL_COLUMNS, e.g. Size) that the user explicitly
+        // added are always included — they bypass responsive dropping.
         (Some(user_cols), false) => {
             let responsive =
                 select_columns(table_area.width, &state.worktrees, &row_vals, sort_ref);
-            responsive
+            let mut cols: Vec<Column> = responsive
                 .into_iter()
                 .filter(|c| matches!(c, Column::Status) || user_cols.contains(c))
-                .collect()
+                .collect();
+            for col in user_cols {
+                if !ALL_COLUMNS.contains(col) && !cols.contains(col) {
+                    cols.push(*col);
+                }
+            }
+            cols
         }
         // No column selection: fully responsive.
         (None, _) => select_columns(table_area.width, &state.worktrees, &row_vals, sort_ref),

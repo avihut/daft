@@ -107,13 +107,15 @@ impl Column {
     }
 }
 
-/// All columns in display order.
+/// Default columns in display order.
+///
+/// Size is excluded because it requires an expensive filesystem walk and should
+/// only appear when the user explicitly requests it via `--columns +size`.
 pub(super) const ALL_COLUMNS: &[Column] = &[
     Column::Status,
     Column::Annotation,
     Column::Branch,
     Column::Path,
-    Column::Size,
     Column::Base,
     Column::Changes,
     Column::Remote,
@@ -252,5 +254,16 @@ mod tests {
         let cols = select_columns(30, &[], &[], None);
         assert!(cols.iter().any(|c| matches!(c, Column::Status)));
         assert!(cols.iter().any(|c| matches!(c, Column::Branch)));
+    }
+
+    /// Regression: Size must never appear in the default responsive set.
+    /// It is an opt-in column that requires `--columns +size`.
+    #[test]
+    fn size_excluded_from_default_responsive_columns() {
+        let cols = select_columns(500, &[], &[], None);
+        assert!(
+            !cols.iter().any(|c| matches!(c, Column::Size)),
+            "Size should not appear in responsive defaults even on a wide terminal"
+        );
     }
 }
