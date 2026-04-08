@@ -207,6 +207,90 @@ impl ManageMode {
         }
     }
 
+    /// Check whether the currently highlighted entry is in NotCollected state.
+    fn is_not_collected(&self, state: &PickerState) -> bool {
+        let tab_idx = state.active_tab;
+        let entry_idx = state.current_tab().list_cursor;
+        self.statuses
+            .get(tab_idx)
+            .and_then(|t| t.get(entry_idx))
+            .copied()
+            == Some(WorktreeStatus::NotCollected)
+    }
+
+    /// Collect an uncollected file using the currently highlighted worktree as
+    /// the source. Only works if that worktree actually has a copy of the file
+    /// on disk; otherwise shows an info message.
+    fn collect_from_worktree(&mut self, state: &mut PickerState) {
+        let tab = state.current_tab();
+        let rel_path = tab.rel_path.clone();
+        let entry_idx = tab.list_cursor;
+        let wt_name = tab.entries[entry_idx].worktree_name.clone();
+        let wt_path = tab.entries[entry_idx].worktree_path.clone();
+        let source_path = wt_path.join(&rel_path);
+
+        // The worktree must have a real (non-symlink) copy of the file.
+        if !source_path.exists() || source_path.is_symlink() {
+            self.info_message = Some(format!(
+                "{wt_name}: no copy of {rel_path} \u{2014} select a worktree that has it"
+            ));
+            return;
+        }
+
+        // Ensure shared storage directory exists.
+        if let Err(e) = shared::ensure_shared_dir(&self.git_common_dir) {
+            self.info_message = Some(format!("Failed to create shared storage: {e}"));
+            return;
+        }
+
+        // Find the source index in worktree_paths.
+        let source_idx = match self.worktree_paths.iter().position(|p| p == &wt_path) {
+            Some(idx) => idx,
+            None => {
+                self.info_message = Some(format!("{wt_name}: worktree path not found"));
+                return;
+            }
+        };
+
+        // Compute materialization defaults for other worktrees.
+        let (mat, _timed_out) = shared::compute_materialization_defaults(
+            &source_path,
+            &rel_path,
+            &self.worktree_paths,
+            source_idx,
+            std::time::Duration::from_secs(1),
+        );
+
+        let materialize_in: Vec<PathBuf> = self
+            .worktree_paths
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| mat[*i])
+            .map(|(_, p)| p.clone())
+            .collect();
+
+        let decision = shared::CollectDecision {
+            rel_path: rel_path.clone(),
+            source_worktree: wt_path,
+            materialize_in,
+        };
+
+        if let Err(e) = shared::execute_collect(
+            &decision,
+            &self.worktree_paths,
+            &self.git_common_dir,
+            &self.config_root,
+            &mut self.materialized,
+        ) {
+            self.info_message = Some(format!("Collect failed: {e}"));
+            return;
+        }
+
+        let _ = self.materialized.save(&self.git_common_dir);
+        self.info_message = Some(format!("Collected {rel_path} from {wt_name}"));
+        self.refresh_all(state);
+    }
+
     /// Execute the Materialized -> Linked conversion for the current entry.
     /// Removes the local copy and creates a symlink to the shared file.
     pub fn execute_link(&mut self, state: &PickerState) {
@@ -787,7 +871,18 @@ impl PickerMode for ManageMode {
             KeyCode::Char('d') => {
                 self.toggle_diff_mode(state);
             }
-            KeyCode::Char('m') | KeyCode::Enter | KeyCode::Char(' ') => {
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                self.info_message = None;
+                if self.is_not_collected(state) {
+                    self.collect_from_worktree(state);
+                    // collect_from_worktree calls refresh_all on success
+                } else {
+                    self.toggle_materialize(state);
+                    let tab_idx = state.active_tab;
+                    self.refresh_tab_status(state, tab_idx);
+                }
+            }
+            KeyCode::Char('m') => {
                 self.info_message = None;
                 self.toggle_materialize(state);
                 let tab_idx = state.active_tab;
@@ -1024,5 +1119,133 @@ impl PickerMode for ManageMode {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Set up a minimal manage mode + picker state for testing.
+    fn setup(worktree_names: &[&str], rel_path: &str) -> (TempDir, ManageMode, PickerState) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let git_dir = root.join(".git");
+        fs::create_dir_all(git_dir.join(".daft/shared")).unwrap();
+
+        let mut wt_paths = Vec::new();
+        let mut entries = Vec::new();
+        for name in worktree_names {
+            let wt = root.join(name);
+            fs::create_dir_all(&wt).unwrap();
+            entries.push(WorktreeEntry {
+                worktree_name: name.to_string(),
+                worktree_path: wt.clone(),
+                has_file: true,
+            });
+            wt_paths.push(wt);
+        }
+
+        let tab = FileTabState::new(rel_path.to_string(), entries);
+        let n = worktree_names.len();
+        let statuses = vec![vec![WorktreeStatus::NotCollected; n]];
+        let state = PickerState::from_tabs(vec![tab]);
+
+        // Write a .gitignore so execute_collect can append to it.
+        fs::write(root.join(".gitignore"), "").unwrap();
+
+        // Write daft.yml in worktree_root so refresh_all can find declared shared paths.
+        let wt_root = wt_paths[0].clone();
+        fs::write(
+            wt_root.join("daft.yml"),
+            format!("shared:\n  - {rel_path}\n"),
+        )
+        .unwrap();
+
+        let mode = ManageMode {
+            git_common_dir: git_dir,
+            config_root: root,
+            materialized: shared::MaterializedState::default(),
+            statuses,
+            worktree_paths: wt_paths,
+            worktree_root: tmp.path().join(worktree_names[0]),
+            info_message: None,
+            diff_pivot: None,
+            pending_remove: false,
+            pending_add: false,
+            pending_link_confirm: false,
+            edit_state: None,
+        };
+
+        (tmp, mode, state)
+    }
+
+    #[test]
+    fn collect_from_worktree_with_file_succeeds() {
+        let (_tmp, mut mode, mut state) = setup(&["main", "develop"], ".env");
+
+        // Create .env in both worktrees with different content.
+        fs::write(mode.worktree_paths[0].join(".env"), "FROM_MAIN=1").unwrap();
+        fs::write(mode.worktree_paths[1].join(".env"), "FROM_DEVELOP=1").unwrap();
+
+        // Cursor is on worktree 0 (main). Trigger collect.
+        state.tabs[0].list_cursor = 0;
+        mode.collect_from_worktree(&mut state);
+
+        // Shared storage should have main's content.
+        let shared = shared::shared_file_path(&mode.git_common_dir, ".env");
+        assert!(shared.exists(), "shared file should exist after collect");
+        assert_eq!(fs::read_to_string(&shared).unwrap(), "FROM_MAIN=1");
+
+        // main: should be symlinked (source worktree).
+        assert!(
+            mode.worktree_paths[0].join(".env").is_symlink(),
+            "source worktree should be symlinked"
+        );
+
+        // develop: had different content, should be materialized.
+        let dev_env = mode.worktree_paths[1].join(".env");
+        assert!(!dev_env.is_symlink(), "develop should keep its local copy");
+        assert_eq!(fs::read_to_string(&dev_env).unwrap(), "FROM_DEVELOP=1");
+
+        // Info message should confirm success.
+        assert!(
+            mode.info_message
+                .as_ref()
+                .unwrap()
+                .contains("Collected .env"),
+            "info message should confirm collection"
+        );
+
+        // Statuses should have been refreshed (no longer NotCollected).
+        assert!(
+            !mode.statuses[0].contains(&WorktreeStatus::NotCollected),
+            "no entries should be NotCollected after collect"
+        );
+    }
+
+    #[test]
+    fn collect_from_worktree_without_file_shows_message() {
+        let (_tmp, mut mode, mut state) = setup(&["main", "develop"], ".env");
+
+        // Only develop has the file, not main.
+        fs::write(mode.worktree_paths[1].join(".env"), "FROM_DEVELOP=1").unwrap();
+
+        // Cursor is on worktree 0 (main) which has no .env.
+        state.tabs[0].list_cursor = 0;
+        mode.collect_from_worktree(&mut state);
+
+        // Should NOT have collected.
+        let shared = shared::shared_file_path(&mode.git_common_dir, ".env");
+        assert!(!shared.exists(), "shared file should not exist");
+
+        // Info message should tell user to pick a worktree that has it.
+        let msg = mode.info_message.as_ref().unwrap();
+        assert!(
+            msg.contains("no copy of .env"),
+            "info message should explain the file is missing: {msg}"
+        );
     }
 }

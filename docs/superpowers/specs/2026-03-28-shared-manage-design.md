@@ -252,12 +252,23 @@ before returning to the manager.
 
 ### `Space`/`Enter` — Collect Uncollected File
 
-Available when focused on a tab whose file is in "not yet collected" state
-(declared in `daft.yml` but not in shared storage).
+Available when focused on a worktree entry whose file is in "not yet collected"
+state (declared in `daft.yml` but not in shared storage). Only `Space` and
+`Enter` trigger collection — `m` does not, since `m` is semantically "toggle
+materialized/linked" which requires the file to already be collected.
 
-Triggers the collect picker flow for that single file — the same
-prepare-and-submit UX used during sync, but scoped to one file. After collection
-completes, the manager refreshes the tab with the new state.
+**Worktree has the file**: pressing `Space`/`Enter` collects using that worktree
+as the source. Materialization defaults are computed automatically (identical
+copies in other worktrees → linked, different copies → materialized, missing →
+linked). The collection executes immediately and the tab refreshes with updated
+states.
+
+**Worktree does not have the file**: shows an info message —
+`"<name>: no copy of <file> — select a worktree that has it"`.
+
+This avoids launching a separate picker — the manage TUI already shows all
+worktrees, so the user just navigates to the one with the file and presses
+`Enter`.
 
 ## Immediate Mode Execution
 
