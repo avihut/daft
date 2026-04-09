@@ -244,6 +244,22 @@ as YAML.
 daft hooks dump
 ```
 
+### jobs
+
+Manage background hook jobs
+
+```
+daft hooks jobs [OPTIONS]
+```
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `--all-repos` | Show jobs across all repositories |  |
+| `--worktree <WORKTREE>` | Filter to a specific worktree |  |
+| `--json` | Output in JSON format |  |
+
 ### migrate
 
 Rename deprecated hook files to their new names

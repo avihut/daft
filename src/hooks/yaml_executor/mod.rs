@@ -210,6 +210,7 @@ pub fn execute_yaml_hook_with_rc(
         source_dir,
         working_dir,
         rc,
+        hook_def.background,
     );
 
     if specs.is_empty() {
