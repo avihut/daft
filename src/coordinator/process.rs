@@ -31,6 +31,9 @@ pub struct CoordinatorState {
     pub repo_hash: String,
     pub invocation_id: String,
     pub jobs: Vec<JobSpec>,
+    pub trigger_command: String,
+    pub hook_type: String,
+    pub worktree: String,
 }
 
 impl CoordinatorState {
@@ -39,7 +42,17 @@ impl CoordinatorState {
             repo_hash: repo_hash.to_string(),
             invocation_id: invocation_id.to_string(),
             jobs: Vec::new(),
+            trigger_command: String::new(),
+            hook_type: String::new(),
+            worktree: String::new(),
         }
+    }
+
+    pub fn with_metadata(mut self, trigger_command: &str, hook_type: &str, worktree: &str) -> Self {
+        self.trigger_command = trigger_command.to_string();
+        self.hook_type = hook_type.to_string();
+        self.worktree = worktree.to_string();
+        self
     }
 
     pub fn add_job(&mut self, job: JobSpec) {
@@ -67,6 +80,17 @@ impl CoordinatorState {
         child_pids: &ChildPidMap,
         cancel_all: &Arc<AtomicBool>,
     ) -> Result<Vec<JobResult>> {
+        if !self.trigger_command.is_empty() {
+            let inv_meta = super::log_store::InvocationMeta {
+                invocation_id: self.invocation_id.clone(),
+                trigger_command: self.trigger_command.clone(),
+                hook_type: self.hook_type.clone(),
+                worktree: self.worktree.clone(),
+                created_at: chrono::Utc::now(),
+            };
+            let _ = store.write_invocation_meta(&self.invocation_id, &inv_meta);
+        }
+
         let mut handles = Vec::new();
         let results = Arc::new(Mutex::new(Vec::new()));
 
@@ -77,12 +101,19 @@ impl CoordinatorState {
             let results = Arc::clone(&results);
             let child_pids = Arc::clone(child_pids);
             let cancel_all = Arc::clone(cancel_all);
+            let hook_type = self.hook_type.clone();
+            let worktree = self.worktree.clone();
 
             let handle = std::thread::spawn(move || {
                 let local_store = LogStore::new(store_base);
+                let ctx = JobInvocationContext {
+                    invocation_id: &inv_id,
+                    hook_type: &hook_type,
+                    worktree: &worktree,
+                };
                 run_single_background_job(
                     &job,
-                    &inv_id,
+                    &ctx,
                     &local_store,
                     &results,
                     &child_pids,
@@ -105,12 +136,19 @@ impl CoordinatorState {
     }
 }
 
+/// Metadata propagated from the coordinator into each job execution.
+struct JobInvocationContext<'a> {
+    invocation_id: &'a str,
+    hook_type: &'a str,
+    worktree: &'a str,
+}
+
 /// Run a single background job: create log directory, write metadata,
 /// stream output to a log file, execute the command, and update metadata
 /// with the final status.
 fn run_single_background_job(
     job: &JobSpec,
-    invocation_id: &str,
+    ctx: &JobInvocationContext<'_>,
     store: &LogStore,
     results: &Arc<Mutex<Vec<JobResult>>>,
     child_pids: &ChildPidMap,
@@ -132,7 +170,7 @@ fn run_single_background_job(
     }
 
     // 1. Create the job log directory.
-    let job_dir = match store.create_job_dir(invocation_id, &job.name) {
+    let job_dir = match store.create_job_dir(ctx.invocation_id, &job.name) {
         Ok(dir) => dir,
         Err(e) => {
             eprintln!("daft: failed to create log dir for '{}': {e}", job.name);
@@ -151,8 +189,8 @@ fn run_single_background_job(
     // 2. Write initial meta with Running status.
     let mut meta = JobMeta {
         name: job.name.clone(),
-        hook_type: String::new(),
-        worktree: String::new(),
+        hook_type: ctx.hook_type.to_string(),
+        worktree: ctx.worktree.to_string(),
         command: job.command.clone(),
         working_dir: job.working_dir.display().to_string(),
         env: job.env.clone(),
@@ -221,6 +259,7 @@ fn run_single_background_job(
 
     meta.status = status;
     meta.exit_code = exit_code;
+    meta.finished_at = Some(chrono::Utc::now());
     if let Err(e) = store.write_meta(&job_dir, &meta) {
         eprintln!("daft: failed to update meta for '{}': {e}", job.name);
     }
@@ -581,6 +620,18 @@ mod tests {
     }
 
     #[test]
+    fn test_coordinator_state_with_metadata() {
+        let state = CoordinatorState::new("test-repo", "inv-1").with_metadata(
+            "worktree-post-create",
+            "worktree-post-create",
+            "feature/tax-calc",
+        );
+        assert_eq!(state.trigger_command, "worktree-post-create");
+        assert_eq!(state.hook_type, "worktree-post-create");
+        assert_eq!(state.worktree, "feature/tax-calc");
+    }
+
+    #[test]
     fn test_coordinator_state_add_jobs() {
         let mut state = CoordinatorState::new("test-repo", "inv-1");
         state.add_job(test_job("job-a"));
@@ -713,6 +764,58 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, NodeStatus::Skipped);
+    }
+
+    #[test]
+    fn test_run_all_writes_invocation_meta() {
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let mut state = CoordinatorState::new("test-repo", "inv-meta-1").with_metadata(
+            "worktree-post-create",
+            "worktree-post-create",
+            "feature/x",
+        );
+        state.add_job(JobSpec {
+            name: "echo-job".to_string(),
+            command: "echo hello".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            ..Default::default()
+        });
+
+        state.run_all(&store).unwrap();
+
+        let inv_meta = store.read_invocation_meta("inv-meta-1").unwrap();
+        assert_eq!(inv_meta.trigger_command, "worktree-post-create");
+        assert_eq!(inv_meta.worktree, "feature/x");
+    }
+
+    #[test]
+    fn test_run_all_populates_job_hook_type_and_worktree() {
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let mut state = CoordinatorState::new("test-repo", "inv-pop-1").with_metadata(
+            "worktree-post-create",
+            "worktree-post-create",
+            "feature/y",
+        );
+        state.add_job(JobSpec {
+            name: "check-job".to_string(),
+            command: "echo ok".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            ..Default::default()
+        });
+
+        state.run_all(&store).unwrap();
+
+        let meta = store
+            .read_meta(&tmp.path().join("inv-pop-1").join("check-job"))
+            .unwrap();
+        assert_eq!(meta.hook_type, "worktree-post-create");
+        assert_eq!(meta.worktree, "feature/y");
+        assert!(meta.background);
+        assert!(meta.finished_at.is_some());
     }
 
     #[test]
