@@ -423,8 +423,10 @@ fn retry_job(job: &str, path: &Path, output: &mut dyn Output) -> Result<()> {
 
     let invocation_id = generate_invocation_id();
     let retry_store = LogStore::for_repo(&repo_hash)?;
+    let trigger_command = format!("hooks jobs retry {}", meta.name);
     let mut coord_state =
-        crate::coordinator::process::CoordinatorState::new(&repo_hash, &invocation_id);
+        crate::coordinator::process::CoordinatorState::new(&repo_hash, &invocation_id)
+            .with_metadata(&trigger_command, &meta.hook_type, &meta.worktree);
     coord_state.add_job(job_spec);
 
     #[cfg(unix)]
