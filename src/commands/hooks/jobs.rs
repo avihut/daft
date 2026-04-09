@@ -14,6 +14,22 @@ use tabled::{
     settings::{object::Columns, Padding, Style},
 };
 
+/// Format a duration in seconds as `M:SS` (e.g., `0:06`, `1:32`, `12:05`).
+/// For durations >= 1 hour, uses `H:MM:SS`.
+fn format_duration(secs: i64) -> String {
+    let secs = secs.max(0);
+    if secs >= 3600 {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        let s = secs % 60;
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        let m = secs / 60;
+        let s = secs % 60;
+        format!("{m}:{s:02}")
+    }
+}
+
 #[derive(serde::Serialize)]
 struct JsonOutput {
     worktrees: Vec<JsonWorktree>,
@@ -509,11 +525,11 @@ fn list_jobs(args: &JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()
                             let secs = finished
                                 .signed_duration_since(meta.started_at)
                                 .num_seconds();
-                            shorthand_from_seconds(secs)
+                            format_duration(secs)
                         }
                         (JobStatus::Running, None) => {
                             let secs = now.signed_duration_since(meta.started_at).num_seconds();
-                            format!("{}...", shorthand_from_seconds(secs))
+                            format!("{}...", format_duration(secs))
                         }
                         _ => "\u{2014}".to_string(),
                     };
@@ -600,7 +616,7 @@ fn show_logs(
             let secs = finished
                 .signed_duration_since(meta.started_at)
                 .num_seconds();
-            shorthand_from_seconds(secs)
+            format_duration(secs)
         }
         None => "\u{2014}".to_string(),
     };
