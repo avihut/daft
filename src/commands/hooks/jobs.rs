@@ -5,9 +5,14 @@ use clap::{Parser, Subcommand};
 use std::path::Path;
 
 use crate::coordinator::client::CoordinatorClient;
-use crate::coordinator::log_store::{JobStatus, LogStore};
+use crate::coordinator::log_store::{InvocationMeta, JobStatus, LogStore};
+use crate::output::format::shorthand_from_seconds;
 use crate::output::Output;
-use crate::styles::{bold, dim, green, red, yellow};
+use crate::styles::{blue, bold, dim, dim_underline, green, red, yellow};
+use tabled::{
+    builder::Builder,
+    settings::{object::Columns, Padding, Style},
+};
 
 #[derive(Parser, Debug)]
 #[command(about = "Manage background hook jobs")]
@@ -15,13 +20,9 @@ pub struct JobsArgs {
     #[command(subcommand)]
     command: Option<JobsCommand>,
 
-    /// Show jobs across all repositories.
+    /// Show jobs across all worktrees.
     #[arg(long)]
-    all_repos: bool,
-
-    /// Filter to a specific worktree.
-    #[arg(long)]
-    worktree: Option<String>,
+    all: bool,
 
     /// Output in JSON format.
     #[arg(long)]
@@ -32,28 +33,36 @@ pub struct JobsArgs {
 enum JobsCommand {
     /// View output log for a background job.
     Logs {
-        /// Job name.
+        /// Job address: name, inv:name, or worktree:inv:name.
         job: String,
+        /// Invocation ID prefix (overrides inline prefix).
+        #[arg(long)]
+        inv: Option<String>,
     },
     /// Cancel a running background job.
     Cancel {
-        /// Job name (omit for --all).
+        /// Job address (omit for --all).
         job: Option<String>,
         /// Cancel all running jobs.
         #[arg(long)]
         all: bool,
+        /// Invocation ID prefix.
+        #[arg(long)]
+        inv: Option<String>,
     },
     /// Re-run a failed background job.
     Retry {
-        /// Job name.
+        /// Job address.
         job: String,
+        /// Invocation ID prefix.
+        #[arg(long)]
+        inv: Option<String>,
     },
     /// Remove logs older than the retention period.
     Clean,
 }
 
 /// Parsed composite job address: `[worktree:][invocation:]job_name`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct JobAddress {
     pub worktree: Option<String>,
@@ -61,7 +70,6 @@ pub struct JobAddress {
     pub job_name: String,
 }
 
-#[allow(dead_code)]
 impl JobAddress {
     pub fn parse(input: &str) -> Self {
         // rsplitn splits from the right, so worktree (which may contain /)
@@ -87,7 +95,6 @@ impl JobAddress {
         }
     }
 
-    #[allow(dead_code)]
     pub fn with_inv_override(mut self, inv: Option<&str>) -> Self {
         if let Some(prefix) = inv {
             self.invocation_prefix = Some(prefix.to_string());
@@ -96,7 +103,6 @@ impl JobAddress {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ResolvedAddress {
     pub invocation_id: String,
@@ -104,7 +110,6 @@ pub struct ResolvedAddress {
     pub job_dir: std::path::PathBuf,
 }
 
-#[allow(dead_code)]
 fn resolve_job_address(
     addr: &JobAddress,
     store: &LogStore,
@@ -147,7 +152,6 @@ fn resolve_job_address(
                     })
                 }
                 _ => {
-                    use crate::output::format::shorthand_from_seconds;
                     let now = chrono::Utc::now();
                     let lines: Vec<String> = matches
                         .iter()
@@ -194,7 +198,6 @@ fn resolve_job_address(
     }
 }
 
-#[allow(dead_code)]
 fn list_job_names_in_invocation(store: &LogStore, invocation_id: &str) -> Result<Vec<String>> {
     let dirs = store.list_jobs_in_invocation(invocation_id)?;
     Ok(dirs
@@ -203,7 +206,6 @@ fn list_job_names_in_invocation(store: &LogStore, invocation_id: &str) -> Result
         .collect())
 }
 
-#[allow(dead_code)]
 fn collect_all_job_names(
     store: &LogStore,
     invocations: &[crate::coordinator::log_store::InvocationMeta],
@@ -222,16 +224,24 @@ fn collect_all_job_names(
 pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
     match args.command {
         None => list_jobs(&args, path, output),
-        Some(JobsCommand::Logs { ref job }) => show_logs(job, &args, path, output),
-        Some(JobsCommand::Cancel { ref job, all }) => {
+        Some(JobsCommand::Logs { ref job, ref inv }) => {
+            show_logs(job, inv.as_deref(), &args, path, output)
+        }
+        Some(JobsCommand::Cancel {
+            ref job,
+            all,
+            ref inv,
+        }) => {
             if all || job.is_none() {
                 cancel_all(path, output)
             } else {
-                cancel_job(job.as_ref().unwrap(), path, output)
+                cancel_job(job.as_ref().unwrap(), inv.as_deref(), path, output)
             }
         }
-        Some(JobsCommand::Retry { ref job }) => retry_job(job, path, output),
-        Some(JobsCommand::Clean) => clean_logs(path, output),
+        Some(JobsCommand::Retry { ref job, ref inv }) => {
+            retry_job(job, inv.as_deref(), path, output)
+        }
+        Some(JobsCommand::Clean) => clean_logs(&args, path, output),
     }
 }
 
@@ -270,242 +280,258 @@ fn list_all_repo_hashes() -> Result<Vec<String>> {
     Ok(hashes)
 }
 
-fn format_elapsed(secs: Option<u64>) -> String {
-    match secs {
-        Some(s) if s >= 60 => format!("{}m {}s", s / 60, s % 60),
-        Some(s) => format!("{}s", s),
-        None => "\u{2014}".to_string(), // em dash
-    }
+fn is_coordinator_running(repo_hash: &str) -> bool {
+    crate::coordinator::coordinator_socket_path(repo_hash)
+        .map(|p| p.exists())
+        .unwrap_or(false)
 }
 
-fn format_status(status: &JobStatus) -> String {
+fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
     match status {
-        JobStatus::Running => yellow("RUNNING"),
-        JobStatus::Completed => green("COMPLETED"),
-        JobStatus::Failed => red("FAILED"),
-        JobStatus::Cancelled => dim("CANCELLED"),
+        JobStatus::Completed => green("\u{2713} completed"),
+        JobStatus::Failed => red("\u{2717} failed"),
+        JobStatus::Running => {
+            if coordinator_alive {
+                yellow("\u{27f3} running")
+            } else {
+                yellow("\u{27f3} running (stale)")
+            }
+        }
+        JobStatus::Cancelled => dim("\u{2014} cancelled"),
     }
 }
 
-/// Default subcommand: list jobs (running from coordinator + history from log store).
+fn print_json_output(
+    _invocations: &[InvocationMeta],
+    _store: &LogStore,
+    _coordinator_alive: bool,
+    output: &mut dyn Output,
+) -> Result<()> {
+    output.info("JSON output not yet implemented.");
+    Ok(())
+}
+
+/// Default subcommand: list jobs grouped by worktree and invocation.
 fn list_jobs(args: &JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
-    let repo_hashes = if args.all_repos {
-        list_all_repo_hashes()?
+    let repo_hash = compute_repo_hash_from_path(path)?;
+    let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
+    let coordinator_alive = is_coordinator_running(&repo_hash);
+
+    let store = LogStore::for_repo(&repo_hash)?;
+    let invocations = if args.all {
+        store.list_invocations()?
     } else {
-        vec![compute_repo_hash_from_path(path)?]
+        store.list_invocations_for_worktree(&current_worktree)?
     };
 
-    if repo_hashes.is_empty() {
+    if invocations.is_empty() {
         output.info("No background job history found.");
         return Ok(());
     }
 
-    let mut any_jobs = false;
-
-    for repo_hash in &repo_hashes {
-        // Collect live running jobs from the coordinator (if one is active).
-        let live_jobs = match CoordinatorClient::connect(repo_hash)? {
-            Some(mut client) => client.list_jobs().unwrap_or_default(),
-            None => vec![],
-        };
-
-        // Collect historical jobs from the log store.
-        let store = LogStore::for_repo(repo_hash)?;
-        let job_dirs = store.list_job_dirs()?;
-
-        let mut all_metas: Vec<crate::coordinator::log_store::JobMeta> = Vec::new();
-        for dir in &job_dirs {
-            if let Ok(meta) = store.read_meta(dir) {
-                // Apply worktree filter if specified.
-                if let Some(ref wt_filter) = args.worktree {
-                    if !meta.worktree.contains(wt_filter.as_str()) {
-                        continue;
-                    }
-                }
-                all_metas.push(meta);
-            }
-        }
-
-        // Merge live status into stored metas: if a coordinator reports a job
-        // as Running, prefer that over what's on disk (which may be stale).
-        for live in &live_jobs {
-            if !all_metas.iter().any(|m| m.name == live.name) {
-                // Create a synthetic meta for live-only jobs.
-                all_metas.push(crate::coordinator::log_store::JobMeta {
-                    name: live.name.clone(),
-                    hook_type: live.hook_type.clone(),
-                    worktree: live.worktree.clone(),
-                    command: String::new(),
-                    working_dir: String::new(),
-                    env: std::collections::HashMap::new(),
-                    started_at: chrono::Utc::now(),
-                    status: live.status.clone(),
-                    exit_code: live.exit_code,
-                    pid: None,
-                    background: true,
-                    finished_at: None,
-                });
-            }
-        }
-
-        if all_metas.is_empty() {
-            continue;
-        }
-        any_jobs = true;
-
-        if args.json {
-            let json = serde_json::to_string_pretty(&all_metas)?;
-            output.info(&json);
-            continue;
-        }
-
-        if args.all_repos {
-            output.info(&bold(&format!("Repository: {repo_hash}")));
-            output.info("");
-        }
-
-        // Group by status for display.
-        let mut running: Vec<&crate::coordinator::log_store::JobMeta> = Vec::new();
-        let mut completed: Vec<&crate::coordinator::log_store::JobMeta> = Vec::new();
-        let mut failed: Vec<&crate::coordinator::log_store::JobMeta> = Vec::new();
-        let mut cancelled: Vec<&crate::coordinator::log_store::JobMeta> = Vec::new();
-
-        for meta in &all_metas {
-            match meta.status {
-                JobStatus::Running => running.push(meta),
-                JobStatus::Completed => completed.push(meta),
-                JobStatus::Failed => failed.push(meta),
-                JobStatus::Cancelled => cancelled.push(meta),
-            }
-        }
-
-        if !running.is_empty() {
-            output.info(&yellow("RUNNING"));
-            for meta in &running {
-                let elapsed = live_jobs
-                    .iter()
-                    .find(|j| j.name == meta.name)
-                    .and_then(|j| j.elapsed_secs);
-                output.info(&format!(
-                    "  {} ({}) [{}]",
-                    bold(&meta.name),
-                    meta.hook_type,
-                    format_elapsed(elapsed),
-                ));
-                if !meta.worktree.is_empty() {
-                    output.info(&format!("    worktree: {}", dim(&meta.worktree)));
-                }
-            }
-            output.info("");
-        }
-
-        if !failed.is_empty() {
-            output.info(&red("FAILED"));
-            for meta in &failed {
-                let exit_str = meta
-                    .exit_code
-                    .map(|c| format!("exit {c}"))
-                    .unwrap_or_else(|| "unknown".to_string());
-                output.info(&format!(
-                    "  {} ({}) [{}]",
-                    bold(&meta.name),
-                    meta.hook_type,
-                    exit_str,
-                ));
-                if !meta.worktree.is_empty() {
-                    output.info(&format!("    worktree: {}", dim(&meta.worktree)));
-                }
-            }
-            output.info("");
-        }
-
-        if !completed.is_empty() {
-            output.info(&green("COMPLETED"));
-            for meta in &completed {
-                output.info(&format!("  {} ({})", bold(&meta.name), meta.hook_type,));
-            }
-            output.info("");
-        }
-
-        if !cancelled.is_empty() {
-            output.info(&dim("CANCELLED"));
-            for meta in &cancelled {
-                output.info(&format!("  {} ({})", bold(&meta.name), meta.hook_type,));
-            }
-            output.info("");
-        }
+    if args.json {
+        return print_json_output(&invocations, &store, coordinator_alive, output);
     }
 
-    if !any_jobs {
-        output.info("No background job history found.");
+    // Group invocations by worktree.
+    let mut groups: std::collections::BTreeMap<String, Vec<&InvocationMeta>> =
+        std::collections::BTreeMap::new();
+    for inv in &invocations {
+        groups.entry(inv.worktree.clone()).or_default().push(inv);
+    }
+
+    let now = chrono::Utc::now();
+    let mut first_group = true;
+
+    for (worktree, inv_list) in &groups {
+        if args.all {
+            if !first_group {
+                output.info("");
+            }
+            output.info(&bold(worktree));
+        }
+        first_group = false;
+
+        for inv in inv_list {
+            let ago =
+                shorthand_from_seconds(now.signed_duration_since(inv.created_at).num_seconds());
+            let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+
+            output.info("");
+            output.info(&format!(
+                "{} -- {} {}",
+                dim(&ago),
+                inv.trigger_command,
+                dim(&format!("[{short_id}]")),
+            ));
+
+            // Collect jobs for this invocation.
+            let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
+            if job_dirs.is_empty() {
+                continue;
+            }
+
+            let mut builder = Builder::new();
+
+            // Header row.
+            builder.push_record(vec![
+                dim_underline("Job"),
+                dim_underline("Status"),
+                dim_underline("Started"),
+                dim_underline("Duration"),
+            ]);
+
+            for dir in &job_dirs {
+                if let Ok(meta) = store.read_meta(dir) {
+                    let job_label = if meta.background {
+                        format!("{} {}", blue("\u{21bb}"), meta.name)
+                    } else {
+                        meta.name.clone()
+                    };
+
+                    let status = format_status_inline(&meta.status, coordinator_alive);
+
+                    let started = {
+                        let local: chrono::DateTime<chrono::Local> = meta.started_at.into();
+                        local.format("%H:%M:%S").to_string()
+                    };
+
+                    let duration = match (&meta.status, meta.finished_at) {
+                        (_, Some(finished)) => {
+                            let secs = finished
+                                .signed_duration_since(meta.started_at)
+                                .num_seconds();
+                            shorthand_from_seconds(secs)
+                        }
+                        (JobStatus::Running, None) => {
+                            let secs = now.signed_duration_since(meta.started_at).num_seconds();
+                            format!("{}...", shorthand_from_seconds(secs))
+                        }
+                        _ => "\u{2014}".to_string(),
+                    };
+
+                    builder.push_record(vec![job_label, status, started, duration]);
+                }
+            }
+
+            let mut table = builder.build();
+            table.with(Style::blank());
+            table.modify(Columns::first(), Padding::new(2, 1, 0, 0));
+
+            output.info(&table.to_string());
+        }
     }
 
     Ok(())
 }
 
-/// Show the output log for the most recent instance of a named job.
-fn show_logs(job: &str, args: &JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
+/// Show the output log for a job, resolved via address.
+fn show_logs(
+    job: &str,
+    inv: Option<&str>,
+    _args: &JobsArgs,
+    path: &Path,
+    output: &mut dyn Output,
+) -> Result<()> {
     let repo_hash = compute_repo_hash_from_path(path)?;
     let store = LogStore::for_repo(&repo_hash)?;
+    let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
 
-    // Find the most recent job directory matching the name.
-    let job_dirs = store.list_job_dirs()?;
-    let mut matching: Vec<(std::path::PathBuf, chrono::DateTime<chrono::Utc>)> = Vec::new();
+    let addr = JobAddress::parse(job).with_inv_override(inv);
+    let resolved = resolve_job_address(&addr, &store, &current_worktree)?;
 
-    for dir in &job_dirs {
-        if let Ok(meta) = store.read_meta(dir) {
-            if meta.name == job {
-                // Apply worktree filter if specified.
-                if let Some(ref wt_filter) = args.worktree {
-                    if !meta.worktree.contains(wt_filter.as_str()) {
-                        continue;
-                    }
-                }
-                matching.push((dir.clone(), meta.started_at));
-            }
-        }
-    }
+    let meta = store.read_meta(&resolved.job_dir)?;
+    let log_path = LogStore::log_path(&resolved.job_dir);
 
-    if matching.is_empty() {
-        anyhow::bail!("No logs found for job '{job}'");
-    }
+    // Read invocation meta for worktree/trigger info.
+    let inv_meta = store.read_invocation_meta(&resolved.invocation_id).ok();
 
-    // Pick the most recent.
-    matching.sort_by(|a, b| b.1.cmp(&a.1));
-    let (job_dir, _) = &matching[0];
-    let log_path = LogStore::log_path(job_dir);
+    let now = chrono::Utc::now();
+    let short_id = &resolved.invocation_id[..4.min(resolved.invocation_id.len())];
 
-    if !log_path.exists() {
-        anyhow::bail!("Log file not found for job '{job}'");
-    }
-
-    let meta = store.read_meta(job_dir)?;
+    // Status header.
+    let status_label = match meta.status {
+        JobStatus::Completed => green("COMPLETED"),
+        JobStatus::Failed => red("FAILED"),
+        JobStatus::Running => yellow("RUNNING"),
+        JobStatus::Cancelled => dim("CANCELLED"),
+    };
     output.info(&format!(
-        "{} {} ({})",
-        format_status(&meta.status),
+        "{}  {}  {}",
+        status_label,
         bold(&meta.name),
-        meta.hook_type,
+        dim(&format!("[{short_id}]")),
     ));
-    if !meta.worktree.is_empty() {
-        output.info(&format!("worktree: {}", dim(&meta.worktree)));
-    }
-    output.info(&format!("started:  {}", dim(&meta.started_at.to_rfc3339())));
-    output.info(&dim("---"));
 
-    let contents = std::fs::read_to_string(&log_path)
-        .with_context(|| format!("Failed to read log file: {}", log_path.display()))?;
-    output.info(&contents);
+    // Worktree.
+    let worktree_display = inv_meta
+        .as_ref()
+        .map(|m| m.worktree.as_str())
+        .unwrap_or(&meta.worktree);
+    if !worktree_display.is_empty() {
+        output.info(&format!("worktree:  {}", worktree_display));
+    }
+
+    // Trigger.
+    if let Some(ref im) = inv_meta {
+        output.info(&format!("trigger:   {}", im.trigger_command));
+    }
+
+    // Started.
+    let ago = shorthand_from_seconds(now.signed_duration_since(meta.started_at).num_seconds());
+    let local_started: chrono::DateTime<chrono::Local> = meta.started_at.into();
+    output.info(&format!(
+        "started:   {} ago ({})",
+        ago,
+        local_started.format("%Y-%m-%d %H:%M:%S"),
+    ));
+
+    // Duration.
+    let duration_str = match meta.finished_at {
+        Some(finished) => {
+            let secs = finished
+                .signed_duration_since(meta.started_at)
+                .num_seconds();
+            shorthand_from_seconds(secs)
+        }
+        None => "\u{2014}".to_string(),
+    };
+    output.info(&format!("duration:  {duration_str}"));
+
+    // Command.
+    if !meta.command.is_empty() {
+        output.info(&format!("command:   {}", meta.command));
+    }
+
+    // Log output.
+    if log_path.exists() {
+        output.info("");
+        output.info(&dim("--- output ---"));
+        let contents = std::fs::read_to_string(&log_path)
+            .with_context(|| format!("Failed to read log file: {}", log_path.display()))?;
+        output.info(&contents);
+        output.info("");
+        output.info(&format!("Full log: {}", log_path.display()));
+    } else {
+        output.info("");
+        output.info(&dim("(no output log)"));
+    }
 
     Ok(())
 }
 
 /// Cancel a specific running job via the coordinator.
-fn cancel_job(job: &str, path: &Path, output: &mut dyn Output) -> Result<()> {
+fn cancel_job(job: &str, inv: Option<&str>, path: &Path, output: &mut dyn Output) -> Result<()> {
     let repo_hash = compute_repo_hash_from_path(path)?;
+    let store = LogStore::for_repo(&repo_hash)?;
+    let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
+
+    let addr = JobAddress::parse(job).with_inv_override(inv);
+    let resolved = resolve_job_address(&addr, &store, &current_worktree)?;
 
     match CoordinatorClient::connect(&repo_hash)? {
         Some(mut client) => {
-            let msg = client.cancel_job(job)?;
+            let msg = client.cancel_job(&resolved.job_name)?;
             output.success(&msg);
         }
         None => {
@@ -534,30 +560,22 @@ fn cancel_all(path: &Path, output: &mut dyn Output) -> Result<()> {
 }
 
 /// Retry a failed job by reconstructing a JobSpec from stored metadata.
-fn retry_job(job: &str, path: &Path, output: &mut dyn Output) -> Result<()> {
+fn retry_job(job: &str, inv: Option<&str>, path: &Path, output: &mut dyn Output) -> Result<()> {
     let repo_hash = compute_repo_hash_from_path(path)?;
     let store = LogStore::for_repo(&repo_hash)?;
+    let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
 
-    // Find the most recent failed instance of this job.
-    let job_dirs = store.list_job_dirs()?;
-    let mut matching: Vec<(std::path::PathBuf, chrono::DateTime<chrono::Utc>)> = Vec::new();
+    let addr = JobAddress::parse(job).with_inv_override(inv);
+    let resolved = resolve_job_address(&addr, &store, &current_worktree)?;
+    let meta = store.read_meta(&resolved.job_dir)?;
 
-    for dir in &job_dirs {
-        if let Ok(meta) = store.read_meta(dir) {
-            if meta.name == job && matches!(meta.status, JobStatus::Failed) {
-                matching.push((dir.clone(), meta.started_at));
-            }
-        }
+    if !matches!(meta.status, JobStatus::Failed) {
+        anyhow::bail!(
+            "Job '{}' is not in a failed state (current: {:?}). Only failed jobs can be retried.",
+            resolved.job_name,
+            meta.status
+        );
     }
-
-    if matching.is_empty() {
-        anyhow::bail!("No failed job named '{job}' found. Only failed jobs can be retried.");
-    }
-
-    // Pick the most recent failed instance.
-    matching.sort_by(|a, b| b.1.cmp(&a.1));
-    let (job_dir, _) = &matching[0];
-    let meta = store.read_meta(job_dir)?;
 
     if meta.command.is_empty() {
         anyhow::bail!(
@@ -612,15 +630,29 @@ fn retry_job(job: &str, path: &Path, output: &mut dyn Output) -> Result<()> {
 }
 
 /// Remove logs older than the default retention period (7 days).
-fn clean_logs(path: &Path, output: &mut dyn Output) -> Result<()> {
-    let repo_hash = compute_repo_hash_from_path(path)?;
-    let store = LogStore::for_repo(&repo_hash)?;
-    let removed = store.clean(chrono::Duration::days(7))?;
-
-    if removed > 0 {
-        output.success(&format!("Removed {removed} old job log(s)."));
+fn clean_logs(args: &JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
+    if args.all {
+        let hashes = list_all_repo_hashes()?;
+        let mut total = 0;
+        for hash in &hashes {
+            let store = LogStore::for_repo(hash)?;
+            total += store.clean(chrono::Duration::days(7))?;
+        }
+        if total > 0 {
+            output.success(&format!("Removed {total} old job log(s) across all repos."));
+        } else {
+            output.info("No old logs to clean.");
+        }
     } else {
-        output.info("No old logs to clean.");
+        let repo_hash = compute_repo_hash_from_path(path)?;
+        let store = LogStore::for_repo(&repo_hash)?;
+        let removed = store.clean(chrono::Duration::days(7))?;
+
+        if removed > 0 {
+            output.success(&format!("Removed {removed} old job log(s)."));
+        } else {
+            output.info("No old logs to clean.");
+        }
     }
 
     Ok(())
