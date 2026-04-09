@@ -35,6 +35,7 @@ pub fn yaml_jobs_to_specs(
     source_dir: &str,
     working_dir: &Path,
     rc: Option<&str>,
+    hook_background: Option<bool>,
 ) -> Vec<JobSpec> {
     jobs.iter()
         .filter_map(|job| {
@@ -85,7 +86,7 @@ pub fn yaml_jobs_to_specs(
                 interactive: job.interactive == Some(true),
                 fail_text: job.fail_text.clone(),
                 timeout: JobSpec::DEFAULT_TIMEOUT,
-                background: job.background.unwrap_or(false),
+                background: job.background.or(hook_background).unwrap_or(false),
                 background_output: job.background_output.clone(),
                 log_config: job.log.clone(),
             })
@@ -162,8 +163,15 @@ mod tests {
         }];
 
         let hook_env = HashMap::new();
-        let specs =
-            yaml_jobs_to_specs(&jobs, &ctx, &hook_env, ".daft", Path::new("/project"), None);
+        let specs = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &hook_env,
+            ".daft",
+            Path::new("/project"),
+            None,
+            None,
+        );
 
         assert_eq!(specs.len(), 1);
         let s = &specs[0];
@@ -213,6 +221,7 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             None,
+            None,
         );
         assert!(
             specs.is_empty(),
@@ -236,6 +245,7 @@ mod tests {
             ".daft",
             Path::new("/project"),
             Some("~/.bashrc"),
+            None,
         );
 
         assert_eq!(specs.len(), 1);
@@ -258,6 +268,7 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/project"),
+            None,
             None,
         );
 
@@ -286,8 +297,15 @@ mod tests {
             ..Default::default()
         }];
 
-        let specs =
-            yaml_jobs_to_specs(&jobs, &ctx, &hook_env, ".daft", Path::new("/project"), None);
+        let specs = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &hook_env,
+            ".daft",
+            Path::new("/project"),
+            None,
+            None,
+        );
 
         assert_eq!(specs.len(), 1);
         let env = &specs[0].env;
@@ -320,6 +338,7 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             None,
+            None,
         );
 
         assert_eq!(specs.len(), 2);
@@ -341,6 +360,7 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
+            None,
             None,
         );
 
@@ -379,6 +399,7 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             None,
+            None,
         );
 
         assert_eq!(specs.len(), 1, "group job should be excluded");
@@ -410,6 +431,7 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
+            None,
             None,
         );
         assert_eq!(specs.len(), 1);
