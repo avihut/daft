@@ -16,6 +16,8 @@ Files are stored in .git/.daft/shared/ and symlinked into each worktree.
 Use 'materialize' to make a worktree-local copy, and 'link' to rejoin
 the shared version.
 
+Without a subcommand, shows status.
+
 ## Usage
 
 ```
