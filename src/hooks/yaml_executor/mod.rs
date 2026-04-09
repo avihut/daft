@@ -272,8 +272,18 @@ pub fn execute_yaml_hook_with_rc(
         let repo_hash = compute_repo_hash(&hook_env_obj);
         let invocation_id = generate_invocation_id();
         let store = crate::coordinator::log_store::LogStore::for_repo(&repo_hash)?;
+
+        // Derive trigger_command: manual runs use "hooks run {hook_name}",
+        // automatic hooks use the hook_name directly.
+        let trigger_command = if ctx.command == "hooks-run" {
+            format!("hooks run {}", hook_name)
+        } else {
+            hook_name.to_string()
+        };
+
         let mut coord_state =
-            crate::coordinator::process::CoordinatorState::new(&repo_hash, &invocation_id);
+            crate::coordinator::process::CoordinatorState::new(&repo_hash, &invocation_id)
+                .with_metadata(&trigger_command, hook_name, &ctx.branch_name);
         for spec in bg_specs {
             coord_state.add_job(spec);
         }
