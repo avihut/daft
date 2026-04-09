@@ -469,6 +469,12 @@ fn run_status(output: &mut dyn Output) -> Result<()> {
     }
 
     let use_color = styles::colors_enabled();
+    let name_col_width = worktree_paths
+        .iter()
+        .map(|wt| wt.file_name().unwrap_or_default().to_string_lossy().len())
+        .max()
+        .unwrap_or(0)
+        + 2;
 
     println!("Shared files:\n");
 
@@ -534,7 +540,12 @@ fn run_status(output: &mut dyn Output) -> Result<()> {
                 state.to_string()
             };
 
-            println!("    {:<24}{}", wt_name, colored_state);
+            println!(
+                "    {:<width$}{}",
+                wt_name,
+                colored_state,
+                width = name_col_width
+            );
         }
 
         println!();
