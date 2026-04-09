@@ -54,6 +54,13 @@ export GIT_COMMITTER_EMAIL="${DAFT_SANDBOX_GIT_EMAIL}"
 
 # Completions: direnv exports this env var, source enable-completions to load them
 export DAFT_SANDBOX_COMPLETIONS_DIR="${bin_dir}/completions"
+
+# Reminder: shell wrappers need manual initialization
+if [[ -z "\${DAFT_SANDBOX_INIT_DONE:-}" ]]; then
+    echo ""
+    echo "  \033[33m▸ Run 'source init' to load shell wrappers and completions\033[0m"
+    echo ""
+fi
 ENVRC
 
 # --- Write helper scripts ---
@@ -554,6 +561,8 @@ elif [[ -n "${BASH_VERSION:-}" ]]; then
     source "${DAFT_SANDBOX_COMPLETIONS_DIR}/test-plan.bash"
     eval "$(daft shell-init bash)"
 fi
+
+export DAFT_SANDBOX_INIT_DONE=1
 
 # Shell function to reload the sandbox environment in the current shell
 reload-sandbox() {
