@@ -27,6 +27,15 @@ pub struct JobMeta {
     pub pid: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvocationMeta {
+    pub invocation_id: String,
+    pub trigger_command: String,
+    pub hook_type: String,
+    pub worktree: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// Manages background job log storage on disk.
 ///
 /// Directory structure:
@@ -116,6 +125,62 @@ impl LogStore {
 
         Ok(removed)
     }
+
+    pub fn write_invocation_meta(&self, invocation_id: &str, meta: &InvocationMeta) -> Result<()> {
+        let dir = self.base_dir.join(invocation_id);
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("Failed to create invocation dir: {}", dir.display()))?;
+        let path = dir.join("invocation.json");
+        let content = serde_json::to_string_pretty(meta)?;
+        fs::write(&path, content)?;
+        Ok(())
+    }
+
+    pub fn read_invocation_meta(&self, invocation_id: &str) -> Result<InvocationMeta> {
+        let path = self.base_dir.join(invocation_id).join("invocation.json");
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read invocation meta: {}", path.display()))?;
+        let meta: InvocationMeta = serde_json::from_str(&content)?;
+        Ok(meta)
+    }
+
+    pub fn list_invocations(&self) -> Result<Vec<InvocationMeta>> {
+        let mut invocations = Vec::new();
+        if !self.base_dir.exists() {
+            return Ok(invocations);
+        }
+        for entry in fs::read_dir(&self.base_dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                let inv_id = entry.file_name().to_string_lossy().to_string();
+                if let Ok(meta) = self.read_invocation_meta(&inv_id) {
+                    invocations.push(meta);
+                }
+            }
+        }
+        invocations.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        Ok(invocations)
+    }
+
+    pub fn list_invocations_for_worktree(&self, worktree: &str) -> Result<Vec<InvocationMeta>> {
+        let all = self.list_invocations()?;
+        Ok(all.into_iter().filter(|m| m.worktree == worktree).collect())
+    }
+
+    pub fn list_jobs_in_invocation(&self, invocation_id: &str) -> Result<Vec<PathBuf>> {
+        let inv_dir = self.base_dir.join(invocation_id);
+        let mut dirs = Vec::new();
+        if !inv_dir.exists() {
+            return Ok(dirs);
+        }
+        for entry in fs::read_dir(&inv_dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                dirs.push(entry.path());
+            }
+        }
+        Ok(dirs)
+    }
 }
 
 #[cfg(test)]
@@ -188,5 +253,102 @@ mod tests {
         let removed = store.clean(chrono::Duration::days(7)).unwrap();
         assert_eq!(removed, 1);
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn test_write_and_read_invocation_meta() {
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        // Create the invocation directory (normally done by create_job_dir)
+        std::fs::create_dir_all(tmp.path().join("inv1")).unwrap();
+
+        let meta = InvocationMeta {
+            invocation_id: "inv1".to_string(),
+            trigger_command: "worktree-post-create".to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            worktree: "feature/tax-calc".to_string(),
+            created_at: chrono::Utc::now(),
+        };
+        store.write_invocation_meta("inv1", &meta).unwrap();
+        let loaded = store.read_invocation_meta("inv1").unwrap();
+        assert_eq!(loaded.invocation_id, "inv1");
+        assert_eq!(loaded.trigger_command, "worktree-post-create");
+        assert_eq!(loaded.worktree, "feature/tax-calc");
+    }
+
+    #[test]
+    fn test_list_invocations() {
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+
+        for (inv_id, wt) in &[("inv1", "feature/a"), ("inv2", "feature/b")] {
+            std::fs::create_dir_all(tmp.path().join(inv_id)).unwrap();
+            let meta = InvocationMeta {
+                invocation_id: inv_id.to_string(),
+                trigger_command: "worktree-post-create".to_string(),
+                hook_type: "worktree-post-create".to_string(),
+                worktree: wt.to_string(),
+                created_at: chrono::Utc::now(),
+            };
+            store.write_invocation_meta(inv_id, &meta).unwrap();
+        }
+
+        let all = store.list_invocations().unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_list_invocations_for_worktree() {
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+
+        for (inv_id, wt) in &[
+            ("inv1", "feature/a"),
+            ("inv2", "feature/b"),
+            ("inv3", "feature/a"),
+        ] {
+            std::fs::create_dir_all(tmp.path().join(inv_id)).unwrap();
+            let meta = InvocationMeta {
+                invocation_id: inv_id.to_string(),
+                trigger_command: "worktree-post-create".to_string(),
+                hook_type: "worktree-post-create".to_string(),
+                worktree: wt.to_string(),
+                created_at: chrono::Utc::now(),
+            };
+            store.write_invocation_meta(inv_id, &meta).unwrap();
+        }
+
+        let filtered = store.list_invocations_for_worktree("feature/a").unwrap();
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|m| m.worktree == "feature/a"));
+    }
+
+    #[test]
+    fn test_list_jobs_in_invocation() {
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+
+        // Create two jobs under inv1
+        store.create_job_dir("inv1", "db-migrate").unwrap();
+        store.create_job_dir("inv1", "warm-build").unwrap();
+        // Create one job under inv2
+        store.create_job_dir("inv2", "db-seed").unwrap();
+
+        let jobs = store.list_jobs_in_invocation("inv1").unwrap();
+        assert_eq!(jobs.len(), 2);
+        let names: Vec<&str> = jobs
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert!(names.contains(&"db-migrate"));
+        assert!(names.contains(&"warm-build"));
+    }
+
+    #[test]
+    fn test_list_invocations_empty_store() {
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let all = store.list_invocations().unwrap();
+        assert!(all.is_empty());
     }
 }
