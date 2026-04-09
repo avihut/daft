@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.1](https://github.com/avihut/daft/compare/v1.6.0...v1.6.1) - 2026-04-09
+
+### Bug Fixes
+
+- shared status column alignment and default subcommand ([#352](https://github.com/avihut/daft/pull/352))
+- collect uncollected shared files from manage TUI via Enter/Space ([#351](https://github.com/avihut/daft/pull/351))
+- exclude Size column from default responsive column set ([#350](https://github.com/avihut/daft/pull/350))
+
 ## [1.6.0](https://github.com/avihut/daft/compare/v1.5.1...v1.6.0) - 2026-03-31
 
 ### Bug Fixes
