@@ -117,6 +117,9 @@ fn complete(command: &str, position: usize, word: &str, verbose: bool) -> Result
         // shared-worktrees: complete worktree directory names
         ("shared-worktrees", _) => complete_worktree_names(word),
 
+        // hooks jobs: complete job addresses (names, invocation IDs, composite)
+        ("hooks-jobs-job", 1) => complete_job_addresses(word),
+
         // Default: no completions
         _ => Ok(vec![]),
     }
@@ -402,6 +405,207 @@ fn complete_worktree_names(prefix: &str) -> Result<Vec<String>> {
     entries.sort();
     entries.dedup();
     Ok(entries)
+}
+
+/// Complete job addresses for `hooks jobs logs/cancel/retry`.
+///
+/// Supports three levels of colon-separated addressing:
+/// - `name` or `abcd` (0 colons): job names from latest invocation + short IDs
+/// - `abcd:name` (1 colon): jobs within a specific invocation OR invocations for a worktree
+/// - `worktree:abcd:name` (2 colons): jobs within a specific worktree+invocation
+fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
+    use crate::coordinator::log_store::LogStore;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let repo_hash = find_project_root().ok().map(|root| {
+        let mut hasher = DefaultHasher::new();
+        root.display().to_string().hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    });
+    let repo_hash = match repo_hash {
+        Some(h) => h,
+        None => return Ok(vec![]),
+    };
+
+    let store = match LogStore::for_repo(&repo_hash) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
+    let now = chrono::Utc::now();
+
+    let colon_count = prefix.matches(':').count();
+
+    match colon_count {
+        0 => {
+            // First level: job names from latest invocation + invocation short IDs
+            let invocations = store
+                .list_invocations_for_worktree(&current_worktree)
+                .unwrap_or_default();
+            let mut entries = Vec::new();
+
+            // Job names from the latest invocation
+            if let Some(latest) = invocations.last() {
+                let job_dirs = store
+                    .list_jobs_in_invocation(&latest.invocation_id)
+                    .unwrap_or_default();
+                for dir in &job_dirs {
+                    if let Ok(meta) = store.read_meta(dir) {
+                        if meta.name.starts_with(prefix) {
+                            let status_icon = match meta.status {
+                                crate::coordinator::log_store::JobStatus::Completed => {
+                                    "\u{2713} completed"
+                                }
+                                crate::coordinator::log_store::JobStatus::Failed => {
+                                    "\u{2717} failed"
+                                }
+                                crate::coordinator::log_store::JobStatus::Running => {
+                                    "\u{27f3} running"
+                                }
+                                crate::coordinator::log_store::JobStatus::Cancelled => {
+                                    "\u{2014} cancelled"
+                                }
+                            };
+                            let short_id =
+                                &latest.invocation_id[..4.min(latest.invocation_id.len())];
+                            let ago = crate::output::format::shorthand_from_seconds(
+                                now.signed_duration_since(latest.created_at).num_seconds(),
+                            );
+                            entries.push(format!(
+                                "{}\t{status_icon} -- {ago} ago [{short_id}]",
+                                meta.name
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // Invocation short IDs
+            for inv in &invocations {
+                let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+                if short_id.starts_with(prefix) {
+                    let ago = crate::output::format::shorthand_from_seconds(
+                        now.signed_duration_since(inv.created_at).num_seconds(),
+                    );
+                    let job_count = store
+                        .list_jobs_in_invocation(&inv.invocation_id)
+                        .map(|d| d.len())
+                        .unwrap_or(0);
+                    entries.push(format!(
+                        "{short_id}\t{} -- {ago} ago ({job_count} job{})",
+                        inv.trigger_command,
+                        if job_count == 1 { "" } else { "s" },
+                    ));
+                }
+            }
+
+            Ok(entries)
+        }
+        1 => {
+            // After one colon: try as inv:job, then as worktree:inv
+            let (before, after) = prefix.split_once(':').unwrap_or(("", ""));
+
+            let invocations = store
+                .list_invocations_for_worktree(&current_worktree)
+                .unwrap_or_default();
+            let matching: Vec<_> = invocations
+                .iter()
+                .filter(|inv| inv.invocation_id.starts_with(before))
+                .collect();
+
+            if matching.len() == 1 {
+                // inv:job completions
+                let inv = matching[0];
+                let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+                let job_dirs = store
+                    .list_jobs_in_invocation(&inv.invocation_id)
+                    .unwrap_or_default();
+                let mut entries = Vec::new();
+                for dir in &job_dirs {
+                    if let Ok(meta) = store.read_meta(dir) {
+                        if meta.name.starts_with(after) {
+                            let status_icon = match meta.status {
+                                crate::coordinator::log_store::JobStatus::Completed => {
+                                    "\u{2713} completed"
+                                }
+                                crate::coordinator::log_store::JobStatus::Failed => {
+                                    "\u{2717} failed"
+                                }
+                                crate::coordinator::log_store::JobStatus::Running => {
+                                    "\u{27f3} running"
+                                }
+                                crate::coordinator::log_store::JobStatus::Cancelled => {
+                                    "\u{2014} cancelled"
+                                }
+                            };
+                            entries.push(format!("{short_id}:{}\t{status_icon}", meta.name));
+                        }
+                    }
+                }
+                return Ok(entries);
+            }
+
+            // Try as worktree: prefix
+            let wt_invocations = store
+                .list_invocations_for_worktree(before)
+                .unwrap_or_default();
+            let mut entries = Vec::new();
+            for inv in &wt_invocations {
+                let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+                if short_id.starts_with(after) {
+                    let ago = crate::output::format::shorthand_from_seconds(
+                        now.signed_duration_since(inv.created_at).num_seconds(),
+                    );
+                    entries.push(format!(
+                        "{before}:{short_id}\t{} -- {ago} ago",
+                        inv.trigger_command
+                    ));
+                }
+            }
+            Ok(entries)
+        }
+        2 => {
+            // worktree:inv:job
+            let parts: Vec<&str> = prefix.rsplitn(3, ':').collect();
+            let (job_prefix, inv_prefix, wt) = (parts[0], parts[1], parts[2]);
+            let invocations = store.list_invocations_for_worktree(wt).unwrap_or_default();
+            let matching: Vec<_> = invocations
+                .iter()
+                .filter(|inv| inv.invocation_id.starts_with(inv_prefix))
+                .collect();
+
+            if matching.len() != 1 {
+                return Ok(vec![]);
+            }
+            let inv = matching[0];
+            let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+            let job_dirs = store
+                .list_jobs_in_invocation(&inv.invocation_id)
+                .unwrap_or_default();
+            let mut entries = Vec::new();
+            for dir in &job_dirs {
+                if let Ok(meta) = store.read_meta(dir) {
+                    if meta.name.starts_with(job_prefix) {
+                        let status_icon = match meta.status {
+                            crate::coordinator::log_store::JobStatus::Completed => {
+                                "\u{2713} completed"
+                            }
+                            crate::coordinator::log_store::JobStatus::Failed => "\u{2717} failed",
+                            crate::coordinator::log_store::JobStatus::Running => "\u{27f3} running",
+                            crate::coordinator::log_store::JobStatus::Cancelled => {
+                                "\u{2014} cancelled"
+                            }
+                        };
+                        entries.push(format!("{wt}:{short_id}:{}\t{status_icon}", meta.name));
+                    }
+                }
+            }
+            Ok(entries)
+        }
+        _ => Ok(vec![]),
+    }
 }
 
 /// Find the project root (parent of git common dir).

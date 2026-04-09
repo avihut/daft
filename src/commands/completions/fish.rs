@@ -285,9 +285,10 @@ complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcomma
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from migrate' -l dry-run -d 'Preview renames without making changes'
 # hooks jobs: sub-subcommands and flags
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -f -a 'logs cancel retry clean'
-complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs' -l all-repos -d 'Show jobs from all repos'
-complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs' -l worktree -d 'Filter by worktree name'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs' -l all -d 'Show jobs from all worktrees'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs' -l json -d 'Output as JSON'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from logs cancel retry' -l inv -d 'Invocation ID prefix'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from logs cancel retry' -f -a "(daft __complete hooks-jobs-job (commandline -ct) 2>/dev/null)"
 # shared: subcommands
 complete -c daft -n '__fish_seen_subcommand_from shared; and not __fish_seen_subcommand_from add link manage materialize remove status sync' -f -a 'add link manage materialize remove status sync'
 # shared add: file completion + --declare
