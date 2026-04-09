@@ -472,14 +472,13 @@ _daft() {
                             compadd -- --inv -h --help
                             return
                         fi
-                        local -a completions
-                        completions=("${(@f)$(daft __complete hooks-jobs-job "$curword" 2>/dev/null)}")
-                        local -a vals descs
-                        for line in $completions; do
-                            vals+=("${line%%	*}")
-                            descs+=("$line")
-                        done
-                        _describe 'job' descs
+                        local -a _vals _descs
+                        local _line
+                        while IFS='' read -r _line; do
+                            _vals+=("${_line%%$'\t'*}")
+                            _descs+=("${_line//$'\t'/  }")
+                        done < <(daft __complete hooks-jobs-job "$curword" 2>/dev/null)
+                        compadd -l -d _descs -a _vals
                         return
                         ;;
                 esac
