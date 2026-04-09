@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.2](https://github.com/avihut/daft/compare/v1.6.1...v1.6.2) - 2026-04-09
+
+### Bug Fixes
+
+- shared status/sync/manage work from contained layout root ([#353](https://github.com/avihut/daft/pull/353))
+
 ## [1.6.1](https://github.com/avihut/daft/compare/v1.6.0...v1.6.1) - 2026-04-09
 
 ### Bug Fixes
