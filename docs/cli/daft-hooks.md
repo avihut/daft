@@ -256,8 +256,7 @@ daft hooks jobs [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|----------|
-| `--all-repos` | Show jobs across all repositories |  |
-| `--worktree <WORKTREE>` | Filter to a specific worktree |  |
+| `--all` | Show jobs across all worktrees |  |
 | `--json` | Output in JSON format |  |
 
 ### migrate
