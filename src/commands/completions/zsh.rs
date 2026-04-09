@@ -466,8 +466,25 @@ _daft() {
                     compadd logs cancel retry clean
                     return
                 fi
+                case "$words[4]" in
+                    logs|retry|cancel)
+                        if [[ "$curword" == -* ]]; then
+                            compadd -- --inv -h --help
+                            return
+                        fi
+                        local -a completions
+                        completions=("${(@f)$(daft __complete hooks-jobs-job "$curword" 2>/dev/null)}")
+                        local -a vals descs
+                        for line in $completions; do
+                            vals+=("${line%%	*}")
+                            descs+=("$line")
+                        done
+                        _describe 'job' descs
+                        return
+                        ;;
+                esac
                 if [[ "$curword" == -* ]]; then
-                    compadd -- --all-repos --worktree --json -h --help
+                    compadd -- --all --json -h --help
                 fi
                 return
                 ;;

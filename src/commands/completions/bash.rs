@@ -287,8 +287,25 @@ _daft() {
                     COMPREPLY=( $(compgen -W "logs cancel retry clean" -- "$cur") )
                     return 0
                 fi
+                case "${words[3]}" in
+                    logs|retry|cancel)
+                        if [[ "$cur" == -* ]]; then
+                            COMPREPLY=( $(compgen -W "--inv -h --help" -- "$cur") )
+                            return 0
+                        fi
+                        local completions
+                        completions=$(daft __complete hooks-jobs-job "$cur" 2>/dev/null)
+                        if [[ -n "$completions" ]]; then
+                            while IFS=$'\n' read -r line; do
+                                local val="${line%%	*}"
+                                COMPREPLY+=( "$val" )
+                            done <<< "$completions"
+                        fi
+                        return 0
+                        ;;
+                esac
                 if [[ "$cur" == -* ]]; then
-                    COMPREPLY=( $(compgen -W "--all-repos --worktree --json -h --help" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "--all --json -h --help" -- "$cur") )
                     return 0
                 fi
                 return 0
