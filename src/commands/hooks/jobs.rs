@@ -14,6 +14,39 @@ use tabled::{
     settings::{object::Columns, Padding, Style},
 };
 
+#[derive(serde::Serialize)]
+struct JsonOutput {
+    worktrees: Vec<JsonWorktree>,
+}
+
+#[derive(serde::Serialize)]
+struct JsonWorktree {
+    name: String,
+    invocations: Vec<JsonInvocation>,
+}
+
+#[derive(serde::Serialize)]
+struct JsonInvocation {
+    id: String,
+    short_id: String,
+    trigger_command: String,
+    hook_type: String,
+    created_at: String,
+    jobs: Vec<JsonJob>,
+}
+
+#[derive(serde::Serialize)]
+struct JsonJob {
+    name: String,
+    background: bool,
+    status: String,
+    exit_code: Option<i32>,
+    started_at: String,
+    finished_at: Option<String>,
+    duration_secs: i64,
+    command: String,
+}
+
 #[derive(Parser, Debug)]
 #[command(about = "Manage background hook jobs")]
 pub struct JobsArgs {
@@ -302,12 +335,87 @@ fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
 }
 
 fn print_json_output(
-    _invocations: &[InvocationMeta],
-    _store: &LogStore,
-    _coordinator_alive: bool,
+    invocations: &[InvocationMeta],
+    store: &LogStore,
+    coordinator_alive: bool,
     output: &mut dyn Output,
 ) -> Result<()> {
-    output.info("JSON output not yet implemented.");
+    let now = chrono::Utc::now();
+
+    // Group invocations by worktree (BTreeMap for stable ordering).
+    let mut groups: std::collections::BTreeMap<String, Vec<&InvocationMeta>> =
+        std::collections::BTreeMap::new();
+    for inv in invocations {
+        groups.entry(inv.worktree.clone()).or_default().push(inv);
+    }
+
+    let mut json_worktrees: Vec<JsonWorktree> = Vec::new();
+
+    for (worktree, inv_list) in &groups {
+        let mut json_invocations: Vec<JsonInvocation> = Vec::new();
+
+        for inv in inv_list {
+            let short_id = inv.invocation_id[..4.min(inv.invocation_id.len())].to_string();
+
+            let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
+            let mut json_jobs: Vec<JsonJob> = Vec::new();
+
+            for dir in &job_dirs {
+                if let Ok(meta) = store.read_meta(dir) {
+                    let status_str = match &meta.status {
+                        JobStatus::Running if !coordinator_alive => "running (stale)".to_string(),
+                        JobStatus::Running => "running".to_string(),
+                        JobStatus::Completed => "completed".to_string(),
+                        JobStatus::Failed => "failed".to_string(),
+                        JobStatus::Cancelled => "cancelled".to_string(),
+                    };
+
+                    let duration_secs = match (&meta.status, meta.finished_at) {
+                        (_, Some(finished)) => finished
+                            .signed_duration_since(meta.started_at)
+                            .num_seconds(),
+                        (JobStatus::Running, None) => {
+                            now.signed_duration_since(meta.started_at).num_seconds()
+                        }
+                        _ => 0,
+                    };
+
+                    json_jobs.push(JsonJob {
+                        name: meta.name.clone(),
+                        background: meta.background,
+                        status: status_str,
+                        exit_code: meta.exit_code,
+                        started_at: meta.started_at.to_rfc3339(),
+                        finished_at: meta.finished_at.map(|t| t.to_rfc3339()),
+                        duration_secs,
+                        command: meta.command.clone(),
+                    });
+                }
+            }
+
+            json_invocations.push(JsonInvocation {
+                id: inv.invocation_id.clone(),
+                short_id,
+                trigger_command: inv.trigger_command.clone(),
+                hook_type: inv.hook_type.clone(),
+                created_at: inv.created_at.to_rfc3339(),
+                jobs: json_jobs,
+            });
+        }
+
+        json_worktrees.push(JsonWorktree {
+            name: worktree.clone(),
+            invocations: json_invocations,
+        });
+    }
+
+    let json_output = JsonOutput {
+        worktrees: json_worktrees,
+    };
+
+    let serialized =
+        serde_json::to_string_pretty(&json_output).context("Failed to serialize jobs to JSON")?;
+    output.info(&serialized);
     Ok(())
 }
 
