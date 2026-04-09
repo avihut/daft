@@ -460,8 +460,10 @@ fn run_status(output: &mut dyn Output) -> Result<()> {
     use crate::styles;
 
     let git_common_dir = repo::get_git_common_dir()?;
-    let worktree_path = repo::get_current_worktree_path()?;
-    let shared_paths = shared::read_shared_paths(&worktree_path)?;
+    let worktree_path = repo::get_current_worktree_path()
+        .or_else(|_| std::env::current_dir().context("Failed to determine current directory"))?;
+    let config_root = shared::resolve_config_root(&worktree_path);
+    let shared_paths = shared::read_shared_paths(&config_root)?;
     let worktree_paths = shared::list_worktree_paths()?;
     let materialized = shared::MaterializedState::load(&git_common_dir)?;
 
@@ -558,9 +560,10 @@ fn run_status(output: &mut dyn Output) -> Result<()> {
 
 fn run_sync(output: &mut dyn Output) -> Result<()> {
     let git_common_dir = repo::get_git_common_dir()?;
-    let worktree_path = repo::get_current_worktree_path()?;
+    let worktree_path = repo::get_current_worktree_path()
+        .or_else(|_| std::env::current_dir().context("Failed to determine current directory"))?;
     let config_root = shared::resolve_config_root(&worktree_path);
-    let shared_paths = shared::read_shared_paths(&worktree_path)?;
+    let shared_paths = shared::read_shared_paths(&config_root)?;
     let worktree_paths = shared::list_worktree_paths()?;
     let mut materialized = shared::MaterializedState::load(&git_common_dir)?;
 
@@ -658,9 +661,10 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
 
 fn run_manage(_output: &mut dyn Output) -> Result<()> {
     let git_common_dir = repo::get_git_common_dir()?;
-    let worktree_path = repo::get_current_worktree_path()?;
+    let worktree_path = repo::get_current_worktree_path()
+        .or_else(|_| std::env::current_dir().context("Failed to determine current directory"))?;
     let config_root = shared::resolve_config_root(&worktree_path);
-    let shared_paths = shared::read_shared_paths(&worktree_path)?;
+    let shared_paths = shared::read_shared_paths(&config_root)?;
     let worktree_paths = shared::list_worktree_paths()?;
     let materialized = shared::MaterializedState::load(&git_common_dir)?;
 
