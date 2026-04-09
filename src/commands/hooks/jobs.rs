@@ -175,6 +175,8 @@ fn list_jobs(args: &JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()
                     status: live.status.clone(),
                     exit_code: live.exit_code,
                     pid: None,
+                    background: true,
+                    finished_at: None,
                 });
             }
         }

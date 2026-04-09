@@ -25,6 +25,8 @@ pub struct JobMeta {
     pub status: JobStatus,
     pub exit_code: Option<i32>,
     pub pid: Option<u32>,
+    pub background: bool,
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,6 +216,8 @@ mod tests {
             status: JobStatus::Running,
             exit_code: None,
             pid: Some(12345),
+            background: false,
+            finished_at: None,
         };
         store.write_meta(&dir, &meta).unwrap();
         let loaded = store.read_meta(&dir).unwrap();
@@ -248,6 +252,8 @@ mod tests {
             status: JobStatus::Completed,
             exit_code: Some(0),
             pid: None,
+            background: false,
+            finished_at: None,
         };
         store.write_meta(&dir, &meta).unwrap();
         let removed = store.clean(chrono::Duration::days(7)).unwrap();
@@ -342,6 +348,32 @@ mod tests {
             .collect();
         assert!(names.contains(&"db-migrate"));
         assert!(names.contains(&"warm-build"));
+    }
+
+    #[test]
+    fn test_job_meta_background_and_finished_at() {
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let dir = store.create_job_dir("inv1", "bg-job").unwrap();
+        let finished = chrono::Utc::now();
+        let meta = JobMeta {
+            name: "bg-job".to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            worktree: "feature/x".to_string(),
+            command: "echo hi".to_string(),
+            working_dir: "/tmp".to_string(),
+            env: HashMap::new(),
+            started_at: finished - chrono::Duration::seconds(5),
+            status: JobStatus::Completed,
+            exit_code: Some(0),
+            pid: Some(1234),
+            background: true,
+            finished_at: Some(finished),
+        };
+        store.write_meta(&dir, &meta).unwrap();
+        let loaded = store.read_meta(&dir).unwrap();
+        assert!(loaded.background);
+        assert!(loaded.finished_at.is_some());
     }
 
     #[test]
