@@ -52,6 +52,173 @@ enum JobsCommand {
     Clean,
 }
 
+/// Parsed composite job address: `[worktree:][invocation:]job_name`.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct JobAddress {
+    pub worktree: Option<String>,
+    pub invocation_prefix: Option<String>,
+    pub job_name: String,
+}
+
+#[allow(dead_code)]
+impl JobAddress {
+    pub fn parse(input: &str) -> Self {
+        // rsplitn splits from the right, so worktree (which may contain /)
+        // stays intact as a single piece.
+        let parts: Vec<&str> = input.rsplitn(3, ':').collect();
+        match parts.len() {
+            1 => Self {
+                worktree: None,
+                invocation_prefix: None,
+                job_name: parts[0].to_string(),
+            },
+            2 => Self {
+                worktree: None,
+                invocation_prefix: Some(parts[1].to_string()),
+                job_name: parts[0].to_string(),
+            },
+            3 => Self {
+                worktree: Some(parts[2].to_string()),
+                invocation_prefix: Some(parts[1].to_string()),
+                job_name: parts[0].to_string(),
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_inv_override(mut self, inv: Option<&str>) -> Self {
+        if let Some(prefix) = inv {
+            self.invocation_prefix = Some(prefix.to_string());
+        }
+        self
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct ResolvedAddress {
+    pub invocation_id: String,
+    pub job_name: String,
+    pub job_dir: std::path::PathBuf,
+}
+
+#[allow(dead_code)]
+fn resolve_job_address(
+    addr: &JobAddress,
+    store: &LogStore,
+    current_worktree: &str,
+) -> Result<ResolvedAddress> {
+    let worktree = addr.worktree.as_deref().unwrap_or(current_worktree);
+    let invocations = store.list_invocations_for_worktree(worktree)?;
+
+    if invocations.is_empty() {
+        anyhow::bail!("No invocations found for worktree '{worktree}'.");
+    }
+
+    match &addr.invocation_prefix {
+        Some(prefix) => {
+            let matches: Vec<_> = invocations
+                .iter()
+                .filter(|inv| inv.invocation_id.starts_with(prefix.as_str()))
+                .collect();
+
+            match matches.len() {
+                0 => anyhow::bail!(
+                    "No invocation matching prefix '{prefix}' in worktree '{worktree}'."
+                ),
+                1 => {
+                    let inv = matches[0];
+                    let job_dir = store.base_dir.join(&inv.invocation_id).join(&addr.job_name);
+                    if !job_dir.exists() {
+                        let available = list_job_names_in_invocation(store, &inv.invocation_id)?;
+                        anyhow::bail!(
+                            "No job named '{}' found in invocation '{}'.\nAvailable jobs: {}",
+                            addr.job_name,
+                            &inv.invocation_id[..4.min(inv.invocation_id.len())],
+                            available.join(", ")
+                        );
+                    }
+                    Ok(ResolvedAddress {
+                        invocation_id: inv.invocation_id.clone(),
+                        job_name: addr.job_name.clone(),
+                        job_dir,
+                    })
+                }
+                _ => {
+                    use crate::output::format::shorthand_from_seconds;
+                    let now = chrono::Utc::now();
+                    let lines: Vec<String> = matches
+                        .iter()
+                        .map(|inv| {
+                            let ago = shorthand_from_seconds(
+                                now.signed_duration_since(inv.created_at).num_seconds(),
+                            );
+                            format!(
+                                "  {}  {} -- {} ago",
+                                &inv.invocation_id[..4.min(inv.invocation_id.len())],
+                                inv.trigger_command,
+                                ago
+                            )
+                        })
+                        .collect();
+                    anyhow::bail!(
+                        "Ambiguous invocation ID '{}' -- matches:\n{}\nUse more characters to disambiguate.",
+                        prefix,
+                        lines.join("\n")
+                    );
+                }
+            }
+        }
+        None => {
+            // No invocation prefix: find most recent invocation containing the job.
+            for inv in invocations.iter().rev() {
+                let job_dir = store.base_dir.join(&inv.invocation_id).join(&addr.job_name);
+                if job_dir.exists() {
+                    return Ok(ResolvedAddress {
+                        invocation_id: inv.invocation_id.clone(),
+                        job_name: addr.job_name.clone(),
+                        job_dir,
+                    });
+                }
+            }
+            let all_job_names = collect_all_job_names(store, &invocations)?;
+            anyhow::bail!(
+                "No job named '{}' found in worktree '{}'.\nAvailable jobs: {}",
+                addr.job_name,
+                worktree,
+                all_job_names.join(", ")
+            );
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn list_job_names_in_invocation(store: &LogStore, invocation_id: &str) -> Result<Vec<String>> {
+    let dirs = store.list_jobs_in_invocation(invocation_id)?;
+    Ok(dirs
+        .iter()
+        .filter_map(|d| d.file_name().map(|n| n.to_string_lossy().to_string()))
+        .collect())
+}
+
+#[allow(dead_code)]
+fn collect_all_job_names(
+    store: &LogStore,
+    invocations: &[crate::coordinator::log_store::InvocationMeta],
+) -> Result<Vec<String>> {
+    let mut names = std::collections::BTreeSet::new();
+    for inv in invocations {
+        for dir in store.list_jobs_in_invocation(&inv.invocation_id)? {
+            if let Some(n) = dir.file_name() {
+                names.insert(n.to_string_lossy().to_string());
+            }
+        }
+    }
+    Ok(names.into_iter().collect())
+}
+
 pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
     match args.command {
         None => list_jobs(&args, path, output),
@@ -467,4 +634,128 @@ fn generate_invocation_id() -> String {
         .unwrap()
         .as_millis();
     format!("{ts:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_job_address_name_only() {
+        let addr = JobAddress::parse("db-migrate");
+        assert_eq!(addr.job_name, "db-migrate");
+        assert!(addr.invocation_prefix.is_none());
+        assert!(addr.worktree.is_none());
+    }
+
+    #[test]
+    fn test_parse_job_address_invocation_and_name() {
+        let addr = JobAddress::parse("c9d4:db-migrate");
+        assert_eq!(addr.job_name, "db-migrate");
+        assert_eq!(addr.invocation_prefix.as_deref(), Some("c9d4"));
+        assert!(addr.worktree.is_none());
+    }
+
+    #[test]
+    fn test_parse_job_address_full() {
+        let addr = JobAddress::parse("feat/tax-calc:c9d4:db-migrate");
+        assert_eq!(addr.job_name, "db-migrate");
+        assert_eq!(addr.invocation_prefix.as_deref(), Some("c9d4"));
+        assert_eq!(addr.worktree.as_deref(), Some("feat/tax-calc"));
+    }
+
+    #[test]
+    fn test_parse_job_address_worktree_with_slash() {
+        let addr = JobAddress::parse("feature/auth/v2:a3f2:warm-build");
+        assert_eq!(addr.worktree.as_deref(), Some("feature/auth/v2"));
+        assert_eq!(addr.invocation_prefix.as_deref(), Some("a3f2"));
+        assert_eq!(addr.job_name, "warm-build");
+    }
+
+    #[test]
+    fn test_resolve_job_address_name_only_finds_most_recent() {
+        use crate::coordinator::log_store::{InvocationMeta, JobMeta, JobStatus, LogStore};
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+
+        let now = chrono::Utc::now();
+        for (inv_id, offset) in &[("0001000000000000", 100i64), ("0002000000000000", 50)] {
+            let inv_meta = InvocationMeta {
+                invocation_id: inv_id.to_string(),
+                trigger_command: "worktree-post-create".to_string(),
+                hook_type: "worktree-post-create".to_string(),
+                worktree: "feature/x".to_string(),
+                created_at: now - chrono::Duration::seconds(*offset),
+            };
+            store.write_invocation_meta(inv_id, &inv_meta).unwrap();
+
+            let dir = store.create_job_dir(inv_id, "db-migrate").unwrap();
+            let meta = JobMeta {
+                name: "db-migrate".to_string(),
+                hook_type: "worktree-post-create".to_string(),
+                worktree: "feature/x".to_string(),
+                command: "echo".to_string(),
+                working_dir: "/tmp".to_string(),
+                env: HashMap::new(),
+                started_at: now - chrono::Duration::seconds(*offset),
+                status: JobStatus::Completed,
+                exit_code: Some(0),
+                pid: None,
+                background: true,
+                finished_at: Some(now - chrono::Duration::seconds(offset - 3)),
+            };
+            store.write_meta(&dir, &meta).unwrap();
+        }
+
+        let addr = JobAddress::parse("db-migrate");
+        let result = resolve_job_address(&addr, &store, "feature/x").unwrap();
+        // Should resolve to the most recent invocation (0002... has later created_at)
+        assert!(result.invocation_id.starts_with("0002"));
+        assert_eq!(result.job_name, "db-migrate");
+    }
+
+    #[test]
+    fn test_resolve_job_address_with_prefix() {
+        use crate::coordinator::log_store::{InvocationMeta, JobMeta, JobStatus, LogStore};
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let now = chrono::Utc::now();
+
+        let inv_id = "c9d4e7f2a3b10000";
+        let inv_meta = InvocationMeta {
+            invocation_id: inv_id.to_string(),
+            trigger_command: "worktree-post-create".to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            worktree: "feature/x".to_string(),
+            created_at: now,
+        };
+        store.write_invocation_meta(inv_id, &inv_meta).unwrap();
+
+        let dir = store.create_job_dir(inv_id, "db-migrate").unwrap();
+        let meta = JobMeta {
+            name: "db-migrate".to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            worktree: "feature/x".to_string(),
+            command: "echo".to_string(),
+            working_dir: "/tmp".to_string(),
+            env: HashMap::new(),
+            started_at: now,
+            status: JobStatus::Completed,
+            exit_code: Some(0),
+            pid: None,
+            background: true,
+            finished_at: Some(now),
+        };
+        store.write_meta(&dir, &meta).unwrap();
+
+        let addr = JobAddress::parse("c9d4:db-migrate");
+        let result = resolve_job_address(&addr, &store, "feature/x").unwrap();
+        assert_eq!(result.invocation_id, inv_id);
+    }
 }
