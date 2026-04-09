@@ -4,7 +4,7 @@
 .SH NAME
 daft\-shared \- Manage shared files across worktrees
 .SH SYNOPSIS
-\fBdaft\-shared\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
+\fBdaft\-shared\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
 .PP
 Centralize untracked configuration files (.env, .idea/, .vscode/, etc.)
@@ -13,6 +13,8 @@ so they are shared across worktrees via symlinks.
 Files are stored in .git/.daft/shared/ and symlinked into each worktree.
 Use \*(Aqmaterialize\*(Aq to make a worktree\-local copy, and \*(Aqlink\*(Aq to rejoin
 the shared version.
+.PP
+Without a subcommand, shows status.
 .SH OPTIONS
 .TP
 \fB\-h\fR, \fB\-\-help\fR

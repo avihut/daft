@@ -21,10 +21,12 @@ so they are shared across worktrees via symlinks.
 Files are stored in .git/.daft/shared/ and symlinked into each worktree.
 Use 'materialize' to make a worktree-local copy, and 'link' to rejoin
 the shared version.
+
+Without a subcommand, shows status.
 "#)]
 pub struct Args {
     #[command(subcommand)]
-    command: SharedCommand,
+    command: Option<SharedCommand>,
 }
 
 #[derive(Subcommand)]
@@ -111,13 +113,13 @@ pub fn run() -> Result<()> {
     let mut output = CliOutput::default_output();
 
     match args.command {
-        SharedCommand::Add(add_args) => run_add(add_args, &mut output),
-        SharedCommand::Remove(remove_args) => run_remove(remove_args, &mut output),
-        SharedCommand::Materialize(mat_args) => run_materialize(mat_args, &mut output),
-        SharedCommand::Link(link_args) => run_link(link_args, &mut output),
-        SharedCommand::Status(_) => run_status(&mut output),
-        SharedCommand::Sync(_) => run_sync(&mut output),
-        SharedCommand::Manage(_) => run_manage(&mut output),
+        Some(SharedCommand::Add(add_args)) => run_add(add_args, &mut output),
+        Some(SharedCommand::Remove(remove_args)) => run_remove(remove_args, &mut output),
+        Some(SharedCommand::Materialize(mat_args)) => run_materialize(mat_args, &mut output),
+        Some(SharedCommand::Link(link_args)) => run_link(link_args, &mut output),
+        Some(SharedCommand::Status(_)) | None => run_status(&mut output),
+        Some(SharedCommand::Sync(_)) => run_sync(&mut output),
+        Some(SharedCommand::Manage(_)) => run_manage(&mut output),
     }
 }
 
