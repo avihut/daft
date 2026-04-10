@@ -2,13 +2,11 @@
 ///
 /// Displays release notes from CHANGELOG.md in a scrollable interface
 /// using the system pager (like git does).
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
-#[cfg(unix)]
-use pager::Pager;
 use regex::Regex;
 use serde::Serialize;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use termimad::crossterm::style::Color;
 use termimad::MadSkin;
 
@@ -324,30 +322,16 @@ fn create_daft_skin() -> MadSkin {
     skin
 }
 
-/// Display content using pager if appropriate
+/// Display content using pager if appropriate.
 fn display_with_pager(content: &str, no_pager: bool) -> Result<()> {
-    // Only use pager if: stdout is TTY AND --no-pager not set
-    #[cfg(unix)]
-    if !no_pager && io::stdout().is_terminal() {
-        // Set up pager with less-like options:
-        // -F: quit if one screen
-        // -I: case-insensitive search
-        // -R: raw control chars (for potential color)
-        // -X: don't clear screen on exit
-        Pager::with_pager("less -FIRX").setup();
+    if no_pager {
+        use std::io::Write;
+        let mut stdout = std::io::stdout();
+        stdout.write_all(content.as_bytes())?;
+        stdout.flush()?;
+    } else {
+        crate::output::pager::display_with_pager(content);
     }
-
-    // Suppress unused variable warning on Windows
-    #[cfg(not(unix))]
-    let _ = no_pager;
-
-    // After Pager::setup(), stdout goes to pager (if active)
-    // or directly to terminal (if no pager)
-    io::stdout()
-        .write_all(content.as_bytes())
-        .context("Failed to write output")?;
-    io::stdout().flush().context("Failed to flush output")?;
-
     Ok(())
 }
 

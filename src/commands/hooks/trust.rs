@@ -6,7 +6,6 @@ use crate::{get_git_common_dir, is_git_repository};
 use anyhow::{Context, Result};
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 /// Set trust level for the repository at the given path.
 pub(super) fn cmd_set_trust(
@@ -297,33 +296,12 @@ pub(super) fn cmd_list(show_all: bool, output: &mut dyn Output) -> Result<()> {
     // Use pager if output is long and we're in a terminal
     let line_count = text.lines().count();
     if line_count > 20 && std::io::stdout().is_terminal() {
-        output_with_pager(&text);
+        crate::output::pager::display_with_pager(&text);
     } else {
         output.raw(&text);
     }
 
     Ok(())
-}
-
-/// Output text through a pager if available.
-fn output_with_pager(text: &str) {
-    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".to_string());
-
-    let result = Command::new("sh")
-        .args(["-c", &format!("{pager} -R")])
-        .stdin(Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            if let Some(stdin) = child.stdin.as_mut() {
-                stdin.write_all(text.as_bytes())?;
-            }
-            child.wait()
-        });
-
-    // Fall back to direct output if pager fails
-    if result.is_err() {
-        print!("{text}");
-    }
 }
 
 /// Clear all trust settings.
