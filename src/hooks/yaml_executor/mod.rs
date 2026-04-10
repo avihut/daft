@@ -394,13 +394,16 @@ fn compute_repo_hash(env: &super::environment::HookEnvironment) -> String {
 
 /// Generate a unique invocation ID based on the current timestamp.
 /// Used to group background job logs under a single hook invocation.
+///
+/// 12-char hex fits millisecond timestamps up to ~year 8900 without leading
+/// zeros, so the first characters (used as short IDs) are meaningful.
 fn generate_invocation_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    format!("{ts:016x}")
+    format!("{ts:012x}")
 }
 
 /// Check if a job should be silently skipped due to platform mismatch.
