@@ -557,8 +557,6 @@ fn show_logs(
     path: &Path,
     _output: &mut dyn Output,
 ) -> Result<()> {
-    use std::io::{self, IsTerminal, Write as IoWrite};
-
     let repo_hash = compute_repo_hash_from_path(path)?;
     let store = LogStore::for_repo(&repo_hash)?;
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
@@ -596,16 +594,7 @@ fn show_logs(
         render_single_job_log(&store, &resolved, &mut buf)?;
     }
 
-    // Route through the system pager when stdout is a TTY.
-    #[cfg(unix)]
-    if io::stdout().is_terminal() {
-        pager::Pager::with_pager("less -FIRX").setup();
-    }
-
-    io::stdout()
-        .write_all(buf.as_bytes())
-        .context("Failed to write output")?;
-    io::stdout().flush().context("Failed to flush output")?;
+    crate::output::pager::display_with_pager(&buf);
 
     Ok(())
 }
