@@ -555,90 +555,229 @@ fn show_logs(
     inv: Option<&str>,
     _args: &JobsArgs,
     path: &Path,
-    output: &mut dyn Output,
+    _output: &mut dyn Output,
 ) -> Result<()> {
+    use std::io::{self, IsTerminal, Write as IoWrite};
+
     let repo_hash = compute_repo_hash_from_path(path)?;
     let store = LogStore::for_repo(&repo_hash)?;
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
 
     let addr = JobAddress::parse(job).with_inv_override(inv);
-    let resolved = resolve_job_address(&addr, &store, &current_worktree)?;
+
+    // If the input is a single hex-only segment with no explicit --inv, check
+    // whether it matches an invocation ID prefix. If so, show all jobs in that
+    // invocation instead of a single job.
+    let invocation_only = if addr.worktree.is_none()
+        && addr.invocation_prefix.is_none()
+        && inv.is_none()
+        && is_hex_prefix(&addr.job_name)
+    {
+        let invocations = store.list_invocations_for_worktree(&current_worktree)?;
+        let matches: Vec<_> = invocations
+            .iter()
+            .filter(|i| i.invocation_id.starts_with(&addr.job_name))
+            .collect();
+        if matches.len() == 1 {
+            Some(matches[0].invocation_id.clone())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let mut buf = String::new();
+
+    if let Some(invocation_id) = invocation_only {
+        render_invocation_logs(&store, &invocation_id, &mut buf)?;
+    } else {
+        let resolved = resolve_job_address(&addr, &store, &current_worktree)?;
+        render_single_job_log(&store, &resolved, &mut buf)?;
+    }
+
+    // Route through the system pager when stdout is a TTY.
+    #[cfg(unix)]
+    if io::stdout().is_terminal() {
+        pager::Pager::with_pager("less -FIRX").setup();
+    }
+
+    io::stdout()
+        .write_all(buf.as_bytes())
+        .context("Failed to write output")?;
+    io::stdout().flush().context("Failed to flush output")?;
+
+    Ok(())
+}
+
+/// True when `s` is a non-empty ASCII hex string (0-9, a-f, A-F).
+fn is_hex_prefix(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Render a single job's metadata and log into `buf`.
+fn render_single_job_log(
+    store: &LogStore,
+    resolved: &ResolvedAddress,
+    buf: &mut String,
+) -> Result<()> {
+    use std::fmt::Write;
 
     let meta = store.read_meta(&resolved.job_dir)?;
     let log_path = LogStore::log_path(&resolved.job_dir);
-
-    // Read invocation meta for worktree/trigger info.
     let inv_meta = store.read_invocation_meta(&resolved.invocation_id).ok();
 
     let now = chrono::Utc::now();
     let short_id = &resolved.invocation_id[..4.min(resolved.invocation_id.len())];
 
-    // Status header.
     let status_label = match meta.status {
         JobStatus::Completed => green("COMPLETED"),
         JobStatus::Failed => red("FAILED"),
         JobStatus::Running => yellow("RUNNING"),
         JobStatus::Cancelled => dim("CANCELLED"),
     };
-    output.info(&format!(
+    writeln!(
+        buf,
         "{}  {}  {}",
         status_label,
         bold(&meta.name),
         dim(&format!("[{short_id}]")),
-    ));
+    )?;
 
-    // Worktree.
     let worktree_display = inv_meta
         .as_ref()
         .map(|m| m.worktree.as_str())
         .unwrap_or(&meta.worktree);
     if !worktree_display.is_empty() {
-        output.info(&format!("worktree:  {}", worktree_display));
+        writeln!(buf, "worktree:  {}", worktree_display)?;
     }
 
-    // Trigger.
     if let Some(ref im) = inv_meta {
-        output.info(&format!("trigger:   {}", im.trigger_command));
+        writeln!(buf, "trigger:   {}", im.trigger_command)?;
     }
 
-    // Started.
     let ago = shorthand_from_seconds(now.signed_duration_since(meta.started_at).num_seconds());
     let local_started: chrono::DateTime<chrono::Local> = meta.started_at.into();
-    output.info(&format!(
+    writeln!(
+        buf,
         "started:   {} ago ({})",
         ago,
         local_started.format("%Y-%m-%d %H:%M:%S"),
-    ));
+    )?;
 
-    // Duration.
     let duration_str = match meta.finished_at {
-        Some(finished) => {
-            let secs = finished
+        Some(finished) => format_duration(
+            finished
                 .signed_duration_since(meta.started_at)
-                .num_seconds();
-            format_duration(secs)
-        }
+                .num_seconds(),
+        ),
         None => "\u{2014}".to_string(),
     };
-    output.info(&format!("duration:  {duration_str}"));
+    writeln!(buf, "duration:  {duration_str}")?;
 
-    // Command.
     if !meta.command.is_empty() {
-        output.info(&format!("command:   {}", meta.command));
+        writeln!(buf, "command:   {}", meta.command)?;
     }
 
-    // Log output.
     if log_path.exists() {
-        output.info("");
-        output.info(&dim("--- output ---"));
+        writeln!(buf)?;
+        writeln!(buf, "{}", dim("--- output ---"))?;
         let contents = std::fs::read_to_string(&log_path)
             .with_context(|| format!("Failed to read log file: {}", log_path.display()))?;
-        output.info(&contents);
-        output.info("");
-        output.info(&format!("Full log: {}", log_path.display()));
+        buf.push_str(&contents);
+        if !contents.ends_with('\n') {
+            buf.push('\n');
+        }
+        writeln!(buf)?;
+        writeln!(buf, "Full log: {}", log_path.display())?;
     } else {
-        output.info("");
-        output.info(&dim("(no output log)"));
+        writeln!(buf)?;
+        writeln!(buf, "{}", dim("(no output log)"))?;
+    }
+
+    Ok(())
+}
+
+/// Render all job logs for a single invocation into `buf`.
+fn render_invocation_logs(store: &LogStore, invocation_id: &str, buf: &mut String) -> Result<()> {
+    use std::fmt::Write;
+
+    let inv_meta = store.read_invocation_meta(invocation_id)?;
+    let short_id = &invocation_id[..4.min(invocation_id.len())];
+    let now = chrono::Utc::now();
+
+    // Collect job metas sorted by started_at.
+    let job_dirs = store.list_jobs_in_invocation(invocation_id)?;
+    let mut jobs: Vec<(std::path::PathBuf, crate::coordinator::log_store::JobMeta)> = job_dirs
+        .into_iter()
+        .filter_map(|dir| store.read_meta(&dir).ok().map(|m| (dir, m)))
+        .collect();
+    jobs.sort_by(|a, b| a.1.started_at.cmp(&b.1.started_at));
+
+    // Invocation header.
+    writeln!(
+        buf,
+        "{}  {}",
+        bold(&inv_meta.trigger_command),
+        dim(&format!("[{short_id}]")),
+    )?;
+    if !inv_meta.worktree.is_empty() {
+        writeln!(buf, "worktree:  {}", inv_meta.worktree)?;
+    }
+    let ago = shorthand_from_seconds(now.signed_duration_since(inv_meta.created_at).num_seconds());
+    let local_started: chrono::DateTime<chrono::Local> = inv_meta.created_at.into();
+    writeln!(
+        buf,
+        "started:   {} ago ({})",
+        ago,
+        local_started.format("%Y-%m-%d %H:%M:%S"),
+    )?;
+    writeln!(buf, "jobs:      {}", jobs.len())?;
+    writeln!(buf)?;
+
+    // Per-job sections.
+    for (dir, meta) in &jobs {
+        let status_label = match meta.status {
+            JobStatus::Completed => green("COMPLETED"),
+            JobStatus::Failed => red("FAILED"),
+            JobStatus::Running => yellow("RUNNING"),
+            JobStatus::Cancelled => dim("CANCELLED"),
+        };
+
+        let duration_str = match meta.finished_at {
+            Some(finished) => format_duration(
+                finished
+                    .signed_duration_since(meta.started_at)
+                    .num_seconds(),
+            ),
+            None => "\u{2014}".to_string(),
+        };
+
+        writeln!(
+            buf,
+            "{} {}  {}  {}",
+            dim("══"),
+            status_label,
+            bold(&meta.name),
+            dim(&format!("({duration_str})")),
+        )?;
+
+        let log_path = LogStore::log_path(dir);
+        if log_path.exists() {
+            let contents = std::fs::read_to_string(&log_path)
+                .with_context(|| format!("Failed to read log file: {}", log_path.display()))?;
+            if contents.is_empty() {
+                writeln!(buf, "{}", dim("(empty)"))?;
+            } else {
+                buf.push_str(&contents);
+                if !contents.ends_with('\n') {
+                    buf.push('\n');
+                }
+            }
+        } else {
+            writeln!(buf, "{}", dim("(no output log)"))?;
+        }
+        writeln!(buf)?;
     }
 
     Ok(())
@@ -789,7 +928,7 @@ fn generate_invocation_id() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    format!("{ts:016x}")
+    format!("{ts:012x}")
 }
 
 #[cfg(test)]
