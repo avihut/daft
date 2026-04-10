@@ -21,6 +21,7 @@ mod buffering;
 mod cli;
 pub mod format;
 pub mod hook_progress;
+pub mod pager;
 mod test;
 pub mod tui;
 
