@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.4](https://github.com/avihut/daft/compare/v1.6.3...v1.6.4) - 2026-04-11
+
+### Bug Fixes
+
+- *(ci)* run test-homebrew clone from a clean workspace subdir ([#360](https://github.com/avihut/daft/pull/360))
+
+### Miscellaneous
+
+- add --env flag to sandbox help command ([#362](https://github.com/avihut/daft/pull/362))
+
 ## [1.6.3](https://github.com/avihut/daft/compare/v1.6.2...v1.6.3) - 2026-04-11
 
 ### Bug Fixes
