@@ -136,6 +136,34 @@ pub fn execute_yaml_hook_with_rc(
         }
     }
 
+    // Build hook environment early so we can write an invocation record
+    // unconditionally — every hook that fires (even empty / fully-filtered)
+    // gets logged before any early returns below.
+    let hook_env_obj = super::environment::HookEnvironment::from_context(ctx);
+
+    // Compute repo hash and invocation ID unconditionally so every hook
+    // invocation lands in the log store, even fg-only, empty, and remove hooks.
+    let repo_hash = compute_repo_hash(&hook_env_obj);
+    let invocation_id = generate_invocation_id();
+    let store = std::sync::Arc::new(crate::coordinator::log_store::LogStore::for_repo(
+        &repo_hash,
+    )?);
+
+    let trigger_command = if ctx.command == "hooks-run" {
+        format!("hooks run {}", hook_name)
+    } else {
+        hook_name.to_string()
+    };
+
+    let inv_meta = crate::coordinator::log_store::InvocationMeta {
+        invocation_id: invocation_id.clone(),
+        trigger_command: trigger_command.clone(),
+        hook_type: hook_name.to_string(),
+        worktree: ctx.branch_name.clone(),
+        created_at: chrono::Utc::now(),
+    };
+    let _ = store.write_invocation_meta(&invocation_id, &inv_meta);
+
     let mut jobs = get_effective_jobs(hook_def);
 
     if jobs.is_empty() {
@@ -198,8 +226,7 @@ pub fn execute_yaml_hook_with_rc(
         ExecutionMode::Parallel => crate::executor::ExecutionMode::Parallel,
     };
 
-    // Build hook environment
-    let hook_env_obj = super::environment::HookEnvironment::from_context(ctx);
+    // Build hook environment map for job specs (uses the hoisted hook_env_obj).
     let hook_env = hook_env_obj.vars().clone();
 
     // Convert filtered JobDefs to generic JobSpecs
@@ -213,41 +240,11 @@ pub fn execute_yaml_hook_with_rc(
         hook_def.background,
     );
 
-    if specs.is_empty() {
-        return Ok(HookResult::skipped("All jobs skipped"));
-    }
-
-    // Partition into foreground and background phases.
-    // Background jobs that are transitively depended on by foreground jobs
-    // are promoted to foreground to preserve DAG validity.
-    let (fg_specs, bg_specs) = partition_foreground_background(&specs);
-
-    // Compute repo hash and invocation ID unconditionally so every hook
-    // invocation lands in the log store, even fg-only and remove hooks.
-    let repo_hash = compute_repo_hash(&hook_env_obj);
-    let invocation_id = generate_invocation_id();
-    let store = std::sync::Arc::new(crate::coordinator::log_store::LogStore::for_repo(
-        &repo_hash,
-    )?);
-
-    let trigger_command = if ctx.command == "hooks-run" {
-        format!("hooks run {}", hook_name)
-    } else {
-        hook_name.to_string()
-    };
-
-    let inv_meta = crate::coordinator::log_store::InvocationMeta {
-        invocation_id: invocation_id.clone(),
-        trigger_command: trigger_command.clone(),
-        hook_type: hook_name.to_string(),
-        worktree: ctx.branch_name.clone(),
-        created_at: chrono::Utc::now(),
-    };
-    let _ = store.write_invocation_meta(&invocation_id, &inv_meta);
-
     // Write sparse records for jobs that were filtered out before execution.
     // Each skipped job gets a meta.json + log file containing the reason so
-    // the user can investigate via `daft hooks jobs logs <name>`.
+    // the user can investigate via `daft hooks jobs logs <name>`. This runs
+    // BEFORE the `specs.is_empty()` early return so fully-filtered hooks still
+    // produce skipped-job records.
     for sj in &skipped_jobs {
         let meta = crate::coordinator::log_store::JobMeta {
             name: sj.name.clone(),
@@ -270,6 +267,15 @@ pub fn execute_yaml_hook_with_rc(
             );
         }
     }
+
+    if specs.is_empty() {
+        return Ok(HookResult::skipped("All jobs skipped"));
+    }
+
+    // Partition into foreground and background phases.
+    // Background jobs that are transitively depended on by foreground jobs
+    // are promoted to foreground to preserve DAG validity.
+    let (fg_specs, bg_specs) = partition_foreground_background(&specs);
 
     // Warn about promoted jobs (background flag was true but they ended up
     // in the foreground partition because a foreground job depends on them).
