@@ -203,7 +203,7 @@ pub fn execute_yaml_hook_with_rc(
     let hook_env = hook_env_obj.vars().clone();
 
     // Convert filtered JobDefs to generic JobSpecs
-    let (specs, _skipped_jobs) = crate::hooks::job_adapter::yaml_jobs_to_specs(
+    let (specs, skipped_jobs) = crate::hooks::job_adapter::yaml_jobs_to_specs(
         &jobs,
         ctx,
         &hook_env,
@@ -244,6 +244,32 @@ pub fn execute_yaml_hook_with_rc(
         created_at: chrono::Utc::now(),
     };
     let _ = store.write_invocation_meta(&invocation_id, &inv_meta);
+
+    // Write sparse records for jobs that were filtered out before execution.
+    // Each skipped job gets a meta.json + log file containing the reason so
+    // the user can investigate via `daft hooks jobs logs <name>`.
+    for sj in &skipped_jobs {
+        let meta = crate::coordinator::log_store::JobMeta {
+            name: sj.name.clone(),
+            hook_type: hook_name.to_string(),
+            worktree: ctx.branch_name.clone(),
+            command: String::new(),
+            working_dir: String::new(),
+            env: std::collections::HashMap::new(),
+            started_at: chrono::Utc::now(),
+            status: crate::coordinator::log_store::JobStatus::Skipped,
+            exit_code: None,
+            pid: None,
+            background: sj.background,
+            finished_at: None,
+        };
+        if let Err(e) = store.write_job_record(&invocation_id, &meta, sj.reason.as_bytes()) {
+            eprintln!(
+                "daft: failed to write skipped job record for '{}': {e}",
+                sj.name
+            );
+        }
+    }
 
     // Warn about promoted jobs (background flag was true but they ended up
     // in the foreground partition because a foreground job depends on them).
