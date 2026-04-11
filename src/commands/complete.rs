@@ -79,8 +79,14 @@ fn complete(command: &str, position: usize, word: &str, verbose: bool) -> Result
         // git-worktree-branch: complete existing branch names for deletion
         ("git-worktree-branch", _) => complete_existing_branches(word, verbose),
 
-        // daft-go: complete existing branch names
-        ("daft-go", 1) => complete_existing_branches(word, verbose),
+        // daft-go: grouped worktree/local/remote completions
+        ("daft-go", 1) => {
+            let entries = complete_daft_go(word, false)?;
+            Ok(entries
+                .iter()
+                .map(|e| format!("{}\t{}\t{}", e.name, e.group.as_str(), e.description))
+                .collect())
+        }
 
         // daft-start: no dynamic completion for new branch names
         ("daft-start", _) => Ok(vec![]),
@@ -167,6 +173,116 @@ fn complete_existing_branches(prefix: &str, verbose: bool) -> Result<Vec<String>
     }
 
     Ok(unique_branches)
+}
+
+/// Collect `(branch, path)` pairs for every linked worktree that has a
+/// branch checked out. Detached HEADs and bare repos are skipped —
+/// they're not navigation targets.
+fn collect_go_worktrees() -> Vec<(String, std::path::PathBuf)> {
+    use crate::git::GitCommand;
+
+    let git = GitCommand::new(true);
+    let entries = match crate::core::worktree::prune::parse_worktree_list(&git) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    entries
+        .into_iter()
+        .filter(|wt| !wt.is_bare && !wt.is_detached)
+        .filter_map(|wt| wt.branch.map(|b| (b, wt.path)))
+        .collect()
+}
+
+/// Collect `(branch, relative_age)` pairs for every local branch.
+fn collect_go_local_branches() -> Vec<(String, String)> {
+    let output = Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname:short)%09%(committerdate:relative)",
+            "refs/heads/",
+        ])
+        .output();
+
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (name, age) = line.split_once('\t')?;
+            Some((name.to_string(), age.to_string()))
+        })
+        .collect()
+}
+
+/// Collect `(branch, relative_age)` pairs for every remote-tracking
+/// branch across all remotes.
+fn collect_go_remote_branches() -> Vec<(String, String)> {
+    let output = Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname:short)%09%(committerdate:relative)",
+            "refs/remotes/",
+        ])
+        .output();
+
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (name, age) = line.split_once('\t')?;
+            Some((name.to_string(), age.to_string()))
+        })
+        .collect()
+}
+
+/// Collect the current worktree's branch, if any — used to exclude it
+/// from the completion list. Returns `None` if the caller is outside a
+/// worktree or the current worktree is detached.
+fn current_worktree_branch() -> Option<String> {
+    use crate::git::GitCommand;
+
+    let git = GitCommand::new(true);
+    let current_path = crate::core::repo::get_current_worktree_path().ok()?;
+    let entries = crate::core::worktree::prune::parse_worktree_list(&git).ok()?;
+    entries
+        .into_iter()
+        .find(|wt| wt.path == current_path)
+        .and_then(|wt| wt.branch)
+}
+
+/// Top-level completion helper for `daft go`. Collects real git data,
+/// applies grouping rules, and returns the ordered candidate list.
+/// `fetch_on_miss` is wired in a later task — for now it is always false.
+pub(crate) fn complete_daft_go(prefix: &str, _fetch_on_miss: bool) -> Result<Vec<CompletionEntry>> {
+    let settings = crate::core::settings::DaftSettings::load().unwrap_or_default();
+    let default_remote = if settings.multi_remote_enabled {
+        settings.multi_remote_default.clone()
+    } else {
+        settings.remote.clone()
+    };
+
+    let worktrees = collect_go_worktrees();
+    let local = collect_go_local_branches();
+    let remote = collect_go_remote_branches();
+    let current_branch = current_worktree_branch();
+
+    Ok(build_go_completions(
+        &worktrees,
+        &local,
+        &remote,
+        current_branch.as_deref(),
+        &default_remote,
+        settings.multi_remote_enabled,
+        prefix,
+    ))
 }
 
 /// Suggest common branch name patterns for new branches
@@ -440,7 +556,6 @@ fn find_worktree_root() -> Result<std::path::PathBuf> {
 /// Which group a completion entry belongs to, used for visual separation
 /// in shells that support per-item tags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum CompletionGroup {
     /// Branch has a worktree — immediate navigation target.
     Worktree,
@@ -451,7 +566,6 @@ pub(crate) enum CompletionGroup {
 }
 
 impl CompletionGroup {
-    #[allow(dead_code)]
     fn as_str(self) -> &'static str {
         match self {
             CompletionGroup::Worktree => "worktree",
@@ -463,7 +577,6 @@ impl CompletionGroup {
 
 /// A single completion candidate emitted by `daft __complete daft-go`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) struct CompletionEntry {
     pub name: String,
     pub group: CompletionGroup,
