@@ -499,7 +499,7 @@ pub(crate) fn build_go_completions(
     multi_remote: bool,
     prefix: &str,
 ) -> Vec<CompletionEntry> {
-    use std::collections::BTreeSet;
+    use std::collections::HashSet;
 
     // Worktree group: exclude the current worktree's branch.
     let mut wt_entries: Vec<CompletionEntry> = worktrees
@@ -514,7 +514,7 @@ pub(crate) fn build_go_completions(
         .collect();
     wt_entries.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let wt_names: BTreeSet<&str> = wt_entries.iter().map(|e| e.name.as_str()).collect();
+    let wt_names: HashSet<&str> = wt_entries.iter().map(|e| e.name.as_str()).collect();
 
     // Local group: drop anything already in the worktree group.
     let mut local_entries: Vec<CompletionEntry> = local_branches
@@ -529,10 +529,7 @@ pub(crate) fn build_go_completions(
         .collect();
     local_entries.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let local_names: BTreeSet<String> = local_entries
-        .iter()
-        .map(|e| e.name.clone())
-        .collect::<BTreeSet<_>>();
+    let local_names: HashSet<&str> = local_entries.iter().map(|e| e.name.as_str()).collect();
 
     // Remote group: drop HEAD symrefs, prefix-strip in single-remote mode,
     // dedupe against worktree + local by stripped name.
@@ -551,7 +548,7 @@ pub(crate) fn build_go_completions(
                 // shadowing rule.
                 name.clone()
             };
-            if wt_names.contains(display.as_str()) || local_names.contains(&display) {
+            if wt_names.contains(display.as_str()) || local_names.contains(display.as_str()) {
                 return None;
             }
             if !display.starts_with(prefix) {
@@ -792,5 +789,60 @@ mod tests {
             out,
             "master\tworktree\t2 hours ago\nfeat/bar\tlocal\t4 days ago\n"
         );
+    }
+
+    #[test]
+    fn go_completions_empty_input_returns_empty() {
+        let entries = build_go_completions(&[], &[], &[], None, "origin", false, "");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn go_completions_non_matching_prefix_returns_empty() {
+        let entries = build_go_completions(
+            &[wt("master", "/tmp/master")],
+            &[br("feat/x", "1d")],
+            &[br("origin/bug/y", "2d")],
+            None,
+            "origin",
+            false,
+            "zzz",
+        );
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn go_completions_prefix_filter_applies_after_remote_strip() {
+        // In single-remote mode, the user sees `bug/xyz` (not `origin/bug/xyz`).
+        // The prefix filter must match against the stripped display name.
+        let entries = build_go_completions(
+            &[],
+            &[],
+            &[br("origin/bug/xyz", "3w")],
+            None,
+            "origin",
+            false,
+            "bu",
+        );
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "bug/xyz");
+        assert_eq!(entries[0].group, CompletionGroup::Remote);
+    }
+
+    #[test]
+    fn go_completions_multi_remote_dedupe_keeps_distinct_display_names() {
+        // In multi-remote mode, `origin/feat/x` and `fork/feat/x` are distinct
+        // display names and both must survive — they don't shadow each other.
+        let entries = build_go_completions(
+            &[],
+            &[],
+            &[br("origin/feat/x", "1d"), br("fork/feat/x", "2d")],
+            None,
+            "origin",
+            true, // multi-remote
+            "",
+        );
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["fork/feat/x", "origin/feat/x"]);
     }
 }
