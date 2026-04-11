@@ -2,22 +2,22 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or
-> superpowers:executing-plans to implement this plan task-by-task. Steps
-> use checkbox (`- [ ]`) syntax for tracking.
+> superpowers:executing-plans to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Group `daft go` completions as worktrees → local → remote, fix the
-zsh flag-leak bug, color each group distinctly, and add a fetch-on-miss
-spinner path for remote-only branches.
+**Goal:** Group `daft go` completions as worktrees → local → remote, fix the zsh
+flag-leak bug, color each group distinctly, and add a fetch-on-miss spinner path
+for remote-only branches.
 
 **Architecture:** A new pure function `build_go_completions()` in
-`src/commands/complete.rs` takes already-collected git ref data and
-produces a `Vec<CompletionEntry>`. A thin wrapper `complete_daft_go()`
-collects real data from git, calls the pure function, and optionally runs
-a `git fetch` with a `/dev/tty` spinner when the prefix yields no local
-matches. Shell generators in `completions/{zsh,bash,fish}.rs` emit bespoke
-code paths for `daft-go` that parse tab-separated output (name, group,
-description) and render per-group via `_describe -t <tag>` in zsh,
-ordered flat lists in bash, and awk-reshuffled descriptions in fish.
+`src/commands/complete.rs` takes already-collected git ref data and produces a
+`Vec<CompletionEntry>`. A thin wrapper `complete_daft_go()` collects real data
+from git, calls the pure function, and optionally runs a `git fetch` with a
+`/dev/tty` spinner when the prefix yields no local matches. Shell generators in
+`completions/{zsh,bash,fish}.rs` emit bespoke code paths for `daft-go` that
+parse tab-separated output (name, group, description) and render per-group via
+`_describe -t <tag>` in zsh, ordered flat lists in bash, and awk-reshuffled
+descriptions in fish.
 
 **Tech Stack:** Rust, clap, lefthook, mise, YAML integration scenarios
 (`tests/manual/scenarios/`).
@@ -32,32 +32,31 @@ ordered flat lists in bash, and awk-reshuffled descriptions in fish.
   `CompletionGroup`, `build_go_completions()`, `complete_daft_go()`,
   `--fetch-on-miss` flag, fetch cooldown, spinner integration. Route
   `("daft-go", 1)` to `complete_daft_go()`.
-- **Create** `src/completion_spinner.rs` — `/dev/tty` braille-dot spinner
-  with a background thread and cancellation signal.
+- **Create** `src/completion_spinner.rs` — `/dev/tty` braille-dot spinner with a
+  background thread and cancellation signal.
 - **Modify** `src/lib.rs` — declare `pub mod completion_spinner;`.
 - **Modify** `src/core/settings.rs` — add `go_fetch_on_miss: bool` to
-  `DaftSettings`, `GO_FETCH_ON_MISS` const in `defaults` and `keys`,
-  wire into `load()` / `load_global()`.
-- **Modify** `src/commands/completions/zsh.rs` — bespoke
-  `daft-go` generator path with `_describe -t <tag>` per group, flag
-  gating on `-`, and tab-separated stdout parsing. Add zstyle coloring
-  block to `DAFT_ZSH_COMPLETIONS`.
-- **Modify** `src/commands/completions/bash.rs` — bespoke
-  `daft-go` generator path that concatenates `wt + local + remote` in
-  order and best-effort `compopt -o nosort`.
-- **Modify** `src/commands/completions/fish.rs` — update the
-  `daft-go` completion line to pass `--fetch-on-miss` and awk-reshuffle
-  tab-separated output into fish's `name\tdescription` format.
-- **Modify** `src/commands/completions/mod.rs` — add test module wiring
-  if needed (most tests go inside existing generator files).
-- **Create** `tests/manual/scenarios/completions/go-grouped.yml` —
-  end-to-end scenario that sets up a repo with worktrees, local
-  branches, and remote-only branches, and asserts exact tab-separated
-  output from `daft __complete daft-go`.
+  `DaftSettings`, `GO_FETCH_ON_MISS` const in `defaults` and `keys`, wire into
+  `load()` / `load_global()`.
+- **Modify** `src/commands/completions/zsh.rs` — bespoke `daft-go` generator
+  path with `_describe -t <tag>` per group, flag gating on `-`, and
+  tab-separated stdout parsing. Add zstyle coloring block to
+  `DAFT_ZSH_COMPLETIONS`.
+- **Modify** `src/commands/completions/bash.rs` — bespoke `daft-go` generator
+  path that concatenates `wt + local + remote` in order and best-effort
+  `compopt -o nosort`.
+- **Modify** `src/commands/completions/fish.rs` — update the `daft-go`
+  completion line to pass `--fetch-on-miss` and awk-reshuffle tab-separated
+  output into fish's `name\tdescription` format.
+- **Modify** `src/commands/completions/mod.rs` — add test module wiring if
+  needed (most tests go inside existing generator files).
+- **Create** `tests/manual/scenarios/completions/go-grouped.yml` — end-to-end
+  scenario that sets up a repo with worktrees, local branches, and remote-only
+  branches, and asserts exact tab-separated output from
+  `daft __complete daft-go`.
 - **Modify** `docs/cli/daft-go.md` — add "Completion behavior" section.
-- **Create** `test-plans/go-completions.md` — manual checklist for the
-  spinner / color / group-ordering path that's hard to assert in
-  automated tests.
+- **Create** `test-plans/go-completions.md` — manual checklist for the spinner /
+  color / group-ordering path that's hard to assert in automated tests.
 - **Regenerate** `man/daft-go.1` via `mise run man:gen`.
 
 ---
@@ -65,25 +64,25 @@ ordered flat lists in bash, and awk-reshuffled descriptions in fish.
 ## Ordering notes
 
 Task 1 is a standalone regression fix for the zsh flag-leak bug. It ships
-independently — if the rest of the plan is delayed, Task 1 has already
-fixed the most user-visible annoyance. Tasks 2–9 build the new data
-layer; Tasks 10–13 swap the shell rendering. Task 14 wires colors. Tasks
-15–16 are docs and manual test plan.
+independently — if the rest of the plan is delayed, Task 1 has already fixed the
+most user-visible annoyance. Tasks 2–9 build the new data layer; Tasks 10–13
+swap the shell rendering. Task 14 wires colors. Tasks 15–16 are docs and manual
+test plan.
 
 ---
 
 ### Task 1: Regression test + fix for zsh flag-gating in `daft-go`
 
-**Why first:** CLAUDE.md requires every bugfix to ship with a regression
-test. This is a self-contained fix that's valuable even if the rest of
-the plan is never merged.
+**Why first:** CLAUDE.md requires every bugfix to ship with a regression test.
+This is a self-contained fix that's valuable even if the rest of the plan is
+never merged.
 
 **Files:**
 
-- Modify: `src/commands/completions/zsh.rs` (the branch-completion block
-  for commands in the `has_branches` set)
-- Modify: `src/commands/completions/mod.rs` — add `#[cfg(test)] mod tests`
-  block if one doesn't exist yet
+- Modify: `src/commands/completions/zsh.rs` (the branch-completion block for
+  commands in the `has_branches` set)
+- Modify: `src/commands/completions/mod.rs` — add `#[cfg(test)] mod tests` block
+  if one doesn't exist yet
 
 - [ ] **Step 1: Write the failing unit test**
 
@@ -123,14 +122,15 @@ mod tests {
 cargo test -p daft --lib commands::completions::tests::zsh_daft_go_gates_flags_on_leading_dash
 ```
 
-Expected: FAIL with `generated script must gate flag completion on a
-leading dash before adding flags`. Current generator does not emit that
-guard — it adds flags unconditionally via `compadd -a flags`.
+Expected: FAIL with
+`generated script must gate flag completion on a leading dash before adding flags`.
+Current generator does not emit that guard — it adds flags unconditionally via
+`compadd -a flags`.
 
 - [ ] **Step 3: Fix the zsh generator**
 
-In `src/commands/completions/zsh.rs`, locate the block that reads
-(approximately lines 171–186):
+In `src/commands/completions/zsh.rs`, locate the block that reads (approximately
+lines 171–186):
 
 ```rust
 output.push_str("    # Flag completions (extracted from clap)\n");
@@ -150,8 +150,8 @@ output.push_str("    compadd -a flags\n");
 output.push_str("}\n");
 ```
 
-Wrap the `compadd -a flags` call in a guard so it only runs when the user
-has typed a leading dash:
+Wrap the `compadd -a flags` call in a guard so it only runs when the user has
+typed a leading dash:
 
 ```rust
 output.push_str("    # Flag completions (extracted from clap)\n");
@@ -173,11 +173,10 @@ output.push_str("    fi\n");
 output.push_str("}\n");
 ```
 
-Note: the branch-completion block earlier in the function already has
-its own `if [[ $curword != -* ]]; then ... fi` guard and continues to
-work as-is. Moving the flag block into an `if` guard means the function
-only emits flags when the user typed a `-`, and only emits branches when
-they didn't — never both.
+Note: the branch-completion block earlier in the function already has its own
+`if [[ $curword != -* ]]; then ... fi` guard and continues to work as-is. Moving
+the flag block into an `if` guard means the function only emits flags when the
+user typed a `-`, and only emits branches when they didn't — never both.
 
 - [ ] **Step 4: Run the test and verify it passes**
 
@@ -195,9 +194,9 @@ mise run test:manual -- --ci completions
 ```
 
 Expected: all tests pass. The manual scenarios in
-`tests/manual/scenarios/completions/` verify that generated scripts for
-every command are parseable by the target shell — they must still pass
-after the guard change.
+`tests/manual/scenarios/completions/` verify that generated scripts for every
+command are parseable by the target shell — they must still pass after the guard
+change.
 
 - [ ] **Step 6: Commit**
 
@@ -222,8 +221,8 @@ EOF
 
 ### Task 2: Add `go_fetch_on_miss` setting to `DaftSettings`
 
-**Why:** `complete_daft_go()` in Task 5 will need to read this setting.
-Adding it first means the data-layer tasks can reference it directly.
+**Why:** `complete_daft_go()` in Task 5 will need to read this setting. Adding
+it first means the data-layer tasks can reference it directly.
 
 **Files:**
 
@@ -231,9 +230,9 @@ Adding it first means the data-layer tasks can reference it directly.
 
 - [ ] **Step 1: Write the failing unit test**
 
-Add to the existing `#[cfg(test)] mod tests` block in
-`src/core/settings.rs` (the file already has a tests module — grep for
-`#[test]` near the end of the file to find it):
+Add to the existing `#[cfg(test)] mod tests` block in `src/core/settings.rs`
+(the file already has a tests module — grep for `#[test]` near the end of the
+file to find it):
 
 ```rust
 #[test]
@@ -317,9 +316,8 @@ Expected: PASS.
 cargo test -p daft --lib core::settings
 ```
 
-Expected: all existing tests still pass (the new field has a default
-value, so existing tests that construct `DaftSettings::default()` are
-unaffected).
+Expected: all existing tests still pass (the new field has a default value, so
+existing tests that construct `DaftSettings::default()` are unaffected).
 
 - [ ] **Step 6: Commit**
 
@@ -543,8 +541,8 @@ Expected: all FAIL with `cannot find function build_go_completions` /
 
 - [ ] **Step 3: Define types and implement the pure function**
 
-Add to `src/commands/complete.rs` (below the existing `complete` function
-and its helpers, above the existing `#[cfg(test)] mod tests` block):
+Add to `src/commands/complete.rs` (below the existing `complete` function and
+its helpers, above the existing `#[cfg(test)] mod tests` block):
 
 ```rust
 /// Which group a completion entry belongs to, used for visual separation
@@ -870,11 +868,11 @@ pub(crate) fn complete_daft_go(
 }
 ```
 
-- [ ] **Step 2: Route `("daft-go", 1)` to `complete_daft_go()` and emit
-      the tab-separated format**
+- [ ] **Step 2: Route `("daft-go", 1)` to `complete_daft_go()` and emit the
+      tab-separated format**
 
-In the existing `complete()` dispatcher in `src/commands/complete.rs`,
-replace the `daft-go` arm:
+In the existing `complete()` dispatcher in `src/commands/complete.rs`, replace
+the `daft-go` arm:
 
 ```rust
 // daft-go: complete existing branch names
@@ -898,15 +896,15 @@ with:
 }
 ```
 
-Note: we deliberately don't call `format_go_completions()` here because
-the dispatcher returns `Vec<String>` (one entry per line) while
+Note: we deliberately don't call `format_go_completions()` here because the
+dispatcher returns `Vec<String>` (one entry per line) while
 `format_go_completions()` returns a single pre-joined `String`.
-`format_go_completions()` stays in the module for direct use by unit
-tests and for any future caller that wants the full stdout blob.
+`format_go_completions()` stays in the module for direct use by unit tests and
+for any future caller that wants the full stdout blob.
 
-The outer `run()` function already prints each suggestion on its own
-line, so the existing `for suggestion in suggestions { println!(...); }`
-loop handles the tab-separated strings correctly.
+The outer `run()` function already prints each suggestion on its own line, so
+the existing `for suggestion in suggestions { println!(...); }` loop handles the
+tab-separated strings correctly.
 
 - [ ] **Step 3: Build and run the existing unit tests**
 
@@ -915,9 +913,9 @@ cargo build -p daft
 cargo test -p daft --lib commands::complete
 ```
 
-Expected: compiles cleanly, all existing tests pass. The new git
-collection helpers aren't unit-tested here — they're covered by the YAML
-scenario in Task 6.
+Expected: compiles cleanly, all existing tests pass. The new git collection
+helpers aren't unit-tested here — they're covered by the YAML scenario in
+Task 6.
 
 - [ ] **Step 4: Manual smoke test in the daft repo itself**
 
@@ -929,9 +927,9 @@ cargo build
 ./target/debug/daft __complete daft-go "" --position 1
 ```
 
-Expected output: tab-separated lines with your current worktrees, local
-branches (minus any with worktrees), and remote-only branches. The
-current worktree's branch should be absent from the worktree group.
+Expected output: tab-separated lines with your current worktrees, local branches
+(minus any with worktrees), and remote-only branches. The current worktree's
+branch should be absent from the worktree group.
 
 - [ ] **Step 5: Commit**
 
@@ -966,8 +964,8 @@ EOF
 cat tests/manual/scenarios/completions/dynamic-branch.yml
 ```
 
-Note the `steps`, `run`, `cwd`, `expect.exit_code`, and
-`expect.output_contains` / `expect.output_matches` fields.
+Note the `steps`, `run`, `cwd`, `expect.exit_code`, and `expect.output_contains`
+/ `expect.output_matches` fields.
 
 - [ ] **Step 2: Write the failing scenario**
 
@@ -1048,11 +1046,10 @@ steps:
 grep -rn "output_not_contains" tests/manual/ | head -5
 ```
 
-Expected: at least a few hits showing the field is supported by the
-runner. If not supported, the test must use `output_matches` with a
-negated regex instead — adjust the step to use only
-`output_contains` and leave `output_not_contains` out of this task; the
-positive assertions cover the grouping behavior.
+Expected: at least a few hits showing the field is supported by the runner. If
+not supported, the test must use `output_matches` with a negated regex instead —
+adjust the step to use only `output_contains` and leave `output_not_contains`
+out of this task; the positive assertions cover the grouping behavior.
 
 - [ ] **Step 4: Run the scenario**
 
@@ -1060,8 +1057,8 @@ positive assertions cover the grouping behavior.
 mise run test:manual -- --ci completions go-grouped
 ```
 
-Expected: the scenario sets up the repo and asserts the grouped
-output. Should PASS.
+Expected: the scenario sets up the repo and asserts the grouped output. Should
+PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -1436,9 +1433,8 @@ In the `Args` struct in `src/commands/complete.rs`, add:
 fetch_on_miss: bool,
 ```
 
-In the `run()` function, update the call to `complete()` to pass the
-new flag through. Extend the `complete()` function signature to accept
-it:
+In the `run()` function, update the call to `complete()` to pass the new flag
+through. Extend the `complete()` function signature to accept it:
 
 ```rust
 fn complete(
@@ -1462,11 +1458,11 @@ And update the `("daft-go", 1)` arm from Task 4:
 }
 ```
 
-The parameter is named `fetch_on_miss` (no underscore prefix) in the
-signature because it IS used by the `("daft-go", 1)` arm. Other arms
-simply don't reference it — that's fine, Rust only warns on unused
-parameters if no branch reads them, and the daft-go arm counts as a
-read. No warning, no underscore needed.
+The parameter is named `fetch_on_miss` (no underscore prefix) in the signature
+because it IS used by the `("daft-go", 1)` arm. Other arms simply don't
+reference it — that's fine, Rust only warns on unused parameters if no branch
+reads them, and the daft-go arm counts as a read. No warning, no underscore
+needed.
 
 - [ ] **Step 2: Implement the fetch-on-miss path in `complete_daft_go()`**
 
@@ -1563,11 +1559,10 @@ cargo test -p daft --lib commands::complete
 cargo test -p daft --lib completion_spinner
 ```
 
-Expected: all existing tests still PASS. No new unit tests in this
-task — the fetch-on-miss behavior is a composition of already-tested
-primitives (`should_run_fetch`, `touch_fetch_marker`, the spinner, and
-`complete_daft_go`). The manual test plan (Task 16) verifies the
-end-to-end user-visible behavior.
+Expected: all existing tests still PASS. No new unit tests in this task — the
+fetch-on-miss behavior is a composition of already-tested primitives
+(`should_run_fetch`, `touch_fetch_marker`, the spinner, and `complete_daft_go`).
+The manual test plan (Task 16) verifies the end-to-end user-visible behavior.
 
 - [ ] **Step 5: Manual smoke test**
 
@@ -1578,9 +1573,8 @@ cargo build
 ```
 
 Expected: the spinner line appears on the terminal for the duration of
-`git fetch`, then disappears. Output is empty if the fetch did not
-produce any matching refs. Running again within 30s should NOT show the
-spinner (cooldown).
+`git fetch`, then disappears. Output is empty if the fetch did not produce any
+matching refs. Running again within 30s should NOT show the spinner (cooldown).
 
 - [ ] **Step 6: Commit**
 
@@ -1648,15 +1642,14 @@ cargo test -p daft --lib commands::completions::tests::zsh_daft_go
 ```
 
 Expected: the two new tests FAIL; the existing
-`zsh_daft_go_gates_flags_on_leading_dash` test still PASSES (it just
-checks for the guard).
+`zsh_daft_go_gates_flags_on_leading_dash` test still PASSES (it just checks for
+the guard).
 
 - [ ] **Step 3: Add a bespoke `daft-go` code path in the zsh generator**
 
-In `src/commands/completions/zsh.rs`, inside
-`generate_zsh_completion_string()`, special-case `daft-go` before the
-generic branch-completion code. The cleanest shape is to early-return a
-hand-written function body for `daft-go`:
+In `src/commands/completions/zsh.rs`, inside `generate_zsh_completion_string()`,
+special-case `daft-go` before the generic branch-completion code. The cleanest
+shape is to early-return a hand-written function body for `daft-go`:
 
 ```rust
 pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<String> {
@@ -1728,9 +1721,9 @@ compdef _daft_go daft-go
 }
 ```
 
-Note: the `compdef` at the bottom is for direct invocation of
-`daft-go`. Shortcut aliases are handled by the existing umbrella
-wiring in `DAFT_ZSH_COMPLETIONS`, which is updated in Task 13.
+Note: the `compdef` at the bottom is for direct invocation of `daft-go`.
+Shortcut aliases are handled by the existing umbrella wiring in
+`DAFT_ZSH_COMPLETIONS`, which is updated in Task 13.
 
 - [ ] **Step 4: Run the new tests**
 
@@ -1739,8 +1732,8 @@ cargo test -p daft --lib commands::completions::tests::zsh_daft_go
 ```
 
 Expected: all three zsh_daft_go tests PASS, including the existing
-`zsh_daft_go_gates_flags_on_leading_dash` regression test (the guard
-remains present in the new hand-written body).
+`zsh_daft_go_gates_flags_on_leading_dash` regression test (the guard remains
+present in the new hand-written body).
 
 - [ ] **Step 5: Run the full completion scenario suite**
 
@@ -1748,8 +1741,8 @@ remains present in the new hand-written body).
 mise run test:manual -- --ci completions
 ```
 
-Expected: all scenarios pass. The `all-commands` scenario that
-generates zsh completions for every command must still succeed — verify
+Expected: all scenarios pass. The `all-commands` scenario that generates zsh
+completions for every command must still succeed — verify
 `daft completions zsh --command=daft-go` returns exit 0.
 
 - [ ] **Step 6: Commit**
@@ -1927,8 +1920,8 @@ fn fish_daft_go_passes_fetch_on_miss_and_awk_reshuffles() {
 }
 ```
 
-Also check `DAFT_FISH_COMPLETIONS` since the existing daft-go completion
-line lives in the umbrella string constant, not the per-command output:
+Also check `DAFT_FISH_COMPLETIONS` since the existing daft-go completion line
+lives in the umbrella string constant, not the per-command output:
 
 ```rust
 #[test]
@@ -1954,22 +1947,22 @@ Expected: both FAIL.
 
 - [ ] **Step 3: Update the fish generator**
 
-In `src/commands/completions/fish.rs`, find the per-command generator
-and special-case `daft-go` similarly to zsh/bash — return a bespoke
-function body that passes `--fetch-on-miss` and awk-reshuffles:
+In `src/commands/completions/fish.rs`, find the per-command generator and
+special-case `daft-go` similarly to zsh/bash — return a bespoke function body
+that passes `--fetch-on-miss` and awk-reshuffles:
 
-The per-command fish generator is relatively small. Replace the
-dynamic branch-completion line it would otherwise emit with (this is
-the final fish text — show this exact output when running
+The per-command fish generator is relatively small. Replace the dynamic
+branch-completion line it would otherwise emit with (this is the final fish text
+— show this exact output when running
 `daft completions fish --command=daft-go`):
 
 ```fish
 complete -c daft-go -f -a "(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\t' '{printf \"%s\t%s · %s\n\", $1, $3, $2}')"
 ```
 
-In Rust source, write this via `r#"..."#` raw strings (no special
-escaping) or via `"..."` with `\\t` and `\\n` for the literal
-backslash escape sequences that fish / awk see:
+In Rust source, write this via `r#"..."#` raw strings (no special escaping) or
+via `"..."` with `\\t` and `\\n` for the literal backslash escape sequences that
+fish / awk see:
 
 ```rust
 fn generate_fish_daft_go_line() -> &'static str {
@@ -1980,12 +1973,12 @@ fn generate_fish_daft_go_line() -> &'static str {
 }
 ```
 
-After implementing, verify with `./target/debug/daft completions fish
---command=daft-go` and confirm the output matches the expected fish
-text above character-for-character.
+After implementing, verify with
+`./target/debug/daft completions fish --command=daft-go` and confirm the output
+matches the expected fish text above character-for-character.
 
-Also update `DAFT_FISH_COMPLETIONS` in the same file — replace the
-existing line:
+Also update `DAFT_FISH_COMPLETIONS` in the same file — replace the existing
+line:
 
 ```fish
 complete -c daft -n '__fish_seen_subcommand_from go' -f -a "(daft __complete daft-go '' 2>/dev/null)"
@@ -2014,8 +2007,8 @@ cargo build
 ./target/debug/daft shell-init fish | grep -A1 "daft __complete daft-go"
 ```
 
-Inspect the emitted lines — the `awk` invocation should be correctly
-escaped for fish (single tab field separator, three-column reshuffle).
+Inspect the emitted lines — the `awk` invocation should be correctly escaped for
+fish (single tab field separator, three-column reshuffle).
 
 - [ ] **Step 6: Commit**
 
@@ -2073,11 +2066,12 @@ cargo test -p daft --lib commands::completions::tests::zsh_daft_go_emits_zstyle_
 
 Expected: FAIL.
 
-- [ ] **Step 3: Prepend the zstyle block to `generate_zsh_daft_go_completion()`**
+- [ ] **Step 3: Prepend the zstyle block to
+      `generate_zsh_daft_go_completion()`**
 
-Edit `generate_zsh_daft_go_completion()` in `src/commands/completions/zsh.rs`
-so the returned string begins with a zstyle block before the
-`#compdef` line. Replace the `format!` header:
+Edit `generate_zsh_daft_go_completion()` in `src/commands/completions/zsh.rs` so
+the returned string begins with a zstyle block before the `#compdef` line.
+Replace the `format!` header:
 
 ```rust
 format!(
@@ -2127,16 +2121,15 @@ EOF
 
 ### Task 13: Wire `go` verb alias to the grouped completion in `DAFT_ZSH_COMPLETIONS`
 
-**Why:** The zsh umbrella function in `DAFT_ZSH_COMPLETIONS` currently
-delegates `daft go` to `__daft_go_impl`. That's already the right path
-name — Task 9 kept the `__daft_go_impl` name intentionally. Verify
-there's no stale delegation to adjust, and add a test that pins the
-contract.
+**Why:** The zsh umbrella function in `DAFT_ZSH_COMPLETIONS` currently delegates
+`daft go` to `__daft_go_impl`. That's already the right path name — Task 9 kept
+the `__daft_go_impl` name intentionally. Verify there's no stale delegation to
+adjust, and add a test that pins the contract.
 
 **Files:**
 
-- Modify: `src/commands/completions/mod.rs` (test only, unless a real
-  bug is found)
+- Modify: `src/commands/completions/mod.rs` (test only, unless a real bug is
+  found)
 
 - [ ] **Step 1: Write a test that locks in the alias wiring**
 
@@ -2162,13 +2155,13 @@ fn zsh_umbrella_delegates_go_to_daft_go_impl() {
 cargo test -p daft --lib commands::completions::tests::zsh_umbrella_delegates_go_to_daft_go_impl
 ```
 
-If the test passes unchanged: the umbrella wiring already matches.
-Commit and move on.
+If the test passes unchanged: the umbrella wiring already matches. Commit and
+move on.
 
-If the test fails: inspect `DAFT_ZSH_COMPLETIONS` in `zsh.rs` and
-update the `go)` case inside the verb-alias `case` block to call
-`__daft_go_impl` (this is the pre-existing shape — the call site
-already exists, so expect the test to pass).
+If the test fails: inspect `DAFT_ZSH_COMPLETIONS` in `zsh.rs` and update the
+`go)` case inside the verb-alias `case` block to call `__daft_go_impl` (this is
+the pre-existing shape — the call site already exists, so expect the test to
+pass).
 
 - [ ] **Step 3: Commit**
 
@@ -2190,8 +2183,8 @@ EOF
 **Files:**
 
 - Modify: `docs/cli/daft-go.md`
-- Modify: `docs/guide/configuration.md` (if the config reference page
-  lists daft settings — verify first)
+- Modify: `docs/guide/configuration.md` (if the config reference page lists daft
+  settings — verify first)
 
 - [ ] **Step 1: Check the current state of `docs/cli/daft-go.md`**
 
@@ -2205,50 +2198,49 @@ Note the existing structure — frontmatter, synopsis, options table, etc.
 
 Append to `docs/cli/daft-go.md` (before any trailing "See also" block):
 
-```markdown
+````markdown
 ## Completion behavior
 
 `daft go <TAB>` offers candidates grouped by type:
 
-1. **Worktrees** — branches that already have a linked worktree. These
-   are the primary navigation targets and are listed first. The branch
-   you are currently sitting in is excluded.
-2. **Local branches** — branches in `refs/heads/` that don't have a
-   worktree yet. Selecting one of these will check it out into a new
-   worktree.
-3. **Remote branches** — branches in `refs/remotes/` that don't already
-   exist locally. In single-remote mode the `<remote>/` prefix is
-   stripped for readability; in multi-remote mode the full
-   `<remote>/<branch>` form is preserved.
+1. **Worktrees** — branches that already have a linked worktree. These are the
+   primary navigation targets and are listed first. The branch you are currently
+   sitting in is excluded.
+2. **Local branches** — branches in `refs/heads/` that don't have a worktree
+   yet. Selecting one of these will check it out into a new worktree.
+3. **Remote branches** — branches in `refs/remotes/` that don't already exist
+   locally. In single-remote mode the `<remote>/` prefix is stripped for
+   readability; in multi-remote mode the full `<remote>/<branch>` form is
+   preserved.
 
-In zsh and fish, each candidate is annotated with the relative time of
-its last commit (e.g. "3 days ago"). In zsh the three groups are
-colored distinctly — worktrees in bright green, local branches in
-bright blue, remote branches in dim gray. Bash shows a flat list in
-the same group order but without colors or descriptions.
+In zsh and fish, each candidate is annotated with the relative time of its last
+commit (e.g. "3 days ago"). In zsh the three groups are colored distinctly —
+worktrees in bright green, local branches in bright blue, remote branches in dim
+gray. Bash shows a flat list in the same group order but without colors or
+descriptions.
 
 ### Fetch-on-miss
 
-If you type a prefix that doesn't match any local or already-fetched
-remote ref, daft will run `git fetch` once (from the configured
-default remote) and re-resolve, showing a spinner while the fetch
-runs. This lets you tab-complete to a remote branch that exists
-upstream but hasn't been pulled yet.
+If you type a prefix that doesn't match any local or already-fetched remote ref,
+daft will run `git fetch` once (from the configured default remote) and
+re-resolve, showing a spinner while the fetch runs. This lets you tab-complete
+to a remote branch that exists upstream but hasn't been pulled yet.
 
-The fetch path is gated by a 30-second cooldown per repository, so
-rapid keystrokes won't trigger repeated fetches. To disable the
-feature entirely:
+The fetch path is gated by a 30-second cooldown per repository, so rapid
+keystrokes won't trigger repeated fetches. To disable the feature entirely:
 
 ```sh
 git config daft.go.fetchOnMiss false
 ```
-```
+````
+
+````
 
 - [ ] **Step 3: Regenerate the man page**
 
 ```bash
 mise run man:gen
-```
+````
 
 Expected: `man/daft-go.1` is updated. Verify with:
 
@@ -2309,25 +2301,23 @@ branch: fix/go-completions
 ## Setup
 
 - [ ] Install the current build via `mise run dev`.
-- [ ] In a test repo with ≥ 3 worktrees, ≥ 2 local-only branches, and
-      ≥ 5 remote-only branches, open a new zsh shell and a new bash
-      shell.
+- [ ] In a test repo with ≥ 3 worktrees, ≥ 2 local-only branches, and ≥ 5
+      remote-only branches, open a new zsh shell and a new bash shell.
 
 ## Group ordering
 
-- [ ] `daft go <TAB>` in zsh lists worktrees first, then local
-      branches, then remote branches, in that order.
+- [ ] `daft go <TAB>` in zsh lists worktrees first, then local branches, then
+      remote branches, in that order.
 - [ ] Same in bash (flat list but preserving the order).
 - [ ] Same in fish.
-- [ ] The current worktree's branch does NOT appear in the worktree
-      group.
+- [ ] The current worktree's branch does NOT appear in the worktree group.
 
 ## Descriptions and colors
 
 - [ ] zsh: each entry shows a relative age ("3 days ago", etc.) in the
       description column.
-- [ ] zsh: worktree entries are bright green, local are bright blue,
-      remote are dim gray.
+- [ ] zsh: worktree entries are bright green, local are bright blue, remote are
+      dim gray.
 - [ ] fish: each entry shows `<age> · <group>` in the description.
 - [ ] bash: no descriptions, but no flags leaked into the branch list.
 
@@ -2339,19 +2329,19 @@ branch: fix/go-completions
 
 ## Fetch-on-miss + spinner
 
-- [ ] Find a remote-only branch that's NOT in your local `refs/remotes/`
-      (ask someone to push a branch, or delete your local remote ref
-      with `git update-ref -d refs/remotes/origin/<branch>`).
-- [ ] Type `daft go <prefix-of-that-branch><TAB>`. Expected: a
-      braille-dot spinner with "Fetching refs from origin…" appears
-      on the terminal for the duration of the fetch, then clears.
-- [ ] After the fetch completes, the completion list now includes
-      the remote branch.
-- [ ] Immediately type the same completion again. Expected: no
-      spinner this time (cooldown).
+- [ ] Find a remote-only branch that's NOT in your local `refs/remotes/` (ask
+      someone to push a branch, or delete your local remote ref with
+      `git update-ref -d refs/remotes/origin/<branch>`).
+- [ ] Type `daft go <prefix-of-that-branch><TAB>`. Expected: a braille-dot
+      spinner with "Fetching refs from origin…" appears on the terminal for the
+      duration of the fetch, then clears.
+- [ ] After the fetch completes, the completion list now includes the remote
+      branch.
+- [ ] Immediately type the same completion again. Expected: no spinner this time
+      (cooldown).
 - [ ] Wait 30+ seconds and retry. Expected: spinner reappears.
-- [ ] `git config daft.go.fetchOnMiss false` — expected: spinner never
-      appears, regardless of cooldown.
+- [ ] `git config daft.go.fetchOnMiss false` — expected: spinner never appears,
+      regardless of cooldown.
 - [ ] Reset with `git config --unset daft.go.fetchOnMiss`.
 
 ## Multi-remote mode
@@ -2363,11 +2353,11 @@ branch: fix/go-completions
 
 ## Non-interactive invocation
 
-- [ ] `daft __complete daft-go "" --position 1 | head` inside a
-      repository emits tab-separated lines with three columns each.
-- [ ] The same command with `--fetch-on-miss` and a non-matching
-      prefix does NOT draw a spinner (no /dev/tty when stdout is
-      piped) and still emits any matching output.
+- [ ] `daft __complete daft-go "" --position 1 | head` inside a repository emits
+      tab-separated lines with three columns each.
+- [ ] The same command with `--fetch-on-miss` and a non-matching prefix does NOT
+      draw a spinner (no /dev/tty when stdout is piped) and still emits any
+      matching output.
 ```
 
 - [ ] **Step 3: Commit**
@@ -2397,12 +2387,12 @@ EOF
 mise run ci
 ```
 
-Expected: clippy, fmt check, unit tests, integration tests, man-page
-verify all pass. The CLAUDE.md pre-commit requirements (`mise run fmt`,
-`mise run clippy`, `mise run test:unit`) are a subset of `mise run ci`.
+Expected: clippy, fmt check, unit tests, integration tests, man-page verify all
+pass. The CLAUDE.md pre-commit requirements (`mise run fmt`, `mise run clippy`,
+`mise run test:unit`) are a subset of `mise run ci`.
 
-If anything fails, fix the root cause in a new commit — do not skip
-lefthook or amend earlier commits in the chain.
+If anything fails, fix the root cause in a new commit — do not skip lefthook or
+amend earlier commits in the chain.
 
 - [ ] **Step 2: Run the full manual test plan**
 
@@ -2413,9 +2403,8 @@ Open the manual test plan from Task 15:
 cat test-plans/go-completions.md
 ```
 
-Walk through each checkbox. If any manual check fails, fix the root
-cause and add a new commit. Update the plan if the expected behavior
-changed.
+Walk through each checkbox. If any manual check fails, fix the root cause and
+add a new commit. Update the plan if the expected behavior changed.
 
 - [ ] **Step 3: Push the branch (no auto-PR)**
 
@@ -2423,7 +2412,7 @@ changed.
 git push -u origin fix/go-completions
 ```
 
-Per CLAUDE.md: PRs target master and are always squash-merged. The
-user will open the PR manually via `gh pr create` or the GitHub UI,
-with title `feat(completions): overhaul daft go completion grouping`
-and the spec + plan referenced in the body.
+Per CLAUDE.md: PRs target master and are always squash-merged. The user will
+open the PR manually via `gh pr create` or the GitHub UI, with title
+`feat(completions): overhaul daft go completion grouping` and the spec + plan
+referenced in the body.
