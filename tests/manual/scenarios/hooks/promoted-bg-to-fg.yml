@@ -1,0 +1,88 @@
+name: Promoted background job is recorded as foreground
+description:
+  "Regression for the universal hook invocation logging feature. When a job is
+  declared 'background: true' but has a foreground dependent, the DAG
+  partitioner promotes it into the foreground phase to preserve DAG validity. In
+  that case the job actually runs synchronously on the main daft process, and
+  per spec the meta must reflect *how the job actually ran* — so its recorded
+  'background' field must be false, not what the YAML declared. This scenario
+  declares exactly such a config (bg 'build-shared' with fg 'use-shared' that
+  needs it) and asserts both the JSON output and the listing reflect
+  background=false for both jobs."
+
+repos:
+  - name: test-promoted-bg-to-fg
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Promoted bg->fg hook test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/promoted
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: build-shared
+              run: echo shared-built
+              background: true
+            - name: use-shared
+              run: echo using-shared
+              needs:
+                - build-shared
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_PROMOTED_BG_TO_FG
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-promoted-bg-to-fg/main"
+      files_exist:
+        - "$WORK_DIR/test-promoted-bg-to-fg/main/daft.yml"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-promoted-bg-to-fg/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (both jobs run as fg due to promotion)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/promoted 2>&1
+    cwd: "$WORK_DIR/test-promoted-bg-to-fg/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-promoted-bg-to-fg/feature/promoted"
+      output_contains:
+        - "shared-built"
+        - "using-shared"
+
+  - name: JSON output confirms both jobs are recorded as background=false
+    run: daft hooks jobs --json 2>&1
+    cwd: "$WORK_DIR/test-promoted-bg-to-fg/feature/promoted"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"name": "build-shared"'
+        - '"name": "use-shared"'
+        - '"background": false'
+      output_not_contains:
+        - '"background": true'
+
+  - name: List view shows both jobs as foreground (no background indicator)
+    run: daft hooks jobs 2>&1
+    cwd: "$WORK_DIR/test-promoted-bg-to-fg/feature/promoted"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "worktree-post-create"
+        - "build-shared"
+        - "use-shared"
+        - "completed"
+      output_not_contains:
+        - "(no jobs declared)"
+        - "No background job history found."
