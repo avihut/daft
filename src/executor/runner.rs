@@ -344,14 +344,16 @@ fn execute_single_job(
         // Spawn a reader thread that streams output to the presenter
         // and, if provided, the sink.
         let presenter_clone = Arc::clone(presenter);
-        let sink_clone: Option<Arc<dyn crate::executor::log_sink::LogSink>> = sink.cloned();
+        // Only clone the JobSpec when a sink is actually present — otherwise
+        // we'd pay the clone cost on every job for the common no-sink path.
+        let sink_context: Option<(Arc<dyn crate::executor::log_sink::LogSink>, JobSpec)> =
+            sink.cloned().map(|s| (s, job.clone()));
         let job_name = job.name.clone();
-        let job_for_sink = job.clone();
         let reader_handle = std::thread::spawn(move || {
             for line in rx {
                 presenter_clone.on_job_output(&job_name, &line);
-                if let Some(ref s) = sink_clone {
-                    s.on_job_output(&job_for_sink, &line);
+                if let Some((s, spec)) = &sink_context {
+                    s.on_job_output(spec, &line);
                 }
             }
         });
@@ -1171,5 +1173,26 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| e == "runner_skipped:after:previous job failed"));
+    }
+
+    #[test]
+    fn sink_receives_runner_skipped_on_dag_dep_failed() {
+        let jobs = vec![
+            make_job_with_needs("first", "false", vec![]),
+            make_job_with_needs("second", "echo never", vec!["first"]),
+        ];
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let concrete = Arc::new(RecordingLogSink::default());
+        let sink_arc: Arc<dyn crate::executor::log_sink::LogSink> = concrete.clone();
+
+        let _ = run_jobs(&jobs, ExecutionMode::Parallel, &presenter, Some(&sink_arc)).unwrap();
+
+        let events = concrete.events();
+        assert!(
+            events
+                .iter()
+                .any(|e| e == "runner_skipped:second:dependency failed"),
+            "expected runner_skipped event for dep-failed job, got: {events:?}"
+        );
     }
 }
