@@ -11,7 +11,7 @@ pub mod log_sink;
 pub mod presenter;
 pub mod runner;
 
-pub use log_sink::LogSink;
+pub use log_sink::{BufferingLogSink, LogSink};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
