@@ -1,0 +1,82 @@
+name: Foreground-only hook creates an invocation record
+description:
+  "Regression for the 'foreground jobs are invisible' bug. A hook that declares
+  only foreground jobs used to write nothing to the log store, so 'daft hooks
+  jobs' showed no record. After the universal hook invocation logging feature,
+  the hook's invocation and every foreground job must appear in the listing, and
+  'daft hooks jobs logs <name>' must return the captured output."
+
+repos:
+  - name: test-fg-only-hook
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Foreground-only hook test"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: say-hello
+              run: echo hello-from-fg
+            - name: say-done
+              run: echo done-from-fg
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_FG_ONLY_HOOK
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-fg-only-hook/main"
+      files_exist:
+        - "$WORK_DIR/test-fg-only-hook/main/daft.yml"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-fg-only-hook/main"
+    expect:
+      exit_code: 0
+
+  - name: Run the foreground-only worktree-post-create hook manually
+    run: daft hooks run worktree-post-create 2>&1
+    cwd: "$WORK_DIR/test-fg-only-hook/main"
+    expect:
+      exit_code: 0
+
+  - name: List jobs — should show the invocation with two fg rows
+    run: daft hooks jobs 2>&1
+    cwd: "$WORK_DIR/test-fg-only-hook/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "worktree-post-create"
+        - "say-hello"
+        - "say-done"
+        - "completed"
+      output_not_contains:
+        - "(no jobs declared)"
+        - "No background job history found."
+
+  - name: View log for the first fg job — should show captured stdout
+    run: daft hooks jobs logs say-hello 2>&1
+    cwd: "$WORK_DIR/test-fg-only-hook/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "say-hello"
+        - "hello-from-fg"
+        - "COMPLETED"
+
+  - name: View log for the second fg job — should show captured stdout
+    run: daft hooks jobs logs say-done 2>&1
+    cwd: "$WORK_DIR/test-fg-only-hook/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "say-done"
+        - "done-from-fg"
+        - "COMPLETED"
