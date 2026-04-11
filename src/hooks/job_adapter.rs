@@ -133,6 +133,15 @@ pub fn yaml_jobs_to_specs(
         });
     }
 
+    // Remove needs: references to skipped jobs so dependent jobs don't
+    // fail DAG construction. A skipped dependency is vacuously satisfied —
+    // it was never going to run, and we shouldn't block dependents on it.
+    let skipped_names: std::collections::HashSet<&str> =
+        skipped.iter().map(|s| s.name.as_str()).collect();
+    for spec in &mut kept {
+        spec.needs.retain(|n| !skipped_names.contains(n.as_str()));
+    }
+
     (kept, skipped)
 }
 
@@ -571,6 +580,51 @@ mod tests {
 
         assert_eq!(kept.len(), 1);
         assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn kept_spec_needs_are_stripped_of_skipped_dependencies() {
+        use crate::hooks::yaml_config::{JobDef, SkipCondition};
+        let jobs = vec![
+            JobDef {
+                name: Some("skipped-dep".to_string()),
+                run: Some(crate::hooks::yaml_config::RunCommand::Simple(
+                    "echo nope".to_string(),
+                )),
+                skip: Some(SkipCondition::Bool(true)),
+                ..Default::default()
+            },
+            JobDef {
+                name: Some("dependent".to_string()),
+                run: Some(crate::hooks::yaml_config::RunCommand::Simple(
+                    "echo yes".to_string(),
+                )),
+                needs: Some(vec!["skipped-dep".to_string()]),
+                ..Default::default()
+            },
+        ];
+
+        let ctx = make_ctx();
+        let env = HashMap::new();
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &env,
+            "/src",
+            std::path::Path::new("/work"),
+            None,
+            None,
+        );
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].name, "dependent");
+        assert!(
+            kept[0].needs.is_empty(),
+            "needs: list should have been stripped of the skipped dependency, but got {:?}",
+            kept[0].needs
+        );
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "skipped-dep");
     }
 
     #[test]
