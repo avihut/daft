@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.5](https://github.com/avihut/daft/compare/v1.6.4...v1.6.5) - 2026-04-11
+
+### Bug Fixes
+
+- *(ci)* verify remote/ clone directly in test-homebrew ([#363](https://github.com/avihut/daft/pull/363))
+
 ## [1.6.4](https://github.com/avihut/daft/compare/v1.6.3...v1.6.4) - 2026-04-11
 
 ### Bug Fixes
