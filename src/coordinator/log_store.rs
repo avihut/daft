@@ -74,7 +74,8 @@ impl LogStore {
     pub fn write_meta(&self, job_dir: &Path, meta: &JobMeta) -> Result<()> {
         let path = job_dir.join("meta.json");
         let content = serde_json::to_string_pretty(meta)?;
-        fs::write(&path, content)?;
+        fs::write(&path, content)
+            .with_context(|| format!("Failed to write job meta: {}", path.display()))?;
         Ok(())
     }
 
