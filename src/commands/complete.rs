@@ -244,18 +244,10 @@ fn collect_go_remote_branches() -> Vec<(String, String)> {
 }
 
 /// Collect the current worktree's branch, if any — used to exclude it
-/// from the completion list. Returns `None` if the caller is outside a
-/// worktree or the current worktree is detached.
+/// from the completion list. Returns `None` if HEAD is detached or if
+/// the current directory is outside a git repository.
 fn current_worktree_branch() -> Option<String> {
-    use crate::git::GitCommand;
-
-    let git = GitCommand::new(true);
-    let current_path = crate::core::repo::get_current_worktree_path().ok()?;
-    let entries = crate::core::worktree::prune::parse_worktree_list(&git).ok()?;
-    entries
-        .into_iter()
-        .find(|wt| wt.path == current_path)
-        .and_then(|wt| wt.branch)
+    crate::core::repo::get_current_branch().ok()
 }
 
 /// Top-level completion helper for `daft go`. Collects real git data,
@@ -649,7 +641,14 @@ pub(crate) fn build_go_completions(
     let prefix_to_strip = format!("{default_remote}/");
     let mut remote_entries: Vec<CompletionEntry> = remote_branches
         .iter()
-        .filter(|(name, _)| !name.ends_with("/HEAD") && name != "HEAD")
+        .filter(|(name, _)| {
+            // Drop HEAD symrefs (`origin/HEAD`) and the collapsed HEAD
+            // short-form (git emits the bare remote name `origin` for the
+            // remote HEAD symref via `for-each-ref --format=%(refname:short)`).
+            // Any legitimate remote-tracking branch has a `/` separating
+            // the remote name from the branch path.
+            !name.ends_with("/HEAD") && name != "HEAD" && name.contains('/')
+        })
         .filter_map(|(name, age)| {
             let display = if multi_remote {
                 name.clone()
@@ -957,5 +956,52 @@ mod tests {
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["fork/feat/x", "origin/feat/x"]);
+    }
+
+    #[test]
+    fn go_completions_drop_bare_remote_name_symref_collapse() {
+        // `git for-each-ref refs/remotes/ --format=%(refname:short)` emits
+        // the bare remote name (`origin`) as the short name for
+        // `refs/remotes/origin/HEAD`. This is the collapsed form that our
+        // `/HEAD` suffix filter misses, so it needs its own filter rule.
+        let entries = build_go_completions(
+            &[],
+            &[],
+            &[
+                br("origin", "2 hours ago"),
+                br("origin/master", "1 day ago"),
+            ],
+            None,
+            "origin",
+            false,
+            "",
+        );
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["master"],
+            "bare remote name `origin` must be filtered out"
+        );
+    }
+
+    #[test]
+    fn go_completions_drop_bare_remote_name_in_multi_remote_mode() {
+        // In multi-remote mode, bare remote names are equally bogus — git
+        // still collapses `refs/remotes/<remote>/HEAD` to just `<remote>`.
+        let entries = build_go_completions(
+            &[],
+            &[],
+            &[
+                br("origin", "1 day ago"),
+                br("fork", "2 days ago"),
+                br("origin/feat/x", "1 hour ago"),
+            ],
+            None,
+            "origin",
+            true,
+            "",
+        );
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["origin/feat/x"]);
     }
 }
