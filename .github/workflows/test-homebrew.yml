@@ -120,7 +120,12 @@ jobs:
           cd ..
           rm -rf temp-init
 
-          # Test git-worktree-clone
+          # Test git-worktree-clone from a clean workspace directory so the
+          # bare remote at /tmp/test-daft/remote.git is not a sibling of the
+          # worktree daft creates -- otherwise the `remote.*/` glob below also
+          # matches the bare remote and picks it alphabetically before
+          # `remote.master/`.
+          mkdir workspace && cd workspace
           echo ""
           echo "Testing git worktree-clone..."
           git worktree-clone /tmp/test-daft/remote.git
