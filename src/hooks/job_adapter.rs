@@ -77,6 +77,17 @@ pub fn yaml_jobs_to_specs(
             continue;
         }
 
+        if let Some(ref skip) = job.skip {
+            if let Some(info) = super::conditions::should_skip(skip, working_dir) {
+                skipped.push(SkippedJob {
+                    name,
+                    background: declared_background,
+                    reason: info.reason,
+                });
+                continue;
+            }
+        }
+
         let cmd = super::yaml_executor::resolve_command(job, ctx, Some(&name), source_dir);
 
         let cmd = match rc {
@@ -491,6 +502,64 @@ mod tests {
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0].name, "my-group");
         assert!(skipped[0].reason.contains("group"));
+    }
+
+    #[test]
+    fn per_job_skip_true_produces_skipped_entry() {
+        use crate::hooks::yaml_config::{JobDef, SkipCondition};
+        let jobs = vec![JobDef {
+            name: Some("gated".to_string()),
+            run: Some(crate::hooks::yaml_config::RunCommand::Simple(
+                "echo gated".to_string(),
+            )),
+            skip: Some(SkipCondition::Bool(true)),
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let env = HashMap::new();
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &env,
+            "/src",
+            std::path::Path::new("/work"),
+            None,
+            None,
+        );
+
+        assert!(kept.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "gated");
+        assert_eq!(skipped[0].reason, "skip: true");
+    }
+
+    #[test]
+    fn per_job_skip_false_keeps_job() {
+        use crate::hooks::yaml_config::{JobDef, SkipCondition};
+        let jobs = vec![JobDef {
+            name: Some("always-runs".to_string()),
+            run: Some(crate::hooks::yaml_config::RunCommand::Simple(
+                "echo go".to_string(),
+            )),
+            skip: Some(SkipCondition::Bool(false)),
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let env = HashMap::new();
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &env,
+            "/src",
+            std::path::Path::new("/work"),
+            None,
+            None,
+        );
+
+        assert_eq!(kept.len(), 1);
+        assert!(skipped.is_empty());
     }
 
     // ── scripts_to_specs ────────────────────────────────────────────────
