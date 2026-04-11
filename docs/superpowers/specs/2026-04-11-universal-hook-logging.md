@@ -158,26 +158,51 @@ And for a worktree removed yesterday:
 Both views require no code changes in the display layer — they are correct by
 construction once the data is recorded.
 
-### 4. Skip-reason capture
+### 4. Skip-reason capture (and a latent-bug fix)
 
-When the filter pipeline rejects a job (because a `when:` condition evaluated
-false, or the expression failed to evaluate), the feature records it as a sparse
-entry and stores the reason in the job's log file.
+When a job is filtered out before execution — because a `skip:` or `only:`
+condition matched, a `group` wrapper was present, or a platform constraint
+excluded the current OS — the feature records it as a sparse entry and stores
+the reason in the job's log file.
 
-**Filter pipeline refactor.** Wherever `when:` conditions are currently
-evaluated (in `job_adapter` or adjacent), the return type changes from "kept
-specs" to `(kept_specs, skipped_with_reasons)`. Each skipped entry carries the
-job name and a reason string. The reason format falls out of whatever the
-`when:` evaluator produces and should make the cause obvious — e.g.,
-`when: $env.NO_INSTALL != "true" → false`, or `when: <expr> → error: <err>` for
-evaluation failures.
+**Important finding from the survey.** Per-job `skip:` / `only:` evaluation is
+**not currently wired up**. `JobDef` in `src/hooks/yaml_config.rs:261-264`
+parses `skip` / `only` from YAML, and `src/hooks/conditions.rs` provides
+`should_skip` / `should_only_skip` that work correctly, but nothing calls those
+helpers per-job. Today they are only invoked at the hook level in
+`yaml_executor::execute_yaml_hook_with_rc`. Net effect: YAML that declares
+`skip:` or `only:` on an individual job is silently ignored. This spec therefore
+expands to wire up per-job evaluation as part of producing the skipped-job
+records — activating a dormant feature while delivering the visibility.
 
-**Write behavior.** For each skipped entry, `yaml_executor` writes:
+**Filter pipeline changes in `src/hooks/job_adapter.rs`:**
+
+- Introduce a new `SkippedJob` struct carrying the job name, the hook-declared
+  `background` flag (so promoted/demoted logic does not apply — skipped jobs
+  never ran), and a `reason: String`.
+- Change `yaml_jobs_to_specs` to return `(Vec<JobSpec>, Vec<SkippedJob>)`.
+- In the per-job loop, before building the `JobSpec`, call
+  `conditions::should_skip(&job.skip, worktree)` and
+  `conditions::should_only_skip(&job.only, worktree)`. The first one that
+  returns `Some(SkipInfo)` produces a
+  `SkippedJob { name, background, reason: info.reason }` instead of a kept
+  `JobSpec`.
+- Platform-skip and group-job filters, which currently return `None` silently,
+  also produce `SkippedJob` entries with descriptive reasons like
+  `"skip: platform-specific run has no entry for macos"` or
+  `"skip: group jobs are not yet supported by the generic executor"`.
+
+**Reason format.** Whatever `SkipInfo.reason` already produces in
+`conditions.rs` — strings like `"skip: in merge state"`,
+`"skip: env $CI is set"`, `"only: not in merge state"`. The spec does not
+redesign these strings; it propagates them unchanged.
+
+**Write behavior.** For each `SkippedJob` entry, `yaml_executor` writes:
 
 - `meta.json` with `name`, `hook_type`, `worktree`, `background` (as declared in
   YAML), `status = Skipped`. No `started_at`, `finished_at`, `command`, or
   `env`.
-- `log` file containing the reason string.
+- `log` file (via `LogStore::log_path`) containing the reason string.
 
 **Display.** Skipped jobs render as regular rows with dim `— skipped` in the
 Status column. No second line, no extra column:
@@ -194,7 +219,7 @@ Since the reason lives in the job's log file, no special-casing is needed:
 
 ```
 $ daft hooks jobs logs pnpm-install
-when: $env.NO_INSTALL != "true" → false
+skip: env $CI is set
 ```
 
 Composite addressing (`inv:job`, `worktree:inv:job`) works for skipped jobs
@@ -233,9 +258,10 @@ exactly like any other.
 
 - **Promoted bg → fg.** Recorded with `background: false`. See §2.
 
-- **Filter pipeline evaluation error on a `when:` expression.** Treated as a
-  skip with the error as the reason (`when: <expr> → error: <err>`). Same
-  display treatment as a normal false-result skip.
+- **Named conditions like `skip: merge` or `only: rebase`.** Handled by existing
+  `conditions::eval_named_condition` logic, which returns reasons like
+  `"skip: in merge state"` or `"only: not in rebase state"`. No new work — the
+  spec just propagates these strings unchanged.
 
 - **Empty YAML (no jobs declared at all).** `invocation.json` is written; zero
   per-job entries. Listing shows `(no jobs declared)`.
@@ -264,9 +290,16 @@ exactly like any other.
 - **Mixed fg + bg.** Post-create hook with two foreground and two background
   jobs. Assert both sets land under the same `invocation_id`, no write races.
   Assert the listing shows the mix with correct `↻` prefixes on the two bg rows.
-- **All-skipped hook.** Every job has a `when:` that evaluates to false. Assert
+- **All-skipped hook via per-job `skip:`.** Every job has a `skip: true` or
+  `skip:\n  env: CI` where `CI` is truthy in the test env. Assert
   `invocation.json` appears, each skipped job has sparse meta plus a log file
-  containing the reason. Assert `daft hooks jobs logs <name>` prints the reason.
+  containing the reason. Assert `daft hooks jobs logs <name>` prints the reason
+  string produced by `conditions::should_skip`. **Second assertion: activation
+  of dormant feature** — prior to this change, per-job `skip:` does nothing;
+  after, the jobs are actually skipped.
+- **Per-job `only:` condition.** A job with `only:\n  env: CI` where `CI` is not
+  truthy in the test env is recorded as skipped with reason
+  `"only: env $CI is not set"`.
 - **Empty YAML.** Hook file declares zero jobs. Assert `invocation.json`
   appears; listing shows the invocation with `(no jobs declared)`.
 - **Remove hook.** `worktree-pre-remove` has only foreground jobs; one fails.
@@ -283,13 +316,13 @@ shows the invocation — locking in the fix against regressions.
 
 ## File inventory
 
-| File                                                          | Change                                                                                                                                                                                          |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/coordinator/log_store.rs`                                | Add `JobStatus::Skipped` variant. Helper for writing sparse meta + log file for skipped jobs. Existing `JobMeta` otherwise unchanged.                                                           |
-| `src/executor/runner.rs`                                      | Add `Option<&mut dyn LogSink>` parameter to `run_jobs`. Fan output chunks to sink when present.                                                                                                 |
-| `src/executor/log_sink.rs` (new, path TBD in plan)            | `LogSink` trait and `BufferingLogSink` implementation.                                                                                                                                          |
-| `src/coordinator/process.rs`                                  | Remove `write_invocation_meta` call from the coordinator's `run_all_with_cancel` — main process writes it now.                                                                                  |
-| `src/hooks/yaml_executor/mod.rs`                              | Write `invocation.json` unconditionally before dispatch. Construct a `BufferingLogSink` and pass it to `run_jobs`. Write sparse skipped records. Remove the `bg_specs.is_empty()` early return. |
-| `src/hooks/job_adapter.rs` (or wherever `when:` is evaluated) | Filter pipeline refactor: return `(kept_specs, skipped_with_reasons)` instead of just `kept_specs`.                                                                                             |
-| `src/commands/hooks/jobs.rs`                                  | Render `Skipped` rows with `— skipped` status. Render `(no jobs declared)` placeholder for invocations with zero job entries.                                                                   |
-| `tests/manual/scenarios/hooks/…`                              | New integration scenarios listed in §6.                                                                                                                                                         |
+| File                                               | Change                                                                                                                                                                                           |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/coordinator/log_store.rs`                     | Add `JobStatus::Skipped` variant. Helper for writing sparse meta + log file for skipped jobs. Existing `JobMeta` otherwise unchanged.                                                            |
+| `src/executor/runner.rs`                           | Add `Option<&mut dyn LogSink>` parameter to `run_jobs`. Fan output chunks to sink when present.                                                                                                  |
+| `src/executor/log_sink.rs` (new, path TBD in plan) | `LogSink` trait and `BufferingLogSink` implementation.                                                                                                                                           |
+| `src/coordinator/process.rs`                       | Remove `write_invocation_meta` call from the coordinator's `run_all_with_cancel` — main process writes it now.                                                                                   |
+| `src/hooks/yaml_executor/mod.rs`                   | Write `invocation.json` unconditionally before dispatch. Construct a `BufferingLogSink` and pass it to `run_jobs`. Write sparse skipped records. Remove the `bg_specs.is_empty()` early return.  |
+| `src/hooks/job_adapter.rs`                         | Introduce `SkippedJob` struct. Change `yaml_jobs_to_specs` to return `(Vec<JobSpec>, Vec<SkippedJob>)`. Wire up per-job `skip:` / `only:` evaluation via `conditions` helpers (dormant feature). |
+| `src/commands/hooks/jobs.rs`                       | Render `Skipped` rows with `— skipped` status. Render `(no jobs declared)` placeholder for invocations with zero job entries.                                                                    |
+| `tests/manual/scenarios/hooks/…`                   | New integration scenarios listed in §6.                                                                                                                                                          |
