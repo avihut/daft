@@ -80,17 +80,6 @@ impl CoordinatorState {
         child_pids: &ChildPidMap,
         cancel_all: &Arc<AtomicBool>,
     ) -> Result<Vec<JobResult>> {
-        if !self.trigger_command.is_empty() {
-            let inv_meta = super::log_store::InvocationMeta {
-                invocation_id: self.invocation_id.clone(),
-                trigger_command: self.trigger_command.clone(),
-                hook_type: self.hook_type.clone(),
-                worktree: self.worktree.clone(),
-                created_at: chrono::Utc::now(),
-            };
-            let _ = store.write_invocation_meta(&self.invocation_id, &inv_meta);
-        }
-
         let mut handles = Vec::new();
         let results = Arc::new(Mutex::new(Vec::new()));
 
@@ -764,30 +753,6 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, NodeStatus::Skipped);
-    }
-
-    #[test]
-    fn test_run_all_writes_invocation_meta() {
-        let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().to_path_buf());
-        let mut state = CoordinatorState::new("test-repo", "inv-meta-1").with_metadata(
-            "worktree-post-create",
-            "worktree-post-create",
-            "feature/x",
-        );
-        state.add_job(JobSpec {
-            name: "echo-job".to_string(),
-            command: "echo hello".to_string(),
-            working_dir: std::env::temp_dir(),
-            background: true,
-            ..Default::default()
-        });
-
-        state.run_all(&store).unwrap();
-
-        let inv_meta = store.read_invocation_meta("inv-meta-1").unwrap();
-        assert_eq!(inv_meta.trigger_command, "worktree-post-create");
-        assert_eq!(inv_meta.worktree, "feature/x");
     }
 
     #[test]

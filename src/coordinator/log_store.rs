@@ -49,6 +49,7 @@ pub struct InvocationMeta {
 ///       meta.json
 ///       output.log
 /// ```
+#[derive(Clone)]
 pub struct LogStore {
     pub base_dir: PathBuf,
 }
@@ -427,6 +428,28 @@ mod tests {
 
         let loaded = store.read_meta(&job_dir).unwrap();
         assert_eq!(loaded.status, JobStatus::Skipped);
+    }
+
+    #[test]
+    fn invocation_meta_written_without_coordinator() {
+        // Verifies that write_invocation_meta creates the file on its own;
+        // no coordinator fork required.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LogStore::new(dir.path().to_path_buf());
+        let meta = InvocationMeta {
+            invocation_id: "deadbeef".to_string(),
+            trigger_command: "worktree-post-create".to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            worktree: "feature/x".to_string(),
+            created_at: chrono::Utc::now(),
+        };
+
+        store.write_invocation_meta("deadbeef", &meta).unwrap();
+        let path = dir.path().join("deadbeef").join("invocation.json");
+        assert!(path.exists());
+
+        let loaded = store.read_invocation_meta("deadbeef").unwrap();
+        assert_eq!(loaded.trigger_command, "worktree-post-create");
     }
 
     #[test]

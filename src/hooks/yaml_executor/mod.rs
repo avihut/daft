@@ -222,6 +222,29 @@ pub fn execute_yaml_hook_with_rc(
     // are promoted to foreground to preserve DAG validity.
     let (fg_specs, bg_specs) = partition_foreground_background(&specs);
 
+    // Compute repo hash and invocation ID unconditionally so every hook
+    // invocation lands in the log store, even fg-only and remove hooks.
+    let repo_hash = compute_repo_hash(&hook_env_obj);
+    let invocation_id = generate_invocation_id();
+    let store = std::sync::Arc::new(crate::coordinator::log_store::LogStore::for_repo(
+        &repo_hash,
+    )?);
+
+    let trigger_command = if ctx.command == "hooks-run" {
+        format!("hooks run {}", hook_name)
+    } else {
+        hook_name.to_string()
+    };
+
+    let inv_meta = crate::coordinator::log_store::InvocationMeta {
+        invocation_id: invocation_id.clone(),
+        trigger_command: trigger_command.clone(),
+        hook_type: hook_name.to_string(),
+        worktree: ctx.branch_name.clone(),
+        created_at: chrono::Utc::now(),
+    };
+    let _ = store.write_invocation_meta(&invocation_id, &inv_meta);
+
     // Warn about promoted jobs (background flag was true but they ended up
     // in the foreground partition because a foreground job depends on them).
     for spec in &fg_specs {
@@ -269,18 +292,6 @@ pub fn execute_yaml_hook_with_rc(
     // Dispatch background jobs to a forked coordinator process.
     #[cfg(unix)]
     {
-        let repo_hash = compute_repo_hash(&hook_env_obj);
-        let invocation_id = generate_invocation_id();
-        let store = crate::coordinator::log_store::LogStore::for_repo(&repo_hash)?;
-
-        // Derive trigger_command: manual runs use "hooks run {hook_name}",
-        // automatic hooks use the hook_name directly.
-        let trigger_command = if ctx.command == "hooks-run" {
-            format!("hooks run {}", hook_name)
-        } else {
-            hook_name.to_string()
-        };
-
         let mut coord_state =
             crate::coordinator::process::CoordinatorState::new(&repo_hash, &invocation_id)
                 .with_metadata(&trigger_command, hook_name, &ctx.branch_name);
@@ -289,7 +300,7 @@ pub fn execute_yaml_hook_with_rc(
         }
 
         let bg_count = coord_state.jobs.len();
-        crate::coordinator::process::fork_coordinator(coord_state, store)?;
+        crate::coordinator::process::fork_coordinator(coord_state, (*store).clone())?;
 
         presenter.on_message(&format!(
             "⟳ {} background job{} running — daft hooks jobs to manage",
