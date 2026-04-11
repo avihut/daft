@@ -285,12 +285,21 @@ pub fn execute_yaml_hook_with_rc(
     // Clear any active spinner — the presenter writes directly to stderr.
     output.finish_spinner();
 
+    let fg_sink: std::sync::Arc<dyn crate::executor::log_sink::LogSink> =
+        std::sync::Arc::new(crate::executor::log_sink::BufferingLogSink::new(
+            std::sync::Arc::clone(&store),
+            invocation_id.clone(),
+            hook_name.to_string(),
+            ctx.branch_name.clone(),
+        ));
+
     // Use presenter for header and execution
     presenter.on_phase_start(hook_name);
     let hook_start = std::time::Instant::now();
 
     // Execute foreground jobs via the generic runner
-    let fg_results = crate::executor::runner::run_jobs(&fg_specs, exec_mode, presenter, None)?;
+    let fg_results =
+        crate::executor::runner::run_jobs(&fg_specs, exec_mode, presenter, Some(&fg_sink))?;
 
     // If there are no background jobs, print summary and return.
     if bg_specs.is_empty() {
@@ -300,7 +309,8 @@ pub fn execute_yaml_hook_with_rc(
 
     // If DAFT_NO_BACKGROUND_JOBS is set, run background jobs inline as foreground.
     if std::env::var("DAFT_NO_BACKGROUND_JOBS").is_ok() {
-        let bg_results = crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter, None)?;
+        let bg_results =
+            crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter, Some(&fg_sink))?;
         presenter.on_phase_complete(hook_start.elapsed());
         let mut all_results = fg_results;
         all_results.extend(bg_results);
