@@ -88,6 +88,17 @@ pub fn yaml_jobs_to_specs(
             }
         }
 
+        if let Some(ref only) = job.only {
+            if let Some(info) = super::conditions::should_only_skip(only, working_dir) {
+                skipped.push(SkippedJob {
+                    name,
+                    background: declared_background,
+                    reason: info.reason,
+                });
+                continue;
+            }
+        }
+
         let cmd = super::yaml_executor::resolve_command(job, ctx, Some(&name), source_dir);
 
         let cmd = match rc {
@@ -560,6 +571,35 @@ mod tests {
 
         assert_eq!(kept.len(), 1);
         assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn per_job_only_false_produces_skipped_entry() {
+        use crate::hooks::yaml_config::{JobDef, OnlyCondition};
+        let jobs = vec![JobDef {
+            name: Some("conditional".to_string()),
+            run: Some(crate::hooks::yaml_config::RunCommand::Simple(
+                "echo cond".to_string(),
+            )),
+            only: Some(OnlyCondition::Bool(false)),
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let env = HashMap::new();
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &env,
+            "/src",
+            std::path::Path::new("/work"),
+            None,
+            None,
+        );
+
+        assert!(kept.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].reason, "only: false");
     }
 
     // ── scripts_to_specs ────────────────────────────────────────────────
