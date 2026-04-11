@@ -1,0 +1,62 @@
+name: Empty hook still records an invocation with a placeholder
+description:
+  "A hook declaring zero jobs must still produce an invocation.json so that
+  'daft hooks jobs' lists the invocation header with a '(no jobs declared)'
+  placeholder row. Prior to the universal hook invocation logging feature, an
+  empty-jobs hook returned early and wrote nothing to the log store, so the
+  listing was empty. This scenario verifies the invocation is recorded and the
+  placeholder is shown."
+
+repos:
+  - name: test-empty-hook
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Empty hook test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/empty
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs: []
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_EMPTY_HOOK
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-empty-hook/main"
+      files_exist:
+        - "$WORK_DIR/test-empty-hook/main/daft.yml"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-empty-hook/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (fires empty-jobs worktree-post-create hook)
+    run: git-worktree-checkout feature/empty 2>&1
+    cwd: "$WORK_DIR/test-empty-hook/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-empty-hook/feature/empty"
+
+  - name:
+      List jobs from inside the new worktree — should show invocation header
+      with the (no jobs declared) placeholder
+    run: daft hooks jobs 2>&1
+    cwd: "$WORK_DIR/test-empty-hook/feature/empty"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "worktree-post-create"
+        - "(no jobs declared)"
+      output_not_contains:
+        - "No background job history found."
