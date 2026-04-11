@@ -494,6 +494,8 @@ fn list_jobs(args: &JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()
             // Collect jobs for this invocation.
             let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
             if job_dirs.is_empty() {
+                output.info(&format!("  {}", dim("(no jobs declared)")));
+                output.info("");
                 continue;
             }
 
