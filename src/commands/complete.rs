@@ -836,6 +836,9 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                                 crate::coordinator::log_store::JobStatus::Cancelled => {
                                     "\u{2014} cancelled"
                                 }
+                                crate::coordinator::log_store::JobStatus::Skipped => {
+                                    "\u{2014} skipped"
+                                }
                             };
                             let short_id =
                                 &latest.invocation_id[..4.min(latest.invocation_id.len())];
@@ -908,6 +911,9 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                                 crate::coordinator::log_store::JobStatus::Cancelled => {
                                     "\u{2014} cancelled"
                                 }
+                                crate::coordinator::log_store::JobStatus::Skipped => {
+                                    "\u{2014} skipped"
+                                }
                             };
                             entries.push(format!("{short_id}:{}\t{status_icon}", meta.name));
                         }
@@ -966,6 +972,7 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                             crate::coordinator::log_store::JobStatus::Cancelled => {
                                 "\u{2014} cancelled"
                             }
+                            crate::coordinator::log_store::JobStatus::Skipped => "\u{2014} skipped",
                         };
                         entries.push(format!("{wt}:{short_id}:{}\t{status_icon}", meta.name));
                     }
