@@ -169,8 +169,9 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     }
 
     output.push_str("    # Flag completions (extracted from clap)\n");
-    output.push_str("    local -a flags\n");
-    output.push_str("    flags=(\n");
+    output.push_str("    if [[ \"$curword\" == -* ]]; then\n");
+    output.push_str("        local -a flags\n");
+    output.push_str("        flags=(\n");
 
     // Use clap introspection to get flags
     let cmd =
@@ -178,11 +179,12 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     let (all_flags, _, _) = extract_flags(&cmd);
 
     for flag in all_flags {
-        output.push_str(&format!("        '{}'\n", flag));
+        output.push_str(&format!("            '{}'\n", flag));
     }
 
-    output.push_str("    )\n");
-    output.push_str("    compadd -a flags\n");
+    output.push_str("        )\n");
+    output.push_str("        compadd -a flags\n");
+    output.push_str("    fi\n");
     output.push_str("}\n");
     output.push('\n');
 

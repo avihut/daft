@@ -493,3 +493,27 @@ fn print_post_install_message(target: &CompletionTarget) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zsh_daft_go_gates_flags_on_leading_dash() {
+        let script =
+            zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
+        let flags_pos = script
+            .find("compadd -a flags")
+            .expect("generated script must contain `compadd -a flags`");
+        let guard_pos = script.find("[[ \"$curword\" == -* ]]").expect(
+            "generated script must gate flag completion on a leading \
+                 dash before adding flags (zsh flag-leak regression)",
+        );
+        assert!(
+            guard_pos < flags_pos,
+            "flag-gating guard must appear before `compadd -a flags`, \
+             otherwise flags leak into branch completions. \
+             guard_pos={guard_pos} flags_pos={flags_pos}",
+        );
+    }
+}
