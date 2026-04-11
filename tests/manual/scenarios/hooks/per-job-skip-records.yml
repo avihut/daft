@@ -1,0 +1,113 @@
+name: Per-job skip/only conditions produce skipped records
+description:
+  "Regression for the per-job skip:/only: evaluation path (Tasks 6-7 of the
+  universal hook invocation logging feature). Previously this was a dormant
+  feature — per-job conditions were not actually filtered, so a job with `skip:
+  true` would still run. After the feature, a gated job must be filtered before
+  execution, appear as a sparse SkippedJob record in the invocation's log store,
+  and `daft hooks jobs logs <job>` must print the reason string produced by
+  `conditions::should_skip` / `should_only_skip`. This scenario declares three
+  jobs: one that always runs, one gated by `skip: true`, and one gated by `only:
+  false`, then asserts that only the first executes, both gated jobs show up as
+  skipped in the listing, and their log entries carry the exact reason strings."
+
+repos:
+  - name: test-per-job-skip
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Per-job skip/only test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/skip
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: runs-always
+              run: echo runs-always-output
+            - name: gated-skip
+              run: echo never-skip
+              skip: true
+            - name: gated-only
+              run: echo never-only
+              only: false
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_PER_JOB_SKIP
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-per-job-skip/main"
+      files_exist:
+        - "$WORK_DIR/test-per-job-skip/main/daft.yml"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-per-job-skip/main"
+    expect:
+      exit_code: 0
+
+  - name:
+      Checkout feature branch (triggers worktree-post-create with gated jobs)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/skip 2>&1
+    cwd: "$WORK_DIR/test-per-job-skip/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-per-job-skip/feature/skip"
+      output_contains:
+        - "runs-always-output"
+      output_not_contains:
+        - "never-skip"
+        - "never-only"
+
+  - name: List shows skipped jobs alongside the runnable one
+    run: daft hooks jobs 2>&1
+    cwd: "$WORK_DIR/test-per-job-skip/feature/skip"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "worktree-post-create"
+        - "runs-always"
+        - "completed"
+        - "gated-skip"
+        - "gated-only"
+        - "skipped"
+      output_not_contains:
+        - "(no jobs declared)"
+        - "No background job history found."
+
+  - name: Log for skip-gated job shows reason string
+    run: daft hooks jobs logs gated-skip 2>&1
+    cwd: "$WORK_DIR/test-per-job-skip/feature/skip"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "gated-skip"
+        - "skip: true"
+        - "SKIPPED"
+
+  - name: Log for only-gated job shows reason string
+    run: daft hooks jobs logs gated-only 2>&1
+    cwd: "$WORK_DIR/test-per-job-skip/feature/skip"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "gated-only"
+        - "only: false"
+        - "SKIPPED"
+
+  - name: Log for the runnable job — regular path still works
+    run: daft hooks jobs logs runs-always 2>&1
+    cwd: "$WORK_DIR/test-per-job-skip/feature/skip"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "runs-always"
+        - "runs-always-output"
+        - "COMPLETED"
