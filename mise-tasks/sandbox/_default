@@ -227,6 +227,13 @@ chmod +x "${bin_dir}/reset-test"
 cat > "${bin_dir}/help" <<SCRIPT
 #!/usr/bin/env bash
 set -euo pipefail
+
+if [ "\${1:-}" = "--env" ]; then
+    echo "Sandbox environment variables:"
+    env | grep -E '^(DAFT_|GIT_AUTHOR_|GIT_COMMITTER_)' | sort | sed 's/^/  /'
+    exit 0
+fi
+
 ${bat_path} "\$(dirname "\$(dirname "\$(realpath "\$0")")")/README.md" -p
 SCRIPT
 chmod +x "${bin_dir}/help"
@@ -570,6 +577,7 @@ Initialize completions and daft shell integration:
 ## Available commands
 
     help                     Show this guide
+    help --env               Show currently-set sandbox DAFT_* and GIT_* env vars
     test-plan [name]         Open branch test plan in neovim (auto-detects branch)
     manual-test <scenario>   Run a manual test scenario interactively
     manual-test --list       List available scenarios
