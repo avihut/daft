@@ -134,21 +134,8 @@ pub fn generate_repo(spec: &RepoSpec, remotes_dir: &Path) -> Result<PathBuf> {
         run_git(&tmp_clone_path, &["commit", "-m", "Initial commit"])?;
     }
 
-    // 4. Process additional branches.
-    for branch in &spec.branches {
-        if branch.name == *default_branch {
-            continue;
-        }
-
-        let base = branch.from.as_deref().unwrap_or(default_branch.as_str());
-        run_git(&tmp_clone_path, &["checkout", base])?;
-        run_git(&tmp_clone_path, &["checkout", "-b", &branch.name])?;
-
-        write_branch_files(&tmp_clone_path, branch)?;
-        commit_branch(&tmp_clone_path, branch)?;
-    }
-
-    // 5. daft.yml config.
+    // 4. daft.yml config (committed to default branch before feature branches
+    //    are created, so the feature branches inherit it).
     if let Some(daft_yml_content) = &spec.daft_yml {
         run_git(&tmp_clone_path, &["checkout", default_branch])?;
         let daft_yml_path = tmp_clone_path.join("daft.yml");
@@ -157,7 +144,8 @@ pub fn generate_repo(spec: &RepoSpec, remotes_dir: &Path) -> Result<PathBuf> {
         run_git(&tmp_clone_path, &["commit", "-m", "Add daft.yml config"])?;
     }
 
-    // 6. Hook scripts.
+    // 5. Hook scripts (committed to default branch before feature branches
+    //    are created, so the feature branches inherit them).
     if !spec.hook_scripts.is_empty() {
         run_git(&tmp_clone_path, &["checkout", default_branch])?;
         let hooks_dir = tmp_clone_path.join(".daft/hooks");
@@ -179,6 +167,22 @@ pub fn generate_repo(spec: &RepoSpec, remotes_dir: &Path) -> Result<PathBuf> {
 
         run_git(&tmp_clone_path, &["add", "."])?;
         run_git(&tmp_clone_path, &["commit", "-m", "Add hook scripts"])?;
+    }
+
+    // 6. Process additional branches. Created AFTER daft.yml and hook scripts
+    //    have been committed to the default branch, so feature branches
+    //    inherit the daft config and hooks from the default-branch HEAD.
+    for branch in &spec.branches {
+        if branch.name == *default_branch {
+            continue;
+        }
+
+        let base = branch.from.as_deref().unwrap_or(default_branch.as_str());
+        run_git(&tmp_clone_path, &["checkout", base])?;
+        run_git(&tmp_clone_path, &["checkout", "-b", &branch.name])?;
+
+        write_branch_files(&tmp_clone_path, branch)?;
+        commit_branch(&tmp_clone_path, branch)?;
     }
 
     // 7. Push all branches to the bare repo.
