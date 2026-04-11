@@ -1,0 +1,135 @@
+name: Mixed foreground and background hook invocation
+description:
+  "Regression for the universal hook invocation logging feature. A hook that
+  declares both foreground and background jobs must produce a single invocation
+  record whose rows are written by two different processes: the foreground jobs
+  are written by the main daft process, the background jobs by the coordinator
+  child. This scenario verifies that the writes are disjoint (no races), all
+  four jobs appear in 'daft hooks jobs' under the same invocation, and 'daft
+  hooks jobs logs <name>' returns the captured output for both fg and bg jobs.
+  The fg job output is visible live on stdout; the bg job output is captured to
+  the log store only."
+
+repos:
+  - name: test-mixed-fg-bg
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Mixed fg+bg hook test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/mixed
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: setup-env
+              run: echo fg-setup
+            - name: print-done
+              run: echo fg-done
+            - name: warm-cache
+              run: sleep 1 && echo bg-cache
+              background: true
+            - name: warm-index
+              run: sleep 1 && echo bg-index
+              background: true
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_MIXED_FG_BG
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-mixed-fg-bg/main"
+      files_exist:
+        - "$WORK_DIR/test-mixed-fg-bg/main/daft.yml"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-mixed-fg-bg/main"
+    expect:
+      exit_code: 0
+
+  - name:
+      Checkout feature branch (triggers mixed fg/bg worktree-post-create hook)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/mixed 2>&1
+    cwd: "$WORK_DIR/test-mixed-fg-bg/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-mixed-fg-bg/feature/mixed"
+      output_contains:
+        - "fg-setup"
+        - "fg-done"
+      output_not_contains:
+        - "bg-cache"
+        - "bg-index"
+
+  - name: Wait for background jobs, then list jobs
+    run: |
+      for i in $(seq 1 20); do
+        if daft hooks jobs 2>&1 | grep -q "warm-index"; then
+          daft hooks jobs 2>&1
+          exit 0
+        fi
+        sleep 0.5
+      done
+      echo "BG_JOBS_TIMEOUT"
+      daft hooks jobs 2>&1
+      exit 1
+    cwd: "$WORK_DIR/test-mixed-fg-bg/feature/mixed"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "worktree-post-create"
+        - "setup-env"
+        - "print-done"
+        - "warm-cache"
+        - "warm-index"
+        - "completed"
+      output_not_contains:
+        - "(no jobs declared)"
+        - "No background job history found."
+
+  - name: View log for a foreground job — written by main daft process
+    run: daft hooks jobs logs setup-env 2>&1
+    cwd: "$WORK_DIR/test-mixed-fg-bg/feature/mixed"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "setup-env"
+        - "fg-setup"
+        - "COMPLETED"
+
+  - name: View log for the second foreground job
+    run: daft hooks jobs logs print-done 2>&1
+    cwd: "$WORK_DIR/test-mixed-fg-bg/feature/mixed"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "print-done"
+        - "fg-done"
+        - "COMPLETED"
+
+  - name: View log for a background job — written by coordinator child
+    run: daft hooks jobs logs warm-cache 2>&1
+    cwd: "$WORK_DIR/test-mixed-fg-bg/feature/mixed"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "warm-cache"
+        - "bg-cache"
+        - "COMPLETED"
+
+  - name: View log for the second background job
+    run: daft hooks jobs logs warm-index 2>&1
+    cwd: "$WORK_DIR/test-mixed-fg-bg/feature/mixed"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "warm-index"
+        - "bg-index"
+        - "COMPLETED"
