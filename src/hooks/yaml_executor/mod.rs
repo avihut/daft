@@ -241,7 +241,7 @@ pub fn execute_yaml_hook_with_rc(
     let hook_start = std::time::Instant::now();
 
     // Execute foreground jobs via the generic runner
-    let fg_results = crate::executor::runner::run_jobs(&fg_specs, exec_mode, presenter)?;
+    let fg_results = crate::executor::runner::run_jobs(&fg_specs, exec_mode, presenter, None)?;
 
     // If there are no background jobs, print summary and return.
     if bg_specs.is_empty() {
@@ -251,7 +251,7 @@ pub fn execute_yaml_hook_with_rc(
 
     // If DAFT_NO_BACKGROUND_JOBS is set, run background jobs inline as foreground.
     if std::env::var("DAFT_NO_BACKGROUND_JOBS").is_ok() {
-        let bg_results = crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter)?;
+        let bg_results = crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter, None)?;
         presenter.on_phase_complete(hook_start.elapsed());
         let mut all_results = fg_results;
         all_results.extend(bg_results);
@@ -302,7 +302,7 @@ pub fn execute_yaml_hook_with_rc(
     // Fall back to running background jobs inline.
     #[cfg(not(unix))]
     {
-        let bg_results = crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter)?;
+        let bg_results = crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter, None)?;
         let mut all_results = fg_results.clone();
         all_results.extend(bg_results);
         return job_results_to_hook_result(&all_results);

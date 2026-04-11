@@ -437,6 +437,7 @@ impl HookExecutor {
             &specs,
             crate::executor::ExecutionMode::Piped,
             &presenter,
+            None,
         )?;
 
         presenter.on_phase_complete(hook_start.elapsed());
