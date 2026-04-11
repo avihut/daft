@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.3](https://github.com/avihut/daft/compare/v1.6.2...v1.6.3) - 2026-04-11
+
+### Bug Fixes
+
+- add daft-go/daft-start to all packaging symlink lists ([#358](https://github.com/avihut/daft/pull/358))
+
 ## [1.6.2](https://github.com/avihut/daft/compare/v1.6.1...v1.6.2) - 2026-04-09
 
 ### Bug Fixes
