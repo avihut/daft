@@ -499,21 +499,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zsh_daft_go_gates_flags_on_leading_dash() {
-        let script =
-            zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
-        let flags_pos = script
-            .find("compadd -a flags")
-            .expect("generated script must contain `compadd -a flags`");
-        let guard_pos = script.find("[[ \"$curword\" == -* ]]").expect(
-            "generated script must gate flag completion on a leading \
-                 dash before adding flags (zsh flag-leak regression)",
-        );
-        assert!(
-            guard_pos < flags_pos,
-            "flag-gating guard must appear before `compadd -a flags`, \
-             otherwise flags leak into branch completions. \
-             guard_pos={guard_pos} flags_pos={flags_pos}",
-        );
+    fn zsh_gates_flag_completions_on_leading_dash() {
+        let commands = [
+            "git-worktree-checkout",
+            "git-worktree-carry",
+            "git-worktree-fetch",
+            "daft-go",
+            "daft-start",
+            "daft-remove",
+            "daft-rename",
+        ];
+        for cmd in commands {
+            let script = zsh::generate_zsh_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("generator must succeed for {cmd}: {e}"));
+            let flags_pos = script.find("compadd -a flags").unwrap_or_else(|| {
+                panic!("generated script for {cmd} must contain `compadd -a flags`")
+            });
+            let guard_pos = script.find("[[ \"$curword\" == -* ]]").unwrap_or_else(|| {
+                panic!(
+                    "generated script for {cmd} must gate flag completion on a leading dash \
+before adding flags (zsh flag-leak regression)"
+                )
+            });
+            assert!(
+                guard_pos < flags_pos,
+                "flag-gating guard must appear before `compadd -a flags` for {cmd}, \
+                 otherwise flags leak into branch completions. \
+                 guard_pos={guard_pos} flags_pos={flags_pos}",
+            );
+        }
     }
 }
