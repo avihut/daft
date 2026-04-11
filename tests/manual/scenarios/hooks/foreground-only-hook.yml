@@ -4,7 +4,9 @@ description:
   only foreground jobs used to write nothing to the log store, so 'daft hooks
   jobs' showed no record. After the universal hook invocation logging feature,
   the hook's invocation and every foreground job must appear in the listing, and
-  'daft hooks jobs logs <name>' must return the captured output."
+  'daft hooks jobs logs <name>' must return the captured output. This scenario
+  uses the natural worktree-creation path (git-worktree-checkout) to trigger
+  worktree-post-create, exactly as a user would experience it."
 
 repos:
   - name: test-fg-only-hook
@@ -16,6 +18,8 @@ repos:
             content: "# Foreground-only hook test"
         commits:
           - message: "Initial commit"
+      - name: feature/fg
+        from: main
     daft_yml: |
       hooks:
         worktree-post-create:
@@ -41,15 +45,24 @@ steps:
     expect:
       exit_code: 0
 
-  - name: Run the foreground-only worktree-post-create hook manually
-    run: daft hooks run worktree-post-create 2>&1
+  - name:
+      Checkout feature branch (triggers foreground-only worktree-post-create
+      hook)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/fg 2>&1
     cwd: "$WORK_DIR/test-fg-only-hook/main"
     expect:
       exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-fg-only-hook/feature/fg"
+      output_contains:
+        - "hello-from-fg"
+        - "done-from-fg"
 
-  - name: List jobs — should show the invocation with two fg rows
+  - name:
+      List jobs from inside the new worktree — should show invocation + two fg
+      rows
     run: daft hooks jobs 2>&1
-    cwd: "$WORK_DIR/test-fg-only-hook/main"
+    cwd: "$WORK_DIR/test-fg-only-hook/feature/fg"
     expect:
       exit_code: 0
       output_contains:
@@ -63,7 +76,7 @@ steps:
 
   - name: View log for the first fg job — should show captured stdout
     run: daft hooks jobs logs say-hello 2>&1
-    cwd: "$WORK_DIR/test-fg-only-hook/main"
+    cwd: "$WORK_DIR/test-fg-only-hook/feature/fg"
     expect:
       exit_code: 0
       output_contains:
@@ -73,7 +86,7 @@ steps:
 
   - name: View log for the second fg job — should show captured stdout
     run: daft hooks jobs logs say-done 2>&1
-    cwd: "$WORK_DIR/test-fg-only-hook/main"
+    cwd: "$WORK_DIR/test-fg-only-hook/feature/fg"
     expect:
       exit_code: 0
       output_contains:
