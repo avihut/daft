@@ -74,7 +74,9 @@ impl BufferingLogSink {
             NodeStatus::Succeeded => JobStatus::Completed,
             NodeStatus::Failed => JobStatus::Failed,
             NodeStatus::Skipped | NodeStatus::DepFailed => JobStatus::Skipped,
-            NodeStatus::Pending | NodeStatus::Running => JobStatus::Running,
+            NodeStatus::Pending | NodeStatus::Running => {
+                unreachable!("on_job_complete called with non-terminal NodeStatus: {status:?}")
+            }
         }
     }
 }
@@ -121,9 +123,12 @@ impl LogSink for BufferingLogSink {
             finished_at: Some(chrono::Utc::now()),
         };
 
-        let _ = self
+        if let Err(e) = self
             .store
-            .write_job_record(&self.invocation_id, &meta, &buf.output);
+            .write_job_record(&self.invocation_id, &meta, &buf.output)
+        {
+            eprintln!("daft: failed to write job record for '{}': {e}", spec.name);
+        }
     }
 
     fn on_job_runner_skipped(&self, spec: &JobSpec, reason: &str) {
@@ -148,9 +153,12 @@ impl LogSink for BufferingLogSink {
             finished_at: None,
         };
 
-        let _ = self
+        if let Err(e) = self
             .store
-            .write_job_record(&self.invocation_id, &meta, reason.as_bytes());
+            .write_job_record(&self.invocation_id, &meta, reason.as_bytes())
+        {
+            eprintln!("daft: failed to write job record for '{}': {e}", spec.name);
+        }
     }
 }
 
