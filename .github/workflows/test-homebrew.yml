@@ -121,25 +121,22 @@ jobs:
           rm -rf temp-init
 
           # Test git-worktree-clone from a clean workspace directory so the
-          # bare remote at /tmp/test-daft/remote.git is not a sibling of the
-          # worktree daft creates -- otherwise the `remote.*/` glob below also
-          # matches the bare remote and picks it alphabetically before
-          # `remote.master/`.
+          # bare remote at /tmp/test-daft/remote.git does not collide with the
+          # clone daft creates here.
           mkdir workspace && cd workspace
           echo ""
           echo "Testing git worktree-clone..."
           git worktree-clone /tmp/test-daft/remote.git
 
-          # Verify the structure: default sibling layout creates
-          #   remote/      — bare repo (.git dir)
-          #   remote.<branch>/  — worktree as sibling (branch is main or master)
+          # Verify the structure: daft's default sibling layout creates a
+          # non-bare clone of the default branch at `remote/` with `.git/`
+          # inside. Additional branch worktrees (if any) would be placed as
+          # siblings like `remote.<branch>/`, but for a single-branch clone
+          # only the default checkout exists.
           echo "Verifying clone structure..."
-          test -d remote/.git || { echo "FAILED: .git directory not found"; exit 1; }
-          # Find the sibling worktree directory (remote.main or remote.master)
-          WORKTREE_DIR=$(ls -d remote.*/ 2>/dev/null | head -1)
-          test -n "$WORKTREE_DIR" || { echo "FAILED: No sibling worktree directory found"; exit 1; }
-          echo "Found worktree: $WORKTREE_DIR"
-          test -f "${WORKTREE_DIR}README.md" || { echo "FAILED: README.md not found in worktree"; exit 1; }
+          test -d remote/.git || { echo "FAILED: remote/.git directory not found"; exit 1; }
+          test -f remote/README.md || { echo "FAILED: README.md not found in remote/"; exit 1; }
+          echo "Found clone at remote/ with working tree checked out"
 
           echo ""
           echo "=== All tests passed! ==="
