@@ -1046,4 +1046,12 @@ mod tests {
         let result = resolve_job_address(&addr, &store, "feature/x").unwrap();
         assert_eq!(result.invocation_id, inv_id);
     }
+
+    #[test]
+    fn format_status_inline_renders_skipped() {
+        let rendered = format_status_inline(&JobStatus::Skipped, true);
+        // The dim helper wraps in ANSI codes; check that the literal "skipped"
+        // is present inside.
+        assert!(rendered.contains("skipped"));
+    }
 }
