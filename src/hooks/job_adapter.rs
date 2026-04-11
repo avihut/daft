@@ -12,6 +12,17 @@ use crate::hooks::yaml_config::JobDef;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// A job that was declared in YAML but filtered out before execution.
+///
+/// Produced by `yaml_jobs_to_specs` alongside the kept `JobSpec`s so the
+/// caller can record a skipped-job entry in the log store.
+#[derive(Debug, Clone)]
+pub struct SkippedJob {
+    pub name: String,
+    pub background: bool,
+    pub reason: String,
+}
+
 /// Convert YAML job definitions into format-agnostic [`JobSpec`] values.
 ///
 /// Each [`JobDef`] is resolved into a concrete command string, merged
@@ -36,62 +47,71 @@ pub fn yaml_jobs_to_specs(
     working_dir: &Path,
     rc: Option<&str>,
     hook_background: Option<bool>,
-) -> Vec<JobSpec> {
-    jobs.iter()
-        .filter_map(|job| {
-            // Skip group jobs — they contain nested sub-jobs that require
-            // recursive handling. This will be wired up when the
-            // yaml_executor is fully migrated to the generic executor.
-            if job.group.is_some() {
-                return None;
-            }
+) -> (Vec<JobSpec>, Vec<SkippedJob>) {
+    let mut kept: Vec<JobSpec> = Vec::new();
+    let mut skipped: Vec<SkippedJob> = Vec::new();
 
-            // Skip jobs with a platform-specific run map that has no
-            // entry for the current OS.
-            if super::yaml_executor::is_platform_skip(job) {
-                return None;
-            }
+    for job in jobs {
+        let name = job.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
+        let declared_background = job.background.or(hook_background).unwrap_or(false);
 
-            let name = job.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
-
-            let cmd = super::yaml_executor::resolve_command(job, ctx, Some(&name), source_dir);
-
-            // Prepend RC file sourcing if configured.
-            let cmd = match rc {
-                Some(rc_path) => format!("source {rc_path} && {cmd}"),
-                None => cmd,
-            };
-
-            // Build merged environment: hook-level env first, then
-            // per-job env (job wins on conflict).
-            let mut env = hook_env.clone();
-            if let Some(ref job_env) = job.env {
-                env.extend(job_env.clone());
-            }
-
-            // Resolve working directory.
-            let wd = if let Some(ref root) = job.root {
-                working_dir.join(root)
-            } else {
-                working_dir.to_path_buf()
-            };
-
-            Some(JobSpec {
+        if job.group.is_some() {
+            skipped.push(SkippedJob {
                 name,
-                command: cmd,
-                working_dir: wd,
-                env,
-                description: job.description.clone(),
-                needs: job.needs.clone().unwrap_or_default(),
-                interactive: job.interactive == Some(true),
-                fail_text: job.fail_text.clone(),
-                timeout: JobSpec::DEFAULT_TIMEOUT,
-                background: job.background.or(hook_background).unwrap_or(false),
-                background_output: job.background_output.clone(),
-                log_config: job.log.clone(),
-            })
-        })
-        .collect()
+                background: declared_background,
+                reason: "skip: group jobs are not yet supported by the generic executor"
+                    .to_string(),
+            });
+            continue;
+        }
+
+        if super::yaml_executor::is_platform_skip(job) {
+            skipped.push(SkippedJob {
+                name,
+                background: declared_background,
+                reason: format!(
+                    "skip: platform-specific run has no entry for {}",
+                    std::env::consts::OS
+                ),
+            });
+            continue;
+        }
+
+        let cmd = super::yaml_executor::resolve_command(job, ctx, Some(&name), source_dir);
+
+        let cmd = match rc {
+            Some(rc_path) => format!("source {rc_path} && {cmd}"),
+            None => cmd,
+        };
+
+        let mut env = hook_env.clone();
+        if let Some(ref job_env) = job.env {
+            env.extend(job_env.clone());
+        }
+
+        let wd = if let Some(ref root) = job.root {
+            working_dir.join(root)
+        } else {
+            working_dir.to_path_buf()
+        };
+
+        kept.push(JobSpec {
+            name,
+            command: cmd,
+            working_dir: wd,
+            env,
+            description: job.description.clone(),
+            needs: job.needs.clone().unwrap_or_default(),
+            interactive: job.interactive == Some(true),
+            fail_text: job.fail_text.clone(),
+            timeout: JobSpec::DEFAULT_TIMEOUT,
+            background: declared_background,
+            background_output: job.background_output.clone(),
+            log_config: job.log.clone(),
+        });
+    }
+
+    (kept, skipped)
 }
 
 /// Convert legacy hook script paths into [`JobSpec`] values.
@@ -163,7 +183,7 @@ mod tests {
         }];
 
         let hook_env = HashMap::new();
-        let specs = yaml_jobs_to_specs(
+        let (specs, _) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &hook_env,
@@ -214,7 +234,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let specs = yaml_jobs_to_specs(
+        let (kept, skipped) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &HashMap::new(),
@@ -224,9 +244,12 @@ mod tests {
             None,
         );
         assert!(
-            specs.is_empty(),
+            kept.is_empty(),
             "platform-mismatched job should be excluded"
         );
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "os-specific");
+        assert!(skipped[0].reason.contains("platform"));
     }
 
     #[test]
@@ -238,7 +261,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let specs = yaml_jobs_to_specs(
+        let (specs, _) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &HashMap::new(),
@@ -262,7 +285,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let specs = yaml_jobs_to_specs(
+        let (specs, _) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &HashMap::new(),
@@ -297,7 +320,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let specs = yaml_jobs_to_specs(
+        let (specs, _) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &hook_env,
@@ -331,7 +354,7 @@ mod tests {
             },
         ];
 
-        let specs = yaml_jobs_to_specs(
+        let (specs, _) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &HashMap::new(),
@@ -354,7 +377,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let specs = yaml_jobs_to_specs(
+        let (specs, _) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &HashMap::new(),
@@ -392,7 +415,7 @@ mod tests {
             },
         ];
 
-        let specs = yaml_jobs_to_specs(
+        let (kept, skipped) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &HashMap::new(),
@@ -402,8 +425,72 @@ mod tests {
             None,
         );
 
-        assert_eq!(specs.len(), 1, "group job should be excluded");
-        assert_eq!(specs[0].name, "normal");
+        assert_eq!(kept.len(), 1, "group job should be excluded");
+        assert_eq!(kept[0].name, "normal");
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "grouped");
+        assert!(skipped[0].reason.contains("group"));
+    }
+
+    #[test]
+    fn platform_skip_produces_skipped_job_entry() {
+        use crate::hooks::yaml_config::{PlatformRunCommand, TargetOs};
+        let mut run_map = HashMap::new();
+        let other_os = if cfg!(target_os = "macos") {
+            TargetOs::Linux
+        } else {
+            TargetOs::Macos
+        };
+        run_map.insert(other_os, PlatformRunCommand::Simple("echo other".into()));
+
+        let jobs = vec![JobDef {
+            name: Some("platform-only".to_string()),
+            run: Some(RunCommand::Platform(run_map)),
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let env = HashMap::new();
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &env,
+            "/src",
+            std::path::Path::new("/work"),
+            None,
+            None,
+        );
+
+        assert!(kept.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "platform-only");
+        assert!(skipped[0].reason.contains("platform"));
+    }
+
+    #[test]
+    fn group_jobs_produce_skipped_job_entry() {
+        let jobs = vec![JobDef {
+            name: Some("my-group".to_string()),
+            group: Some(GroupDef::default()),
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let env = HashMap::new();
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &env,
+            "/src",
+            std::path::Path::new("/work"),
+            None,
+            None,
+        );
+
+        assert!(kept.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "my-group");
+        assert!(skipped[0].reason.contains("group"));
     }
 
     // ── scripts_to_specs ────────────────────────────────────────────────
@@ -425,7 +512,7 @@ mod tests {
         }];
 
         let ctx = make_ctx();
-        let specs = yaml_jobs_to_specs(
+        let (specs, _) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &HashMap::new(),
