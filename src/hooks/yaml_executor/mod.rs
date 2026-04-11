@@ -162,7 +162,9 @@ pub fn execute_yaml_hook_with_rc(
         worktree: ctx.branch_name.clone(),
         created_at: chrono::Utc::now(),
     };
-    let _ = store.write_invocation_meta(&invocation_id, &inv_meta);
+    if let Err(e) = store.write_invocation_meta(&invocation_id, &inv_meta) {
+        eprintln!("daft: failed to write invocation meta for '{hook_name}': {e}");
+    }
 
     let mut jobs = get_effective_jobs(hook_def);
 
