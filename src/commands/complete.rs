@@ -437,6 +437,158 @@ fn find_worktree_root() -> Result<std::path::PathBuf> {
     ))
 }
 
+/// Which group a completion entry belongs to, used for visual separation
+/// in shells that support per-item tags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum CompletionGroup {
+    /// Branch has a worktree — immediate navigation target.
+    Worktree,
+    /// Local branch without a worktree.
+    Local,
+    /// Remote-tracking branch not mirrored locally.
+    Remote,
+}
+
+impl CompletionGroup {
+    #[allow(dead_code)]
+    fn as_str(self) -> &'static str {
+        match self {
+            CompletionGroup::Worktree => "worktree",
+            CompletionGroup::Local => "local",
+            CompletionGroup::Remote => "remote",
+        }
+    }
+}
+
+/// A single completion candidate emitted by `daft __complete daft-go`.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct CompletionEntry {
+    pub name: String,
+    pub group: CompletionGroup,
+    pub description: String,
+}
+
+/// Pure grouping/dedupe/filter/sort function for `daft go` completions.
+///
+/// Takes already-collected git data and produces a flat, ordered list of
+/// completion entries: worktrees first, then local branches, then remote
+/// branches. Within each group, entries are sorted alphabetically.
+///
+/// Dedupe rules: worktree shadows local and remote; local shadows remote.
+/// Shadowing is by stripped-name comparison — a remote-only branch whose
+/// stripped name collides with a local or worktree branch is dropped.
+///
+/// The current worktree (if any) is excluded from the worktree group —
+/// `daft go` to the branch you're already on is a no-op.
+///
+/// In single-remote mode, the leading `<default_remote>/` prefix is
+/// stripped from remote-branch names. In multi-remote mode the full
+/// `<remote>/<branch>` form is preserved. HEAD symrefs (`origin/HEAD`,
+/// etc.) are always dropped.
+///
+/// Entries whose name doesn't start with `prefix` are filtered out.
+#[allow(dead_code)]
+pub(crate) fn build_go_completions(
+    worktrees: &[(String, std::path::PathBuf)],
+    local_branches: &[(String, String)],
+    remote_branches: &[(String, String)],
+    current_worktree_branch: Option<&str>,
+    default_remote: &str,
+    multi_remote: bool,
+    prefix: &str,
+) -> Vec<CompletionEntry> {
+    use std::collections::BTreeSet;
+
+    // Worktree group: exclude the current worktree's branch.
+    let mut wt_entries: Vec<CompletionEntry> = worktrees
+        .iter()
+        .filter(|(name, _)| Some(name.as_str()) != current_worktree_branch)
+        .filter(|(name, _)| name.starts_with(prefix))
+        .map(|(name, path)| CompletionEntry {
+            name: name.clone(),
+            group: CompletionGroup::Worktree,
+            description: path.display().to_string(),
+        })
+        .collect();
+    wt_entries.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let wt_names: BTreeSet<&str> = wt_entries.iter().map(|e| e.name.as_str()).collect();
+
+    // Local group: drop anything already in the worktree group.
+    let mut local_entries: Vec<CompletionEntry> = local_branches
+        .iter()
+        .filter(|(name, _)| !wt_names.contains(name.as_str()))
+        .filter(|(name, _)| name.starts_with(prefix))
+        .map(|(name, age)| CompletionEntry {
+            name: name.clone(),
+            group: CompletionGroup::Local,
+            description: age.clone(),
+        })
+        .collect();
+    local_entries.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let local_names: BTreeSet<String> = local_entries
+        .iter()
+        .map(|e| e.name.clone())
+        .collect::<BTreeSet<_>>();
+
+    // Remote group: drop HEAD symrefs, prefix-strip in single-remote mode,
+    // dedupe against worktree + local by stripped name.
+    let prefix_to_strip = format!("{default_remote}/");
+    let mut remote_entries: Vec<CompletionEntry> = remote_branches
+        .iter()
+        .filter(|(name, _)| !name.ends_with("/HEAD") && name != "HEAD")
+        .filter_map(|(name, age)| {
+            let display = if multi_remote {
+                name.clone()
+            } else if let Some(stripped) = name.strip_prefix(&prefix_to_strip) {
+                stripped.to_string()
+            } else {
+                // In single-remote mode, a remote from a non-default remote
+                // is unusual — keep its full name rather than inventing a
+                // shadowing rule.
+                name.clone()
+            };
+            if wt_names.contains(display.as_str()) || local_names.contains(&display) {
+                return None;
+            }
+            if !display.starts_with(prefix) {
+                return None;
+            }
+            Some(CompletionEntry {
+                name: display,
+                group: CompletionGroup::Remote,
+                description: age.clone(),
+            })
+        })
+        .collect();
+    remote_entries.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut out = Vec::with_capacity(wt_entries.len() + local_entries.len() + remote_entries.len());
+    out.extend(wt_entries);
+    out.extend(local_entries);
+    out.extend(remote_entries);
+    out
+}
+
+/// Format grouped completion entries as tab-separated lines for the
+/// shell completion protocol: `<name>\t<group>\t<description>`.
+#[allow(dead_code)]
+pub(crate) fn format_go_completions(entries: &[CompletionEntry]) -> String {
+    let mut out = String::new();
+    for entry in entries {
+        out.push_str(&entry.name);
+        out.push('\t');
+        out.push_str(entry.group.as_str());
+        out.push('\t');
+        out.push_str(&entry.description);
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,5 +609,188 @@ mod tests {
     fn test_suggest_new_branch_names_no_match() {
         let suggestions = suggest_new_branch_names("xyz");
         assert!(suggestions.is_empty());
+    }
+
+    // Tests for the new go-completion grouping function.
+
+    fn wt(name: &str, path: &str) -> (String, std::path::PathBuf) {
+        (name.to_string(), std::path::PathBuf::from(path))
+    }
+
+    fn br(name: &str, age: &str) -> (String, String) {
+        (name.to_string(), age.to_string())
+    }
+
+    #[test]
+    fn go_completions_group_order_is_worktrees_then_local_then_remote() {
+        let entries = build_go_completions(
+            &[wt("master", "/tmp/repo/master")],
+            &[br("feat/local", "4 days ago")],
+            &[br("origin/bug/xyz", "3 weeks ago")],
+            None, // no current worktree
+            "origin",
+            false, // single-remote mode
+            "",
+        );
+        let groups: Vec<CompletionGroup> = entries.iter().map(|e| e.group).collect();
+        assert_eq!(
+            groups,
+            vec![
+                CompletionGroup::Worktree,
+                CompletionGroup::Local,
+                CompletionGroup::Remote,
+            ],
+            "worktrees must come first, then local, then remote"
+        );
+    }
+
+    #[test]
+    fn go_completions_sort_within_group_alphabetically() {
+        let entries = build_go_completions(
+            &[wt("b", "/tmp/b"), wt("a", "/tmp/a")],
+            &[br("z", "1 day ago"), br("m", "2 days ago")],
+            &[],
+            None,
+            "origin",
+            false,
+            "",
+        );
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "m", "z"]);
+    }
+
+    #[test]
+    fn go_completions_local_shadows_remote() {
+        let entries = build_go_completions(
+            &[],
+            &[br("feat/shared", "1 day ago")],
+            &[br("origin/feat/shared", "2 days ago")],
+            None,
+            "origin",
+            false,
+            "",
+        );
+        assert_eq!(entries.len(), 1, "remote should be shadowed by local");
+        assert_eq!(entries[0].name, "feat/shared");
+        assert_eq!(entries[0].group, CompletionGroup::Local);
+    }
+
+    #[test]
+    fn go_completions_worktree_shadows_local_and_remote() {
+        let entries = build_go_completions(
+            &[wt("master", "/tmp/master")],
+            &[br("master", "1 day ago")],
+            &[br("origin/master", "2 days ago")],
+            None,
+            "origin",
+            false,
+            "",
+        );
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "master");
+        assert_eq!(entries[0].group, CompletionGroup::Worktree);
+    }
+
+    #[test]
+    fn go_completions_exclude_current_worktree() {
+        let entries = build_go_completions(
+            &[wt("master", "/tmp/master"), wt("feat/x", "/tmp/feat-x")],
+            &[],
+            &[],
+            Some("feat/x"),
+            "origin",
+            false,
+            "",
+        );
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["master"]);
+    }
+
+    #[test]
+    fn go_completions_strip_remote_prefix_in_single_remote_mode() {
+        let entries = build_go_completions(
+            &[],
+            &[],
+            &[br("origin/bug/xyz", "3 weeks ago")],
+            None,
+            "origin",
+            false,
+            "",
+        );
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "bug/xyz");
+        assert_eq!(entries[0].group, CompletionGroup::Remote);
+    }
+
+    #[test]
+    fn go_completions_keep_remote_prefix_in_multi_remote_mode() {
+        let entries = build_go_completions(
+            &[],
+            &[],
+            &[
+                br("origin/bug/xyz", "3 weeks ago"),
+                br("fork/feat/y", "2 days ago"),
+            ],
+            None,
+            "origin",
+            true, // multi-remote mode
+            "",
+        );
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["fork/feat/y", "origin/bug/xyz"]);
+    }
+
+    #[test]
+    fn go_completions_filter_by_prefix() {
+        let entries = build_go_completions(
+            &[wt("master", "/tmp/master")],
+            &[br("feat/x", "1d"), br("fix/y", "2d")],
+            &[br("origin/bug/z", "3w")],
+            None,
+            "origin",
+            false,
+            "fe",
+        );
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["feat/x"]);
+    }
+
+    #[test]
+    fn go_completions_drop_remote_head_symrefs() {
+        let entries = build_go_completions(
+            &[],
+            &[],
+            &[
+                br("origin/HEAD", "just now"),
+                br("origin/master", "1 day ago"),
+            ],
+            None,
+            "origin",
+            false,
+            "",
+        );
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["master"]);
+    }
+
+    #[test]
+    fn format_go_completions_emits_tab_separated_name_group_description() {
+        let entries = vec![
+            CompletionEntry {
+                name: "master".into(),
+                group: CompletionGroup::Worktree,
+                description: "2 hours ago".into(),
+            },
+            CompletionEntry {
+                name: "feat/bar".into(),
+                group: CompletionGroup::Local,
+                description: "4 days ago".into(),
+            },
+        ];
+        let out = format_go_completions(&entries);
+        assert_eq!(
+            out,
+            "master\tworktree\t2 hours ago\nfeat/bar\tlocal\t4 days ago\n"
+        );
     }
 }
