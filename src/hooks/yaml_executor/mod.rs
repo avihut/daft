@@ -203,7 +203,7 @@ pub fn execute_yaml_hook_with_rc(
     let hook_env = hook_env_obj.vars().clone();
 
     // Convert filtered JobDefs to generic JobSpecs
-    let specs = crate::hooks::job_adapter::yaml_jobs_to_specs(
+    let (specs, _skipped_jobs) = crate::hooks::job_adapter::yaml_jobs_to_specs(
         &jobs,
         ctx,
         &hook_env,
