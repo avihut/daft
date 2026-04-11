@@ -7,8 +7,11 @@
 pub mod cli_presenter;
 pub mod command;
 pub mod dag;
+pub mod log_sink;
 pub mod presenter;
 pub mod runner;
+
+pub use log_sink::LogSink;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
