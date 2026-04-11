@@ -11,6 +11,7 @@ pub enum JobStatus {
     Completed,
     Failed,
     Cancelled,
+    Skipped,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +87,23 @@ impl LogStore {
 
     pub fn log_path(job_dir: &Path) -> PathBuf {
         job_dir.join("output.log")
+    }
+
+    /// Write `meta.json` and `output.log` for a completed job atomically.
+    ///
+    /// Creates the job directory if needed. Used by `BufferingLogSink` (for
+    /// foreground jobs) and by `yaml_executor` (for skipped job records).
+    pub fn write_job_record(
+        &self,
+        invocation_id: &str,
+        meta: &JobMeta,
+        log_bytes: &[u8],
+    ) -> Result<PathBuf> {
+        let job_dir = self.create_job_dir(invocation_id, &meta.name)?;
+        self.write_meta(&job_dir, meta)?;
+        fs::write(Self::log_path(&job_dir), log_bytes)
+            .with_context(|| format!("Failed to write log file for job: {}", meta.name))?;
+        Ok(job_dir)
     }
 
     pub fn list_job_dirs(&self) -> Result<Vec<PathBuf>> {
@@ -382,5 +400,62 @@ mod tests {
         let store = LogStore::new(tmp.path().to_path_buf());
         let all = store.list_invocations().unwrap();
         assert!(all.is_empty());
+    }
+
+    #[test]
+    fn skipped_status_round_trips_through_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LogStore::new(dir.path().to_path_buf());
+        let job_dir = store.create_job_dir("inv1", "dbsetup").unwrap();
+
+        let meta = JobMeta {
+            name: "dbsetup".to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            worktree: "feature/x".to_string(),
+            command: String::new(),
+            working_dir: String::new(),
+            env: HashMap::new(),
+            started_at: chrono::Utc::now(),
+            status: JobStatus::Skipped,
+            exit_code: None,
+            pid: None,
+            background: false,
+            finished_at: None,
+        };
+        store.write_meta(&job_dir, &meta).unwrap();
+
+        let loaded = store.read_meta(&job_dir).unwrap();
+        assert_eq!(loaded.status, JobStatus::Skipped);
+    }
+
+    #[test]
+    fn write_job_record_creates_meta_and_log_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LogStore::new(dir.path().to_path_buf());
+
+        let meta = JobMeta {
+            name: "pnpm-install".to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            worktree: "feature/x".to_string(),
+            command: "pnpm install".to_string(),
+            working_dir: "/tmp/wt".to_string(),
+            env: HashMap::new(),
+            started_at: chrono::Utc::now(),
+            status: JobStatus::Completed,
+            exit_code: Some(0),
+            pid: None,
+            background: false,
+            finished_at: Some(chrono::Utc::now()),
+        };
+
+        let job_dir = store
+            .write_job_record("inv42", &meta, b"installing...\ndone\n")
+            .unwrap();
+
+        let loaded_meta = store.read_meta(&job_dir).unwrap();
+        assert_eq!(loaded_meta.name, "pnpm-install");
+
+        let log_bytes = std::fs::read(LogStore::log_path(&job_dir)).unwrap();
+        assert_eq!(log_bytes, b"installing...\ndone\n");
     }
 }

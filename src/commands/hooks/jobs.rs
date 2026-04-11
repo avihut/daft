@@ -347,6 +347,7 @@ fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
             }
         }
         JobStatus::Cancelled => dim("\u{2014} cancelled"),
+        JobStatus::Skipped => dim("\u{2014} skipped"),
     }
 }
 
@@ -384,6 +385,7 @@ fn print_json_output(
                         JobStatus::Completed => "completed".to_string(),
                         JobStatus::Failed => "failed".to_string(),
                         JobStatus::Cancelled => "cancelled".to_string(),
+                        JobStatus::Skipped => "skipped".to_string(),
                     };
 
                     let duration_secs = match (&meta.status, meta.finished_at) {
@@ -624,6 +626,7 @@ fn render_single_job_log(
         JobStatus::Failed => red("FAILED"),
         JobStatus::Running => yellow("RUNNING"),
         JobStatus::Cancelled => dim("CANCELLED"),
+        JobStatus::Skipped => dim("SKIPPED"),
     };
     writeln!(
         buf,
@@ -731,6 +734,7 @@ fn render_invocation_logs(store: &LogStore, invocation_id: &str, buf: &mut Strin
             JobStatus::Failed => red("FAILED"),
             JobStatus::Running => yellow("RUNNING"),
             JobStatus::Cancelled => dim("CANCELLED"),
+            JobStatus::Skipped => dim("SKIPPED"),
         };
 
         let duration_str = match meta.finished_at {
