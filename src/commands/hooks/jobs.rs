@@ -336,7 +336,6 @@ fn retry_target_from_arg(arg: Option<&str>, flags: &RetryFlags) -> RetryTarget {
     }
 }
 
-#[allow(dead_code)]
 fn build_retry_set(
     metas: &[crate::coordinator::log_store::JobMeta],
 ) -> (Vec<crate::executor::JobSpec>, Vec<String>) {
@@ -922,6 +921,76 @@ fn cancel_all(path: &Path, output: &mut dyn Output) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the retry target to a specific invocation.
+fn resolve_retry_invocation(
+    target: &RetryTarget,
+    store: &LogStore,
+    current_worktree: &str,
+) -> Result<InvocationMeta> {
+    match target {
+        RetryTarget::LatestInvocation => {
+            let invocations = store.list_invocations_for_worktree(current_worktree)?;
+            invocations.into_iter().last().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No invocations found in worktree '{current_worktree}'. Run a hook first."
+                )
+            })
+        }
+        RetryTarget::HookType(hook) => {
+            let invocations = store.list_invocations_for_worktree(current_worktree)?;
+            invocations
+                .into_iter()
+                .rfind(|inv| inv.hook_type == *hook)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("No invocations of '{hook}' in worktree '{current_worktree}'.")
+                })
+        }
+        RetryTarget::InvocationPrefix(prefix) => {
+            let matches = store.find_invocations_by_prefix(current_worktree, prefix)?;
+            match matches.len() {
+                0 => anyhow::bail!(
+                    "No invocation matching prefix '{prefix}' in worktree '{current_worktree}'."
+                ),
+                1 => Ok(matches.into_iter().next().unwrap()),
+                _ => {
+                    let now = chrono::Utc::now();
+                    let lines: Vec<String> = matches
+                        .iter()
+                        .map(|inv| {
+                            let ago = shorthand_from_seconds(
+                                now.signed_duration_since(inv.created_at).num_seconds(),
+                            );
+                            let short = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+                            format!("  {short}  {} -- {ago} ago", inv.trigger_command)
+                        })
+                        .collect();
+                    anyhow::bail!(
+                        "Ambiguous invocation prefix '{prefix}' -- matches:\n{}\n\
+                         Use more characters to disambiguate.",
+                        lines.join("\n")
+                    );
+                }
+            }
+        }
+        RetryTarget::JobName(name) => {
+            let invocations = store.list_invocations_for_worktree(current_worktree)?;
+            for inv in invocations.iter().rev() {
+                let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
+                for dir in &job_dirs {
+                    if let Ok(meta) = store.read_meta(dir) {
+                        if meta.name == *name
+                            && matches!(meta.status, JobStatus::Failed | JobStatus::Cancelled)
+                        {
+                            return Ok(inv.clone());
+                        }
+                    }
+                }
+            }
+            anyhow::bail!("No failed job named '{name}' in worktree '{current_worktree}'.")
+        }
+    }
+}
+
 fn retry_command(
     target: Option<&str>,
     hook_flag: &Option<String>,
@@ -930,84 +999,210 @@ fn retry_command(
     path: &Path,
     output: &mut dyn Output,
 ) -> Result<()> {
+    let repo_hash = compute_repo_hash_from_path(path)?;
+    let store = LogStore::for_repo(&repo_hash)?;
+    let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
+
     let flags = RetryFlags {
         hook: hook_flag.clone(),
         inv: inv_flag.clone(),
         job: job_flag.clone(),
     };
     let parsed = retry_target_from_arg(target, &flags);
-    output.info(&format!("Retry target: {parsed:?}"));
-    let _ = path; // will be used in Task 8
-    Ok(())
-}
 
-/// Retry a failed job by reconstructing a JobSpec from stored metadata.
-#[allow(dead_code)]
-fn retry_job(job: &str, inv: Option<&str>, path: &Path, output: &mut dyn Output) -> Result<()> {
-    let repo_hash = compute_repo_hash_from_path(path)?;
-    let store = LogStore::for_repo(&repo_hash)?;
-    let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
+    // Handle cross-worktree composite address for job-name targets.
+    if let RetryTarget::JobName(ref name) = parsed {
+        if name.contains(':') {
+            let addr = JobAddress::parse(name);
+            if let Some(ref wt) = addr.worktree {
+                if *wt != current_worktree {
+                    anyhow::bail!("Cross-worktree retry is not yet supported.");
+                }
+            }
+        }
+    }
 
-    let addr = JobAddress::parse(job).with_inv_override(inv);
-    let resolved = resolve_job_address(&addr, &store, &current_worktree)?;
-    let meta = store.read_meta(&resolved.job_dir)?;
+    // Resolve to a source invocation.
+    let inv = resolve_retry_invocation(&parsed, &store, &current_worktree)?;
 
-    if !matches!(meta.status, JobStatus::Failed) {
+    // Load all job metas from the source invocation.
+    let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
+    let mut metas: Vec<crate::coordinator::log_store::JobMeta> = Vec::new();
+    for dir in &job_dirs {
+        if let Ok(meta) = store.read_meta(dir) {
+            metas.push(meta);
+        }
+    }
+
+    // Check for running jobs — bail if any.
+    let running: Vec<&str> = metas
+        .iter()
+        .filter(|m| matches!(m.status, JobStatus::Running))
+        .map(|m| m.name.as_str())
+        .collect();
+    if !running.is_empty() {
         anyhow::bail!(
-            "Job '{}' is not in a failed state (current: {:?}). Only failed jobs can be retried.",
-            resolved.job_name,
-            meta.status
+            "Cannot retry: {} job(s) still running ({}). Cancel them first.",
+            running.len(),
+            running.join(", ")
         );
     }
 
-    if meta.command.is_empty() {
-        anyhow::bail!(
-            "Cannot retry job '{job}': no command recorded in metadata. \
-             This job may have been created by an older version of daft."
-        );
+    // For single-job form, filter metas to just that job and validate.
+    if let RetryTarget::JobName(ref name) = parsed {
+        // Extract the bare job name (strip worktree/invocation prefix).
+        let bare_name = if name.contains(':') {
+            let addr = JobAddress::parse(name);
+            addr.job_name.clone()
+        } else {
+            name.clone()
+        };
+
+        let job_meta = metas.iter().find(|m| m.name == bare_name);
+        match job_meta {
+            None => {
+                anyhow::bail!(
+                    "No job named '{}' in invocation '{}'.",
+                    bare_name,
+                    &inv.invocation_id[..4.min(inv.invocation_id.len())]
+                );
+            }
+            Some(m) => {
+                if !matches!(m.status, JobStatus::Failed | JobStatus::Cancelled) {
+                    anyhow::bail!(
+                        "Job '{}' is not in a failed or cancelled state (current: {:?}).",
+                        bare_name,
+                        m.status
+                    );
+                }
+            }
+        }
+
+        // Filter metas to just this one job.
+        metas.retain(|m| m.name == bare_name);
     }
 
-    let working_dir = std::path::PathBuf::from(&meta.working_dir);
-    if !working_dir.exists() {
-        anyhow::bail!(
-            "Cannot retry job '{job}': working directory '{}' no longer exists.",
-            meta.working_dir
-        );
+    // Compute the retry set.
+    let (specs, _retry_names) = build_retry_set(&metas);
+
+    if specs.is_empty() {
+        output.info("Nothing to retry — all jobs succeeded.");
+        return Ok(());
     }
 
-    output.info(&format!("Retrying job: {}", bold(&meta.name)));
-    output.info(&format!("  command:  {}", dim(&meta.command)));
-    output.info(&format!("  workdir:  {}", dim(&meta.working_dir)));
+    // Validate working dirs and commands.
+    for spec in &specs {
+        if spec.command.is_empty() {
+            anyhow::bail!(
+                "Cannot retry job '{}': no command recorded in metadata. \
+                 This job may have been created by an older version of daft.",
+                spec.name
+            );
+        }
+        if !spec.working_dir.exists() {
+            anyhow::bail!(
+                "Cannot retry job '{}': working directory '{}' no longer exists.",
+                spec.name,
+                spec.working_dir.display()
+            );
+        }
+    }
 
-    // Reconstruct a JobSpec and spawn a coordinator.
-    let job_spec = crate::executor::JobSpec {
-        name: meta.name.clone(),
-        command: meta.command,
-        working_dir,
-        env: meta.env,
-        background: true,
-        ..Default::default()
+    // Split into foreground and background sets.
+    let (fg_specs, bg_specs): (Vec<_>, Vec<_>) = specs.into_iter().partition(|s| !s.background);
+
+    let total = fg_specs.len() + bg_specs.len();
+    let new_invocation_id = generate_invocation_id();
+    let short_id = &new_invocation_id[..4.min(new_invocation_id.len())];
+
+    // Build trigger command for the new invocation.
+    let trigger_command = match &parsed {
+        RetryTarget::LatestInvocation => "hooks jobs retry".to_string(),
+        RetryTarget::HookType(h) => format!("hooks jobs retry {h}"),
+        RetryTarget::InvocationPrefix(p) => format!("hooks jobs retry {p}"),
+        RetryTarget::JobName(n) => format!("hooks jobs retry {n}"),
     };
 
-    let invocation_id = generate_invocation_id();
-    let retry_store = LogStore::for_repo(&repo_hash)?;
-    let trigger_command = format!("hooks jobs retry {}", meta.name);
-    let mut coord_state =
-        crate::coordinator::process::CoordinatorState::new(&repo_hash, &invocation_id)
-            .with_metadata(&trigger_command, &meta.hook_type, &meta.worktree);
-    coord_state.add_job(job_spec);
+    // Write invocation meta for the new retry invocation.
+    let inv_meta = InvocationMeta {
+        invocation_id: new_invocation_id.clone(),
+        trigger_command: trigger_command.clone(),
+        hook_type: inv.hook_type.clone(),
+        worktree: current_worktree.clone(),
+        created_at: chrono::Utc::now(),
+    };
+    store.write_invocation_meta(&new_invocation_id, &inv_meta)?;
 
-    #[cfg(unix)]
-    {
-        crate::coordinator::process::fork_coordinator(coord_state, retry_store)?;
-        output.success(&format!("Job '{}' re-dispatched to background.", meta.name));
+    // ── Foreground phase ────────────────────────────────────────────────
+    let fg_count = fg_specs.len();
+    if !fg_specs.is_empty() {
+        let config = crate::settings::HookOutputConfig::default();
+        let presenter: std::sync::Arc<dyn crate::executor::presenter::JobPresenter> =
+            crate::executor::cli_presenter::CliPresenter::auto(&config);
+
+        let fg_sink: std::sync::Arc<dyn crate::executor::log_sink::LogSink> =
+            std::sync::Arc::new(crate::executor::BufferingLogSink::new(
+                std::sync::Arc::new(store.clone()),
+                new_invocation_id.clone(),
+                inv.hook_type.clone(),
+                current_worktree.clone(),
+            ));
+
+        presenter.on_phase_start(&trigger_command);
+        let fg_start = std::time::Instant::now();
+        let _fg_results = crate::executor::runner::run_jobs(
+            &fg_specs,
+            crate::executor::ExecutionMode::Parallel,
+            &presenter,
+            Some(&fg_sink),
+        )?;
+        presenter.on_phase_complete(fg_start.elapsed());
     }
 
-    #[cfg(not(unix))]
-    {
-        let _ = (coord_state, retry_store);
-        anyhow::bail!("Background job retry is only supported on Unix systems.");
+    // ── Background phase ────────────────────────────────────────────────
+    let bg_count = bg_specs.len();
+    if !bg_specs.is_empty() {
+        #[cfg(unix)]
+        {
+            let bg_store = LogStore::for_repo(&repo_hash)?;
+            let mut coord_state =
+                crate::coordinator::process::CoordinatorState::new(&repo_hash, &new_invocation_id)
+                    .with_metadata(&trigger_command, &inv.hook_type, &current_worktree);
+            for spec in bg_specs {
+                coord_state.add_job(spec);
+            }
+            crate::coordinator::process::fork_coordinator(coord_state, bg_store)?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = bg_specs;
+            anyhow::bail!("Background job retry is only supported on Unix systems.");
+        }
     }
+
+    // ── Summary ─────────────────────────────────────────────────────────
+    let fg_label = if fg_count > 0 {
+        format!("{fg_count} foreground done")
+    } else {
+        String::new()
+    };
+    let bg_label = if bg_count > 0 {
+        format!("{bg_count} background running")
+    } else {
+        String::new()
+    };
+    let parts: Vec<&str> = [fg_label.as_str(), bg_label.as_str()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    output.success(&format!(
+        "Retried {} job(s) in invocation {} ({}). Check status: daft hooks jobs",
+        total,
+        short_id,
+        parts.join(", ")
+    ));
 
     Ok(())
 }
