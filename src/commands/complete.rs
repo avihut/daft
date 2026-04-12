@@ -160,6 +160,9 @@ fn complete(
         // hooks jobs: complete job addresses (names, invocation IDs, composite)
         ("hooks-jobs-job", 1) => complete_job_addresses(word),
 
+        // hooks jobs retry: complete retry targets (hook types, invocation IDs, job names with failures)
+        ("hooks-jobs-retry", 1) => complete_retry_targets(word),
+
         // Default: no completions
         _ => Ok(vec![]),
     }
@@ -982,6 +985,125 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
         }
         _ => Ok(vec![]),
     }
+}
+
+/// Complete retry targets for `hooks jobs retry <TAB>`.
+///
+/// Offers three categories of completions filtered to things that actually have
+/// failed or cancelled jobs:
+/// - Hook types with failures
+/// - Invocation short IDs with failures
+/// - Job names from the most recent failing invocation
+fn complete_retry_targets(prefix: &str) -> Result<Vec<String>> {
+    use crate::coordinator::log_store::{JobStatus, LogStore};
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let repo_hash = find_project_root().ok().map(|root| {
+        let mut hasher = DefaultHasher::new();
+        root.display().to_string().hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    });
+    let repo_hash = match repo_hash {
+        Some(h) => h,
+        None => return Ok(vec![]),
+    };
+
+    let store = match LogStore::for_repo(&repo_hash) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
+    let now = chrono::Utc::now();
+    let invocations = store
+        .list_invocations_for_worktree(&current_worktree)
+        .unwrap_or_default();
+
+    let mut entries = Vec::new();
+
+    // 1. Hook types with failures
+    let mut hooks_with_failures: std::collections::HashMap<String, (usize, usize)> =
+        std::collections::HashMap::new();
+    for inv in &invocations {
+        let job_dirs = store
+            .list_jobs_in_invocation(&inv.invocation_id)
+            .unwrap_or_default();
+        let failed_count = job_dirs
+            .iter()
+            .filter_map(|d| store.read_meta(d).ok())
+            .filter(|m| matches!(m.status, JobStatus::Failed | JobStatus::Cancelled))
+            .count();
+        if failed_count > 0 {
+            let entry = hooks_with_failures
+                .entry(inv.hook_type.clone())
+                .or_insert((0, 0));
+            entry.0 += failed_count;
+            entry.1 += 1;
+        }
+    }
+    for (hook, (failed, inv_count)) in &hooks_with_failures {
+        if hook.starts_with(prefix) {
+            entries.push(format!(
+                "{hook}\thook -- {failed} failed across {inv_count} invocation{}",
+                if *inv_count == 1 { "" } else { "s" },
+            ));
+        }
+    }
+
+    // 2. Invocation short IDs with failures
+    for inv in &invocations {
+        let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+        if !short_id.starts_with(prefix) {
+            continue;
+        }
+        let job_dirs = store
+            .list_jobs_in_invocation(&inv.invocation_id)
+            .unwrap_or_default();
+        let failed_count = job_dirs
+            .iter()
+            .filter_map(|d| store.read_meta(d).ok())
+            .filter(|m| matches!(m.status, JobStatus::Failed | JobStatus::Cancelled))
+            .count();
+        if failed_count > 0 {
+            let ago = crate::output::format::shorthand_from_seconds(
+                now.signed_duration_since(inv.created_at).num_seconds(),
+            );
+            entries.push(format!(
+                "{short_id}\tinvocation -- {}, {failed_count} failed, {ago} ago",
+                inv.trigger_command,
+            ));
+        }
+    }
+
+    // 3. Job names from latest invocation with failures
+    for inv in invocations.iter().rev() {
+        let job_dirs = store
+            .list_jobs_in_invocation(&inv.invocation_id)
+            .unwrap_or_default();
+        let failed_jobs: Vec<_> = job_dirs
+            .iter()
+            .filter_map(|d| store.read_meta(d).ok())
+            .filter(|m| matches!(m.status, JobStatus::Failed | JobStatus::Cancelled))
+            .collect();
+        if !failed_jobs.is_empty() {
+            let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+            let ago = crate::output::format::shorthand_from_seconds(
+                now.signed_duration_since(inv.created_at).num_seconds(),
+            );
+            for meta in &failed_jobs {
+                if meta.name.starts_with(prefix) {
+                    entries.push(format!(
+                        "{}\tjob -- failed in {short_id}, {ago} ago",
+                        meta.name,
+                    ));
+                }
+            }
+            break;
+        }
+    }
+
+    Ok(entries)
 }
 
 /// Find the project root (parent of git common dir).
