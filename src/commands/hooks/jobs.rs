@@ -99,13 +99,20 @@ enum JobsCommand {
         #[arg(long)]
         inv: Option<String>,
     },
-    /// Re-run a failed background job.
+    /// Re-run failed jobs from an invocation.
     Retry {
-        /// Job address.
-        job: String,
-        /// Invocation ID prefix.
-        #[arg(long)]
-        inv: Option<String>,
+        /// Target: hook name, invocation prefix, or job name.
+        /// Empty = retry all failed from most recent invocation.
+        target: Option<String>,
+        /// Force interpretation as a hook name.
+        #[arg(long, conflicts_with_all = ["inv_flag", "job_flag"])]
+        hook: Option<String>,
+        /// Force interpretation as an invocation prefix.
+        #[arg(long = "inv", conflicts_with_all = ["hook", "job_flag"])]
+        inv_flag: Option<String>,
+        /// Force interpretation as a job name.
+        #[arg(long = "job", conflicts_with_all = ["hook", "inv_flag"])]
+        job_flag: Option<String>,
     },
     /// Remove logs older than the retention period.
     Clean,
@@ -281,7 +288,6 @@ fn collect_all_job_names(
     Ok(names.into_iter().collect())
 }
 
-#[allow(dead_code)]
 const KNOWN_HOOK_TYPES: &[&str] = &[
     "post-clone",
     "worktree-pre-create",
@@ -290,7 +296,6 @@ const KNOWN_HOOK_TYPES: &[&str] = &[
     "worktree-post-remove",
 ];
 
-#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 enum RetryTarget {
     LatestInvocation,
@@ -299,7 +304,6 @@ enum RetryTarget {
     JobName(String),
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 struct RetryFlags {
     hook: Option<String>,
@@ -307,7 +311,6 @@ struct RetryFlags {
     job: Option<String>,
 }
 
-#[allow(dead_code)]
 fn retry_target_from_arg(arg: Option<&str>, flags: &RetryFlags) -> RetryTarget {
     if let Some(ref h) = flags.hook {
         return RetryTarget::HookType(h.clone());
@@ -386,9 +389,12 @@ pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
                 cancel_job(job.as_ref().unwrap(), inv.as_deref(), path, output)
             }
         }
-        Some(JobsCommand::Retry { ref job, ref inv }) => {
-            retry_job(job, inv.as_deref(), path, output)
-        }
+        Some(JobsCommand::Retry {
+            ref target,
+            ref hook,
+            ref inv_flag,
+            ref job_flag,
+        }) => retry_command(target.as_deref(), hook, inv_flag, job_flag, path, output),
         Some(JobsCommand::Clean) => clean_logs(&args, path, output),
     }
 }
@@ -916,7 +922,27 @@ fn cancel_all(path: &Path, output: &mut dyn Output) -> Result<()> {
     Ok(())
 }
 
+fn retry_command(
+    target: Option<&str>,
+    hook_flag: &Option<String>,
+    inv_flag: &Option<String>,
+    job_flag: &Option<String>,
+    path: &Path,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let flags = RetryFlags {
+        hook: hook_flag.clone(),
+        inv: inv_flag.clone(),
+        job: job_flag.clone(),
+    };
+    let parsed = retry_target_from_arg(target, &flags);
+    output.info(&format!("Retry target: {parsed:?}"));
+    let _ = path; // will be used in Task 8
+    Ok(())
+}
+
 /// Retry a failed job by reconstructing a JobSpec from stored metadata.
+#[allow(dead_code)]
 fn retry_job(job: &str, inv: Option<&str>, path: &Path, output: &mut dyn Output) -> Result<()> {
     let repo_hash = compute_repo_hash_from_path(path)?;
     let store = LogStore::for_repo(&repo_hash)?;
