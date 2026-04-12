@@ -245,8 +245,7 @@ __daft_go_impl() {{
         return
     fi
 
-    local -a raw
-    local -a wt_names wt_descs local_names local_descs remote_names remote_descs
+    local -a raw wt_items local_items remote_items
     raw=(${{(f)"$(daft __complete daft-go "$curword" --position "$cword" --fetch-on-miss 2>/dev/null)"}})
 
     local line name rest group desc
@@ -256,24 +255,18 @@ __daft_go_impl() {{
         group="${{rest%%$'\t'*}}"
         desc="${{rest#*$'\t'}}"
         case "$group" in
-            worktree)
-                wt_names+=("$name")
-                wt_descs+=("$name (worktree)")
-                ;;
-            local)
-                local_names+=("$name")
-                local_descs+=("$name (local · $desc)")
-                ;;
-            remote)
-                remote_names+=("$name")
-                remote_descs+=("$name (remote · $desc)")
-                ;;
+            worktree) wt_items+=("$name:worktree") ;;
+            local)    local_items+=("$name:local · $desc") ;;
+            remote)   remote_items+=("$name:remote · $desc") ;;
         esac
     done
 
-    (( ${{#wt_names}} ))     && compadd -V worktree -l -d wt_descs -a wt_names
-    (( ${{#local_names}} ))  && compadd -V local -l -d local_descs -a local_names
-    (( ${{#remote_names}} )) && compadd -V remote -l -d remote_descs -a remote_names
+    # _describe without -t avoids zsh's tag-retry mechanism.
+    # Empty first arg suppresses the group header.
+    # Items in name:description format get auto-aligned columns.
+    (( ${{#wt_items}} ))    && _describe '' wt_items
+    (( ${{#local_items}} )) && _describe '' local_items
+    (( ${{#remote_items}} )) && _describe '' remote_items
 }}
 
 _daft_go() {{
