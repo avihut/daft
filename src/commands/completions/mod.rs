@@ -547,6 +547,30 @@ mod tests {
     }
 
     #[test]
+    fn fish_daft_go_passes_fetch_on_miss_and_awk_reshuffles() {
+        let script =
+            fish::generate_fish_completion_string("daft-go").expect("generator must succeed");
+        assert!(
+            script.contains("--fetch-on-miss"),
+            "daft-go fish completion must pass --fetch-on-miss"
+        );
+        assert!(
+            script.contains("awk"),
+            "daft-go fish completion must reshuffle tab-separated columns via awk"
+        );
+    }
+
+    #[test]
+    fn fish_daft_umbrella_passes_fetch_on_miss_for_go() {
+        let fish_completions = fish::generate_daft_fish_completions();
+        assert!(
+            fish_completions.contains("daft __complete daft-go")
+                && fish_completions.contains("--fetch-on-miss"),
+            "daft go subcommand in umbrella fish completions must pass --fetch-on-miss"
+        );
+    }
+
+    #[test]
     fn zsh_gates_flag_completions_on_leading_dash() {
         let commands = [
             "git-worktree-checkout",

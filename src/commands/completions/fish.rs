@@ -3,6 +3,10 @@ use anyhow::{Context, Result};
 
 /// Generate fish completion string
 pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<String> {
+    if command_name == "daft-go" {
+        return Ok(generate_fish_daft_go_completion());
+    }
+
     let mut output = String::new();
     let has_branches = matches!(
         command_name,
@@ -221,6 +225,58 @@ fn generate_verb_alias_flag_completions() -> String {
     output
 }
 
+/// Generate bespoke fish completion for `daft-go`.
+///
+/// Passes `--fetch-on-miss` to `daft __complete` and reshuffles the
+/// tab-separated `name\tgroup\tage` output into fish's `name\tdescription`
+/// format where the description reads `<age> · <group>`.
+fn generate_fish_daft_go_completion() -> String {
+    use super::get_flag_descriptions;
+    use clap::CommandFactory;
+    let cmd = crate::commands::checkout::GoArgs::command();
+    let flag_descriptions = get_flag_descriptions(&cmd);
+
+    let mut output = String::new();
+    // Dynamic branch completion with grouped output
+    output.push_str("# Dynamic branch name completion\n");
+    output.push_str(
+        "complete -c daft-go -f -a \"(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\\t' '{printf \\\"%s\\t%s · %s\\n\\\", $1, $3, $2}')\"\n",
+    );
+    output.push('\n');
+    output.push_str("# Static flag completions (extracted from clap)\n");
+
+    // Flag completions (from clap introspection)
+    for (short, long, desc) in flag_descriptions {
+        let description = desc.unwrap_or_default();
+        if !short.is_empty() && !long.is_empty() {
+            let short_char = short.trim_start_matches('-');
+            let long_name = long.trim_start_matches("--");
+            output.push_str(&format!(
+                "complete -c daft-go -s {short_char} -l {long_name} -d '{description}'\n"
+            ));
+        } else if !long.is_empty() {
+            let long_name = long.trim_start_matches("--");
+            output.push_str(&format!(
+                "complete -c daft-go -l {long_name} -d '{description}'\n"
+            ));
+        } else if !short.is_empty() {
+            let short_char = short.trim_start_matches('-');
+            output.push_str(&format!(
+                "complete -c daft-go -s {short_char} -d '{description}'\n"
+            ));
+        }
+    }
+
+    // Register completions for shortcut aliases (wraps the full command)
+    for shortcut in crate::shortcuts::SHORTCUTS {
+        if shortcut.command == "daft-go" {
+            output.push_str(&format!("complete -c {} -w daft-go\n", shortcut.alias));
+        }
+    }
+
+    output
+}
+
 const DAFT_FISH_COMPLETIONS: &str = r#"# daft subcommand completions
 complete -c daft -f
 complete -c daft -n '__fish_use_subcommand' -s V -l version -d 'Print version information'
@@ -247,7 +303,7 @@ complete -c daft -n '__fish_use_subcommand' -a 'list' -d 'List worktrees with st
 complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to traditional layout'
 complete -c daft -n '__fish_use_subcommand' -a 'config' -d 'Configure daft settings'
 complete -c daft -n '__fish_use_subcommand' -a 'shared' -d 'Manage shared files across worktrees'
-complete -c daft -n '__fish_seen_subcommand_from go' -f -a "(daft __complete daft-go '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from go' -f -a "(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\t' '{printf \"%s\t%s · %s\n\", $1, $3, $2}')"
 complete -c daft -n '__fish_seen_subcommand_from start' -f -a "(daft __complete daft-start '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from carry update' -f -a "(daft __complete git-worktree-checkout '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove '' 2>/dev/null)"
