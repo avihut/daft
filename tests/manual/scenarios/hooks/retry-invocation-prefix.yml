@@ -1,0 +1,59 @@
+name: Retry by invocation prefix targets a specific invocation
+description:
+  "Verifies that 'retry <prefix>' works by using --inv flag to force invocation
+  prefix interpretation."
+
+repos:
+  - name: test-retry-inv
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Invocation prefix retry test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/inv
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: inv-job
+              run: "exit 1"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_RETRY_INV
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-retry-inv/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (job fails)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/inv 2>&1
+    cwd: "$WORK_DIR/test-retry-inv/main"
+    expect:
+      exit_code: 0
+
+  - name: Retry using --inv flag with a short prefix from the listing
+    run: |
+      short_id=$(daft hooks jobs --json 2>/dev/null | grep -o '"short_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      daft hooks jobs retry --inv "$short_id" 2>&1
+    cwd: "$WORK_DIR/test-retry-inv/feature/inv"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Retried"
+
+  - name: Retry with a nonexistent prefix — should fail
+    run: daft hooks jobs retry --inv zzzz 2>&1
+    cwd: "$WORK_DIR/test-retry-inv/feature/inv"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "No invocation matching prefix"
