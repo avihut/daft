@@ -589,6 +589,19 @@ mod tests {
     }
 
     #[test]
+    fn zsh_umbrella_delegates_go_to_daft_go_impl() {
+        let combined = format!(
+            "{}\n{}",
+            zsh::generate_zsh_completion_string("daft-go").unwrap(),
+            zsh::DAFT_ZSH_COMPLETIONS,
+        );
+        assert!(
+            combined.contains("__daft_go_impl"),
+            "zsh umbrella must call __daft_go_impl for the `go` verb alias"
+        );
+    }
+
+    #[test]
     fn zsh_gates_flag_completions_on_leading_dash() {
         let commands = [
             "git-worktree-checkout",
