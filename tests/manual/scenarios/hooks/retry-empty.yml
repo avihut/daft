@@ -1,0 +1,107 @@
+name: Empty retry retries all failed jobs from the most recent invocation
+description:
+  "Core bulk retry scenario. A hook with a guaranteed-fail job fires during
+  worktree creation, then 'daft hooks jobs retry' with no arguments re-runs the
+  failed job from the most recent invocation. Verifies: new invocation appears,
+  retry fails again, fix the job, retry succeeds on third pass. Listing shows
+  three chronological invocations."
+
+repos:
+  - name: test-retry-empty
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Retry test"
+          - path: fail-once.sh
+            content: |
+              #!/usr/bin/env bash
+              if [ ! -f /tmp/daft-retry-test-pass ]; then
+                echo "failing on purpose"
+                exit 1
+              fi
+              echo "passing now"
+              exit 0
+        commits:
+          - message: "Initial commit"
+      - name: feature/retry
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: might-fail
+              run: bash fail-once.sh
+            - name: always-ok
+              run: echo works
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_RETRY_EMPTY
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-retry-empty/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-retry-empty/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (might-fail will fail)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/retry 2>&1
+    cwd: "$WORK_DIR/test-retry-empty/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "failing on purpose"
+
+  - name: List jobs — should show one failed, one completed
+    run: daft hooks jobs 2>&1
+    cwd: "$WORK_DIR/test-retry-empty/feature/retry"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "might-fail"
+        - "failed"
+        - "always-ok"
+        - "completed"
+
+  - name: Retry with no args — retries the failed job, fails again
+    run: daft hooks jobs retry 2>&1
+    cwd: "$WORK_DIR/test-retry-empty/feature/retry"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Retried"
+        - "1 job"
+
+  - name: List jobs after first retry — should show two invocations
+    run: daft hooks jobs 2>&1
+    cwd: "$WORK_DIR/test-retry-empty/feature/retry"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "worktree-post-create"
+        - "hooks jobs retry"
+        - "might-fail"
+
+  - name: Fix the job by creating the sentinel file
+    run: touch /tmp/daft-retry-test-pass
+    expect:
+      exit_code: 0
+
+  - name: Retry again — should pass now
+    run: daft hooks jobs retry 2>&1
+    cwd: "$WORK_DIR/test-retry-empty/feature/retry"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Retried"
+
+  - name: Clean up sentinel
+    run: rm -f /tmp/daft-retry-test-pass
+    expect:
+      exit_code: 0
