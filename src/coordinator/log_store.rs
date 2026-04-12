@@ -28,6 +28,8 @@ pub struct JobMeta {
     pub pid: Option<u32>,
     pub background: bool,
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub needs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,6 +240,7 @@ mod tests {
             pid: Some(12345),
             background: false,
             finished_at: None,
+            needs: vec![],
         };
         store.write_meta(&dir, &meta).unwrap();
         let loaded = store.read_meta(&dir).unwrap();
@@ -274,6 +277,7 @@ mod tests {
             pid: None,
             background: false,
             finished_at: None,
+            needs: vec![],
         };
         store.write_meta(&dir, &meta).unwrap();
         let removed = store.clean(chrono::Duration::days(7)).unwrap();
@@ -389,6 +393,7 @@ mod tests {
             pid: Some(1234),
             background: true,
             finished_at: Some(finished),
+            needs: vec![],
         };
         store.write_meta(&dir, &meta).unwrap();
         let loaded = store.read_meta(&dir).unwrap();
@@ -423,6 +428,7 @@ mod tests {
             pid: None,
             background: false,
             finished_at: None,
+            needs: vec![],
         };
         store.write_meta(&job_dir, &meta).unwrap();
 
@@ -470,6 +476,7 @@ mod tests {
             pid: None,
             background: false,
             finished_at: Some(chrono::Utc::now()),
+            needs: vec![],
         };
 
         let job_dir = store
@@ -481,5 +488,50 @@ mod tests {
 
         let log_bytes = std::fs::read(LogStore::log_path(&job_dir)).unwrap();
         assert_eq!(log_bytes, b"installing...\ndone\n");
+    }
+
+    #[test]
+    fn job_meta_needs_round_trips_through_json() {
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let dir = store.create_job_dir("inv-needs", "seeder").unwrap();
+        let meta = JobMeta {
+            name: "seeder".to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            worktree: "feature/x".to_string(),
+            command: "echo seed".to_string(),
+            working_dir: "/tmp".to_string(),
+            env: HashMap::new(),
+            started_at: chrono::Utc::now(),
+            status: JobStatus::Completed,
+            exit_code: Some(0),
+            pid: None,
+            background: false,
+            finished_at: None,
+            needs: vec!["migrator".to_string()],
+        };
+        store.write_meta(&dir, &meta).unwrap();
+        let loaded = store.read_meta(&dir).unwrap();
+        assert_eq!(loaded.needs, vec!["migrator".to_string()]);
+    }
+
+    #[test]
+    fn job_meta_without_needs_field_deserializes_to_empty_vec() {
+        let json = r#"{
+            "name": "old-job",
+            "hook_type": "worktree-post-create",
+            "worktree": "feature/x",
+            "command": "echo hi",
+            "working_dir": "/tmp",
+            "env": {},
+            "started_at": "2026-04-11T12:00:00Z",
+            "status": "completed",
+            "exit_code": 0,
+            "pid": null,
+            "background": false,
+            "finished_at": null
+        }"#;
+        let meta: JobMeta = serde_json::from_str(json).unwrap();
+        assert!(meta.needs.is_empty());
     }
 }

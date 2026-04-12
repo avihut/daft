@@ -996,6 +996,7 @@ mod tests {
                 pid: None,
                 background: true,
                 finished_at: Some(now - chrono::Duration::seconds(offset - 3)),
+                needs: vec![],
             };
             store.write_meta(&dir, &meta).unwrap();
         }
@@ -1041,6 +1042,7 @@ mod tests {
             pid: None,
             background: true,
             finished_at: Some(now),
+            needs: vec![],
         };
         store.write_meta(&dir, &meta).unwrap();
 
