@@ -233,6 +233,13 @@ fn generate_zsh_daft_go_completion() -> String {
     format!(
         r#"#compdef daft-go
 
+# Per-group colors via list-colors zstyle. compadd -V <group> uses
+# the group name as a tag, so these patterns target each group.
+# Worktree = green, local = blue, remote = dim gray.
+zstyle ':completion:*:worktree' list-colors '=(#b)(*)=32'
+zstyle ':completion:*:local' list-colors '=(#b)(*)=34'
+zstyle ':completion:*:remote' list-colors '=(#b)(*)=2;37'
+
 __daft_go_impl() {{
     local curword="${{words[$CURRENT]}}"
     local cword=$((CURRENT - 1))
@@ -280,20 +287,20 @@ __daft_go_impl() {{
     (( max_len += 2 ))
     for (( i=1; i<=${{#wt_names}}; i++ )); do
         pad=$(( max_len - ${{#wt_names[$i]}} ))
-        wt_display+=("${{wt_names[$i]}}${{(l:$pad:: :)}}  \e[32mworktree\e[0m")
+        wt_display+=("${{wt_names[$i]}}${{(l:$pad:: :)}}  worktree")
     done
     for (( i=1; i<=${{#local_names}}; i++ )); do
         pad=$(( max_len - ${{#local_names[$i]}} ))
-        local_display+=("${{local_names[$i]}}${{(l:$pad:: :)}}  \e[34mlocal\e[0m · ${{local_descs[$i]}}")
+        local_display+=("${{local_names[$i]}}${{(l:$pad:: :)}}  local · ${{local_descs[$i]}}")
     done
     for (( i=1; i<=${{#remote_names}}; i++ )); do
         pad=$(( max_len - ${{#remote_names[$i]}} ))
-        remote_display+=("${{remote_names[$i]}}${{(l:$pad:: :)}}  \e[2;37mremote\e[0m · ${{remote_descs[$i]}}")
+        remote_display+=("${{remote_names[$i]}}${{(l:$pad:: :)}}  remote · ${{remote_descs[$i]}}")
     done
 
     # compadd -V preserves group order, -l shows one-per-line,
     # -d uses display array, -a uses names array.
-    # No _describe — it triggers zsh's tag-retry mechanism.
+    # Colors come from list-colors zstyle (above), not ANSI in display strings.
     (( ${{#wt_names}} ))     && compadd -V worktree -l -d wt_display -a wt_names
     (( ${{#local_names}} ))  && compadd -V local -l -d local_display -a local_names
     (( ${{#remote_names}} )) && compadd -V remote -l -d remote_display -a remote_names
