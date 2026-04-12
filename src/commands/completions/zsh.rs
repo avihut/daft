@@ -255,18 +255,17 @@ __daft_go_impl() {{
         group="${{rest%%$'\t'*}}"
         desc="${{rest#*$'\t'}}"
         case "$group" in
-            worktree) wt_items+=("$name:worktree") ;;
-            local)    local_items+=("$name:local · $desc") ;;
-            remote)   remote_items+=("$name:remote · $desc") ;;
+            worktree) wt_items+=("$name:$desc") ;;
+            local)    local_items+=("$name:$desc") ;;
+            remote)   remote_items+=("$name:$desc") ;;
         esac
     done
 
     # _describe without -t avoids zsh's tag-retry mechanism.
-    # Empty first arg suppresses the group header.
-    # Items in name:description format get auto-aligned columns.
-    (( ${{#wt_items}} ))    && _describe '' wt_items
-    (( ${{#local_items}} )) && _describe '' local_items
-    (( ${{#remote_items}} )) && _describe '' remote_items
+    # Group names show as headers; items get auto-aligned columns.
+    (( ${{#wt_items}} ))     && _describe 'worktree' wt_items
+    (( ${{#local_items}} ))  && _describe 'local branch' local_items
+    (( ${{#remote_items}} )) && _describe 'remote branch' remote_items
 }}
 
 _daft_go() {{

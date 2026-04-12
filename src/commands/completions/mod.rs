@@ -523,15 +523,15 @@ mod tests {
         let script =
             zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
         assert!(
-            script.contains("_describe '' wt_items"),
+            script.contains("_describe 'worktree' wt_items"),
             "daft-go zsh completion must call _describe for worktree group"
         );
         assert!(
-            script.contains("_describe '' local_items"),
+            script.contains("_describe 'local branch' local_items"),
             "daft-go zsh completion must call _describe for local group"
         );
         assert!(
-            script.contains("_describe '' remote_items"),
+            script.contains("_describe 'remote branch' remote_items"),
             "daft-go zsh completion must call _describe for remote group"
         );
         assert!(
