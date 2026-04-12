@@ -1,0 +1,70 @@
+name: Single-job retry works and rejects non-failed jobs
+description:
+  "Verifies that 'retry <job-name>' retries exactly one job, and that attempting
+  to retry a completed or skipped job produces an error."
+
+repos:
+  - name: test-retry-job
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Single-job retry test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/rj
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: fails-here
+              run: "exit 1"
+            - name: works-fine
+              run: echo ok
+            - name: skipped-job
+              run: echo never
+              skip: true
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_RETRY_JOB
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-retry-job/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch
+    run: env -u DAFT_TESTING git-worktree-checkout feature/rj 2>&1
+    cwd: "$WORK_DIR/test-retry-job/main"
+    expect:
+      exit_code: 0
+
+  - name: Retry the failed job by name
+    run: daft hooks jobs retry fails-here 2>&1
+    cwd: "$WORK_DIR/test-retry-job/feature/rj"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Retried 1 job"
+
+  - name: Retry a completed job — should fail
+    run: daft hooks jobs retry --job works-fine 2>&1
+    cwd: "$WORK_DIR/test-retry-job/feature/rj"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not in a retryable state"
+
+  - name: Retry a skipped job — should fail (not found as failed)
+    run: daft hooks jobs retry skipped-job 2>&1
+    cwd: "$WORK_DIR/test-retry-job/feature/rj"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "No failed job named"
