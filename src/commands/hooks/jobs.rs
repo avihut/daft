@@ -333,6 +333,42 @@ fn retry_target_from_arg(arg: Option<&str>, flags: &RetryFlags) -> RetryTarget {
     }
 }
 
+#[allow(dead_code)]
+fn build_retry_set(
+    metas: &[crate::coordinator::log_store::JobMeta],
+) -> (Vec<crate::executor::JobSpec>, Vec<String>) {
+    let retry_names: std::collections::HashSet<String> = metas
+        .iter()
+        .filter(|m| matches!(m.status, JobStatus::Failed | JobStatus::Cancelled))
+        .map(|m| m.name.clone())
+        .collect();
+
+    let specs: Vec<crate::executor::JobSpec> = metas
+        .iter()
+        .filter(|m| retry_names.contains(&m.name))
+        .map(|m| {
+            let needs: Vec<String> = m
+                .needs
+                .iter()
+                .filter(|n| retry_names.contains(n.as_str()))
+                .cloned()
+                .collect();
+            crate::executor::JobSpec {
+                name: m.name.clone(),
+                command: m.command.clone(),
+                working_dir: std::path::PathBuf::from(&m.working_dir),
+                env: m.env.clone(),
+                background: m.background,
+                needs,
+                ..Default::default()
+            }
+        })
+        .collect();
+
+    let names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
+    (specs, names)
+}
+
 pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
     match args.command {
         None => list_jobs(&args, path, output),
@@ -1202,5 +1238,66 @@ mod tests {
     fn test_retry_target_9char_hex_is_job() {
         let target = retry_target_from_arg(Some("deadbeef0"), &RetryFlags::default());
         assert!(matches!(target, RetryTarget::JobName(_)));
+    }
+
+    fn make_test_job_meta(
+        name: &str,
+        status: crate::coordinator::log_store::JobStatus,
+        needs: Vec<String>,
+    ) -> crate::coordinator::log_store::JobMeta {
+        crate::coordinator::log_store::JobMeta {
+            name: name.to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            worktree: "feature/x".to_string(),
+            command: format!("echo {name}"),
+            working_dir: "/tmp".to_string(),
+            env: std::collections::HashMap::new(),
+            started_at: chrono::Utc::now(),
+            status,
+            exit_code: None,
+            pid: None,
+            background: false,
+            finished_at: None,
+            needs,
+        }
+    }
+
+    #[test]
+    fn test_build_retry_set_picks_failed_and_cancelled() {
+        let metas = vec![
+            make_test_job_meta("a", JobStatus::Completed, vec![]),
+            make_test_job_meta("b", JobStatus::Failed, vec!["a".into()]),
+            make_test_job_meta("c", JobStatus::Cancelled, vec!["b".into()]),
+            make_test_job_meta("d", JobStatus::Skipped, vec![]),
+        ];
+        let (specs, _) = build_retry_set(&metas);
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"b"));
+        assert!(names.contains(&"c"));
+        // b's needs should be pruned (a is not in retry set)
+        let b_spec = specs.iter().find(|s| s.name == "b").unwrap();
+        assert!(b_spec.needs.is_empty());
+        // c's needs should point to b (b IS in retry set)
+        let c_spec = specs.iter().find(|s| s.name == "c").unwrap();
+        assert_eq!(c_spec.needs, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn test_build_retry_set_all_green_returns_empty() {
+        let metas = vec![
+            make_test_job_meta("a", JobStatus::Completed, vec![]),
+            make_test_job_meta("b", JobStatus::Completed, vec!["a".into()]),
+        ];
+        let (specs, _) = build_retry_set(&metas);
+        assert!(specs.is_empty());
+    }
+
+    #[test]
+    fn test_build_retry_set_single_failed() {
+        let metas = vec![make_test_job_meta("only", JobStatus::Failed, vec![])];
+        let (specs, _) = build_retry_set(&metas);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "only");
     }
 }
