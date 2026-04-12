@@ -1,0 +1,74 @@
+name: Retry re-dispatches fg jobs inline and bg jobs to coordinator
+description:
+  "Verifies the fg-first/bg-second execution model. A hook with one fg job
+  (fails) and one bg job (fails) and one fg job (passes). Retry picks up only
+  the two failures."
+
+repos:
+  - name: test-retry-mixed
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Mixed retry test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/mix
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: fg-ok
+              run: echo fg-ok-output
+            - name: fg-fail
+              run: "exit 1"
+            - name: bg-fail
+              run: "exit 1"
+              background: true
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_RETRY_MIXED
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-retry-mixed/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (fg-fail and bg-fail will fail)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/mix 2>&1
+    cwd: "$WORK_DIR/test-retry-mixed/main"
+    expect:
+      exit_code: 0
+
+  - name: Wait for bg job to finish then list
+    run: |
+      for i in $(seq 1 20); do
+        if daft hooks jobs --json 2>/dev/null | grep -q '"failed"'; then
+          break
+        fi
+        sleep 0.5
+      done
+      daft hooks jobs 2>&1
+    cwd: "$WORK_DIR/test-retry-mixed/feature/mix"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "fg-ok"
+        - "completed"
+        - "fg-fail"
+        - "failed"
+
+  - name: Retry — should re-dispatch failures only
+    run: daft hooks jobs retry 2>&1
+    cwd: "$WORK_DIR/test-retry-mixed/feature/mix"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Retried"
+        - "foreground"
