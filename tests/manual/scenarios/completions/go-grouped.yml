@@ -1,0 +1,137 @@
+name: Grouped go completions
+description:
+  daft __complete daft-go emits tab-separated grouped output with correct
+  ordering, deduplication, and current-worktree exclusion
+
+steps:
+  - name:
+      Set up a git repo with worktrees, local branches, and a remote-only branch
+    run: |
+      set -e
+      mkdir -p $WORK_DIR/origin.git
+      cd $WORK_DIR/origin.git
+      git init --bare
+      git symbolic-ref HEAD refs/heads/master
+
+      # Bootstrap: populate the bare origin via a temp clone
+      cd $WORK_DIR
+      git clone origin.git bootstrap
+      cd $WORK_DIR/bootstrap
+      echo "content" > README.md
+      git add README.md
+      git commit -m "Initial commit"
+      git push origin master
+
+      # Push feat/worktree-branch (will have a linked worktree in the work clone)
+      git checkout -b feat/worktree-branch
+      git commit --allow-empty -m "worktree branch"
+      git push origin feat/worktree-branch
+      git checkout master
+
+      # Push remote-only (will NOT be checked out locally)
+      git checkout -b remote-only
+      git commit --allow-empty -m "remote-only"
+      git push origin remote-only
+      git checkout master
+
+      # Clean up bootstrap: cd away first so the shell is not left in a
+      # deleted directory (which causes getcwd errors on subsequent commands)
+      cd $WORK_DIR
+      rm -rf $WORK_DIR/bootstrap
+
+      # Create the working clone
+      git clone $WORK_DIR/origin.git $WORK_DIR/work
+
+      # Create a local-only branch (not pushed to remote)
+      cd $WORK_DIR/work
+      git checkout -b local-only
+      git commit --allow-empty -m "local-only"
+      git checkout master
+
+      # Track feat/worktree-branch locally
+      git checkout feat/worktree-branch
+      git checkout master
+
+      # Add a linked worktree for feat/worktree-branch
+      git worktree add $WORK_DIR/feat-worktree feat/worktree-branch
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/work"
+        - "$WORK_DIR/feat-worktree"
+
+  - name: Completion from master worktree lists worktree group first
+    run: daft __complete daft-go "" --position 1 2>&1
+    cwd: "$WORK_DIR/work"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feat/worktree-branch\tworktree\t"
+
+  - name: Completion from master worktree lists local group second
+    run: daft __complete daft-go "" --position 1 2>&1
+    cwd: "$WORK_DIR/work"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "local-only\tlocal\t"
+        - "master\tlocal\t"
+
+  - name: Completion from master worktree lists remote group third
+    run: daft __complete daft-go "" --position 1 2>&1
+    cwd: "$WORK_DIR/work"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "remote-only\tremote\t"
+
+  - name:
+      Completion from master worktree excludes current branch from worktree
+      group
+    run: daft __complete daft-go "" --position 1 2>&1
+    cwd: "$WORK_DIR/work"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "master\tworktree\t"
+
+  - name: Completion deduplicates feat/worktree-branch from local group
+    run: daft __complete daft-go "" --position 1 2>&1
+    cwd: "$WORK_DIR/work"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "feat/worktree-branch\tlocal\t"
+
+  - name:
+      Completion deduplicates remote-only from remote after appearing in local
+    run: daft __complete daft-go "" --position 1 2>&1
+    cwd: "$WORK_DIR/work"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "remote-only\tlocal\t"
+
+  - name:
+      Completion from feat-worktree excludes feat/worktree-branch from worktree
+      group
+    run: daft __complete daft-go "" --position 1 2>&1
+    cwd: "$WORK_DIR/feat-worktree"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "master\tworktree\t"
+      output_not_contains:
+        - "feat/worktree-branch\tworktree\t"
+
+  - name: Prefix filtering returns only matching entries
+    run: daft __complete daft-go "feat" --position 1 2>&1
+    cwd: "$WORK_DIR/work"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feat/worktree-branch\tworktree\t"
+      output_not_contains:
+        - "master\t"
+        - "local-only\t"
+        - "remote-only\t"
