@@ -288,7 +288,7 @@ _daft() {
                     return 0
                 fi
                 case "${words[3]}" in
-                    logs|retry|cancel)
+                    logs|cancel)
                         if [[ "$cur" == -* ]]; then
                             COMPREPLY=( $(compgen -W "--inv -h --help" -- "$cur") )
                             return 0
@@ -299,6 +299,21 @@ _daft() {
                             while IFS=$'\n' read -r line; do
                                 local val="${line%%	*}"
                                 COMPREPLY+=( "$val" )
+                            done <<< "$completions"
+                        fi
+                        return 0
+                        ;;
+                    retry)
+                        if [[ "$cur" == -* ]]; then
+                            COMPREPLY=( $(compgen -W "--hook --inv --job -h --help" -- "$cur") )
+                            return 0
+                        fi
+                        local completions
+                        completions=$(daft __complete hooks-jobs-retry "$cur" 2>/dev/null)
+                        if [[ -n "$completions" ]]; then
+                            while IFS=$'\n' read -r line; do
+                                local val="${line%%	*}"
+                                COMPREPLY+=("$val")
                             done <<< "$completions"
                         fi
                         return 0
