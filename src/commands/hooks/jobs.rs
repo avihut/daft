@@ -82,7 +82,7 @@ pub struct JobsArgs {
 enum JobsCommand {
     /// View output log for a background job.
     Logs {
-        /// Job address: name, inv:name, or worktree:inv:name.
+        /// Job address: name, inv:name, worktree:name, or worktree:inv:name.
         job: String,
         /// Invocation ID prefix (overrides inline prefix).
         #[arg(long)]
@@ -130,11 +130,22 @@ impl JobAddress {
                 invocation_prefix: None,
                 job_name: parts[0].to_string(),
             },
-            2 => Self {
-                worktree: None,
-                invocation_prefix: Some(parts[1].to_string()),
-                job_name: parts[0].to_string(),
-            },
+            2 => {
+                let left = parts[1];
+                if left.contains('/') {
+                    Self {
+                        worktree: Some(left.to_string()),
+                        invocation_prefix: None,
+                        job_name: parts[0].to_string(),
+                    }
+                } else {
+                    Self {
+                        worktree: None,
+                        invocation_prefix: Some(left.to_string()),
+                        job_name: parts[0].to_string(),
+                    }
+                }
+            }
             3 => Self {
                 worktree: Some(parts[2].to_string()),
                 invocation_prefix: Some(parts[1].to_string()),
@@ -960,6 +971,22 @@ mod tests {
         assert_eq!(addr.worktree.as_deref(), Some("feature/auth/v2"));
         assert_eq!(addr.invocation_prefix.as_deref(), Some("a3f2"));
         assert_eq!(addr.job_name, "warm-build");
+    }
+
+    #[test]
+    fn test_parse_job_address_worktree_job_two_segment() {
+        let addr = JobAddress::parse("feature/auth:db-migrate");
+        assert_eq!(addr.worktree.as_deref(), Some("feature/auth"));
+        assert!(addr.invocation_prefix.is_none());
+        assert_eq!(addr.job_name, "db-migrate");
+    }
+
+    #[test]
+    fn test_parse_job_address_two_segment_inv_job_no_slash() {
+        let addr = JobAddress::parse("c9d4:db-migrate");
+        assert!(addr.worktree.is_none());
+        assert_eq!(addr.invocation_prefix.as_deref(), Some("c9d4"));
+        assert_eq!(addr.job_name, "db-migrate");
     }
 
     #[test]
