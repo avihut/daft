@@ -519,20 +519,28 @@ mod tests {
     }
 
     #[test]
-    fn zsh_daft_go_uses_compadd_groups() {
+    fn zsh_daft_go_uses_compadd_groups_with_colored_headers() {
         let script =
             zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
         assert!(
-            script.contains("compadd -V worktree"),
-            "daft-go zsh must use compadd -V for worktree group"
+            script.contains("-V worktree"),
+            "daft-go zsh must use -V worktree group"
         );
         assert!(
-            script.contains("compadd -V local"),
-            "daft-go zsh must use compadd -V for local group"
+            script.contains("-V local"),
+            "daft-go zsh must use -V local group"
         );
         assert!(
-            script.contains("compadd -V remote"),
-            "daft-go zsh must use compadd -V for remote group"
+            script.contains("-V remote"),
+            "daft-go zsh must use -V remote group"
+        );
+        assert!(
+            script.contains("-X '%F{green}worktree%f'"),
+            "daft-go zsh must have colored worktree header via -X"
+        );
+        assert!(
+            script.contains("-X '%F{blue}local branch%f'"),
+            "daft-go zsh must have colored local header via -X"
         );
         assert!(
             !script.contains("\n    _describe"),

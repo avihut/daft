@@ -233,13 +233,6 @@ fn generate_zsh_daft_go_completion() -> String {
     format!(
         r#"#compdef daft-go
 
-# Per-group colors via list-colors zstyle. compadd -V <group> uses
-# the group name as a tag, so these patterns target each group.
-# Worktree = green, local = blue, remote = dim gray.
-zstyle ':completion:*:worktree' list-colors '=(#b)(*)=32'
-zstyle ':completion:*:local' list-colors '=(#b)(*)=34'
-zstyle ':completion:*:remote' list-colors '=(#b)(*)=2;37'
-
 __daft_go_impl() {{
     local curword="${{words[$CURRENT]}}"
     local cword=$((CURRENT - 1))
@@ -281,29 +274,29 @@ __daft_go_impl() {{
         esac
     done
 
-    # Second pass: build padded display strings with group label + age.
+    # Second pass: build padded display strings with age.
     local -a wt_display local_display remote_display
     local i pad
     (( max_len += 2 ))
     for (( i=1; i<=${{#wt_names}}; i++ )); do
         pad=$(( max_len - ${{#wt_names[$i]}} ))
-        wt_display+=("${{wt_names[$i]}}${{(l:$pad:: :)}}  worktree")
+        wt_display+=("${{wt_names[$i]}}${{(l:$pad:: :)}}  ${{wt_descs[$i]}}")
     done
     for (( i=1; i<=${{#local_names}}; i++ )); do
         pad=$(( max_len - ${{#local_names[$i]}} ))
-        local_display+=("${{local_names[$i]}}${{(l:$pad:: :)}}  local · ${{local_descs[$i]}}")
+        local_display+=("${{local_names[$i]}}${{(l:$pad:: :)}}  ${{local_descs[$i]}}")
     done
     for (( i=1; i<=${{#remote_names}}; i++ )); do
         pad=$(( max_len - ${{#remote_names[$i]}} ))
-        remote_display+=("${{remote_names[$i]}}${{(l:$pad:: :)}}  remote · ${{remote_descs[$i]}}")
+        remote_display+=("${{remote_names[$i]}}${{(l:$pad:: :)}}  ${{remote_descs[$i]}}")
     done
 
     # compadd -V preserves group order, -l shows one-per-line,
     # -d uses display array, -a uses names array.
-    # Colors come from list-colors zstyle (above), not ANSI in display strings.
-    (( ${{#wt_names}} ))     && compadd -V worktree -l -d wt_display -a wt_names
-    (( ${{#local_names}} ))  && compadd -V local -l -d local_display -a local_names
-    (( ${{#remote_names}} )) && compadd -V remote -l -d remote_display -a remote_names
+    # -X with %F prompt escapes adds colored group headers.
+    (( ${{#wt_names}} ))     && compadd -X '%F{{green}}worktree%f' -V worktree -l -d wt_display -a wt_names
+    (( ${{#local_names}} ))  && compadd -X '%F{{blue}}local branch%f' -V local -l -d local_display -a local_names
+    (( ${{#remote_names}} )) && compadd -X '%F{{245}}remote branch%f' -V remote -l -d remote_display -a remote_names
 }}
 
 _daft_go() {{
