@@ -189,7 +189,7 @@ fn run_single_background_job(
         pid: Some(std::process::id()),
         background: true,
         finished_at: None,
-        needs: vec![],
+        needs: job.needs.clone(),
     };
     if let Err(e) = store.write_meta(&job_dir, &meta) {
         eprintln!("daft: failed to write meta for '{}': {e}", job.name);

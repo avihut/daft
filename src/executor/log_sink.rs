@@ -121,7 +121,7 @@ impl LogSink for BufferingLogSink {
             pid: None,
             background: false,
             finished_at: Some(chrono::Utc::now()),
-            needs: vec![],
+            needs: spec.needs.clone(),
         };
 
         if let Err(e) = self
@@ -152,7 +152,7 @@ impl LogSink for BufferingLogSink {
             pid: None,
             background: false,
             finished_at: None,
-            needs: vec![],
+            needs: spec.needs.clone(),
         };
 
         if let Err(e) = self
@@ -204,7 +204,8 @@ mod tests {
             "feature/x".to_string(),
         );
 
-        let spec = make_spec("pnpm-install", false);
+        let mut spec = make_spec("pnpm-install", false);
+        spec.needs = vec!["db-migrate".to_string()];
         sink.on_job_start(&spec);
         sink.on_job_output(&spec, "installing...");
         sink.on_job_output(&spec, "done");
@@ -217,6 +218,7 @@ mod tests {
         assert_eq!(loaded.worktree, "feature/x");
         assert!(!loaded.background);
         assert!(loaded.finished_at.is_some());
+        assert_eq!(loaded.needs, vec!["db-migrate".to_string()]);
 
         let log_bytes = std::fs::read(LogStore::log_path(&job_dir)).unwrap();
         let log_text = String::from_utf8(log_bytes).unwrap();
