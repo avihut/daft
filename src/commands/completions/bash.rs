@@ -3,6 +3,10 @@ use anyhow::{Context, Result};
 
 /// Generate bash completion string
 pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<String> {
+    if command_name == "daft-go" {
+        return Ok(generate_bash_daft_go_completion());
+    }
+
     let mut output = String::new();
     let has_branches = matches!(
         command_name,
@@ -134,6 +138,35 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
     }
 
     Ok(output)
+}
+
+fn generate_bash_daft_go_completion() -> String {
+    let cmd = get_command_for_name("daft-go").expect("daft-go command must exist");
+    let (all_flags, _, _) = extract_flags(&cmd);
+    let flags_joined = all_flags.join(" ");
+
+    format!(
+        r#"_daft_go() {{
+    local cur prev words cword
+    _init_completion || return
+
+    if [[ "$cur" == -* ]]; then
+        local flags="{flags_joined}"
+        COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
+        return 0
+    fi
+
+    local raw
+    raw=$(daft __complete daft-go "$cur" --position "$cword" --fetch-on-miss 2>/dev/null | cut -f1)
+    if [[ -n "$raw" ]]; then
+        COMPREPLY=( $(compgen -W "$raw" -- "$cur") )
+        compopt -o nosort 2>/dev/null || true
+        return 0
+    fi
+}}
+complete -F _daft_go daft-go
+"#
+    )
 }
 
 pub(super) const DAFT_BASH_COMPLETIONS: &str = r#"# daft subcommand completions

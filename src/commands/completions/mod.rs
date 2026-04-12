@@ -499,6 +499,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bash_daft_go_uses_nosort_and_fetch_on_miss() {
+        let script =
+            bash::generate_bash_completion_string("daft-go").expect("generator must succeed");
+        assert!(
+            script.contains("--fetch-on-miss"),
+            "daft-go bash completion must pass --fetch-on-miss to daft __complete"
+        );
+        assert!(
+            script.contains("compopt -o nosort"),
+            "daft-go bash completion must attempt compopt -o nosort to \
+             preserve group ordering"
+        );
+        assert!(
+            script.contains("cut -f1"),
+            "daft-go bash completion must strip tab-separated group/desc \
+             columns with cut -f1"
+        );
+    }
+
+    #[test]
     fn zsh_daft_go_emits_describe_per_group() {
         let script =
             zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
