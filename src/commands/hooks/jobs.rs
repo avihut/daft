@@ -281,6 +281,58 @@ fn collect_all_job_names(
     Ok(names.into_iter().collect())
 }
 
+#[allow(dead_code)]
+const KNOWN_HOOK_TYPES: &[&str] = &[
+    "post-clone",
+    "worktree-pre-create",
+    "worktree-post-create",
+    "worktree-pre-remove",
+    "worktree-post-remove",
+];
+
+#[allow(dead_code)]
+#[derive(Debug, PartialEq)]
+enum RetryTarget {
+    LatestInvocation,
+    HookType(String),
+    InvocationPrefix(String),
+    JobName(String),
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Default)]
+struct RetryFlags {
+    hook: Option<String>,
+    inv: Option<String>,
+    job: Option<String>,
+}
+
+#[allow(dead_code)]
+fn retry_target_from_arg(arg: Option<&str>, flags: &RetryFlags) -> RetryTarget {
+    if let Some(ref h) = flags.hook {
+        return RetryTarget::HookType(h.clone());
+    }
+    if let Some(ref i) = flags.inv {
+        return RetryTarget::InvocationPrefix(i.clone());
+    }
+    if let Some(ref j) = flags.job {
+        return RetryTarget::JobName(j.clone());
+    }
+
+    match arg {
+        None => RetryTarget::LatestInvocation,
+        Some(a) => {
+            if KNOWN_HOOK_TYPES.contains(&a) {
+                RetryTarget::HookType(a.to_string())
+            } else if a.len() >= 2 && a.len() <= 8 && a.chars().all(|c| c.is_ascii_hexdigit()) {
+                RetryTarget::InvocationPrefix(a.to_string())
+            } else {
+                RetryTarget::JobName(a.to_string())
+            }
+        }
+    }
+}
+
 pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
     match args.command {
         None => list_jobs(&args, path, output),
@@ -1084,5 +1136,71 @@ mod tests {
         // The dim helper wraps in ANSI codes; check that the literal "skipped"
         // is present inside.
         assert!(rendered.contains("skipped"));
+    }
+
+    #[test]
+    fn test_retry_target_empty_is_latest() {
+        let target = retry_target_from_arg(None, &RetryFlags::default());
+        assert!(matches!(target, RetryTarget::LatestInvocation));
+    }
+
+    #[test]
+    fn test_retry_target_known_hook_type() {
+        let target = retry_target_from_arg(Some("worktree-post-create"), &RetryFlags::default());
+        assert!(matches!(target, RetryTarget::HookType(ref h) if h == "worktree-post-create"));
+    }
+
+    #[test]
+    fn test_retry_target_hex_prefix() {
+        let target = retry_target_from_arg(Some("a3f2"), &RetryFlags::default());
+        assert!(matches!(target, RetryTarget::InvocationPrefix(ref p) if p == "a3f2"));
+    }
+
+    #[test]
+    fn test_retry_target_job_name() {
+        let target = retry_target_from_arg(Some("db-migrate"), &RetryFlags::default());
+        assert!(matches!(target, RetryTarget::JobName(ref n) if n == "db-migrate"));
+    }
+
+    #[test]
+    fn test_retry_target_flag_overrides_shape() {
+        let flags = RetryFlags {
+            hook: Some("worktree-post-create".into()),
+            ..Default::default()
+        };
+        let target = retry_target_from_arg(None, &flags);
+        assert!(matches!(target, RetryTarget::HookType(ref h) if h == "worktree-post-create"));
+
+        let flags = RetryFlags {
+            inv: Some("a3f2".into()),
+            ..Default::default()
+        };
+        let target = retry_target_from_arg(None, &flags);
+        assert!(matches!(target, RetryTarget::InvocationPrefix(ref p) if p == "a3f2"));
+
+        let flags = RetryFlags {
+            job: Some("db-migrate".into()),
+            ..Default::default()
+        };
+        let target = retry_target_from_arg(None, &flags);
+        assert!(matches!(target, RetryTarget::JobName(ref n) if n == "db-migrate"));
+    }
+
+    #[test]
+    fn test_retry_target_post_clone_is_hook_not_job() {
+        let target = retry_target_from_arg(Some("post-clone"), &RetryFlags::default());
+        assert!(matches!(target, RetryTarget::HookType(ref h) if h == "post-clone"));
+    }
+
+    #[test]
+    fn test_retry_target_8char_hex_is_invocation() {
+        let target = retry_target_from_arg(Some("deadbeef"), &RetryFlags::default());
+        assert!(matches!(target, RetryTarget::InvocationPrefix(_)));
+    }
+
+    #[test]
+    fn test_retry_target_9char_hex_is_job() {
+        let target = retry_target_from_arg(Some("deadbeef0"), &RetryFlags::default());
+        assert!(matches!(target, RetryTarget::JobName(_)));
     }
 }
