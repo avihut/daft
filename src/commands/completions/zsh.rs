@@ -258,15 +258,15 @@ __daft_go_impl() {{
         case "$group" in
             worktree)
                 wt_names+=("$name")
-                wt_descs+=("$name ($desc)")
+                wt_descs+=("$name (worktree)")
                 ;;
             local)
                 local_names+=("$name")
-                local_descs+=("$name ($desc)")
+                local_descs+=("$name (local · $desc)")
                 ;;
             remote)
                 remote_names+=("$name")
-                remote_descs+=("$name ($desc)")
+                remote_descs+=("$name (remote · $desc)")
                 ;;
         esac
     done
