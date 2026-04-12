@@ -1,0 +1,67 @@
+name: Retry by hook name targets the most recent invocation of that hook type
+description:
+  "Verifies that 'retry worktree-post-create' selects the most recent invocation
+  of that hook type."
+
+repos:
+  - name: test-retry-hook
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Hook-name retry test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/rh
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: hook-job
+              run: "exit 1"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_RETRY_HOOK
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-retry-hook/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (automatic hook fires, job fails)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/rh 2>&1
+    cwd: "$WORK_DIR/test-retry-hook/main"
+    expect:
+      exit_code: 0
+
+  - name: List jobs — should show one invocation with a failed job
+    run: daft hooks jobs 2>&1
+    cwd: "$WORK_DIR/test-retry-hook/feature/rh"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "hook-job"
+        - "failed"
+
+  - name: Retry by hook name
+    run: daft hooks jobs retry worktree-post-create 2>&1
+    cwd: "$WORK_DIR/test-retry-hook/feature/rh"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Retried"
+
+  - name: List jobs — should show original + retry invocation
+    run: daft hooks jobs 2>&1
+    cwd: "$WORK_DIR/test-retry-hook/feature/rh"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "worktree-post-create"
+        - "hooks jobs retry worktree-post-create"
