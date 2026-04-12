@@ -191,6 +191,18 @@ impl LogStore {
         Ok(all.into_iter().filter(|m| m.worktree == worktree).collect())
     }
 
+    pub fn find_invocations_by_prefix(
+        &self,
+        worktree: &str,
+        prefix: &str,
+    ) -> Result<Vec<InvocationMeta>> {
+        let all = self.list_invocations_for_worktree(worktree)?;
+        Ok(all
+            .into_iter()
+            .filter(|m| m.invocation_id.starts_with(prefix))
+            .collect())
+    }
+
     pub fn list_jobs_in_invocation(&self, invocation_id: &str) -> Result<Vec<PathBuf>> {
         let inv_dir = self.base_dir.join(invocation_id);
         let mut dirs = Vec::new();
@@ -533,5 +545,44 @@ mod tests {
         }"#;
         let meta: JobMeta = serde_json::from_str(json).unwrap();
         assert!(meta.needs.is_empty());
+    }
+
+    #[test]
+    fn find_invocations_by_prefix_returns_matching() {
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+
+        let now = chrono::Utc::now();
+        for (inv_id, wt, offset) in &[
+            ("a3f200000000", "feature/a", 100i64),
+            ("a3f200000001", "feature/a", 50),
+            ("b7c100000000", "feature/a", 10),
+        ] {
+            std::fs::create_dir_all(tmp.path().join(inv_id)).unwrap();
+            let meta = InvocationMeta {
+                invocation_id: inv_id.to_string(),
+                trigger_command: "worktree-post-create".to_string(),
+                hook_type: "worktree-post-create".to_string(),
+                worktree: wt.to_string(),
+                created_at: now - chrono::Duration::seconds(*offset),
+            };
+            store.write_invocation_meta(inv_id, &meta).unwrap();
+        }
+
+        let matches = store
+            .find_invocations_by_prefix("feature/a", "a3f2")
+            .unwrap();
+        assert_eq!(matches.len(), 2);
+        assert!(matches.iter().all(|m| m.invocation_id.starts_with("a3f2")));
+
+        let matches = store
+            .find_invocations_by_prefix("feature/a", "b7c1")
+            .unwrap();
+        assert_eq!(matches.len(), 1);
+
+        let matches = store
+            .find_invocations_by_prefix("feature/a", "zzzz")
+            .unwrap();
+        assert!(matches.is_empty());
     }
 }
