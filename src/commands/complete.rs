@@ -30,6 +30,13 @@ struct Args {
         help = "Enable verbose error output for debugging completion issues"
     )]
     verbose: bool,
+
+    #[arg(
+        long,
+        help = "When no local matches are found for the prefix, run `git fetch` \
+                with a spinner and re-resolve"
+    )]
+    fetch_on_miss: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -49,6 +56,7 @@ pub fn run() -> Result<()> {
         args.position.unwrap_or(1),
         &args.word,
         args.verbose,
+        args.fetch_on_miss,
     )?;
 
     for suggestion in suggestions {
@@ -59,7 +67,13 @@ pub fn run() -> Result<()> {
 }
 
 /// Provide context-aware completions based on command and position
-fn complete(command: &str, position: usize, word: &str, verbose: bool) -> Result<Vec<String>> {
+fn complete(
+    command: &str,
+    position: usize,
+    word: &str,
+    verbose: bool,
+    fetch_on_miss: bool,
+) -> Result<Vec<String>> {
     match (command, position) {
         // git-worktree-checkout: complete existing branch names
         ("git-worktree-checkout", 1) => complete_existing_branches(word, verbose),
@@ -81,7 +95,7 @@ fn complete(command: &str, position: usize, word: &str, verbose: bool) -> Result
 
         // daft-go: grouped worktree/local/remote completions
         ("daft-go", 1) => {
-            let entries = complete_daft_go(word, false)?;
+            let entries = complete_daft_go(word, fetch_on_miss)?;
             Ok(entries
                 .iter()
                 .map(|e| format!("{}\t{}\t{}", e.name, e.group.as_str(), e.description))
@@ -252,8 +266,9 @@ fn current_worktree_branch() -> Option<String> {
 
 /// Top-level completion helper for `daft go`. Collects real git data,
 /// applies grouping rules, and returns the ordered candidate list.
-/// `fetch_on_miss` is wired in a later task — for now it is always false.
-pub(crate) fn complete_daft_go(prefix: &str, _fetch_on_miss: bool) -> Result<Vec<CompletionEntry>> {
+/// When `fetch_on_miss` is true and the prefix has no local matches,
+/// runs `git fetch` with a spinner and re-resolves.
+pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<CompletionEntry>> {
     let settings = crate::core::settings::DaftSettings::load().unwrap_or_default();
     let default_remote = if settings.multi_remote_enabled {
         settings.multi_remote_default.clone()
@@ -261,20 +276,57 @@ pub(crate) fn complete_daft_go(prefix: &str, _fetch_on_miss: bool) -> Result<Vec
         settings.remote.clone()
     };
 
-    let worktrees = collect_go_worktrees();
-    let local = collect_go_local_branches();
-    let remote = collect_go_remote_branches();
-    let current_branch = current_worktree_branch();
+    let collect = || -> Vec<CompletionEntry> {
+        let worktrees = collect_go_worktrees();
+        let local = collect_go_local_branches();
+        let remote = collect_go_remote_branches();
+        let current_branch = current_worktree_branch();
+        build_go_completions(
+            &worktrees,
+            &local,
+            &remote,
+            current_branch.as_deref(),
+            &default_remote,
+            settings.multi_remote_enabled,
+            prefix,
+        )
+    };
 
-    Ok(build_go_completions(
-        &worktrees,
-        &local,
-        &remote,
-        current_branch.as_deref(),
-        &default_remote,
-        settings.multi_remote_enabled,
-        prefix,
-    ))
+    let entries = collect();
+    if !entries.is_empty() || !fetch_on_miss || !settings.go_fetch_on_miss || prefix.is_empty() {
+        return Ok(entries);
+    }
+
+    let git_common_dir = match crate::core::repo::get_git_common_dir() {
+        Ok(d) => d,
+        Err(_) => return Ok(entries),
+    };
+    let marker = git_common_dir.join("daft_complete_last_fetch");
+    if !should_run_fetch(&marker, std::time::Duration::from_secs(30)) {
+        return Ok(entries);
+    }
+
+    let spinner =
+        crate::completion_spinner::Spinner::start(&format!("Fetching refs from {default_remote}…"));
+
+    let fetch_result = std::process::Command::new("git")
+        .args([
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            &default_remote,
+        ])
+        .output();
+    let _ = fetch_result;
+
+    if let Some(s) = spinner {
+        s.stop();
+    }
+
+    let _ = touch_fetch_marker(&marker);
+
+    Ok(collect())
 }
 
 /// Suggest common branch name patterns for new branches
@@ -547,7 +599,6 @@ fn find_worktree_root() -> Result<std::path::PathBuf> {
 
 /// Return `true` if the cooldown marker is missing or older than
 /// `cooldown`. Used to decide whether the fetch-on-miss path should run.
-#[allow(dead_code)]
 fn should_run_fetch(marker: &std::path::Path, cooldown: std::time::Duration) -> bool {
     let metadata = match std::fs::metadata(marker) {
         Ok(m) => m,
@@ -564,7 +615,6 @@ fn should_run_fetch(marker: &std::path::Path, cooldown: std::time::Duration) -> 
 }
 
 /// Create or update the cooldown marker to reflect a just-completed fetch.
-#[allow(dead_code)]
 fn touch_fetch_marker(marker: &std::path::Path) -> std::io::Result<()> {
     if let Some(parent) = marker.parent() {
         std::fs::create_dir_all(parent)?;
@@ -630,7 +680,6 @@ pub(crate) struct CompletionEntry {
 /// etc.) are always dropped.
 ///
 /// Entries whose name doesn't start with `prefix` are filtered out.
-#[allow(dead_code)]
 pub(crate) fn build_go_completions(
     worktrees: &[(String, std::path::PathBuf)],
     local_branches: &[(String, String)],
