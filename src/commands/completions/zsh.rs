@@ -233,6 +233,12 @@ fn generate_zsh_daft_go_completion() -> String {
     format!(
         r#"#compdef daft-go
 
+# Per-group colors for `daft go` completions. Scoped to daft-go so the
+# user's global completion colors are untouched. `zstyle -d` to disable.
+zstyle ':completion:*:*:daft-go:*:worktree' list-colors '=(#b)(*)=0=1;32'
+zstyle ':completion:*:*:daft-go:*:local'    list-colors '=(#b)(*)=0=1;34'
+zstyle ':completion:*:*:daft-go:*:remote'   list-colors '=(#b)(*)=0=2;37'
+
 __daft_go_impl() {{
     local curword="${{words[$CURRENT]}}"
     local cword=$((CURRENT - 1))

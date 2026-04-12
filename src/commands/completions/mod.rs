@@ -571,6 +571,24 @@ mod tests {
     }
 
     #[test]
+    fn zsh_daft_go_emits_zstyle_colors_per_group() {
+        let script =
+            zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
+        assert!(
+            script.contains(":*:daft-go:*:worktree"),
+            "zsh daft-go must emit a zstyle line for the worktree group"
+        );
+        assert!(
+            script.contains(":*:daft-go:*:local"),
+            "zsh daft-go must emit a zstyle line for the local group"
+        );
+        assert!(
+            script.contains(":*:daft-go:*:remote"),
+            "zsh daft-go must emit a zstyle line for the remote group"
+        );
+    }
+
+    #[test]
     fn zsh_gates_flag_completions_on_leading_dash() {
         let commands = [
             "git-worktree-checkout",
