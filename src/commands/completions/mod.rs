@@ -519,24 +519,24 @@ mod tests {
     }
 
     #[test]
-    fn zsh_daft_go_uses_describe_per_group() {
+    fn zsh_daft_go_uses_compadd_groups() {
         let script =
             zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
         assert!(
-            script.contains("_describe 'worktree' wt_items"),
-            "daft-go zsh completion must call _describe for worktree group"
+            script.contains("compadd -V worktree"),
+            "daft-go zsh must use compadd -V for worktree group"
         );
         assert!(
-            script.contains("_describe 'local branch' local_items"),
-            "daft-go zsh completion must call _describe for local group"
+            script.contains("compadd -V local"),
+            "daft-go zsh must use compadd -V for local group"
         );
         assert!(
-            script.contains("_describe 'remote branch' remote_items"),
-            "daft-go zsh completion must call _describe for remote group"
+            script.contains("compadd -V remote"),
+            "daft-go zsh must use compadd -V for remote group"
         );
         assert!(
-            !script.contains("_describe -t"),
-            "daft-go must NOT use _describe -t (causes tag-retry 3x repetition)"
+            !script.contains("\n    _describe"),
+            "daft-go must NOT call _describe (triggers tag-retry 3x repetition)"
         );
     }
 

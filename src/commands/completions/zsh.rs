@@ -245,27 +245,58 @@ __daft_go_impl() {{
         return
     fi
 
-    local -a raw wt_items local_items remote_items
+    local -a raw
+    local -a wt_names wt_descs local_names local_descs remote_names remote_descs
     raw=(${{(f)"$(daft __complete daft-go "$curword" --position "$cword" --fetch-on-miss 2>/dev/null)"}})
 
-    local line name rest group desc
+    # First pass: collect names and descriptions per group.
+    local line name rest group desc max_len=0 len
     for line in "${{raw[@]}}"; do
         name="${{line%%$'\t'*}}"
         rest="${{line#*$'\t'}}"
         group="${{rest%%$'\t'*}}"
         desc="${{rest#*$'\t'}}"
+        len=${{#name}}
+        (( len > max_len )) && max_len=$len
         case "$group" in
-            worktree) wt_items+=("$name:$desc") ;;
-            local)    local_items+=("$name:$desc") ;;
-            remote)   remote_items+=("$name:$desc") ;;
+            worktree)
+                wt_names+=("$name")
+                wt_descs+=("$desc")
+                ;;
+            local)
+                local_names+=("$name")
+                local_descs+=("$desc")
+                ;;
+            remote)
+                remote_names+=("$name")
+                remote_descs+=("$desc")
+                ;;
         esac
     done
 
-    # _describe without -t avoids zsh's tag-retry mechanism.
-    # Group names show as headers; items get auto-aligned columns.
-    (( ${{#wt_items}} ))     && _describe 'worktree' wt_items
-    (( ${{#local_items}} ))  && _describe 'local branch' local_items
-    (( ${{#remote_items}} )) && _describe 'remote branch' remote_items
+    # Second pass: build padded display strings with group label + age.
+    local -a wt_display local_display remote_display
+    local i pad
+    (( max_len += 2 ))
+    for (( i=1; i<=${{#wt_names}}; i++ )); do
+        pad=$(( max_len - ${{#wt_names[$i]}} ))
+        wt_display+=("${{wt_names[$i]}}${{(l:$pad:: :)}}  \e[32mworktree\e[0m")
+    done
+    for (( i=1; i<=${{#local_names}}; i++ )); do
+        pad=$(( max_len - ${{#local_names[$i]}} ))
+        local_display+=("${{local_names[$i]}}${{(l:$pad:: :)}}  \e[34mlocal\e[0m · ${{local_descs[$i]}}")
+    done
+    for (( i=1; i<=${{#remote_names}}; i++ )); do
+        pad=$(( max_len - ${{#remote_names[$i]}} ))
+        remote_display+=("${{remote_names[$i]}}${{(l:$pad:: :)}}  \e[2;37mremote\e[0m · ${{remote_descs[$i]}}")
+    done
+
+    # compadd -V preserves group order, -l shows one-per-line,
+    # -d uses display array, -a uses names array.
+    # No _describe — it triggers zsh's tag-retry mechanism.
+    (( ${{#wt_names}} ))     && compadd -V worktree -l -d wt_display -a wt_names
+    (( ${{#local_names}} ))  && compadd -V local -l -d local_display -a local_names
+    (( ${{#remote_names}} )) && compadd -V remote -l -d remote_display -a remote_names
 }}
 
 _daft_go() {{
