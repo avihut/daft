@@ -233,12 +233,6 @@ fn generate_zsh_daft_go_completion() -> String {
     format!(
         r#"#compdef daft-go
 
-# Per-group colors for `daft go` completions. Scoped to daft-go so the
-# user's global completion colors are untouched. `zstyle -d` to disable.
-zstyle ':completion:*:*:daft-go:*:worktree' list-colors '=(#b)(*)=0=1;32'
-zstyle ':completion:*:*:daft-go:*:local'    list-colors '=(#b)(*)=0=1;34'
-zstyle ':completion:*:*:daft-go:*:remote'   list-colors '=(#b)(*)=0=2;37'
-
 __daft_go_impl() {{
     local curword="${{words[$CURRENT]}}"
     local cword=$((CURRENT - 1))
@@ -251,7 +245,8 @@ __daft_go_impl() {{
         return
     fi
 
-    local -a raw wt_items local_items remote_items
+    local -a raw
+    local -a wt_names wt_descs local_names local_descs remote_names remote_descs
     raw=(${{(f)"$(daft __complete daft-go "$curword" --position "$cword" --fetch-on-miss 2>/dev/null)"}})
 
     local line name rest group desc
@@ -261,15 +256,24 @@ __daft_go_impl() {{
         group="${{rest%%$'\t'*}}"
         desc="${{rest#*$'\t'}}"
         case "$group" in
-            worktree) wt_items+=("$name:$desc") ;;
-            local)    local_items+=("$name:$desc") ;;
-            remote)   remote_items+=("$name:$desc") ;;
+            worktree)
+                wt_names+=("$name")
+                wt_descs+=("$name ($desc)")
+                ;;
+            local)
+                local_names+=("$name")
+                local_descs+=("$name ($desc)")
+                ;;
+            remote)
+                remote_names+=("$name")
+                remote_descs+=("$name ($desc)")
+                ;;
         esac
     done
 
-    _describe -t worktree '' wt_items
-    _describe -t local    '' local_items
-    _describe -t remote   '' remote_items
+    (( ${{#wt_names}} ))     && compadd -V worktree -l -d wt_descs -a wt_names
+    (( ${{#local_names}} ))  && compadd -V local -l -d local_descs -a local_names
+    (( ${{#remote_names}} )) && compadd -V remote -l -d remote_descs -a remote_names
 }}
 
 _daft_go() {{

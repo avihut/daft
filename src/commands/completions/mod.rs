@@ -519,20 +519,20 @@ mod tests {
     }
 
     #[test]
-    fn zsh_daft_go_emits_describe_per_group() {
+    fn zsh_daft_go_uses_compadd_groups() {
         let script =
             zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
         assert!(
-            script.contains("_describe -t worktree"),
-            "daft-go zsh completion must call _describe with the worktree tag"
+            script.contains("compadd -V worktree"),
+            "daft-go zsh completion must use compadd -V worktree for group ordering"
         );
         assert!(
-            script.contains("_describe -t local"),
-            "daft-go zsh completion must call _describe with the local tag"
+            script.contains("compadd -V local"),
+            "daft-go zsh completion must use compadd -V local for group ordering"
         );
         assert!(
-            script.contains("_describe -t remote"),
-            "daft-go zsh completion must call _describe with the remote tag"
+            script.contains("compadd -V remote"),
+            "daft-go zsh completion must use compadd -V remote for group ordering"
         );
     }
 
@@ -570,23 +570,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn zsh_daft_go_emits_zstyle_colors_per_group() {
-        let script =
-            zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
-        assert!(
-            script.contains(":*:daft-go:*:worktree"),
-            "zsh daft-go must emit a zstyle line for the worktree group"
-        );
-        assert!(
-            script.contains(":*:daft-go:*:local"),
-            "zsh daft-go must emit a zstyle line for the local group"
-        );
-        assert!(
-            script.contains(":*:daft-go:*:remote"),
-            "zsh daft-go must emit a zstyle line for the remote group"
-        );
-    }
+    // zstyle coloring was removed — compadd -V groups don't interact
+    // with zsh's tag system, so per-tag zstyle list-colors wouldn't apply.
+    // Colors may be revisited via a different mechanism in a follow-up.
 
     #[test]
     fn zsh_umbrella_delegates_go_to_daft_go_impl() {
