@@ -121,6 +121,7 @@ impl LogSink for BufferingLogSink {
             pid: None,
             background: false,
             finished_at: Some(chrono::Utc::now()),
+            needs: vec![],
         };
 
         if let Err(e) = self
@@ -151,6 +152,7 @@ impl LogSink for BufferingLogSink {
             pid: None,
             background: false,
             finished_at: None,
+            needs: vec![],
         };
 
         if let Err(e) = self

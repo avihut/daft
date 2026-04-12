@@ -261,6 +261,7 @@ pub fn execute_yaml_hook_with_rc(
             pid: None,
             background: sj.background,
             finished_at: None,
+            needs: vec![],
         };
         if let Err(e) = store.write_job_record(&invocation_id, &meta, sj.reason.as_bytes()) {
             eprintln!(

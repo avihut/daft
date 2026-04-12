@@ -189,6 +189,7 @@ fn run_single_background_job(
         pid: Some(std::process::id()),
         background: true,
         finished_at: None,
+        needs: vec![],
     };
     if let Err(e) = store.write_meta(&job_dir, &meta) {
         eprintln!("daft: failed to write meta for '{}': {e}", job.name);
@@ -683,6 +684,7 @@ mod tests {
             pid: Some(1234),
             background: false,
             finished_at: None,
+            needs: vec![],
         };
         store.write_meta(&dir, &meta).unwrap();
 
@@ -715,6 +717,7 @@ mod tests {
             pid: Some(9999),
             background: false,
             finished_at: None,
+            needs: vec![],
         };
         store.write_meta(&dir, &meta).unwrap();
 
@@ -810,6 +813,7 @@ mod tests {
             pid: Some(1234),
             background: false,
             finished_at: None,
+            needs: vec![],
         };
         store.write_meta(&dir, &meta).unwrap();
 
