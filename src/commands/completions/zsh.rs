@@ -511,7 +511,7 @@ _daft() {
                     return
                 fi
                 case "$words[4]" in
-                    logs|retry|cancel)
+                    logs|cancel)
                         if [[ "$curword" == -* ]]; then
                             compadd -- --inv -h --help
                             return
@@ -522,6 +522,19 @@ _daft() {
                             _vals+=("${_line%%$'\t'*}")
                             _descs+=("${_line//$'\t'/  }")
                         done < <(daft __complete hooks-jobs-job "$curword" 2>/dev/null)
+                        compadd -l -d _descs -a _vals
+                        return
+                        ;;
+                    retry)
+                        if [[ "$curword" == -* ]]; then
+                            compadd -- --hook --inv --job -h --help
+                            return
+                        fi
+                        local -a _vals _descs
+                        while IFS='' read -r _line; do
+                            _vals+=("${_line%%$'\t'*}")
+                            _descs+=("${_line//$'\t'/  }")
+                        done < <(daft __complete hooks-jobs-retry "$curword" 2>/dev/null)
                         compadd -l -d _descs -a _vals
                         return
                         ;;
