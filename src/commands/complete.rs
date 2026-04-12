@@ -545,6 +545,42 @@ fn find_worktree_root() -> Result<std::path::PathBuf> {
     ))
 }
 
+/// Return `true` if the cooldown marker is missing or older than
+/// `cooldown`. Used to decide whether the fetch-on-miss path should run.
+#[allow(dead_code)]
+fn should_run_fetch(marker: &std::path::Path, cooldown: std::time::Duration) -> bool {
+    let metadata = match std::fs::metadata(marker) {
+        Ok(m) => m,
+        Err(_) => return true,
+    };
+    let mtime = match metadata.modified() {
+        Ok(t) => t,
+        Err(_) => return true,
+    };
+    match std::time::SystemTime::now().duration_since(mtime) {
+        Ok(age) => age >= cooldown,
+        Err(_) => true,
+    }
+}
+
+/// Create or update the cooldown marker to reflect a just-completed fetch.
+#[allow(dead_code)]
+fn touch_fetch_marker(marker: &std::path::Path) -> std::io::Result<()> {
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(marker)?;
+    filetime::set_file_mtime(
+        marker,
+        filetime::FileTime::from_system_time(std::time::SystemTime::now()),
+    )?;
+    Ok(())
+}
+
 /// Which group a completion entry belongs to, used for visual separation
 /// in shells that support per-item tags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1003,5 +1039,39 @@ mod tests {
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["origin/feat/x"]);
+    }
+
+    #[test]
+    fn fetch_cooldown_allows_fetch_when_marker_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("daft_complete_last_fetch");
+        assert!(
+            should_run_fetch(&marker, std::time::Duration::from_secs(30)),
+            "missing marker must allow fetch"
+        );
+    }
+
+    #[test]
+    fn fetch_cooldown_blocks_fetch_within_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("daft_complete_last_fetch");
+        touch_fetch_marker(&marker).unwrap();
+        assert!(
+            !should_run_fetch(&marker, std::time::Duration::from_secs(30)),
+            "freshly touched marker must block fetch"
+        );
+    }
+
+    #[test]
+    fn fetch_cooldown_allows_fetch_after_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("daft_complete_last_fetch");
+        touch_fetch_marker(&marker).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(31);
+        filetime::set_file_mtime(&marker, filetime::FileTime::from_system_time(old)).unwrap();
+        assert!(
+            should_run_fetch(&marker, std::time::Duration::from_secs(30)),
+            "marker older than cooldown must allow fetch"
+        );
     }
 }

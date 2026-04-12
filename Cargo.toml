@@ -110,6 +110,7 @@ similar = "3.0"
 nucleo-matcher = "0.3"
 ignore = "0.4"
 edtui = { version = "0.11", features = ["syntax-highlighting"] }
+filetime = "0.2"
 
 # pager is Unix-only (uses fork/pipes)
 [target.'cfg(unix)'.dependencies]
