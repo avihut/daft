@@ -1,8 +1,12 @@
 use super::{extract_flags, get_command_for_name};
 use anyhow::{Context, Result};
+use clap::CommandFactory;
 
 /// Generate zsh completion string
 pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<String> {
+    if command_name == "daft-go" {
+        return Ok(generate_zsh_daft_go_completion());
+    }
     let mut output = String::new();
     let has_branches = matches!(
         command_name,
@@ -216,6 +220,59 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     }
 
     Ok(output)
+}
+
+fn generate_zsh_daft_go_completion() -> String {
+    let cmd = crate::commands::checkout::GoArgs::command();
+    let (all_flags, _, _) = extract_flags(&cmd);
+    let flags_block: String = all_flags
+        .iter()
+        .map(|f| format!("            '{f}'\n"))
+        .collect();
+
+    format!(
+        r#"#compdef daft-go
+
+__daft_go_impl() {{
+    local curword="${{words[$CURRENT]}}"
+    local cword=$((CURRENT - 1))
+
+    if [[ "$curword" == -* ]]; then
+        local -a flags
+        flags=(
+{flags_block}        )
+        compadd -a flags
+        return
+    fi
+
+    local -a raw wt_items local_items remote_items
+    raw=(${{(f)"$(daft __complete daft-go "$curword" --position "$cword" --fetch-on-miss 2>/dev/null)"}})
+
+    local line name rest group desc
+    for line in "${{raw[@]}}"; do
+        name="${{line%%$'\t'*}}"
+        rest="${{line#*$'\t'}}"
+        group="${{rest%%$'\t'*}}"
+        desc="${{rest#*$'\t'}}"
+        case "$group" in
+            worktree) wt_items+=("$name:$desc") ;;
+            local)    local_items+=("$name:$desc") ;;
+            remote)   remote_items+=("$name:$desc") ;;
+        esac
+    done
+
+    _describe -t worktree '' wt_items
+    _describe -t local    '' local_items
+    _describe -t remote   '' remote_items
+}}
+
+_daft_go() {{
+    __daft_go_impl
+}}
+
+compdef _daft_go daft-go
+"#
+    )
 }
 
 pub(super) const DAFT_ZSH_COMPLETIONS: &str = r#"# daft subcommand completions

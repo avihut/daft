@@ -499,6 +499,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn zsh_daft_go_emits_describe_per_group() {
+        let script =
+            zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
+        assert!(
+            script.contains("_describe -t worktree"),
+            "daft-go zsh completion must call _describe with the worktree tag"
+        );
+        assert!(
+            script.contains("_describe -t local"),
+            "daft-go zsh completion must call _describe with the local tag"
+        );
+        assert!(
+            script.contains("_describe -t remote"),
+            "daft-go zsh completion must call _describe with the remote tag"
+        );
+    }
+
+    #[test]
+    fn zsh_daft_go_passes_fetch_on_miss_flag() {
+        let script =
+            zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
+        assert!(
+            script.contains("--fetch-on-miss"),
+            "daft-go zsh completion must pass --fetch-on-miss to daft __complete"
+        );
+    }
+
+    #[test]
     fn zsh_gates_flag_completions_on_leading_dash() {
         let commands = [
             "git-worktree-checkout",
