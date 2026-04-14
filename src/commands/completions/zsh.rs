@@ -236,11 +236,8 @@ fn generate_zsh_daft_go_completion() -> String {
 # Load complist for colored completions
 zmodload -i zsh/complist
 
-# Per-tag list-colors (git branch colors): worktree=cyan, local=green, remote=red.
-# The (|b) backreference pattern colors only the branch name, not the description.
-zstyle ':completion:*:*:*:*:daft-go-wt' list-colors '=(#b)([^ ]##)( *)=0=36=0'
-zstyle ':completion:*:*:*:*:daft-go-local' list-colors '=(#b)([^ ]##)( *)=0=32=0'
-zstyle ':completion:*:*:*:*:daft-go-remote' list-colors '=(#b)([^ ]##)( *)=0=31=0'
+# Color worktree completions cyan (ANSI 36), matching git color.branch.worktree.
+zstyle ':completion:*:*:*:*:daft-go-wt' list-colors '=*=36'
 
 __daft_go_impl() {{
     local curword="${{words[$CURRENT]}}"
@@ -300,20 +297,18 @@ __daft_go_impl() {{
         remote_display+=("${{remote_names[$i]}}${{(l:$pad:: :)}}  ${{remote_descs[$i]}}")
     done
 
-    # Register only non-empty groups as tags for per-group coloring.
-    local -a avail_tags
-    (( ${{#wt_names}} )) && avail_tags+=(daft-go-wt)
-    (( ${{#local_names}} )) && avail_tags+=(daft-go-local)
-    (( ${{#remote_names}} )) && avail_tags+=(daft-go-remote)
+    # Worktrees: use _tags so list-colors can target the daft-go-wt tag (cyan).
+    if (( ${{#wt_names}} )); then
+        _tags daft-go-wt
+        while _tags; do
+            _requested daft-go-wt && \
+                compadd -V worktree -l -d wt_display -a wt_names
+        done
+    fi
 
-    (( ${{#avail_tags}} )) || return
-
-    _tags "${{avail_tags[@]}}"
-    while _tags; do
-        _requested daft-go-wt && compadd -V worktree -l -d wt_display -a wt_names
-        _requested daft-go-local && compadd -V local -l -d local_display -a local_names
-        _requested daft-go-remote && compadd -V remote -l -d remote_display -a remote_names
-    done
+    # Local and remote: plain compadd (default color).
+    (( ${{#local_names}} ))  && compadd -V local -l -d local_display -a local_names
+    (( ${{#remote_names}} )) && compadd -V remote -l -d remote_display -a remote_names
 }}
 
 _daft_go() {{

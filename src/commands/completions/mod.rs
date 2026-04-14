@@ -519,19 +519,23 @@ mod tests {
     }
 
     #[test]
-    fn zsh_daft_go_uses_tags_with_per_group_list_colors() {
+    fn zsh_daft_go_uses_tags_for_worktree_color() {
         let script =
             zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
-        // Uses _tags + _requested for per-group coloring (not _describe)
+        // Worktrees use _tags + _requested for cyan via list-colors
         assert!(
-            script.contains("_tags \"${avail_tags[@]}\""),
-            "daft-go zsh must register tags via _tags"
+            script.contains("_tags daft-go-wt"),
+            "daft-go zsh must register worktree tag"
         );
         assert!(
             script.contains("_requested daft-go-wt"),
             "daft-go zsh must use _requested for worktree tag"
         );
-        // Groups still use -V for ordering
+        assert!(
+            script.contains("daft-go-wt' list-colors '=*=36'"),
+            "daft-go zsh must set cyan list-colors for worktree tag"
+        );
+        // Groups use -V for ordering (worktree first)
         assert!(
             script.contains("-V worktree"),
             "daft-go zsh must use -V worktree group"
@@ -544,20 +548,7 @@ mod tests {
             script.contains("-V remote"),
             "daft-go zsh must use -V remote group"
         );
-        // Per-tag list-colors with git branch colors (cyan, green, red)
-        assert!(
-            script.contains("daft-go-wt' list-colors '=(#b)([^ ]##)( *)=0=36=0'"),
-            "daft-go zsh must set cyan list-colors for worktree tag"
-        );
-        assert!(
-            script.contains("daft-go-local' list-colors '=(#b)([^ ]##)( *)=0=32=0'"),
-            "daft-go zsh must set green list-colors for local tag"
-        );
-        assert!(
-            script.contains("daft-go-remote' list-colors '=(#b)([^ ]##)( *)=0=31=0'"),
-            "daft-go zsh must set red list-colors for remote tag"
-        );
-        // No group headers — colors are on items themselves
+        // No group headers, no _describe
         assert!(
             !script.contains("-X "),
             "daft-go must NOT use -X group headers"
