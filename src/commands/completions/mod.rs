@@ -519,9 +519,19 @@ mod tests {
     }
 
     #[test]
-    fn zsh_daft_go_uses_compadd_groups_with_colored_headers() {
+    fn zsh_daft_go_uses_tags_with_per_group_list_colors() {
         let script =
             zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
+        // Uses _tags + _requested for per-group coloring (not _describe)
+        assert!(
+            script.contains("_tags \"${avail_tags[@]}\""),
+            "daft-go zsh must register tags via _tags"
+        );
+        assert!(
+            script.contains("_requested daft-go-wt"),
+            "daft-go zsh must use _requested for worktree tag"
+        );
+        // Groups still use -V for ordering
         assert!(
             script.contains("-V worktree"),
             "daft-go zsh must use -V worktree group"
@@ -534,13 +544,23 @@ mod tests {
             script.contains("-V remote"),
             "daft-go zsh must use -V remote group"
         );
+        // Per-tag list-colors with git branch colors (cyan, green, red)
         assert!(
-            script.contains("-X '%F{green}worktree%f'"),
-            "daft-go zsh must have colored worktree header via -X"
+            script.contains("daft-go-wt' list-colors '=(#b)([^ ]##)( *)=0=36=0'"),
+            "daft-go zsh must set cyan list-colors for worktree tag"
         );
         assert!(
-            script.contains("-X '%F{blue}local branch%f'"),
-            "daft-go zsh must have colored local header via -X"
+            script.contains("daft-go-local' list-colors '=(#b)([^ ]##)( *)=0=32=0'"),
+            "daft-go zsh must set green list-colors for local tag"
+        );
+        assert!(
+            script.contains("daft-go-remote' list-colors '=(#b)([^ ]##)( *)=0=31=0'"),
+            "daft-go zsh must set red list-colors for remote tag"
+        );
+        // No group headers — colors are on items themselves
+        assert!(
+            !script.contains("-X "),
+            "daft-go must NOT use -X group headers"
         );
         assert!(
             !script.contains("\n    _describe"),

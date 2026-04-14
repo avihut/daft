@@ -233,6 +233,15 @@ fn generate_zsh_daft_go_completion() -> String {
     format!(
         r#"#compdef daft-go
 
+# Load complist for colored completions
+zmodload -i zsh/complist
+
+# Per-tag list-colors (git branch colors): worktree=cyan, local=green, remote=red.
+# The (|b) backreference pattern colors only the branch name, not the description.
+zstyle ':completion:*:*:*:*:daft-go-wt' list-colors '=(#b)([^ ]##)( *)=0=36=0'
+zstyle ':completion:*:*:*:*:daft-go-local' list-colors '=(#b)([^ ]##)( *)=0=32=0'
+zstyle ':completion:*:*:*:*:daft-go-remote' list-colors '=(#b)([^ ]##)( *)=0=31=0'
+
 __daft_go_impl() {{
     local curword="${{words[$CURRENT]}}"
     local cword=$((CURRENT - 1))
@@ -291,12 +300,20 @@ __daft_go_impl() {{
         remote_display+=("${{remote_names[$i]}}${{(l:$pad:: :)}}  ${{remote_descs[$i]}}")
     done
 
-    # compadd -V preserves group order, -l shows one-per-line,
-    # -d uses display array, -a uses names array.
-    # -X with %F prompt escapes adds colored group headers.
-    (( ${{#wt_names}} ))     && compadd -X '%F{{green}}worktree%f' -V worktree -l -d wt_display -a wt_names
-    (( ${{#local_names}} ))  && compadd -X '%F{{blue}}local branch%f' -V local -l -d local_display -a local_names
-    (( ${{#remote_names}} )) && compadd -X '%F{{245}}remote branch%f' -V remote -l -d remote_display -a remote_names
+    # Register only non-empty groups as tags for per-group coloring.
+    local -a avail_tags
+    (( ${{#wt_names}} )) && avail_tags+=(daft-go-wt)
+    (( ${{#local_names}} )) && avail_tags+=(daft-go-local)
+    (( ${{#remote_names}} )) && avail_tags+=(daft-go-remote)
+
+    (( ${{#avail_tags}} )) || return
+
+    _tags "${{avail_tags[@]}}"
+    while _tags; do
+        _requested daft-go-wt && compadd -V worktree -l -d wt_display -a wt_names
+        _requested daft-go-local && compadd -V local -l -d local_display -a local_names
+        _requested daft-go-remote && compadd -V remote -l -d remote_display -a remote_names
+    done
 }}
 
 _daft_go() {{
