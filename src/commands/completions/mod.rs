@@ -519,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn zsh_daft_go_uses_compadd_groups_with_worktree_header() {
+    fn zsh_daft_go_uses_compadd_groups_no_headers() {
         let script =
             zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
         // Groups use -V for ordering (worktree first)
@@ -535,16 +535,15 @@ mod tests {
             script.contains("-V remote"),
             "daft-go zsh must use -V remote group"
         );
-        // Cyan header for worktree group only (prompt escapes via -X)
+        // Worktree display has three columns: name, age, path
         assert!(
-            script.contains("-X '%F{cyan}worktrees%f'"),
-            "daft-go zsh must have cyan worktree header via -X"
+            script.contains("wt_ages") && script.contains("wt_paths"),
+            "daft-go zsh must split worktree desc into age and path"
         );
-        // No headers for local/remote groups (only worktree has -X)
-        assert_eq!(
-            script.matches("compadd -X").count(),
-            1,
-            "daft-go must only have one compadd -X (worktrees)"
+        // No group headers
+        assert!(
+            !script.contains("-X "),
+            "daft-go must NOT use -X group headers"
         );
         assert!(
             !script.contains("\n    _describe"),

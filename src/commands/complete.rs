@@ -692,14 +692,23 @@ pub(crate) fn build_go_completions(
     use std::collections::HashSet;
 
     // Worktree group: exclude the current worktree's branch.
+    // Look up the commit age from local_branches for each worktree, and
+    // pack both age and path into the description as "age\tpath".
     let mut wt_entries: Vec<CompletionEntry> = worktrees
         .iter()
         .filter(|(name, _)| Some(name.as_str()) != current_worktree_branch)
         .filter(|(name, _)| name.starts_with(prefix))
-        .map(|(name, path)| CompletionEntry {
-            name: name.clone(),
-            group: CompletionGroup::Worktree,
-            description: path.display().to_string(),
+        .map(|(name, path)| {
+            let age = local_branches
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, a)| a.as_str())
+                .unwrap_or("");
+            CompletionEntry {
+                name: name.clone(),
+                group: CompletionGroup::Worktree,
+                description: format!("{}\t{}", age, path.display()),
+            }
         })
         .collect();
     wt_entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -973,7 +982,7 @@ mod tests {
             CompletionEntry {
                 name: "master".into(),
                 group: CompletionGroup::Worktree,
-                description: "2 hours ago".into(),
+                description: "2 hours ago\t/tmp/wt/master".into(),
             },
             CompletionEntry {
                 name: "feat/bar".into(),
@@ -984,7 +993,7 @@ mod tests {
         let out = format_go_completions(&entries);
         assert_eq!(
             out,
-            "master\tworktree\t2 hours ago\nfeat/bar\tlocal\t4 days ago\n"
+            "master\tworktree\t2 hours ago\t/tmp/wt/master\nfeat/bar\tlocal\t4 days ago\n"
         );
     }
 

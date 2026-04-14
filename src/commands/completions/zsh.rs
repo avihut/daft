@@ -246,11 +246,13 @@ __daft_go_impl() {{
     fi
 
     local -a raw
-    local -a wt_names wt_descs local_names local_descs remote_names remote_descs
+    local -a wt_names wt_ages wt_paths local_names local_descs remote_names remote_descs
     raw=(${{(f)"$(daft __complete daft-go "$curword" --position "$cword" --fetch-on-miss 2>/dev/null)"}})
 
     # First pass: collect names and descriptions per group.
-    local line name rest group desc max_len=0 len
+    # Worktree lines have 4 fields: name\tworktree\tage\tpath
+    # Local/remote lines have 3 fields: name\tgroup\tage
+    local line name rest group desc max_len=0 len age_len max_age_len=0
     for line in "${{raw[@]}}"; do
         name="${{line%%$'\t'*}}"
         rest="${{line#*$'\t'}}"
@@ -261,7 +263,11 @@ __daft_go_impl() {{
         case "$group" in
             worktree)
                 wt_names+=("$name")
-                wt_descs+=("$desc")
+                # desc is "age\tpath" — split on tab
+                wt_ages+=("${{desc%%$'\t'*}}")
+                wt_paths+=("${{desc#*$'\t'}}")
+                age_len=${{#${{desc%%$'\t'*}}}}
+                (( age_len > max_age_len )) && max_age_len=$age_len
                 ;;
             local)
                 local_names+=("$name")
@@ -274,13 +280,17 @@ __daft_go_impl() {{
         esac
     done
 
-    # Second pass: build padded display strings with age.
+    # Second pass: build padded display strings.
+    # Worktrees: three columns (name, age, path).
+    # Local/remote: two columns (name, age).
     local -a wt_display local_display remote_display
-    local i pad
+    local i pad apad
     (( max_len += 2 ))
+    (( max_age_len += 2 ))
     for (( i=1; i<=${{#wt_names}}; i++ )); do
         pad=$(( max_len - ${{#wt_names[$i]}} ))
-        wt_display+=("${{wt_names[$i]}}${{(l:$pad:: :)}}  ${{wt_descs[$i]}}")
+        apad=$(( max_age_len - ${{#wt_ages[$i]}} ))
+        wt_display+=("${{wt_names[$i]}}${{(l:$pad:: :)}}  ${{wt_ages[$i]}}${{(l:$apad:: :)}}  ${{wt_paths[$i]}}")
     done
     for (( i=1; i<=${{#local_names}}; i++ )); do
         pad=$(( max_len - ${{#local_names[$i]}} ))
@@ -292,8 +302,7 @@ __daft_go_impl() {{
     done
 
     # -V preserves group insertion order: worktrees first, then local, then remote.
-    # -X with %F prompt escapes adds a cyan header for the worktree group.
-    (( ${{#wt_names}} ))     && compadd -X '%F{{cyan}}worktrees%f' -V worktree -l -d wt_display -a wt_names
+    (( ${{#wt_names}} ))     && compadd -V worktree -l -d wt_display -a wt_names
     (( ${{#local_names}} ))  && compadd -V local -l -d local_display -a local_names
     (( ${{#remote_names}} )) && compadd -V remote -l -d remote_display -a remote_names
 }}
