@@ -258,9 +258,18 @@ fn collect_go_remote_branches() -> Vec<(String, String)> {
 }
 
 /// Collect the current worktree's branch, if any — used to exclude it
-/// from the completion list. Returns `None` if HEAD is detached or if
-/// the current directory is outside a git repository.
+/// from the completion list. Returns `None` if HEAD is detached, if
+/// the current directory is outside a git repository, or if we're in
+/// a bare repository (e.g., the root of a contained layout where HEAD
+/// points to the default branch but no worktree corresponds to CWD).
 fn current_worktree_branch() -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--is-bare-repository"])
+        .output()
+        .ok()?;
+    if String::from_utf8_lossy(&output.stdout).trim() == "true" {
+        return None;
+    }
     crate::core::repo::get_current_branch().ok()
 }
 
