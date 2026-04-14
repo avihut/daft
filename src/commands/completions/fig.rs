@@ -1,4 +1,4 @@
-use super::{get_command_for_name, get_flag_descriptions, COMMANDS};
+use super::{get_command_for_name, get_flag_descriptions, uses_rich_completions, COMMANDS};
 use anyhow::{Context, Result};
 use clap::Command;
 use serde::Serialize;
@@ -146,16 +146,7 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
     let cmd =
         get_command_for_name(command_name).context(format!("Unknown command: {command_name}"))?;
 
-    let has_branches = matches!(
-        command_name,
-        "git-worktree-checkout"
-            | "git-worktree-carry"
-            | "git-worktree-fetch"
-            | "daft-go"
-            | "daft-start"
-            | "daft-remove"
-            | "daft-rename"
-    );
+    let has_branches = uses_rich_completions(command_name) || command_name == "daft-start";
 
     let about = cmd.get_about().map(|a| a.to_string());
 

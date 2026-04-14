@@ -74,8 +74,11 @@ fn complete(
     fetch_on_miss: bool,
 ) -> Result<Vec<String>> {
     match (command, position) {
-        // git-worktree-checkout: complete existing branch names
-        ("git-worktree-checkout", 1) => complete_existing_branches(word, verbose),
+        // git-worktree-checkout: rich grouped completions (same as daft-go)
+        ("git-worktree-checkout", 1) => Ok(format_entries_as_strings(&complete_rich_branches(
+            word,
+            &CONFIG_CHECKOUT,
+        )?)),
 
         // git-worktree-clone: repository URL (no dynamic completion for now)
         ("git-worktree-clone", 1) => Ok(vec![]),
@@ -83,32 +86,44 @@ fn complete(
         // git-worktree-init: repository name (no dynamic completion)
         ("git-worktree-init", 1) => Ok(vec![]),
 
-        // git-worktree-carry: complete existing branch/worktree names
-        ("git-worktree-carry", _) => complete_existing_branches(word, verbose),
+        // git-worktree-carry: worktree-only completions
+        ("git-worktree-carry", _) => Ok(format_entries_as_strings(&complete_rich_branches(
+            word,
+            &CONFIG_CARRY,
+        )?)),
 
-        // git-worktree-fetch: complete existing branch/worktree names
-        ("git-worktree-fetch", _) => complete_existing_branches(word, verbose),
+        // git-worktree-fetch: worktree-only completions
+        ("git-worktree-fetch", _) => Ok(format_entries_as_strings(&complete_rich_branches(
+            word,
+            &CONFIG_FETCH,
+        )?)),
 
-        // git-worktree-branch: complete existing branch names for deletion
-        ("git-worktree-branch", _) => complete_existing_branches(word, verbose),
+        // git-worktree-branch: worktree + local completions for deletion
+        ("git-worktree-branch", _) => Ok(format_entries_as_strings(&complete_rich_branches(
+            word,
+            &CONFIG_BRANCH,
+        )?)),
 
-        // daft-go: grouped worktree/local/remote completions
+        // daft-go: grouped worktree/local/remote completions with fetch-on-miss
         ("daft-go", 1) => {
             let entries = complete_daft_go(word, fetch_on_miss)?;
-            Ok(entries
-                .iter()
-                .map(|e| format!("{}\t{}\t{}", e.name, e.group.as_str(), e.description))
-                .collect())
+            Ok(format_entries_as_strings(&entries))
         }
 
         // daft-start: no dynamic completion for new branch names
         ("daft-start", _) => Ok(vec![]),
 
-        // daft-remove: complete existing branch names for deletion
-        ("daft-remove", _) => complete_existing_branches(word, verbose),
+        // daft-remove: worktree + local completions for deletion
+        ("daft-remove", _) => Ok(format_entries_as_strings(&complete_rich_branches(
+            word,
+            &CONFIG_REMOVE,
+        )?)),
 
-        // daft-rename: complete existing branch names for rename
-        ("daft-rename", _) => complete_existing_branches(word, verbose),
+        // daft-rename: worktree-only completions
+        ("daft-rename", _) => Ok(format_entries_as_strings(&complete_rich_branches(
+            word,
+            &CONFIG_RENAME,
+        )?)),
 
         // git-worktree-prune: no arguments
         ("git-worktree-prune", _) => Ok(vec![]),
@@ -273,59 +288,9 @@ fn ref_commit_age(reference: &mut gix::Reference<'_>) -> String {
     }
 }
 
-/// Complete existing branch names (local and remote)
-fn complete_existing_branches(prefix: &str, verbose: bool) -> Result<Vec<String>> {
-    let repo = match discover_repo() {
-        Ok(r) => r,
-        Err(e) => {
-            if verbose {
-                eprintln!("Git repository discovery failed: {e}");
-            }
-            return Ok(vec![]);
-        }
-    };
-
-    let mut branches: Vec<String> = Vec::new();
-
-    for refs_prefix in ["refs/heads/", "refs/remotes/origin/"] {
-        let platform = match repo.references() {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        let iter = match platform.prefixed(refs_prefix) {
-            Ok(i) => i,
-            Err(_) => continue,
-        };
-        for reference_result in iter {
-            let reference = match reference_result {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            let short = reference.name().shorten().to_string();
-            if short.contains("HEAD") {
-                continue;
-            }
-            let display = short.trim_start_matches("origin/").to_string();
-            if display.starts_with(prefix) {
-                branches.push(display);
-            }
-        }
-    }
-
-    branches.sort();
-    branches.dedup();
-
-    if verbose && branches.is_empty() {
-        eprintln!("No branches found matching prefix: '{prefix}'");
-    }
-
-    Ok(branches)
-}
-
 /// Collect `(branch, path)` pairs for every worktree (main + linked) that
-/// has a branch checked out. Detached HEADs and bare repos are skipped —
-/// they're not navigation targets.
-fn collect_go_worktrees(repo: &gix::Repository) -> Vec<(String, std::path::PathBuf)> {
+/// has a branch checked out. Detached HEADs and bare repos are skipped.
+fn collect_worktrees(repo: &gix::Repository) -> Vec<(String, std::path::PathBuf)> {
     let mut result = Vec::new();
 
     // Main worktree (if not bare / has a working directory).
@@ -337,7 +302,10 @@ fn collect_go_worktrees(repo: &gix::Repository) -> Vec<(String, std::path::PathB
         // Detached HEAD in main worktree → skip (no branch).
     }
 
-    // Linked worktrees.
+    // Linked worktrees — skip any that duplicate the current workdir
+    // (when gix::discover runs from a linked worktree, repo.workdir()
+    // already returns it, but repo.worktrees() also lists it).
+    let current_workdir = repo.workdir().map(|p| p.to_path_buf());
     let proxies = match repo.worktrees() {
         Ok(p) => p,
         Err(_) => return result,
@@ -351,6 +319,9 @@ fn collect_go_worktrees(repo: &gix::Repository) -> Vec<(String, std::path::PathB
             Ok(p) => p,
             Err(_) => continue,
         };
+        if current_workdir.as_deref() == Some(path.as_ref()) {
+            continue; // already collected via repo.workdir() above
+        }
         result.push((branch, path));
     }
 
@@ -382,13 +353,13 @@ fn collect_refs_with_age(repo: &gix::Repository, prefix: &str) -> Vec<(String, S
 }
 
 /// Collect `(branch, relative_age)` pairs for every local branch.
-fn collect_go_local_branches(repo: &gix::Repository) -> Vec<(String, String)> {
+fn collect_local_branches(repo: &gix::Repository) -> Vec<(String, String)> {
     collect_refs_with_age(repo, "refs/heads/")
 }
 
 /// Collect `(branch, relative_age)` pairs for every remote-tracking
 /// branch across all remotes.
-fn collect_go_remote_branches(repo: &gix::Repository) -> Vec<(String, String)> {
+fn collect_remote_branches(repo: &gix::Repository) -> Vec<(String, String)> {
     collect_refs_with_age(repo, "refs/remotes/")
 }
 
@@ -422,40 +393,26 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
     let repo = discover_repo()?;
     let d_discover = t.elapsed();
 
-    // Read only the config keys completions actually need — directly from
-    // the repo's in-memory config snapshot (no subprocess overhead).
+    // Read remote config + go-specific fetch-on-miss setting.
     let t = Instant::now();
-    let config = repo.config_snapshot();
-    let multi_remote_enabled = config
-        .boolean(keys::multi_remote::ENABLED)
-        .unwrap_or(defaults::MULTI_REMOTE_ENABLED);
-    let default_remote = if multi_remote_enabled {
-        config
-            .string(keys::multi_remote::DEFAULT_REMOTE)
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| defaults::MULTI_REMOTE_DEFAULT_REMOTE.to_string())
-    } else {
-        config
-            .string(keys::REMOTE)
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| defaults::REMOTE.to_string())
-    };
-    let go_fetch_on_miss = config
+    let (default_remote, multi_remote_enabled) = read_remote_config(&repo);
+    let go_fetch_on_miss = repo
+        .config_snapshot()
         .boolean(keys::GO_FETCH_ON_MISS)
         .unwrap_or(defaults::GO_FETCH_ON_MISS);
     let d_settings = t.elapsed();
 
     let collect = |repo: &gix::Repository, timings: bool| -> Vec<CompletionEntry> {
         let t = Instant::now();
-        let worktrees = collect_go_worktrees(repo);
+        let worktrees = collect_worktrees(repo);
         let d_wt = t.elapsed();
 
         let t = Instant::now();
-        let local = collect_go_local_branches(repo);
+        let local = collect_local_branches(repo);
         let d_local = t.elapsed();
 
         let t = Instant::now();
-        let remote = collect_go_remote_branches(repo);
+        let remote = collect_remote_branches(repo);
         let d_remote = t.elapsed();
 
         let t = Instant::now();
@@ -463,7 +420,7 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
         let d_current = t.elapsed();
 
         let t = Instant::now();
-        let entries = build_go_completions(
+        let entries = build_rich_completions(
             &worktrees,
             &local,
             &remote,
@@ -598,51 +555,6 @@ fn suggest_new_branch_names(prefix: &str) -> Vec<String> {
         .filter(|pattern| pattern.starts_with(prefix))
         .map(|pattern| pattern.to_string())
         .collect()
-}
-
-/// Complete local branches only (for base branch selection)
-#[allow(dead_code)]
-fn complete_local_branches(prefix: &str, verbose: bool) -> Result<Vec<String>> {
-    let repo = match discover_repo() {
-        Ok(r) => r,
-        Err(e) => {
-            if verbose {
-                eprintln!("Git repository discovery failed: {e}");
-            }
-            return Ok(vec![]);
-        }
-    };
-
-    let branches: Vec<String> = collect_refs_with_age(&repo, "refs/heads/")
-        .into_iter()
-        .map(|(name, _)| name)
-        .filter(|name| name.starts_with(prefix))
-        .collect();
-
-    Ok(branches)
-}
-
-/// Complete remote branches only
-#[allow(dead_code)]
-fn complete_remote_branches(prefix: &str, verbose: bool) -> Result<Vec<String>> {
-    let repo = match discover_repo() {
-        Ok(r) => r,
-        Err(e) => {
-            if verbose {
-                eprintln!("Git repository discovery failed: {e}");
-            }
-            return Ok(vec![]);
-        }
-    };
-
-    let branches: Vec<String> = collect_refs_with_age(&repo, "refs/remotes/origin/")
-        .into_iter()
-        .map(|(name, _)| name)
-        .filter(|name| !name.contains("HEAD") && name.starts_with(prefix))
-        .map(|name| name.trim_start_matches("origin/").to_string())
-        .collect();
-
-    Ok(branches)
 }
 
 /// Complete available layout names (built-in + custom from global config).
@@ -829,6 +741,90 @@ fn find_worktree_root() -> Result<std::path::PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("Not inside a worktree (bare repository)"))
 }
 
+/// Read multi-remote and default-remote settings from the repo's in-memory
+/// config snapshot (zero subprocess overhead).
+fn read_remote_config(repo: &gix::Repository) -> (String, bool) {
+    use crate::core::settings::{defaults, keys};
+
+    let config = repo.config_snapshot();
+    let multi_remote_enabled = config
+        .boolean(keys::multi_remote::ENABLED)
+        .unwrap_or(defaults::MULTI_REMOTE_ENABLED);
+    let default_remote = if multi_remote_enabled {
+        config
+            .string(keys::multi_remote::DEFAULT_REMOTE)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| defaults::MULTI_REMOTE_DEFAULT_REMOTE.to_string())
+    } else {
+        config
+            .string(keys::REMOTE)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| defaults::REMOTE.to_string())
+    };
+    (default_remote, multi_remote_enabled)
+}
+
+/// Shared rich branch completion entry point. Discovers the repo, reads
+/// config, collects branch/worktree data according to `config`, and
+/// returns grouped completion entries.
+fn complete_rich_branches(
+    prefix: &str,
+    config: &RichCompletionConfig,
+) -> Result<Vec<CompletionEntry>> {
+    let repo = discover_repo()?;
+    let (default_remote, multi_remote_enabled) = read_remote_config(&repo);
+
+    let worktrees = if config.include_worktrees {
+        collect_worktrees(&repo)
+    } else {
+        Vec::new()
+    };
+    let local = if config.include_local || config.include_worktrees {
+        // Always collect local branches when worktrees are included —
+        // needed to look up commit ages for worktree entries.
+        collect_local_branches(&repo)
+    } else {
+        Vec::new()
+    };
+    let remote = if config.include_remote {
+        collect_remote_branches(&repo)
+    } else {
+        Vec::new()
+    };
+    let current_branch = if config.exclude_current {
+        current_worktree_branch(&repo)
+    } else {
+        None
+    };
+
+    let mut entries = build_rich_completions(
+        &worktrees,
+        &local,
+        &remote,
+        current_branch.as_deref(),
+        &default_remote,
+        multi_remote_enabled,
+        prefix,
+    );
+
+    // If the config excludes local branches but we collected them for
+    // worktree age lookup, strip them from the output.
+    if !config.include_local {
+        entries.retain(|e| e.group != CompletionGroup::Local);
+    }
+
+    Ok(entries)
+}
+
+/// Format rich completion entries as tab-separated strings for the shell
+/// completion protocol: `<name>\t<group>\t<description>`.
+fn format_entries_as_strings(entries: &[CompletionEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .map(|e| format!("{}\t{}\t{}", e.name, e.group.as_str(), e.description))
+        .collect()
+}
+
 /// Return `true` if the cooldown marker is missing or older than
 /// `cooldown`. Used to decide whether the fetch-on-miss path should run.
 fn should_run_fetch(marker: &std::path::Path, cooldown: std::time::Duration) -> bool {
@@ -885,7 +881,8 @@ impl CompletionGroup {
     }
 }
 
-/// A single completion candidate emitted by `daft __complete daft-go`.
+/// A single completion candidate emitted by `daft __complete` for rich
+/// branch completions.
 #[derive(Debug, Clone)]
 pub(crate) struct CompletionEntry {
     pub name: String,
@@ -893,7 +890,63 @@ pub(crate) struct CompletionEntry {
     pub description: String,
 }
 
-/// Pure grouping/dedupe/filter/sort function for `daft go` completions.
+/// Configuration for which groups to include in rich branch completions.
+struct RichCompletionConfig {
+    /// Include worktree branches (branches checked out in a worktree).
+    include_worktrees: bool,
+    /// Include local branches not checked out in any worktree.
+    include_local: bool,
+    /// Include remote-tracking branches.
+    include_remote: bool,
+    /// Exclude the branch checked out in the current worktree.
+    exclude_current: bool,
+}
+
+// Per-command completion configurations.
+
+const CONFIG_CHECKOUT: RichCompletionConfig = RichCompletionConfig {
+    include_worktrees: true,
+    include_local: true,
+    include_remote: true,
+    exclude_current: true,
+};
+
+const CONFIG_REMOVE: RichCompletionConfig = RichCompletionConfig {
+    include_worktrees: true,
+    include_local: true,
+    include_remote: false,
+    exclude_current: false,
+};
+
+const CONFIG_RENAME: RichCompletionConfig = RichCompletionConfig {
+    include_worktrees: true,
+    include_local: false,
+    include_remote: false,
+    exclude_current: false,
+};
+
+const CONFIG_CARRY: RichCompletionConfig = RichCompletionConfig {
+    include_worktrees: true,
+    include_local: false,
+    include_remote: false,
+    exclude_current: true,
+};
+
+const CONFIG_FETCH: RichCompletionConfig = RichCompletionConfig {
+    include_worktrees: true,
+    include_local: false,
+    include_remote: false,
+    exclude_current: false,
+};
+
+const CONFIG_BRANCH: RichCompletionConfig = RichCompletionConfig {
+    include_worktrees: true,
+    include_local: true,
+    include_remote: false,
+    exclude_current: false,
+};
+
+/// Pure grouping/dedupe/filter/sort function for rich branch completions.
 ///
 /// Takes already-collected git data and produces a flat, ordered list of
 /// completion entries: worktrees first, then local branches, then remote
@@ -903,8 +956,7 @@ pub(crate) struct CompletionEntry {
 /// Shadowing is by stripped-name comparison — a remote-only branch whose
 /// stripped name collides with a local or worktree branch is dropped.
 ///
-/// The current worktree (if any) is excluded from the worktree group —
-/// `daft go` to the branch you're already on is a no-op.
+/// The current worktree (if any) is excluded from the worktree group.
 ///
 /// In single-remote mode, the leading `<default_remote>/` prefix is
 /// stripped from remote-branch names. In multi-remote mode the full
@@ -912,7 +964,7 @@ pub(crate) struct CompletionEntry {
 /// etc.) are always dropped.
 ///
 /// Entries whose name doesn't start with `prefix` are filtered out.
-pub(crate) fn build_go_completions(
+pub(crate) fn build_rich_completions(
     worktrees: &[(String, std::path::PathBuf)],
     local_branches: &[(String, String)],
     remote_branches: &[(String, String)],
@@ -1008,10 +1060,10 @@ pub(crate) fn build_go_completions(
     out
 }
 
-/// Format grouped completion entries as tab-separated lines for the
+/// Format rich completion entries as tab-separated lines for the
 /// shell completion protocol: `<name>\t<group>\t<description>`.
 #[allow(dead_code)]
-pub(crate) fn format_go_completions(entries: &[CompletionEntry]) -> String {
+pub(crate) fn format_rich_completions(entries: &[CompletionEntry]) -> String {
     let mut out = String::new();
     for entry in entries {
         out.push_str(&entry.name);
@@ -1046,7 +1098,7 @@ mod tests {
         assert!(suggestions.is_empty());
     }
 
-    // Tests for the new go-completion grouping function.
+    // Tests for the rich completion grouping function.
 
     fn wt(name: &str, path: &str) -> (String, std::path::PathBuf) {
         (name.to_string(), std::path::PathBuf::from(path))
@@ -1057,8 +1109,8 @@ mod tests {
     }
 
     #[test]
-    fn go_completions_group_order_is_worktrees_then_local_then_remote() {
-        let entries = build_go_completions(
+    fn rich_completions_group_order_is_worktrees_then_local_then_remote() {
+        let entries = build_rich_completions(
             &[wt("master", "/tmp/repo/master")],
             &[br("feat/local", "4 days ago")],
             &[br("origin/bug/xyz", "3 weeks ago")],
@@ -1080,8 +1132,8 @@ mod tests {
     }
 
     #[test]
-    fn go_completions_sort_within_group_alphabetically() {
-        let entries = build_go_completions(
+    fn rich_completions_sort_within_group_alphabetically() {
+        let entries = build_rich_completions(
             &[wt("b", "/tmp/b"), wt("a", "/tmp/a")],
             &[br("z", "1 day ago"), br("m", "2 days ago")],
             &[],
@@ -1095,8 +1147,8 @@ mod tests {
     }
 
     #[test]
-    fn go_completions_local_shadows_remote() {
-        let entries = build_go_completions(
+    fn rich_completions_local_shadows_remote() {
+        let entries = build_rich_completions(
             &[],
             &[br("feat/shared", "1 day ago")],
             &[br("origin/feat/shared", "2 days ago")],
@@ -1111,8 +1163,8 @@ mod tests {
     }
 
     #[test]
-    fn go_completions_worktree_shadows_local_and_remote() {
-        let entries = build_go_completions(
+    fn rich_completions_worktree_shadows_local_and_remote() {
+        let entries = build_rich_completions(
             &[wt("master", "/tmp/master")],
             &[br("master", "1 day ago")],
             &[br("origin/master", "2 days ago")],
@@ -1127,8 +1179,8 @@ mod tests {
     }
 
     #[test]
-    fn go_completions_exclude_current_worktree() {
-        let entries = build_go_completions(
+    fn rich_completions_exclude_current_worktree() {
+        let entries = build_rich_completions(
             &[wt("master", "/tmp/master"), wt("feat/x", "/tmp/feat-x")],
             &[],
             &[],
@@ -1142,8 +1194,8 @@ mod tests {
     }
 
     #[test]
-    fn go_completions_strip_remote_prefix_in_single_remote_mode() {
-        let entries = build_go_completions(
+    fn rich_completions_strip_remote_prefix_in_single_remote_mode() {
+        let entries = build_rich_completions(
             &[],
             &[],
             &[br("origin/bug/xyz", "3 weeks ago")],
@@ -1158,8 +1210,8 @@ mod tests {
     }
 
     #[test]
-    fn go_completions_keep_remote_prefix_in_multi_remote_mode() {
-        let entries = build_go_completions(
+    fn rich_completions_keep_remote_prefix_in_multi_remote_mode() {
+        let entries = build_rich_completions(
             &[],
             &[],
             &[
@@ -1176,8 +1228,8 @@ mod tests {
     }
 
     #[test]
-    fn go_completions_filter_by_prefix() {
-        let entries = build_go_completions(
+    fn rich_completions_filter_by_prefix() {
+        let entries = build_rich_completions(
             &[wt("master", "/tmp/master")],
             &[br("feat/x", "1d"), br("fix/y", "2d")],
             &[br("origin/bug/z", "3w")],
@@ -1191,8 +1243,8 @@ mod tests {
     }
 
     #[test]
-    fn go_completions_drop_remote_head_symrefs() {
-        let entries = build_go_completions(
+    fn rich_completions_drop_remote_head_symrefs() {
+        let entries = build_rich_completions(
             &[],
             &[],
             &[
@@ -1209,7 +1261,7 @@ mod tests {
     }
 
     #[test]
-    fn format_go_completions_emits_tab_separated_name_group_description() {
+    fn format_rich_completions_emits_tab_separated_name_group_description() {
         let entries = vec![
             CompletionEntry {
                 name: "master".into(),
@@ -1222,7 +1274,7 @@ mod tests {
                 description: "4 days ago".into(),
             },
         ];
-        let out = format_go_completions(&entries);
+        let out = format_rich_completions(&entries);
         assert_eq!(
             out,
             "master\tworktree\t2 hours ago\t/tmp/wt/master\nfeat/bar\tlocal\t4 days ago\n"
@@ -1230,14 +1282,14 @@ mod tests {
     }
 
     #[test]
-    fn go_completions_empty_input_returns_empty() {
-        let entries = build_go_completions(&[], &[], &[], None, "origin", false, "");
+    fn rich_completions_empty_input_returns_empty() {
+        let entries = build_rich_completions(&[], &[], &[], None, "origin", false, "");
         assert!(entries.is_empty());
     }
 
     #[test]
-    fn go_completions_non_matching_prefix_returns_empty() {
-        let entries = build_go_completions(
+    fn rich_completions_non_matching_prefix_returns_empty() {
+        let entries = build_rich_completions(
             &[wt("master", "/tmp/master")],
             &[br("feat/x", "1d")],
             &[br("origin/bug/y", "2d")],
@@ -1250,10 +1302,10 @@ mod tests {
     }
 
     #[test]
-    fn go_completions_prefix_filter_applies_after_remote_strip() {
+    fn rich_completions_prefix_filter_applies_after_remote_strip() {
         // In single-remote mode, the user sees `bug/xyz` (not `origin/bug/xyz`).
         // The prefix filter must match against the stripped display name.
-        let entries = build_go_completions(
+        let entries = build_rich_completions(
             &[],
             &[],
             &[br("origin/bug/xyz", "3w")],
@@ -1268,10 +1320,10 @@ mod tests {
     }
 
     #[test]
-    fn go_completions_multi_remote_dedupe_keeps_distinct_display_names() {
+    fn rich_completions_multi_remote_dedupe_keeps_distinct_display_names() {
         // In multi-remote mode, `origin/feat/x` and `fork/feat/x` are distinct
         // display names and both must survive — they don't shadow each other.
-        let entries = build_go_completions(
+        let entries = build_rich_completions(
             &[],
             &[],
             &[br("origin/feat/x", "1d"), br("fork/feat/x", "2d")],
@@ -1285,12 +1337,12 @@ mod tests {
     }
 
     #[test]
-    fn go_completions_drop_bare_remote_name_symref_collapse() {
+    fn rich_completions_drop_bare_remote_name_symref_collapse() {
         // `git for-each-ref refs/remotes/ --format=%(refname:short)` emits
         // the bare remote name (`origin`) as the short name for
         // `refs/remotes/origin/HEAD`. This is the collapsed form that our
         // `/HEAD` suffix filter misses, so it needs its own filter rule.
-        let entries = build_go_completions(
+        let entries = build_rich_completions(
             &[],
             &[],
             &[
@@ -1311,10 +1363,10 @@ mod tests {
     }
 
     #[test]
-    fn go_completions_drop_bare_remote_name_in_multi_remote_mode() {
+    fn rich_completions_drop_bare_remote_name_in_multi_remote_mode() {
         // In multi-remote mode, bare remote names are equally bogus — git
         // still collapses `refs/remotes/<remote>/HEAD` to just `<remote>`.
-        let entries = build_go_completions(
+        let entries = build_rich_completions(
             &[],
             &[],
             &[
@@ -1419,5 +1471,115 @@ mod tests {
             format_relative_time(now_secs() - 86400 * 800),
             "2 years, 2 months ago"
         );
+    }
+
+    // --- RichCompletionConfig behavior tests ---
+
+    #[test]
+    fn rich_completions_worktree_only_returns_no_local_or_remote() {
+        // When only worktrees are requested (like daft-rename),
+        // local and remote groups must be stripped even if data is provided.
+        let worktrees = vec![wt("main", "/repo/main"), wt("feat", "/repo/feat")];
+        let local = vec![
+            br("main", "1 day ago"),
+            br("feat", "2 days ago"),
+            br("dev", "3 days ago"),
+        ];
+        let remote = vec![br("origin/ci", "4 days ago")];
+
+        let entries =
+            build_rich_completions(&worktrees, &local, &remote, None, "origin", false, "");
+
+        // build_rich_completions returns all groups — the caller filters.
+        // Simulate what complete_rich_branches does with include_local=false:
+        let filtered: Vec<_> = entries
+            .into_iter()
+            .filter(|e| e.group == CompletionGroup::Worktree)
+            .collect();
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered
+            .iter()
+            .all(|e| e.group == CompletionGroup::Worktree));
+    }
+
+    #[test]
+    fn rich_completions_no_remote_returns_worktrees_and_local() {
+        // When remote is excluded (like daft-remove), only worktree + local.
+        let worktrees = vec![wt("main", "/repo/main")];
+        let local = vec![br("main", "1 day ago"), br("dev", "2 days ago")];
+        let remote = vec![br("origin/ci", "3 days ago")];
+
+        let entries =
+            build_rich_completions(&worktrees, &local, &remote, None, "origin", false, "");
+
+        // Simulate exclude_remote by filtering.
+        let filtered: Vec<_> = entries
+            .into_iter()
+            .filter(|e| e.group != CompletionGroup::Remote)
+            .collect();
+        assert_eq!(filtered.len(), 2); // main (worktree), dev (local)
+        let groups: Vec<_> = filtered.iter().map(|e| e.group).collect();
+        assert!(groups.contains(&CompletionGroup::Worktree));
+        assert!(groups.contains(&CompletionGroup::Local));
+    }
+
+    #[test]
+    fn rich_completions_exclude_current_false_keeps_current_in_worktree_group() {
+        // When exclude_current is false (like daft-remove), the current
+        // worktree branch should appear in the worktree group.
+        let worktrees = vec![wt("main", "/repo/main"), wt("feat", "/repo/feat")];
+        let local = vec![br("main", "1 day ago"), br("feat", "2 days ago")];
+
+        // Pass None as current branch (exclude_current: false behavior)
+        let entries = build_rich_completions(&worktrees, &local, &[], None, "origin", false, "");
+        let wt_names: Vec<&str> = entries
+            .iter()
+            .filter(|e| e.group == CompletionGroup::Worktree)
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(
+            wt_names.contains(&"main"),
+            "main should be in worktree group"
+        );
+        assert!(
+            wt_names.contains(&"feat"),
+            "feat should be in worktree group"
+        );
+
+        // Compare with Some("main") — main removed from worktree group
+        let entries =
+            build_rich_completions(&worktrees, &local, &[], Some("main"), "origin", false, "");
+        let wt_names: Vec<&str> = entries
+            .iter()
+            .filter(|e| e.group == CompletionGroup::Worktree)
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(
+            !wt_names.contains(&"main"),
+            "main should be excluded from worktree group"
+        );
+        assert!(
+            wt_names.contains(&"feat"),
+            "feat should remain in worktree group"
+        );
+    }
+
+    #[test]
+    fn format_entries_as_strings_produces_tab_separated_output() {
+        let entries = vec![
+            CompletionEntry {
+                name: "main".to_string(),
+                group: CompletionGroup::Worktree,
+                description: "1 day ago\t/repo/main".to_string(),
+            },
+            CompletionEntry {
+                name: "dev".to_string(),
+                group: CompletionGroup::Local,
+                description: "2 days ago".to_string(),
+            },
+        ];
+        let strings = format_entries_as_strings(&entries);
+        assert_eq!(strings[0], "main\tworktree\t1 day ago\t/repo/main");
+        assert_eq!(strings[1], "dev\tlocal\t2 days ago");
     }
 }

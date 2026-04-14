@@ -1,23 +1,16 @@
-use super::{extract_flags, get_command_for_name};
+use super::{extract_flags, get_command_for_name, uses_fetch_on_miss, uses_rich_completions};
 use anyhow::{Context, Result};
-use clap::CommandFactory;
 
 /// Generate zsh completion string
 pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<String> {
-    if command_name == "daft-go" {
-        return Ok(generate_zsh_daft_go_completion());
+    // Rich completion commands get the grouped parsing (compadd -V).
+    if uses_rich_completions(command_name) {
+        return Ok(generate_zsh_rich_completion(command_name));
     }
+
     let mut output = String::new();
-    let has_branches = matches!(
-        command_name,
-        "git-worktree-checkout"
-            | "git-worktree-carry"
-            | "git-worktree-fetch"
-            | "daft-go"
-            | "daft-start"
-            | "daft-remove"
-            | "daft-rename"
-    );
+    // daft-start still uses simple branch-prefix patterns (not rich).
+    let has_branches = command_name == "daft-start";
 
     let func_name = command_name.replace('-', "_");
 
@@ -222,18 +215,28 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     Ok(output)
 }
 
-fn generate_zsh_daft_go_completion() -> String {
-    let cmd = crate::commands::checkout::GoArgs::command();
+/// Generate a zsh completion script with rich grouped output for any command
+/// that uses the `name\tgroup\tdescription` protocol.
+fn generate_zsh_rich_completion(command_name: &str) -> String {
+    let cmd = get_command_for_name(command_name)
+        .unwrap_or_else(|| panic!("Unknown rich-completion command: {command_name}"));
     let (all_flags, _, _) = extract_flags(&cmd);
     let flags_block: String = all_flags
         .iter()
         .map(|f| format!("            '{f}'\n"))
         .collect();
 
-    format!(
-        r#"#compdef daft-go
+    let func_name = command_name.replace('-', "_");
+    let fetch_flag = if uses_fetch_on_miss(command_name) {
+        " --fetch-on-miss"
+    } else {
+        ""
+    };
 
-__daft_go_impl() {{
+    format!(
+        r#"#compdef {command_name}
+
+__{func_name}_impl() {{
     local curword="${{words[$CURRENT]}}"
     local cword=$((CURRENT - 1))
 
@@ -247,7 +250,7 @@ __daft_go_impl() {{
 
     local -a raw
     local -a wt_names wt_ages wt_paths local_names local_descs remote_names remote_descs
-    raw=(${{(f)"$(daft __complete daft-go "$curword" --position "$cword" --fetch-on-miss 2>/dev/null)"}})
+    raw=(${{(f)"$(daft __complete {command_name} "$curword" --position "$cword"{fetch_flag} 2>/dev/null)"}})
 
     # First pass: collect names and descriptions per group.
     # Worktree lines have 4 fields: name\tworktree\tage\tpath
@@ -307,11 +310,11 @@ __daft_go_impl() {{
     (( ${{#remote_names}} )) && compadd -V remote -l -d remote_display -a remote_names
 }}
 
-_daft_go() {{
-    __daft_go_impl
+_{func_name}() {{
+    __{func_name}_impl
 }}
 
-compdef _daft_go daft-go
+compdef _{func_name} {command_name}
 "#
     )
 }
