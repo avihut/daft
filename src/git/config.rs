@@ -34,26 +34,11 @@ impl GitCommand {
         Ok(())
     }
 
-    /// Get a git config value from the current repository (respects local + global config)
+    /// Get a git config value from the current repository (respects local + global config).
+    ///
+    /// Always uses gitoxide for in-process config reading — no subprocess overhead.
     pub fn config_get(&self, key: &str) -> Result<Option<String>> {
-        if self.use_gitoxide {
-            return oxide::config_get(&self.gix_repo()?, key);
-        }
-        let output = Command::new("git")
-            .args(["config", "--get", key])
-            .output()
-            .context("Failed to execute git config command")?;
-
-        if output.status.success() {
-            let value = String::from_utf8(output.stdout)
-                .context("Failed to parse git config output")?
-                .trim()
-                .to_string();
-            Ok(Some(value))
-        } else {
-            // Exit code 1 means the key was not found, which is not an error
-            Ok(None)
-        }
+        oxide::config_get(&self.gix_repo()?, key)
     }
 
     /// Set a git config value in global config
@@ -71,26 +56,11 @@ impl GitCommand {
         Ok(())
     }
 
-    /// Get a git config value from global config only
+    /// Get a git config value from global config only.
+    ///
+    /// Always uses gitoxide for in-process config reading — no subprocess overhead.
     pub fn config_get_global(&self, key: &str) -> Result<Option<String>> {
-        if self.use_gitoxide {
-            return oxide::config_get_global(key);
-        }
-        let output = Command::new("git")
-            .args(["config", "--global", "--get", key])
-            .output()
-            .context("Failed to execute git config command")?;
-
-        if output.status.success() {
-            let value = String::from_utf8(output.stdout)
-                .context("Failed to parse git config output")?
-                .trim()
-                .to_string();
-            Ok(Some(value))
-        } else {
-            // Exit code 1 means the key was not found, which is not an error
-            Ok(None)
-        }
+        oxide::config_get_global(key)
     }
 
     /// Get the tracking remote for a branch.

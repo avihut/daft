@@ -413,21 +413,37 @@ fn current_worktree_branch(repo: &gix::Repository) -> Option<String> {
 pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<CompletionEntry>> {
     use std::time::Instant;
 
+    use crate::core::settings::{defaults, keys};
+
     let timings = std::env::var("DAFT_COMPLETE_TIMINGS").is_ok();
     let t_total = Instant::now();
 
     let t = Instant::now();
-    let settings = crate::core::settings::DaftSettings::load().unwrap_or_default();
-    let default_remote = if settings.multi_remote_enabled {
-        settings.multi_remote_default.clone()
-    } else {
-        settings.remote.clone()
-    };
-    let d_settings = t.elapsed();
-
-    let t = Instant::now();
     let repo = discover_repo()?;
     let d_discover = t.elapsed();
+
+    // Read only the config keys completions actually need — directly from
+    // the repo's in-memory config snapshot (no subprocess overhead).
+    let t = Instant::now();
+    let config = repo.config_snapshot();
+    let multi_remote_enabled = config
+        .boolean(keys::multi_remote::ENABLED)
+        .unwrap_or(defaults::MULTI_REMOTE_ENABLED);
+    let default_remote = if multi_remote_enabled {
+        config
+            .string(keys::multi_remote::DEFAULT_REMOTE)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| defaults::MULTI_REMOTE_DEFAULT_REMOTE.to_string())
+    } else {
+        config
+            .string(keys::REMOTE)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| defaults::REMOTE.to_string())
+    };
+    let go_fetch_on_miss = config
+        .boolean(keys::GO_FETCH_ON_MISS)
+        .unwrap_or(defaults::GO_FETCH_ON_MISS);
+    let d_settings = t.elapsed();
 
     let collect = |repo: &gix::Repository, timings: bool| -> Vec<CompletionEntry> {
         let t = Instant::now();
@@ -453,7 +469,7 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
             &remote,
             current_branch.as_deref(),
             &default_remote,
-            settings.multi_remote_enabled,
+            multi_remote_enabled,
             prefix,
         );
         let d_build = t.elapsed();
@@ -486,18 +502,18 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
 
     if timings {
         eprintln!(
-            "[timings] settings_load    : {:>7.1}ms",
-            d_settings.as_secs_f64() * 1000.0
-        );
-        eprintln!(
             "[timings] repo_discover    : {:>7.1}ms",
             d_discover.as_secs_f64() * 1000.0
+        );
+        eprintln!(
+            "[timings] settings_load    : {:>7.1}ms",
+            d_settings.as_secs_f64() * 1000.0
         );
     }
 
     let entries = collect(&repo, timings);
 
-    if !entries.is_empty() || !fetch_on_miss || !settings.go_fetch_on_miss || prefix.is_empty() {
+    if !entries.is_empty() || !fetch_on_miss || !go_fetch_on_miss || prefix.is_empty() {
         if timings {
             eprintln!(
                 "[timings] total            : {:>7.1}ms",
