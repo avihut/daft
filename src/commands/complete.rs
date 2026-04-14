@@ -4,9 +4,8 @@
 /// to get dynamic completion suggestions (e.g., branch names).
 ///
 /// Performance target: < 50ms response time
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
-use std::process::Command;
 
 use crate::hooks::yaml_config_loader;
 
@@ -142,119 +141,255 @@ fn complete(
     }
 }
 
-/// Complete existing branch names (local and remote)
-fn complete_existing_branches(prefix: &str, verbose: bool) -> Result<Vec<String>> {
-    // Use git for-each-ref for fast, parseable output
-    let output = Command::new("git")
-        .args([
-            "for-each-ref",
-            "--format=%(refname:short)",
-            "refs/heads/",
-            "refs/remotes/origin/",
-        ])
-        .output()?;
+// ---------------------------------------------------------------------------
+// Gitoxide helpers — repo discovery and time formatting
+// ---------------------------------------------------------------------------
 
-    if !output.status.success() {
-        // Not in a git repository or git command failed
-        if verbose {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!("Git command failed: {}", stderr.trim());
-            eprintln!("Exit code: {}", output.status.code().unwrap_or(-1));
-            if !std::path::Path::new(".git").exists() {
-                eprintln!("Note: Not in a git repository (no .git directory found)");
-            }
-        }
-        return Ok(vec![]);
-    }
-
-    let branches: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|branch| !branch.contains("HEAD"))
-        .map(|branch| {
-            // Remove "origin/" prefix for cleaner suggestions
-            branch.trim_start_matches("origin/").to_string()
-        })
-        .filter(|branch| branch.starts_with(prefix))
-        .collect();
-
-    // Deduplicate branches (local and remote might have same name)
-    let mut unique_branches: Vec<String> = branches;
-    unique_branches.sort();
-    unique_branches.dedup();
-
-    if verbose && unique_branches.is_empty() {
-        eprintln!("No branches found matching prefix: '{}'", prefix);
-    }
-
-    Ok(unique_branches)
+/// Discover the git repository from the current working directory via gitoxide.
+/// This avoids spawning a subprocess and reuses the in-process gix object cache.
+fn discover_repo() -> Result<gix::Repository> {
+    let cwd = std::env::current_dir().context("Failed to get current working directory")?;
+    let repo = gix::discover(&cwd).context("Failed to discover git repository")?;
+    Ok(repo)
 }
 
-/// Collect `(branch, path)` pairs for every linked worktree that has a
-/// branch checked out. Detached HEADs and bare repos are skipped —
-/// they're not navigation targets.
-fn collect_go_worktrees() -> Vec<(String, std::path::PathBuf)> {
-    use crate::git::GitCommand;
+/// Format a Unix epoch timestamp as a human-readable relative time string
+/// matching git's `%(committerdate:relative)` output (e.g. "3 days ago").
+fn format_relative_time(epoch_secs: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let delta = now.saturating_sub(epoch_secs);
+    if delta < 0 {
+        return "in the future".to_string();
+    }
+    let delta = delta as u64;
 
-    let git = GitCommand::new(true);
-    let entries = match crate::core::worktree::prune::parse_worktree_list(&git) {
-        Ok(e) => e,
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    const WEEK: u64 = 7 * DAY;
+    const MONTH: u64 = 30 * DAY;
+    const YEAR: u64 = 365 * DAY;
+
+    if delta < 90 {
+        let n = delta;
+        return if n == 1 {
+            "1 second ago".to_string()
+        } else {
+            format!("{n} seconds ago")
+        };
+    }
+    if delta < 90 * MINUTE {
+        let n = delta / MINUTE;
+        return if n == 1 {
+            "1 minute ago".to_string()
+        } else {
+            format!("{n} minutes ago")
+        };
+    }
+    if delta < 36 * HOUR {
+        let n = delta / HOUR;
+        return if n == 1 {
+            "1 hour ago".to_string()
+        } else {
+            format!("{n} hours ago")
+        };
+    }
+    if delta < 14 * DAY {
+        let n = delta / DAY;
+        return if n == 1 {
+            "1 day ago".to_string()
+        } else {
+            format!("{n} days ago")
+        };
+    }
+    if delta < 10 * WEEK {
+        let n = delta / WEEK;
+        return if n == 1 {
+            "1 week ago".to_string()
+        } else {
+            format!("{n} weeks ago")
+        };
+    }
+    if delta < YEAR {
+        let n = delta / MONTH;
+        return if n == 1 {
+            "1 month ago".to_string()
+        } else {
+            format!("{n} months ago")
+        };
+    }
+    let years = delta / YEAR;
+    let months = (delta % YEAR) / MONTH;
+    if months == 0 {
+        if years == 1 {
+            "1 year ago".to_string()
+        } else {
+            format!("{years} years ago")
+        }
+    } else if years == 1 {
+        format!("1 year, {months} months ago")
+    } else {
+        format!("{years} years, {months} months ago")
+    }
+}
+
+/// Read the branch checked out in a worktree from its private git dir's HEAD file.
+/// Returns `None` for detached HEAD or unreadable files.
+fn worktree_branch_from_gitdir(git_dir: &std::path::Path) -> Option<String> {
+    let head_contents = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let trimmed = head_contents.trim();
+    trimmed
+        .strip_prefix("ref: refs/heads/")
+        .map(|s| s.to_string())
+}
+
+/// Peel a reference to its commit and return the committer timestamp as a
+/// relative-time string. Returns an empty string on failure (tag that doesn't
+/// point to a commit, corrupt object, etc.).
+fn ref_commit_age(reference: &mut gix::Reference<'_>) -> String {
+    let id = match reference.peel_to_id() {
+        Ok(id) => id.detach(),
+        Err(_) => return String::new(),
+    };
+    let repo = reference.repo;
+    let object = match repo.find_object(id) {
+        Ok(o) => o,
+        Err(_) => return String::new(),
+    };
+    let commit = match object.try_into_commit() {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+    let sig = match commit.committer() {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    match sig.time() {
+        Ok(time) => format_relative_time(time.seconds),
+        Err(_) => String::new(),
+    }
+}
+
+/// Complete existing branch names (local and remote)
+fn complete_existing_branches(prefix: &str, verbose: bool) -> Result<Vec<String>> {
+    let repo = match discover_repo() {
+        Ok(r) => r,
+        Err(e) => {
+            if verbose {
+                eprintln!("Git repository discovery failed: {e}");
+            }
+            return Ok(vec![]);
+        }
+    };
+
+    let mut branches: Vec<String> = Vec::new();
+
+    for refs_prefix in ["refs/heads/", "refs/remotes/origin/"] {
+        let platform = match repo.references() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let iter = match platform.prefixed(refs_prefix) {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+        for reference_result in iter {
+            let reference = match reference_result {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let short = reference.name().shorten().to_string();
+            if short.contains("HEAD") {
+                continue;
+            }
+            let display = short.trim_start_matches("origin/").to_string();
+            if display.starts_with(prefix) {
+                branches.push(display);
+            }
+        }
+    }
+
+    branches.sort();
+    branches.dedup();
+
+    if verbose && branches.is_empty() {
+        eprintln!("No branches found matching prefix: '{prefix}'");
+    }
+
+    Ok(branches)
+}
+
+/// Collect `(branch, path)` pairs for every worktree (main + linked) that
+/// has a branch checked out. Detached HEADs and bare repos are skipped —
+/// they're not navigation targets.
+fn collect_go_worktrees(repo: &gix::Repository) -> Vec<(String, std::path::PathBuf)> {
+    let mut result = Vec::new();
+
+    // Main worktree (if not bare / has a working directory).
+    if let Some(workdir) = repo.workdir() {
+        if let Ok(Some(head_ref)) = repo.head_ref() {
+            let branch = head_ref.name().shorten().to_string();
+            result.push((branch, workdir.to_path_buf()));
+        }
+        // Detached HEAD in main worktree → skip (no branch).
+    }
+
+    // Linked worktrees.
+    let proxies = match repo.worktrees() {
+        Ok(p) => p,
+        Err(_) => return result,
+    };
+    for proxy in proxies {
+        let branch = match worktree_branch_from_gitdir(proxy.git_dir()) {
+            Some(b) => b,
+            None => continue, // detached or unreadable
+        };
+        let path = match proxy.base() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        result.push((branch, path));
+    }
+
+    result
+}
+
+/// Collect `(branch, relative_age)` pairs for a given ref prefix via gitoxide.
+fn collect_refs_with_age(repo: &gix::Repository, prefix: &str) -> Vec<(String, String)> {
+    let platform = match repo.references() {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let references = match platform.prefixed(prefix) {
+        Ok(r) => r,
         Err(_) => return Vec::new(),
     };
 
-    entries
-        .into_iter()
-        .filter(|wt| !wt.is_bare && !wt.is_detached)
-        .filter_map(|wt| wt.branch.map(|b| (b, wt.path)))
-        .collect()
+    let mut result = Vec::new();
+    for ref_result in references {
+        let mut reference = match ref_result {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let short_name = reference.name().shorten().to_string();
+        let age = ref_commit_age(&mut reference);
+        result.push((short_name, age));
+    }
+    result
 }
 
 /// Collect `(branch, relative_age)` pairs for every local branch.
-fn collect_go_local_branches() -> Vec<(String, String)> {
-    let output = Command::new("git")
-        .args([
-            "for-each-ref",
-            "--format=%(refname:short)%09%(committerdate:relative)",
-            "refs/heads/",
-        ])
-        .output();
-
-    let output = match output {
-        Ok(o) if o.status.success() => o,
-        _ => return Vec::new(),
-    };
-
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let (name, age) = line.split_once('\t')?;
-            Some((name.to_string(), age.to_string()))
-        })
-        .collect()
+fn collect_go_local_branches(repo: &gix::Repository) -> Vec<(String, String)> {
+    collect_refs_with_age(repo, "refs/heads/")
 }
 
 /// Collect `(branch, relative_age)` pairs for every remote-tracking
 /// branch across all remotes.
-fn collect_go_remote_branches() -> Vec<(String, String)> {
-    let output = Command::new("git")
-        .args([
-            "for-each-ref",
-            "--format=%(refname:short)%09%(committerdate:relative)",
-            "refs/remotes/",
-        ])
-        .output();
-
-    let output = match output {
-        Ok(o) if o.status.success() => o,
-        _ => return Vec::new(),
-    };
-
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let (name, age) = line.split_once('\t')?;
-            Some((name.to_string(), age.to_string()))
-        })
-        .collect()
+fn collect_go_remote_branches(repo: &gix::Repository) -> Vec<(String, String)> {
+    collect_refs_with_age(repo, "refs/remotes/")
 }
 
 /// Collect the current worktree's branch, if any — used to exclude it
@@ -262,15 +397,13 @@ fn collect_go_remote_branches() -> Vec<(String, String)> {
 /// the current directory is outside a git repository, or if we're in
 /// a bare repository (e.g., the root of a contained layout where HEAD
 /// points to the default branch but no worktree corresponds to CWD).
-fn current_worktree_branch() -> Option<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--is-bare-repository"])
-        .output()
-        .ok()?;
-    if String::from_utf8_lossy(&output.stdout).trim() == "true" {
-        return None;
-    }
-    crate::core::repo::get_current_branch().ok()
+fn current_worktree_branch(repo: &gix::Repository) -> Option<String> {
+    // In a bare repository there is no "current worktree" to exclude.
+    repo.workdir()?;
+    repo.head_ref()
+        .ok()
+        .flatten()
+        .map(|r| r.name().shorten().to_string())
 }
 
 /// Top-level completion helper for `daft go`. Collects real git data,
@@ -278,19 +411,43 @@ fn current_worktree_branch() -> Option<String> {
 /// When `fetch_on_miss` is true and the prefix has no local matches,
 /// runs `git fetch` with a spinner and re-resolves.
 pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<CompletionEntry>> {
+    use std::time::Instant;
+
+    let timings = std::env::var("DAFT_COMPLETE_TIMINGS").is_ok();
+    let t_total = Instant::now();
+
+    let t = Instant::now();
     let settings = crate::core::settings::DaftSettings::load().unwrap_or_default();
     let default_remote = if settings.multi_remote_enabled {
         settings.multi_remote_default.clone()
     } else {
         settings.remote.clone()
     };
+    let d_settings = t.elapsed();
 
-    let collect = || -> Vec<CompletionEntry> {
-        let worktrees = collect_go_worktrees();
-        let local = collect_go_local_branches();
-        let remote = collect_go_remote_branches();
-        let current_branch = current_worktree_branch();
-        build_go_completions(
+    let t = Instant::now();
+    let repo = discover_repo()?;
+    let d_discover = t.elapsed();
+
+    let collect = |repo: &gix::Repository, timings: bool| -> Vec<CompletionEntry> {
+        let t = Instant::now();
+        let worktrees = collect_go_worktrees(repo);
+        let d_wt = t.elapsed();
+
+        let t = Instant::now();
+        let local = collect_go_local_branches(repo);
+        let d_local = t.elapsed();
+
+        let t = Instant::now();
+        let remote = collect_go_remote_branches(repo);
+        let d_remote = t.elapsed();
+
+        let t = Instant::now();
+        let current_branch = current_worktree_branch(repo);
+        let d_current = t.elapsed();
+
+        let t = Instant::now();
+        let entries = build_go_completions(
             &worktrees,
             &local,
             &remote,
@@ -298,23 +455,72 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
             &default_remote,
             settings.multi_remote_enabled,
             prefix,
-        )
+        );
+        let d_build = t.elapsed();
+
+        if timings {
+            eprintln!(
+                "[timings] worktrees        : {:>7.1}ms",
+                d_wt.as_secs_f64() * 1000.0
+            );
+            eprintln!(
+                "[timings] local_branches   : {:>7.1}ms",
+                d_local.as_secs_f64() * 1000.0
+            );
+            eprintln!(
+                "[timings] remote_branches  : {:>7.1}ms",
+                d_remote.as_secs_f64() * 1000.0
+            );
+            eprintln!(
+                "[timings] current_branch   : {:>7.1}ms",
+                d_current.as_secs_f64() * 1000.0
+            );
+            eprintln!(
+                "[timings] build            : {:>7.1}ms",
+                d_build.as_secs_f64() * 1000.0
+            );
+        }
+
+        entries
     };
 
-    let entries = collect();
+    if timings {
+        eprintln!(
+            "[timings] settings_load    : {:>7.1}ms",
+            d_settings.as_secs_f64() * 1000.0
+        );
+        eprintln!(
+            "[timings] repo_discover    : {:>7.1}ms",
+            d_discover.as_secs_f64() * 1000.0
+        );
+    }
+
+    let entries = collect(&repo, timings);
+
     if !entries.is_empty() || !fetch_on_miss || !settings.go_fetch_on_miss || prefix.is_empty() {
+        if timings {
+            eprintln!(
+                "[timings] total            : {:>7.1}ms",
+                t_total.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         return Ok(entries);
     }
 
-    let git_common_dir = match crate::core::repo::get_git_common_dir() {
-        Ok(d) => d,
-        Err(_) => return Ok(entries),
-    };
+    let common_dir = repo.common_dir().to_path_buf();
+    let git_common_dir = common_dir.canonicalize().unwrap_or(common_dir);
     let marker = git_common_dir.join("daft_complete_last_fetch");
     if !should_run_fetch(&marker, std::time::Duration::from_secs(30)) {
+        if timings {
+            eprintln!(
+                "[timings] total            : {:>7.1}ms",
+                t_total.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         return Ok(entries);
     }
 
+    let t = Instant::now();
     let spinner =
         crate::completion_spinner::Spinner::start(&format!("Fetching refs from {default_remote}…"));
 
@@ -332,10 +538,27 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
     if let Some(s) = spinner {
         s.stop();
     }
+    let d_fetch = t.elapsed();
 
     let _ = touch_fetch_marker(&marker);
 
-    Ok(collect())
+    if timings {
+        eprintln!(
+            "[timings] fetch            : {:>7.1}ms",
+            d_fetch.as_secs_f64() * 1000.0
+        );
+    }
+
+    let entries = collect(&repo, timings);
+
+    if timings {
+        eprintln!(
+            "[timings] total            : {:>7.1}ms",
+            t_total.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+
+    Ok(entries)
 }
 
 /// Suggest common branch name patterns for new branches
@@ -364,22 +587,20 @@ fn suggest_new_branch_names(prefix: &str) -> Vec<String> {
 /// Complete local branches only (for base branch selection)
 #[allow(dead_code)]
 fn complete_local_branches(prefix: &str, verbose: bool) -> Result<Vec<String>> {
-    let output = Command::new("git")
-        .args(["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
-        .output()?;
-
-    if !output.status.success() {
-        if verbose {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!("Git command failed (local branches): {}", stderr.trim());
+    let repo = match discover_repo() {
+        Ok(r) => r,
+        Err(e) => {
+            if verbose {
+                eprintln!("Git repository discovery failed: {e}");
+            }
+            return Ok(vec![]);
         }
-        return Ok(vec![]);
-    }
+    };
 
-    let branches: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|branch| branch.starts_with(prefix))
-        .map(String::from)
+    let branches: Vec<String> = collect_refs_with_age(&repo, "refs/heads/")
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| name.starts_with(prefix))
         .collect();
 
     Ok(branches)
@@ -388,26 +609,21 @@ fn complete_local_branches(prefix: &str, verbose: bool) -> Result<Vec<String>> {
 /// Complete remote branches only
 #[allow(dead_code)]
 fn complete_remote_branches(prefix: &str, verbose: bool) -> Result<Vec<String>> {
-    let output = Command::new("git")
-        .args([
-            "for-each-ref",
-            "--format=%(refname:short)",
-            "refs/remotes/origin/",
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        if verbose {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!("Git command failed (remote branches): {}", stderr.trim());
+    let repo = match discover_repo() {
+        Ok(r) => r,
+        Err(e) => {
+            if verbose {
+                eprintln!("Git repository discovery failed: {e}");
+            }
+            return Ok(vec![]);
         }
-        return Ok(vec![]);
-    }
+    };
 
-    let branches: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|branch| !branch.contains("HEAD") && branch.starts_with(prefix))
-        .map(|branch| branch.trim_start_matches("origin/").to_string())
+    let branches: Vec<String> = collect_refs_with_age(&repo, "refs/remotes/origin/")
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| !name.contains("HEAD") && name.starts_with(prefix))
+        .map(|name| name.trim_start_matches("origin/").to_string())
         .collect();
 
     Ok(branches)
@@ -575,16 +791,14 @@ fn complete_worktree_names(prefix: &str) -> Result<Vec<String>> {
 
 /// Find the project root (parent of git common dir).
 fn find_project_root() -> Result<std::path::PathBuf> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--git-common-dir"])
-        .output()?;
-
-    if !output.status.success() {
-        anyhow::bail!("Not in a git repository");
-    }
-
-    let common_dir = std::path::PathBuf::from(String::from_utf8(output.stdout)?.trim());
-    let canonical = common_dir.canonicalize()?;
+    let repo = discover_repo()?;
+    let common_dir = repo.common_dir().to_path_buf();
+    let canonical = common_dir.canonicalize().with_context(|| {
+        format!(
+            "Failed to canonicalize git directory: {}",
+            common_dir.display()
+        )
+    })?;
     canonical
         .parent()
         .map(|p| p.to_path_buf())
@@ -593,17 +807,10 @@ fn find_project_root() -> Result<std::path::PathBuf> {
 
 /// Find the worktree root directory (for completions).
 fn find_worktree_root() -> Result<std::path::PathBuf> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()?;
-
-    if !output.status.success() {
-        anyhow::bail!("Not in a git worktree");
-    }
-
-    Ok(std::path::PathBuf::from(
-        String::from_utf8(output.stdout)?.trim(),
-    ))
+    let repo = discover_repo()?;
+    repo.workdir()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| anyhow::anyhow!("Not inside a worktree (bare repository)"))
 }
 
 /// Return `true` if the cooldown marker is missing or older than
@@ -1139,6 +1346,62 @@ mod tests {
         assert!(
             should_run_fetch(&marker, std::time::Duration::from_secs(30)),
             "marker older than cooldown must allow fetch"
+        );
+    }
+
+    // --- format_relative_time tests ---
+
+    fn now_secs() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    #[test]
+    fn relative_time_seconds() {
+        assert_eq!(format_relative_time(now_secs() - 30), "30 seconds ago");
+        assert_eq!(format_relative_time(now_secs() - 1), "1 second ago");
+    }
+
+    #[test]
+    fn relative_time_minutes() {
+        assert_eq!(format_relative_time(now_secs() - 120), "2 minutes ago");
+        assert_eq!(format_relative_time(now_secs() - 60 * 45), "45 minutes ago");
+    }
+
+    #[test]
+    fn relative_time_hours() {
+        assert_eq!(format_relative_time(now_secs() - 3600 * 3), "3 hours ago");
+    }
+
+    #[test]
+    fn relative_time_days() {
+        assert_eq!(format_relative_time(now_secs() - 86400 * 5), "5 days ago");
+    }
+
+    #[test]
+    fn relative_time_weeks() {
+        assert_eq!(format_relative_time(now_secs() - 86400 * 21), "3 weeks ago");
+    }
+
+    #[test]
+    fn relative_time_months() {
+        assert_eq!(
+            format_relative_time(now_secs() - 86400 * 90),
+            "3 months ago"
+        );
+    }
+
+    #[test]
+    fn relative_time_years() {
+        assert_eq!(
+            format_relative_time(now_secs() - 86400 * 400),
+            "1 year, 1 months ago"
+        );
+        assert_eq!(
+            format_relative_time(now_secs() - 86400 * 800),
+            "2 years, 2 months ago"
         );
     }
 }
