@@ -402,6 +402,7 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
         .unwrap_or(defaults::GO_FETCH_ON_MISS);
     let d_settings = t.elapsed();
 
+    let cwd = std::env::current_dir().ok();
     let collect = |repo: &gix::Repository, timings: bool| -> Vec<CompletionEntry> {
         let t = Instant::now();
         let worktrees = collect_worktrees(repo);
@@ -428,6 +429,7 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
             &default_remote,
             multi_remote_enabled,
             prefix,
+            cwd.as_deref(),
         );
         let d_build = t.elapsed();
 
@@ -797,6 +799,7 @@ fn complete_rich_branches(
         None
     };
 
+    let cwd = std::env::current_dir().ok();
     let mut entries = build_rich_completions(
         &worktrees,
         &local,
@@ -805,6 +808,7 @@ fn complete_rich_branches(
         &default_remote,
         multi_remote_enabled,
         prefix,
+        cwd.as_deref(),
     );
 
     // If the config excludes local branches but we collected them for
@@ -964,6 +968,7 @@ const CONFIG_BRANCH: RichCompletionConfig = RichCompletionConfig {
 /// etc.) are always dropped.
 ///
 /// Entries whose name doesn't start with `prefix` are filtered out.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_rich_completions(
     worktrees: &[(String, std::path::PathBuf)],
     local_branches: &[(String, String)],
@@ -972,6 +977,7 @@ pub(crate) fn build_rich_completions(
     default_remote: &str,
     multi_remote: bool,
     prefix: &str,
+    cwd: Option<&std::path::Path>,
 ) -> Vec<CompletionEntry> {
     use std::collections::HashSet;
 
@@ -988,10 +994,13 @@ pub(crate) fn build_rich_completions(
                 .find(|(n, _)| n == name)
                 .map(|(_, a)| a.as_str())
                 .unwrap_or("");
+            let display_path = cwd
+                .and_then(|base| pathdiff::diff_paths(path, base))
+                .unwrap_or_else(|| path.to_path_buf());
             CompletionEntry {
                 name: name.clone(),
                 group: CompletionGroup::Worktree,
-                description: format!("{}\t{}", age, path.display()),
+                description: format!("{}\t{}", age, display_path.display()),
             }
         })
         .collect();
@@ -1118,6 +1127,7 @@ mod tests {
             "origin",
             false, // single-remote mode
             "",
+            None,
         );
         let groups: Vec<CompletionGroup> = entries.iter().map(|e| e.group).collect();
         assert_eq!(
@@ -1141,6 +1151,7 @@ mod tests {
             "origin",
             false,
             "",
+            None,
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b", "m", "z"]);
@@ -1156,6 +1167,7 @@ mod tests {
             "origin",
             false,
             "",
+            None,
         );
         assert_eq!(entries.len(), 1, "remote should be shadowed by local");
         assert_eq!(entries[0].name, "feat/shared");
@@ -1172,6 +1184,7 @@ mod tests {
             "origin",
             false,
             "",
+            None,
         );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "master");
@@ -1188,6 +1201,7 @@ mod tests {
             "origin",
             false,
             "",
+            None,
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["master"]);
@@ -1203,6 +1217,7 @@ mod tests {
             "origin",
             false,
             "",
+            None,
         );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "bug/xyz");
@@ -1222,6 +1237,7 @@ mod tests {
             "origin",
             true, // multi-remote mode
             "",
+            None,
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["fork/feat/y", "origin/bug/xyz"]);
@@ -1237,6 +1253,7 @@ mod tests {
             "origin",
             false,
             "fe",
+            None,
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["feat/x"]);
@@ -1255,6 +1272,7 @@ mod tests {
             "origin",
             false,
             "",
+            None,
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["master"]);
@@ -1283,7 +1301,7 @@ mod tests {
 
     #[test]
     fn rich_completions_empty_input_returns_empty() {
-        let entries = build_rich_completions(&[], &[], &[], None, "origin", false, "");
+        let entries = build_rich_completions(&[], &[], &[], None, "origin", false, "", None);
         assert!(entries.is_empty());
     }
 
@@ -1297,6 +1315,7 @@ mod tests {
             "origin",
             false,
             "zzz",
+            None,
         );
         assert!(entries.is_empty());
     }
@@ -1313,6 +1332,7 @@ mod tests {
             "origin",
             false,
             "bu",
+            None,
         );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "bug/xyz");
@@ -1331,6 +1351,7 @@ mod tests {
             "origin",
             true, // multi-remote
             "",
+            None,
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["fork/feat/x", "origin/feat/x"]);
@@ -1353,6 +1374,7 @@ mod tests {
             "origin",
             false,
             "",
+            None,
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
@@ -1378,6 +1400,7 @@ mod tests {
             "origin",
             true,
             "",
+            None,
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["origin/feat/x"]);
@@ -1488,7 +1511,7 @@ mod tests {
         let remote = vec![br("origin/ci", "4 days ago")];
 
         let entries =
-            build_rich_completions(&worktrees, &local, &remote, None, "origin", false, "");
+            build_rich_completions(&worktrees, &local, &remote, None, "origin", false, "", None);
 
         // build_rich_completions returns all groups — the caller filters.
         // Simulate what complete_rich_branches does with include_local=false:
@@ -1510,7 +1533,7 @@ mod tests {
         let remote = vec![br("origin/ci", "3 days ago")];
 
         let entries =
-            build_rich_completions(&worktrees, &local, &remote, None, "origin", false, "");
+            build_rich_completions(&worktrees, &local, &remote, None, "origin", false, "", None);
 
         // Simulate exclude_remote by filtering.
         let filtered: Vec<_> = entries
@@ -1531,7 +1554,8 @@ mod tests {
         let local = vec![br("main", "1 day ago"), br("feat", "2 days ago")];
 
         // Pass None as current branch (exclude_current: false behavior)
-        let entries = build_rich_completions(&worktrees, &local, &[], None, "origin", false, "");
+        let entries =
+            build_rich_completions(&worktrees, &local, &[], None, "origin", false, "", None);
         let wt_names: Vec<&str> = entries
             .iter()
             .filter(|e| e.group == CompletionGroup::Worktree)
@@ -1547,8 +1571,16 @@ mod tests {
         );
 
         // Compare with Some("main") — main removed from worktree group
-        let entries =
-            build_rich_completions(&worktrees, &local, &[], Some("main"), "origin", false, "");
+        let entries = build_rich_completions(
+            &worktrees,
+            &local,
+            &[],
+            Some("main"),
+            "origin",
+            false,
+            "",
+            None,
+        );
         let wt_names: Vec<&str> = entries
             .iter()
             .filter(|e| e.group == CompletionGroup::Worktree)
