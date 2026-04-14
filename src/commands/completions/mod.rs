@@ -519,22 +519,9 @@ mod tests {
     }
 
     #[test]
-    fn zsh_daft_go_uses_tags_for_worktree_color() {
+    fn zsh_daft_go_uses_compadd_groups_with_worktree_header() {
         let script =
             zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
-        // Worktrees use _tags + _requested for cyan via list-colors
-        assert!(
-            script.contains("_tags daft-go-wt"),
-            "daft-go zsh must register worktree tag"
-        );
-        assert!(
-            script.contains("_requested daft-go-wt"),
-            "daft-go zsh must use _requested for worktree tag"
-        );
-        assert!(
-            script.contains("daft-go-wt' list-colors '=*=36'"),
-            "daft-go zsh must set cyan list-colors for worktree tag"
-        );
         // Groups use -V for ordering (worktree first)
         assert!(
             script.contains("-V worktree"),
@@ -548,10 +535,16 @@ mod tests {
             script.contains("-V remote"),
             "daft-go zsh must use -V remote group"
         );
-        // No group headers, no _describe
+        // Cyan header for worktree group only (prompt escapes via -X)
         assert!(
-            !script.contains("-X "),
-            "daft-go must NOT use -X group headers"
+            script.contains("-X '%F{cyan}worktrees%f'"),
+            "daft-go zsh must have cyan worktree header via -X"
+        );
+        // No headers for local/remote groups (only worktree has -X)
+        assert_eq!(
+            script.matches("compadd -X").count(),
+            1,
+            "daft-go must only have one compadd -X (worktrees)"
         );
         assert!(
             !script.contains("\n    _describe"),

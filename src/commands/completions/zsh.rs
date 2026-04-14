@@ -233,12 +233,6 @@ fn generate_zsh_daft_go_completion() -> String {
     format!(
         r#"#compdef daft-go
 
-# Load complist for colored completions
-zmodload -i zsh/complist
-
-# Color worktree completions cyan (ANSI 36), matching git color.branch.worktree.
-zstyle ':completion:*:*:*:*:daft-go-wt' list-colors '=*=36'
-
 __daft_go_impl() {{
     local curword="${{words[$CURRENT]}}"
     local cword=$((CURRENT - 1))
@@ -297,16 +291,9 @@ __daft_go_impl() {{
         remote_display+=("${{remote_names[$i]}}${{(l:$pad:: :)}}  ${{remote_descs[$i]}}")
     done
 
-    # Worktrees: use _tags so list-colors can target the daft-go-wt tag (cyan).
-    if (( ${{#wt_names}} )); then
-        _tags daft-go-wt
-        while _tags; do
-            _requested daft-go-wt && \
-                compadd -V worktree -l -d wt_display -a wt_names
-        done
-    fi
-
-    # Local and remote: plain compadd (default color).
+    # -V preserves group insertion order: worktrees first, then local, then remote.
+    # -X with %F prompt escapes adds a cyan header for the worktree group.
+    (( ${{#wt_names}} ))     && compadd -X '%F{{cyan}}worktrees%f' -V worktree -l -d wt_display -a wt_names
     (( ${{#local_names}} ))  && compadd -V local -l -d local_display -a local_names
     (( ${{#remote_names}} )) && compadd -V remote -l -d remote_display -a remote_names
 }}
