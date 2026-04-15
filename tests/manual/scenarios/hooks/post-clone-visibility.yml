@@ -1,0 +1,51 @@
+name: Post-clone hook invocation appears in daft hooks jobs listing
+description:
+  "Regression coverage for post-clone hooks. All other scenarios test
+  worktree-post-create or worktree-pre-remove. This verifies that a post-clone
+  hook fired during git-worktree-clone also writes an invocation record visible
+  in the listing."
+
+repos:
+  - name: test-post-clone-vis
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Post-clone visibility test"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        post-clone:
+          jobs:
+            - name: clone-setup
+              run: echo clone-setup-output
+
+steps:
+  - name: Trust and clone the repository (triggers post-clone hook)
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_POST_CLONE_VIS
+      cd test-post-clone-vis/main
+      daft hooks trust --force 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Re-clone with trust in place (post-clone should fire now)
+    run: |
+      rm -rf test-post-clone-vis
+      env -u DAFT_TESTING git-worktree-clone --layout contained $REMOTE_TEST_POST_CLONE_VIS 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "clone-setup-output"
+
+  - name: List jobs — should show post-clone invocation
+    run: daft hooks jobs 2>&1
+    cwd: "$WORK_DIR/test-post-clone-vis/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "post-clone"
+        - "clone-setup"
+        - "completed"
