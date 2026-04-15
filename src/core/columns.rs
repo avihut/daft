@@ -343,12 +343,14 @@ impl CompletionColumn {
         ]
     }
 
-    /// The default column set (matches pre-config behavior).
+    /// The default column set for branch completions.
     pub fn completion_defaults() -> &'static [CompletionColumn] {
         &[
             CompletionColumn::Age,
             CompletionColumn::Author,
             CompletionColumn::Path,
+            CompletionColumn::TrackedChanges,
+            CompletionColumn::Untracked,
         ]
     }
 
@@ -751,7 +753,9 @@ mod tests {
             &[
                 CompletionColumn::Age,
                 CompletionColumn::Author,
-                CompletionColumn::Path
+                CompletionColumn::Path,
+                CompletionColumn::TrackedChanges,
+                CompletionColumn::Untracked,
             ]
         );
     }
@@ -779,19 +783,20 @@ mod tests {
     }
 
     #[test]
-    fn completion_column_parse_modifier_add() {
-        let cols = CompletionColumnSelection::parse("+tracked-changes").unwrap();
-        assert!(cols.contains(&CompletionColumn::TrackedChanges));
-        // Defaults are preserved
+    fn completion_column_parse_modifier_remove_and_readd() {
+        // Remove tracked-changes (which is in defaults), verify it's gone
+        let cols = CompletionColumnSelection::parse("-tracked-changes").unwrap();
+        assert!(!cols.contains(&CompletionColumn::TrackedChanges));
         assert!(cols.contains(&CompletionColumn::Age));
-        assert!(cols.contains(&CompletionColumn::Author));
-        assert!(cols.contains(&CompletionColumn::Path));
+        assert!(cols.contains(&CompletionColumn::Untracked));
     }
 
     #[test]
     fn completion_column_parse_modifier_remove() {
-        let cols = CompletionColumnSelection::parse("-author").unwrap();
+        let cols = CompletionColumnSelection::parse("-author,-tracked-changes,-untracked").unwrap();
         assert!(!cols.contains(&CompletionColumn::Author));
+        assert!(!cols.contains(&CompletionColumn::TrackedChanges));
+        assert!(!cols.contains(&CompletionColumn::Untracked));
         assert!(cols.contains(&CompletionColumn::Age));
         assert!(cols.contains(&CompletionColumn::Path));
     }
