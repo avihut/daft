@@ -358,7 +358,8 @@ pub fn execute_yaml_hook_with_rc(
     // Fall back to running background jobs inline.
     #[cfg(not(unix))]
     {
-        let bg_results = crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter, None)?;
+        let bg_results =
+            crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter, Some(&fg_sink))?;
         let mut all_results = fg_results.clone();
         all_results.extend(bg_results);
         return job_results_to_hook_result(&all_results);
