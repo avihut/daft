@@ -258,6 +258,9 @@ daft hooks jobs [OPTIONS]
 |--------|-------------|----------|
 | `--all` | Show jobs across all worktrees |  |
 | `--json` | Output in JSON format |  |
+| `--worktree <WORKTREE>` | Filter to a specific worktree (can be deleted) |  |
+| `--status <STATUS>` | Filter to invocations containing jobs with this status |  |
+| `--hook <HOOK_FILTER>` | Filter to invocations of this hook type |  |
 
 ### migrate
 
