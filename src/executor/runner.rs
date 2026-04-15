@@ -6,6 +6,7 @@
 
 use super::command::{run_command, run_command_interactive, CommandResult};
 use super::dag::DagGraph;
+use super::log_sink::LogSink;
 use super::presenter::JobPresenter;
 use super::{ExecutionMode, JobResult, JobSpec, NodeStatus};
 use anyhow::Result;
@@ -29,7 +30,7 @@ pub fn run_jobs(
     jobs: &[JobSpec],
     mode: ExecutionMode,
     presenter: &Arc<dyn JobPresenter>,
-    sink: Option<&Arc<dyn crate::executor::log_sink::LogSink>>,
+    sink: Option<&Arc<dyn LogSink>>,
 ) -> Result<Vec<JobResult>> {
     if jobs.is_empty() {
         return Ok(Vec::new());
@@ -61,7 +62,7 @@ fn run_sequential(
     jobs: &[JobSpec],
     presenter: &Arc<dyn JobPresenter>,
     stop_on_failure: bool,
-    sink: Option<&Arc<dyn crate::executor::log_sink::LogSink>>,
+    sink: Option<&Arc<dyn LogSink>>,
 ) -> Result<Vec<JobResult>> {
     let mut results = Vec::with_capacity(jobs.len());
 
@@ -119,7 +120,7 @@ fn run_sequential(
 fn run_parallel_flat(
     jobs: &[JobSpec],
     presenter: &Arc<dyn JobPresenter>,
-    sink: Option<&Arc<dyn crate::executor::log_sink::LogSink>>,
+    sink: Option<&Arc<dyn LogSink>>,
 ) -> Result<Vec<JobResult>> {
     let nodes: Vec<(String, Vec<String>)> = jobs.iter().map(|j| (j.name.clone(), vec![])).collect();
     let graph = DagGraph::new(nodes)?;
@@ -135,7 +136,7 @@ fn run_with_dag(
     jobs: &[JobSpec],
     mode: ExecutionMode,
     presenter: &Arc<dyn JobPresenter>,
-    sink: Option<&Arc<dyn crate::executor::log_sink::LogSink>>,
+    sink: Option<&Arc<dyn LogSink>>,
 ) -> Result<Vec<JobResult>> {
     let nodes: Vec<(String, Vec<String>)> = jobs
         .iter()
@@ -154,7 +155,7 @@ fn run_dag_execution(
     jobs: &[JobSpec],
     graph: &DagGraph,
     presenter: &Arc<dyn JobPresenter>,
-    sink: Option<&Arc<dyn crate::executor::log_sink::LogSink>>,
+    sink: Option<&Arc<dyn LogSink>>,
 ) -> Result<Vec<JobResult>> {
     let job_map = build_job_map(jobs);
     let max_workers = std::thread::available_parallelism()
@@ -239,7 +240,7 @@ fn run_dag_sequential_exec(
     graph: &DagGraph,
     presenter: &Arc<dyn JobPresenter>,
     _stop_on_failure: bool,
-    sink: Option<&Arc<dyn crate::executor::log_sink::LogSink>>,
+    sink: Option<&Arc<dyn LogSink>>,
 ) -> Result<Vec<JobResult>> {
     let job_map = build_job_map(jobs);
 
@@ -334,7 +335,7 @@ fn build_job_map(jobs: &[JobSpec]) -> HashMap<&str, &JobSpec> {
 fn execute_single_job(
     job: &JobSpec,
     presenter: &Arc<dyn JobPresenter>,
-    sink: Option<&Arc<dyn crate::executor::log_sink::LogSink>>,
+    sink: Option<&Arc<dyn LogSink>>,
 ) -> Result<CommandResult> {
     if job.interactive {
         run_command_interactive(&job.command, &job.env, &job.working_dir)
@@ -346,7 +347,7 @@ fn execute_single_job(
         let presenter_clone = Arc::clone(presenter);
         // Only clone the JobSpec when a sink is actually present — otherwise
         // we'd pay the clone cost on every job for the common no-sink path.
-        let sink_context: Option<(Arc<dyn crate::executor::log_sink::LogSink>, JobSpec)> =
+        let sink_context: Option<(Arc<dyn LogSink>, JobSpec)> =
             sink.cloned().map(|s| (s, job.clone()));
         let job_name = job.name.clone();
         let reader_handle = std::thread::spawn(move || {
@@ -421,7 +422,7 @@ fn build_results_from_statuses(
     durations: &HashMap<usize, Duration>,
     jobs: &[JobSpec],
     presenter: &Arc<dyn JobPresenter>,
-    sink: Option<&Arc<dyn crate::executor::log_sink::LogSink>>,
+    sink: Option<&Arc<dyn LogSink>>,
 ) -> Vec<JobResult> {
     let job_map: HashMap<&str, &JobSpec> = jobs.iter().map(|j| (j.name.as_str(), j)).collect();
 
@@ -1112,7 +1113,7 @@ mod tests {
         }
     }
 
-    impl crate::executor::log_sink::LogSink for RecordingLogSink {
+    impl LogSink for RecordingLogSink {
         fn on_job_start(&self, spec: &JobSpec) {
             self.events
                 .lock()
@@ -1144,7 +1145,7 @@ mod tests {
         let jobs = vec![make_job("hello", "echo hello")];
         let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
         let concrete = Arc::new(RecordingLogSink::default());
-        let sink_arc: Arc<dyn crate::executor::log_sink::LogSink> = concrete.clone();
+        let sink_arc: Arc<dyn LogSink> = concrete.clone();
 
         let _ = run_jobs(
             &jobs,
@@ -1165,7 +1166,7 @@ mod tests {
         let jobs = vec![make_job("bad", "false"), make_job("after", "echo never")];
         let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
         let concrete = Arc::new(RecordingLogSink::default());
-        let sink_arc: Arc<dyn crate::executor::log_sink::LogSink> = concrete.clone();
+        let sink_arc: Arc<dyn LogSink> = concrete.clone();
 
         let _ = run_jobs(&jobs, ExecutionMode::Piped, &presenter, Some(&sink_arc)).unwrap();
 
@@ -1183,7 +1184,7 @@ mod tests {
         ];
         let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
         let concrete = Arc::new(RecordingLogSink::default());
-        let sink_arc: Arc<dyn crate::executor::log_sink::LogSink> = concrete.clone();
+        let sink_arc: Arc<dyn LogSink> = concrete.clone();
 
         let _ = run_jobs(&jobs, ExecutionMode::Parallel, &presenter, Some(&sink_arc)).unwrap();
 
