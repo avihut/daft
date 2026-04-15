@@ -113,6 +113,12 @@ enum JobsCommand {
         /// Force interpretation as a job name.
         #[arg(long = "job", conflicts_with_all = ["hook", "inv_flag"])]
         job_flag: Option<String>,
+        /// Retry jobs from a specific worktree (can be deleted).
+        #[arg(long)]
+        worktree: Option<String>,
+        /// Override working directory for all retried jobs.
+        #[arg(long)]
+        cwd: Option<String>,
     },
     /// Remove logs older than the retention period.
     Clean,
@@ -393,7 +399,18 @@ pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
             ref hook,
             ref inv_flag,
             ref job_flag,
-        }) => retry_command(target.as_deref(), hook, inv_flag, job_flag, path, output),
+            ref worktree,
+            ref cwd,
+        }) => retry_command(
+            target.as_deref(),
+            hook,
+            inv_flag,
+            job_flag,
+            worktree.as_deref(),
+            cwd.as_deref(),
+            path,
+            output,
+        ),
         Some(JobsCommand::Clean) => clean_logs(&args, path, output),
     }
 }
@@ -991,17 +1008,24 @@ fn resolve_retry_invocation(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn retry_command(
     target: Option<&str>,
     hook_flag: &Option<String>,
     inv_flag: &Option<String>,
     job_flag: &Option<String>,
+    worktree_flag: Option<&str>,
+    cwd_flag: Option<&str>,
     path: &Path,
     output: &mut dyn Output,
 ) -> Result<()> {
     let repo_hash = compute_repo_hash_from_path(path)?;
     let store = LogStore::for_repo(&repo_hash)?;
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
+
+    let mut effective_worktree = worktree_flag
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| current_worktree.clone());
 
     let flags = RetryFlags {
         hook: hook_flag.clone(),
@@ -1010,20 +1034,35 @@ fn retry_command(
     };
     let parsed = retry_target_from_arg(target, &flags);
 
-    // Handle cross-worktree composite address for job-name targets.
-    if let RetryTarget::JobName(ref name) = parsed {
+    // Handle composite address for job-name targets (supports cross-worktree).
+    let parsed = if let RetryTarget::JobName(ref name) = parsed {
         if name.contains(':') {
             let addr = JobAddress::parse(name);
             if let Some(ref wt) = addr.worktree {
-                if *wt != current_worktree {
-                    anyhow::bail!("Cross-worktree retry is not yet supported.");
+                // Check for conflict between --worktree flag and composite address
+                if let Some(flag_wt) = worktree_flag {
+                    if flag_wt != wt.as_str() {
+                        anyhow::bail!(
+                            "Conflicting worktree: --worktree says '{}' but address says '{}'.",
+                            flag_wt,
+                            wt
+                        );
+                    }
                 }
+                effective_worktree = wt.clone();
+                RetryTarget::JobName(addr.job_name)
+            } else {
+                parsed
             }
+        } else {
+            parsed
         }
-    }
+    } else {
+        parsed
+    };
 
     // Resolve to a source invocation.
-    let inv = resolve_retry_invocation(&parsed, &store, &current_worktree)?;
+    let inv = resolve_retry_invocation(&parsed, &store, &effective_worktree)?;
 
     // Load all job metas from the source invocation.
     let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
@@ -1090,6 +1129,14 @@ fn retry_command(
         return Ok(());
     }
 
+    // Validate --cwd path if provided.
+    if let Some(cwd) = cwd_flag {
+        let cwd_path = std::path::Path::new(cwd);
+        if !cwd_path.exists() || !cwd_path.is_dir() {
+            anyhow::bail!("--cwd path '{}' does not exist or is not a directory.", cwd);
+        }
+    }
+
     // Validate working dirs and commands.
     for spec in &specs {
         if spec.command.is_empty() {
@@ -1099,9 +1146,10 @@ fn retry_command(
                 spec.name
             );
         }
-        if !spec.working_dir.exists() {
+        if !spec.working_dir.exists() && cwd_flag.is_none() {
             anyhow::bail!(
-                "Cannot retry job '{}': working directory '{}' no longer exists.",
+                "Cannot retry job '{}': working directory '{}' no longer exists. \
+                 Use --cwd to specify an alternative.",
                 spec.name,
                 spec.working_dir.display()
             );
@@ -1109,7 +1157,18 @@ fn retry_command(
     }
 
     // Split into foreground and background sets.
-    let (fg_specs, bg_specs): (Vec<_>, Vec<_>) = specs.into_iter().partition(|s| !s.background);
+    let (mut fg_specs, mut bg_specs): (Vec<_>, Vec<_>) =
+        specs.into_iter().partition(|s| !s.background);
+
+    if let Some(cwd) = cwd_flag {
+        let cwd_path = std::path::PathBuf::from(cwd);
+        for spec in &mut fg_specs {
+            spec.working_dir = cwd_path.clone();
+        }
+        for spec in &mut bg_specs {
+            spec.working_dir = cwd_path.clone();
+        }
+    }
 
     let total = fg_specs.len() + bg_specs.len();
     let new_invocation_id = generate_invocation_id();
@@ -1128,7 +1187,7 @@ fn retry_command(
         invocation_id: new_invocation_id.clone(),
         trigger_command: trigger_command.clone(),
         hook_type: inv.hook_type.clone(),
-        worktree: current_worktree.clone(),
+        worktree: effective_worktree.clone(),
         created_at: chrono::Utc::now(),
     };
     store.write_invocation_meta(&new_invocation_id, &inv_meta)?;
@@ -1145,7 +1204,7 @@ fn retry_command(
                 std::sync::Arc::new(store.clone()),
                 new_invocation_id.clone(),
                 inv.hook_type.clone(),
-                current_worktree.clone(),
+                effective_worktree.clone(),
             ));
 
         presenter.on_phase_start(&trigger_command);
@@ -1167,7 +1226,7 @@ fn retry_command(
             let bg_store = LogStore::for_repo(&repo_hash)?;
             let mut coord_state =
                 crate::coordinator::process::CoordinatorState::new(&repo_hash, &new_invocation_id)
-                    .with_metadata(&trigger_command, &inv.hook_type, &current_worktree);
+                    .with_metadata(&trigger_command, &inv.hook_type, &effective_worktree);
             for spec in bg_specs {
                 coord_state.add_job(spec);
             }
