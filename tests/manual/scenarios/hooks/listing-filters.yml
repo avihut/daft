@@ -1,0 +1,91 @@
+name: Listing filters --status, --hook, --worktree work and combine
+description:
+  "Verifies that daft hooks jobs supports --status, --hook, and --worktree
+  filters, and that they AND together correctly."
+
+repos:
+  - name: test-listing-filters
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Listing filters test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/filters
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: good-job
+              run: echo success
+            - name: bad-job
+              run: "exit 1"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_LISTING_FILTERS
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-listing-filters/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch
+    run: env -u DAFT_TESTING git-worktree-checkout feature/filters 2>&1
+    cwd: "$WORK_DIR/test-listing-filters/main"
+    expect:
+      exit_code: 0
+
+  - name: Filter by --status failed shows the invocation
+    run: daft hooks jobs --status failed 2>&1
+    cwd: "$WORK_DIR/test-listing-filters/feature/filters"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "bad-job"
+        - "failed"
+
+  - name: Filter by --status running shows nothing
+    run: daft hooks jobs --status running 2>&1
+    cwd: "$WORK_DIR/test-listing-filters/feature/filters"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "bad-job"
+
+  - name: Filter by --hook worktree-post-create shows the invocation
+    run: daft hooks jobs --hook worktree-post-create 2>&1
+    cwd: "$WORK_DIR/test-listing-filters/feature/filters"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "worktree-post-create"
+
+  - name: Filter by --hook worktree-pre-remove shows nothing
+    run: daft hooks jobs --hook worktree-pre-remove 2>&1
+    cwd: "$WORK_DIR/test-listing-filters/feature/filters"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "worktree-post-create"
+
+  - name: Filter by --worktree from main shows feature/filters jobs
+    run: daft hooks jobs --worktree feature/filters 2>&1
+    cwd: "$WORK_DIR/test-listing-filters/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "bad-job"
+        - "good-job"
+
+  - name: --all and --worktree together should error
+    run: daft hooks jobs --all --worktree feature/filters 2>&1
+    cwd: "$WORK_DIR/test-listing-filters/main"
+    expect:
+      exit_code: 2
