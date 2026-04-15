@@ -245,6 +245,15 @@ impl LogStore {
         }
         Ok(dirs)
     }
+
+    pub fn list_distinct_worktrees(&self) -> Result<Vec<String>> {
+        let invocations = self.list_invocations()?;
+        let mut seen = std::collections::BTreeSet::new();
+        for inv in &invocations {
+            seen.insert(inv.worktree.clone());
+        }
+        Ok(seen.into_iter().collect())
+    }
 }
 
 #[cfg(test)]
@@ -597,6 +606,36 @@ mod tests {
         }"#;
         let meta: JobMeta = serde_json::from_str(json).unwrap();
         assert!(meta.needs.is_empty());
+    }
+
+    #[test]
+    fn list_distinct_worktrees_returns_unique_names() {
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+
+        let now = chrono::Utc::now();
+        for (inv_id, wt, offset) in &[
+            ("inv1", "feature/a", 100i64),
+            ("inv2", "feature/b", 50),
+            ("inv3", "feature/a", 10),
+            ("inv4", "feature/c", 5),
+        ] {
+            std::fs::create_dir_all(tmp.path().join(inv_id)).unwrap();
+            let meta = InvocationMeta {
+                invocation_id: inv_id.to_string(),
+                trigger_command: "worktree-post-create".to_string(),
+                hook_type: "worktree-post-create".to_string(),
+                worktree: wt.to_string(),
+                created_at: now - chrono::Duration::seconds(*offset),
+            };
+            store.write_invocation_meta(inv_id, &meta).unwrap();
+        }
+
+        let worktrees = store.list_distinct_worktrees().unwrap();
+        assert_eq!(worktrees.len(), 3);
+        assert!(worktrees.contains(&"feature/a".to_string()));
+        assert!(worktrees.contains(&"feature/b".to_string()));
+        assert!(worktrees.contains(&"feature/c".to_string()));
     }
 
     #[test]
