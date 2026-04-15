@@ -7,6 +7,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 
+use crate::core::columns::{CompletionColumn, CompletionColumnSelection};
 use crate::hooks::yaml_config_loader;
 
 #[derive(Parser)]
@@ -408,20 +409,28 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
     let repo = discover_repo()?;
     let d_discover = t.elapsed();
 
-    // Read remote config + go-specific fetch-on-miss setting.
+    // Read remote config + go-specific fetch-on-miss setting + columns.
     let t = Instant::now();
     let (default_remote, multi_remote_enabled) = read_remote_config(&repo);
     let go_fetch_on_miss = repo
         .config_snapshot()
         .boolean(keys::GO_FETCH_ON_MISS)
         .unwrap_or(defaults::GO_FETCH_ON_MISS);
+    let columns = read_completion_columns(&repo);
     let d_settings = t.elapsed();
+
+    let check_tracked = columns.contains(&CompletionColumn::TrackedChanges);
+    let check_untracked = columns.contains(&CompletionColumn::Untracked);
 
     let cwd = std::env::current_dir().ok();
     let collect = |repo: &gix::Repository, timings: bool| -> Vec<CompletionEntry> {
         let t = Instant::now();
         let worktrees = collect_worktrees(repo);
         let d_wt = t.elapsed();
+
+        let t = Instant::now();
+        let statuses = collect_worktree_statuses(&worktrees, check_tracked, check_untracked);
+        let d_statuses = t.elapsed();
 
         let t = Instant::now();
         let local = collect_local_branches(repo);
@@ -445,6 +454,8 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
             multi_remote_enabled,
             prefix,
             cwd.as_deref(),
+            &columns,
+            &statuses,
         );
         let d_build = t.elapsed();
 
@@ -452,6 +463,10 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
             eprintln!(
                 "[timings] worktrees        : {:>7.1}ms",
                 d_wt.as_secs_f64() * 1000.0
+            );
+            eprintln!(
+                "[timings] wt_statuses      : {:>7.1}ms",
+                d_statuses.as_secs_f64() * 1000.0
             );
             eprintln!(
                 "[timings] local_branches   : {:>7.1}ms",
@@ -781,6 +796,67 @@ fn read_remote_config(repo: &gix::Repository) -> (String, bool) {
     (default_remote, multi_remote_enabled)
 }
 
+/// Read the completion columns config from the repo's in-memory config
+/// snapshot (zero subprocess overhead). Falls back to defaults on missing
+/// or invalid config.
+fn read_completion_columns(repo: &gix::Repository) -> Vec<CompletionColumn> {
+    use crate::core::settings::keys;
+
+    let config = repo.config_snapshot();
+    match config.string(keys::completions::BRANCHES_COLUMNS) {
+        Some(value) => CompletionColumnSelection::parse(&value.to_string())
+            .unwrap_or_else(|_| CompletionColumn::completion_defaults().to_vec()),
+        None => CompletionColumn::completion_defaults().to_vec(),
+    }
+}
+
+/// Status flags for a worktree branch (tracked changes / untracked files).
+pub(crate) struct WorktreeStatus {
+    has_tracked_changes: bool,
+    has_untracked: bool,
+}
+
+/// Check dirty status for all worktrees in parallel using gitoxide.
+/// Returns a map from branch name to status flags.
+/// Returns an empty map when both flags are false (zero cost path).
+fn collect_worktree_statuses(
+    worktrees: &[(String, std::path::PathBuf)],
+    check_tracked: bool,
+    check_untracked: bool,
+) -> std::collections::HashMap<String, WorktreeStatus> {
+    use std::collections::HashMap;
+
+    if !check_tracked && !check_untracked {
+        return HashMap::new();
+    }
+
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = worktrees
+            .iter()
+            .map(|(name, path)| {
+                let name = name.clone();
+                let path = path.clone();
+                scope.spawn(move || {
+                    let (tracked, untracked) =
+                        crate::git::oxide::worktree_dirty_status(&path).unwrap_or((false, false));
+                    (
+                        name,
+                        WorktreeStatus {
+                            has_tracked_changes: check_tracked && tracked,
+                            has_untracked: check_untracked && untracked,
+                        },
+                    )
+                })
+            })
+            .collect();
+
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .collect::<HashMap<_, _>>()
+    })
+}
+
 /// Shared rich branch completion entry point. Discovers the repo, reads
 /// config, collects branch/worktree data according to `config`, and
 /// returns grouped completion entries.
@@ -790,6 +866,7 @@ fn complete_rich_branches(
 ) -> Result<Vec<CompletionEntry>> {
     let repo = discover_repo()?;
     let (default_remote, multi_remote_enabled) = read_remote_config(&repo);
+    let columns = read_completion_columns(&repo);
 
     let worktrees = if config.include_worktrees {
         collect_worktrees(&repo)
@@ -814,6 +891,10 @@ fn complete_rich_branches(
         None
     };
 
+    let check_tracked = columns.contains(&CompletionColumn::TrackedChanges);
+    let check_untracked = columns.contains(&CompletionColumn::Untracked);
+    let statuses = collect_worktree_statuses(&worktrees, check_tracked, check_untracked);
+
     let cwd = std::env::current_dir().ok();
     let mut entries = build_rich_completions(
         &worktrees,
@@ -824,6 +905,8 @@ fn complete_rich_branches(
         multi_remote_enabled,
         prefix,
         cwd.as_deref(),
+        &columns,
+        &statuses,
     );
 
     // If the config excludes local branches but we collected them for
@@ -993,12 +1076,19 @@ pub(crate) fn build_rich_completions(
     multi_remote: bool,
     prefix: &str,
     cwd: Option<&std::path::Path>,
+    columns: &[CompletionColumn],
+    statuses: &std::collections::HashMap<String, WorktreeStatus>,
 ) -> Vec<CompletionEntry> {
     use std::collections::HashSet;
+
+    let show_age = columns.contains(&CompletionColumn::Age);
+    let show_author = columns.contains(&CompletionColumn::Author);
+    let show_path = columns.contains(&CompletionColumn::Path);
 
     // Worktree group: exclude the current worktree's branch.
     // Look up the commit info from local_branches for each worktree, and
     // pack age, author, and path into the description as "age\tauthor\tpath".
+    // Disabled columns emit empty strings to keep the field count fixed.
     let mut wt_entries: Vec<CompletionEntry> = worktrees
         .iter()
         .filter(|(name, _)| Some(name.as_str()) != current_worktree_branch)
@@ -1008,13 +1098,36 @@ pub(crate) fn build_rich_completions(
                 .iter()
                 .find(|(n, _)| n == name)
                 .map(|(_, i)| i);
-            let age = info.map(|i| i.age.as_str()).unwrap_or("");
-            let author = info.map(|i| i.author.as_str()).unwrap_or("");
-            let display_path = cwd
-                .and_then(|base| pathdiff::diff_paths(path, base))
-                .unwrap_or_else(|| path.to_path_buf());
+            let age = if show_age {
+                info.map(|i| i.age.as_str()).unwrap_or("")
+            } else {
+                ""
+            };
+            let author = if show_author {
+                info.map(|i| i.author.as_str()).unwrap_or("")
+            } else {
+                ""
+            };
+            let display_path = if show_path {
+                cwd.and_then(|base| pathdiff::diff_paths(path, base))
+                    .unwrap_or_else(|| path.to_path_buf())
+            } else {
+                std::path::PathBuf::new()
+            };
+
+            // Append dirty indicators to the display name.
+            let mut display_name = name.clone();
+            if let Some(status) = statuses.get(name.as_str()) {
+                if status.has_tracked_changes {
+                    display_name.push('*');
+                }
+                if status.has_untracked {
+                    display_name.push('?');
+                }
+            }
+
             CompletionEntry {
-                name: name.clone(),
+                name: display_name,
                 group: CompletionGroup::Worktree,
                 description: format!("{}\t{}\t{}", age, author, display_path.display()),
             }
@@ -1022,17 +1135,31 @@ pub(crate) fn build_rich_completions(
         .collect();
     wt_entries.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let wt_names: HashSet<&str> = wt_entries.iter().map(|e| e.name.as_str()).collect();
+    // wt_names uses the clean branch name (without indicators) for dedup.
+    let wt_names: HashSet<&str> = worktrees
+        .iter()
+        .filter(|(name, _)| Some(name.as_str()) != current_worktree_branch)
+        .filter(|(name, _)| name.starts_with(prefix))
+        .map(|(name, _)| name.as_str())
+        .collect();
 
     // Local group: drop anything already in the worktree group.
     let mut local_entries: Vec<CompletionEntry> = local_branches
         .iter()
         .filter(|(name, _)| !wt_names.contains(name.as_str()))
         .filter(|(name, _)| name.starts_with(prefix))
-        .map(|(name, info)| CompletionEntry {
-            name: name.clone(),
-            group: CompletionGroup::Local,
-            description: format!("{}\t{}", info.age, info.author),
+        .map(|(name, info)| {
+            let age = if show_age { info.age.as_str() } else { "" };
+            let author = if show_author {
+                info.author.as_str()
+            } else {
+                ""
+            };
+            CompletionEntry {
+                name: name.clone(),
+                group: CompletionGroup::Local,
+                description: format!("{}\t{}", age, author),
+            }
         })
         .collect();
     local_entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1069,10 +1196,16 @@ pub(crate) fn build_rich_completions(
             if !display.starts_with(prefix) {
                 return None;
             }
+            let age = if show_age { info.age.as_str() } else { "" };
+            let author = if show_author {
+                info.author.as_str()
+            } else {
+                ""
+            };
             Some(CompletionEntry {
                 name: display,
                 group: CompletionGroup::Remote,
-                description: format!("{}\t{}", info.age, info.author),
+                description: format!("{}\t{}", age, author),
             })
         })
         .collect();
@@ -1125,6 +1258,14 @@ mod tests {
 
     // Tests for the rich completion grouping function.
 
+    fn default_columns() -> &'static [CompletionColumn] {
+        CompletionColumn::completion_defaults()
+    }
+
+    fn empty_statuses() -> std::collections::HashMap<String, WorktreeStatus> {
+        std::collections::HashMap::new()
+    }
+
     fn wt(name: &str, path: &str) -> (String, std::path::PathBuf) {
         (name.to_string(), std::path::PathBuf::from(path))
     }
@@ -1160,6 +1301,8 @@ mod tests {
             false, // single-remote mode
             "",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         let groups: Vec<CompletionGroup> = entries.iter().map(|e| e.group).collect();
         assert_eq!(
@@ -1184,6 +1327,8 @@ mod tests {
             false,
             "",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b", "m", "z"]);
@@ -1200,6 +1345,8 @@ mod tests {
             false,
             "",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         assert_eq!(entries.len(), 1, "remote should be shadowed by local");
         assert_eq!(entries[0].name, "feat/shared");
@@ -1217,6 +1364,8 @@ mod tests {
             false,
             "",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "master");
@@ -1234,6 +1383,8 @@ mod tests {
             false,
             "",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["master"]);
@@ -1250,6 +1401,8 @@ mod tests {
             false,
             "",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "bug/xyz");
@@ -1270,6 +1423,8 @@ mod tests {
             true, // multi-remote mode
             "",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["fork/feat/y", "origin/bug/xyz"]);
@@ -1286,6 +1441,8 @@ mod tests {
             false,
             "fe",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["feat/x"]);
@@ -1305,6 +1462,8 @@ mod tests {
             false,
             "",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["master"]);
@@ -1333,7 +1492,18 @@ mod tests {
 
     #[test]
     fn rich_completions_empty_input_returns_empty() {
-        let entries = build_rich_completions(&[], &[], &[], None, "origin", false, "", None);
+        let entries = build_rich_completions(
+            &[],
+            &[],
+            &[],
+            None,
+            "origin",
+            false,
+            "",
+            None,
+            default_columns(),
+            &empty_statuses(),
+        );
         assert!(entries.is_empty());
     }
 
@@ -1348,6 +1518,8 @@ mod tests {
             false,
             "zzz",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         assert!(entries.is_empty());
     }
@@ -1365,6 +1537,8 @@ mod tests {
             false,
             "bu",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "bug/xyz");
@@ -1384,6 +1558,8 @@ mod tests {
             true, // multi-remote
             "",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["fork/feat/x", "origin/feat/x"]);
@@ -1407,6 +1583,8 @@ mod tests {
             false,
             "",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
@@ -1433,6 +1611,8 @@ mod tests {
             true,
             "",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["origin/feat/x"]);
@@ -1542,8 +1722,18 @@ mod tests {
         ];
         let remote = vec![br("origin/ci", "4 days ago")];
 
-        let entries =
-            build_rich_completions(&worktrees, &local, &remote, None, "origin", false, "", None);
+        let entries = build_rich_completions(
+            &worktrees,
+            &local,
+            &remote,
+            None,
+            "origin",
+            false,
+            "",
+            None,
+            default_columns(),
+            &empty_statuses(),
+        );
 
         // build_rich_completions returns all groups — the caller filters.
         // Simulate what complete_rich_branches does with include_local=false:
@@ -1564,8 +1754,18 @@ mod tests {
         let local = vec![br("main", "1 day ago"), br("dev", "2 days ago")];
         let remote = vec![br("origin/ci", "3 days ago")];
 
-        let entries =
-            build_rich_completions(&worktrees, &local, &remote, None, "origin", false, "", None);
+        let entries = build_rich_completions(
+            &worktrees,
+            &local,
+            &remote,
+            None,
+            "origin",
+            false,
+            "",
+            None,
+            default_columns(),
+            &empty_statuses(),
+        );
 
         // Simulate exclude_remote by filtering.
         let filtered: Vec<_> = entries
@@ -1586,8 +1786,18 @@ mod tests {
         let local = vec![br("main", "1 day ago"), br("feat", "2 days ago")];
 
         // Pass None as current branch (exclude_current: false behavior)
-        let entries =
-            build_rich_completions(&worktrees, &local, &[], None, "origin", false, "", None);
+        let entries = build_rich_completions(
+            &worktrees,
+            &local,
+            &[],
+            None,
+            "origin",
+            false,
+            "",
+            None,
+            default_columns(),
+            &empty_statuses(),
+        );
         let wt_names: Vec<&str> = entries
             .iter()
             .filter(|e| e.group == CompletionGroup::Worktree)
@@ -1612,6 +1822,8 @@ mod tests {
             false,
             "",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         let wt_names: Vec<&str> = entries
             .iter()
@@ -1661,6 +1873,8 @@ mod tests {
             false,
             "",
             None,
+            default_columns(),
+            &empty_statuses(),
         );
         // Worktree entry has age + author + path
         let wt_entry = entries.iter().find(|e| e.name == "master").unwrap();
@@ -1674,5 +1888,119 @@ mod tests {
         // Remote entry has age + author
         let remote_entry = entries.iter().find(|e| e.name == "feat/remote").unwrap();
         assert_eq!(remote_entry.description, "5 days ago\tCharlie");
+    }
+
+    #[test]
+    fn rich_completions_dirty_indicators_append_to_worktree_names() {
+        let mut statuses = std::collections::HashMap::new();
+        statuses.insert(
+            "master".to_string(),
+            WorktreeStatus {
+                has_tracked_changes: true,
+                has_untracked: true,
+            },
+        );
+        statuses.insert(
+            "feat".to_string(),
+            WorktreeStatus {
+                has_tracked_changes: true,
+                has_untracked: false,
+            },
+        );
+        let entries = build_rich_completions(
+            &[wt("master", "/tmp/master"), wt("feat", "/tmp/feat")],
+            &[br("master", "1d"), br("feat", "2d")],
+            &[],
+            None,
+            "origin",
+            false,
+            "",
+            None,
+            default_columns(),
+            &statuses,
+        );
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            names.contains(&"master*?"),
+            "expected master*? got {names:?}"
+        );
+        assert!(names.contains(&"feat*"), "expected feat* got {names:?}");
+    }
+
+    #[test]
+    fn rich_completions_dirty_indicators_not_on_local_or_remote() {
+        let mut statuses = std::collections::HashMap::new();
+        statuses.insert(
+            "master".to_string(),
+            WorktreeStatus {
+                has_tracked_changes: true,
+                has_untracked: true,
+            },
+        );
+        let entries = build_rich_completions(
+            &[wt("master", "/tmp/master")],
+            &[br("master", "1d"), br("feat/local", "2d")],
+            &[br("origin/feat/remote", "3d")],
+            None,
+            "origin",
+            false,
+            "",
+            None,
+            default_columns(),
+            &statuses,
+        );
+        // Local and remote entries should never have indicators
+        let local = entries.iter().find(|e| e.name == "feat/local").unwrap();
+        assert!(!local.name.contains('*'));
+        assert!(!local.name.contains('?'));
+        let remote = entries.iter().find(|e| e.name == "feat/remote").unwrap();
+        assert!(!remote.name.contains('*'));
+        assert!(!remote.name.contains('?'));
+    }
+
+    #[test]
+    fn rich_completions_columns_disable_age_emits_empty() {
+        let columns = &[CompletionColumn::Author, CompletionColumn::Path];
+        let entries = build_rich_completions(
+            &[wt("master", "/tmp/master")],
+            &[br_author("master", "1 day ago", "Alice")],
+            &[],
+            None,
+            "origin",
+            false,
+            "",
+            None,
+            columns,
+            &empty_statuses(),
+        );
+        let wt = entries.iter().find(|e| e.name == "master").unwrap();
+        // Description is "age\tauthor\tpath" — age should be empty
+        let parts: Vec<&str> = wt.description.split('\t').collect();
+        assert_eq!(parts[0], "", "age should be empty when Age column disabled");
+        assert_eq!(parts[1], "Alice", "author should still be present");
+    }
+
+    #[test]
+    fn rich_completions_columns_disable_author_emits_empty() {
+        let columns = &[CompletionColumn::Age, CompletionColumn::Path];
+        let entries = build_rich_completions(
+            &[],
+            &[br_author("feat", "2 days ago", "Bob")],
+            &[],
+            None,
+            "origin",
+            false,
+            "",
+            None,
+            columns,
+            &empty_statuses(),
+        );
+        let local = entries.iter().find(|e| e.name == "feat").unwrap();
+        let parts: Vec<&str> = local.description.split('\t').collect();
+        assert_eq!(parts[0], "2 days ago", "age should be present");
+        assert_eq!(
+            parts[1], "",
+            "author should be empty when Author column disabled"
+        );
     }
 }

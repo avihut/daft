@@ -260,6 +260,12 @@ pub mod keys {
             format!("daft.hooks.{hook_name}.{setting}")
         }
     }
+
+    /// Completions config keys.
+    pub mod completions {
+        /// Config key for completions.branches.columns setting.
+        pub const BRANCHES_COLUMNS: &str = "daft.completions.branches.columns";
+    }
 }
 
 /// User-configurable settings for daft commands.

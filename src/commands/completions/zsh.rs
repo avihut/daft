@@ -249,7 +249,7 @@ __{func_name}_impl() {{
     fi
 
     local -a raw
-    local -a wt_names wt_ages wt_authors wt_paths
+    local -a wt_names wt_raw_names wt_ages wt_authors wt_paths
     local -a local_names local_ages local_authors
     local -a remote_names remote_ages remote_authors
     raw=(${{(f)"$(daft __complete {command_name} "$curword" --position "$cword"{fetch_flag} 2>/dev/null)"}})
@@ -257,7 +257,9 @@ __{func_name}_impl() {{
     # First pass: collect names and descriptions per group.
     # Worktree lines have 5 fields: name\tworktree\tage\tauthor\tpath
     # Local/remote lines have 4 fields: name\tgroup\tage\tauthor
-    local line name rest group desc max_len=0 len
+    # Worktree names may have *? dirty indicators — strip for completion
+    # value, keep for display. (* and ? are invalid in git branch names.)
+    local line name rest group desc max_len=0 len clean_name
     local age_len max_age_len=0 auth_len max_auth_len=0
     for line in "${{raw[@]}}"; do
         name="${{line%%$'\t'*}}"
@@ -268,7 +270,10 @@ __{func_name}_impl() {{
         (( len > max_len )) && max_len=$len
         case "$group" in
             worktree)
-                wt_names+=("$name")
+                # Strip *? for completion value, keep raw for display
+                clean_name="${{name%%[*?]*}}"
+                wt_names+=("$clean_name")
+                wt_raw_names+=("$name")
                 # desc is "age\tauthor\tpath" — split on tabs
                 wt_ages+=("${{desc%%$'\t'*}}")
                 local wt_rest="${{desc#*$'\t'}}"
@@ -303,7 +308,7 @@ __{func_name}_impl() {{
     done
 
     # Second pass: build padded display strings.
-    # Worktrees: four columns (name, age, author, path).
+    # Worktrees: four columns (name, age, author, path) — uses raw name with indicators.
     # Local/remote: three columns (name, age, author).
     local -a wt_display local_display remote_display
     local i pad apad authpad
@@ -311,10 +316,10 @@ __{func_name}_impl() {{
     (( max_age_len += 2 ))
     (( max_auth_len += 2 ))
     for (( i=1; i<=${{#wt_names}}; i++ )); do
-        pad=$(( max_len - ${{#wt_names[$i]}} ))
+        pad=$(( max_len - ${{#wt_raw_names[$i]}} ))
         apad=$(( max_age_len - ${{#wt_ages[$i]}} ))
         authpad=$(( max_auth_len - ${{#wt_authors[$i]}} ))
-        wt_display+=("${{wt_names[$i]}}${{(l:$pad:: :)}}  ${{wt_ages[$i]}}${{(l:$apad:: :)}}  ${{wt_authors[$i]}}${{(l:$authpad:: :)}}  ${{wt_paths[$i]}}")
+        wt_display+=("${{wt_raw_names[$i]}}${{(l:$pad:: :)}}  ${{wt_ages[$i]}}${{(l:$apad:: :)}}  ${{wt_authors[$i]}}${{(l:$authpad:: :)}}  ${{wt_paths[$i]}}")
     done
     for (( i=1; i<=${{#local_names}}; i++ )); do
         pad=$(( max_len - ${{#local_names[$i]}} ))
