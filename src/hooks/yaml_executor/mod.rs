@@ -248,21 +248,14 @@ pub fn execute_yaml_hook_with_rc(
     // BEFORE the `specs.is_empty()` early return so fully-filtered hooks still
     // produce skipped-job records.
     for sj in &skipped_jobs {
-        let meta = crate::coordinator::log_store::JobMeta {
-            name: sj.name.clone(),
-            hook_type: hook_name.to_string(),
-            worktree: ctx.branch_name.clone(),
-            command: String::new(),
-            working_dir: String::new(),
-            env: std::collections::HashMap::new(),
-            started_at: chrono::Utc::now(),
-            status: crate::coordinator::log_store::JobStatus::Skipped,
-            exit_code: None,
-            pid: None,
-            background: sj.background,
-            finished_at: None,
-            needs: vec![],
-        };
+        let meta = crate::coordinator::log_store::JobMeta::skipped(
+            &sj.name,
+            hook_name,
+            &ctx.branch_name,
+            "",
+            sj.background,
+            vec![],
+        );
         if let Err(e) = store.write_job_record(&invocation_id, &meta, sj.reason.as_bytes()) {
             eprintln!(
                 "daft: failed to write skipped job record for '{}': {e}",

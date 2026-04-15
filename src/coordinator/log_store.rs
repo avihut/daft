@@ -32,6 +32,33 @@ pub struct JobMeta {
     pub needs: Vec<String>,
 }
 
+impl JobMeta {
+    pub fn skipped(
+        name: &str,
+        hook_type: &str,
+        worktree: &str,
+        command: &str,
+        background: bool,
+        needs: Vec<String>,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            hook_type: hook_type.to_string(),
+            worktree: worktree.to_string(),
+            command: command.to_string(),
+            working_dir: String::new(),
+            env: HashMap::new(),
+            started_at: chrono::Utc::now(),
+            status: JobStatus::Skipped,
+            exit_code: None,
+            pid: None,
+            background,
+            finished_at: None,
+            needs,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvocationMeta {
     pub invocation_id: String,
@@ -526,6 +553,30 @@ mod tests {
         store.write_meta(&dir, &meta).unwrap();
         let loaded = store.read_meta(&dir).unwrap();
         assert_eq!(loaded.needs, vec!["migrator".to_string()]);
+    }
+
+    #[test]
+    fn job_meta_skipped_constructor_produces_correct_fields() {
+        let meta = JobMeta::skipped(
+            "test-job",
+            "worktree-post-create",
+            "feature/x",
+            "echo test",
+            false,
+            vec!["dep".to_string()],
+        );
+        assert_eq!(meta.name, "test-job");
+        assert_eq!(meta.hook_type, "worktree-post-create");
+        assert_eq!(meta.worktree, "feature/x");
+        assert_eq!(meta.command, "echo test");
+        assert_eq!(meta.status, JobStatus::Skipped);
+        assert_eq!(meta.needs, vec!["dep".to_string()]);
+        assert!(!meta.background);
+        assert!(meta.exit_code.is_none());
+        assert!(meta.pid.is_none());
+        assert!(meta.finished_at.is_none());
+        assert!(meta.working_dir.is_empty());
+        assert!(meta.env.is_empty());
     }
 
     #[test]
