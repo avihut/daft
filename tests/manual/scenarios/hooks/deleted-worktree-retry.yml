@@ -1,0 +1,64 @@
+name: Retry jobs for a deleted worktree with --cwd override
+description:
+  "Verifies that retry for a removed worktree refuses by default when the
+  working directory is gone, and succeeds when --cwd is provided."
+
+repos:
+  - name: test-deleted-retry
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Deleted worktree retry test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/ephemeral
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: setup-env
+              run: "exit 1"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_DELETED_RETRY
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-deleted-retry/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (hook fires, job fails)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/ephemeral 2>&1
+    cwd: "$WORK_DIR/test-deleted-retry/main"
+    expect:
+      exit_code: 0
+
+  - name: Remove the worktree
+    run: daft remove feature/ephemeral --force 2>&1
+    cwd: "$WORK_DIR/test-deleted-retry/main"
+    expect:
+      exit_code: 0
+
+  - name: Retry without --cwd should fail (working dir gone)
+    run: daft hooks jobs retry --worktree feature/ephemeral 2>&1
+    cwd: "$WORK_DIR/test-deleted-retry/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no longer exists"
+        - "--cwd"
+
+  - name: Retry with --cwd should succeed
+    run: daft hooks jobs retry --worktree feature/ephemeral --cwd /tmp 2>&1
+    cwd: "$WORK_DIR/test-deleted-retry/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Retried"
