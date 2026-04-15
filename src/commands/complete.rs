@@ -51,13 +51,18 @@ pub fn run() -> Result<()> {
 
     let args = Args::parse_from(&args_vec);
 
-    let suggestions = complete(
+    // Completions must never crash — return empty results on any error
+    // (e.g. outside a git repository).
+    let suggestions = match complete(
         &args.command,
         args.position.unwrap_or(1),
         &args.word,
         args.verbose,
         args.fetch_on_miss,
-    )?;
+    ) {
+        Ok(s) => s,
+        Err(_) => return Ok(()),
+    };
 
     for suggestion in suggestions {
         println!("{}", suggestion);
@@ -309,19 +314,38 @@ fn ref_commit_info(reference: &mut gix::Reference<'_>) -> RefInfo {
 fn collect_worktrees(repo: &gix::Repository) -> Vec<(String, std::path::PathBuf)> {
     let mut result = Vec::new();
 
-    // Main worktree (if not bare / has a working directory).
+    // Current worktree (main or linked — whichever we discovered from).
     if let Some(workdir) = repo.workdir() {
         if let Ok(Some(head_ref)) = repo.head_ref() {
             let branch = head_ref.name().shorten().to_string();
             result.push((branch, workdir.to_path_buf()));
         }
-        // Detached HEAD in main worktree → skip (no branch).
+        // Detached HEAD → skip (no branch).
     }
 
-    // Linked worktrees — skip any that duplicate the current workdir
-    // (when gix::discover runs from a linked worktree, repo.workdir()
-    // already returns it, but repo.worktrees() also lists it).
-    let current_workdir = repo.workdir().map(|p| p.to_path_buf());
+    // When discovered from a linked worktree, the main worktree is not
+    // listed by repo.worktrees() and repo.workdir() returns the linked
+    // worktree's dir. Detect this (git_dir != common_dir) and collect
+    // the main worktree separately. common_dir may be a relative path
+    // (git stores `../..` in the commondir file), so canonicalize it.
+    let is_linked = repo.git_dir() != repo.common_dir();
+    if is_linked {
+        let common = std::fs::canonicalize(repo.common_dir()).ok();
+        if let Some(ref common) = common {
+            if let Some(main_workdir) = common.parent() {
+                let already = result.iter().any(|(_, p)| p == main_workdir);
+                if !already {
+                    if let Some(branch) = worktree_branch_from_gitdir(common) {
+                        result.push((branch, main_workdir.to_path_buf()));
+                    }
+                }
+            }
+        }
+    }
+
+    // Linked worktrees — skip any that duplicate an already-collected path
+    // (the current worktree or the main worktree added above).
+    let collected_paths: Vec<std::path::PathBuf> = result.iter().map(|(_, p)| p.clone()).collect();
     let proxies = match repo.worktrees() {
         Ok(p) => p,
         Err(_) => return result,
@@ -335,8 +359,8 @@ fn collect_worktrees(repo: &gix::Repository) -> Vec<(String, std::path::PathBuf)
             Ok(p) => p,
             Err(_) => continue,
         };
-        if current_workdir.as_deref() == Some(path.as_ref()) {
-            continue; // already collected via repo.workdir() above
+        if collected_paths.iter().any(|cp| cp == &*path) {
+            continue; // already collected
         }
         result.push((branch, path));
     }

@@ -148,7 +148,7 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
         ""
     };
 
-    format!(
+    let mut output = format!(
         r#"_{func_name}() {{
     local cur prev words cword
     _init_completion || return
@@ -169,7 +169,31 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
 }}
 complete -F _{func_name} {command_name}
 "#
-    )
+    );
+
+    // Register for git subcommand invocation (git worktree-checkout)
+    if command_name.starts_with("git-") {
+        let git_subcommand = command_name.trim_start_matches("git-");
+        output.push_str(&format!(
+            "# Also register for 'git {}' invocation\n",
+            git_subcommand
+        ));
+        output.push_str("if declare -f __git_complete >/dev/null 2>&1; then\n");
+        output.push_str(&format!(
+            "    __git_complete git-{} _{}\n",
+            git_subcommand, func_name
+        ));
+        output.push_str("fi\n");
+    }
+
+    // Register completions for shortcut aliases
+    for shortcut in crate::shortcuts::SHORTCUTS {
+        if shortcut.command == command_name {
+            output.push_str(&format!("complete -F _{func_name} {}\n", shortcut.alias));
+        }
+    }
+
+    output
 }
 
 pub(super) const DAFT_BASH_COMPLETIONS: &str = r#"# daft subcommand completions

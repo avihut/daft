@@ -16,7 +16,7 @@ steps:
       exit_code: 0
       output_contains:
         - "daft __complete"
-        - "branches="
+        - "raw="
 
   - name: Zsh git subcommand registration for checkout
     run: daft completions zsh --command=git-worktree-checkout 2>&1

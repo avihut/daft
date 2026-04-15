@@ -233,7 +233,7 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
         ""
     };
 
-    format!(
+    let mut output = format!(
         r#"#compdef {command_name}
 
 __{func_name}_impl() {{
@@ -346,7 +346,25 @@ _{func_name}() {{
 
 compdef _{func_name} {command_name}
 "#
-    )
+    );
+
+    // Wrapper for git subcommand invocation (git worktree-checkout).
+    // Git's completion system expects _git-<subcommand>.
+    if command_name.starts_with("git-") {
+        let git_func_name = format!("_git-{}", command_name.trim_start_matches("git-"));
+        output.push_str(&format!("{git_func_name}() {{\n"));
+        output.push_str(&format!("    __{func_name}_impl\n"));
+        output.push_str("}\n\n");
+    }
+
+    // Register completions for shortcut aliases
+    for shortcut in crate::shortcuts::SHORTCUTS {
+        if shortcut.command == command_name {
+            output.push_str(&format!("compdef _{func_name} {}\n", shortcut.alias));
+        }
+    }
+
+    output
 }
 
 pub(super) const DAFT_ZSH_COMPLETIONS: &str = r#"# daft subcommand completions
