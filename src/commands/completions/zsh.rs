@@ -249,13 +249,16 @@ __{func_name}_impl() {{
     fi
 
     local -a raw
-    local -a wt_names wt_ages wt_paths local_names local_descs remote_names remote_descs
+    local -a wt_names wt_ages wt_authors wt_paths
+    local -a local_names local_ages local_authors
+    local -a remote_names remote_ages remote_authors
     raw=(${{(f)"$(daft __complete {command_name} "$curword" --position "$cword"{fetch_flag} 2>/dev/null)"}})
 
     # First pass: collect names and descriptions per group.
-    # Worktree lines have 4 fields: name\tworktree\tage\tpath
-    # Local/remote lines have 3 fields: name\tgroup\tage
-    local line name rest group desc max_len=0 len age_len max_age_len=0
+    # Worktree lines have 5 fields: name\tworktree\tage\tauthor\tpath
+    # Local/remote lines have 4 fields: name\tgroup\tage\tauthor
+    local line name rest group desc max_len=0 len
+    local age_len max_age_len=0 auth_len max_auth_len=0
     for line in "${{raw[@]}}"; do
         name="${{line%%$'\t'*}}"
         rest="${{line#*$'\t'}}"
@@ -266,42 +269,64 @@ __{func_name}_impl() {{
         case "$group" in
             worktree)
                 wt_names+=("$name")
-                # desc is "age\tpath" — split on tab
+                # desc is "age\tauthor\tpath" — split on tabs
                 wt_ages+=("${{desc%%$'\t'*}}")
-                wt_paths+=("${{desc#*$'\t'}}")
+                local wt_rest="${{desc#*$'\t'}}"
+                wt_authors+=("${{wt_rest%%$'\t'*}}")
+                wt_paths+=("${{wt_rest#*$'\t'}}")
                 age_len=${{#${{desc%%$'\t'*}}}}
                 (( age_len > max_age_len )) && max_age_len=$age_len
+                auth_len=${{#${{wt_rest%%$'\t'*}}}}
+                (( auth_len > max_auth_len )) && max_auth_len=$auth_len
                 ;;
             local)
                 local_names+=("$name")
-                local_descs+=("$desc")
+                # desc is "age\tauthor"
+                local_ages+=("${{desc%%$'\t'*}}")
+                local_authors+=("${{desc#*$'\t'}}")
+                age_len=${{#${{desc%%$'\t'*}}}}
+                (( age_len > max_age_len )) && max_age_len=$age_len
+                auth_len=${{#${{desc#*$'\t'}}}}
+                (( auth_len > max_auth_len )) && max_auth_len=$auth_len
                 ;;
             remote)
                 remote_names+=("$name")
-                remote_descs+=("$desc")
+                # desc is "age\tauthor"
+                remote_ages+=("${{desc%%$'\t'*}}")
+                remote_authors+=("${{desc#*$'\t'}}")
+                age_len=${{#${{desc%%$'\t'*}}}}
+                (( age_len > max_age_len )) && max_age_len=$age_len
+                auth_len=${{#${{desc#*$'\t'}}}}
+                (( auth_len > max_auth_len )) && max_auth_len=$auth_len
                 ;;
         esac
     done
 
     # Second pass: build padded display strings.
-    # Worktrees: three columns (name, age, path).
-    # Local/remote: two columns (name, age).
+    # Worktrees: four columns (name, age, author, path).
+    # Local/remote: three columns (name, age, author).
     local -a wt_display local_display remote_display
-    local i pad apad
+    local i pad apad authpad
     (( max_len += 2 ))
     (( max_age_len += 2 ))
+    (( max_auth_len += 2 ))
     for (( i=1; i<=${{#wt_names}}; i++ )); do
         pad=$(( max_len - ${{#wt_names[$i]}} ))
         apad=$(( max_age_len - ${{#wt_ages[$i]}} ))
-        wt_display+=("${{wt_names[$i]}}${{(l:$pad:: :)}}  ${{wt_ages[$i]}}${{(l:$apad:: :)}}  ${{wt_paths[$i]}}")
+        authpad=$(( max_auth_len - ${{#wt_authors[$i]}} ))
+        wt_display+=("${{wt_names[$i]}}${{(l:$pad:: :)}}  ${{wt_ages[$i]}}${{(l:$apad:: :)}}  ${{wt_authors[$i]}}${{(l:$authpad:: :)}}  ${{wt_paths[$i]}}")
     done
     for (( i=1; i<=${{#local_names}}; i++ )); do
         pad=$(( max_len - ${{#local_names[$i]}} ))
-        local_display+=("${{local_names[$i]}}${{(l:$pad:: :)}}  ${{local_descs[$i]}}")
+        apad=$(( max_age_len - ${{#local_ages[$i]}} ))
+        authpad=$(( max_auth_len - ${{#local_authors[$i]}} ))
+        local_display+=("${{local_names[$i]}}${{(l:$pad:: :)}}  ${{local_ages[$i]}}${{(l:$apad:: :)}}  ${{local_authors[$i]}}")
     done
     for (( i=1; i<=${{#remote_names}}; i++ )); do
         pad=$(( max_len - ${{#remote_names[$i]}} ))
-        remote_display+=("${{remote_names[$i]}}${{(l:$pad:: :)}}  ${{remote_descs[$i]}}")
+        apad=$(( max_age_len - ${{#remote_ages[$i]}} ))
+        authpad=$(( max_auth_len - ${{#remote_authors[$i]}} ))
+        remote_display+=("${{remote_names[$i]}}${{(l:$pad:: :)}}  ${{remote_ages[$i]}}${{(l:$apad:: :)}}  ${{remote_authors[$i]}}")
     done
 
     # -V preserves group insertion order: worktrees first, then local, then remote.

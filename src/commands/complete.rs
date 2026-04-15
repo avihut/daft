@@ -261,31 +261,46 @@ fn worktree_branch_from_gitdir(git_dir: &std::path::Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Peel a reference to its commit and return the committer timestamp as a
-/// relative-time string. Returns an empty string on failure (tag that doesn't
-/// point to a commit, corrupt object, etc.).
-fn ref_commit_age(reference: &mut gix::Reference<'_>) -> String {
+/// Commit metadata extracted from a ref for completion display.
+pub(crate) struct RefInfo {
+    age: String,
+    author: String,
+}
+
+/// Peel a reference to its commit and return the committer timestamp
+/// (as a relative-time string) and the author name. Returns empty
+/// strings on failure (tag that doesn't point to a commit, corrupt
+/// object, etc.).
+fn ref_commit_info(reference: &mut gix::Reference<'_>) -> RefInfo {
+    let empty = || RefInfo {
+        age: String::new(),
+        author: String::new(),
+    };
     let id = match reference.peel_to_id() {
         Ok(id) => id.detach(),
-        Err(_) => return String::new(),
+        Err(_) => return empty(),
     };
     let repo = reference.repo;
     let object = match repo.find_object(id) {
         Ok(o) => o,
-        Err(_) => return String::new(),
+        Err(_) => return empty(),
     };
     let commit = match object.try_into_commit() {
         Ok(c) => c,
-        Err(_) => return String::new(),
+        Err(_) => return empty(),
     };
-    let sig = match commit.committer() {
-        Ok(s) => s,
-        Err(_) => return String::new(),
-    };
-    match sig.time() {
-        Ok(time) => format_relative_time(time.seconds),
-        Err(_) => String::new(),
-    }
+    let age = commit
+        .committer()
+        .ok()
+        .and_then(|s| s.time().ok())
+        .map(|t| format_relative_time(t.seconds))
+        .unwrap_or_default();
+    let author = commit
+        .author()
+        .ok()
+        .map(|s| s.name.to_string())
+        .unwrap_or_default();
+    RefInfo { age, author }
 }
 
 /// Collect `(branch, path)` pairs for every worktree (main + linked) that
@@ -328,8 +343,8 @@ fn collect_worktrees(repo: &gix::Repository) -> Vec<(String, std::path::PathBuf)
     result
 }
 
-/// Collect `(branch, relative_age)` pairs for a given ref prefix via gitoxide.
-fn collect_refs_with_age(repo: &gix::Repository, prefix: &str) -> Vec<(String, String)> {
+/// Collect `(branch, RefInfo)` pairs for a given ref prefix via gitoxide.
+fn collect_refs_with_info(repo: &gix::Repository, prefix: &str) -> Vec<(String, RefInfo)> {
     let platform = match repo.references() {
         Ok(p) => p,
         Err(_) => return Vec::new(),
@@ -346,21 +361,21 @@ fn collect_refs_with_age(repo: &gix::Repository, prefix: &str) -> Vec<(String, S
             Err(_) => continue,
         };
         let short_name = reference.name().shorten().to_string();
-        let age = ref_commit_age(&mut reference);
-        result.push((short_name, age));
+        let info = ref_commit_info(&mut reference);
+        result.push((short_name, info));
     }
     result
 }
 
-/// Collect `(branch, relative_age)` pairs for every local branch.
-fn collect_local_branches(repo: &gix::Repository) -> Vec<(String, String)> {
-    collect_refs_with_age(repo, "refs/heads/")
+/// Collect `(branch, RefInfo)` pairs for every local branch.
+fn collect_local_branches(repo: &gix::Repository) -> Vec<(String, RefInfo)> {
+    collect_refs_with_info(repo, "refs/heads/")
 }
 
-/// Collect `(branch, relative_age)` pairs for every remote-tracking
+/// Collect `(branch, RefInfo)` pairs for every remote-tracking
 /// branch across all remotes.
-fn collect_remote_branches(repo: &gix::Repository) -> Vec<(String, String)> {
-    collect_refs_with_age(repo, "refs/remotes/")
+fn collect_remote_branches(repo: &gix::Repository) -> Vec<(String, RefInfo)> {
+    collect_refs_with_info(repo, "refs/remotes/")
 }
 
 /// Collect the current worktree's branch, if any — used to exclude it
@@ -971,8 +986,8 @@ const CONFIG_BRANCH: RichCompletionConfig = RichCompletionConfig {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_rich_completions(
     worktrees: &[(String, std::path::PathBuf)],
-    local_branches: &[(String, String)],
-    remote_branches: &[(String, String)],
+    local_branches: &[(String, RefInfo)],
+    remote_branches: &[(String, RefInfo)],
     current_worktree_branch: Option<&str>,
     default_remote: &str,
     multi_remote: bool,
@@ -982,25 +997,26 @@ pub(crate) fn build_rich_completions(
     use std::collections::HashSet;
 
     // Worktree group: exclude the current worktree's branch.
-    // Look up the commit age from local_branches for each worktree, and
-    // pack both age and path into the description as "age\tpath".
+    // Look up the commit info from local_branches for each worktree, and
+    // pack age, author, and path into the description as "age\tauthor\tpath".
     let mut wt_entries: Vec<CompletionEntry> = worktrees
         .iter()
         .filter(|(name, _)| Some(name.as_str()) != current_worktree_branch)
         .filter(|(name, _)| name.starts_with(prefix))
         .map(|(name, path)| {
-            let age = local_branches
+            let info = local_branches
                 .iter()
                 .find(|(n, _)| n == name)
-                .map(|(_, a)| a.as_str())
-                .unwrap_or("");
+                .map(|(_, i)| i);
+            let age = info.map(|i| i.age.as_str()).unwrap_or("");
+            let author = info.map(|i| i.author.as_str()).unwrap_or("");
             let display_path = cwd
                 .and_then(|base| pathdiff::diff_paths(path, base))
                 .unwrap_or_else(|| path.to_path_buf());
             CompletionEntry {
                 name: name.clone(),
                 group: CompletionGroup::Worktree,
-                description: format!("{}\t{}", age, display_path.display()),
+                description: format!("{}\t{}\t{}", age, author, display_path.display()),
             }
         })
         .collect();
@@ -1013,10 +1029,10 @@ pub(crate) fn build_rich_completions(
         .iter()
         .filter(|(name, _)| !wt_names.contains(name.as_str()))
         .filter(|(name, _)| name.starts_with(prefix))
-        .map(|(name, age)| CompletionEntry {
+        .map(|(name, info)| CompletionEntry {
             name: name.clone(),
             group: CompletionGroup::Local,
-            description: age.clone(),
+            description: format!("{}\t{}", info.age, info.author),
         })
         .collect();
     local_entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1036,7 +1052,7 @@ pub(crate) fn build_rich_completions(
             // the remote name from the branch path.
             !name.ends_with("/HEAD") && name != "HEAD" && name.contains('/')
         })
-        .filter_map(|(name, age)| {
+        .filter_map(|(name, info)| {
             let display = if multi_remote {
                 name.clone()
             } else if let Some(stripped) = name.strip_prefix(&prefix_to_strip) {
@@ -1056,7 +1072,7 @@ pub(crate) fn build_rich_completions(
             Some(CompletionEntry {
                 name: display,
                 group: CompletionGroup::Remote,
-                description: age.clone(),
+                description: format!("{}\t{}", info.age, info.author),
             })
         })
         .collect();
@@ -1113,8 +1129,24 @@ mod tests {
         (name.to_string(), std::path::PathBuf::from(path))
     }
 
-    fn br(name: &str, age: &str) -> (String, String) {
-        (name.to_string(), age.to_string())
+    fn br(name: &str, age: &str) -> (String, RefInfo) {
+        (
+            name.to_string(),
+            RefInfo {
+                age: age.to_string(),
+                author: String::new(),
+            },
+        )
+    }
+
+    fn br_author(name: &str, age: &str, author: &str) -> (String, RefInfo) {
+        (
+            name.to_string(),
+            RefInfo {
+                age: age.to_string(),
+                author: author.to_string(),
+            },
+        )
     }
 
     #[test]
@@ -1284,18 +1316,18 @@ mod tests {
             CompletionEntry {
                 name: "master".into(),
                 group: CompletionGroup::Worktree,
-                description: "2 hours ago\t/tmp/wt/master".into(),
+                description: "2 hours ago\tAlice\t/tmp/wt/master".into(),
             },
             CompletionEntry {
                 name: "feat/bar".into(),
                 group: CompletionGroup::Local,
-                description: "4 days ago".into(),
+                description: "4 days ago\tBob".into(),
             },
         ];
         let out = format_rich_completions(&entries);
         assert_eq!(
             out,
-            "master\tworktree\t2 hours ago\t/tmp/wt/master\nfeat/bar\tlocal\t4 days ago\n"
+            "master\tworktree\t2 hours ago\tAlice\t/tmp/wt/master\nfeat/bar\tlocal\t4 days ago\tBob\n"
         );
     }
 
@@ -1602,16 +1634,45 @@ mod tests {
             CompletionEntry {
                 name: "main".to_string(),
                 group: CompletionGroup::Worktree,
-                description: "1 day ago\t/repo/main".to_string(),
+                description: "1 day ago\tAlice\t/repo/main".to_string(),
             },
             CompletionEntry {
                 name: "dev".to_string(),
                 group: CompletionGroup::Local,
-                description: "2 days ago".to_string(),
+                description: "2 days ago\tBob".to_string(),
             },
         ];
         let strings = format_entries_as_strings(&entries);
-        assert_eq!(strings[0], "main\tworktree\t1 day ago\t/repo/main");
-        assert_eq!(strings[1], "dev\tlocal\t2 days ago");
+        assert_eq!(strings[0], "main\tworktree\t1 day ago\tAlice\t/repo/main");
+        assert_eq!(strings[1], "dev\tlocal\t2 days ago\tBob");
+    }
+
+    #[test]
+    fn rich_completions_author_propagates_to_all_groups() {
+        let entries = build_rich_completions(
+            &[wt("master", "/tmp/wt/master")],
+            &[
+                br_author("master", "1 day ago", "Alice"),
+                br_author("feat/local", "3 days ago", "Bob"),
+            ],
+            &[br_author("origin/feat/remote", "5 days ago", "Charlie")],
+            None,
+            "origin",
+            false,
+            "",
+            None,
+        );
+        // Worktree entry has age + author + path
+        let wt_entry = entries.iter().find(|e| e.name == "master").unwrap();
+        assert!(wt_entry.description.contains("Alice"));
+        assert!(wt_entry.description.contains("1 day ago"));
+
+        // Local entry has age + author
+        let local_entry = entries.iter().find(|e| e.name == "feat/local").unwrap();
+        assert_eq!(local_entry.description, "3 days ago\tBob");
+
+        // Remote entry has age + author
+        let remote_entry = entries.iter().find(|e| e.name == "feat/remote").unwrap();
+        assert_eq!(remote_entry.description, "5 days ago\tCharlie");
     }
 }

@@ -244,13 +244,16 @@ fn generate_fish_rich_completion(command_name: &str) -> Result<String> {
     let mut output = String::new();
     // Dynamic branch completion with grouped output
     output.push_str("# Dynamic branch name completion\n");
+    // Worktree lines: name\tworktree\tage\tauthor\tpath (5 fields)
+    // Local/remote: name\tgroup\tage\tauthor (4 fields)
+    // Fish display: name\tage · author · path (worktree) or name\tage · author
     output.push_str(&format!(
-        "complete -c {command_name} -f -a \"(daft __complete {command_name} (commandline -ct) --position 1{fetch_flag} 2>/dev/null | awk -F'\\t' '{{printf \\\"%s\\t%s · %s\\n\\\", $1, $3, $2}}')\"\n",
+        "complete -c {command_name} -f -a \"(daft __complete {command_name} (commandline -ct) --position 1{fetch_flag} 2>/dev/null | awk -F'\\t' '{{if (NF>=5) printf \\\"%s\\t%s · %s · %s\\n\\\",$1,$3,$4,$5; else printf \\\"%s\\t%s · %s\\n\\\",$1,$3,$4}}')\"\n",
     ));
     // Git subcommand invocation (git worktree-checkout) — only for git-* commands
     if is_git_command {
         output.push_str(&format!(
-            "complete -c git -n '__fish_seen_subcommand_from {git_subcommand}' -f -a \"(daft __complete {command_name} (commandline -ct) --position 1{fetch_flag} 2>/dev/null | awk -F'\\t' '{{printf \\\"%s\\t%s · %s\\n\\\", $1, $3, $2}}')\"\n",
+            "complete -c git -n '__fish_seen_subcommand_from {git_subcommand}' -f -a \"(daft __complete {command_name} (commandline -ct) --position 1{fetch_flag} 2>/dev/null | awk -F'\\t' '{{if (NF>=5) printf \\\"%s\\t%s · %s · %s\\n\\\",$1,$3,$4,$5; else printf \\\"%s\\t%s · %s\\n\\\",$1,$3,$4}}')\"\n",
         ));
     }
     output.push('\n');
@@ -317,12 +320,12 @@ complete -c daft -n '__fish_use_subcommand' -a 'list' -d 'List worktrees with st
 complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to traditional layout'
 complete -c daft -n '__fish_use_subcommand' -a 'config' -d 'Configure daft settings'
 complete -c daft -n '__fish_use_subcommand' -a 'shared' -d 'Manage shared files across worktrees'
-complete -c daft -n '__fish_seen_subcommand_from go' -f -a "(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\t' '{printf \"%s\t%s · %s\n\", $1, $3, $2}')"
+complete -c daft -n '__fish_seen_subcommand_from go' -f -a "(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\t' '{if (NF>=5) printf \"%s\t%s · %s · %s\n\",$1,$3,$4,$5; else printf \"%s\t%s · %s\n\",$1,$3,$4}')"
 complete -c daft -n '__fish_seen_subcommand_from start' -f -a "(daft __complete daft-start '' 2>/dev/null)"
-complete -c daft -n '__fish_seen_subcommand_from carry' -f -a "(daft __complete git-worktree-carry (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{printf \"%s\t%s · %s\n\", $1, $3, $2}')"
-complete -c daft -n '__fish_seen_subcommand_from update' -f -a "(daft __complete git-worktree-fetch (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{printf \"%s\t%s · %s\n\", $1, $3, $2}')"
-complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{printf \"%s\t%s · %s\n\", $1, $3, $2}')"
-complete -c daft -n '__fish_seen_subcommand_from rename' -f -a "(daft __complete daft-rename (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{printf \"%s\t%s · %s\n\", $1, $3, $2}')"
+complete -c daft -n '__fish_seen_subcommand_from carry' -f -a "(daft __complete git-worktree-carry (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{if (NF>=5) printf \"%s\t%s · %s · %s\n\",$1,$3,$4,$5; else printf \"%s\t%s · %s\n\",$1,$3,$4}')"
+complete -c daft -n '__fish_seen_subcommand_from update' -f -a "(daft __complete git-worktree-fetch (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{if (NF>=5) printf \"%s\t%s · %s · %s\n\",$1,$3,$4,$5; else printf \"%s\t%s · %s\n\",$1,$3,$4}')"
+complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{if (NF>=5) printf \"%s\t%s · %s · %s\n\",$1,$3,$4,$5; else printf \"%s\t%s · %s\n\",$1,$3,$4}')"
+complete -c daft -n '__fish_seen_subcommand_from rename' -f -a "(daft __complete daft-rename (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{if (NF>=5) printf \"%s\t%s · %s · %s\n\",$1,$3,$4,$5; else printf \"%s\t%s · %s\n\",$1,$3,$4}')"
 complete -c daft -n '__fish_seen_subcommand_from layout; and not __fish_seen_subcommand_from default list show transform' -f -a 'default list show transform'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from show' -F
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -f -a "(daft __complete layout-transform '' 2>/dev/null)"
