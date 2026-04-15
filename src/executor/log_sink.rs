@@ -139,21 +139,14 @@ impl LogSink for BufferingLogSink {
             buffers.remove(&spec.name);
         }
 
-        let meta = JobMeta {
-            name: spec.name.clone(),
-            hook_type: self.hook_type.clone(),
-            worktree: self.worktree.clone(),
-            command: spec.command.clone(),
-            working_dir: spec.working_dir.to_string_lossy().into_owned(),
-            env: spec.env.clone(),
-            started_at: chrono::Utc::now(),
-            status: JobStatus::Skipped,
-            exit_code: None,
-            pid: None,
-            background: false,
-            finished_at: None,
-            needs: spec.needs.clone(),
-        };
+        let meta = JobMeta::skipped(
+            &spec.name,
+            &self.hook_type,
+            &self.worktree,
+            &spec.command,
+            false,
+            spec.needs.clone(),
+        );
 
         if let Err(e) = self
             .store
