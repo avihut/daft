@@ -156,7 +156,8 @@ impl LogStore {
             .with_context(|| format!("Failed to create invocation dir: {}", dir.display()))?;
         let path = dir.join("invocation.json");
         let content = serde_json::to_string_pretty(meta)?;
-        fs::write(&path, content)?;
+        fs::write(&path, content)
+            .with_context(|| format!("Failed to write invocation meta: {}", path.display()))?;
         Ok(())
     }
 
