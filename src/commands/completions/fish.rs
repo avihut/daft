@@ -367,6 +367,11 @@ complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcomma
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from retry' -l hook -d 'Force hook name interpretation'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from retry' -l inv -d 'Force invocation prefix interpretation'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from retry' -l job -d 'Force job name interpretation'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from retry' -l worktree -r -d 'Retry from specific worktree' -f -a "(daft __complete hooks-jobs-retry-worktree (commandline -ct) 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from retry' -l cwd -d 'Override working directory'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -l worktree -r -d 'Filter by worktree' -f -a "(daft __complete hooks-jobs-worktree (commandline -ct) 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -l status -r -d 'Filter by job status' -f -a "failed completed running cancelled skipped"
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -l hook -r -d 'Filter by hook type' -f -a "(daft __complete hooks-jobs-hook-filter (commandline -ct) 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from logs cancel' -f -a "(daft __complete hooks-jobs-job (commandline -ct) 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from retry' -f -a "(daft __complete hooks-jobs-retry (commandline -ct) 2>/dev/null)"
 # shared: subcommands

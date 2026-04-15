@@ -304,8 +304,19 @@ _daft() {
                         return 0
                         ;;
                     retry)
+                        if [[ "${prev}" == "--worktree" ]]; then
+                            local completions
+                            completions=$(daft __complete hooks-jobs-retry-worktree "$cur" 2>/dev/null)
+                            if [[ -n "$completions" ]]; then
+                                while IFS=$'\n' read -r line; do
+                                    local val="${line%%	*}"
+                                    COMPREPLY+=("$val")
+                                done <<< "$completions"
+                            fi
+                            return 0
+                        fi
                         if [[ "$cur" == -* ]]; then
-                            COMPREPLY=( $(compgen -W "--hook --inv --job -h --help" -- "$cur") )
+                            COMPREPLY=( $(compgen -W "--hook --inv --job --worktree --cwd -h --help" -- "$cur") )
                             return 0
                         fi
                         local completions
@@ -319,8 +330,34 @@ _daft() {
                         return 0
                         ;;
                 esac
+                if [[ "${prev}" == "--worktree" ]]; then
+                    local completions
+                    completions=$(daft __complete hooks-jobs-worktree "$cur" 2>/dev/null)
+                    if [[ -n "$completions" ]]; then
+                        while IFS=$'\n' read -r line; do
+                            local val="${line%%	*}"
+                            COMPREPLY+=("$val")
+                        done <<< "$completions"
+                    fi
+                    return 0
+                fi
+                if [[ "${prev}" == "--status" ]]; then
+                    COMPREPLY=( $(compgen -W "failed completed running cancelled skipped" -- "$cur") )
+                    return 0
+                fi
+                if [[ "${prev}" == "--hook" ]]; then
+                    local completions
+                    completions=$(daft __complete hooks-jobs-hook-filter "$cur" 2>/dev/null)
+                    if [[ -n "$completions" ]]; then
+                        while IFS=$'\n' read -r line; do
+                            local val="${line%%	*}"
+                            COMPREPLY+=("$val")
+                        done <<< "$completions"
+                    fi
+                    return 0
+                fi
                 if [[ "$cur" == -* ]]; then
-                    COMPREPLY=( $(compgen -W "--all --json -h --help" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "--all --json --worktree --status --hook -h --help" -- "$cur") )
                     return 0
                 fi
                 return 0

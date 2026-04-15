@@ -482,8 +482,18 @@ _daft() {
                         return
                         ;;
                     retry)
+                        local prev="$words[$((CURRENT-1))]"
+                        if [[ "$prev" == "--worktree" ]]; then
+                            local -a _vals _descs
+                            while IFS='' read -r _line; do
+                                _vals+=("${_line%%$'\t'*}")
+                                _descs+=("${_line//$'\t'/  }")
+                            done < <(daft __complete hooks-jobs-retry-worktree "$curword" 2>/dev/null)
+                            compadd -l -d _descs -a _vals
+                            return
+                        fi
                         if [[ "$curword" == -* ]]; then
-                            compadd -- --hook --inv --job -h --help
+                            compadd -- --hook --inv --job --worktree --cwd -h --help
                             return
                         fi
                         local -a _vals _descs
@@ -495,8 +505,31 @@ _daft() {
                         return
                         ;;
                 esac
+                local prev="$words[$((CURRENT-1))]"
+                if [[ "$prev" == "--worktree" ]]; then
+                    local -a _vals _descs
+                    while IFS='' read -r _line; do
+                        _vals+=("${_line%%$'\t'*}")
+                        _descs+=("${_line//$'\t'/  }")
+                    done < <(daft __complete hooks-jobs-worktree "$curword" 2>/dev/null)
+                    compadd -l -d _descs -a _vals
+                    return
+                fi
+                if [[ "$prev" == "--status" ]]; then
+                    compadd -- failed completed running cancelled skipped
+                    return
+                fi
+                if [[ "$prev" == "--hook" ]]; then
+                    local -a _vals _descs
+                    while IFS='' read -r _line; do
+                        _vals+=("${_line%%$'\t'*}")
+                        _descs+=("${_line//$'\t'/  }")
+                    done < <(daft __complete hooks-jobs-hook-filter "$curword" 2>/dev/null)
+                    compadd -l -d _descs -a _vals
+                    return
+                fi
                 if [[ "$curword" == -* ]]; then
-                    compadd -- --all --json -h --help
+                    compadd -- --all --json --worktree --status --hook -h --help
                 fi
                 return
                 ;;
