@@ -163,6 +163,10 @@ fn complete(
         // hooks jobs retry: complete retry targets (hook types, invocation IDs, job names with failures)
         ("hooks-jobs-retry", 1) => complete_retry_targets(word),
 
+        ("hooks-jobs-retry-worktree", 1) => complete_retry_worktrees(word),
+        ("hooks-jobs-worktree", 1) => complete_listing_worktrees(word),
+        ("hooks-jobs-hook-filter", 1) => complete_hook_types(word),
+
         // Default: no completions
         _ => Ok(vec![]),
     }
@@ -1103,6 +1107,149 @@ fn complete_retry_targets(prefix: &str) -> Result<Vec<String>> {
         }
     }
 
+    Ok(entries)
+}
+
+fn complete_retry_worktrees(prefix: &str) -> Result<Vec<String>> {
+    use crate::coordinator::log_store::{JobStatus, LogStore};
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let repo_hash = find_project_root().ok().map(|root| {
+        let mut hasher = DefaultHasher::new();
+        root.display().to_string().hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    });
+    let repo_hash = match repo_hash {
+        Some(h) => h,
+        None => return Ok(vec![]),
+    };
+    let store = match LogStore::for_repo(&repo_hash) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let now = chrono::Utc::now();
+    let invocations = store.list_invocations().unwrap_or_default();
+
+    let mut worktree_stats: std::collections::HashMap<
+        String,
+        (usize, chrono::DateTime<chrono::Utc>),
+    > = std::collections::HashMap::new();
+    for inv in &invocations {
+        let job_dirs = store
+            .list_jobs_in_invocation(&inv.invocation_id)
+            .unwrap_or_default();
+        let failed = job_dirs
+            .iter()
+            .filter_map(|d| store.read_meta(d).ok())
+            .filter(|m| matches!(m.status, JobStatus::Failed | JobStatus::Cancelled))
+            .count();
+        let entry = worktree_stats
+            .entry(inv.worktree.clone())
+            .or_insert((0, inv.created_at));
+        entry.0 += failed;
+        if inv.created_at > entry.1 {
+            entry.1 = inv.created_at;
+        }
+    }
+
+    let mut entries = Vec::new();
+    for (wt, (failed, latest)) in &worktree_stats {
+        if *failed == 0 {
+            continue;
+        }
+        if wt.starts_with(prefix) {
+            let ago = crate::output::format::shorthand_from_seconds(
+                now.signed_duration_since(*latest).num_seconds(),
+            );
+            entries.push(format!("{wt}\tworktree\t{failed} failed, {ago} ago"));
+        }
+    }
+    Ok(entries)
+}
+
+fn complete_listing_worktrees(prefix: &str) -> Result<Vec<String>> {
+    use crate::coordinator::log_store::LogStore;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let repo_hash = find_project_root().ok().map(|root| {
+        let mut hasher = DefaultHasher::new();
+        root.display().to_string().hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    });
+    let repo_hash = match repo_hash {
+        Some(h) => h,
+        None => return Ok(vec![]),
+    };
+    let store = match LogStore::for_repo(&repo_hash) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let now = chrono::Utc::now();
+    let invocations = store.list_invocations().unwrap_or_default();
+    let worktrees = store.list_distinct_worktrees().unwrap_or_default();
+
+    let mut entries = Vec::new();
+    for wt in &worktrees {
+        if !wt.starts_with(prefix) {
+            continue;
+        }
+        let wt_invs: Vec<_> = invocations.iter().filter(|i| i.worktree == *wt).collect();
+        let latest = wt_invs.iter().map(|i| i.created_at).max();
+        let ago = latest
+            .map(|t| {
+                crate::output::format::shorthand_from_seconds(
+                    now.signed_duration_since(t).num_seconds(),
+                )
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        let inv_count = wt_invs.len();
+        entries.push(format!(
+            "{wt}\tworktree\t{inv_count} invocation{}, {ago} ago",
+            if inv_count == 1 { "" } else { "s" },
+        ));
+    }
+    Ok(entries)
+}
+
+fn complete_hook_types(prefix: &str) -> Result<Vec<String>> {
+    use crate::coordinator::log_store::LogStore;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let repo_hash = find_project_root().ok().map(|root| {
+        let mut hasher = DefaultHasher::new();
+        root.display().to_string().hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    });
+    let repo_hash = match repo_hash {
+        Some(h) => h,
+        None => return Ok(vec![]),
+    };
+    let store = match LogStore::for_repo(&repo_hash) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let invocations = store.list_invocations().unwrap_or_default();
+    let mut hook_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for inv in &invocations {
+        *hook_counts.entry(inv.hook_type.clone()).or_insert(0) += 1;
+    }
+
+    let mut entries = Vec::new();
+    for (hook, count) in &hook_counts {
+        if hook.starts_with(prefix) {
+            entries.push(format!(
+                "{hook}\thook\t{count} invocation{}",
+                if *count == 1 { "" } else { "s" },
+            ));
+        }
+    }
     Ok(entries)
 }
 
