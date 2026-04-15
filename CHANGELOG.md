@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.7.0](https://github.com/avihut/daft/compare/v1.6.5...v1.7.0) - 2026-04-15
+
+### Features
+
+- *(completions)* rich grouped completions with configurable columns ([#365](https://github.com/avihut/daft/pull/365))
+
 ## [1.6.5](https://github.com/avihut/daft/compare/v1.6.4...v1.6.5) - 2026-04-11
 
 ### Bug Fixes
