@@ -1,19 +1,16 @@
-use super::{extract_flags, get_command_for_name};
+use super::{extract_flags, get_command_for_name, uses_fetch_on_miss, uses_rich_completions};
 use anyhow::{Context, Result};
 
 /// Generate zsh completion string
 pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<String> {
+    // Rich completion commands get the grouped parsing (compadd -V).
+    if uses_rich_completions(command_name) {
+        return Ok(generate_zsh_rich_completion(command_name));
+    }
+
     let mut output = String::new();
-    let has_branches = matches!(
-        command_name,
-        "git-worktree-checkout"
-            | "git-worktree-carry"
-            | "git-worktree-fetch"
-            | "daft-go"
-            | "daft-start"
-            | "daft-remove"
-            | "daft-rename"
-    );
+    // daft-start still uses simple branch-prefix patterns (not rich).
+    let has_branches = command_name == "daft-start";
 
     let func_name = command_name.replace('-', "_");
 
@@ -169,8 +166,9 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     }
 
     output.push_str("    # Flag completions (extracted from clap)\n");
-    output.push_str("    local -a flags\n");
-    output.push_str("    flags=(\n");
+    output.push_str("    if [[ \"$curword\" == -* ]]; then\n");
+    output.push_str("        local -a flags\n");
+    output.push_str("        flags=(\n");
 
     // Use clap introspection to get flags
     let cmd =
@@ -178,11 +176,12 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     let (all_flags, _, _) = extract_flags(&cmd);
 
     for flag in all_flags {
-        output.push_str(&format!("        '{}'\n", flag));
+        output.push_str(&format!("            '{}'\n", flag));
     }
 
-    output.push_str("    )\n");
-    output.push_str("    compadd -a flags\n");
+    output.push_str("        )\n");
+    output.push_str("        compadd -a flags\n");
+    output.push_str("    fi\n");
     output.push_str("}\n");
     output.push('\n');
 
@@ -214,6 +213,158 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     }
 
     Ok(output)
+}
+
+/// Generate a zsh completion script with rich grouped output for any command
+/// that uses the `name\tgroup\tdescription` protocol.
+fn generate_zsh_rich_completion(command_name: &str) -> String {
+    let cmd = get_command_for_name(command_name)
+        .unwrap_or_else(|| panic!("Unknown rich-completion command: {command_name}"));
+    let (all_flags, _, _) = extract_flags(&cmd);
+    let flags_block: String = all_flags
+        .iter()
+        .map(|f| format!("            '{f}'\n"))
+        .collect();
+
+    let func_name = command_name.replace('-', "_");
+    let fetch_flag = if uses_fetch_on_miss(command_name) {
+        " --fetch-on-miss"
+    } else {
+        ""
+    };
+
+    let mut output = format!(
+        r#"#compdef {command_name}
+
+__{func_name}_impl() {{
+    local curword="${{words[$CURRENT]}}"
+    local cword=$((CURRENT - 1))
+
+    if [[ "$curword" == -* ]]; then
+        local -a flags
+        flags=(
+{flags_block}        )
+        compadd -a flags
+        return
+    fi
+
+    local -a raw
+    local -a wt_names wt_raw_names wt_ages wt_authors wt_paths
+    local -a local_names local_ages local_authors
+    local -a remote_names remote_ages remote_authors
+    raw=(${{(f)"$(daft __complete {command_name} "$curword" --position "$cword"{fetch_flag} 2>/dev/null)"}})
+
+    # First pass: collect names and descriptions per group.
+    # Worktree lines have 5 fields: name\tworktree\tage\tauthor\tpath
+    # Local/remote lines have 4 fields: name\tgroup\tage\tauthor
+    # Worktree names may have *? dirty indicators — strip for completion
+    # value, keep for display. (* and ? are invalid in git branch names.)
+    local line name rest group desc max_len=0 len clean_name
+    local age_len max_age_len=0 auth_len max_auth_len=0
+    for line in "${{raw[@]}}"; do
+        name="${{line%%$'\t'*}}"
+        rest="${{line#*$'\t'}}"
+        group="${{rest%%$'\t'*}}"
+        desc="${{rest#*$'\t'}}"
+        len=${{#name}}
+        (( len > max_len )) && max_len=$len
+        case "$group" in
+            worktree)
+                # Strip *? for completion value, keep raw for display
+                clean_name="${{name%%[*?]*}}"
+                wt_names+=("$clean_name")
+                wt_raw_names+=("$name")
+                # desc is "age\tauthor\tpath" — split on tabs
+                wt_ages+=("${{desc%%$'\t'*}}")
+                local wt_rest="${{desc#*$'\t'}}"
+                wt_authors+=("${{wt_rest%%$'\t'*}}")
+                wt_paths+=("${{wt_rest#*$'\t'}}")
+                age_len=${{#${{desc%%$'\t'*}}}}
+                (( age_len > max_age_len )) && max_age_len=$age_len
+                auth_len=${{#${{wt_rest%%$'\t'*}}}}
+                (( auth_len > max_auth_len )) && max_auth_len=$auth_len
+                ;;
+            local)
+                local_names+=("$name")
+                # desc is "age\tauthor"
+                local_ages+=("${{desc%%$'\t'*}}")
+                local_authors+=("${{desc#*$'\t'}}")
+                age_len=${{#${{desc%%$'\t'*}}}}
+                (( age_len > max_age_len )) && max_age_len=$age_len
+                auth_len=${{#${{desc#*$'\t'}}}}
+                (( auth_len > max_auth_len )) && max_auth_len=$auth_len
+                ;;
+            remote)
+                remote_names+=("$name")
+                # desc is "age\tauthor"
+                remote_ages+=("${{desc%%$'\t'*}}")
+                remote_authors+=("${{desc#*$'\t'}}")
+                age_len=${{#${{desc%%$'\t'*}}}}
+                (( age_len > max_age_len )) && max_age_len=$age_len
+                auth_len=${{#${{desc#*$'\t'}}}}
+                (( auth_len > max_auth_len )) && max_auth_len=$auth_len
+                ;;
+        esac
+    done
+
+    # Second pass: build padded display strings.
+    # Worktrees: four columns (name, age, author, path) — uses raw name with indicators.
+    # Local/remote: three columns (name, age, author).
+    local -a wt_display local_display remote_display
+    local i pad apad authpad
+    (( max_len += 2 ))
+    (( max_age_len += 2 ))
+    (( max_auth_len += 2 ))
+    for (( i=1; i<=${{#wt_names}}; i++ )); do
+        pad=$(( max_len - ${{#wt_raw_names[$i]}} ))
+        apad=$(( max_age_len - ${{#wt_ages[$i]}} ))
+        authpad=$(( max_auth_len - ${{#wt_authors[$i]}} ))
+        wt_display+=("${{wt_raw_names[$i]}}${{(l:$pad:: :)}}  ${{wt_ages[$i]}}${{(l:$apad:: :)}}  ${{wt_authors[$i]}}${{(l:$authpad:: :)}}  ${{wt_paths[$i]}}")
+    done
+    for (( i=1; i<=${{#local_names}}; i++ )); do
+        pad=$(( max_len - ${{#local_names[$i]}} ))
+        apad=$(( max_age_len - ${{#local_ages[$i]}} ))
+        authpad=$(( max_auth_len - ${{#local_authors[$i]}} ))
+        local_display+=("${{local_names[$i]}}${{(l:$pad:: :)}}  ${{local_ages[$i]}}${{(l:$apad:: :)}}  ${{local_authors[$i]}}")
+    done
+    for (( i=1; i<=${{#remote_names}}; i++ )); do
+        pad=$(( max_len - ${{#remote_names[$i]}} ))
+        apad=$(( max_age_len - ${{#remote_ages[$i]}} ))
+        authpad=$(( max_auth_len - ${{#remote_authors[$i]}} ))
+        remote_display+=("${{remote_names[$i]}}${{(l:$pad:: :)}}  ${{remote_ages[$i]}}${{(l:$apad:: :)}}  ${{remote_authors[$i]}}")
+    done
+
+    # -V preserves group insertion order: worktrees first, then local, then remote.
+    (( ${{#wt_names}} ))     && compadd -V worktree -l -d wt_display -a wt_names
+    (( ${{#local_names}} ))  && compadd -V local -l -d local_display -a local_names
+    (( ${{#remote_names}} )) && compadd -V remote -l -d remote_display -a remote_names
+}}
+
+_{func_name}() {{
+    __{func_name}_impl
+}}
+
+compdef _{func_name} {command_name}
+"#
+    );
+
+    // Wrapper for git subcommand invocation (git worktree-checkout).
+    // Git's completion system expects _git-<subcommand>.
+    if command_name.starts_with("git-") {
+        let git_func_name = format!("_git-{}", command_name.trim_start_matches("git-"));
+        output.push_str(&format!("{git_func_name}() {{\n"));
+        output.push_str(&format!("    __{func_name}_impl\n"));
+        output.push_str("}\n\n");
+    }
+
+    // Register completions for shortcut aliases
+    for shortcut in crate::shortcuts::SHORTCUTS {
+        if shortcut.command == command_name {
+            output.push_str(&format!("compdef _{func_name} {}\n", shortcut.alias));
+        }
+    }
+
+    output
 }
 
 pub(super) const DAFT_ZSH_COMPLETIONS: &str = r#"# daft subcommand completions

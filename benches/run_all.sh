@@ -30,6 +30,7 @@ SCENARIOS=(
     fetch
     branch_delete
     workflow_full
+    complete
 )
 
 # Parse arguments

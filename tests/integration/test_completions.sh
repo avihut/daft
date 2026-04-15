@@ -120,7 +120,7 @@ test_bash_dynamic_wiring() {
     local output
     output=$("$DAFT_BIN" completions bash --command=git-worktree-checkout 2>&1)
 
-    if [[ "$output" == *'daft __complete'* ]] && [[ "$output" == *'branches='* ]]; then
+    if [[ "$output" == *'daft __complete'* ]] && [[ "$output" == *'raw='* ]]; then
         pass_test
     else
         fail_test "Bash completion missing 'daft __complete' call for dynamic branches"
@@ -134,7 +134,7 @@ test_zsh_dynamic_wiring() {
     local output
     output=$("$DAFT_BIN" completions zsh --command=git-worktree-checkout 2>&1)
 
-    if [[ "$output" == *'daft __complete'* ]] && [[ "$output" == *'branches='* ]]; then
+    if [[ "$output" == *'daft __complete'* ]] && [[ "$output" == *'raw='* ]]; then
         pass_test
     else
         fail_test "Zsh completion missing 'daft __complete' call for dynamic branches"
@@ -417,7 +417,7 @@ test_carry_dynamic_completion() {
     local output
     output=$("$DAFT_BIN" completions bash --command=git-worktree-carry 2>&1)
 
-    if [[ "$output" == *'daft __complete'* ]] && [[ "$output" == *'branches='* ]]; then
+    if [[ "$output" == *'daft __complete'* ]] && [[ "$output" == *'raw='* ]]; then
         pass_test
     else
         fail_test "Carry command missing dynamic branch completion"

@@ -1,19 +1,16 @@
-use super::{extract_flags, get_command_for_name};
+use super::{extract_flags, get_command_for_name, uses_fetch_on_miss, uses_rich_completions};
 use anyhow::{Context, Result};
 
 /// Generate bash completion string
 pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<String> {
+    // Rich completion commands get cut -f1 + nosort to preserve group ordering.
+    if uses_rich_completions(command_name) {
+        return Ok(generate_bash_rich_completion(command_name));
+    }
+
     let mut output = String::new();
-    let has_branches = matches!(
-        command_name,
-        "git-worktree-checkout"
-            | "git-worktree-carry"
-            | "git-worktree-fetch"
-            | "daft-go"
-            | "daft-start"
-            | "daft-remove"
-            | "daft-rename"
-    );
+    // daft-start still uses simple branch-prefix patterns (not rich).
+    let has_branches = command_name == "daft-start";
 
     let func_name = command_name.replace('-', "_");
 
@@ -134,6 +131,69 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
     }
 
     Ok(output)
+}
+
+/// Generate a bash completion script with rich grouped output for any command
+/// that uses the `name\tgroup\tdescription` protocol.
+fn generate_bash_rich_completion(command_name: &str) -> String {
+    let cmd = get_command_for_name(command_name)
+        .unwrap_or_else(|| panic!("Unknown rich-completion command: {command_name}"));
+    let (all_flags, _, _) = extract_flags(&cmd);
+    let flags_joined = all_flags.join(" ");
+
+    let func_name = command_name.replace('-', "_");
+    let fetch_flag = if uses_fetch_on_miss(command_name) {
+        " --fetch-on-miss"
+    } else {
+        ""
+    };
+
+    let mut output = format!(
+        r#"_{func_name}() {{
+    local cur prev words cword
+    _init_completion || return
+
+    if [[ "$cur" == -* ]]; then
+        local flags="{flags_joined}"
+        COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
+        return 0
+    fi
+
+    local raw
+    raw=$(daft __complete {command_name} "$cur" --position "$cword"{fetch_flag} 2>/dev/null | cut -f1)
+    if [[ -n "$raw" ]]; then
+        COMPREPLY=( $(compgen -W "$raw" -- "$cur") )
+        compopt -o nosort 2>/dev/null || true
+        return 0
+    fi
+}}
+complete -F _{func_name} {command_name}
+"#
+    );
+
+    // Register for git subcommand invocation (git worktree-checkout)
+    if command_name.starts_with("git-") {
+        let git_subcommand = command_name.trim_start_matches("git-");
+        output.push_str(&format!(
+            "# Also register for 'git {}' invocation\n",
+            git_subcommand
+        ));
+        output.push_str("if declare -f __git_complete >/dev/null 2>&1; then\n");
+        output.push_str(&format!(
+            "    __git_complete git-{} _{}\n",
+            git_subcommand, func_name
+        ));
+        output.push_str("fi\n");
+    }
+
+    // Register completions for shortcut aliases
+    for shortcut in crate::shortcuts::SHORTCUTS {
+        if shortcut.command == command_name {
+            output.push_str(&format!("complete -F _{func_name} {}\n", shortcut.alias));
+        }
+    }
+
+    output
 }
 
 pub(super) const DAFT_BASH_COMPLETIONS: &str = r#"# daft subcommand completions

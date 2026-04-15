@@ -1,19 +1,19 @@
-use super::{get_command_for_name, get_flag_descriptions, VERB_ALIAS_GROUPS};
+use super::{
+    get_command_for_name, get_flag_descriptions, uses_fetch_on_miss, uses_rich_completions,
+    VERB_ALIAS_GROUPS,
+};
 use anyhow::{Context, Result};
 
 /// Generate fish completion string
 pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<String> {
+    // Rich completion commands get awk-reshuffled descriptions.
+    if uses_rich_completions(command_name) {
+        return generate_fish_rich_completion(command_name);
+    }
+
     let mut output = String::new();
-    let has_branches = matches!(
-        command_name,
-        "git-worktree-checkout"
-            | "git-worktree-carry"
-            | "git-worktree-fetch"
-            | "daft-go"
-            | "daft-start"
-            | "daft-remove"
-            | "daft-rename"
-    );
+    // daft-start still uses simple branch-prefix patterns (not rich).
+    let has_branches = command_name == "daft-start";
 
     // Extract git subcommand name for dual registration (git-* commands only)
     let git_subcommand = command_name.trim_start_matches("git-");
@@ -221,6 +221,81 @@ fn generate_verb_alias_flag_completions() -> String {
     output
 }
 
+/// Generate a fish completion script with rich grouped output for any command
+/// that uses the `name\tgroup\tdescription` protocol.
+///
+/// Reshuffles the tab-separated output into fish's `name\tdescription` format
+/// where the description reads `<age> · <group>`.
+fn generate_fish_rich_completion(command_name: &str) -> Result<String> {
+    let cmd =
+        get_command_for_name(command_name).context(format!("Unknown command: {command_name}"))?;
+    let flag_descriptions = get_flag_descriptions(&cmd);
+
+    let fetch_flag = if uses_fetch_on_miss(command_name) {
+        " --fetch-on-miss"
+    } else {
+        ""
+    };
+
+    // Extract git subcommand name for dual registration (git-* commands only)
+    let git_subcommand = command_name.trim_start_matches("git-");
+    let is_git_command = command_name.starts_with("git-");
+
+    let mut output = String::new();
+    // Dynamic branch completion with grouped output
+    output.push_str("# Dynamic branch name completion\n");
+    // Worktree lines: name[*?]\tworktree\tage\tauthor\tpath (5 fields)
+    // Local/remote: name\tgroup\tage\tauthor (4 fields)
+    // Fish display: clean_name\t[*?] age · author · path (worktree) or name\tage · author
+    // Strip *? from name for completion value — these are invalid in git branch names.
+    let awk_body = "{{c=$1; sub(/[*?]+$/,\\\"\\\",c); s=substr($1,length(c)+1); if (NF>=5) printf \\\"%s\\t%s %s · %s · %s\\n\\\",c,s,$3,$4,$5; else printf \\\"%s\\t%s %s · %s\\n\\\",c,s,$3,$4}}";
+    output.push_str(&format!(
+        "complete -c {command_name} -f -a \"(daft __complete {command_name} (commandline -ct) --position 1{fetch_flag} 2>/dev/null | awk -F'\\t' '{awk_body}')\"\n",
+    ));
+    // Git subcommand invocation (git worktree-checkout) — only for git-* commands
+    if is_git_command {
+        output.push_str(&format!(
+            "complete -c git -n '__fish_seen_subcommand_from {git_subcommand}' -f -a \"(daft __complete {command_name} (commandline -ct) --position 1{fetch_flag} 2>/dev/null | awk -F'\\t' '{awk_body}')\"\n",
+        ));
+    }
+    output.push('\n');
+    output.push_str("# Static flag completions (extracted from clap)\n");
+
+    // Flag completions (from clap introspection)
+    for (short, long, desc) in flag_descriptions {
+        let description = desc.unwrap_or_default();
+        if !short.is_empty() && !long.is_empty() {
+            let short_char = short.trim_start_matches('-');
+            let long_name = long.trim_start_matches("--");
+            output.push_str(&format!(
+                "complete -c {command_name} -s {short_char} -l {long_name} -d '{description}'\n"
+            ));
+        } else if !long.is_empty() {
+            let long_name = long.trim_start_matches("--");
+            output.push_str(&format!(
+                "complete -c {command_name} -l {long_name} -d '{description}'\n"
+            ));
+        } else if !short.is_empty() {
+            let short_char = short.trim_start_matches('-');
+            output.push_str(&format!(
+                "complete -c {command_name} -s {short_char} -d '{description}'\n"
+            ));
+        }
+    }
+
+    // Register completions for shortcut aliases (wraps the full command)
+    for shortcut in crate::shortcuts::SHORTCUTS {
+        if shortcut.command == command_name {
+            output.push_str(&format!(
+                "complete -c {} -w {command_name}\n",
+                shortcut.alias
+            ));
+        }
+    }
+
+    Ok(output)
+}
+
 const DAFT_FISH_COMPLETIONS: &str = r#"# daft subcommand completions
 complete -c daft -f
 complete -c daft -n '__fish_use_subcommand' -s V -l version -d 'Print version information'
@@ -247,11 +322,12 @@ complete -c daft -n '__fish_use_subcommand' -a 'list' -d 'List worktrees with st
 complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to traditional layout'
 complete -c daft -n '__fish_use_subcommand' -a 'config' -d 'Configure daft settings'
 complete -c daft -n '__fish_use_subcommand' -a 'shared' -d 'Manage shared files across worktrees'
-complete -c daft -n '__fish_seen_subcommand_from go' -f -a "(daft __complete daft-go '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from go' -f -a "(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
 complete -c daft -n '__fish_seen_subcommand_from start' -f -a "(daft __complete daft-start '' 2>/dev/null)"
-complete -c daft -n '__fish_seen_subcommand_from carry update' -f -a "(daft __complete git-worktree-checkout '' 2>/dev/null)"
-complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove '' 2>/dev/null)"
-complete -c daft -n '__fish_seen_subcommand_from rename' -f -a "(daft __complete daft-rename '' 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from carry' -f -a "(daft __complete git-worktree-carry (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
+complete -c daft -n '__fish_seen_subcommand_from update' -f -a "(daft __complete git-worktree-fetch (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
+complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
+complete -c daft -n '__fish_seen_subcommand_from rename' -f -a "(daft __complete daft-rename (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
 complete -c daft -n '__fish_seen_subcommand_from layout; and not __fish_seen_subcommand_from default list show transform' -f -a 'default list show transform'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from show' -F
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -f -a "(daft __complete layout-transform '' 2>/dev/null)"

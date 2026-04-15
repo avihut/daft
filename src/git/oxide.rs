@@ -253,6 +253,52 @@ pub fn has_uncommitted_changes(repo: &Repository) -> Result<bool> {
     Ok(false)
 }
 
+/// Check a worktree for tracked changes and untracked files separately.
+///
+/// Returns `(has_tracked_changes, has_untracked)` where:
+/// - `has_tracked_changes` is true if there are modified/staged/removed
+///   tracked files or conflicts
+/// - `has_untracked` is true if untracked files exist (excluding empty dirs)
+///
+/// Opens the worktree as a fresh `gix::Repository` so it can be called
+/// from any thread (each thread gets its own repo instance).
+pub fn worktree_dirty_status(worktree_path: &std::path::Path) -> Result<(bool, bool)> {
+    use gix::status::index_worktree::iter::Summary;
+    use gix::status::UntrackedFiles;
+
+    let repo = gix::open(worktree_path)
+        .with_context(|| format!("Failed to open repository at {}", worktree_path.display()))?;
+
+    let status = repo
+        .status(gix::progress::Discard)
+        .context("Failed to get repository status")?;
+
+    let iter = status
+        .untracked_files(UntrackedFiles::Files)
+        .dirwalk_options(|opts| opts.emit_empty_directories(false))
+        .into_index_worktree_iter(Vec::<gix::bstr::BString>::new())
+        .context("Failed to iterate status")?;
+
+    let mut has_tracked = false;
+    let mut has_untracked = false;
+    for item_result in iter {
+        let item = match item_result {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+        match item.summary() {
+            Some(Summary::Added) => has_untracked = true,
+            Some(_) => has_tracked = true,
+            None => {} // NeedsUpdate — not a real change
+        }
+        if has_tracked && has_untracked {
+            break;
+        }
+    }
+
+    Ok((has_tracked, has_untracked))
+}
+
 /// Gitoxide-native commit metadata retrieval for a named ref.
 ///
 /// Returns `(timestamp, short_hash, subject)` where:

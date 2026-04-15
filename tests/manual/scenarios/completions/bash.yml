@@ -16,7 +16,7 @@ steps:
       exit_code: 0
       output_contains:
         - "daft __complete"
-        - "branches="
+        - "raw="
 
   - name: Bash git subcommand registration for checkout
     run: daft completions bash --command=git-worktree-checkout 2>&1
@@ -39,7 +39,7 @@ steps:
       exit_code: 0
       output_contains:
         - "daft __complete"
-        - "branches="
+        - "raw="
 
   - name: shell-init bash includes completion functions
     run: daft shell-init bash 2>&1

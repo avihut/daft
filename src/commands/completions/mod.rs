@@ -80,6 +80,26 @@ pub(super) fn get_command_for_name(command_name: &str) -> Option<Command> {
     }
 }
 
+/// Whether a command uses the rich (grouped, tab-separated) completion
+/// protocol with worktree/local/remote groups and metadata.
+pub(super) fn uses_rich_completions(command_name: &str) -> bool {
+    matches!(
+        command_name,
+        "daft-go"
+            | "git-worktree-checkout"
+            | "daft-remove"
+            | "daft-rename"
+            | "git-worktree-carry"
+            | "git-worktree-fetch"
+            | "git-worktree-branch"
+    )
+}
+
+/// Whether a command should pass `--fetch-on-miss` to `daft __complete`.
+pub(super) fn uses_fetch_on_miss(command_name: &str) -> bool {
+    matches!(command_name, "daft-go")
+}
+
 /// Extract flag strings from a clap Command for shell completions
 /// Returns a tuple of (short_and_long_flags, short_flags, long_flags)
 pub(super) fn extract_flags(cmd: &Command) -> (Vec<String>, Vec<String>, Vec<String>) {
@@ -492,4 +512,241 @@ fn print_post_install_message(target: &CompletionTarget) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bash_daft_go_uses_nosort_and_fetch_on_miss() {
+        let script =
+            bash::generate_bash_completion_string("daft-go").expect("generator must succeed");
+        assert!(
+            script.contains("--fetch-on-miss"),
+            "daft-go bash completion must pass --fetch-on-miss to daft __complete"
+        );
+        assert!(
+            script.contains("compopt -o nosort"),
+            "daft-go bash completion must attempt compopt -o nosort to \
+             preserve group ordering"
+        );
+        assert!(
+            script.contains("cut -f1"),
+            "daft-go bash completion must strip tab-separated group/desc \
+             columns with cut -f1"
+        );
+    }
+
+    #[test]
+    fn zsh_daft_go_uses_compadd_groups_no_headers() {
+        let script =
+            zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
+        // Groups use -V for ordering (worktree first)
+        assert!(
+            script.contains("-V worktree"),
+            "daft-go zsh must use -V worktree group"
+        );
+        assert!(
+            script.contains("-V local"),
+            "daft-go zsh must use -V local group"
+        );
+        assert!(
+            script.contains("-V remote"),
+            "daft-go zsh must use -V remote group"
+        );
+        // Worktree display has three columns: name, age, path
+        assert!(
+            script.contains("wt_ages") && script.contains("wt_paths"),
+            "daft-go zsh must split worktree desc into age and path"
+        );
+        // No group headers
+        assert!(
+            !script.contains("-X "),
+            "daft-go must NOT use -X group headers"
+        );
+        assert!(
+            !script.contains("\n    _describe"),
+            "daft-go must NOT call _describe (triggers tag-retry 3x repetition)"
+        );
+    }
+
+    #[test]
+    fn zsh_daft_go_passes_fetch_on_miss_flag() {
+        let script =
+            zsh::generate_zsh_completion_string("daft-go").expect("generator must succeed");
+        assert!(
+            script.contains("--fetch-on-miss"),
+            "daft-go zsh completion must pass --fetch-on-miss to daft __complete"
+        );
+    }
+
+    #[test]
+    fn fish_daft_go_passes_fetch_on_miss_and_awk_reshuffles() {
+        let script =
+            fish::generate_fish_completion_string("daft-go").expect("generator must succeed");
+        assert!(
+            script.contains("--fetch-on-miss"),
+            "daft-go fish completion must pass --fetch-on-miss"
+        );
+        assert!(
+            script.contains("awk"),
+            "daft-go fish completion must reshuffle tab-separated columns via awk"
+        );
+    }
+
+    #[test]
+    fn fish_daft_umbrella_passes_fetch_on_miss_for_go() {
+        let fish_completions = fish::generate_daft_fish_completions();
+        assert!(
+            fish_completions.contains("daft __complete daft-go")
+                && fish_completions.contains("--fetch-on-miss"),
+            "daft go subcommand in umbrella fish completions must pass --fetch-on-miss"
+        );
+    }
+
+    // zstyle coloring was removed — compadd -V groups don't interact
+    // with zsh's tag system, so per-tag zstyle list-colors wouldn't apply.
+    // Colors may be revisited via a different mechanism in a follow-up.
+
+    #[test]
+    fn zsh_umbrella_delegates_go_to_daft_go_impl() {
+        let combined = format!(
+            "{}\n{}",
+            zsh::generate_zsh_completion_string("daft-go").unwrap(),
+            zsh::DAFT_ZSH_COMPLETIONS,
+        );
+        assert!(
+            combined.contains("__daft_go_impl"),
+            "zsh umbrella must call __daft_go_impl for the `go` verb alias"
+        );
+    }
+
+    #[test]
+    fn rich_commands_use_compadd_v_groups_in_zsh() {
+        // Every rich-completion command should use compadd -V for group ordering.
+        let rich_commands = [
+            "git-worktree-checkout",
+            "git-worktree-carry",
+            "git-worktree-fetch",
+            "daft-go",
+            "daft-remove",
+            "daft-rename",
+        ];
+        for cmd in rich_commands {
+            let script = zsh::generate_zsh_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("generator must succeed for {cmd}: {e}"));
+            assert!(
+                script.contains("-V worktree"),
+                "{cmd} zsh must use -V worktree group"
+            );
+        }
+    }
+
+    #[test]
+    fn only_daft_go_passes_fetch_on_miss_in_all_shells() {
+        let non_go_rich = [
+            "git-worktree-checkout",
+            "git-worktree-carry",
+            "git-worktree-fetch",
+            "daft-remove",
+            "daft-rename",
+        ];
+        for cmd in non_go_rich {
+            let zsh = zsh::generate_zsh_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("zsh generator must succeed for {cmd}: {e}"));
+            assert!(
+                !zsh.contains("--fetch-on-miss"),
+                "{cmd} zsh must NOT pass --fetch-on-miss"
+            );
+            let bash = bash::generate_bash_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("bash generator must succeed for {cmd}: {e}"));
+            assert!(
+                !bash.contains("--fetch-on-miss"),
+                "{cmd} bash must NOT pass --fetch-on-miss"
+            );
+            let fish = fish::generate_fish_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("fish generator must succeed for {cmd}: {e}"));
+            assert!(
+                !fish.contains("--fetch-on-miss"),
+                "{cmd} fish must NOT pass --fetch-on-miss"
+            );
+        }
+    }
+
+    #[test]
+    fn fish_rich_commands_use_awk_reshuffle() {
+        let rich_commands = [
+            "git-worktree-checkout",
+            "git-worktree-carry",
+            "git-worktree-fetch",
+            "daft-go",
+            "daft-remove",
+            "daft-rename",
+        ];
+        for cmd in rich_commands {
+            let script = fish::generate_fish_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("fish generator must succeed for {cmd}: {e}"));
+            assert!(
+                script.contains("awk"),
+                "{cmd} fish must reshuffle tab-separated columns via awk"
+            );
+        }
+    }
+
+    #[test]
+    fn bash_rich_commands_use_cut_and_nosort() {
+        let rich_commands = [
+            "git-worktree-checkout",
+            "git-worktree-carry",
+            "git-worktree-fetch",
+            "daft-go",
+            "daft-remove",
+            "daft-rename",
+        ];
+        for cmd in rich_commands {
+            let script = bash::generate_bash_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("bash generator must succeed for {cmd}: {e}"));
+            assert!(
+                script.contains("cut -f1"),
+                "{cmd} bash must strip group/desc columns with cut -f1"
+            );
+            assert!(
+                script.contains("compopt -o nosort"),
+                "{cmd} bash must use compopt -o nosort to preserve group ordering"
+            );
+        }
+    }
+
+    #[test]
+    fn zsh_gates_flag_completions_on_leading_dash() {
+        let commands = [
+            "git-worktree-checkout",
+            "git-worktree-carry",
+            "git-worktree-fetch",
+            "daft-go",
+            "daft-start",
+            "daft-remove",
+            "daft-rename",
+        ];
+        for cmd in commands {
+            let script = zsh::generate_zsh_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("generator must succeed for {cmd}: {e}"));
+            let flags_pos = script.find("compadd -a flags").unwrap_or_else(|| {
+                panic!("generated script for {cmd} must contain `compadd -a flags`")
+            });
+            let guard_pos = script.find("[[ \"$curword\" == -* ]]").unwrap_or_else(|| {
+                panic!(
+                    "generated script for {cmd} must gate flag completion on a leading dash \
+before adding flags (zsh flag-leak regression)"
+                )
+            });
+            assert!(
+                guard_pos < flags_pos,
+                "flag-gating guard must appear before `compadd -a flags` for {cmd}, \
+                 otherwise flags leak into branch completions. \
+                 guard_pos={guard_pos} flags_pos={flags_pos}",
+            );
+        }
+    }
 }

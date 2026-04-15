@@ -124,6 +124,9 @@ pub mod defaults {
     /// Default value for go.autoStart setting.
     pub const GO_AUTO_START: bool = false;
 
+    /// Default value for go.fetchOnMiss setting.
+    pub const GO_FETCH_ON_MISS: bool = true;
+
     /// Default value for list.stat setting.
     pub const LIST_STAT: Stat = Stat::Summary;
 
@@ -183,6 +186,9 @@ pub mod keys {
 
     /// Config key for go.autoStart setting.
     pub const GO_AUTO_START: &str = "daft.go.autoStart";
+
+    /// Config key for go.fetchOnMiss setting.
+    pub const GO_FETCH_ON_MISS: &str = "daft.go.fetchOnMiss";
 
     /// Config key for list.stat setting.
     pub const LIST_STAT: &str = "daft.list.stat";
@@ -254,6 +260,12 @@ pub mod keys {
             format!("daft.hooks.{hook_name}.{setting}")
         }
     }
+
+    /// Completions config keys.
+    pub mod completions {
+        /// Config key for completions.branches.columns setting.
+        pub const BRANCHES_COLUMNS: &str = "daft.completions.branches.columns";
+    }
 }
 
 /// User-configurable settings for daft commands.
@@ -303,6 +315,10 @@ pub struct DaftSettings {
     /// Automatically create worktree when branch not found in go command.
     pub go_auto_start: bool,
 
+    /// Whether `daft go` completion should run `git fetch` when the typed
+    /// prefix has no local matches. Controlled by `daft.go.fetchOnMiss`.
+    pub go_fetch_on_miss: bool,
+
     /// Default statistics mode for list command.
     pub list_stat: Stat,
 
@@ -350,6 +366,7 @@ impl Default for DaftSettings {
             multi_remote_default: defaults::MULTI_REMOTE_DEFAULT_REMOTE.to_string(),
             use_gitoxide: defaults::USE_GITOXIDE,
             go_auto_start: defaults::GO_AUTO_START,
+            go_fetch_on_miss: defaults::GO_FETCH_ON_MISS,
             list_stat: defaults::LIST_STAT,
             sync_stat: defaults::SYNC_STAT,
             prune_stat: defaults::PRUNE_STAT,
@@ -436,6 +453,10 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get(keys::GO_AUTO_START)? {
             settings.go_auto_start = parse_bool(&value, defaults::GO_AUTO_START);
+        }
+
+        if let Some(value) = git.config_get(keys::GO_FETCH_ON_MISS)? {
+            settings.go_fetch_on_miss = parse_bool(&value, defaults::GO_FETCH_ON_MISS);
         }
 
         if let Some(value) = git.config_get(keys::LIST_STAT)? {
@@ -569,6 +590,10 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get_global(keys::GO_AUTO_START)? {
             settings.go_auto_start = parse_bool(&value, defaults::GO_AUTO_START);
+        }
+
+        if let Some(value) = git.config_get_global(keys::GO_FETCH_ON_MISS)? {
+            settings.go_fetch_on_miss = parse_bool(&value, defaults::GO_FETCH_ON_MISS);
         }
 
         if let Some(value) = git.config_get_global(keys::LIST_STAT)? {
@@ -977,5 +1002,15 @@ mod tests {
         assert!(settings.list_columns.is_none());
         assert!(settings.sync_columns.is_none());
         assert!(settings.prune_columns.is_none());
+    }
+
+    #[test]
+    fn default_settings_have_go_fetch_on_miss_true() {
+        let settings = DaftSettings::default();
+        assert!(
+            settings.go_fetch_on_miss,
+            "go.fetchOnMiss must default to true — the fetch-on-miss spinner \
+             path is opt-out, not opt-in"
+        );
     }
 }

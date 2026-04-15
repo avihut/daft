@@ -315,6 +315,200 @@ impl ColumnSelection {
     }
 }
 
+/// A column that can appear in rich branch completions, controlled by
+/// `daft.completions.branches.columns`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompletionColumn {
+    /// Relative age of the branch tip commit.
+    Age,
+    /// Author name of the branch tip commit.
+    Author,
+    /// Worktree path (only shown for worktree group entries).
+    Path,
+    /// Append `*` to branch name if the worktree has modified tracked files.
+    TrackedChanges,
+    /// Append `?` to branch name if the worktree has untracked files.
+    Untracked,
+}
+
+impl CompletionColumn {
+    /// All columns in canonical display order.
+    pub fn all() -> &'static [CompletionColumn] {
+        &[
+            CompletionColumn::Age,
+            CompletionColumn::Author,
+            CompletionColumn::Path,
+            CompletionColumn::TrackedChanges,
+            CompletionColumn::Untracked,
+        ]
+    }
+
+    /// The default column set for branch completions.
+    pub fn completion_defaults() -> &'static [CompletionColumn] {
+        &[
+            CompletionColumn::Age,
+            CompletionColumn::Author,
+            CompletionColumn::Path,
+            CompletionColumn::TrackedChanges,
+            CompletionColumn::Untracked,
+        ]
+    }
+
+    /// Canonical display position (used to order columns in modifier mode).
+    pub fn canonical_position(self) -> u8 {
+        match self {
+            Self::Age => 1,
+            Self::Author => 2,
+            Self::Path => 3,
+            Self::TrackedChanges => 4,
+            Self::Untracked => 5,
+        }
+    }
+
+    /// CLI-facing name for this column.
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            Self::Age => "age",
+            Self::Author => "author",
+            Self::Path => "path",
+            Self::TrackedChanges => "tracked-changes",
+            Self::Untracked => "untracked",
+        }
+    }
+
+    /// All valid CLI column names, for use in error messages.
+    pub fn valid_names() -> String {
+        Self::all()
+            .iter()
+            .map(|c| c.cli_name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl fmt::Display for CompletionColumn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.cli_name())
+    }
+}
+
+impl FromStr for CompletionColumn {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "age" => Ok(Self::Age),
+            "author" => Ok(Self::Author),
+            "path" => Ok(Self::Path),
+            "tracked-changes" => Ok(Self::TrackedChanges),
+            "untracked" => Ok(Self::Untracked),
+            _ => Err(format!(
+                "unknown completion column '{}'\n  valid columns: {}",
+                s.trim(),
+                Self::valid_names()
+            )),
+        }
+    }
+}
+
+/// Parser for `daft.completions.branches.columns` config values.
+pub struct CompletionColumnSelection;
+
+impl CompletionColumnSelection {
+    /// Parse a comma-separated column spec into a resolved column list.
+    /// Supports replace mode (`age,path`) and modifier mode (`+tracked-changes,-author`).
+    pub fn parse(input: &str) -> Result<Vec<CompletionColumn>, String> {
+        let tokens: Vec<&str> = input.split(',').map(|s| s.trim()).collect();
+        if tokens.is_empty() || tokens.iter().all(|t| t.is_empty()) {
+            return Err("no columns specified".to_string());
+        }
+
+        let has_modifier = tokens
+            .iter()
+            .any(|t| t.starts_with('+') || t.starts_with('-'));
+        let has_plain = tokens
+            .iter()
+            .any(|t| !t.starts_with('+') && !t.starts_with('-') && !t.is_empty());
+
+        if has_modifier && has_plain {
+            return Err("cannot mix column names with +/- modifiers\n  \
+                 use either replace mode:   age,path,tracked-changes\n  \
+                 or modifier mode:          +tracked-changes,-author"
+                .to_string());
+        }
+
+        if has_modifier {
+            Self::parse_modifier(&tokens)
+        } else {
+            Self::parse_replace(&tokens)
+        }
+    }
+
+    fn parse_replace(tokens: &[&str]) -> Result<Vec<CompletionColumn>, String> {
+        let mut result = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for token in tokens {
+            if token.is_empty() {
+                continue;
+            }
+            let col: CompletionColumn = token.parse()?;
+            if !seen.insert(col) {
+                return Err(format!("duplicate column '{}'", col.cli_name()));
+            }
+            result.push(col);
+        }
+
+        if result.is_empty() {
+            return Err("no columns specified".to_string());
+        }
+
+        Ok(result)
+    }
+
+    fn parse_modifier(tokens: &[&str]) -> Result<Vec<CompletionColumn>, String> {
+        let defaults = CompletionColumn::completion_defaults();
+        let mut active: std::collections::HashSet<CompletionColumn> =
+            defaults.iter().copied().collect();
+
+        for token in tokens {
+            if token.is_empty() {
+                continue;
+            }
+            let (prefix, name) = if let Some(rest) = token.strip_prefix('+') {
+                ('+', rest)
+            } else if let Some(rest) = token.strip_prefix('-') {
+                ('-', rest)
+            } else {
+                return Err(format!("expected +/- prefix on '{token}'"));
+            };
+
+            let col: CompletionColumn = name.parse()?;
+
+            match prefix {
+                '+' => {
+                    active.insert(col);
+                }
+                '-' => {
+                    active.remove(&col);
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        if active.is_empty() {
+            let modifiers = tokens.join(",");
+            return Err(format!(
+                "no columns remaining after applying modifiers\n  modifiers: {modifiers}"
+            ));
+        }
+
+        let mut result: Vec<CompletionColumn> = active.into_iter().collect();
+        result.sort_by_key(|c| c.canonical_position());
+        Ok(result)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,5 +742,80 @@ mod tests {
         let col: ListColumn = "hash".parse().unwrap();
         assert_eq!(col, ListColumn::Hash);
         assert_eq!(col.cli_name(), "hash");
+    }
+
+    // CompletionColumn tests
+
+    #[test]
+    fn completion_column_defaults() {
+        assert_eq!(
+            CompletionColumn::completion_defaults(),
+            &[
+                CompletionColumn::Age,
+                CompletionColumn::Author,
+                CompletionColumn::Path,
+                CompletionColumn::TrackedChanges,
+                CompletionColumn::Untracked,
+            ]
+        );
+    }
+
+    #[test]
+    fn completion_column_parse_replace() {
+        let cols = CompletionColumnSelection::parse("age,path").unwrap();
+        assert_eq!(cols, vec![CompletionColumn::Age, CompletionColumn::Path]);
+    }
+
+    #[test]
+    fn completion_column_parse_replace_with_status() {
+        let cols =
+            CompletionColumnSelection::parse("age,author,path,tracked-changes,untracked").unwrap();
+        assert_eq!(
+            cols,
+            vec![
+                CompletionColumn::Age,
+                CompletionColumn::Author,
+                CompletionColumn::Path,
+                CompletionColumn::TrackedChanges,
+                CompletionColumn::Untracked,
+            ]
+        );
+    }
+
+    #[test]
+    fn completion_column_parse_modifier_remove_and_readd() {
+        // Remove tracked-changes (which is in defaults), verify it's gone
+        let cols = CompletionColumnSelection::parse("-tracked-changes").unwrap();
+        assert!(!cols.contains(&CompletionColumn::TrackedChanges));
+        assert!(cols.contains(&CompletionColumn::Age));
+        assert!(cols.contains(&CompletionColumn::Untracked));
+    }
+
+    #[test]
+    fn completion_column_parse_modifier_remove() {
+        let cols = CompletionColumnSelection::parse("-author,-tracked-changes,-untracked").unwrap();
+        assert!(!cols.contains(&CompletionColumn::Author));
+        assert!(!cols.contains(&CompletionColumn::TrackedChanges));
+        assert!(!cols.contains(&CompletionColumn::Untracked));
+        assert!(cols.contains(&CompletionColumn::Age));
+        assert!(cols.contains(&CompletionColumn::Path));
+    }
+
+    #[test]
+    fn completion_column_parse_unknown() {
+        let err = CompletionColumnSelection::parse("bogus").unwrap_err();
+        assert!(err.contains("unknown completion column"));
+    }
+
+    #[test]
+    fn completion_column_parse_mixed_mode_error() {
+        let err = CompletionColumnSelection::parse("age,+tracked-changes").unwrap_err();
+        assert!(err.contains("cannot mix"));
+    }
+
+    #[test]
+    fn completion_column_parse_duplicate_error() {
+        let err = CompletionColumnSelection::parse("age,age").unwrap_err();
+        assert!(err.contains("duplicate"));
     }
 }
