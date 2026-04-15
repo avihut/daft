@@ -53,13 +53,13 @@ steps:
       output_contains:
         - "Retried 1 job"
 
-  - name: Retry a completed job — should fail
+  - name: Retry a completed job — should fail (no failed job with that name)
     run: daft hooks jobs retry --job works-fine 2>&1
     cwd: "$WORK_DIR/test-retry-job/feature/rj"
     expect:
       exit_code: 1
       output_contains:
-        - "not in a retryable state"
+        - "No failed job named"
 
   - name: Retry a skipped job — should fail (not found as failed)
     run: daft hooks jobs retry skipped-job 2>&1
