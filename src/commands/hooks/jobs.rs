@@ -70,12 +70,24 @@ pub struct JobsArgs {
     command: Option<JobsCommand>,
 
     /// Show jobs across all worktrees.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "worktree")]
     all: bool,
 
     /// Output in JSON format.
     #[arg(long)]
     json: bool,
+
+    /// Filter to a specific worktree (can be deleted).
+    #[arg(long, conflicts_with = "all")]
+    worktree: Option<String>,
+
+    /// Filter to invocations containing jobs with this status.
+    #[arg(long)]
+    status: Option<String>,
+
+    /// Filter to invocations of this hook type.
+    #[arg(long = "hook")]
+    hook_filter: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -567,8 +579,52 @@ fn list_jobs(args: &JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()
     let store = LogStore::for_repo(&repo_hash)?;
     let invocations = if args.all {
         store.list_invocations()?
+    } else if let Some(ref wt) = args.worktree {
+        store.list_invocations_for_worktree(wt)?
     } else {
         store.list_invocations_for_worktree(&current_worktree)?
+    };
+
+    // Apply --hook filter.
+    let invocations: Vec<_> = if let Some(ref hook) = args.hook_filter {
+        invocations
+            .into_iter()
+            .filter(|inv| inv.hook_type == *hook)
+            .collect()
+    } else {
+        invocations
+    };
+
+    // Apply --status filter (invocation-level: keep if any job matches).
+    let invocations: Vec<_> = if let Some(ref status_str) = args.status {
+        let target_status = match status_str.as_str() {
+            "failed" => JobStatus::Failed,
+            "completed" => JobStatus::Completed,
+            "running" => JobStatus::Running,
+            "cancelled" => JobStatus::Cancelled,
+            "skipped" => JobStatus::Skipped,
+            other => anyhow::bail!(
+                "Unknown status '{}'. Valid values: failed, completed, running, cancelled, skipped.",
+                other
+            ),
+        };
+        invocations
+            .into_iter()
+            .filter(|inv| {
+                store
+                    .list_jobs_in_invocation(&inv.invocation_id)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|dir| {
+                        store
+                            .read_meta(dir)
+                            .map(|m| m.status == target_status)
+                            .unwrap_or(false)
+                    })
+            })
+            .collect()
+    } else {
+        invocations
     };
 
     if invocations.is_empty() {
@@ -591,7 +647,7 @@ fn list_jobs(args: &JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()
     let mut first_group = true;
 
     for (worktree, inv_list) in &groups {
-        if args.all {
+        if args.all || args.worktree.is_some() {
             if !first_group {
                 output.info("");
             }
