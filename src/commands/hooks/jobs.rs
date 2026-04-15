@@ -1636,4 +1636,36 @@ mod tests {
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name, "only");
     }
+
+    #[test]
+    fn test_resolve_retry_invocation_with_worktree_override() {
+        use crate::coordinator::log_store::{InvocationMeta, LogStore};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let now = chrono::Utc::now();
+
+        // Create an invocation in feature/other (not "current")
+        std::fs::create_dir_all(tmp.path().join("inv1")).unwrap();
+        let inv_meta = InvocationMeta {
+            invocation_id: "inv1".to_string(),
+            trigger_command: "worktree-post-create".to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            worktree: "feature/other".to_string(),
+            created_at: now,
+        };
+        store.write_invocation_meta("inv1", &inv_meta).unwrap();
+
+        // Resolving with "feature/other" as worktree should find it
+        let result =
+            resolve_retry_invocation(&RetryTarget::LatestInvocation, &store, "feature/other");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().worktree, "feature/other");
+
+        // Resolving with "feature/current" should find nothing
+        let result =
+            resolve_retry_invocation(&RetryTarget::LatestInvocation, &store, "feature/current");
+        assert!(result.is_err());
+    }
 }
