@@ -1227,7 +1227,7 @@ fn retry_command(
     }
 
     let total = fg_specs.len() + bg_specs.len();
-    let new_invocation_id = generate_invocation_id();
+    let new_invocation_id = crate::coordinator::log_store::generate_invocation_id();
     let short_id = &new_invocation_id[..4.min(new_invocation_id.len())];
 
     // Build trigger command for the new invocation.
@@ -1349,16 +1349,6 @@ fn clean_logs(args: &JobsArgs, path: &Path, output: &mut dyn Output) -> Result<(
     }
 
     Ok(())
-}
-
-/// Generate a unique invocation ID (same logic as the yaml executor).
-fn generate_invocation_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-    format!("{ts:012x}")
 }
 
 #[cfg(test)]

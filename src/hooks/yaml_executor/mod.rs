@@ -144,7 +144,7 @@ pub fn execute_yaml_hook_with_rc(
     // Compute repo hash and invocation ID unconditionally so every hook
     // invocation lands in the log store, even fg-only, empty, and remove hooks.
     let repo_hash = compute_repo_hash(&hook_env_obj);
-    let invocation_id = generate_invocation_id();
+    let invocation_id = crate::coordinator::log_store::generate_invocation_id();
     let store = std::sync::Arc::new(crate::coordinator::log_store::LogStore::for_repo(
         &repo_hash,
     )?);
@@ -440,20 +440,6 @@ fn compute_repo_hash(env: &super::environment::HookEnvironment) -> String {
     let mut hasher = DefaultHasher::new();
     project_root.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
-}
-
-/// Generate a unique invocation ID based on the current timestamp.
-/// Used to group background job logs under a single hook invocation.
-///
-/// 12-char hex fits millisecond timestamps up to ~year 8900 without leading
-/// zeros, so the first characters (used as short IDs) are meaningful.
-fn generate_invocation_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-    format!("{ts:012x}")
 }
 
 /// Check if a job should be silently skipped due to platform mismatch.
