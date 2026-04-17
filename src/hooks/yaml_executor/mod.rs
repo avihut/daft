@@ -143,7 +143,7 @@ pub fn execute_yaml_hook_with_rc(
 
     // Compute repo hash and invocation ID unconditionally so every hook
     // invocation lands in the log store, even fg-only, empty, and remove hooks.
-    let repo_hash = compute_repo_hash(&hook_env_obj);
+    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
     let invocation_id = crate::coordinator::log_store::generate_invocation_id();
     let store = std::sync::Arc::new(crate::coordinator::log_store::LogStore::for_repo(
         &repo_hash,
@@ -428,18 +428,6 @@ pub fn filter_tracked_jobs(jobs: &[JobDef], changed: &HashSet<TrackedAttribute>)
         })
         .cloned()
         .collect()
-}
-
-/// Compute a stable hash of the project root for use as the coordinator's
-/// repo identifier. This ensures each repository gets its own log store
-/// directory and coordinator socket.
-fn compute_repo_hash(env: &super::environment::HookEnvironment) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let project_root = env.get("DAFT_PROJECT_ROOT").unwrap_or_default().to_string();
-    let mut hasher = DefaultHasher::new();
-    project_root.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
 }
 
 /// Check if a job should be silently skipped due to platform mismatch.
