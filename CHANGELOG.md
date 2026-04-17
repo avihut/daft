@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.7.1](https://github.com/avihut/daft/compare/v1.7.0...v1.7.1) - 2026-04-17
+
+### Bug Fixes
+
+- *(output)* keep outer spinner alive across hook boundary ([#367](https://github.com/avihut/daft/pull/367))
+
+### Miscellaneous
+
+- fix clippy warnings new in Rust 1.95 ([#368](https://github.com/avihut/daft/pull/368))
+
 ## [1.7.0](https://github.com/avihut/daft/compare/v1.6.5...v1.7.0) - 2026-04-15
 
 ### Features
