@@ -83,16 +83,31 @@ pub fn compute_repo_id_from_common_dir(git_common_dir: &Path) -> Result<String>;
 1. Resolve `git_common_dir` via existing `core::repo::get_git_common_dir()`.
 2. Call `compute_repo_id_from_common_dir(&dir)`.
 
-`compute_repo_id_from_common_dir`:
+`compute_repo_id_from_common_dir` — race-safe and corruption-aware recipe:
 
-1. Read `<git-common-dir>/daft-id`. If present and parseable as UUID, return its
-   string form.
-2. Otherwise generate a fresh UUID v7, write it to a temp file in the same dir,
-   rename into place (atomic creation via rename), return its string form.
-3. If another process created the file between our read and our write (`EEXIST`
-   on rename, or the contents appear after our initial read), re-read and return
-   what's there. Last-writer-wins does not apply because we only ever generate
-   when absent — a race is resolved by the first successful write.
+1. Attempt to read `<git-common-dir>/daft-id`. If the read succeeds and the
+   contents trim to a well-formed UUID, return the canonical string form.
+2. If the file exists but trims to the empty string, treat as absent (step 4) —
+   an empty file is almost certainly a crashed previous write.
+3. If the file exists and has non-empty but unparseable contents, **error out**
+   with a message pointing the user at the file: _"Corrupt repo identity file at
+   <path>. Delete it to regenerate (this will orphan existing job logs for this
+   repo)."_ Do not silently overwrite — that would orphan a valid repo whose
+   identity was temporarily unreadable (bad permissions, transient I/O error,
+   partial filesystem view).
+4. If the file is absent (or empty per step 2), generate a fresh UUID v7 and
+   attempt atomic create-or-fail via
+   `OpenOptions::new().write(true).create_new(true).open(path)`. This fails with
+   `EEXIST` if another process created the file first.
+5. On successful creation, write the 36-byte canonical UUID string (single
+   syscall, well below PIPE_BUF — not torn) and return it.
+6. On `EEXIST`, loop back to step 1 — the winner's UUID is now on disk and we
+   adopt it.
+
+`rename()` is NOT used. POSIX `rename()` atomically replaces existing files,
+which would let two racing processes both "win" with the last writer's UUID
+becoming canon — silently orphaning the first writer's log-store entries.
+`create_new(true)` gives us actual create-if-absent semantics.
 
 The returned string is used verbatim as the log-store directory name — no
 additional hashing. UUID v7 canonical form is 36 chars of `[0-9a-f-]`, safe as a
@@ -100,14 +115,40 @@ filesystem path component on all platforms daft supports.
 
 ### Call-site migration
 
-Two current producers of the "repo hash":
+The path-hash computation is currently duplicated across **eight** sites. All
+must migrate to `crate::core::repo_identity::compute_repo_id()`:
 
-- `src/commands/hooks/jobs.rs:435 — compute_repo_hash_from_path`
-- `src/hooks/yaml_executor/mod.rs:436 — compute_repo_hash`
+1. `src/commands/hooks/jobs.rs:435` — `compute_repo_hash_from_path` (helper
+   called from 7 places within the file).
+2. `src/hooks/yaml_executor/mod.rs:436` — `compute_repo_hash` (takes a
+   `HookEnvironment` arg but hashes the project root).
+3. `src/core/worktree/prune.rs:835-841` — inline `DefaultHasher` block, used to
+   resolve the coordinator socket for pruning.
+4. `src/commands/complete.rs:794-805` — inline block in
+   `complete_job_addresses`.
+5. `src/commands/complete.rs:1003-1014` — inline block in
+   `complete_retry_targets`.
+6. `src/commands/complete.rs:1115-1126` — inline block in
+   `complete_retry_worktrees`.
+7. `src/commands/complete.rs:1174-1185` — inline block in
+   `complete_listing_worktrees`.
+8. `src/commands/complete.rs:1220-1231` — inline block in `complete_hook_types`.
 
-Both are replaced by calls to `crate::core::repo_identity::compute_repo_id()`.
-The old functions and their `DefaultHasher` imports are removed. All consumers
-use the returned string as a drop-in replacement for the previous 16-hex string.
+After migration, `DefaultHasher` imports are removed from every file that
+previously computed the path hash. All consumers use the UUID string as a
+drop-in replacement for the previous 16-hex string.
+
+### `list_all_repo_hashes()` behavior
+
+`src/commands/hooks/jobs.rs:448 — list_all_repo_hashes` walks the `jobs/` dir by
+directory name. After the cut, that dir may contain:
+
+- New 36-char UUID v7 directories (valid repos under the new scheme).
+- Orphaned 16-hex-char path-hash directories from before this change.
+
+Filter out entries that don't parse as valid UUIDs. This keeps
+`daft hooks jobs clean --all` focused on real repos and silently ignores the
+orphaned directories. The orphans can be cleaned manually with `rm -rf`.
 
 ### Cargo dependency
 
@@ -141,13 +182,15 @@ sandbox). No code handling required.
 
 ## File inventory
 
-| File                             | Change                                                             |
-| -------------------------------- | ------------------------------------------------------------------ |
-| `Cargo.toml`                     | Add `uuid = { version = "1", features = ["v7"] }`                  |
-| `src/core/mod.rs`                | Add `pub mod repo_identity;`                                       |
-| `src/core/repo_identity.rs`      | New: `compute_repo_id`, `compute_repo_id_from_common_dir`, tests   |
-| `src/commands/hooks/jobs.rs`     | Replace `compute_repo_hash_from_path` calls with `compute_repo_id` |
-| `src/hooks/yaml_executor/mod.rs` | Replace `compute_repo_hash` calls with `compute_repo_id`           |
+| File                             | Change                                                                                                    |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `Cargo.toml`                     | Add `uuid = { version = "1", features = ["v7"] }`                                                         |
+| `src/core/mod.rs`                | Add `pub mod repo_identity;`                                                                              |
+| `src/core/repo_identity.rs`      | New: `compute_repo_id`, `compute_repo_id_from_common_dir`, tests                                          |
+| `src/commands/hooks/jobs.rs`     | Remove `compute_repo_hash_from_path`; update 7 call sites; filter non-UUID dirs in `list_all_repo_hashes` |
+| `src/hooks/yaml_executor/mod.rs` | Remove `compute_repo_hash`; update 2 call sites                                                           |
+| `src/core/worktree/prune.rs`     | Replace inline `DefaultHasher` block with `compute_repo_id()`                                             |
+| `src/commands/complete.rs`       | Replace 5 inline `DefaultHasher` blocks (one per completion helper) with `compute_repo_id()`              |
 
 ## Testing
 
@@ -157,9 +200,16 @@ sandbox). No code handling required.
 - Reuses existing file across calls (idempotent per-repo).
 - Generated UUID is valid v7 (version field = 7 in the canonical string).
 - Two separate temp common-dirs produce distinct IDs.
-- Corrupt file (non-UUID contents) is treated as absent and overwritten.
+- Empty file is treated as absent and overwritten (crashed-write recovery).
+- Non-empty, non-UUID contents produce an error (refuse to silently orphan a
+  valid repo on corruption).
 - Concurrent creation (two threads calling in parallel against the same temp
-  dir) converges on one ID for both.
+  dir) converges on one ID for both — race resolved by `create_new` EEXIST.
+
+### Unit test for `list_all_repo_hashes`
+
+- A jobs dir containing both a UUID-named dir and a 16-hex-char-named dir
+  returns only the UUID entry.
 
 ### Integration scenario
 
