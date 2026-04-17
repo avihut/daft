@@ -103,11 +103,85 @@ impl ProgressSink for CommandBridge<'_> {
 impl HookRunner for CommandBridge<'_> {
     fn run_hook(&mut self, ctx: &crate::hooks::HookContext) -> anyhow::Result<HookOutcome> {
         let presenter: Arc<dyn JobPresenter> = CliPresenter::auto(&self.output_config);
-        let result = self.executor.execute(ctx, self.output, presenter)?;
+        // The hook executor may render its own indicatif MultiProgress, which
+        // would fight the outer command spinner for the stderr cursor. Hide
+        // the outer spinner across the hook boundary so step-label updates
+        // after the hook (e.g. "Removing worktree at <path>") stay visible.
+        self.output.pause_spinner();
+        let exec_result = self.executor.execute(ctx, self.output, presenter);
+        self.output.resume_spinner();
+        let result = exec_result?;
         Ok(HookOutcome {
             success: result.success,
             skipped: result.skipped,
             skip_reason: result.skip_reason.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hooks::{HookContext, HookExecutor, HookType, HooksConfig};
+    use crate::output::{OutputEntry, TestOutput};
+    use std::path::PathBuf;
+
+    /// Regression test: the outer spinner must be paused around hook execution
+    /// so the hook's own progress UI (indicatif MultiProgress) does not clobber
+    /// it. Without this, step-label updates like "Removing worktree at <path>"
+    /// stay invisible after a pre-remove hook finishes, leaving the user with
+    /// an unexplained pause during the filesystem-delete phase.
+    #[test]
+    fn run_hook_brackets_executor_with_spinner_pause_resume() {
+        let mut output = TestOutput::new();
+        output.start_spinner("Deleting branches...");
+
+        // Hooks globally disabled so execute() short-circuits without touching
+        // the filesystem. The wrapping must happen regardless of the inner
+        // outcome — that is the contract under test.
+        let hooks_config = HooksConfig {
+            enabled: false,
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(hooks_config).expect("create executor");
+
+        let ctx = HookContext::new(
+            HookType::PreRemove,
+            "test-remove",
+            PathBuf::from("/tmp/project"),
+            PathBuf::from("/tmp/project/.git"),
+            "origin",
+            PathBuf::from("/tmp/project"),
+            PathBuf::from("/tmp/project/feature"),
+            "feature",
+        );
+
+        {
+            let mut bridge = CommandBridge::new(&mut output, executor);
+            bridge.run_hook(&ctx).expect("run_hook");
+        }
+
+        let entries = output.entries();
+        let start_idx = entries
+            .iter()
+            .position(|e| matches!(e, OutputEntry::SpinnerStart(_)))
+            .expect("SpinnerStart entry missing");
+        let pause_idx = entries
+            .iter()
+            .position(|e| matches!(e, OutputEntry::SpinnerPause))
+            .expect("SpinnerPause entry missing — run_hook must suspend the outer spinner");
+        let resume_idx = entries
+            .iter()
+            .position(|e| matches!(e, OutputEntry::SpinnerResume))
+            .expect("SpinnerResume entry missing — run_hook must resume the outer spinner");
+
+        assert!(
+            start_idx < pause_idx,
+            "spinner must be started before being paused"
+        );
+        assert!(
+            pause_idx < resume_idx,
+            "pause must come before resume around hook execution"
+        );
     }
 }
