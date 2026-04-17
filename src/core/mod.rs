@@ -12,6 +12,7 @@ pub mod multi_remote;
 mod progress;
 pub mod remote;
 pub mod repo;
+pub mod repo_identity;
 pub mod settings;
 pub mod shared;
 pub mod sort;
