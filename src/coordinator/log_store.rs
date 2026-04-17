@@ -68,6 +68,37 @@ pub struct InvocationMeta {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Hash `(nanos, pid)` into a 16-hex-char invocation ID.
+///
+/// Earlier versions formatted the raw millisecond timestamp as `{ts:012x}` and
+/// used the first 4 chars as a short ID. The top 16 bits of a ms timestamp
+/// flip only every ~3 days, so every invocation inside that window collided on
+/// the prefix. Hashing spreads entropy uniformly across the ID, so the first
+/// 4 hex chars (and any other prefix) reliably discriminate between distinct
+/// inputs.
+pub fn invocation_id_from_seed(nanos: u128, pid: u32) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hasher;
+    let mut h = DefaultHasher::new();
+    h.write_u128(nanos);
+    h.write_u32(pid);
+    format!("{:016x}", h.finish())
+}
+
+/// Generate a unique invocation ID for the current process.
+///
+/// Seeds from nanosecond-resolution timestamp and PID, then hashes to a
+/// 16-hex-char string. Leading prefixes are collision-resistant for
+/// display-shortening purposes.
+pub fn generate_invocation_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    invocation_id_from_seed(nanos, std::process::id())
+}
+
 /// Manages background job log storage on disk.
 ///
 /// Directory structure:
@@ -675,5 +706,55 @@ mod tests {
             .find_invocations_by_prefix("feature/a", "zzzz")
             .unwrap();
         assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn invocation_id_is_16_hex_chars() {
+        let id = invocation_id_from_seed(1_234_567_890, 42);
+        assert_eq!(id.len(), 16);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn invocation_id_is_deterministic_for_same_seed() {
+        let a = invocation_id_from_seed(1_234_567_890, 42);
+        let b = invocation_id_from_seed(1_234_567_890, 42);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn invocation_id_prefix_discriminates_within_same_millisecond() {
+        // Regression: the previous `format!("{ts:012x}")` impl produced IDs
+        // whose leading 4 hex chars reflected the top 16 bits of a ms
+        // timestamp — stable for ~3 days at a time. Any two invocations in
+        // the same window collided on the short-ID prefix.
+        //
+        // New impl seeds off nanoseconds and hashes, so two inputs 100 ns
+        // apart must yield distinct leading prefixes.
+        let ms = 1_700_000_000_000_u128;
+        let ns_a = ms * 1_000_000 + 100;
+        let ns_b = ms * 1_000_000 + 200;
+        let a = invocation_id_from_seed(ns_a, 42);
+        let b = invocation_id_from_seed(ns_b, 42);
+        assert_ne!(a, b);
+        assert_ne!(&a[..4], &b[..4]);
+    }
+
+    #[test]
+    fn invocation_id_prefixes_discriminate_across_many_draws() {
+        // 30 close-spaced timestamps, same pid. With the old impl these
+        // would all share the same leading prefix. The hash-based impl
+        // should spread them across the 2^16 prefix space with essentially
+        // zero collisions at this size.
+        let base = 1_700_000_000_000_000_000_u128;
+        let prefixes: std::collections::HashSet<String> = (0..30)
+            .map(|i| invocation_id_from_seed(base + i, 42)[..4].to_string())
+            .collect();
+        assert_eq!(
+            prefixes.len(),
+            30,
+            "short-ID prefixes collided: {:?}",
+            prefixes
+        );
     }
 }
