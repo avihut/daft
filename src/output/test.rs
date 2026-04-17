@@ -44,6 +44,10 @@ pub enum OutputEntry {
     SpinnerStart(String),
     /// Spinner finished
     SpinnerFinish,
+    /// Spinner paused (temporarily hidden)
+    SpinnerPause,
+    /// Spinner resumed after a pause
+    SpinnerResume,
 }
 
 /// Test output implementation that captures all output for assertions.
@@ -389,6 +393,14 @@ impl Output for TestOutput {
 
     fn finish_spinner(&mut self) {
         self.entries.push(OutputEntry::SpinnerFinish);
+    }
+
+    fn pause_spinner(&mut self) {
+        self.entries.push(OutputEntry::SpinnerPause);
+    }
+
+    fn resume_spinner(&mut self) {
+        self.entries.push(OutputEntry::SpinnerResume);
     }
 
     fn is_quiet(&self) -> bool {

@@ -23,6 +23,8 @@ use std::time::Duration;
 pub struct CliOutput {
     config: OutputConfig,
     spinner: Option<ProgressBar>,
+    /// Message of a spinner hidden by `pause_spinner`, waiting to be restored.
+    paused_spinner_message: Option<String>,
 }
 
 impl CliOutput {
@@ -31,6 +33,7 @@ impl CliOutput {
         Self {
             config,
             spinner: None,
+            paused_spinner_message: None,
         }
     }
 
@@ -239,6 +242,27 @@ impl Output for CliOutput {
             let _ = std::io::stderr().write_all(b"\x1b[2K\r");
             let _ = std::io::stderr().flush();
         }
+        // NOTE: do not touch `paused_spinner_message` here. The hook executor
+        // defensively calls finish_spinner() before rendering its own progress
+        // UI; clearing the saved message would turn the subsequent
+        // resume_spinner() into a no-op and leave the user staring at a blank
+        // terminal during the fs-delete phase.
+    }
+
+    fn pause_spinner(&mut self) {
+        if let Some(spinner) = self.spinner.take() {
+            self.paused_spinner_message = Some(spinner.message());
+            spinner.finish_and_clear();
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(b"\x1b[2K\r");
+            let _ = std::io::stderr().flush();
+        }
+    }
+
+    fn resume_spinner(&mut self) {
+        if let Some(msg) = self.paused_spinner_message.take() {
+            self.start_spinner(&msg);
+        }
     }
 
     fn cd_path(&mut self, path: &Path) {
@@ -278,6 +302,23 @@ impl Drop for CliOutput {
 }
 
 #[cfg(test)]
+impl CliOutput {
+    /// Inject a spinner manually for tests. In test builds, `start_spinner` is
+    /// a no-op (gated on `cfg!(test)`), so exercising pause/resume semantics
+    /// requires bypassing that guard.
+    pub(crate) fn inject_spinner_for_test(&mut self, msg: &str) {
+        let pb = ProgressBar::new_spinner();
+        pb.set_message(msg.to_string());
+        self.spinner = Some(pb);
+    }
+
+    /// Expose the internal paused-message field for tests.
+    pub(crate) fn paused_message_for_test(&self) -> Option<&str> {
+        self.paused_spinner_message.as_deref()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -308,5 +349,32 @@ mod tests {
         let output = CliOutput::new(config);
         assert!(output.is_quiet());
         assert!(output.is_verbose());
+    }
+
+    /// Regression: the hook executor (src/hooks/executor.rs:421,
+    /// yaml_executor/mod.rs:217) defensively calls `finish_spinner` before
+    /// rendering its own progress UI. If `finish_spinner` clears
+    /// `paused_spinner_message`, the subsequent `resume_spinner` becomes a
+    /// no-op and the user sees nothing during the long fs-delete phase that
+    /// follows a pre-remove hook.
+    #[test]
+    fn finish_spinner_preserves_paused_message_across_hook_call() {
+        let mut output = CliOutput::default_output();
+        output.inject_spinner_for_test("Deleting branches...");
+
+        output.pause_spinner();
+        assert_eq!(
+            output.paused_message_for_test(),
+            Some("Deleting branches...")
+        );
+
+        // Simulate the defensive clear performed inside HookExecutor::execute.
+        output.finish_spinner();
+
+        assert_eq!(
+            output.paused_message_for_test(),
+            Some("Deleting branches..."),
+            "paused message must survive finish_spinner so resume_spinner can restart the outer spinner after the hook",
+        );
     }
 }

@@ -170,6 +170,20 @@ pub trait Output {
     /// Called explicitly before printing results, and also on `Drop` as safety net.
     fn finish_spinner(&mut self);
 
+    /// Temporarily hide the active spinner so another component (e.g. a hook's
+    /// own `indicatif::MultiProgress`) can render without fighting for the
+    /// same stderr cursor. The current spinner message is remembered so
+    /// `resume_spinner` can restore it. No-op when no spinner is active.
+    fn pause_spinner(&mut self) {
+        let _ = self;
+    }
+
+    /// Restore the spinner previously hidden by `pause_spinner`. No-op if no
+    /// spinner was paused.
+    fn resume_spinner(&mut self) {
+        let _ = self;
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Special Output
     // ─────────────────────────────────────────────────────────────────────────
