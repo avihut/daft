@@ -918,10 +918,8 @@ impl PickerMode for ManageMode {
                     state.move_up(all);
                 }
             }
-            KeyCode::Tab => {
-                if !state.is_virtual_tab() {
-                    state.toggle_panel();
-                }
+            KeyCode::Tab if !state.is_virtual_tab() => {
+                state.toggle_panel();
             }
             _ => {}
         }

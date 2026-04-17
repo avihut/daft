@@ -477,19 +477,15 @@ pub fn ls_remote_symref(repo: &Repository, remote_url: &str) -> Result<String> {
                 target,
                 object,
                 ..
-            } => {
-                if full_ref_name.as_bstr() == "HEAD" {
-                    output.push_str(&format!("ref: {target}\tHEAD\n"));
-                    output.push_str(&format!("{object}\tHEAD\n"));
-                }
+            } if full_ref_name.as_bstr() == "HEAD" => {
+                output.push_str(&format!("ref: {target}\tHEAD\n"));
+                output.push_str(&format!("{object}\tHEAD\n"));
             }
             gix::protocol::handshake::Ref::Direct {
                 full_ref_name,
                 object,
-            } => {
-                if full_ref_name.as_bstr() == "HEAD" {
-                    output.push_str(&format!("{object}\tHEAD\n"));
-                }
+            } if full_ref_name.as_bstr() == "HEAD" => {
+                output.push_str(&format!("{object}\tHEAD\n"));
             }
             _ => {}
         }

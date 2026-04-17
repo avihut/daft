@@ -270,15 +270,14 @@ impl TuiState {
                 self.settings.push = false;
                 self.settings.delete_remote = false;
             }
-            ITEM_CUSTOM => {
+            ITEM_CUSTOM
                 // Selecting "Custom" doesn't change checkboxes, just allows
                 // individual toggling. If currently all-on or all-off, flip one
                 // checkbox to make it truly custom.
-                if self.radio_selection() != RadioSelection::Custom {
+                if self.radio_selection() != RadioSelection::Custom => {
                     // Toggle fetch to break the all-same pattern
                     self.settings.fetch = !self.settings.fetch;
                 }
-            }
             ITEM_FETCH => self.settings.fetch = !self.settings.fetch,
             ITEM_PUSH => self.settings.push = !self.settings.push,
             ITEM_DELETE => self.settings.delete_remote = !self.settings.delete_remote,
