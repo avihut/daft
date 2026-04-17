@@ -1645,12 +1645,13 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn list_all_repo_hashes_filters_non_uuid_dirs() {
         use tempfile::TempDir;
 
         let tmp = TempDir::new().unwrap();
-        // SAFETY: this test mutates a process-global env var. If any
-        // other test in this file sets DAFT_STATE_DIR, add #[serial] here.
+        // DAFT_STATE_DIR is process-global; lib.rs tests also mutate it.
+        // The #[serial] attribute above prevents cross-test interference.
         std::env::set_var("DAFT_STATE_DIR", tmp.path());
         let jobs_dir = tmp.path().join("jobs");
         std::fs::create_dir_all(&jobs_dir).unwrap();
