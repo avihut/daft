@@ -46,6 +46,18 @@ fn read_existing_id(path: &Path) -> Result<Option<String>> {
         .with_context(|| format!("Failed to read {}", path.display()))?;
     let trimmed = contents.trim();
     if trimmed.is_empty() {
+        // Empty file means a prior write crashed mid-flight. Remove it so the
+        // next call to try_create_new can claim the path with create_new(true).
+        drop(file);
+        std::fs::remove_file(path)
+            .or_else(|e| {
+                if e.kind() == ErrorKind::NotFound {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            })
+            .with_context(|| format!("Failed to remove empty identity file {}", path.display()))?;
         return Ok(None);
     }
     match Uuid::parse_str(trimmed) {
