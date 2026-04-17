@@ -427,23 +427,6 @@ pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
     }
 }
 
-/// Compute the repo hash from a working directory path.
-///
-/// This must produce the same hash as `compute_repo_hash()` in the YAML
-/// executor so that the CLI can find the coordinator socket and log store
-/// for the current repository.
-fn compute_repo_hash_from_path(path: &Path) -> Result<String> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let project_root = crate::get_project_root()
-        .context("Could not determine project root. Are you inside a git repository?")?;
-    let _ = path; // path arg reserved for future use; we resolve from cwd
-    let mut hasher = DefaultHasher::new();
-    project_root.display().to_string().hash(&mut hasher);
-    Ok(format!("{:016x}", hasher.finish()))
-}
-
 /// List all repo hashes that have job directories under the state dir.
 fn list_all_repo_hashes() -> Result<Vec<String>> {
     let jobs_dir = crate::daft_state_dir()?.join("jobs");
@@ -455,7 +438,9 @@ fn list_all_repo_hashes() -> Result<Vec<String>> {
         let entry = entry?;
         if entry.file_type()?.is_dir() {
             if let Some(name) = entry.file_name().to_str() {
-                hashes.push(name.to_string());
+                if uuid::Uuid::parse_str(name).is_ok() {
+                    hashes.push(name.to_string());
+                }
             }
         }
     }
@@ -571,8 +556,8 @@ fn print_json_output(
 }
 
 /// Default subcommand: list jobs grouped by worktree and invocation.
-fn list_jobs(args: &JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
-    let repo_hash = compute_repo_hash_from_path(path)?;
+fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<()> {
+    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
     let coordinator_alive = is_coordinator_running(&repo_hash);
 
@@ -735,10 +720,10 @@ fn show_logs(
     job: &str,
     inv: Option<&str>,
     _args: &JobsArgs,
-    path: &Path,
+    _path: &Path,
     _output: &mut dyn Output,
 ) -> Result<()> {
-    let repo_hash = compute_repo_hash_from_path(path)?;
+    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
     let store = LogStore::for_repo(&repo_hash)?;
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
 
@@ -956,8 +941,8 @@ fn render_invocation_logs(store: &LogStore, invocation_id: &str, buf: &mut Strin
 }
 
 /// Cancel a specific running job via the coordinator.
-fn cancel_job(job: &str, inv: Option<&str>, path: &Path, output: &mut dyn Output) -> Result<()> {
-    let repo_hash = compute_repo_hash_from_path(path)?;
+fn cancel_job(job: &str, inv: Option<&str>, _path: &Path, output: &mut dyn Output) -> Result<()> {
+    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
     let store = LogStore::for_repo(&repo_hash)?;
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
 
@@ -978,8 +963,8 @@ fn cancel_job(job: &str, inv: Option<&str>, path: &Path, output: &mut dyn Output
 }
 
 /// Cancel all running jobs via the coordinator.
-fn cancel_all(path: &Path, output: &mut dyn Output) -> Result<()> {
-    let repo_hash = compute_repo_hash_from_path(path)?;
+fn cancel_all(_path: &Path, output: &mut dyn Output) -> Result<()> {
+    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
 
     match CoordinatorClient::connect(&repo_hash)? {
         Some(mut client) => {
@@ -1072,10 +1057,10 @@ fn retry_command(
     job_flag: &Option<String>,
     worktree_flag: Option<&str>,
     cwd_flag: Option<&str>,
-    path: &Path,
+    _path: &Path,
     output: &mut dyn Output,
 ) -> Result<()> {
-    let repo_hash = compute_repo_hash_from_path(path)?;
+    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
     let store = LogStore::for_repo(&repo_hash)?;
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
 
@@ -1323,7 +1308,7 @@ fn retry_command(
 }
 
 /// Remove logs older than the default retention period (7 days).
-fn clean_logs(args: &JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
+fn clean_logs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<()> {
     if args.all {
         let hashes = list_all_repo_hashes()?;
         let mut total = 0;
@@ -1337,7 +1322,7 @@ fn clean_logs(args: &JobsArgs, path: &Path, output: &mut dyn Output) -> Result<(
             output.info("No old logs to clean.");
         }
     } else {
-        let repo_hash = compute_repo_hash_from_path(path)?;
+        let repo_hash = crate::core::repo_identity::compute_repo_id()?;
         let store = LogStore::for_repo(&repo_hash)?;
         let removed = store.clean(chrono::Duration::days(7))?;
 
@@ -1657,5 +1642,27 @@ mod tests {
         let result =
             resolve_retry_invocation(&RetryTarget::LatestInvocation, &store, "feature/current");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn list_all_repo_hashes_filters_non_uuid_dirs() {
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        // SAFETY: this test mutates a process-global env var. If any
+        // other test in this file sets DAFT_STATE_DIR, add #[serial] here.
+        std::env::set_var("DAFT_STATE_DIR", tmp.path());
+        let jobs_dir = tmp.path().join("jobs");
+        std::fs::create_dir_all(&jobs_dir).unwrap();
+
+        // One valid UUID-named dir, one legacy 16-hex-char name.
+        let uuid_name = "01900000-0000-7000-8000-000000000000";
+        std::fs::create_dir(jobs_dir.join(uuid_name)).unwrap();
+        std::fs::create_dir(jobs_dir.join("019d12345678abcd")).unwrap();
+
+        let hashes = list_all_repo_hashes().unwrap();
+        assert_eq!(hashes, vec![uuid_name.to_string()]);
+
+        std::env::remove_var("DAFT_STATE_DIR");
     }
 }
