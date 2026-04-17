@@ -110,21 +110,17 @@ pub fn show_remove_modal(
                     focused = ModalOption::DeleteAll;
                 }
             }
-            KeyCode::Right | KeyCode::Char('l') => {
-                if focused == ModalOption::Materialize && !expanded {
-                    expanded = true;
-                    wt_cursor = 0;
-                }
+            KeyCode::Right | KeyCode::Char('l')
+                if focused == ModalOption::Materialize && !expanded =>
+            {
+                expanded = true;
+                wt_cursor = 0;
             }
-            KeyCode::Left | KeyCode::Char('h') => {
-                if expanded {
-                    expanded = false;
-                }
+            KeyCode::Left | KeyCode::Char('h') if expanded => {
+                expanded = false;
             }
-            KeyCode::Char(' ') => {
-                if expanded && focused == ModalOption::Materialize {
-                    checks[wt_cursor] = !checks[wt_cursor];
-                }
+            KeyCode::Char(' ') if expanded && focused == ModalOption::Materialize => {
+                checks[wt_cursor] = !checks[wt_cursor];
             }
             _ => {}
         }

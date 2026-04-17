@@ -488,7 +488,7 @@ fn index_files(
         });
     }
 
-    all_entries.sort_by(|a, b| a.rel_path.to_lowercase().cmp(&b.rel_path.to_lowercase()));
+    all_entries.sort_by_key(|a| a.rel_path.to_lowercase());
     let _ = tx.send(all_entries);
 }
 
@@ -553,50 +553,36 @@ pub fn show_add_modal(
                     }
                 }
             }
-            KeyCode::Up => {
-                if count > 0 && modal.cursor > 0 {
-                    modal.cursor -= 1;
-                    modal.clamp_scroll();
-                }
+            KeyCode::Up if count > 0 && modal.cursor > 0 => {
+                modal.cursor -= 1;
+                modal.clamp_scroll();
             }
-            KeyCode::Down => {
-                if count > 0 && modal.cursor < count - 1 {
-                    modal.cursor += 1;
-                    modal.clamp_scroll();
-                }
+            KeyCode::Down if count > 0 && modal.cursor < count - 1 => {
+                modal.cursor += 1;
+                modal.clamp_scroll();
             }
-            KeyCode::Right => {
-                if modal.search.is_empty() {
-                    modal.expand_current();
-                }
+            KeyCode::Right if modal.search.is_empty() => {
+                modal.expand_current();
             }
-            KeyCode::Left => {
-                if modal.search.is_empty() {
-                    modal.collapse_current();
-                    modal.clamp_scroll();
-                }
+            KeyCode::Left if modal.search.is_empty() => {
+                modal.collapse_current();
+                modal.clamp_scroll();
             }
-            KeyCode::PageUp => {
-                if count > 0 {
-                    let page = modal.list_height.max(1);
-                    modal.cursor = modal.cursor.saturating_sub(page);
-                    modal.clamp_scroll();
-                }
+            KeyCode::PageUp if count > 0 => {
+                let page = modal.list_height.max(1);
+                modal.cursor = modal.cursor.saturating_sub(page);
+                modal.clamp_scroll();
             }
-            KeyCode::PageDown => {
-                if count > 0 {
-                    let page = modal.list_height.max(1);
-                    modal.cursor = (modal.cursor + page).min(count - 1);
-                    modal.clamp_scroll();
-                }
+            KeyCode::PageDown if count > 0 => {
+                let page = modal.list_height.max(1);
+                modal.cursor = (modal.cursor + page).min(count - 1);
+                modal.clamp_scroll();
             }
-            KeyCode::Backspace => {
-                if !modal.search.is_empty() {
-                    modal.search.pop();
-                    modal.search_dirty = true;
-                    modal.cursor = 0;
-                    modal.scroll = 0;
-                }
+            KeyCode::Backspace if !modal.search.is_empty() => {
+                modal.search.pop();
+                modal.search_dirty = true;
+                modal.cursor = 0;
+                modal.scroll = 0;
             }
             KeyCode::Char(c) => {
                 modal.search.push(c);
