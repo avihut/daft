@@ -826,19 +826,18 @@ fn delete_branch(git: &GitCommand, branch_name: &str, sink: &mut dyn ProgressSin
 /// This is best-effort: if no coordinator is running, or if the coordinator
 /// cannot be reached, the error is silently ignored so removal proceeds.
 fn cancel_background_jobs_for_worktree(
-    project_root: &Path,
+    _project_root: &Path,
     worktree_path: &Path,
     sink: &mut dyn ProgressSink,
 ) {
     use crate::coordinator::client::CoordinatorClient;
     use crate::coordinator::log_store::JobStatus;
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
 
-    // Compute repo hash (same algorithm as yaml_executor and jobs.rs).
-    let mut hasher = DefaultHasher::new();
-    project_root.display().to_string().hash(&mut hasher);
-    let repo_hash = format!("{:016x}", hasher.finish());
+    // Compute repo hash using the centralized repo_identity module.
+    let repo_hash = match crate::core::repo_identity::compute_repo_id() {
+        Ok(id) => id,
+        Err(_) => return, // Unable to compute repo ID — nothing to cancel.
+    };
 
     let client_opt = match CoordinatorClient::connect(&repo_hash) {
         Ok(opt) => opt,
