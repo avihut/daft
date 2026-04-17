@@ -797,17 +797,10 @@ fn complete_worktree_names(prefix: &str) -> Result<Vec<String>> {
 /// - `worktree:abcd:name` (2 colons): jobs within a specific worktree+invocation
 fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
     use crate::coordinator::log_store::LogStore;
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
 
-    let repo_hash = find_project_root().ok().map(|root| {
-        let mut hasher = DefaultHasher::new();
-        root.display().to_string().hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
-    });
-    let repo_hash = match repo_hash {
-        Some(h) => h,
-        None => return Ok(vec![]),
+    let repo_hash = match crate::core::repo_identity::compute_repo_id() {
+        Ok(h) => h,
+        Err(_) => return Ok(vec![]),
     };
 
     let store = match LogStore::for_repo(&repo_hash) {
@@ -1006,17 +999,10 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
 /// - Job names from the most recent failing invocation
 fn complete_retry_targets(prefix: &str) -> Result<Vec<String>> {
     use crate::coordinator::log_store::{JobStatus, LogStore};
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
 
-    let repo_hash = find_project_root().ok().map(|root| {
-        let mut hasher = DefaultHasher::new();
-        root.display().to_string().hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
-    });
-    let repo_hash = match repo_hash {
-        Some(h) => h,
-        None => return Ok(vec![]),
+    let repo_hash = match crate::core::repo_identity::compute_repo_id() {
+        Ok(h) => h,
+        Err(_) => return Ok(vec![]),
     };
 
     let store = match LogStore::for_repo(&repo_hash) {
@@ -1118,17 +1104,10 @@ fn complete_retry_targets(prefix: &str) -> Result<Vec<String>> {
 
 fn complete_retry_worktrees(prefix: &str) -> Result<Vec<String>> {
     use crate::coordinator::log_store::{JobStatus, LogStore};
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
 
-    let repo_hash = find_project_root().ok().map(|root| {
-        let mut hasher = DefaultHasher::new();
-        root.display().to_string().hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
-    });
-    let repo_hash = match repo_hash {
-        Some(h) => h,
-        None => return Ok(vec![]),
+    let repo_hash = match crate::core::repo_identity::compute_repo_id() {
+        Ok(h) => h,
+        Err(_) => return Ok(vec![]),
     };
     let store = match LogStore::for_repo(&repo_hash) {
         Ok(s) => s,
@@ -1177,17 +1156,10 @@ fn complete_retry_worktrees(prefix: &str) -> Result<Vec<String>> {
 
 fn complete_listing_worktrees(prefix: &str) -> Result<Vec<String>> {
     use crate::coordinator::log_store::LogStore;
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
 
-    let repo_hash = find_project_root().ok().map(|root| {
-        let mut hasher = DefaultHasher::new();
-        root.display().to_string().hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
-    });
-    let repo_hash = match repo_hash {
-        Some(h) => h,
-        None => return Ok(vec![]),
+    let repo_hash = match crate::core::repo_identity::compute_repo_id() {
+        Ok(h) => h,
+        Err(_) => return Ok(vec![]),
     };
     let store = match LogStore::for_repo(&repo_hash) {
         Ok(s) => s,
@@ -1223,17 +1195,10 @@ fn complete_listing_worktrees(prefix: &str) -> Result<Vec<String>> {
 
 fn complete_hook_types(prefix: &str) -> Result<Vec<String>> {
     use crate::coordinator::log_store::LogStore;
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
 
-    let repo_hash = find_project_root().ok().map(|root| {
-        let mut hasher = DefaultHasher::new();
-        root.display().to_string().hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
-    });
-    let repo_hash = match repo_hash {
-        Some(h) => h,
-        None => return Ok(vec![]),
+    let repo_hash = match crate::core::repo_identity::compute_repo_id() {
+        Ok(h) => h,
+        Err(_) => return Ok(vec![]),
     };
     let store = match LogStore::for_repo(&repo_hash) {
         Ok(s) => s,
