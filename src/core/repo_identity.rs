@@ -7,7 +7,6 @@
 //! identity and a clean log-store view.
 
 use anyhow::{Context, Result};
-use std::fs::OpenOptions;
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
 use uuid::Uuid;
@@ -73,14 +72,21 @@ fn read_existing_id(path: &Path) -> Result<Option<String>> {
 fn try_create_new(path: &Path) -> Result<Option<String>> {
     let uuid = Uuid::now_v7();
     let s = uuid.hyphenated().to_string();
-    match OpenOptions::new().write(true).create_new(true).open(path) {
-        Ok(mut file) => {
-            file.write_all(s.as_bytes())
-                .with_context(|| format!("Failed to write {}", path.display()))?;
-            Ok(Some(s))
-        }
-        Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("Failed to create {}", path.display())),
+
+    let parent = path
+        .parent()
+        .context("Repo identity path has no parent directory")?;
+
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("Failed to create temp file in {}", parent.display()))?;
+    tmp.write_all(s.as_bytes())
+        .with_context(|| "Failed to write UUID to temp file")?;
+
+    match tmp.persist_noclobber(path) {
+        Ok(_) => Ok(Some(s)),
+        Err(e) if e.error.kind() == ErrorKind::AlreadyExists => Ok(None),
+        Err(e) => Err(anyhow::Error::from(e.error))
+            .with_context(|| format!("Failed to persist {}", path.display())),
     }
 }
 
@@ -148,15 +154,23 @@ mod tests {
     fn concurrent_creation_converges_on_single_id() {
         use std::sync::Arc;
         use std::thread;
-        let tmp = Arc::new(TempDir::new().unwrap());
-        let handles: Vec<_> = (0..8)
-            .map(|_| {
-                let tmp_clone = Arc::clone(&tmp);
-                thread::spawn(move || compute_repo_id_from_common_dir(tmp_clone.path()).unwrap())
-            })
-            .collect();
-        let ids: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        let unique: std::collections::HashSet<_> = ids.iter().collect();
-        assert_eq!(unique.len(), 1, "concurrent calls disagreed: {ids:?}");
+        for iteration in 0..32 {
+            let tmp = Arc::new(TempDir::new().unwrap());
+            let handles: Vec<_> = (0..32)
+                .map(|_| {
+                    let tmp_clone = Arc::clone(&tmp);
+                    thread::spawn(move || {
+                        compute_repo_id_from_common_dir(tmp_clone.path()).unwrap()
+                    })
+                })
+                .collect();
+            let ids: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+            let unique: std::collections::HashSet<_> = ids.iter().collect();
+            assert_eq!(
+                unique.len(),
+                1,
+                "iteration {iteration}: concurrent calls disagreed: {ids:?}"
+            );
+        }
     }
 }
