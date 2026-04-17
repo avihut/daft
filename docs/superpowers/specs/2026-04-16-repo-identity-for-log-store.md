@@ -87,27 +87,49 @@ pub fn compute_repo_id_from_common_dir(git_common_dir: &Path) -> Result<String>;
 
 1. Attempt to read `<git-common-dir>/daft-id`. If the read succeeds and the
    contents trim to a well-formed UUID, return the canonical string form.
-2. If the file exists but trims to the empty string, treat as absent (step 4) —
-   an empty file is almost certainly a crashed previous write.
+2. If the file exists but trims to the empty string, delete it (see note below)
+   and treat as absent (step 4).
 3. If the file exists and has non-empty but unparseable contents, **error out**
    with a message pointing the user at the file: _"Corrupt repo identity file at
    <path>. Delete it to regenerate (this will orphan existing job logs for this
    repo)."_ Do not silently overwrite — that would orphan a valid repo whose
    identity was temporarily unreadable (bad permissions, transient I/O error,
    partial filesystem view).
-4. If the file is absent (or empty per step 2), generate a fresh UUID v7 and
-   attempt atomic create-or-fail via
-   `OpenOptions::new().write(true).create_new(true).open(path)`. This fails with
-   `EEXIST` if another process created the file first.
-5. On successful creation, write the 36-byte canonical UUID string (single
-   syscall, well below PIPE_BUF — not torn) and return it.
-6. On `EEXIST`, loop back to step 1 — the winner's UUID is now on disk and we
-   adopt it.
+4. If the file is absent (or was empty per step 2), generate a fresh UUID v7 and
+   perform an atomic **write-then-link** via `tempfile::NamedTempFile`:
+   1. `NamedTempFile::new_in(parent)` — create a temp file in the same directory
+      (same filesystem, so `link()` works).
+   2. Write the 36-byte canonical UUID string into the temp file.
+   3. `persist_noclobber(path)` — atomically links the temp to `daft-id`,
+      failing with `AlreadyExists` if the target already exists.
+5. On successful persist: return the UUID.
+6. On `AlreadyExists`: loop back to step 1 — the winner's UUID is now on disk
+   and we adopt it.
 
-`rename()` is NOT used. POSIX `rename()` atomically replaces existing files,
-which would let two racing processes both "win" with the last writer's UUID
-becoming canon — silently orphaning the first writer's log-store entries.
-`create_new(true)` gives us actual create-if-absent semantics.
+### Why `persist_noclobber`, not `create_new` + write
+
+`OpenOptions::create_new(true).open(path)` creates an **empty** file atomically,
+then `write_all` fills it in a second syscall. In that window the file is
+visible on disk with empty content. A concurrent reader seeing the empty file
+and following step 2 would delete the winner's in-progress file, breaking
+convergence: the winner's `write_all` hits an unlinked fd (succeeds silently on
+Unix), and the deleter races to create its own file with a different UUID. Both
+threads return distinct IDs.
+
+`persist_noclobber` wraps `link(2)` on Unix (and equivalent on Windows), which
+only creates a directory entry if the target does not already exist. The file is
+either absent or present with full content — never present-but-empty. This
+eliminates the race at the source.
+
+`tempfile` is already a runtime dependency (`tempfile = "3.8"` in `Cargo.toml`).
+No new deps needed.
+
+### Note on empty files
+
+After this fix, daft itself never produces an empty `daft-id` — the file only
+becomes visible once content is written. An empty file indicates external
+interference (user `touch`, disk corruption, partial restore). Deleting it is
+safe because no daft process in-flight could have produced it.
 
 The returned string is used verbatim as the log-store directory name — no
 additional hashing. UUID v7 canonical form is 36 chars of `[0-9a-f-]`, safe as a
@@ -203,8 +225,10 @@ sandbox). No code handling required.
 - Empty file is treated as absent and overwritten (crashed-write recovery).
 - Non-empty, non-UUID contents produce an error (refuse to silently orphan a
   valid repo on corruption).
-- Concurrent creation (two threads calling in parallel against the same temp
-  dir) converges on one ID for both — race resolved by `create_new` EEXIST.
+- Concurrent creation: 32 threads calling in parallel against the same temp dir
+  converge on one ID for all. Loop the scenario at least 32 times across fresh
+  temp dirs to smoke out the race window if any remains. Convergence MUST be
+  100% across all iterations — any flake is a bug.
 
 ### Unit test for `list_all_repo_hashes`
 
