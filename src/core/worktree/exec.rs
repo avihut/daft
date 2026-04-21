@@ -4,8 +4,10 @@
 //! `ExecReport` data type that the command layer renders. No IO to stdout
 //! lives here; renderers are separate.
 
+use std::io::Read;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// A worktree that has been matched by the user's selectors and is ready
 /// to receive commands.
@@ -439,6 +441,93 @@ pub fn collect_snapshot(git: &crate::git::GitCommand) -> anyhow::Result<Vec<Work
     Ok(snaps)
 }
 
+/// Run the pipeline against a single worktree with stdout+stderr captured
+/// into a tail buffer. Stops on first failing command. Does not render any
+/// UI — pure function returning a `WorktreeOutcome`.
+pub fn run_pipeline(
+    target: &ResolvedTarget,
+    pipeline: &[CommandSpec],
+) -> anyhow::Result<WorktreeOutcome> {
+    let start = Instant::now();
+    let mut tail = TailBuffer::new(OUTPUT_CAP_BYTES);
+    let mut exit_code: i32 = 0;
+    let mut last_index: usize = 0;
+
+    for (idx, spec) in pipeline.iter().enumerate() {
+        last_index = idx;
+        let mut cmd = build_command(spec);
+        cmd.current_dir(&target.worktree_path)
+            .env("DAFT_WORKTREE_PATH", &target.worktree_path)
+            .env("DAFT_BRANCH_NAME", &target.branch_name)
+            .env("DAFT_COMMAND", "exec")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Inject project-root / git-dir if obtainable. Use whichever helper
+        // already exists for `git rev-parse --git-common-dir` in daft.
+        if let Ok(root) = crate::get_project_root() {
+            cmd.env("DAFT_PROJECT_ROOT", &root);
+        }
+        if let Ok(gd) = crate::get_git_common_dir() {
+            cmd.env("DAFT_GIT_DIR", &gd);
+        }
+
+        let mut child = cmd.spawn()?;
+        let mut out = child.stdout.take().expect("stdout piped");
+        let mut err = child.stderr.take().expect("stderr piped");
+
+        let mut buf = [0u8; 8192];
+        loop {
+            match out.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => tail.extend(&buf[..n]),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        loop {
+            match err.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => tail.extend(&buf[..n]),
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        let status = child.wait()?;
+        exit_code = status.code().unwrap_or(-1);
+        if exit_code != 0 {
+            break;
+        }
+    }
+
+    Ok(WorktreeOutcome {
+        target: target.clone(),
+        last_command_index: last_index,
+        exit_code,
+        elapsed: start.elapsed(),
+        captured_output: tail.into_inner(),
+        cancelled: false,
+    })
+}
+
+fn build_command(spec: &CommandSpec) -> Command {
+    match spec {
+        CommandSpec::Argv(parts) => {
+            let mut c = Command::new(&parts[0]);
+            if parts.len() > 1 {
+                c.args(&parts[1..]);
+            }
+            c
+        }
+        CommandSpec::Shell(s) => {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+            let mut c = Command::new(shell);
+            c.arg("-c").arg(s);
+            c
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,5 +690,73 @@ mod tests {
         let wts = all_with_orphans();
         let err = resolve_targets_with_orphans(&["feat/orphan-*".into()], false, &wts).unwrap_err();
         assert!(matches!(err, ResolveError::Unmatched(_)));
+    }
+
+    use tempfile::TempDir;
+
+    fn dummy_target(dir: &TempDir, branch: &str) -> ResolvedTarget {
+        ResolvedTarget {
+            worktree_path: dir.path().to_path_buf(),
+            branch_name: branch.to_string(),
+        }
+    }
+
+    #[test]
+    fn runs_single_argv_command_captures_output() {
+        let dir = TempDir::new().unwrap();
+        let target = dummy_target(&dir, "master");
+        let spec = CommandSpec::Argv(vec!["echo".into(), "hi".into()]);
+        let outcome = run_pipeline(&target, &[spec]).unwrap();
+        assert_eq!(outcome.exit_code, 0);
+        assert!(
+            String::from_utf8_lossy(&outcome.captured_output).contains("hi"),
+            "captured: {:?}",
+            outcome.captured_output
+        );
+    }
+
+    #[test]
+    fn stops_pipeline_on_first_failure() {
+        let dir = TempDir::new().unwrap();
+        let target = dummy_target(&dir, "master");
+        let pipeline = vec![
+            CommandSpec::Argv(vec!["false".into()]),
+            CommandSpec::Argv(vec!["echo".into(), "should-not-run".into()]),
+        ];
+        let outcome = run_pipeline(&target, &pipeline).unwrap();
+        assert_ne!(outcome.exit_code, 0);
+        assert_eq!(outcome.last_command_index, 0);
+        assert!(
+            !String::from_utf8_lossy(&outcome.captured_output).contains("should-not-run"),
+            "second command must not run after the first failed"
+        );
+    }
+
+    #[test]
+    fn cwd_is_worktree_path() {
+        let dir = TempDir::new().unwrap();
+        let target = dummy_target(&dir, "master");
+        let spec = CommandSpec::Argv(vec!["pwd".into()]);
+        let outcome = run_pipeline(&target, &[spec]).unwrap();
+        let out = String::from_utf8_lossy(&outcome.captured_output);
+        let expected = dir.path().canonicalize().unwrap();
+        let got = std::path::PathBuf::from(out.trim()).canonicalize().unwrap();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn injects_env_vars() {
+        let dir = TempDir::new().unwrap();
+        let target = dummy_target(&dir, "feat/abc");
+        let spec = CommandSpec::Argv(vec![
+            "sh".into(),
+            "-c".into(),
+            "printf %s \"$DAFT_BRANCH_NAME\"".into(),
+        ]);
+        let outcome = run_pipeline(&target, &[spec]).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&outcome.captured_output).trim(),
+            "feat/abc"
+        );
     }
 }
