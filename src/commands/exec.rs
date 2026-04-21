@@ -94,8 +94,24 @@ pub struct Args {
     pub trailing: Vec<String>,
 }
 
+pub(crate) fn validate_args(args: &Args) -> anyhow::Result<()> {
+    if args.targets.is_empty() && !args.all {
+        anyhow::bail!(
+            "at least one target or --all is required (use `daft exec --help` for examples)"
+        );
+    }
+    if args.exec.is_empty() && args.trailing.is_empty() {
+        anyhow::bail!("no command given: pass `-x 'CMD'` one or more times, or `-- CMD ARGS…`");
+    }
+    if !args.exec.is_empty() && !args.trailing.is_empty() {
+        anyhow::bail!("`-x` and `-- CMD` cannot be combined in one invocation");
+    }
+    Ok(())
+}
+
 pub fn run() -> Result<()> {
     let _args = Args::parse_from(crate::get_clap_args("git-worktree-exec"));
+    validate_args(&_args)?;
 
     init_logging(_args.verbose);
 
@@ -163,5 +179,48 @@ mod tests {
     fn accepts_glob_positionals() {
         let args = parse(&["feat/*", "fix/crash", "--", "echo"]).unwrap();
         assert_eq!(args.targets, vec!["feat/*", "fix/crash"]);
+    }
+
+    fn validate(args: &Args) -> anyhow::Result<()> {
+        super::validate_args(args)
+    }
+
+    #[test]
+    fn rejects_empty_targets_and_no_all() {
+        let args = parse(&["--", "echo"]).unwrap();
+        let err = validate(&args).unwrap_err();
+        assert!(
+            err.to_string().contains("at least one target"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_command_forms() {
+        let args = parse(&["--all"]).unwrap();
+        let err = validate(&args).unwrap_err();
+        assert!(
+            err.to_string().contains("-x") || err.to_string().contains("--"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_both_command_forms() {
+        let args = parse(&["--all", "-x", "echo", "--", "echo"]).unwrap();
+        let err = validate(&args).unwrap_err();
+        assert!(err.to_string().contains("cannot be combined"), "got: {err}");
+    }
+
+    #[test]
+    fn accepts_minimal_valid_argv_form() {
+        let args = parse(&["--all", "--", "echo"]).unwrap();
+        validate(&args).unwrap();
+    }
+
+    #[test]
+    fn accepts_minimal_valid_x_form() {
+        let args = parse(&["--all", "-x", "echo"]).unwrap();
+        validate(&args).unwrap();
     }
 }
