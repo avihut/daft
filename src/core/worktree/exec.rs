@@ -7,6 +7,8 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 /// A worktree that has been matched by the user's selectors and is ready
@@ -528,6 +530,77 @@ fn build_command(spec: &CommandSpec) -> Command {
     }
 }
 
+/// Run the pipeline across all targets in the requested mode. Returns the
+/// aggregated report. Rendering is the caller's responsibility.
+pub fn run_scheduler(
+    targets: &[ResolvedTarget],
+    pipeline: &[CommandSpec],
+    mode: ExecMode,
+) -> anyhow::Result<ExecReport> {
+    match mode {
+        ExecMode::Parallel => run_parallel(targets, pipeline),
+        ExecMode::Sequential => run_sequential(targets, pipeline, false),
+        ExecMode::KeepGoing => run_sequential(targets, pipeline, true),
+    }
+}
+
+fn run_parallel(
+    targets: &[ResolvedTarget],
+    pipeline: &[CommandSpec],
+) -> anyhow::Result<ExecReport> {
+    let pipeline = Arc::new(pipeline.to_vec());
+    let handles: Vec<_> = targets
+        .iter()
+        .cloned()
+        .map(|t| {
+            let p = Arc::clone(&pipeline);
+            thread::spawn(move || run_pipeline(&t, &p))
+        })
+        .collect();
+
+    let mut outcomes: Vec<WorktreeOutcome> = Vec::new();
+    for h in handles {
+        match h.join() {
+            Ok(Ok(o)) => outcomes.push(o),
+            Ok(Err(e)) => return Err(e),
+            Err(panic) => return Err(anyhow::anyhow!("worker thread panicked: {:?}", panic)),
+        }
+    }
+
+    // Preserve targets' resolved order for stable UI rendering.
+    outcomes.sort_by_key(|o| {
+        targets
+            .iter()
+            .position(|t| t.worktree_path == o.target.worktree_path)
+            .unwrap_or(usize::MAX)
+    });
+
+    Ok(ExecReport {
+        outcomes,
+        orphan_branches_skipped: Vec::new(),
+    })
+}
+
+fn run_sequential(
+    targets: &[ResolvedTarget],
+    pipeline: &[CommandSpec],
+    keep_going: bool,
+) -> anyhow::Result<ExecReport> {
+    let mut outcomes = Vec::with_capacity(targets.len());
+    for t in targets {
+        let outcome = run_pipeline(t, pipeline)?;
+        let succeeded = outcome.succeeded();
+        outcomes.push(outcome);
+        if !succeeded && !keep_going {
+            break;
+        }
+    }
+    Ok(ExecReport {
+        outcomes,
+        orphan_branches_skipped: Vec::new(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -772,6 +845,47 @@ mod tests {
             String::from_utf8_lossy(&outcome.captured_output).trim(),
             "3"
         );
+    }
+
+    #[test]
+    fn parallel_runs_all_targets_and_aggregates() {
+        let dir1 = TempDir::new().unwrap();
+        let dir2 = TempDir::new().unwrap();
+        let targets = vec![
+            ResolvedTarget {
+                worktree_path: dir1.path().into(),
+                branch_name: "a".into(),
+            },
+            ResolvedTarget {
+                worktree_path: dir2.path().into(),
+                branch_name: "b".into(),
+            },
+        ];
+        let pipeline = vec![CommandSpec::Argv(vec!["echo".into(), "ok".into()])];
+        let report = run_scheduler(&targets, &pipeline, ExecMode::Parallel).unwrap();
+        assert_eq!(report.outcomes.len(), 2);
+        assert!(report.outcomes.iter().all(|o| o.succeeded()));
+        assert_eq!(report.aggregate_exit_code(), 0);
+    }
+
+    #[test]
+    fn parallel_reports_failures_via_aggregate() {
+        let dir1 = TempDir::new().unwrap();
+        let dir2 = TempDir::new().unwrap();
+        let targets = vec![
+            ResolvedTarget {
+                worktree_path: dir1.path().into(),
+                branch_name: "a".into(),
+            },
+            ResolvedTarget {
+                worktree_path: dir2.path().into(),
+                branch_name: "b".into(),
+            },
+        ];
+        let pipeline = vec![CommandSpec::Argv(vec!["false".into()])];
+        let report = run_scheduler(&targets, &pipeline, ExecMode::Parallel).unwrap();
+        assert_eq!(report.aggregate_exit_code(), 1);
+        assert!(report.outcomes.iter().all(|o| !o.succeeded()));
     }
 
     #[test]
