@@ -10,7 +10,7 @@ use crate::{
 use anyhow::Result;
 use clap::Parser;
 
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(name = "git-worktree-exec")]
 #[command(version = crate::VERSION)]
 #[command(about = "Run a command across one or more worktrees")]
@@ -119,4 +119,49 @@ pub fn run() -> Result<()> {
     }
 
     anyhow::bail!("daft exec is not yet implemented")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse(argv: &[&str]) -> Result<Args, clap::Error> {
+        let mut full = vec!["git-worktree-exec"];
+        full.extend_from_slice(argv);
+        Args::try_parse_from(full)
+    }
+
+    #[test]
+    fn parses_argv_after_double_dash() {
+        let args = parse(&["--all", "--", "cargo", "test"]).unwrap();
+        assert!(args.all);
+        assert_eq!(args.trailing, vec!["cargo", "test"]);
+        assert!(args.exec.is_empty());
+    }
+
+    #[test]
+    fn parses_repeated_dash_x() {
+        let args = parse(&["feat/a", "-x", "mise install", "-x", "pnpm test"]).unwrap();
+        assert_eq!(args.targets, vec!["feat/a"]);
+        assert_eq!(args.exec, vec!["mise install", "pnpm test"]);
+    }
+
+    #[test]
+    fn positionals_conflict_with_all() {
+        let err = parse(&["feat/a", "--all", "--", "echo"]).unwrap_err();
+        assert!(err.to_string().contains("cannot be used with"), "{err}");
+    }
+
+    #[test]
+    fn sequential_conflicts_with_keep_going() {
+        let err = parse(&["--all", "--sequential", "--keep-going", "--", "echo"]).unwrap_err();
+        assert!(err.to_string().contains("cannot be used with"), "{err}");
+    }
+
+    #[test]
+    fn accepts_glob_positionals() {
+        let args = parse(&["feat/*", "fix/crash", "--", "echo"]).unwrap();
+        assert_eq!(args.targets, vec!["feat/*", "fix/crash"]);
+    }
 }
