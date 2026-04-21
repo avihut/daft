@@ -50,6 +50,14 @@ pub(super) fn cmd_set_trust(
         output.info(&format!("{}", project_root.display()));
         output.info(&format!("  Hooks: {hooks_str}"));
 
+        if current_level == new_level {
+            output.info(&format!(
+                "  Trust: already at {}, nothing to do.",
+                styled_trust_level(current_level)
+            ));
+            return Ok(());
+        }
+
         if !force {
             print!(
                 "  Trust: {} -> {}? [y/N] ",

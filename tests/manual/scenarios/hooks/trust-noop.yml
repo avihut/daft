@@ -1,0 +1,69 @@
+name: Hooks trust no-op when level unchanged
+description:
+  daft hooks trust short-circuits without prompting when current level matches
+  target
+
+repos:
+  - name: test-hooks-trust-noop
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Trust no-op test"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: setup
+              run: echo done
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_HOOKS_TRUST_NOOP
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-hooks-trust-noop/main"
+
+  - name: Trust the repository (first time)
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-hooks-trust-noop/main"
+    expect:
+      exit_code: 0
+
+  - name: Re-trust without --force and without stdin should no-op, not prompt
+    run: daft hooks trust < /dev/null 2>&1
+    cwd: "$WORK_DIR/test-hooks-trust-noop/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "already at"
+        - "nothing to do"
+
+  - name: Verify status still reports allow
+    run: daft hooks status 2>&1
+    cwd: "$WORK_DIR/test-hooks-trust-noop/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "allow"
+
+  - name:
+      Prompt-level no-op on an untrusted repo (implicit deny -> deny would
+      differ; allow -> prompt should change)
+    run: daft hooks prompt --force 2>&1
+    cwd: "$WORK_DIR/test-hooks-trust-noop/main"
+    expect:
+      exit_code: 0
+
+  - name: Re-run prompt without --force on already-prompt repo no-ops
+    run: daft hooks prompt < /dev/null 2>&1
+    cwd: "$WORK_DIR/test-hooks-trust-noop/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "already at"
+        - "nothing to do"
