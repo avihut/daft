@@ -131,13 +131,10 @@ pub fn print_notification(notification: &UpdateNotification) {
     let latest = styles::green(&notification.latest_version);
 
     eprintln!();
-    eprintln!("hint: A new version of daft is available: {current} {arrow} {latest}");
+    eprintln!("A new version of daft is available: {current} {arrow} {latest}");
+    eprintln!("To update: {}", styles::cyan(&notification.update_command));
     eprintln!(
-        "hint: To update: {}",
-        styles::cyan(&notification.update_command)
-    );
-    eprintln!(
-        "hint: To disable: {}",
+        "To disable: {}",
         styles::dim("git config --global daft.updateCheck false")
     );
 }
