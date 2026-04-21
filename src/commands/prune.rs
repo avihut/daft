@@ -292,12 +292,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                     settings.ownership_strategy,
                     user_email.as_deref(),
                 );
-                // Keep owner_email tip-author-semantics consistent with the
-                // collect_* paths until Task 11 removes the legacy field.
-                let owner_email = list::get_author_email_for_ref(branch, &cwd);
-                let mut stub = list::WorktreeInfo::local_branch_stub(branch, owner_email);
-                stub.owner = owner;
-                stubs.push(stub);
+                stubs.push(list::WorktreeInfo::local_branch_stub(branch, owner));
             }
         }
         worktree_infos.extend(stubs);

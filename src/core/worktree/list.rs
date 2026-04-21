@@ -93,8 +93,6 @@ pub struct WorktreeInfo {
     pub remote_lines_inserted: Option<usize>,
     /// Lines deleted vs remote tracking branch (None if not computed or no upstream).
     pub remote_lines_deleted: Option<usize>,
-    /// Author email of the branch tip commit (for ownership detection).
-    pub owner_email: Option<String>,
     /// Resolved branch owner per the configured strategy. `None` when
     /// `base..branch` is empty or git failed.
     pub owner: Option<BranchOwner>,
@@ -135,7 +133,6 @@ impl WorktreeInfo {
             unstaged_lines_deleted: None,
             remote_lines_inserted: None,
             remote_lines_deleted: None,
-            owner_email: None,
             owner: None,
             size_bytes: None,
             working_tree_mtime: None,
@@ -144,7 +141,7 @@ impl WorktreeInfo {
     }
 
     /// Create a stub entry for a local-only branch (no worktree).
-    pub fn local_branch_stub(name: &str, owner_email: Option<String>) -> Self {
+    pub fn local_branch_stub(name: &str, owner: Option<BranchOwner>) -> Self {
         Self {
             kind: EntryKind::LocalBranch,
             name: name.to_string(),
@@ -170,8 +167,7 @@ impl WorktreeInfo {
             unstaged_lines_deleted: None,
             remote_lines_inserted: None,
             remote_lines_deleted: None,
-            owner_email,
-            owner: None,
+            owner,
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
@@ -438,26 +434,6 @@ fn get_last_commit_info_for_ref(
             }
         }
         _ => (None, None, String::new()),
-    }
-}
-
-/// Get the author email of the tip commit on a given branch ref.
-pub(crate) fn get_author_email_for_ref(branch_ref: &str, cwd: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .args(["log", "-1", "--format=%ae", branch_ref])
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let email = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if email.is_empty() {
-        None
-    } else {
-        Some(email)
     }
 }
 
@@ -839,13 +815,6 @@ pub fn collect_worktree_info(
         let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
             get_commit_metadata(&entry.path, git);
 
-        // Owner email (author of branch tip commit)
-        let owner_email = if !entry.is_detached {
-            get_author_email_for_ref(&branch_display, &entry.path)
-        } else {
-            None
-        };
-
         let owner = if !entry.is_detached {
             let commits =
                 ownership::fetch_commit_records(base_branch, &branch_display, &entry.path);
@@ -945,7 +914,6 @@ pub fn collect_worktree_info(
             unstaged_lines_deleted,
             remote_lines_inserted,
             remote_lines_deleted,
-            owner_email,
             owner,
             size_bytes,
             working_tree_mtime,
@@ -1002,8 +970,6 @@ pub fn collect_branch_info(
             let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
                 get_commit_metadata_for_ref_dispatched(branch, cwd, git);
 
-            let owner_email = get_author_email_for_ref(branch, cwd);
-
             let commits = ownership::fetch_commit_records(base_branch, branch, cwd);
             let owner =
                 ownership::resolve_owner_from_records(&commits, ownership_strategy, user_email);
@@ -1056,7 +1022,6 @@ pub fn collect_branch_info(
                 unstaged_lines_deleted: None,
                 remote_lines_inserted,
                 remote_lines_deleted,
-                owner_email,
                 owner,
                 size_bytes: None,
                 working_tree_mtime: None,
@@ -1099,8 +1064,6 @@ pub fn collect_branch_info(
             let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
                 get_commit_metadata_for_ref_dispatched(remote_branch, cwd, git);
 
-            let owner_email = get_author_email_for_ref(remote_branch, cwd);
-
             let commits = ownership::fetch_commit_records(base_branch, remote_branch, cwd);
             let owner =
                 ownership::resolve_owner_from_records(&commits, ownership_strategy, user_email);
@@ -1140,7 +1103,6 @@ pub fn collect_branch_info(
                 unstaged_lines_deleted: None,
                 remote_lines_inserted: None,
                 remote_lines_deleted: None,
-                owner_email,
                 owner,
                 size_bytes: None,
                 working_tree_mtime: None,
