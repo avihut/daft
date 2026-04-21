@@ -202,13 +202,19 @@ pub fn run() -> Result<()> {
         core::ExecMode::Parallel
     };
 
-    let report = core::run_scheduler(&targets, &pipeline, mode)?;
+    let report = if args.verbose {
+        core::windows_renderer::run_with_live_windows(&targets, &pipeline, mode)?
+    } else {
+        core::run_scheduler(&targets, &pipeline, mode)?
+    };
 
     let stdout = std::io::stdout();
     let mut sink = stdout.lock();
-    core::list_renderer::render_header(&mut sink, &pipeline)?;
-    for outcome in &report.outcomes {
-        core::list_renderer::render_outcome(&mut sink, outcome, &pipeline)?;
+    if !args.verbose {
+        core::list_renderer::render_header(&mut sink, &pipeline)?;
+        for outcome in &report.outcomes {
+            core::list_renderer::render_outcome(&mut sink, outcome, &pipeline)?;
+        }
     }
     core::list_renderer::render_failed_output_dump(&mut sink, &report, &pipeline)?;
     drop(sink);

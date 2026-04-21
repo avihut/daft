@@ -5,11 +5,13 @@
 //! lives here; renderers are separate.
 
 pub mod list_renderer;
+pub mod windows_renderer;
 
-use std::io::Read;
+use crate::executor::presenter::{JobPresenter, NullPresenter};
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -452,13 +454,42 @@ pub fn run_pipeline(
     target: &ResolvedTarget,
     pipeline: &[CommandSpec],
 ) -> anyhow::Result<WorktreeOutcome> {
+    let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+    run_pipeline_streaming(target, pipeline, "", &presenter)
+}
+
+/// Run the pipeline against a single worktree, streaming every stdout/stderr
+/// line to the given presenter *and* capturing it into a tail buffer. Stops
+/// on first failing command. Job names presented are `{name_prefix}` for
+/// single-command pipelines or `{name_prefix} [{i+1}/{n}]` for multi-command
+/// pipelines; when `name_prefix` is empty, the branch name is used.
+pub fn run_pipeline_streaming(
+    target: &ResolvedTarget,
+    pipeline: &[CommandSpec],
+    name_prefix: &str,
+    presenter: &Arc<dyn JobPresenter>,
+) -> anyhow::Result<WorktreeOutcome> {
     let start = Instant::now();
-    let mut tail = TailBuffer::new(OUTPUT_CAP_BYTES);
+    let tail = Arc::new(Mutex::new(TailBuffer::new(OUTPUT_CAP_BYTES)));
     let mut exit_code: i32 = 0;
     let mut last_index: usize = 0;
+    let base_name: &str = if name_prefix.is_empty() {
+        target.branch_name.as_str()
+    } else {
+        name_prefix
+    };
 
     for (idx, spec) in pipeline.iter().enumerate() {
         last_index = idx;
+        let job_name = if pipeline.len() > 1 {
+            format!("{} [{}/{}]", base_name, idx + 1, pipeline.len())
+        } else {
+            base_name.to_string()
+        };
+        let preview = spec.display();
+        let cmd_start = Instant::now();
+        presenter.on_job_start(&job_name, None, Some(&preview));
+
         let mut cmd = build_command(spec);
         cmd.current_dir(&target.worktree_path)
             .env("DAFT_WORKTREE_PATH", &target.worktree_path)
@@ -468,8 +499,6 @@ pub fn run_pipeline(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        // Inject project-root / git-dir if obtainable. Use whichever helper
-        // already exists for `git rev-parse --git-common-dir` in daft.
         if let Ok(root) = crate::get_project_root() {
             cmd.env("DAFT_PROJECT_ROOT", &root);
         }
@@ -478,39 +507,79 @@ pub fn run_pipeline(
         }
 
         let mut child = cmd.spawn()?;
-        let mut out = child.stdout.take().expect("stdout piped");
-        let mut err = child.stderr.take().expect("stderr piped");
+        let out = child.stdout.take().expect("stdout piped");
+        let err = child.stderr.take().expect("stderr piped");
 
-        let mut buf = [0u8; 8192];
-        loop {
-            match out.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => tail.extend(&buf[..n]),
-                Err(e) => return Err(e.into()),
-            }
-        }
-        loop {
-            match err.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => tail.extend(&buf[..n]),
-                Err(e) => return Err(e.into()),
-            }
-        }
+        let stdout_thread = spawn_stream_reader(out, Arc::clone(&tail), presenter, &job_name);
+        let stderr_thread = spawn_stream_reader(err, Arc::clone(&tail), presenter, &job_name);
 
         let status = child.wait()?;
+        stdout_thread.join().ok();
+        stderr_thread.join().ok();
         exit_code = status.code().unwrap_or(-1);
-        if exit_code != 0 {
+
+        let cmd_elapsed = cmd_start.elapsed();
+        if exit_code == 0 {
+            presenter.on_job_success(&job_name, cmd_elapsed);
+        } else {
+            presenter.on_job_failure(&job_name, cmd_elapsed);
             break;
         }
     }
+
+    let captured = Arc::try_unwrap(tail)
+        .map(|m| m.into_inner().expect("tail mutex poisoned"))
+        .unwrap_or_else(|arc| {
+            let guard = arc.lock().expect("tail mutex poisoned");
+            TailBuffer {
+                buf: guard.buf.clone(),
+                cap: guard.cap,
+            }
+        })
+        .into_inner();
 
     Ok(WorktreeOutcome {
         target: target.clone(),
         last_command_index: last_index,
         exit_code,
         elapsed: start.elapsed(),
-        captured_output: tail.into_inner(),
+        captured_output: captured,
         cancelled: false,
+    })
+}
+
+/// Spawn a thread that reads `reader` line-by-line, forwarding each line to
+/// `presenter.on_job_output(job_name, line)` and appending the bytes
+/// (including the trailing newline) to `tail`.
+fn spawn_stream_reader<R>(
+    reader: R,
+    tail: Arc<Mutex<TailBuffer>>,
+    presenter: &Arc<dyn JobPresenter>,
+    job_name: &str,
+) -> thread::JoinHandle<()>
+where
+    R: std::io::Read + Send + 'static,
+{
+    let presenter = Arc::clone(presenter);
+    let name = job_name.to_string();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if let Ok(mut t) = tail.lock() {
+                        t.extend(line.as_bytes());
+                    }
+                    let trimmed = line.strip_suffix('\n').unwrap_or(&line);
+                    let trimmed = trimmed.strip_suffix('\r').unwrap_or(trimmed);
+                    presenter.on_job_output(&name, trimmed);
+                }
+                Err(_) => break,
+            }
+        }
     })
 }
 
