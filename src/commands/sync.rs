@@ -414,6 +414,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         from_columns || sort_spec.as_ref().is_some_and(|s| s.needs_size())
     };
     let compute_mtime = sort_spec.as_ref().is_some_and(|s| s.needs_mtime());
+    let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     let needs_spinner = stat == Stat::Lines || has_size;
     let worktree_infos = if needs_spinner {
         let mut output = CliOutput::new(OutputConfig::new(false, false));
@@ -430,6 +431,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             stat,
             has_size,
             compute_mtime,
+            settings.ownership_strategy,
+            user_email.as_deref(),
         )?;
         output.finish_spinner();
         result
@@ -441,6 +444,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             stat,
             has_size,
             compute_mtime,
+            settings.ownership_strategy,
+            user_email.as_deref(),
         )?
     };
 
@@ -502,7 +507,6 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     // Compute the unowned section boundary for the TUI divider.
     // The TuiState sorts rows by kind (worktree < local-branch < remote-branch)
     // then alphabetically. Mirror that sort on the infos so the index matches.
-    let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     let include_filters: Vec<IncludeFilter> = args
         .include
         .iter()

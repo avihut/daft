@@ -180,6 +180,7 @@ fn run_prune_inner(output: &mut dyn Output, settings: &DaftSettings, force: bool
 /// Interactive TUI execution path — parallel DAG executor with inline ratatui display.
 fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     let project_root = get_project_root()?;
     let stat = args.stat.unwrap_or(settings.prune_stat);
 
@@ -232,6 +233,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             stat,
             has_size,
             compute_mtime,
+            settings.ownership_strategy,
+            user_email.as_deref(),
         )?;
         output.finish_spinner();
         result
@@ -243,6 +246,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             stat,
             has_size,
             compute_mtime,
+            settings.ownership_strategy,
+            user_email.as_deref(),
         )?
     };
 
@@ -280,8 +285,17 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         let mut stubs = Vec::new();
         for branch in &gone_branches {
             if !worktree_branch_set.contains(branch.as_str()) {
-                let owner_email = list::get_author_email_for_ref(branch, &cwd);
-                stubs.push(list::WorktreeInfo::local_branch_stub(branch, owner_email));
+                let commits =
+                    crate::core::ownership::fetch_commit_records(&base_branch, branch, &cwd);
+                let owner = crate::core::ownership::resolve_owner_from_records(
+                    &commits,
+                    settings.ownership_strategy,
+                    user_email.as_deref(),
+                );
+                let owner_email = owner.as_ref().map(|o| o.email.clone());
+                let mut stub = list::WorktreeInfo::local_branch_stub(branch, owner_email);
+                stub.owner = owner;
+                stubs.push(stub);
             }
         }
         worktree_infos.extend(stubs);

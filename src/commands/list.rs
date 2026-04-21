@@ -188,6 +188,7 @@ pub fn run() -> Result<()> {
     let has_size = selected_columns.contains(&ListColumn::Size) || sort_spec.needs_size();
     let compute_mtime = sort_spec.needs_mtime();
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     let git_common_dir = get_git_common_dir()?;
     let base_branch = get_default_branch_local(&git_common_dir, "origin", settings.use_gitoxide)
         .unwrap_or_else(|_| "master".to_string());
@@ -218,6 +219,8 @@ pub fn run() -> Result<()> {
             stat,
             has_size,
             compute_mtime,
+            settings.ownership_strategy,
+            user_email.as_deref(),
         )?;
         if show_local || show_remote {
             let worktree_branches: HashSet<String> =
@@ -230,6 +233,8 @@ pub fn run() -> Result<()> {
                 show_remote,
                 &worktree_branches,
                 &project_root,
+                settings.ownership_strategy,
+                user_email.as_deref(),
             )?;
             let mut merged = result;
             merged.extend(branch_infos);
@@ -259,6 +264,8 @@ pub fn run() -> Result<()> {
             stat,
             has_size,
             compute_mtime,
+            settings.ownership_strategy,
+            user_email.as_deref(),
         )?;
         sort_spec.sort(&mut result);
         result

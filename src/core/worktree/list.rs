@@ -3,6 +3,7 @@
 //! Collects enriched worktree information (ahead/behind counts, dirty status,
 //! last commit age and subject) for display.
 
+use crate::core::ownership::{self, BranchOwner, OwnershipStrategy};
 use crate::git::GitCommand;
 use anyhow::{Context, Result};
 use std::collections::HashSet;
@@ -94,6 +95,9 @@ pub struct WorktreeInfo {
     pub remote_lines_deleted: Option<usize>,
     /// Author email of the branch tip commit (for ownership detection).
     pub owner_email: Option<String>,
+    /// Resolved branch owner per the configured strategy. `None` when
+    /// `base..branch` is empty or git failed.
+    pub owner: Option<BranchOwner>,
     /// Total disk size of the worktree directory in bytes (None if not computed).
     pub size_bytes: Option<u64>,
     /// Most recent mtime of changed/untracked files (None if clean or not computed).
@@ -132,6 +136,7 @@ impl WorktreeInfo {
             remote_lines_inserted: None,
             remote_lines_deleted: None,
             owner_email: None,
+            owner: None,
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
@@ -166,6 +171,7 @@ impl WorktreeInfo {
             remote_lines_inserted: None,
             remote_lines_deleted: None,
             owner_email,
+            owner: None,
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
@@ -760,6 +766,7 @@ fn max_mtime_of_files(worktree_path: &Path, relative_paths: &[String]) -> Option
 /// Parses the porcelain output, skips bare entries, enriches each entry with
 /// ahead/behind, dirty status, and last commit info, then sorts alphabetically
 /// by name (case-insensitive).
+#[allow(clippy::too_many_arguments)]
 pub fn collect_worktree_info(
     git: &GitCommand,
     base_branch: &str,
@@ -767,6 +774,8 @@ pub fn collect_worktree_info(
     stat: Stat,
     compute_size: bool,
     compute_mtime: bool,
+    ownership_strategy: OwnershipStrategy,
+    user_email: Option<&str>,
 ) -> Result<Vec<WorktreeInfo>> {
     let porcelain_output = git
         .worktree_list_porcelain()
@@ -833,6 +842,14 @@ pub fn collect_worktree_info(
         // Owner email (author of branch tip commit)
         let owner_email = if !entry.is_detached {
             get_author_email_for_ref(&branch_display, &entry.path)
+        } else {
+            None
+        };
+
+        let owner = if !entry.is_detached {
+            let commits =
+                ownership::fetch_commit_records(base_branch, &branch_display, &entry.path);
+            ownership::resolve_owner_from_records(&commits, ownership_strategy, user_email)
         } else {
             None
         };
@@ -929,6 +946,7 @@ pub fn collect_worktree_info(
             remote_lines_inserted,
             remote_lines_deleted,
             owner_email,
+            owner,
             size_bytes,
             working_tree_mtime,
             is_sandbox: entry.is_detached,
@@ -943,6 +961,7 @@ pub fn collect_worktree_info(
 /// Enumerates local and/or remote branches, filters out those already represented
 /// by a worktree, and enriches each with ahead/behind, commit info, and optionally
 /// line-level stats.
+#[allow(clippy::too_many_arguments)]
 pub fn collect_branch_info(
     git: &GitCommand,
     base_branch: &str,
@@ -951,6 +970,8 @@ pub fn collect_branch_info(
     include_remote: bool,
     worktree_branches: &HashSet<String>,
     cwd: &Path,
+    ownership_strategy: OwnershipStrategy,
+    user_email: Option<&str>,
 ) -> Result<Vec<WorktreeInfo>> {
     let mut infos = Vec::new();
     let mut local_branch_names: HashSet<String> = HashSet::new();
@@ -982,6 +1003,10 @@ pub fn collect_branch_info(
                 get_commit_metadata_for_ref_dispatched(branch, cwd, git);
 
             let owner_email = get_author_email_for_ref(branch, cwd);
+
+            let commits = ownership::fetch_commit_records(base_branch, branch, cwd);
+            let owner =
+                ownership::resolve_owner_from_records(&commits, ownership_strategy, user_email);
 
             let branch_creation_timestamp = get_branch_creation_timestamp(branch, cwd);
 
@@ -1032,6 +1057,7 @@ pub fn collect_branch_info(
                 remote_lines_inserted,
                 remote_lines_deleted,
                 owner_email,
+                owner,
                 size_bytes: None,
                 working_tree_mtime: None,
                 is_sandbox: false,
@@ -1075,6 +1101,10 @@ pub fn collect_branch_info(
 
             let owner_email = get_author_email_for_ref(remote_branch, cwd);
 
+            let commits = ownership::fetch_commit_records(base_branch, remote_branch, cwd);
+            let owner =
+                ownership::resolve_owner_from_records(&commits, ownership_strategy, user_email);
+
             // Line-level stats (base only — no upstream concept for remote branches)
             let (base_lines_inserted, base_lines_deleted) = if stat == Stat::Lines {
                 match get_base_line_counts(base_branch, remote_branch, cwd) {
@@ -1111,6 +1141,7 @@ pub fn collect_branch_info(
                 remote_lines_inserted: None,
                 remote_lines_deleted: None,
                 owner_email,
+                owner,
                 size_bytes: None,
                 working_tree_mtime: None,
                 is_sandbox: false,
