@@ -759,4 +759,36 @@ mod tests {
             "feat/abc"
         );
     }
+
+    #[test]
+    fn shell_form_runs_via_sh() {
+        let dir = TempDir::new().unwrap();
+        let target = dummy_target(&dir, "master");
+        // Pipeline + env expansion only works in the shell form.
+        let spec = CommandSpec::Shell("echo $((1+2))".into());
+        let outcome = run_pipeline(&target, &[spec]).unwrap();
+        assert_eq!(outcome.exit_code, 0);
+        assert_eq!(
+            String::from_utf8_lossy(&outcome.captured_output).trim(),
+            "3"
+        );
+    }
+
+    #[test]
+    fn shell_form_does_not_use_interactive_flag() {
+        // Regression guard: the legacy src/exec.rs passes -i which loads
+        // rcfiles. `daft exec -x` must NOT do that — the test passes an
+        // env var with a value that an rcfile would likely clobber, and
+        // asserts we see the outer env.
+        std::env::set_var("DAFT_EXEC_TEST_MARKER", "outer-value");
+        let dir = TempDir::new().unwrap();
+        let target = dummy_target(&dir, "master");
+        let spec = CommandSpec::Shell("echo $DAFT_EXEC_TEST_MARKER".into());
+        let outcome = run_pipeline(&target, &[spec]).unwrap();
+        std::env::remove_var("DAFT_EXEC_TEST_MARKER");
+        assert_eq!(
+            String::from_utf8_lossy(&outcome.captured_output).trim(),
+            "outer-value"
+        );
+    }
 }
