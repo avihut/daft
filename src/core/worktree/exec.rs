@@ -147,6 +147,23 @@ pub struct WorktreeSnapshot {
     pub branch: Option<String>,
 }
 
+impl WorktreeSnapshot {
+    /// True if this snapshot represents a branch that has a real checked-out
+    /// worktree. Orphan branches (branch exists in refs but no worktree)
+    /// are represented with `path` pointing to an unusable sentinel.
+    pub fn has_worktree(&self) -> bool {
+        // In production, `parse_worktree_list` only ever returns real
+        // worktrees; orphan branches are collected separately and fed in
+        // with the sentinel path "::orphan::" from the command-layer
+        // helper. Resolve on the sentinel to distinguish the two.
+        self.path.to_str() != Some("::orphan::")
+    }
+}
+
+fn is_glob(tok: &str) -> bool {
+    tok.contains('*') || tok.contains('?') || tok.contains('[')
+}
+
 /// Errors surfaced during target resolution. Kept as a plain enum so
 /// callers render friendly messages rather than parsing anyhow strings.
 #[derive(Debug)]
@@ -259,6 +276,125 @@ pub fn resolve_targets(
     Ok(out)
 }
 
+/// Like `resolve_targets`, but supports globs and reports orphan
+/// branches (branches matched by a glob that have no worktree). Orphans
+/// are surfaced so the renderer can print a one-line warning; they do not
+/// count as unmatched for error purposes *unless* the glob matched nothing
+/// actionable at all (only orphans, or nothing).
+pub fn resolve_targets_with_orphans(
+    positionals: &[String],
+    all: bool,
+    worktrees: &[WorktreeSnapshot],
+) -> Result<(Vec<ResolvedTarget>, Vec<String>), ResolveError> {
+    if positionals.is_empty() && !all {
+        return Err(ResolveError::NoTargets);
+    }
+    if !positionals.is_empty() && all {
+        return Err(ResolveError::AllWithPositionals);
+    }
+
+    if all {
+        let mut out: Vec<ResolvedTarget> = worktrees
+            .iter()
+            .filter(|w| w.has_worktree())
+            .filter_map(|w| {
+                w.branch.as_ref().map(|b| ResolvedTarget {
+                    worktree_path: w.path.clone(),
+                    branch_name: b.clone(),
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.branch_name.cmp(&b.branch_name));
+        return Ok((out, Vec::new()));
+    }
+
+    use globset::{Glob, GlobSetBuilder};
+    let mut out: Vec<ResolvedTarget> = Vec::new();
+    let mut seen_paths: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
+    let mut orphans: Vec<String> = Vec::new();
+    let mut unmatched: Vec<String> = Vec::new();
+
+    for tok in positionals {
+        if is_glob(tok) {
+            let glob = match Glob::new(tok) {
+                Ok(g) => g,
+                Err(_) => {
+                    unmatched.push(tok.clone());
+                    continue;
+                }
+            };
+            let mut set_builder = GlobSetBuilder::new();
+            set_builder.add(glob);
+            let set = match set_builder.build() {
+                Ok(s) => s,
+                Err(_) => {
+                    unmatched.push(tok.clone());
+                    continue;
+                }
+            };
+
+            let mut snapshot_branches: Vec<(&WorktreeSnapshot, &String)> = worktrees
+                .iter()
+                .filter_map(|w| w.branch.as_ref().map(|b| (w, b)))
+                .filter(|(_, b)| set.is_match(b))
+                .collect();
+            snapshot_branches.sort_by(|a, b| a.1.cmp(b.1));
+
+            let mut actionable_this_glob: usize = 0;
+            let mut orphans_this_glob: Vec<String> = Vec::new();
+
+            for (wt, branch) in snapshot_branches {
+                if !wt.has_worktree() {
+                    orphans_this_glob.push(branch.clone());
+                } else if seen_paths.insert(wt.path.clone()) {
+                    out.push(ResolvedTarget {
+                        worktree_path: wt.path.clone(),
+                        branch_name: branch.clone(),
+                    });
+                    actionable_this_glob += 1;
+                } else {
+                    // Already pulled in by an earlier positional; still
+                    // counts as "this glob produced something actionable."
+                    actionable_this_glob += 1;
+                }
+            }
+
+            if actionable_this_glob == 0 {
+                // Either matched nothing, or matched only orphans. Both
+                // are errors; don't report orphans as "skipped" because
+                // the run isn't happening.
+                unmatched.push(tok.clone());
+            } else {
+                orphans.extend(orphans_this_glob);
+            }
+            continue;
+        }
+
+        // Exact fallthrough: reuse the non-glob resolver's logic.
+        let sub = resolve_targets(std::slice::from_ref(tok), false, worktrees);
+        match sub {
+            Ok(exact) => {
+                for t in exact {
+                    if seen_paths.insert(t.worktree_path.clone()) {
+                        out.push(t);
+                    }
+                }
+            }
+            Err(ResolveError::Unmatched(ref toks)) => {
+                unmatched.extend_from_slice(toks);
+            }
+            Err(other) => return Err(other),
+        }
+    }
+
+    if !unmatched.is_empty() {
+        return Err(ResolveError::Unmatched(unmatched));
+    }
+
+    Ok((out, orphans))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,5 +493,69 @@ mod tests {
         let got = resolve_targets(&["feat/b".into(), "feat/a".into()], false, &wts).unwrap();
         assert_eq!(got[0].branch_name, "feat/b");
         assert_eq!(got[1].branch_name, "feat/a");
+    }
+
+    fn snap_no_wt(branch: &str) -> WorktreeSnapshot {
+        // A branch that exists in the repo but has no worktree checked out.
+        // For test purposes we represent this as a snapshot whose path is
+        // a sentinel — `has_worktree()` returns false for this path.
+        WorktreeSnapshot {
+            path: PathBuf::from("::orphan::"),
+            branch: Some(branch.to_string()),
+        }
+    }
+
+    fn all_with_orphans() -> Vec<WorktreeSnapshot> {
+        let mut v = all_worktrees();
+        v.push(snap_no_wt("feat/orphan-1"));
+        v.push(snap_no_wt("feat/orphan-2"));
+        v
+    }
+
+    fn resolve_report(
+        positionals: &[String],
+        all: bool,
+        worktrees: &[WorktreeSnapshot],
+    ) -> (Vec<ResolvedTarget>, Vec<String>) {
+        let (tgts, orphans) = resolve_targets_with_orphans(positionals, all, worktrees).unwrap();
+        (tgts, orphans)
+    }
+
+    #[test]
+    fn glob_matches_branches_alphabetically() {
+        let wts = all_worktrees();
+        let (got, orphans) = resolve_report(&["feat/*".into()], false, &wts);
+        assert_eq!(
+            got.iter()
+                .map(|t| t.branch_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["feat/a", "feat/b"]
+        );
+        assert!(orphans.is_empty());
+    }
+
+    #[test]
+    fn glob_skips_orphan_branches_but_reports_them() {
+        let wts = all_with_orphans();
+        let (got, orphans) = resolve_report(&["feat/*".into()], false, &wts);
+        let branches: Vec<_> = got.iter().map(|t| t.branch_name.as_str()).collect();
+        assert_eq!(branches, vec!["feat/a", "feat/b"]);
+        assert_eq!(orphans, vec!["feat/orphan-1", "feat/orphan-2"]);
+    }
+
+    #[test]
+    fn glob_that_matches_nothing_is_error() {
+        let wts = all_worktrees();
+        let err = resolve_targets_with_orphans(&["zzz*".into()], false, &wts).unwrap_err();
+        assert!(matches!(err, ResolveError::Unmatched(_)));
+    }
+
+    #[test]
+    fn glob_that_only_matches_orphans_is_error_not_silent_skip() {
+        // "feat/orphan-*" only matches branches with no worktree; nothing
+        // actionable, so we error rather than run zero commands silently.
+        let wts = all_with_orphans();
+        let err = resolve_targets_with_orphans(&["feat/orphan-*".into()], false, &wts).unwrap_err();
+        assert!(matches!(err, ResolveError::Unmatched(_)));
     }
 }
