@@ -402,7 +402,13 @@ fn print_json(
             }
 
             if is_default_columns || selected_columns.contains(&ListColumn::Owner) {
-                obj.insert("owner".into(), serde_json::json!(info.owner_email));
+                let owner_json = info.owner.as_ref().map_or(serde_json::Value::Null, |o| {
+                    serde_json::json!({
+                        "name": o.name,
+                        "email": o.email,
+                    })
+                });
+                obj.insert("owner".into(), owner_json);
             }
 
             if selected_columns.contains(&ListColumn::Hash) {
