@@ -37,6 +37,7 @@ pub(super) const VERB_ALIAS_GROUPS: &[(&[&str], &str)] = &[
     (&["clone"], "git-worktree-clone"),
     (&["init"], "git-worktree-init"),
     (&["shared"], "daft-shared"),
+    (&["exec"], "git-worktree-exec"),
 ];
 
 /// Available daft commands that need completion scripts
@@ -47,6 +48,7 @@ pub(super) const COMMANDS: &[&str] = &[
     "git-worktree-prune",
     "git-worktree-carry",
     "git-worktree-fetch",
+    "git-worktree-exec",
     "git-worktree-flow-adopt",
     "git-worktree-flow-eject",
     "git-worktree-list",
@@ -67,6 +69,7 @@ pub(super) fn get_command_for_name(command_name: &str) -> Option<Command> {
         "git-worktree-prune" => Some(crate::commands::prune::Args::command()),
         "git-worktree-carry" => Some(crate::commands::carry::Args::command()),
         "git-worktree-fetch" => Some(crate::commands::fetch::Args::command()),
+        "git-worktree-exec" => Some(crate::commands::exec::Args::command()),
         "git-worktree-flow-adopt" => Some(crate::commands::flow_adopt::Args::command()),
         "git-worktree-flow-eject" => Some(crate::commands::flow_eject::Args::command()),
         "git-worktree-list" => Some(crate::commands::list::Args::command()),
@@ -92,6 +95,7 @@ pub(super) fn uses_rich_completions(command_name: &str) -> bool {
             | "git-worktree-carry"
             | "git-worktree-fetch"
             | "git-worktree-branch"
+            | "git-worktree-exec"
     )
 }
 
@@ -662,6 +666,7 @@ mod tests {
             "daft-go",
             "daft-remove",
             "daft-rename",
+            "git-worktree-exec",
         ];
         for cmd in rich_commands {
             let script = zsh::generate_zsh_completion_string(cmd)
@@ -713,6 +718,7 @@ mod tests {
             "daft-go",
             "daft-remove",
             "daft-rename",
+            "git-worktree-exec",
         ];
         for cmd in rich_commands {
             let script = fish::generate_fish_completion_string(cmd)
@@ -733,6 +739,7 @@ mod tests {
             "daft-go",
             "daft-remove",
             "daft-rename",
+            "git-worktree-exec",
         ];
         for cmd in rich_commands {
             let script = bash::generate_bash_completion_string(cmd)

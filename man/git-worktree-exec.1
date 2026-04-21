@@ -1,0 +1,73 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-worktree-exec 1  "git-worktree-exec 1.7.2" 
+.SH NAME
+git\-worktree\-exec \- Run a command across one or more worktrees
+.SH SYNOPSIS
+\fBgit\-worktree\-exec\fR [\fB\-\-all\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-\-sequential\fR] [\fB\-\-keep\-going\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fITARGETS\fR] [\fICMD\fR] 
+.SH DESCRIPTION
+.PP
+Runs one or more commands against one or more selected worktrees without
+changing the current directory.
+.PP
+Targets may be given as positional branch or worktree\-directory names, or
+globs against branch names (e.g. \*(Aqfeat/*\*(Aq). Use \-\-all to target every
+worktree in the repository. Positionals and \-\-all are mutually exclusive.
+.PP
+Commands are expressed either as a literal argv after \-\-, or as one or
+more \-x shell strings. The two forms are mutually exclusive. Multiple \-x
+values run sequentially per worktree; a failure stops that worktree but
+does not stop other worktrees.
+.PP
+When a single worktree is targeted, stdio is fully inherited, making
+interactive programs (claude, vim, fzf) work the same as if you had cd\*(Aqd
+into the worktree first.
+.SH OPTIONS
+.TP
+\fB\-\-all\fR
+Target every worktree in the repository
+.TP
+\fB\-x\fR, \fB\-\-exec\fR \fI<CMD>\fR
+Shell command to run (repeatable); runs via $SHELL \-c
+.TP
+\fB\-\-sequential\fR
+Run worktrees one at a time and stop on first failure
+.TP
+\fB\-\-keep\-going\fR
+Run worktrees one at a time and continue through failures
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show hook\-style live windows instead of the list\-mode table
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+[\fITARGETS\fR]
+Target worktree(s) by branch name, directory name, or glob
+.TP
+[\fICMD\fR]
+Trailing command vector after `\-\-`. Mutually exclusive with `\-x`
+.SH EXTRA
+EXAMPLES:
+    Run a single command across all worktrees:
+        daft exec \-\-all \-\- npm test
+
+    Run on specific branches (glob and exact mix):
+        daft exec feat/auth \*(Aqfeat/ui\-*\*(Aq \-\- cargo build
+
+    Sequential with fail\-fast:
+        daft exec \-\-all \-\-sequential \-\- pnpm lint
+
+    Pipeline of commands per worktree:
+        daft exec \-\-all \-x \*(Aqmise install\*(Aq \-x \*(Aqpnpm build\*(Aq \-x \*(Aqpnpm test\*(Aq
+
+    Pass\-through to an interactive program (single target):
+        daft exec feat/auth \-\- claude
+
+    Live "windows" output (like hooks):
+        daft exec \-\-all \-v \-\- cargo test
+.SH VERSION
+v1.7.2
