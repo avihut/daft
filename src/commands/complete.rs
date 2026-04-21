@@ -104,6 +104,12 @@ fn complete(
             &CONFIG_FETCH,
         )?)),
 
+        // git-worktree-exec: worktree-only completions, current worktree included
+        ("git-worktree-exec", _) => Ok(format_entries_as_strings(&complete_rich_branches(
+            word,
+            &CONFIG_EXEC,
+        )?)),
+
         // git-worktree-branch: worktree + local completions for deletion
         ("git-worktree-branch", _) => Ok(format_entries_as_strings(&complete_rich_branches(
             word,
@@ -1059,6 +1065,13 @@ const CONFIG_CARRY: RichCompletionConfig = RichCompletionConfig {
 };
 
 const CONFIG_FETCH: RichCompletionConfig = RichCompletionConfig {
+    include_worktrees: true,
+    include_local: false,
+    include_remote: false,
+    exclude_current: false,
+};
+
+const CONFIG_EXEC: RichCompletionConfig = RichCompletionConfig {
     include_worktrees: true,
     include_local: false,
     include_remote: false,
