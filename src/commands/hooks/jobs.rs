@@ -868,7 +868,7 @@ fn render_invocation_logs(store: &LogStore, invocation_id: &str, buf: &mut Strin
         .into_iter()
         .filter_map(|dir| store.read_meta(&dir).ok().map(|m| (dir, m)))
         .collect();
-    jobs.sort_by(|a, b| a.1.started_at.cmp(&b.1.started_at));
+    jobs.sort_by_key(|a| a.1.started_at);
 
     // Invocation header.
     writeln!(
