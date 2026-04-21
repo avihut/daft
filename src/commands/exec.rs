@@ -202,10 +202,21 @@ pub fn run() -> Result<()> {
         core::ExecMode::Parallel
     };
 
+    // Install a SIGINT handler that escalates the shared cancel flag:
+    // first Ctrl-C soft-cancels (SIGTERM to children), second Ctrl-C
+    // hard-cancels (SIGKILL). `ctrlc::set_handler` is process-global and
+    // can only be installed once; swallow the error if something already
+    // installed one so tests and nested invocations don't panic.
+    let cancel = std::sync::Arc::new(core::CancelFlag::new());
+    let handler_flag = std::sync::Arc::clone(&cancel);
+    let _ = ctrlc::set_handler(move || {
+        handler_flag.escalate();
+    });
+
     let report = if args.verbose {
-        core::windows_renderer::run_with_live_windows(&targets, &pipeline, mode)?
+        core::windows_renderer::run_with_live_windows(&targets, &pipeline, mode, &cancel)?
     } else {
-        core::run_scheduler(&targets, &pipeline, mode)?
+        core::run_scheduler(&targets, &pipeline, mode, &cancel)?
     };
 
     let stdout = std::io::stdout();

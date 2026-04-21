@@ -10,7 +10,9 @@
 //! per-target runtime lives in
 //! [`super::run_pipeline_streaming`](crate::core::worktree::exec::run_pipeline_streaming).
 
-use super::{run_pipeline_streaming, CommandSpec, ExecMode, ExecReport, ResolvedTarget};
+use super::{
+    run_pipeline_streaming, CancelFlag, CommandSpec, ExecMode, ExecReport, ResolvedTarget,
+};
 use crate::executor::cli_presenter::CliPresenter;
 use crate::executor::presenter::JobPresenter;
 use crate::settings::HookOutputConfig;
@@ -26,6 +28,7 @@ pub fn run_with_live_windows(
     targets: &[ResolvedTarget],
     pipeline: &[CommandSpec],
     mode: ExecMode,
+    cancel: &CancelFlag,
 ) -> anyhow::Result<ExecReport> {
     // Enable verbose-style command previews under each panel; other knobs
     // match the defaults used by the hooks command.
@@ -39,9 +42,9 @@ pub fn run_with_live_windows(
     let phase_start = Instant::now();
 
     let outcomes = match mode {
-        ExecMode::Parallel => run_parallel(targets, pipeline, &presenter)?,
-        ExecMode::Sequential => run_sequential(targets, pipeline, false, &presenter)?,
-        ExecMode::KeepGoing => run_sequential(targets, pipeline, true, &presenter)?,
+        ExecMode::Parallel => run_parallel(targets, pipeline, &presenter, cancel)?,
+        ExecMode::Sequential => run_sequential(targets, pipeline, false, &presenter, cancel)?,
+        ExecMode::KeepGoing => run_sequential(targets, pipeline, true, &presenter, cancel)?,
     };
 
     presenter.on_phase_complete(phase_start.elapsed());
@@ -56,26 +59,30 @@ fn run_parallel(
     targets: &[ResolvedTarget],
     pipeline: &[CommandSpec],
     presenter: &Arc<dyn JobPresenter>,
+    cancel: &CancelFlag,
 ) -> anyhow::Result<Vec<super::WorktreeOutcome>> {
-    let pipeline = Arc::new(pipeline.to_vec());
-    let handles: Vec<_> = targets
-        .iter()
-        .cloned()
-        .map(|t| {
-            let p = Arc::clone(&pipeline);
-            let pres = Arc::clone(presenter);
-            thread::spawn(move || run_pipeline_streaming(&t, &p, "", &pres))
-        })
-        .collect();
+    // `thread::scope` lets worker threads borrow `cancel`, `pipeline`, and
+    // `presenter` for their entire lifetime without `'static`, which keeps
+    // the cancellation flag observable across every worker.
+    let mut outcomes = thread::scope(|scope| -> anyhow::Result<Vec<super::WorktreeOutcome>> {
+        let handles: Vec<_> = targets
+            .iter()
+            .map(|t| {
+                let pres = Arc::clone(presenter);
+                scope.spawn(move || run_pipeline_streaming(t, pipeline, "", &pres, cancel))
+            })
+            .collect();
 
-    let mut outcomes = Vec::with_capacity(targets.len());
-    for h in handles {
-        match h.join() {
-            Ok(Ok(o)) => outcomes.push(o),
-            Ok(Err(e)) => return Err(e),
-            Err(panic) => return Err(anyhow::anyhow!("worker thread panicked: {:?}", panic)),
+        let mut out = Vec::with_capacity(targets.len());
+        for h in handles {
+            match h.join() {
+                Ok(Ok(o)) => out.push(o),
+                Ok(Err(e)) => return Err(e),
+                Err(panic) => return Err(anyhow::anyhow!("worker thread panicked: {:?}", panic)),
+            }
         }
-    }
+        Ok(out)
+    })?;
     outcomes.sort_by_key(|o| {
         targets
             .iter()
@@ -90,10 +97,14 @@ fn run_sequential(
     pipeline: &[CommandSpec],
     keep_going: bool,
     presenter: &Arc<dyn JobPresenter>,
+    cancel: &CancelFlag,
 ) -> anyhow::Result<Vec<super::WorktreeOutcome>> {
     let mut outcomes = Vec::with_capacity(targets.len());
     for t in targets {
-        let outcome = run_pipeline_streaming(t, pipeline, "", presenter)?;
+        if cancel.is_cancelled() {
+            break;
+        }
+        let outcome = run_pipeline_streaming(t, pipeline, "", presenter, cancel)?;
         let succeeded = outcome.succeeded();
         outcomes.push(outcome);
         if !succeeded && !keep_going {
@@ -116,7 +127,9 @@ mod tests {
             branch_name: "master".into(),
         }];
         let pipeline = vec![CommandSpec::Argv(vec!["echo".into(), "hi".into()])];
-        let report = run_with_live_windows(&targets, &pipeline, ExecMode::Parallel).unwrap();
+        let report =
+            run_with_live_windows(&targets, &pipeline, ExecMode::Parallel, &CancelFlag::new())
+                .unwrap();
         assert_eq!(report.outcomes.len(), 1);
         assert_eq!(report.aggregate_exit_code(), 0);
         assert!(report.outcomes[0].succeeded());

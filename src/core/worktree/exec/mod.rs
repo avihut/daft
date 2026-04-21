@@ -11,9 +11,64 @@ use crate::executor::presenter::{JobPresenter, NullPresenter};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+/// Cancellation level for in-flight exec runs.
+///
+/// 0 = running normally.
+/// 1 = soft-cancel: children get SIGTERM; we wait for them to exit.
+/// 2 = hard-cancel: children get SIGKILL.
+///
+/// Escalation is monotonic — the flag never goes down.
+pub struct CancelFlag(AtomicUsize);
+
+impl CancelFlag {
+    pub fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+
+    pub fn level(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.level() >= 1
+    }
+
+    pub fn escalate(&self) {
+        // 0 → 1, 1 → 2, 2 → 2 (saturates). Atomic compare-and-swap so
+        // concurrent escalations can't regress the level under contention.
+        let _ = self
+            .0
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
+                (cur < 2).then_some(cur + 1)
+            });
+    }
+}
+
+impl Default for CancelFlag {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(unix)]
+fn terminate_child(child: &std::process::Child) {
+    // Safety: `kill(2)` is signal-safe. Passing a PID of an already-reaped
+    // child returns ESRCH, which we ignore — callers loop and `try_wait`
+    // independently to detect exit.
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGTERM);
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_child(_child: &std::process::Child) {
+    // Windows: fall through to `child.kill()` on escalation.
+}
 
 /// A worktree that has been matched by the user's selectors and is ready
 /// to receive commands.
@@ -453,9 +508,10 @@ pub fn collect_snapshot(git: &crate::git::GitCommand) -> anyhow::Result<Vec<Work
 pub fn run_pipeline(
     target: &ResolvedTarget,
     pipeline: &[CommandSpec],
+    cancel: &CancelFlag,
 ) -> anyhow::Result<WorktreeOutcome> {
     let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
-    run_pipeline_streaming(target, pipeline, "", &presenter)
+    run_pipeline_streaming(target, pipeline, "", &presenter, cancel)
 }
 
 /// Run the pipeline against a single worktree, streaming every stdout/stderr
@@ -468,11 +524,13 @@ pub fn run_pipeline_streaming(
     pipeline: &[CommandSpec],
     name_prefix: &str,
     presenter: &Arc<dyn JobPresenter>,
+    cancel: &CancelFlag,
 ) -> anyhow::Result<WorktreeOutcome> {
     let start = Instant::now();
     let tail = Arc::new(Mutex::new(TailBuffer::new(OUTPUT_CAP_BYTES)));
     let mut exit_code: i32 = 0;
     let mut last_index: usize = 0;
+    let mut cancelled = false;
     let base_name: &str = if name_prefix.is_empty() {
         target.branch_name.as_str()
     } else {
@@ -480,6 +538,13 @@ pub fn run_pipeline_streaming(
     };
 
     for (idx, spec) in pipeline.iter().enumerate() {
+        // Between commands: if cancel has been requested, stop before
+        // launching the next command.
+        if cancel.is_cancelled() {
+            cancelled = true;
+            break;
+        }
+
         last_index = idx;
         let job_name = if pipeline.len() > 1 {
             format!("{} [{}/{}]", base_name, idx + 1, pipeline.len())
@@ -513,12 +578,40 @@ pub fn run_pipeline_streaming(
         let stdout_thread = spawn_stream_reader(out, Arc::clone(&tail), presenter, &job_name);
         let stderr_thread = spawn_stream_reader(err, Arc::clone(&tail), presenter, &job_name);
 
-        let status = child.wait()?;
+        // Poll for child exit while watching for cancel escalation so we
+        // can deliver SIGTERM on first SIGINT and SIGKILL on second.
+        // `child.wait()` would block and ignore our flag until exit.
+        let mut sent_term = false;
+        let status = loop {
+            if let Some(s) = child.try_wait()? {
+                break s;
+            }
+            match cancel.level() {
+                0 => {}
+                1 => {
+                    if !sent_term {
+                        terminate_child(&child);
+                        sent_term = true;
+                    }
+                }
+                _ => {
+                    // Hard-cancel: SIGKILL on unix, TerminateProcess on
+                    // windows (both via std's `child.kill()`).
+                    let _ = child.kill();
+                }
+            }
+            thread::sleep(Duration::from_millis(50));
+        };
         stdout_thread.join().ok();
         stderr_thread.join().ok();
         exit_code = status.code().unwrap_or(-1);
 
         let cmd_elapsed = cmd_start.elapsed();
+        if cancel.is_cancelled() {
+            cancelled = true;
+            presenter.on_job_failure(&job_name, cmd_elapsed);
+            break;
+        }
         if exit_code == 0 {
             presenter.on_job_success(&job_name, cmd_elapsed);
         } else {
@@ -544,7 +637,7 @@ pub fn run_pipeline_streaming(
         exit_code,
         elapsed: start.elapsed(),
         captured_output: captured,
-        cancelled: false,
+        cancelled,
     })
 }
 
@@ -607,38 +700,42 @@ pub fn run_scheduler(
     targets: &[ResolvedTarget],
     pipeline: &[CommandSpec],
     mode: ExecMode,
+    cancel: &CancelFlag,
 ) -> anyhow::Result<ExecReport> {
     match mode {
-        ExecMode::Parallel => run_parallel(targets, pipeline),
-        ExecMode::Sequential => run_sequential(targets, pipeline, false),
-        ExecMode::KeepGoing => run_sequential(targets, pipeline, true),
+        ExecMode::Parallel => run_parallel(targets, pipeline, cancel),
+        ExecMode::Sequential => run_sequential(targets, pipeline, false, cancel),
+        ExecMode::KeepGoing => run_sequential(targets, pipeline, true, cancel),
     }
 }
 
 fn run_parallel(
     targets: &[ResolvedTarget],
     pipeline: &[CommandSpec],
+    cancel: &CancelFlag,
 ) -> anyhow::Result<ExecReport> {
-    let pipeline = Arc::new(pipeline.to_vec());
-    let handles: Vec<_> = targets
-        .iter()
-        .cloned()
-        .map(|t| {
-            let p = Arc::clone(&pipeline);
-            thread::spawn(move || run_pipeline(&t, &p))
-        })
-        .collect();
+    // `thread::scope` lets workers borrow `cancel` and `pipeline` without
+    // requiring `'static`, so SIGINT escalations on the caller's flag
+    // propagate live into every worker.
+    let outcomes = thread::scope(|scope| -> anyhow::Result<Vec<WorktreeOutcome>> {
+        let handles: Vec<_> = targets
+            .iter()
+            .map(|t| scope.spawn(move || run_pipeline(t, pipeline, cancel)))
+            .collect();
 
-    let mut outcomes: Vec<WorktreeOutcome> = Vec::new();
-    for h in handles {
-        match h.join() {
-            Ok(Ok(o)) => outcomes.push(o),
-            Ok(Err(e)) => return Err(e),
-            Err(panic) => return Err(anyhow::anyhow!("worker thread panicked: {:?}", panic)),
+        let mut out: Vec<WorktreeOutcome> = Vec::new();
+        for h in handles {
+            match h.join() {
+                Ok(Ok(o)) => out.push(o),
+                Ok(Err(e)) => return Err(e),
+                Err(panic) => return Err(anyhow::anyhow!("worker thread panicked: {:?}", panic)),
+            }
         }
-    }
+        Ok(out)
+    })?;
 
     // Preserve targets' resolved order for stable UI rendering.
+    let mut outcomes = outcomes;
     outcomes.sort_by_key(|o| {
         targets
             .iter()
@@ -656,10 +753,14 @@ fn run_sequential(
     targets: &[ResolvedTarget],
     pipeline: &[CommandSpec],
     keep_going: bool,
+    cancel: &CancelFlag,
 ) -> anyhow::Result<ExecReport> {
     let mut outcomes = Vec::with_capacity(targets.len());
     for t in targets {
-        let outcome = run_pipeline(t, pipeline)?;
+        if cancel.is_cancelled() {
+            break;
+        }
+        let outcome = run_pipeline(t, pipeline, cancel)?;
         let succeeded = outcome.succeeded();
         outcomes.push(outcome);
         if !succeeded && !keep_going {
@@ -850,7 +951,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let target = dummy_target(&dir, "master");
         let spec = CommandSpec::Argv(vec!["echo".into(), "hi".into()]);
-        let outcome = run_pipeline(&target, &[spec]).unwrap();
+        let outcome = run_pipeline(&target, &[spec], &CancelFlag::new()).unwrap();
         assert_eq!(outcome.exit_code, 0);
         assert!(
             String::from_utf8_lossy(&outcome.captured_output).contains("hi"),
@@ -867,7 +968,7 @@ mod tests {
             CommandSpec::Argv(vec!["false".into()]),
             CommandSpec::Argv(vec!["echo".into(), "should-not-run".into()]),
         ];
-        let outcome = run_pipeline(&target, &pipeline).unwrap();
+        let outcome = run_pipeline(&target, &pipeline, &CancelFlag::new()).unwrap();
         assert_ne!(outcome.exit_code, 0);
         assert_eq!(outcome.last_command_index, 0);
         assert!(
@@ -881,7 +982,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let target = dummy_target(&dir, "master");
         let spec = CommandSpec::Argv(vec!["pwd".into()]);
-        let outcome = run_pipeline(&target, &[spec]).unwrap();
+        let outcome = run_pipeline(&target, &[spec], &CancelFlag::new()).unwrap();
         let out = String::from_utf8_lossy(&outcome.captured_output);
         let expected = dir.path().canonicalize().unwrap();
         let got = std::path::PathBuf::from(out.trim()).canonicalize().unwrap();
@@ -897,7 +998,7 @@ mod tests {
             "-c".into(),
             "printf %s \"$DAFT_BRANCH_NAME\"".into(),
         ]);
-        let outcome = run_pipeline(&target, &[spec]).unwrap();
+        let outcome = run_pipeline(&target, &[spec], &CancelFlag::new()).unwrap();
         assert_eq!(
             String::from_utf8_lossy(&outcome.captured_output).trim(),
             "feat/abc"
@@ -910,7 +1011,7 @@ mod tests {
         let target = dummy_target(&dir, "master");
         // Pipeline + env expansion only works in the shell form.
         let spec = CommandSpec::Shell("echo $((1+2))".into());
-        let outcome = run_pipeline(&target, &[spec]).unwrap();
+        let outcome = run_pipeline(&target, &[spec], &CancelFlag::new()).unwrap();
         assert_eq!(outcome.exit_code, 0);
         assert_eq!(
             String::from_utf8_lossy(&outcome.captured_output).trim(),
@@ -933,7 +1034,8 @@ mod tests {
             },
         ];
         let pipeline = vec![CommandSpec::Argv(vec!["echo".into(), "ok".into()])];
-        let report = run_scheduler(&targets, &pipeline, ExecMode::Parallel).unwrap();
+        let report =
+            run_scheduler(&targets, &pipeline, ExecMode::Parallel, &CancelFlag::new()).unwrap();
         assert_eq!(report.outcomes.len(), 2);
         assert!(report.outcomes.iter().all(|o| o.succeeded()));
         assert_eq!(report.aggregate_exit_code(), 0);
@@ -954,7 +1056,8 @@ mod tests {
             },
         ];
         let pipeline = vec![CommandSpec::Argv(vec!["false".into()])];
-        let report = run_scheduler(&targets, &pipeline, ExecMode::Parallel).unwrap();
+        let report =
+            run_scheduler(&targets, &pipeline, ExecMode::Parallel, &CancelFlag::new()).unwrap();
         assert_eq!(report.aggregate_exit_code(), 1);
         assert!(report.outcomes.iter().all(|o| !o.succeeded()));
     }
@@ -969,7 +1072,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let target = dummy_target(&dir, "master");
         let spec = CommandSpec::Shell("echo $DAFT_EXEC_TEST_MARKER".into());
-        let outcome = run_pipeline(&target, &[spec]).unwrap();
+        let outcome = run_pipeline(&target, &[spec], &CancelFlag::new()).unwrap();
         std::env::remove_var("DAFT_EXEC_TEST_MARKER");
         assert_eq!(
             String::from_utf8_lossy(&outcome.captured_output).trim(),
@@ -1001,7 +1104,13 @@ mod tests {
         let pipeline = vec![CommandSpec::Shell(
             r#"case "$DAFT_BRANCH_NAME" in b) exit 1;; *) exit 0;; esac"#.into(),
         )];
-        let report = run_scheduler(&targets, &pipeline, ExecMode::Sequential).unwrap();
+        let report = run_scheduler(
+            &targets,
+            &pipeline,
+            ExecMode::Sequential,
+            &CancelFlag::new(),
+        )
+        .unwrap();
         assert_eq!(report.outcomes.len(), 2, "third target must not have run");
         assert_eq!(report.outcomes[0].target.branch_name, "a");
         assert_eq!(report.outcomes[1].target.branch_name, "b");
@@ -1030,7 +1139,8 @@ mod tests {
         let pipeline = vec![CommandSpec::Shell(
             r#"case "$DAFT_BRANCH_NAME" in b) exit 1;; *) exit 0;; esac"#.into(),
         )];
-        let report = run_scheduler(&targets, &pipeline, ExecMode::KeepGoing).unwrap();
+        let report =
+            run_scheduler(&targets, &pipeline, ExecMode::KeepGoing, &CancelFlag::new()).unwrap();
         assert_eq!(report.outcomes.len(), 3);
         assert_eq!(report.aggregate_exit_code(), 1);
     }
@@ -1089,5 +1199,19 @@ mod tests {
         );
         assert!(s.contains("exit 101"), "missing exit code");
         assert!(s.contains("panicked!"), "missing failed output dump");
+    }
+
+    #[test]
+    fn cancel_flag_monotonic_escalation() {
+        let f = CancelFlag::new();
+        assert_eq!(f.level(), 0);
+        assert!(!f.is_cancelled());
+        f.escalate();
+        assert_eq!(f.level(), 1);
+        assert!(f.is_cancelled());
+        f.escalate();
+        assert_eq!(f.level(), 2);
+        f.escalate(); // saturates
+        assert_eq!(f.level(), 2);
     }
 }
