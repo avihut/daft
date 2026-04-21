@@ -4,6 +4,8 @@
 //! `ExecReport` data type that the command layer renders. No IO to stdout
 //! lives here; renderers are separate.
 
+pub mod list_renderer;
+
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -962,5 +964,61 @@ mod tests {
         let report = run_scheduler(&targets, &pipeline, ExecMode::KeepGoing).unwrap();
         assert_eq!(report.outcomes.len(), 3);
         assert_eq!(report.aggregate_exit_code(), 1);
+    }
+
+    #[test]
+    fn list_renderer_header_and_rows_and_failed_dump() {
+        use super::list_renderer::{render_failed_output_dump, render_header, render_outcome};
+
+        let pipeline = vec![CommandSpec::Argv(vec!["cargo".into(), "test".into()])];
+        let outcomes = vec![
+            WorktreeOutcome {
+                target: ResolvedTarget {
+                    worktree_path: "/r/master".into(),
+                    branch_name: "master".into(),
+                },
+                last_command_index: 0,
+                exit_code: 0,
+                elapsed: std::time::Duration::from_millis(800),
+                captured_output: b"ok\n".to_vec(),
+                cancelled: false,
+            },
+            WorktreeOutcome {
+                target: ResolvedTarget {
+                    worktree_path: "/r/feat-dirty".into(),
+                    branch_name: "feat/dirty".into(),
+                },
+                last_command_index: 0,
+                exit_code: 101,
+                elapsed: std::time::Duration::from_millis(1200),
+                captured_output: b"panicked!\n".to_vec(),
+                cancelled: false,
+            },
+        ];
+        let report = ExecReport {
+            outcomes,
+            orphan_branches_skipped: vec![],
+        };
+
+        let mut out: Vec<u8> = Vec::new();
+        render_header(&mut out, &pipeline).unwrap();
+        for o in &report.outcomes {
+            render_outcome(&mut out, o, &pipeline).unwrap();
+        }
+        render_failed_output_dump(&mut out, &report, &pipeline).unwrap();
+
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("Commands"), "missing Commands header");
+        assert!(s.contains("1. cargo test"), "missing pipeline row");
+        assert!(
+            s.contains("✓") && s.contains("master"),
+            "missing success row"
+        );
+        assert!(
+            s.contains("✗") && s.contains("feat/dirty"),
+            "missing fail row"
+        );
+        assert!(s.contains("exit 101"), "missing exit code");
+        assert!(s.contains("panicked!"), "missing failed output dump");
     }
 }

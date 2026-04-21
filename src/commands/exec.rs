@@ -204,16 +204,14 @@ pub fn run() -> Result<()> {
 
     let report = core::run_scheduler(&targets, &pipeline, mode)?;
 
-    // Placeholder summary — replaced by list-mode renderer in Task 15.
+    let stdout = std::io::stdout();
+    let mut sink = stdout.lock();
+    core::list_renderer::render_header(&mut sink, &pipeline)?;
     for outcome in &report.outcomes {
-        let tag = if outcome.succeeded() { "OK" } else { "FAIL" };
-        println!(
-            "[{tag}] {} ({:.2}s) exit={}",
-            outcome.target.branch_name,
-            outcome.elapsed.as_secs_f64(),
-            outcome.exit_code
-        );
+        core::list_renderer::render_outcome(&mut sink, outcome, &pipeline)?;
     }
+    core::list_renderer::render_failed_output_dump(&mut sink, &report, &pipeline)?;
+    drop(sink);
 
     std::process::exit(report.aggregate_exit_code());
 }
