@@ -756,6 +756,35 @@ mod tests {
     }
 
     #[test]
+    fn umbrella_shells_dispatch_exec_verb() {
+        let bash = bash::DAFT_BASH_COMPLETIONS;
+        assert!(
+            bash.contains("exec)"),
+            "bash umbrella must dispatch `exec` verb"
+        );
+        assert!(
+            bash.contains("_git_worktree_exec"),
+            "bash umbrella must call per-command completer"
+        );
+
+        let combined_zsh = format!(
+            "{}\n{}",
+            zsh::generate_zsh_completion_string("git-worktree-exec").unwrap(),
+            zsh::DAFT_ZSH_COMPLETIONS,
+        );
+        assert!(
+            combined_zsh.contains("exec)") || combined_zsh.contains("__git_worktree_exec_impl"),
+            "zsh umbrella must dispatch `exec`"
+        );
+
+        let fish = fish::generate_daft_fish_completions();
+        assert!(
+            fish.contains("git-worktree-exec") || fish.contains(" exec "),
+            "fish umbrella must reference exec verb"
+        );
+    }
+
+    #[test]
     fn zsh_gates_flag_completions_on_leading_dash() {
         let commands = [
             "git-worktree-checkout",
