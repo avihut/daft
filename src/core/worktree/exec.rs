@@ -95,3 +95,82 @@ impl ExecReport {
 /// Output-capture cap per worktree (ring buffer keeps the tail). Internal
 /// constant — not user-configurable in v1.
 pub const OUTPUT_CAP_BYTES: usize = 1024 * 1024; // 1 MiB
+
+/// Byte tail-buffer: writes are appended; when total exceeds `cap`, the
+/// oldest bytes are dropped so that only the last `cap` bytes remain.
+///
+/// Does not attempt to preserve UTF-8 boundaries. Callers that need string
+/// output should `String::from_utf8_lossy(buf.tail())`.
+pub struct TailBuffer {
+    buf: Vec<u8>,
+    cap: usize,
+}
+
+impl TailBuffer {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            buf: Vec::with_capacity(cap.min(64 * 1024)),
+            cap,
+        }
+    }
+
+    pub fn extend(&mut self, bytes: &[u8]) {
+        if bytes.len() >= self.cap {
+            // New chunk alone fills (or overfills) the cap.
+            let start = bytes.len() - self.cap;
+            self.buf.clear();
+            self.buf.extend_from_slice(&bytes[start..]);
+            return;
+        }
+        self.buf.extend_from_slice(bytes);
+        if self.buf.len() > self.cap {
+            let drop = self.buf.len() - self.cap;
+            self.buf.drain(..drop);
+        }
+    }
+
+    pub fn tail(&self) -> &[u8] {
+        &self.buf
+    }
+
+    pub fn into_inner(self) -> Vec<u8> {
+        self.buf
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ring_keeps_everything_under_cap() {
+        let mut r = TailBuffer::new(16);
+        r.extend(b"hello world");
+        assert_eq!(r.tail(), b"hello world");
+    }
+
+    #[test]
+    fn ring_keeps_only_tail_over_cap() {
+        let mut r = TailBuffer::new(4);
+        r.extend(b"abcdefghij");
+        assert_eq!(r.tail(), b"ghij");
+    }
+
+    #[test]
+    fn ring_exact_cap_boundary() {
+        let mut r = TailBuffer::new(4);
+        r.extend(b"abcd");
+        assert_eq!(r.tail(), b"abcd");
+        r.extend(b"e");
+        assert_eq!(r.tail(), b"bcde");
+    }
+
+    #[test]
+    fn ring_multi_extend_accumulates_tail() {
+        let mut r = TailBuffer::new(5);
+        r.extend(b"aaa");
+        r.extend(b"bbb");
+        r.extend(b"ccc");
+        assert_eq!(r.tail(), b"bbccc");
+    }
+}
