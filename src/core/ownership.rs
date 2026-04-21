@@ -4,6 +4,10 @@
 //! per the strategy configured in `daft.ownership.strategy`. See
 //! `docs/superpowers/specs/2026-04-21-ownership-detection-strategies.md`.
 
+use std::collections::HashMap;
+use std::path::Path;
+use std::process::Command;
+
 /// Strategy for deducing branch ownership from a commit range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OwnershipStrategy {
@@ -67,8 +71,6 @@ pub struct BranchOwner {
     /// Precomputed so downstream code doesn't need `user_email` plumbing.
     pub is_current_user: bool,
 }
-
-use std::collections::HashMap;
 
 /// Resolve the owner of a branch from its `base..branch` commit range.
 ///
@@ -217,6 +219,40 @@ fn pick_recency_plurality(commits: &[CommitRecord]) -> Option<String> {
         .iter()
         .find(|c| c.author_email.eq_ignore_ascii_case(&winner))
         .map(|c| c.author_email.clone())
+}
+
+/// Fetch commit records for `base..branch` from git, newest first.
+///
+/// Returns an empty Vec on any git error (unreachable base, malformed
+/// branch, etc.) — ownership is best-effort and must never block daft.
+pub fn fetch_commit_records(base: &str, branch: &str, cwd: &Path) -> Vec<CommitRecord> {
+    let range = format!("{base}..{branch}");
+    let output = match Command::new("git")
+        .args(["log", &range, "--format=%an%x09%ae%x09%ct"])
+        .current_dir(cwd)
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '\t');
+            let name = parts.next()?.to_string();
+            let email = parts.next()?.to_string();
+            let ts = parts.next()?.trim().parse::<i64>().ok()?;
+            if email.is_empty() {
+                return None;
+            }
+            Some(CommitRecord {
+                author_name: name,
+                author_email: email,
+                committer_timestamp: ts,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -526,5 +562,90 @@ mod tests {
         assert_eq!(OwnershipStrategy::parse(""), None);
         assert_eq!(OwnershipStrategy::parse("owner"), None);
         assert_eq!(OwnershipStrategy::parse("recency"), None);
+    }
+
+    use std::process::Command as StdCommand;
+
+    /// Create a minimal throwaway git repo for integration tests.
+    /// Returns its path. Caller is responsible for cleanup — use tempfile.
+    fn init_repo(dir: &std::path::Path) {
+        StdCommand::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["config", "--local", "user.email", "tester@example.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["config", "--local", "user.name", "Tester"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["config", "--local", "commit.gpgsign", "false"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+    }
+
+    fn commit_as(dir: &std::path::Path, name: &str, email: &str, message: &str) {
+        let path = dir.join(format!("{message}.txt"));
+        std::fs::write(&path, message).unwrap();
+        StdCommand::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["commit", "-q", "-m", message])
+            .env("GIT_AUTHOR_NAME", name)
+            .env("GIT_AUTHOR_EMAIL", email)
+            .env("GIT_COMMITTER_NAME", name)
+            .env("GIT_COMMITTER_EMAIL", email)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+    }
+
+    #[test]
+    fn fetch_commit_records_returns_newest_first_in_range() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_repo(repo);
+        commit_as(repo, "Tester", "tester@example.com", "base");
+
+        StdCommand::new("git")
+            .args(["checkout", "-q", "-b", "feature"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        commit_as(repo, "Alice", "alice@example.com", "first-feature");
+        commit_as(repo, "Bob", "bob@example.com", "second-feature");
+
+        let commits = fetch_commit_records("main", "feature", repo);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].author_name, "Bob", "newest first");
+        assert_eq!(commits[1].author_name, "Alice");
+    }
+
+    #[test]
+    fn fetch_commit_records_returns_empty_for_zero_divergence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_repo(repo);
+        commit_as(repo, "Tester", "tester@example.com", "base");
+
+        let commits = fetch_commit_records("main", "main", repo);
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn fetch_commit_records_returns_empty_on_git_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let commits = fetch_commit_records("main", "feature", tmp.path());
+        assert!(commits.is_empty(), "not a git repo → empty");
     }
 }
