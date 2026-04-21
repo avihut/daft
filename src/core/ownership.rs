@@ -250,7 +250,7 @@ pub fn resolve_owner(
 fn resolve_from_reflog(branch: &str, cwd: &Path, user_email: Option<&str>) -> Option<BranchOwner> {
     let ref_spec = format!("refs/heads/{branch}");
     let output = Command::new("git")
-        .args(["reflog", "show", &ref_spec, "--format=%gt%x09%ge%x09%gn"])
+        .args(["reflog", "show", &ref_spec, "--format=%ge%x09%gn"])
         .current_dir(cwd)
         .output()
         .ok()?;
@@ -260,8 +260,7 @@ fn resolve_from_reflog(branch: &str, cwd: &Path, user_email: Option<&str>) -> Op
     let stdout = String::from_utf8_lossy(&output.stdout);
     // reflog show is newest-first. Oldest entry is the creation entry.
     let oldest = stdout.lines().rfind(|l| !l.trim().is_empty())?;
-    let mut parts = oldest.splitn(3, '\t');
-    let _ts = parts.next()?;
+    let mut parts = oldest.splitn(2, '\t');
     let email = parts.next()?.to_string();
     let name = parts.next()?.to_string();
     if email.is_empty() || name.is_empty() {
@@ -856,5 +855,49 @@ mod tests {
         assert_eq!(owner.email, "creator@example.com");
         assert_eq!(owner.name, "Creator Person");
         assert!(owner.is_current_user);
+    }
+
+    #[test]
+    fn resolve_owner_with_fallbacks_uses_remote_range_when_local_is_empty() {
+        // Simulate a freshly-fetched branch whose local ref points to base
+        // but whose remote-tracking ref has commits. The fallback chain
+        // should resolve from the remote-tracking range, not fall through
+        // to the reflog.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_repo(repo);
+        commit_as(repo, "Tester", "tester@example.com", "base");
+
+        // Create a local "remote tracking" ref that looks like origin/feature.
+        // The simplest way is to create a commit on a branch, then expose
+        // it as a ref under refs/remotes/origin/feature.
+        run_git(repo, &["checkout", "-q", "-b", "origin-helper"]);
+        commit_as(repo, "Remote Person", "remote@example.com", "remote-work");
+        // Copy the ref into the remote-tracking namespace, then delete the helper.
+        let head = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        let sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        run_git(repo, &["update-ref", "refs/remotes/origin/feature", &sha]);
+        run_git(repo, &["checkout", "-q", "main"]);
+        run_git(repo, &["branch", "-D", "origin-helper"]);
+
+        // Create a LOCAL "feature" branch that points at base — i.e. zero
+        // divergence locally, but origin/feature has a commit.
+        run_git(repo, &["branch", "feature", "main"]);
+
+        let owner = resolve_owner_with_fallbacks(
+            "main",
+            "feature",
+            repo,
+            OwnershipStrategy::Tip,
+            None,
+            Some("origin"),
+        )
+        .unwrap();
+        assert_eq!(owner.email, "remote@example.com");
+        assert_eq!(owner.name, "Remote Person");
     }
 }
