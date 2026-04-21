@@ -395,6 +395,50 @@ pub fn resolve_targets_with_orphans(
     Ok((out, orphans))
 }
 
+/// Build a `Vec<WorktreeSnapshot>` from the repo's current worktree list
+/// plus all local branches. Branches without an associated worktree are
+/// included as orphan snapshots (sentinel path "::orphan::"), which
+/// `resolve_targets_with_orphans` filters during glob expansion.
+pub fn collect_snapshot(git: &crate::git::GitCommand) -> anyhow::Result<Vec<WorktreeSnapshot>> {
+    use crate::core::worktree::prune::parse_worktree_list;
+
+    let wt_entries = parse_worktree_list(git)?;
+    let mut snaps: Vec<WorktreeSnapshot> = Vec::new();
+    let mut branches_with_worktrees: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+
+    for entry in &wt_entries {
+        if let Some(branch) = &entry.branch {
+            branches_with_worktrees.insert(branch.clone());
+            snaps.push(WorktreeSnapshot {
+                path: entry.path.clone(),
+                branch: Some(branch.clone()),
+            });
+        }
+    }
+
+    // Orphan branches: local branches that have no worktree. These are
+    // only included for glob-expansion reporting; they carry the
+    // "::orphan::" sentinel so `has_worktree()` returns false.
+    let branch_output = git
+        .for_each_ref("%(refname:short)", "refs/heads/")
+        .unwrap_or_default();
+    for line in branch_output.lines() {
+        let branch = line.trim();
+        if branch.is_empty() {
+            continue;
+        }
+        if !branches_with_worktrees.contains(branch) {
+            snaps.push(WorktreeSnapshot {
+                path: std::path::PathBuf::from("::orphan::"),
+                branch: Some(branch.to_string()),
+            });
+        }
+    }
+
+    Ok(snaps)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
