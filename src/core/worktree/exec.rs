@@ -138,6 +138,127 @@ impl TailBuffer {
     }
 }
 
+/// Minimal worktree view that `resolve_targets` needs. In production we
+/// build this from `crate::core::worktree::prune::parse_worktree_list`,
+/// which already gives us `(path, branch)`.
+#[derive(Clone, Debug)]
+pub struct WorktreeSnapshot {
+    pub path: std::path::PathBuf,
+    pub branch: Option<String>,
+}
+
+/// Errors surfaced during target resolution. Kept as a plain enum so
+/// callers render friendly messages rather than parsing anyhow strings.
+#[derive(Debug)]
+pub enum ResolveError {
+    NoTargets,
+    AllWithPositionals,
+    Unmatched(Vec<String>),
+}
+
+impl std::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResolveError::NoTargets => {
+                write!(
+                    f,
+                    "no targets: pass one or more branch/dir names, a glob, or --all"
+                )
+            }
+            ResolveError::AllWithPositionals => {
+                write!(f, "--all cannot be combined with positional targets")
+            }
+            ResolveError::Unmatched(toks) => {
+                write!(f, "no worktree matched: {}", toks.join(", "))
+            }
+        }
+    }
+}
+
+impl std::error::Error for ResolveError {}
+
+pub fn resolve_targets(
+    positionals: &[String],
+    all: bool,
+    worktrees: &[WorktreeSnapshot],
+) -> Result<Vec<ResolvedTarget>, ResolveError> {
+    if positionals.is_empty() && !all {
+        return Err(ResolveError::NoTargets);
+    }
+    if !positionals.is_empty() && all {
+        return Err(ResolveError::AllWithPositionals);
+    }
+
+    if all {
+        let mut out: Vec<ResolvedTarget> = worktrees
+            .iter()
+            .filter_map(|w| {
+                w.branch.as_ref().map(|b| ResolvedTarget {
+                    worktree_path: w.path.clone(),
+                    branch_name: b.clone(),
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.branch_name.cmp(&b.branch_name));
+        return Ok(out);
+    }
+
+    let mut out: Vec<ResolvedTarget> = Vec::new();
+    let mut seen_paths: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
+    let mut unmatched: Vec<String> = Vec::new();
+
+    for tok in positionals {
+        let mut matched = false;
+
+        // 1. Exact branch match.
+        for wt in worktrees {
+            if let Some(branch) = &wt.branch {
+                if branch == tok {
+                    matched = true;
+                    if seen_paths.insert(wt.path.clone()) {
+                        out.push(ResolvedTarget {
+                            worktree_path: wt.path.clone(),
+                            branch_name: branch.clone(),
+                        });
+                    }
+                    break;
+                }
+            }
+        }
+        if matched {
+            continue;
+        }
+
+        // 2. Exact directory-name match.
+        for wt in worktrees {
+            let dir_name = wt.path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if dir_name == tok {
+                if let Some(branch) = &wt.branch {
+                    matched = true;
+                    if seen_paths.insert(wt.path.clone()) {
+                        out.push(ResolvedTarget {
+                            worktree_path: wt.path.clone(),
+                            branch_name: branch.clone(),
+                        });
+                    }
+                    break;
+                }
+            }
+        }
+
+        if !matched {
+            unmatched.push(tok.clone());
+        }
+    }
+
+    if !unmatched.is_empty() {
+        return Err(ResolveError::Unmatched(unmatched));
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +293,69 @@ mod tests {
         r.extend(b"bbb");
         r.extend(b"ccc");
         assert_eq!(r.tail(), b"bbccc");
+    }
+
+    use std::path::PathBuf;
+
+    /// A lean snapshot of a worktree for resolver tests. Produced from
+    /// `parse_worktree_list` in production; built by hand in tests.
+    fn snap(path: &str, branch: &str) -> WorktreeSnapshot {
+        WorktreeSnapshot {
+            path: PathBuf::from(path),
+            branch: Some(branch.to_string()),
+        }
+    }
+
+    fn all_worktrees() -> Vec<WorktreeSnapshot> {
+        vec![
+            snap("/r/master", "master"),
+            snap("/r/feat-a", "feat/a"),
+            snap("/r/feat-b", "feat/b"),
+            snap("/r/fix-crash", "fix/crash"),
+        ]
+    }
+
+    #[test]
+    fn exact_branch_name_resolves() {
+        let wts = all_worktrees();
+        let got = resolve_targets(&["feat/a".into()], false, &wts).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].branch_name, "feat/a");
+        assert_eq!(got[0].worktree_path, PathBuf::from("/r/feat-a"));
+    }
+
+    #[test]
+    fn exact_dir_name_resolves_when_branch_miss() {
+        let wts = all_worktrees();
+        let got = resolve_targets(&["feat-b".into()], false, &wts).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].branch_name, "feat/b");
+    }
+
+    #[test]
+    fn branch_takes_precedence_over_dir_name_collision() {
+        // A worktree whose dir name collides with another worktree's branch.
+        let wts = vec![
+            snap("/r/x", "branch-x"), // dir name "x", branch "branch-x"
+            snap("/r/y", "x"),        // branch "x", dir name "y"
+        ];
+        let got = resolve_targets(&["x".into()], false, &wts).unwrap();
+        assert_eq!(got[0].branch_name, "x");
+        assert_eq!(got[0].worktree_path, PathBuf::from("/r/y"));
+    }
+
+    #[test]
+    fn dedupe_by_path() {
+        let wts = all_worktrees();
+        let got = resolve_targets(&["feat/a".into(), "feat-a".into()], false, &wts).unwrap();
+        assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn preserves_user_order() {
+        let wts = all_worktrees();
+        let got = resolve_targets(&["feat/b".into(), "feat/a".into()], false, &wts).unwrap();
+        assert_eq!(got[0].branch_name, "feat/b");
+        assert_eq!(got[1].branch_name, "feat/a");
     }
 }
