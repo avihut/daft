@@ -235,6 +235,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             compute_mtime,
             settings.ownership_strategy,
             user_email.as_deref(),
+            &settings.remote,
         )?;
         output.finish_spinner();
         result
@@ -248,6 +249,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             compute_mtime,
             settings.ownership_strategy,
             user_email.as_deref(),
+            &settings.remote,
         )?
     };
 
@@ -285,12 +287,13 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         let mut stubs = Vec::new();
         for branch in &gone_branches {
             if !worktree_branch_set.contains(branch.as_str()) {
-                let owner = crate::core::ownership::resolve_owner(
+                let owner = crate::core::ownership::resolve_owner_with_fallbacks(
                     &base_branch,
                     branch,
                     &cwd,
                     settings.ownership_strategy,
                     user_email.as_deref(),
+                    Some(&settings.remote),
                 );
                 stubs.push(list::WorktreeInfo::local_branch_stub(branch, owner));
             }

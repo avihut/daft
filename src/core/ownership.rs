@@ -241,6 +241,75 @@ pub fn resolve_owner(
     resolve_owner_from_records(&commits, strategy, user_email)
 }
 
+/// Read the oldest reflog entry for a local branch and return the
+/// committer identity recorded there. That identity is whoever created
+/// the branch on this machine via `git checkout -b` / `git branch`.
+///
+/// Returns `None` if the branch has no reflog, if reflog entries lack
+/// identity, or if git fails.
+fn resolve_from_reflog(branch: &str, cwd: &Path, user_email: Option<&str>) -> Option<BranchOwner> {
+    let ref_spec = format!("refs/heads/{branch}");
+    let output = Command::new("git")
+        .args(["reflog", "show", &ref_spec, "--format=%gt%x09%ge%x09%gn"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // reflog show is newest-first. Oldest entry is the creation entry.
+    let oldest = stdout.lines().rfind(|l| !l.trim().is_empty())?;
+    let mut parts = oldest.splitn(3, '\t');
+    let _ts = parts.next()?;
+    let email = parts.next()?.to_string();
+    let name = parts.next()?.to_string();
+    if email.is_empty() || name.is_empty() {
+        return None;
+    }
+    let is_current_user = user_email
+        .map(|u| u.eq_ignore_ascii_case(&email))
+        .unwrap_or(false);
+    Some(BranchOwner {
+        name,
+        email,
+        is_current_user,
+    })
+}
+
+/// Resolve owner with fallbacks for the empty-range case:
+/// 1. `base..branch` via [`resolve_owner`].
+/// 2. `base..<remote>/<branch>` — uses the remote-tracking branch when
+///    the local branch has no divergence yet (e.g. just fetched).
+/// 3. Local reflog of `refs/heads/<branch>` — the identity that created
+///    the branch on this machine.
+///
+/// When `branch == base` (the default branch), skip all fallbacks and
+/// return `None` — we don't want to credit the repo cloner as the
+/// default branch's owner.
+pub fn resolve_owner_with_fallbacks(
+    base: &str,
+    branch: &str,
+    cwd: &Path,
+    strategy: OwnershipStrategy,
+    user_email: Option<&str>,
+    remote: Option<&str>,
+) -> Option<BranchOwner> {
+    if let Some(owner) = resolve_owner(base, branch, cwd, strategy, user_email) {
+        return Some(owner);
+    }
+    if branch == base {
+        return None;
+    }
+    if let Some(remote) = remote {
+        let remote_ref = format!("{remote}/{branch}");
+        if let Some(owner) = resolve_owner(base, &remote_ref, cwd, strategy, user_email) {
+            return Some(owner);
+        }
+    }
+    resolve_from_reflog(branch, cwd, user_email)
+}
+
 /// Fetch commit records for `base..branch` from git, newest first.
 ///
 /// Returns an empty Vec on any git error (unreachable base, malformed
@@ -704,5 +773,88 @@ mod tests {
         assert_eq!(commits.len(), 1, "commit should not be dropped");
         assert_eq!(commits[0].author_name, "Weird\tName");
         assert_eq!(commits[0].author_email, "weird@example.com");
+    }
+
+    #[test]
+    fn resolve_from_reflog_returns_creator_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_repo(repo);
+        commit_as(repo, "Tester", "tester@example.com", "base");
+        // Create a branch as a distinct identity (set committer env).
+        let out = Command::new("git")
+            .args(["checkout", "-q", "-b", "feature"])
+            .env("GIT_COMMITTER_NAME", "Creator Person")
+            .env("GIT_COMMITTER_EMAIL", "creator@example.com")
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "checkout -b failed: {:?}", out.stderr);
+
+        let owner = resolve_from_reflog("feature", repo, Some("creator@example.com")).unwrap();
+        assert_eq!(owner.email, "creator@example.com");
+        assert_eq!(owner.name, "Creator Person");
+        assert!(owner.is_current_user);
+    }
+
+    #[test]
+    fn resolve_from_reflog_none_for_missing_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_repo(repo);
+        commit_as(repo, "Tester", "tester@example.com", "base");
+        assert!(resolve_from_reflog("nonexistent", repo, None).is_none());
+    }
+
+    #[test]
+    fn resolve_owner_with_fallbacks_returns_none_for_default_branch() {
+        // Simulate a repo where branch == base and no commits diverge.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_repo(repo);
+        commit_as(repo, "Tester", "tester@example.com", "base");
+        // branch == base, should skip all fallbacks.
+        let owner = resolve_owner_with_fallbacks(
+            "main",
+            "main",
+            repo,
+            OwnershipStrategy::Tip,
+            Some("tester@example.com"),
+            Some("origin"),
+        );
+        assert!(
+            owner.is_none(),
+            "default branch should never have a fallback owner"
+        );
+    }
+
+    #[test]
+    fn resolve_owner_with_fallbacks_uses_reflog_when_range_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_repo(repo);
+        commit_as(repo, "Tester", "tester@example.com", "base");
+        // Branch created with zero divergent commits.
+        let out = Command::new("git")
+            .args(["checkout", "-q", "-b", "feature"])
+            .env("GIT_COMMITTER_NAME", "Creator Person")
+            .env("GIT_COMMITTER_EMAIL", "creator@example.com")
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        let owner = resolve_owner_with_fallbacks(
+            "main",
+            "feature",
+            repo,
+            OwnershipStrategy::RecencyPlurality,
+            Some("creator@example.com"),
+            Some("origin"),
+        )
+        .unwrap();
+        assert_eq!(owner.email, "creator@example.com");
+        assert_eq!(owner.name, "Creator Person");
+        assert!(owner.is_current_user);
     }
 }

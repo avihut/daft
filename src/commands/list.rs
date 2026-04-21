@@ -221,6 +221,7 @@ pub fn run() -> Result<()> {
             compute_mtime,
             settings.ownership_strategy,
             user_email.as_deref(),
+            &settings.remote,
         )?;
         if show_local || show_remote {
             let worktree_branches: HashSet<String> =
@@ -235,6 +236,7 @@ pub fn run() -> Result<()> {
                 &project_root,
                 settings.ownership_strategy,
                 user_email.as_deref(),
+                &settings.remote,
             )?;
             let mut merged = result;
             merged.extend(branch_infos);
@@ -266,6 +268,7 @@ pub fn run() -> Result<()> {
             compute_mtime,
             settings.ownership_strategy,
             user_email.as_deref(),
+            &settings.remote,
         )?;
         sort_spec.sort(&mut result);
         result

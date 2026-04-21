@@ -266,12 +266,13 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
         let project_root = get_project_root()?;
         let mut set = HashSet::new();
         for (path, branch) in &worktrees {
-            let owner = crate::core::ownership::resolve_owner(
+            let owner = crate::core::ownership::resolve_owner_with_fallbacks(
                 &default_branch,
                 branch,
                 path,
                 settings.ownership_strategy,
                 user_email.as_deref(),
+                Some(&settings.remote),
             );
             if is_branch_included(branch, owner.as_ref(), &include_filters) {
                 set.insert(branch.clone());
@@ -285,12 +286,13 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
                 if branch.is_empty() || worktree_set.contains(branch) {
                     continue;
                 }
-                let owner = crate::core::ownership::resolve_owner(
+                let owner = crate::core::ownership::resolve_owner_with_fallbacks(
                     &default_branch,
                     branch,
                     &project_root,
                     settings.ownership_strategy,
                     user_email.as_deref(),
+                    Some(&settings.remote),
                 );
                 if is_branch_included(branch, owner.as_ref(), &include_filters) {
                     set.insert(branch.to_string());
@@ -430,6 +432,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             compute_mtime,
             settings.ownership_strategy,
             user_email.as_deref(),
+            &settings.remote,
         )?;
         output.finish_spinner();
         result
@@ -443,6 +446,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             compute_mtime,
             settings.ownership_strategy,
             user_email.as_deref(),
+            &settings.remote,
         )?
     };
 

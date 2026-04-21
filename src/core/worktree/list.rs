@@ -752,6 +752,7 @@ pub fn collect_worktree_info(
     compute_mtime: bool,
     ownership_strategy: OwnershipStrategy,
     user_email: Option<&str>,
+    remote_name: &str,
 ) -> Result<Vec<WorktreeInfo>> {
     let porcelain_output = git
         .worktree_list_porcelain()
@@ -816,12 +817,13 @@ pub fn collect_worktree_info(
             get_commit_metadata(&entry.path, git);
 
         let owner = if !entry.is_detached {
-            ownership::resolve_owner(
+            ownership::resolve_owner_with_fallbacks(
                 base_branch,
                 &branch_display,
                 &entry.path,
                 ownership_strategy,
                 user_email,
+                Some(remote_name),
             )
         } else {
             None
@@ -944,6 +946,7 @@ pub fn collect_branch_info(
     cwd: &Path,
     ownership_strategy: OwnershipStrategy,
     user_email: Option<&str>,
+    remote_name: &str,
 ) -> Result<Vec<WorktreeInfo>> {
     let mut infos = Vec::new();
     let mut local_branch_names: HashSet<String> = HashSet::new();
@@ -974,8 +977,14 @@ pub fn collect_branch_info(
             let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
                 get_commit_metadata_for_ref_dispatched(branch, cwd, git);
 
-            let owner =
-                ownership::resolve_owner(base_branch, branch, cwd, ownership_strategy, user_email);
+            let owner = ownership::resolve_owner_with_fallbacks(
+                base_branch,
+                branch,
+                cwd,
+                ownership_strategy,
+                user_email,
+                Some(remote_name),
+            );
 
             let branch_creation_timestamp = get_branch_creation_timestamp(branch, cwd);
 
