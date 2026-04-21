@@ -1,7 +1,9 @@
-/// Documentation command for `git daft`
+/// Documentation command for `daft` and `git daft`
 ///
 /// Shows daft commands in git-style help format, dynamically extracting
-/// descriptions from clap command definitions.
+/// descriptions from clap command definitions. Renders a different command
+/// surface depending on whether the binary is invoked as `daft` (daft-verb
+/// style) or as `git daft` (Git `worktree-<command>` style).
 use anyhow::Result;
 use clap::{Command, CommandFactory};
 use std::path::Path;
@@ -10,11 +12,30 @@ use crate::commands::{
     carry, checkout, clone, config, doctor, fetch, flow_adopt, flow_eject, hooks, init, layout,
     list, multi_remote, prune, release_notes, shared, shell_init, shortcuts, sync, worktree_branch,
 };
+use crate::styles;
+
+/// Invocation style determines which command surface to render.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Invoked as `daft` — render short daft-verb commands (go, start, list, ...).
+    Daft,
+    /// Invoked as `git daft` — render Git-style worktree-<command> entries.
+    GitDaft,
+}
+
+/// How a category's commands are rendered.
+enum CategoryLayout {
+    /// One command per line with aligned `about` descriptions.
+    List,
+    /// Commands joined on a single line; `about` strings are omitted.
+    Inline,
+}
 
 /// A category of commands with a title and list of commands.
 struct CommandCategory {
     title: &'static str,
     commands: Vec<CommandEntry>,
+    layout: CategoryLayout,
 }
 
 /// A single command entry with its display name and clap Command.
@@ -23,11 +44,132 @@ struct CommandEntry {
     command: Command,
 }
 
-/// Get all command categories with their commands.
-fn get_command_categories() -> Vec<CommandCategory> {
+/// Get category layout for `daft` invocation — daft-verb style, everyday
+/// commands at the top.
+fn get_daft_categories() -> Vec<CommandCategory> {
+    vec![
+        CommandCategory {
+            title: "work on branches (each branch gets its own directory)",
+            layout: CategoryLayout::List,
+            commands: vec![
+                CommandEntry {
+                    display_name: "go",
+                    command: checkout::GoArgs::command(),
+                },
+                CommandEntry {
+                    display_name: "start",
+                    command: checkout::StartArgs::command(),
+                },
+            ],
+        },
+        CommandCategory {
+            title: "maintain your worktrees",
+            layout: CategoryLayout::List,
+            commands: vec![
+                CommandEntry {
+                    display_name: "list",
+                    command: list::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "rename",
+                    command: worktree_branch::RenameArgs::command(),
+                },
+                CommandEntry {
+                    display_name: "remove",
+                    command: worktree_branch::RemoveArgs::command(),
+                },
+                CommandEntry {
+                    display_name: "update",
+                    command: fetch::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "prune",
+                    command: prune::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "sync",
+                    command: sync::Args::command(),
+                },
+            ],
+        },
+        CommandCategory {
+            title: "share changes across worktrees",
+            layout: CategoryLayout::List,
+            commands: vec![CommandEntry {
+                display_name: "carry",
+                command: carry::Args::command(),
+            }],
+        },
+        CommandCategory {
+            title: "start a worktree-based repository",
+            layout: CategoryLayout::List,
+            commands: vec![
+                CommandEntry {
+                    display_name: "clone",
+                    command: clone::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "init",
+                    command: init::Args::command(),
+                },
+            ],
+        },
+        CommandCategory {
+            title: "share configuration across worktrees",
+            layout: CategoryLayout::List,
+            commands: vec![CommandEntry {
+                display_name: "shared",
+                command: shared::Args::command(),
+            }],
+        },
+        CommandCategory {
+            title: "manage daft configuration",
+            layout: CategoryLayout::Inline,
+            commands: vec![
+                CommandEntry {
+                    display_name: "config",
+                    command: config::remote_sync::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "hooks",
+                    command: hooks::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "layout",
+                    command: layout::LayoutArgs::command(),
+                },
+                CommandEntry {
+                    display_name: "multi-remote",
+                    command: multi_remote::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "shell-init",
+                    command: shell_init::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "setup shortcuts",
+                    command: shortcuts::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "doctor",
+                    command: doctor::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "release-notes",
+                    command: release_notes::Args::command(),
+                },
+            ],
+        },
+    ]
+}
+
+/// Get category layout for `git daft` invocation — Git-style
+/// `worktree-<command>` entries and the short-aliases footer.
+fn get_git_daft_categories() -> Vec<CommandCategory> {
     vec![
         CommandCategory {
             title: "start a worktree-based repository",
+            layout: CategoryLayout::List,
             commands: vec![
                 CommandEntry {
                     display_name: "worktree-clone",
@@ -45,6 +187,7 @@ fn get_command_categories() -> Vec<CommandCategory> {
         },
         CommandCategory {
             title: "work on branches (each branch gets its own directory)",
+            layout: CategoryLayout::List,
             commands: vec![CommandEntry {
                 display_name: "worktree-checkout",
                 command: checkout::Args::command(),
@@ -52,6 +195,7 @@ fn get_command_categories() -> Vec<CommandCategory> {
         },
         CommandCategory {
             title: "share changes across worktrees",
+            layout: CategoryLayout::List,
             commands: vec![CommandEntry {
                 display_name: "worktree-carry",
                 command: carry::Args::command(),
@@ -59,6 +203,7 @@ fn get_command_categories() -> Vec<CommandCategory> {
         },
         CommandCategory {
             title: "maintain your worktrees",
+            layout: CategoryLayout::List,
             commands: vec![
                 CommandEntry {
                     display_name: "worktree-list",
@@ -88,6 +233,7 @@ fn get_command_categories() -> Vec<CommandCategory> {
         },
         CommandCategory {
             title: "share configuration across worktrees",
+            layout: CategoryLayout::List,
             commands: vec![CommandEntry {
                 display_name: "daft shared",
                 command: shared::Args::command(),
@@ -95,6 +241,7 @@ fn get_command_categories() -> Vec<CommandCategory> {
         },
         CommandCategory {
             title: "manage daft configuration",
+            layout: CategoryLayout::List,
             commands: vec![
                 CommandEntry {
                     display_name: "daft hooks",
@@ -140,14 +287,41 @@ fn get_about(cmd: &Command) -> String {
         .unwrap_or_else(|| "(no description)".to_string())
 }
 
-/// Calculate the maximum display name length for proper alignment.
-fn max_display_name_len(categories: &[CommandCategory]) -> usize {
+/// Maximum display-name length across `List`-layout categories (used for
+/// column alignment). `Inline` categories are skipped — their names are
+/// joined on a single line and don't participate in column alignment.
+fn max_list_display_name_len(categories: &[CommandCategory]) -> usize {
     categories
         .iter()
-        .flat_map(|cat| cat.commands.iter())
-        .map(|entry| entry.display_name.len())
+        .filter(|c| matches!(c.layout, CategoryLayout::List))
+        .flat_map(|c| c.commands.iter())
+        .map(|e| e.display_name.len())
         .max()
         .unwrap_or(20)
+}
+
+/// Wrap text in bold+underline (clap's `header`/`usage` style) when color is enabled.
+fn bold_underline(text: &str, use_color: bool) -> String {
+    if use_color {
+        format!(
+            "{}{}{}{}",
+            styles::BOLD,
+            styles::UNDERLINE,
+            text,
+            styles::RESET
+        )
+    } else {
+        text.to_string()
+    }
+}
+
+/// Wrap text in bold (clap's `literal` style) when color is enabled.
+fn bold(text: &str, use_color: bool) -> String {
+    if use_color {
+        styles::bold(text)
+    } else {
+        text.to_string()
+    }
 }
 
 pub fn run() -> Result<()> {
@@ -160,36 +334,103 @@ pub fn run() -> Result<()> {
         .and_then(|n| n.to_str())
         .unwrap_or("daft");
 
-    // Determine primary/secondary invocation style based on how we were called
-    let (primary, secondary) = if program_name == "git-daft" {
-        ("git", "daft")
+    let mode = if program_name == "git-daft" {
+        Mode::GitDaft
     } else {
-        ("daft", "git")
+        Mode::Daft
     };
 
-    println!("usage: daft <command> [<args>]");
-    println!("   or: {primary} worktree-<command> [<args>]");
-    println!("   or: {secondary} worktree-<command> [<args>]");
+    match mode {
+        Mode::Daft => render_daft(),
+        Mode::GitDaft => render_git_daft(),
+    }
+}
+
+/// Render daft-style help (invoked as `daft`): short verbs, everyday
+/// commands first, clap-matching styling.
+fn render_daft() -> Result<()> {
+    let use_color = styles::colors_enabled();
+    let categories = get_daft_categories();
+    let max_len = max_list_display_name_len(&categories);
+
+    println!(
+        "{} daft <command> [<args>]",
+        bold_underline("usage:", use_color)
+    );
 
     println!();
     println!("These are common daft commands used in various situations:");
 
-    let categories = get_command_categories();
-    let max_len = max_display_name_len(&categories);
+    for category in &categories {
+        println!();
+        println!("{}", bold_underline(category.title, use_color));
+
+        match category.layout {
+            CategoryLayout::List => {
+                for entry in &category.commands {
+                    let about = get_about(&entry.command);
+                    // Pad from raw display_name length — ANSI escapes are
+                    // zero-width visually but would otherwise skew `{:width$}`.
+                    let pad = " ".repeat(max_len.saturating_sub(entry.display_name.len()));
+                    let name = bold(entry.display_name, use_color);
+                    println!("   {name}{pad}   {about}");
+                }
+            }
+            CategoryLayout::Inline => {
+                let names: Vec<String> = category
+                    .commands
+                    .iter()
+                    .map(|e| bold(e.display_name, use_color))
+                    .collect();
+                println!("   {}", names.join(", "));
+            }
+        }
+    }
+
+    println!();
+    println!(
+        "'daft {} --help' to read about a specific command.",
+        bold("<command>", use_color)
+    );
+    println!("Equivalent 'git worktree-<command>' forms also exist — run 'git daft' to see them.");
+    println!("See https://github.com/avihut/daft for documentation.");
+
+    Ok(())
+}
+
+/// Render Git-style help (invoked as `git daft`): `worktree-<command>`
+/// entries and the short-aliases footer. Unstyled, like today.
+fn render_git_daft() -> Result<()> {
+    println!("usage: daft <command> [<args>]");
+    println!("   or: git worktree-<command> [<args>]");
+    println!("   or: daft worktree-<command> [<args>]");
+
+    println!();
+    println!("These are common daft commands used in various situations:");
+
+    let categories = get_git_daft_categories();
+    let max_len = max_list_display_name_len(&categories);
 
     for category in &categories {
         println!();
         println!("{}", category.title);
 
-        for entry in &category.commands {
-            let about = get_about(&entry.command);
-            // Pad the display name for alignment
-            println!(
-                "   {:width$}   {}",
-                entry.display_name,
-                about,
-                width = max_len
-            );
+        match category.layout {
+            CategoryLayout::List => {
+                for entry in &category.commands {
+                    let about = get_about(&entry.command);
+                    println!(
+                        "   {:width$}   {}",
+                        entry.display_name,
+                        about,
+                        width = max_len
+                    );
+                }
+            }
+            CategoryLayout::Inline => {
+                let names: Vec<&str> = category.commands.iter().map(|e| e.display_name).collect();
+                println!("   {}", names.join(", "));
+            }
         }
     }
 
@@ -200,7 +441,7 @@ pub fn run() -> Result<()> {
     println!("   clone, init, carry, update, list, prune, rename, sync, remove, adopt, eject");
 
     println!();
-    println!("'{primary} worktree-<command> --help' to read about a specific command.");
+    println!("'git worktree-<command> --help' to read about a specific command.");
     println!("See https://github.com/avihut/daft for documentation.");
 
     Ok(())
