@@ -110,31 +110,77 @@ pub(crate) fn validate_args(args: &Args) -> anyhow::Result<()> {
 }
 
 pub fn run() -> Result<()> {
-    let _args = Args::parse_from(crate::get_clap_args("git-worktree-exec"));
-    validate_args(&_args)?;
+    let args = Args::parse_from(crate::get_clap_args("git-worktree-exec"));
+    validate_args(&args)?;
 
-    init_logging(_args.verbose);
+    init_logging(args.verbose);
 
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
     }
 
     let settings = DaftSettings::load()?;
-    let config = OutputConfig::new(false, _args.verbose);
+    let config = OutputConfig::new(false, args.verbose);
     let mut output = CliOutput::new(config);
 
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: false,
     };
-    let _git = GitCommand::new(wt_config.quiet).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(wt_config.quiet).with_gitoxide(settings.use_gitoxide);
     let _project_root = get_project_root()?;
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
-    anyhow::bail!("daft exec is not yet implemented")
+    use crate::core::worktree::exec as core;
+
+    let snaps = core::collect_snapshot(&git)?;
+    let (targets, orphans) = core::resolve_targets_with_orphans(&args.targets, args.all, &snaps)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    if !orphans.is_empty() {
+        output.warning(&format!(
+            "Skipped {} orphan branch(es) (no worktree): {}",
+            orphans.len(),
+            orphans.join(", ")
+        ));
+    }
+
+    let pipeline: Vec<core::CommandSpec> = if !args.trailing.is_empty() {
+        vec![core::CommandSpec::Argv(args.trailing.clone())]
+    } else {
+        args.exec
+            .iter()
+            .map(|s| core::CommandSpec::Shell(s.clone()))
+            .collect()
+    };
+
+    // Single-target pass-through deferred to Task 14.
+
+    let mode = if args.keep_going {
+        core::ExecMode::KeepGoing
+    } else if args.sequential {
+        core::ExecMode::Sequential
+    } else {
+        core::ExecMode::Parallel
+    };
+
+    let report = core::run_scheduler(&targets, &pipeline, mode)?;
+
+    // Placeholder summary — replaced by list-mode renderer in Task 15.
+    for outcome in &report.outcomes {
+        let tag = if outcome.succeeded() { "OK" } else { "FAIL" };
+        println!(
+            "[{tag}] {} ({:.2}s) exit={}",
+            outcome.target.branch_name,
+            outcome.elapsed.as_secs_f64(),
+            outcome.exit_code
+        );
+    }
+
+    std::process::exit(report.aggregate_exit_code());
 }
 
 #[cfg(test)]
