@@ -86,6 +86,13 @@ pub fn resolve_owner_from_records(
         return None;
     }
 
+    debug_assert!(
+        commits
+            .windows(2)
+            .all(|w| w[0].committer_timestamp >= w[1].committer_timestamp),
+        "commits must be reverse-chronological (newest first)"
+    );
+
     let winning_email: String = match strategy {
         OwnershipStrategy::Tip => commits[0].author_email.clone(),
         OwnershipStrategy::First => commits.last().unwrap().author_email.clone(),
@@ -145,7 +152,16 @@ fn pick_plurality(commits: &[CommitRecord]) -> Option<String> {
     }
     let winner = counts
         .into_iter()
-        .max_by(|(_, a), (_, b)| a.0.cmp(&b.0).then(a.1.cmp(&b.1)))?
+        .max_by(|(ka, a), (kb, b)| {
+            a.0.cmp(&b.0)
+                .then(a.1.cmp(&b.1))
+                // Deterministic tertiary tiebreak so the resolver is
+                // pure-functional: when count + recency are identical
+                // (common after squash-merges with reused timestamps),
+                // pick the alphabetically later email. Matches
+                // pick_recency_plurality.
+                .then(ka.cmp(kb))
+        })?
         .0;
     // Return canonical-cased email from the original record (first match).
     commits
@@ -190,10 +206,11 @@ fn pick_recency_plurality(commits: &[CommitRecord]) -> Option<String> {
     }
     let winner = scores
         .into_iter()
-        .max_by(|(_, a), (_, b)| {
+        .max_by(|(ka, a), (kb, b)| {
             a.0.partial_cmp(&b.0)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(a.1.cmp(&b.1))
+                .then(ka.cmp(kb))
         })?
         .0;
     commits
@@ -423,6 +440,37 @@ mod tests {
         let commits = vec![rec("Me", "me@example.com", 100)];
         let owner = resolve_owner_from_records(&commits, OwnershipStrategy::Tip, None).unwrap();
         assert!(!owner.is_current_user);
+    }
+
+    #[test]
+    fn any_with_no_user_email_falls_back_to_tip() {
+        let commits = vec![
+            rec("Bob", "bob@x.com", 200),
+            rec("Alice", "alice@x.com", 100),
+        ];
+        let owner = resolve_owner_from_records(&commits, OwnershipStrategy::Any, None).unwrap();
+        assert_eq!(owner.email, "bob@x.com");
+        assert!(!owner.is_current_user);
+    }
+
+    #[test]
+    fn plurality_collapses_case_insensitive_emails() {
+        // Same author, inconsistent email casing (e.g. across machines).
+        let commits = vec![
+            rec("Alice", "Alice@X.com", 300),
+            rec("Bob", "bob@x.com", 250),
+            rec("Alice", "alice@x.com", 200),
+            rec("Alice", "ALICE@X.COM", 100),
+        ];
+        let owner =
+            resolve_owner_from_records(&commits, OwnershipStrategy::Plurality, None).unwrap();
+        // All three of Alice's commits collapse into one author; Alice (3) > Bob (1).
+        assert!(
+            owner.email.eq_ignore_ascii_case("alice@x.com"),
+            "expected alice@x.com, got {:?}",
+            owner.email
+        );
+        assert_eq!(owner.name, "Alice");
     }
 
     #[test]
