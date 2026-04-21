@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.7.2](https://github.com/avihut/daft/compare/v1.7.1...v1.7.2) - 2026-04-21
+
+### Bug Fixes
+
+- *(ownership)* configurable strategy-driven branch ownership detection ([#376](https://github.com/avihut/daft/pull/376))
+- *(sync)* exclude rebase base branch from push ([#375](https://github.com/avihut/daft/pull/375))
+- *(update-check)* drop git-style "hint:" prefix from notification ([#373](https://github.com/avihut/daft/pull/373))
+- *(hooks)* skip prompt when trust level unchanged ([#371](https://github.com/avihut/daft/pull/371))
+
 ## [1.7.1](https://github.com/avihut/daft/compare/v1.7.0...v1.7.1) - 2026-04-17
 
 ### Bug Fixes
