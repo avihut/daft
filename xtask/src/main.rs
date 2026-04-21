@@ -409,6 +409,90 @@ fn main() -> Result<()> {
     }
 }
 
+/// Escape roff-sensitive characters. `clap_mangen` applies the same
+/// treatment to text it renders, so post-inserted sections should match.
+fn roff_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('-', "\\-")
+}
+
+/// Build a `.SH EXAMPLES` section from `(comment, command)` pairs and splice
+/// it into a rendered man page just before `.SH SUBCOMMANDS`, following the
+/// indented-command style already used elsewhere in the top-level page.
+fn insert_examples_section(roff: &str, examples: &[(&str, &str)]) -> String {
+    if examples.is_empty() {
+        return roff.to_string();
+    }
+
+    let mut section = String::new();
+    section.push_str(".SH EXAMPLES\n");
+    for (i, (comment, cmd)) in examples.iter().enumerate() {
+        if i > 0 {
+            section.push_str(".PP\n");
+        }
+        section.push_str(&roff_escape(comment));
+        section.push('\n');
+        section.push_str(".PP\n");
+        section.push('\t');
+        section.push_str(&roff_escape(cmd));
+        section.push('\n');
+    }
+
+    // Insert before `.SH SUBCOMMANDS` when present; otherwise append.
+    if let Some(idx) = roff.find("\n.SH SUBCOMMANDS") {
+        let (before, after) = roff.split_at(idx + 1);
+        format!("{before}{section}{after}")
+    } else {
+        let mut out = roff.to_string();
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&section);
+        out
+    }
+}
+
+/// Top-level man-page examples. Rendered into `.SH EXAMPLES` by
+/// [`insert_examples_section`], one block per `(comment, command)` pair.
+const DAFT_MAN_EXAMPLES: &[(&str, &str)] = &[
+    (
+        "Clone a repository into a worktree-based layout:",
+        "daft clone git@github.com:user/repo.git",
+    ),
+    (
+        "Initialize a new repository in the worktree layout:",
+        "daft init my-project",
+    ),
+    (
+        "Create a new branch with its own worktree:",
+        "daft start feature/login",
+    ),
+    (
+        "Switch to an existing branch's worktree:",
+        "daft go feature/login",
+    ),
+    ("List all worktrees with status info:", "daft list"),
+    (
+        "Update the current worktree from its remote:",
+        "daft update",
+    ),
+    (
+        "Sync every worktree with its remote (prune + update all):",
+        "daft sync",
+    ),
+    (
+        "Transfer uncommitted changes to another worktree:",
+        "daft carry feature/login",
+    ),
+    (
+        "Delete a branch and its worktree:",
+        "daft remove feature/login",
+    ),
+    (
+        "Rename a branch and move its worktree:",
+        "daft rename feature/login feature/auth",
+    ),
+];
+
 /// Build a top-level `daft` clap Command with all subcommands for man page generation.
 fn build_top_level_command() -> clap::Command {
     use clap::CommandFactory;
@@ -421,17 +505,7 @@ fn build_top_level_command() -> clap::Command {
              subcommands (git worktree-clone, git worktree-checkout, ...) and short \
              verb aliases (daft clone, daft go, daft start, ...).\n\n\
              Run 'daft' with no arguments to see a categorized command overview.\n\n\
-             GETTING STARTED\n\n\
-             Clone a repository into a worktree layout:\n\n\
-             \tdaft clone <url>\n\n\
-             Or adopt an existing repository:\n\n\
-             \tdaft adopt\n\n\
-             Switch to a branch (each branch gets its own directory):\n\n\
-             \tdaft go <branch>\n\n\
-             Create a new branch:\n\n\
-             \tdaft start <branch>\n\n\
-             SHELL INTEGRATION\n\n\
-             Enable automatic cd into new worktrees:\n\n\
+             To enable automatic cd into new worktrees, add the shell integration:\n\n\
              \teval \"$(daft shell-init zsh)\"\n\n\
              See daft-shell-init(1) for details.",
         )
@@ -551,8 +625,11 @@ fn generate_man_pages(output_dir: &PathBuf, command: Option<&str>) -> Result<()>
         let mut buffer = Vec::new();
         man.render(&mut buffer)?;
 
+        let roff = String::from_utf8(buffer).context("Generated man page is not valid UTF-8")?;
+        let roff = insert_examples_section(&roff, DAFT_MAN_EXAMPLES);
+
         let file_path = output_dir.join("daft.1");
-        fs::write(&file_path, &buffer)
+        fs::write(&file_path, roff.as_bytes())
             .with_context(|| format!("Failed to write man page: {}", file_path.display()))?;
 
         eprintln!("Generated: {}", file_path.display());
@@ -1044,6 +1121,37 @@ mod tests {
     #[test]
     fn test_unknown_command_returns_none() {
         assert!(get_command_for_name("unknown-command").is_none());
+    }
+
+    #[test]
+    fn test_insert_examples_section_splices_before_subcommands() {
+        let roff = ".SH OPTIONS\nstuff\n.SH SUBCOMMANDS\nsubs\n";
+        let out = insert_examples_section(
+            roff,
+            &[("Clone into a worktree layout:", "daft clone <url>")],
+        );
+        let ex_idx = out.find(".SH EXAMPLES").expect("EXAMPLES section missing");
+        let sub_idx = out.find(".SH SUBCOMMANDS").expect("SUBCOMMANDS missing");
+        assert!(ex_idx < sub_idx, "EXAMPLES must precede SUBCOMMANDS");
+        // Hyphens escaped (matches clap_mangen's output style).
+        assert!(out.contains("daft clone \\<url\\>") || out.contains("daft clone <url>"));
+        assert!(out.contains("worktree layout"));
+    }
+
+    #[test]
+    fn test_insert_examples_section_empty_is_noop() {
+        let roff = ".SH OPTIONS\nx\n.SH SUBCOMMANDS\n";
+        assert_eq!(insert_examples_section(roff, &[]), roff);
+    }
+
+    #[test]
+    fn test_insert_examples_section_escapes_hyphens() {
+        let out = insert_examples_section(
+            ".SH SUBCOMMANDS\n",
+            &[("Start a long-lived branch:", "daft start feature-x")],
+        );
+        assert!(out.contains("long\\-lived"));
+        assert!(out.contains("feature\\-x"));
     }
 
     #[test]

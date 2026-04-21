@@ -10,27 +10,7 @@ daft is a comprehensive Git extensions toolkit that enhances developer workflows
 .PP
 Run \*(Aqdaft\*(Aq with no arguments to see a categorized command overview.
 .PP
-GETTING STARTED
-.PP
-Clone a repository into a worktree layout:
-.PP
-	daft clone <url>
-.PP
-Or adopt an existing repository:
-.PP
-	daft adopt
-.PP
-Switch to a branch (each branch gets its own directory):
-.PP
-	daft go <branch>
-.PP
-Create a new branch:
-.PP
-	daft start <branch>
-.PP
-SHELL INTEGRATION
-.PP
-Enable automatic cd into new worktrees:
+To enable automatic cd into new worktrees, add the shell integration:
 .PP
 	eval "$(daft shell\-init zsh)"
 .PP
@@ -39,6 +19,46 @@ See daft\-shell\-init(1) for details.
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH EXAMPLES
+Clone a repository into a worktree\-based layout:
+.PP
+	daft clone git@github.com:user/repo.git
+.PP
+Initialize a new repository in the worktree layout:
+.PP
+	daft init my\-project
+.PP
+Create a new branch with its own worktree:
+.PP
+	daft start feature/login
+.PP
+Switch to an existing branch's worktree:
+.PP
+	daft go feature/login
+.PP
+List all worktrees with status info:
+.PP
+	daft list
+.PP
+Update the current worktree from its remote:
+.PP
+	daft update
+.PP
+Sync every worktree with its remote (prune + update all):
+.PP
+	daft sync
+.PP
+Transfer uncommitted changes to another worktree:
+.PP
+	daft carry feature/login
+.PP
+Delete a branch and its worktree:
+.PP
+	daft remove feature/login
+.PP
+Rename a branch and move its worktree:
+.PP
+	daft rename feature/login feature/auth
 .SH SUBCOMMANDS
 .TP
 daft\-clone(1)
