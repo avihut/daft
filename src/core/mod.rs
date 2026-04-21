@@ -9,6 +9,7 @@ pub mod config;
 pub mod global_config;
 pub mod layout;
 pub mod multi_remote;
+pub mod ownership;
 mod progress;
 pub mod remote;
 pub mod repo;

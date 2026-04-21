@@ -140,9 +140,16 @@ impl SortKey {
                 )
             }
             SortColumn::Owner => {
-                let a_owner = a.owner_email.as_deref().map(|s| s.to_lowercase());
-                let b_owner = b.owner_email.as_deref().map(|s| s.to_lowercase());
-                self.compare_optional(a_owner.as_deref(), b_owner.as_deref())
+                // Sort by owner name (case-insensitive), ties broken by email.
+                let key_a = a
+                    .owner
+                    .as_ref()
+                    .map(|o| (o.name.to_lowercase(), o.email.to_lowercase()));
+                let key_b = b
+                    .owner
+                    .as_ref()
+                    .map(|o| (o.name.to_lowercase(), o.email.to_lowercase()));
+                self.compare_optional(key_a.as_ref(), key_b.as_ref())
             }
             SortColumn::Hash => {
                 self.compare_optional(a.last_commit_hash.as_deref(), b.last_commit_hash.as_deref())
@@ -455,7 +462,11 @@ mod tests {
     /// Create a `WorktreeInfo` with name and owner email.
     fn info_with_owner(name: &str, owner: Option<&str>) -> WorktreeInfo {
         let mut i = WorktreeInfo::empty(name);
-        i.owner_email = owner.map(|s| s.to_string());
+        i.owner = owner.map(|email| crate::core::ownership::BranchOwner {
+            name: email.split('@').next().unwrap_or(email).to_string(),
+            email: email.to_string(),
+            is_current_user: false,
+        });
         i
     }
 
@@ -810,7 +821,7 @@ mod tests {
         spec.sort(&mut infos);
         let owners: Vec<&str> = infos
             .iter()
-            .map(|i| i.owner_email.as_deref().unwrap())
+            .map(|i| i.owner.as_ref().unwrap().email.as_str())
             .collect();
         assert_eq!(
             owners,

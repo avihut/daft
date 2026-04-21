@@ -1,0 +1,53 @@
+name: List JSON owner shape
+description:
+  "--json owner field is an object {name, email} or null, not a bare string.
+  Regression test for the breaking change away from the legacy email-string
+  shape."
+
+repos:
+  - name: json-shape-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_JSON_SHAPE_REPO
+    expect:
+      exit_code: 0
+
+  - name: Configure user identity
+    run: |
+      git config user.email "me@example.com"
+      git config user.name "Me Testuser"
+      git config daft.ownership.strategy tip
+    cwd: "$WORK_DIR/json-shape-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop and commit as me
+    run: |
+      git-worktree-checkout develop
+      cd $WORK_DIR/json-shape-repo/develop
+      git config user.email "me@example.com"
+      git config user.name "Me Testuser"
+      echo "mine" > mine.txt
+      git add mine.txt
+      GIT_AUTHOR_NAME="Me Testuser" GIT_AUTHOR_EMAIL="me@example.com" \
+      GIT_COMMITTER_NAME="Me Testuser" GIT_COMMITTER_EMAIL="me@example.com" \
+        git commit -m "Owned commit"
+    cwd: "$WORK_DIR/json-shape-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: JSON output has owner as a {name, email} object
+    run: NO_COLOR=1 git-worktree-list --json --columns branch,owner
+    cwd: "$WORK_DIR/json-shape-repo/develop"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"owner"'
+        - '"name"'
+        - '"email"'
+        - "Me Testuser"
+        - "me@example.com"
+      output_not_contains:
+        - '"owner_email"'

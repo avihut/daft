@@ -1,0 +1,54 @@
+name: Owner strategy recency-plurality (default)
+description:
+  "Default strategy deduces owner via recency-weighted plurality; user wins
+  despite teammate's tip commit."
+
+repos:
+  - name: strat-rec-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_STRAT_REC_REPO
+    expect:
+      exit_code: 0
+
+  - name: Configure user identity (strategy unset — uses default)
+    run: |
+      git config user.email "me@example.com"
+      git config user.name "Me Testuser"
+    cwd: "$WORK_DIR/strat-rec-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature and stack commits; teammate writes the tip
+    run: |
+      git-worktree-checkout --start feature/strat-rec
+      cd $WORK_DIR/strat-rec-repo/feature/strat-rec
+      git config user.email "me@example.com"
+      git config user.name "Me Testuser"
+      for i in 1 2 3; do
+        echo "me $i" > "me-$i.txt"
+        git add "me-$i.txt"
+        GIT_AUTHOR_NAME="Me Testuser" GIT_AUTHOR_EMAIL="me@example.com" \
+        GIT_COMMITTER_NAME="Me Testuser" GIT_COMMITTER_EMAIL="me@example.com" \
+          git commit -m "me $i"
+      done
+      echo "bob tip" > bob.txt
+      git add bob.txt
+      GIT_AUTHOR_NAME="Bob" GIT_AUTHOR_EMAIL="bob@example.com" \
+      GIT_COMMITTER_NAME="Bob" GIT_COMMITTER_EMAIL="bob@example.com" \
+        git commit -m "bob tip"
+    cwd: "$WORK_DIR/strat-rec-repo/main"
+    expect:
+      exit_code: 0
+
+  - name:
+      Owner column reports the recency-weighted plurality author (Me Testuser)
+    run: NO_COLOR=1 git-worktree-list --columns branch,owner 2>&1
+    cwd: "$WORK_DIR/strat-rec-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature/strat-rec"
+        - "Me Testuser"

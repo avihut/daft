@@ -180,6 +180,7 @@ fn run_prune_inner(output: &mut dyn Output, settings: &DaftSettings, force: bool
 /// Interactive TUI execution path — parallel DAG executor with inline ratatui display.
 fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     let project_root = get_project_root()?;
     let stat = args.stat.unwrap_or(settings.prune_stat);
 
@@ -232,6 +233,9 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             stat,
             has_size,
             compute_mtime,
+            settings.ownership_strategy,
+            user_email.as_deref(),
+            &settings.remote,
         )?;
         output.finish_spinner();
         result
@@ -243,6 +247,9 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             stat,
             has_size,
             compute_mtime,
+            settings.ownership_strategy,
+            user_email.as_deref(),
+            &settings.remote,
         )?
     };
 
@@ -280,8 +287,15 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         let mut stubs = Vec::new();
         for branch in &gone_branches {
             if !worktree_branch_set.contains(branch.as_str()) {
-                let owner_email = list::get_author_email_for_ref(branch, &cwd);
-                stubs.push(list::WorktreeInfo::local_branch_stub(branch, owner_email));
+                let owner = crate::core::ownership::resolve_owner_with_fallbacks(
+                    &base_branch,
+                    branch,
+                    &cwd,
+                    settings.ownership_strategy,
+                    user_email.as_deref(),
+                    Some(&settings.remote),
+                );
+                stubs.push(list::WorktreeInfo::local_branch_stub(branch, owner));
             }
         }
         worktree_infos.extend(stubs);

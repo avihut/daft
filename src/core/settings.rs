@@ -23,6 +23,7 @@
 //! | `daft.prune.sort` | `branch` | Default sort order for prune command |
 //! | `daft.updateCheck` | `true` | Enable/disable new version notifications |
 //! | `daft.branchDelete.remote` | `false` | Delete remote branch when removing |
+//! | `daft.ownership.strategy` | `recency-plurality` | Branch ownership detection strategy (`tip`, `any`, `first`, `plurality`, `majority`, `recency-plurality`) |
 //!
 //! # Hooks Config Keys
 //!
@@ -138,6 +139,10 @@ pub mod defaults {
 
     /// Default value for branchDelete.remote setting.
     pub const BRANCH_DELETE_REMOTE: bool = false;
+
+    /// Default value for ownership.strategy setting.
+    pub const OWNERSHIP_STRATEGY: crate::core::ownership::OwnershipStrategy =
+        crate::core::ownership::OwnershipStrategy::RecencyPlurality;
 }
 
 /// Git config keys for daft settings.
@@ -219,6 +224,9 @@ pub mod keys {
 
     /// Config key for branchDelete.remote setting.
     pub const BRANCH_DELETE_REMOTE: &str = "daft.branchDelete.remote";
+
+    /// Config key for ownership.strategy setting.
+    pub const OWNERSHIP_STRATEGY: &str = "daft.ownership.strategy";
 
     /// Experimental config keys.
     pub mod experimental {
@@ -348,6 +356,10 @@ pub struct DaftSettings {
 
     /// Delete remote branch when removing a branch/worktree.
     pub branch_delete_remote: bool,
+
+    /// Strategy for deducing branch ownership from the commit range
+    /// `base..branch`. Set via `daft.ownership.strategy`.
+    pub ownership_strategy: crate::core::ownership::OwnershipStrategy,
 }
 
 impl Default for DaftSettings {
@@ -377,6 +389,7 @@ impl Default for DaftSettings {
             sync_sort: None,
             prune_sort: None,
             branch_delete_remote: defaults::BRANCH_DELETE_REMOTE,
+            ownership_strategy: defaults::OWNERSHIP_STRATEGY,
         }
     }
 }
@@ -517,6 +530,19 @@ impl DaftSettings {
             settings.branch_delete_remote = parse_bool(&value, defaults::BRANCH_DELETE_REMOTE);
         }
 
+        if let Some(value) = git.config_get(keys::OWNERSHIP_STRATEGY)? {
+            if !value.is_empty() {
+                match crate::core::ownership::OwnershipStrategy::parse(&value) {
+                    Some(strategy) => settings.ownership_strategy = strategy,
+                    None => eprintln!(
+                        "daft: unknown value for {}: {:?} — using default",
+                        keys::OWNERSHIP_STRATEGY,
+                        value
+                    ),
+                }
+            }
+        }
+
         Ok(settings)
     }
 
@@ -652,6 +678,19 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get_global(keys::BRANCH_DELETE_REMOTE)? {
             settings.branch_delete_remote = parse_bool(&value, defaults::BRANCH_DELETE_REMOTE);
+        }
+
+        if let Some(value) = git.config_get_global(keys::OWNERSHIP_STRATEGY)? {
+            if !value.is_empty() {
+                match crate::core::ownership::OwnershipStrategy::parse(&value) {
+                    Some(strategy) => settings.ownership_strategy = strategy,
+                    None => eprintln!(
+                        "daft: unknown value for {}: {:?} — using default",
+                        keys::OWNERSHIP_STRATEGY,
+                        value
+                    ),
+                }
+            }
         }
 
         Ok(settings)
@@ -931,6 +970,10 @@ mod tests {
         assert!(!settings.go_auto_start);
         assert_eq!(settings.list_stat, Stat::Summary);
         assert!(!settings.branch_delete_remote);
+        assert_eq!(
+            settings.ownership_strategy,
+            crate::core::ownership::OwnershipStrategy::RecencyPlurality
+        );
     }
 
     #[test]
@@ -1011,6 +1054,15 @@ mod tests {
             settings.go_fetch_on_miss,
             "go.fetchOnMiss must default to true — the fetch-on-miss spinner \
              path is opt-out, not opt-in"
+        );
+    }
+
+    #[test]
+    fn default_ownership_strategy_is_recency_plurality() {
+        let settings = DaftSettings::default();
+        assert_eq!(
+            settings.ownership_strategy,
+            crate::core::ownership::OwnershipStrategy::RecencyPlurality
         );
     }
 }

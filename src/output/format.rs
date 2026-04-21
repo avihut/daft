@@ -295,7 +295,11 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
 
     let last_commit_subject = info.last_commit_subject.clone();
 
-    let owner = info.owner_email.clone().unwrap_or_default();
+    let owner = info
+        .owner
+        .as_ref()
+        .map(|o| o.name.clone())
+        .unwrap_or_default();
 
     let hash = info.last_commit_hash.clone().unwrap_or_default();
 

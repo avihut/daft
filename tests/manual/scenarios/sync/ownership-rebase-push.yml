@@ -15,7 +15,15 @@ steps:
         - "$WORK_DIR/ownership-repo/main"
 
   - name: Set local user email to current user
-    run: git config user.email "me@example.com"
+    run: |
+      git config user.email "me@example.com"
+      git config user.name "Me Testuser"
+    cwd: "$WORK_DIR/ownership-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Pin ownership strategy to tip for deterministic tip-only ownership
+    run: git config daft.ownership.strategy tip
     cwd: "$WORK_DIR/ownership-repo/main"
     expect:
       exit_code: 0

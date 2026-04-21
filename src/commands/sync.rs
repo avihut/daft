@@ -63,22 +63,17 @@ impl IncludeFilter {
 /// Check if a branch is included by the filters or by ownership.
 fn is_branch_included(
     branch: &str,
-    owner_email: Option<&str>,
-    user_email: Option<&str>,
+    owner: Option<&crate::core::ownership::BranchOwner>,
     filters: &[IncludeFilter],
 ) -> bool {
-    // Check ownership first
-    if let (Some(owner), Some(user)) = (owner_email, user_email) {
-        if owner == user {
-            return true;
-        }
+    if owner.is_some_and(|o| o.is_current_user) {
+        return true;
     }
-    // Check include filters
     for filter in filters {
         match filter {
             IncludeFilter::Unowned => return true,
             IncludeFilter::Email(email) => {
-                if owner_email == Some(email.as_str()) {
+                if owner.is_some_and(|o| o.email.eq_ignore_ascii_case(email)) {
                     return true;
                 }
             }
@@ -271,13 +266,15 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
         let project_root = get_project_root()?;
         let mut set = HashSet::new();
         for (path, branch) in &worktrees {
-            let owner = list::get_author_email_for_ref(branch, path);
-            if is_branch_included(
+            let owner = crate::core::ownership::resolve_owner_with_fallbacks(
+                &default_branch,
                 branch,
-                owner.as_deref(),
+                path,
+                settings.ownership_strategy,
                 user_email.as_deref(),
-                &include_filters,
-            ) {
+                Some(&settings.remote),
+            );
+            if is_branch_included(branch, owner.as_ref(), &include_filters) {
                 set.insert(branch.clone());
             }
         }
@@ -289,13 +286,15 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
                 if branch.is_empty() || worktree_set.contains(branch) {
                     continue;
                 }
-                let owner = list::get_author_email_for_ref(branch, &project_root);
-                if is_branch_included(
+                let owner = crate::core::ownership::resolve_owner_with_fallbacks(
+                    &default_branch,
                     branch,
-                    owner.as_deref(),
+                    &project_root,
+                    settings.ownership_strategy,
                     user_email.as_deref(),
-                    &include_filters,
-                ) {
+                    Some(&settings.remote),
+                );
+                if is_branch_included(branch, owner.as_ref(), &include_filters) {
                     set.insert(branch.to_string());
                 }
             }
@@ -414,6 +413,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         from_columns || sort_spec.as_ref().is_some_and(|s| s.needs_size())
     };
     let compute_mtime = sort_spec.as_ref().is_some_and(|s| s.needs_mtime());
+    let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     let needs_spinner = stat == Stat::Lines || has_size;
     let worktree_infos = if needs_spinner {
         let mut output = CliOutput::new(OutputConfig::new(false, false));
@@ -430,6 +430,9 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             stat,
             has_size,
             compute_mtime,
+            settings.ownership_strategy,
+            user_email.as_deref(),
+            &settings.remote,
         )?;
         output.finish_spinner();
         result
@@ -441,6 +444,9 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             stat,
             has_size,
             compute_mtime,
+            settings.ownership_strategy,
+            user_email.as_deref(),
+            &settings.remote,
         )?
     };
 
@@ -502,7 +508,6 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     // Compute the unowned section boundary for the TUI divider.
     // The TuiState sorts rows by kind (worktree < local-branch < remote-branch)
     // then alphabetically. Mirror that sort on the infos so the index matches.
-    let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     let include_filters: Vec<IncludeFilter> = args
         .include
         .iter()
@@ -528,12 +533,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         // Only show divider when user_email is known (otherwise all are unowned)
         user_email.as_ref().and_then(|_| {
             let idx = sorted.iter().position(|info| {
-                !is_branch_included(
-                    &info.name,
-                    info.owner_email.as_deref(),
-                    user_email.as_deref(),
-                    &include_filters,
-                )
+                !is_branch_included(&info.name, info.owner.as_ref(), &include_filters)
             });
             // Only emit a boundary when there are both owned and unowned rows
             idx.filter(|&i| i > 0 && i < sorted.len())
@@ -565,12 +565,13 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         )
         .collect();
     // Build owner lookup from the worktree_infos collected before TUI started
-    let shared_owner_lookup: Arc<HashMap<String, Option<String>>> = Arc::new(
-        worktree_infos
-            .iter()
-            .map(|info| (info.name.clone(), info.owner_email.clone()))
-            .collect(),
-    );
+    let shared_owner_lookup: Arc<HashMap<String, Option<crate::core::ownership::BranchOwner>>> =
+        Arc::new(
+            worktree_infos
+                .iter()
+                .map(|info| (info.name.clone(), info.owner.clone()))
+                .collect(),
+        );
     // Budget hook + job sub-rows per worktree (2 hooks x ~3 jobs each).
     // Not all worktrees will have hooks, but the ratatui inline viewport
     // cannot grow after creation, so over-allocate.
@@ -633,8 +634,6 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     // Ownership filtering for the orchestrator
     let shared_include: Arc<Vec<String>> = Arc::new(args.include.clone());
-    let shared_user_email: Arc<Option<String>> =
-        Arc::new(git.config_get("user.email").ok().flatten());
 
     let orchestrator_handle = std::thread::spawn(move || {
         // ── Phase 1: Fetch ─────────────────────────────────────────────
@@ -673,8 +672,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             live_worktrees.into_iter().partition(|(branch, _)| {
                 is_branch_included(
                     branch,
-                    shared_owner_lookup.get(branch).and_then(|e| e.as_deref()),
-                    shared_user_email.as_deref(),
+                    shared_owner_lookup.get(branch).and_then(|o| o.as_ref()),
                     &include_filters,
                 )
             });
@@ -1737,5 +1735,98 @@ fn tag_no_upstream() -> String {
         format!("{}\u{2298} no remote{}", styles::YELLOW, styles::RESET)
     } else {
         "\u{2298} no remote".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::ownership::BranchOwner;
+
+    fn owner(email: &str, is_current_user: bool) -> BranchOwner {
+        BranchOwner {
+            name: email.split('@').next().unwrap_or(email).to_string(),
+            email: email.to_string(),
+            is_current_user,
+        }
+    }
+
+    #[test]
+    fn is_branch_included_true_when_current_user() {
+        let me = owner("me@example.com", true);
+        assert!(is_branch_included("feat/x", Some(&me), &[]));
+    }
+
+    #[test]
+    fn is_branch_included_false_without_filters_and_not_current_user() {
+        let bob = owner("bob@example.com", false);
+        assert!(!is_branch_included("feat/x", Some(&bob), &[]));
+    }
+
+    #[test]
+    fn is_branch_included_true_for_unowned_filter_even_when_not_current_user() {
+        let bob = owner("bob@example.com", false);
+        assert!(is_branch_included(
+            "feat/x",
+            Some(&bob),
+            &[IncludeFilter::Unowned]
+        ));
+    }
+
+    #[test]
+    fn is_branch_included_true_for_unowned_filter_when_no_owner() {
+        assert!(is_branch_included(
+            "feat/x",
+            None,
+            &[IncludeFilter::Unowned]
+        ));
+    }
+
+    #[test]
+    fn is_branch_included_matches_email_filter_case_insensitive() {
+        let bob = owner("Bob@Example.com", false);
+        assert!(is_branch_included(
+            "feat/x",
+            Some(&bob),
+            &[IncludeFilter::Email("bob@example.com".into())],
+        ));
+    }
+
+    #[test]
+    fn is_branch_included_matches_branch_filter_by_name() {
+        let bob = owner("bob@example.com", false);
+        assert!(is_branch_included(
+            "feat/x",
+            Some(&bob),
+            &[IncludeFilter::Branch("feat/x".into())],
+        ));
+    }
+
+    #[test]
+    fn is_branch_included_false_when_filters_dont_match() {
+        let bob = owner("bob@example.com", false);
+        assert!(!is_branch_included(
+            "feat/x",
+            Some(&bob),
+            &[
+                IncludeFilter::Email("alice@example.com".into()),
+                IncludeFilter::Branch("feat/y".into()),
+            ],
+        ));
+    }
+
+    #[test]
+    fn is_branch_included_falls_back_gracefully_when_owner_is_none() {
+        assert!(!is_branch_included("feat/x", None, &[]));
+        assert!(!is_branch_included(
+            "feat/x",
+            None,
+            &[IncludeFilter::Email("me@example.com".into())],
+        ));
+        assert!(is_branch_included(
+            "feat/x",
+            None,
+            &[IncludeFilter::Branch("feat/x".into())],
+        ));
     }
 }
