@@ -228,7 +228,15 @@ fn pick_recency_plurality(commits: &[CommitRecord]) -> Option<String> {
 pub fn fetch_commit_records(base: &str, branch: &str, cwd: &Path) -> Vec<CommitRecord> {
     let range = format!("{base}..{branch}");
     let output = match Command::new("git")
-        .args(["log", &range, "--format=%an%x09%ae%x09%ct"])
+        .args([
+            "log",
+            &range,
+            // Order: committer timestamp, then email, then name last.
+            // `splitn(3, '\t')` captures the remainder in the third
+            // field, so a tab embedded in the author name (rare but
+            // valid in git identity) does not misalign the parse.
+            "--format=%ct%x09%ae%x09%an",
+        ])
         .current_dir(cwd)
         .output()
     {
@@ -240,9 +248,9 @@ pub fn fetch_commit_records(base: &str, branch: &str, cwd: &Path) -> Vec<CommitR
         .lines()
         .filter_map(|line| {
             let mut parts = line.splitn(3, '\t');
-            let name = parts.next()?.to_string();
-            let email = parts.next()?.to_string();
             let ts = parts.next()?.trim().parse::<i64>().ok()?;
+            let email = parts.next()?.to_string();
+            let name = parts.next()?.to_string();
             if email.is_empty() {
                 return None;
             }
@@ -564,42 +572,36 @@ mod tests {
         assert_eq!(OwnershipStrategy::parse("recency"), None);
     }
 
-    use std::process::Command as StdCommand;
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to spawn git {args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 
     /// Create a minimal throwaway git repo for integration tests.
     /// Returns its path. Caller is responsible for cleanup — use tempfile.
     fn init_repo(dir: &std::path::Path) {
-        StdCommand::new("git")
-            .args(["init", "-q", "-b", "main"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        StdCommand::new("git")
-            .args(["config", "--local", "user.email", "tester@example.com"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        StdCommand::new("git")
-            .args(["config", "--local", "user.name", "Tester"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        StdCommand::new("git")
-            .args(["config", "--local", "commit.gpgsign", "false"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
+        run_git(dir, &["init", "-q", "-b", "main"]);
+        run_git(
+            dir,
+            &["config", "--local", "user.email", "tester@example.com"],
+        );
+        run_git(dir, &["config", "--local", "user.name", "Tester"]);
+        run_git(dir, &["config", "--local", "commit.gpgsign", "false"]);
     }
 
     fn commit_as(dir: &std::path::Path, name: &str, email: &str, message: &str) {
         let path = dir.join(format!("{message}.txt"));
         std::fs::write(&path, message).unwrap();
-        StdCommand::new("git")
-            .args(["add", "."])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        StdCommand::new("git")
+        run_git(dir, &["add", "."]);
+        let out = Command::new("git")
             .args(["commit", "-q", "-m", message])
             .env("GIT_AUTHOR_NAME", name)
             .env("GIT_AUTHOR_EMAIL", email)
@@ -608,6 +610,11 @@ mod tests {
             .current_dir(dir)
             .output()
             .unwrap();
+        assert!(
+            out.status.success(),
+            "git commit failed: stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     #[test]
@@ -617,11 +624,7 @@ mod tests {
         init_repo(repo);
         commit_as(repo, "Tester", "tester@example.com", "base");
 
-        StdCommand::new("git")
-            .args(["checkout", "-q", "-b", "feature"])
-            .current_dir(repo)
-            .output()
-            .unwrap();
+        run_git(repo, &["checkout", "-q", "-b", "feature"]);
         commit_as(repo, "Alice", "alice@example.com", "first-feature");
         commit_as(repo, "Bob", "bob@example.com", "second-feature");
 
@@ -647,5 +650,24 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let commits = fetch_commit_records("main", "feature", tmp.path());
         assert!(commits.is_empty(), "not a git repo → empty");
+    }
+
+    #[test]
+    fn fetch_commit_records_handles_tab_in_author_name() {
+        // An author name containing a literal tab must not misalign
+        // the tab-separated git-log output. With the format
+        // `%ct%x09%ae%x09%an`, the name is the final field and splitn
+        // captures tabs within it verbatim.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_repo(repo);
+        commit_as(repo, "Tester", "tester@example.com", "base");
+        run_git(repo, &["checkout", "-q", "-b", "feature"]);
+        commit_as(repo, "Weird\tName", "weird@example.com", "weird-commit");
+
+        let commits = fetch_commit_records("main", "feature", repo);
+        assert_eq!(commits.len(), 1, "commit should not be dropped");
+        assert_eq!(commits[0].author_name, "Weird\tName");
+        assert_eq!(commits[0].author_email, "weird@example.com");
     }
 }
