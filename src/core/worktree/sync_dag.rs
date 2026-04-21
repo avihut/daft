@@ -297,8 +297,14 @@ impl SyncDag {
         }
 
         // 5. Push tasks ONLY for owned worktrees (if push is enabled).
+        // The rebase base branch is excluded: daft only used its locally-fetched
+        // tip as a rebase target, so pushing it could overwrite commits other
+        // contributors landed between fetch and sync completion.
         if push {
             for (branch, path, last_idx) in &last_task_indices {
+                if rebase_branch.as_ref() == Some(branch) {
+                    continue;
+                }
                 push_task(
                     SyncTask {
                         id: TaskId::Push(branch.clone()),
@@ -864,23 +870,19 @@ mod tests {
 
         let dag = SyncDag::build_sync(worktrees, vec![], gone, Some("master".into()), true);
 
-        // 1 fetch + 3 updates + 2 rebases + 3 pushes = 9 tasks
-        assert_eq!(dag.tasks.len(), 9);
+        // 1 fetch + 3 updates + 2 rebases + 2 pushes = 8 tasks.
+        // master is the rebase base, so it gets neither a Rebase nor a Push task —
+        // pushing the base branch could clobber commits landed by other devs
+        // between the initial fetch and sync completion.
+        assert_eq!(dag.tasks.len(), 8);
 
-        // Push(master) depends on Update(master), not Rebase (master is the base branch)
-        let push_master_idx = dag
-            .tasks
-            .iter()
-            .position(|t| t.id == TaskId::Push("master".into()))
-            .unwrap();
-        let update_master_idx = dag
-            .tasks
-            .iter()
-            .position(|t| t.id == TaskId::Update("master".into()))
-            .unwrap();
-        assert!(dag
-            .dependencies_of(push_master_idx)
-            .contains(&update_master_idx));
+        // No Push(master) task — base branch is excluded from push.
+        assert!(
+            !dag.tasks
+                .iter()
+                .any(|t| t.id == TaskId::Push("master".into())),
+            "rebase base branch must not be pushed"
+        );
 
         // Push(feat/a) depends on Rebase(feat/a)
         let push_feat_a_idx = dag
@@ -897,6 +899,20 @@ mod tests {
             dag.dependencies_of(push_feat_a_idx)
                 .contains(&rebase_feat_a_idx),
             "Push(feat/a) should depend on Rebase(feat/a)"
+        );
+    }
+
+    #[test]
+    fn rebase_base_branch_excluded_from_push_even_when_only_owned_branch() {
+        // Edge case: if the base branch is the only owned worktree, no push tasks
+        // should be emitted at all — there is nothing else to push, and the base
+        // branch itself must not be pushed.
+        let worktrees = vec![("master".into(), Some(PathBuf::from("/p/master")))];
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], Some("master".into()), true);
+
+        assert!(
+            !dag.tasks.iter().any(|t| matches!(t.id, TaskId::Push(_))),
+            "no push tasks expected when the only owned branch is the rebase base"
         );
     }
 

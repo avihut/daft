@@ -330,6 +330,12 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
     if args.push {
         // When ownership filtering is active, skip unowned branches from push.
         let mut push_skip = conflicted_branches.clone();
+        // Never push the rebase base branch: it was used only as a local rebase
+        // target, and pushing it could clobber commits other devs landed between
+        // fetch and sync completion.
+        if let Some(ref base) = args.rebase {
+            push_skip.insert(base.clone());
+        }
         if let Some(ref included) = included_branches {
             // Collect all worktree branches and skip those not included.
             let git_tmp = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
