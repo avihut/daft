@@ -266,10 +266,10 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
         let project_root = get_project_root()?;
         let mut set = HashSet::new();
         for (path, branch) in &worktrees {
-            let commits =
-                crate::core::ownership::fetch_commit_records(&default_branch, branch, path);
-            let owner = crate::core::ownership::resolve_owner_from_records(
-                &commits,
+            let owner = crate::core::ownership::resolve_owner(
+                &default_branch,
+                branch,
+                path,
                 settings.ownership_strategy,
                 user_email.as_deref(),
             );
@@ -285,13 +285,10 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
                 if branch.is_empty() || worktree_set.contains(branch) {
                     continue;
                 }
-                let commits = crate::core::ownership::fetch_commit_records(
+                let owner = crate::core::ownership::resolve_owner(
                     &default_branch,
                     branch,
                     &project_root,
-                );
-                let owner = crate::core::ownership::resolve_owner_from_records(
-                    &commits,
                     settings.ownership_strategy,
                     user_email.as_deref(),
                 );
@@ -1734,5 +1731,98 @@ fn tag_no_upstream() -> String {
         format!("{}\u{2298} no remote{}", styles::YELLOW, styles::RESET)
     } else {
         "\u{2298} no remote".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::ownership::BranchOwner;
+
+    fn owner(email: &str, is_current_user: bool) -> BranchOwner {
+        BranchOwner {
+            name: email.split('@').next().unwrap_or(email).to_string(),
+            email: email.to_string(),
+            is_current_user,
+        }
+    }
+
+    #[test]
+    fn is_branch_included_true_when_current_user() {
+        let me = owner("me@example.com", true);
+        assert!(is_branch_included("feat/x", Some(&me), &[]));
+    }
+
+    #[test]
+    fn is_branch_included_false_without_filters_and_not_current_user() {
+        let bob = owner("bob@example.com", false);
+        assert!(!is_branch_included("feat/x", Some(&bob), &[]));
+    }
+
+    #[test]
+    fn is_branch_included_true_for_unowned_filter_even_when_not_current_user() {
+        let bob = owner("bob@example.com", false);
+        assert!(is_branch_included(
+            "feat/x",
+            Some(&bob),
+            &[IncludeFilter::Unowned]
+        ));
+    }
+
+    #[test]
+    fn is_branch_included_true_for_unowned_filter_when_no_owner() {
+        assert!(is_branch_included(
+            "feat/x",
+            None,
+            &[IncludeFilter::Unowned]
+        ));
+    }
+
+    #[test]
+    fn is_branch_included_matches_email_filter_case_insensitive() {
+        let bob = owner("Bob@Example.com", false);
+        assert!(is_branch_included(
+            "feat/x",
+            Some(&bob),
+            &[IncludeFilter::Email("bob@example.com".into())],
+        ));
+    }
+
+    #[test]
+    fn is_branch_included_matches_branch_filter_by_name() {
+        let bob = owner("bob@example.com", false);
+        assert!(is_branch_included(
+            "feat/x",
+            Some(&bob),
+            &[IncludeFilter::Branch("feat/x".into())],
+        ));
+    }
+
+    #[test]
+    fn is_branch_included_false_when_filters_dont_match() {
+        let bob = owner("bob@example.com", false);
+        assert!(!is_branch_included(
+            "feat/x",
+            Some(&bob),
+            &[
+                IncludeFilter::Email("alice@example.com".into()),
+                IncludeFilter::Branch("feat/y".into()),
+            ],
+        ));
+    }
+
+    #[test]
+    fn is_branch_included_falls_back_gracefully_when_owner_is_none() {
+        assert!(!is_branch_included("feat/x", None, &[]));
+        assert!(!is_branch_included(
+            "feat/x",
+            None,
+            &[IncludeFilter::Email("me@example.com".into())],
+        ));
+        assert!(is_branch_included(
+            "feat/x",
+            None,
+            &[IncludeFilter::Branch("feat/x".into())],
+        ));
     }
 }

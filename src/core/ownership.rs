@@ -49,8 +49,8 @@ impl OwnershipStrategy {
 
 /// A commit's author identity + recency, as needed by the resolver.
 ///
-/// Commits are expected in **reverse-chronological order** (newest first) —
-/// the natural order of `git log`. Rank 0 = tip.
+/// Commits may be passed in any order; [`resolve_owner_from_records`] sorts
+/// them internally before dispatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRecord {
     pub author_name: String,
@@ -74,8 +74,9 @@ pub struct BranchOwner {
 
 /// Resolve the owner of a branch from its `base..branch` commit range.
 ///
-/// `commits` MUST be reverse-chronological (newest first) — the natural
-/// order of `git log`. Rank 0 = tip.
+/// `commits` is reverse-sorted internally by `committer_timestamp`
+/// (newest first, ties preserved in input order) before dispatch, so
+/// the caller may pass any order. Rank 0 = tip in the sorted view.
 ///
 /// `user_email` is the current user's `git config user.email`, if set.
 /// When `None`, the resolved owner is never `is_current_user = true`.
@@ -88,12 +89,13 @@ pub fn resolve_owner_from_records(
         return None;
     }
 
-    debug_assert!(
-        commits
-            .windows(2)
-            .all(|w| w[0].committer_timestamp >= w[1].committer_timestamp),
-        "commits must be reverse-chronological (newest first)"
-    );
+    // Defensive: callers are documented to pass reverse-chronological
+    // (newest first) — but this is the only guarantee relied on by the
+    // positional RecencyPlurality / Plurality helpers, so normalize here
+    // rather than trust the caller. Bounded to branch length (~dozens).
+    let mut normalized: Vec<CommitRecord> = commits.to_vec();
+    normalized.sort_by_key(|c| std::cmp::Reverse(c.committer_timestamp));
+    let commits = &normalized[..];
 
     let winning_email: String = match strategy {
         OwnershipStrategy::Tip => commits[0].author_email.clone(),
@@ -221,6 +223,24 @@ fn pick_recency_plurality(commits: &[CommitRecord]) -> Option<String> {
         .map(|c| c.author_email.clone())
 }
 
+/// One-shot convenience wrapper: fetch `base..branch` commits and
+/// resolve the owner per `strategy`. Equivalent to calling
+/// [`fetch_commit_records`] followed by [`resolve_owner_from_records`].
+///
+/// Prefer this at command-level call sites. Keep the two-step form
+/// when you need to inspect or post-process commits between fetching
+/// and resolving (e.g. in unit tests with fixture data).
+pub fn resolve_owner(
+    base: &str,
+    branch: &str,
+    cwd: &Path,
+    strategy: OwnershipStrategy,
+    user_email: Option<&str>,
+) -> Option<BranchOwner> {
+    let commits = fetch_commit_records(base, branch, cwd);
+    resolve_owner_from_records(&commits, strategy, user_email)
+}
+
 /// Fetch commit records for `base..branch` from git, newest first.
 ///
 /// Returns an empty Vec on any git error (unreachable base, malformed
@@ -325,6 +345,21 @@ mod tests {
         ];
         let owner = resolve_owner_from_records(&commits, OwnershipStrategy::Tip, me()).unwrap();
         assert_eq!(owner.name, "Bob");
+    }
+
+    #[test]
+    fn resolve_normalizes_order() {
+        // Deliberately pass oldest first.
+        let commits = vec![
+            rec("Alice", "alice@x.com", 100),
+            rec("Bob", "bob@x.com", 200),
+            rec("Bob", "bob@x.com", 300),
+        ];
+        let owner = resolve_owner_from_records(&commits, OwnershipStrategy::Tip, None).unwrap();
+        assert_eq!(
+            owner.name, "Bob",
+            "tip should be newest regardless of input order"
+        );
     }
 
     // ── Any strategy ───────────────────────────────────────────────────

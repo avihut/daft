@@ -816,9 +816,13 @@ pub fn collect_worktree_info(
             get_commit_metadata(&entry.path, git);
 
         let owner = if !entry.is_detached {
-            let commits =
-                ownership::fetch_commit_records(base_branch, &branch_display, &entry.path);
-            ownership::resolve_owner_from_records(&commits, ownership_strategy, user_email)
+            ownership::resolve_owner(
+                base_branch,
+                &branch_display,
+                &entry.path,
+                ownership_strategy,
+                user_email,
+            )
         } else {
             None
         };
@@ -970,9 +974,8 @@ pub fn collect_branch_info(
             let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
                 get_commit_metadata_for_ref_dispatched(branch, cwd, git);
 
-            let commits = ownership::fetch_commit_records(base_branch, branch, cwd);
             let owner =
-                ownership::resolve_owner_from_records(&commits, ownership_strategy, user_email);
+                ownership::resolve_owner(base_branch, branch, cwd, ownership_strategy, user_email);
 
             let branch_creation_timestamp = get_branch_creation_timestamp(branch, cwd);
 
@@ -1064,9 +1067,13 @@ pub fn collect_branch_info(
             let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
                 get_commit_metadata_for_ref_dispatched(remote_branch, cwd, git);
 
-            let commits = ownership::fetch_commit_records(base_branch, remote_branch, cwd);
-            let owner =
-                ownership::resolve_owner_from_records(&commits, ownership_strategy, user_email);
+            let owner = ownership::resolve_owner(
+                base_branch,
+                remote_branch,
+                cwd,
+                ownership_strategy,
+                user_email,
+            );
 
             // Line-level stats (base only — no upstream concept for remote branches)
             let (base_lines_inserted, base_lines_deleted) = if stat == Stat::Lines {

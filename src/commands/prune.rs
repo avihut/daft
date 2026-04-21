@@ -285,10 +285,10 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         let mut stubs = Vec::new();
         for branch in &gone_branches {
             if !worktree_branch_set.contains(branch.as_str()) {
-                let commits =
-                    crate::core::ownership::fetch_commit_records(&base_branch, branch, &cwd);
-                let owner = crate::core::ownership::resolve_owner_from_records(
-                    &commits,
+                let owner = crate::core::ownership::resolve_owner(
+                    &base_branch,
+                    branch,
+                    &cwd,
                     settings.ownership_strategy,
                     user_email.as_deref(),
                 );
