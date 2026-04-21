@@ -157,7 +157,42 @@ pub fn run() -> Result<()> {
             .collect()
     };
 
-    // Single-target pass-through deferred to Task 14.
+    // Mode A: single-target pass-through. Inherit stdio; propagate exit
+    // code verbatim; never render a UI. Handles `daft exec <single> -- claude`
+    // and similar interactive cases without any flag ceremony.
+    if targets.len() == 1 {
+        let target = &targets[0];
+        for spec in &pipeline {
+            let mut cmd = match spec {
+                core::CommandSpec::Argv(parts) => {
+                    let mut c = std::process::Command::new(&parts[0]);
+                    if parts.len() > 1 {
+                        c.args(&parts[1..]);
+                    }
+                    c
+                }
+                core::CommandSpec::Shell(s) => {
+                    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+                    let mut c = std::process::Command::new(shell);
+                    c.arg("-c").arg(s);
+                    c
+                }
+            };
+            cmd.current_dir(&target.worktree_path)
+                .env("DAFT_WORKTREE_PATH", &target.worktree_path)
+                .env("DAFT_BRANCH_NAME", &target.branch_name)
+                .env("DAFT_COMMAND", "exec")
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit());
+
+            let status = cmd.status()?;
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
+            }
+        }
+        std::process::exit(0);
+    }
 
     let mode = if args.keep_going {
         core::ExecMode::KeepGoing
