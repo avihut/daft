@@ -130,6 +130,7 @@ daft provides short verb aliases for common commands:
 | `daft clone`  | `daft worktree-clone`       |
 | `daft init`   | `daft worktree-init`        |
 | `daft carry`  | `daft worktree-carry`       |
+| `daft exec`   | `daft worktree-exec`        |
 | `daft list`   | `daft worktree-list`        |
 | `daft update` | `daft worktree-fetch`       |
 | `daft prune`  | `daft worktree-prune`       |
@@ -186,6 +187,7 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 | Command                                                                                     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `daft worktree-list [--format <FMT>] [-b\|-r\|-a] [--stat summary\|lines] [--columns COLS]` | List all worktrees with branch (`✦` = default), path (relative to cwd), base ahead/behind, file status (+N staged, -N unstaged, ?N untracked), remote status (⇡N unpushed, ⇣N unpulled), branch age, and commit info. Use `-b`/`-r`/`-a` to include local/remote branches without worktrees. Use `--format json` for machine-readable output; JSON includes `is_default_branch`, `staged`, `unstaged`, `untracked`, `remote_ahead`, `remote_behind`, `branch_age`, `owner_name`, `owner_email` fields. When `user.email` is configured, output is split into two sections (your branches / other branches) based on the resolved owner per `daft.ownership.strategy`. Use `--columns owner` or `--columns +owner` to show the Owner column (author name of the resolved owner). |
+| `daft worktree-exec [TARGETS]... [--all] [-x CMD]... [-- CMD ARGS]...`                      | Run command(s) across one or more worktrees: positional/glob targets, `--all` for every worktree, `-x` for repeatable shell pipelines, trailing `--` for direct argv. Parallel by default; `--sequential`/`--keep-going` for serial modes; `-v` for live hook-style windows.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `daft config remote-sync [--on\|--off\|--status\|--global]`                                 | Configure remote sync behavior: toggle fetch, push, and remote delete globally or per-repo; no args opens interactive TUI                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `daft layout [show\|list\|transform\|default]`                                              | Manage worktree layouts: show current, list available, transform between layouts, set global default                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `daft hooks <subcommand>`                                                                   | Manage hooks trust and configuration (`trust`, `prompt`, `deny`, `status`, `run`, `install`, `validate`, `dump`, `migrate`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -196,6 +198,12 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 
 All worktree commands can be run from **any directory** within any worktree.
 They find the project root automatically via `git rev-parse --git-common-dir`.
+
+### Ad-hoc Commands vs Hooks
+
+For ad-hoc commands across worktrees (without creating a hook), use
+`daft worktree-exec`. For recurring per-worktree automation, use `daft.yml`
+hooks.
 
 ### Post-setup Command Execution (`-x`/`--exec`)
 
@@ -632,18 +640,19 @@ When suggesting `daft.yml`, also remind the user to trust the repo:
 
 When working in a daft-managed repository, apply these translations:
 
-| User intent           | Correct daft approach                                                                              |
-| --------------------- | -------------------------------------------------------------------------------------------------- |
-| "Create a branch"     | `daft worktree-checkout -b <name>` -- creates branch + worktree + pushes                           |
-| "Branch from main"    | `daft worktree-checkout -b <name> main` -- branches from the specified base                        |
-| "Switch to branch X"  | Navigate to the worktree directory: `cd ../X/`                                                     |
-| "Go back"             | `daft worktree-checkout -- -` -- toggles to the previous worktree                                  |
-| "Check out a PR"      | `daft worktree-checkout <branch>` -- creates worktree for existing branch                          |
-| "Delete a branch"     | `daft worktree-branch -d <branch>` -- removes worktree, local branch, and remote tracking branch   |
-| "Clean up branches"   | `daft worktree-prune` -- removes worktrees for deleted remote branches                             |
-| "Wrong branch"        | `daft worktree-carry <correct-branch>` -- moves uncommitted changes                                |
-| "Update from remote"  | `daft worktree-fetch` -- updates current or specified worktrees (use source:dest for cross-branch) |
-| "Adopt existing repo" | `daft worktree-flow-adopt` -- converts traditional repo to daft layout                             |
+| User intent                       | Correct daft approach                                                                              |
+| --------------------------------- | -------------------------------------------------------------------------------------------------- |
+| "Create a branch"                 | `daft worktree-checkout -b <name>` -- creates branch + worktree + pushes                           |
+| "Branch from main"                | `daft worktree-checkout -b <name> main` -- branches from the specified base                        |
+| "Switch to branch X"              | Navigate to the worktree directory: `cd ../X/`                                                     |
+| "Go back"                         | `daft worktree-checkout -- -` -- toggles to the previous worktree                                  |
+| "Check out a PR"                  | `daft worktree-checkout <branch>` -- creates worktree for existing branch                          |
+| "Delete a branch"                 | `daft worktree-branch -d <branch>` -- removes worktree, local branch, and remote tracking branch   |
+| "Clean up branches"               | `daft worktree-prune` -- removes worktrees for deleted remote branches                             |
+| "Wrong branch"                    | `daft worktree-carry <correct-branch>` -- moves uncommitted changes                                |
+| "Update from remote"              | `daft worktree-fetch` -- updates current or specified worktrees (use source:dest for cross-branch) |
+| "Run my build on these worktrees" | `daft worktree-exec feat/a feat/b -- <cmd>` or `daft exec --all -- <cmd>` for every worktree       |
+| "Adopt existing repo"             | `daft worktree-flow-adopt` -- converts traditional repo to daft layout                             |
 
 ### Per-worktree Isolation
 
