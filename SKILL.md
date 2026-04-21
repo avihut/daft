@@ -751,8 +751,8 @@ Available strategies:
   commit at rank `k` from tip contributes weight `1/(k+1)`. Robust to drive-by
   commits while still favoring recent work.
 
-JSON `"owner"` field is `{name, email}` or `null` (breaking change from the old
-`"owner_email"` string field).
+JSON `"owner"` field is `{name, email}` or `null` (breaking change: the field
+previously carried just the tip-author email string).
 
 ## Column Selection (`--columns`)
 
