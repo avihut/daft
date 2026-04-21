@@ -1,0 +1,43 @@
+name: "Exec skips orphan branches and warns"
+description:
+  "local branch with no worktree matched by glob is skipped with warning; run
+  proceeds for the rest"
+
+repos:
+  - name: exec-orphan
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone the repository"
+    run: "git-worktree-clone --layout contained $REMOTE_EXEC_ORPHAN"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-orphan/main"
+
+  - name: "Create feat-a worktree"
+    run: "git-worktree-checkout -b feat-a"
+    cwd: "$WORK_DIR/exec-orphan/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-orphan/feat-a"
+
+  - name: "Create a local feat-orphan branch without a worktree"
+    run: "git branch feat-orphan"
+    cwd: "$WORK_DIR/exec-orphan/main"
+    expect:
+      exit_code: 0
+
+  - name:
+      "Glob hits feat-a (worktree) and feat-orphan (orphan); orphan is skipped"
+    run: "git-worktree-exec 'feat-*' -- sh -c 'echo ran > orphan_marker' 2>&1"
+    cwd: "$WORK_DIR/exec-orphan/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-orphan/feat-a/orphan_marker"
+      output_contains:
+        - "Skipped"
+        - "orphan"
+        - "feat-orphan"

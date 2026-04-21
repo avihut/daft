@@ -1,0 +1,49 @@
+name: "Exec -v renders live windows with branch headers"
+description:
+  "-v flag renders hook-style live windows and output mentions both branch names"
+
+repos:
+  - name: exec-verbose
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone the repository"
+    run: "git-worktree-clone --layout contained $REMOTE_EXEC_VERBOSE"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-verbose/main"
+
+  - name: "Create feat-a worktree"
+    run: "git-worktree-checkout -b feat-a"
+    cwd: "$WORK_DIR/exec-verbose/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-verbose/feat-a"
+
+  - name: "Verbose run exits 0 and runs the command in every worktree"
+    # Note: the live "windows" TUI output goes through HookRenderer, which
+    # is silenced by DAFT_TESTING=1 (set by this framework). We therefore
+    # verify the -v path by its side effects: every targeted worktree runs
+    # the command, so a marker file appears in each, and a failing command
+    # produces the scrollback-friendly failed-output dump which is NOT
+    # suppressed.
+    run: "git-worktree-exec --all -v -- sh -c 'echo ran > verbose_marker' 2>&1"
+    cwd: "$WORK_DIR/exec-verbose/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-verbose/main/verbose_marker"
+        - "$WORK_DIR/exec-verbose/feat-a/verbose_marker"
+
+  - name: "Verbose run failed-output dump still includes both branch headers"
+    run: "git-worktree-exec --all -v -- sh -c 'echo boom-line; exit 1' 2>&1"
+    cwd: "$WORK_DIR/exec-verbose/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "─── main"
+        - "─── feat-a"
+        - "exit 1"
+        - "boom-line"

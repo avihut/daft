@@ -1,0 +1,47 @@
+name: "Exec multi-target parallel happy path"
+description: "daft exec across 3 worktrees runs in parallel and all succeed"
+
+repos:
+  - name: exec-parallel
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone the repository"
+    run: "git-worktree-clone --layout contained $REMOTE_EXEC_PARALLEL"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-parallel/main"
+
+  - name: "Create feat-a worktree"
+    run: "git-worktree-checkout -b feat-a"
+    cwd: "$WORK_DIR/exec-parallel/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-parallel/feat-a"
+
+  - name: "Create feat-b worktree"
+    run: "git-worktree-checkout -b feat-b"
+    cwd: "$WORK_DIR/exec-parallel/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-parallel/feat-b"
+
+  - name: "Run echo across all worktrees (parallel mode)"
+    run: "git-worktree-exec --all -- sh -c 'echo ran > marker'"
+    cwd: "$WORK_DIR/exec-parallel/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-parallel/main/marker"
+        - "$WORK_DIR/exec-parallel/feat-a/marker"
+        - "$WORK_DIR/exec-parallel/feat-b/marker"
+      file_contains:
+        - path: "$WORK_DIR/exec-parallel/main/marker"
+          content: "ran"
+        - path: "$WORK_DIR/exec-parallel/feat-a/marker"
+          content: "ran"
+        - path: "$WORK_DIR/exec-parallel/feat-b/marker"
+          content: "ran"

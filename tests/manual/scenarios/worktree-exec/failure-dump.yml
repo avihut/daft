@@ -1,0 +1,35 @@
+name: "Exec failure output dump"
+description:
+  "failed worktree's captured output is printed in the dump with both branch
+  headers"
+
+repos:
+  - name: exec-dump
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone the repository"
+    run: "git-worktree-clone --layout contained $REMOTE_EXEC_DUMP"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-dump/main"
+
+  - name: "Create feat-a worktree"
+    run: "git-worktree-checkout -b feat-a"
+    cwd: "$WORK_DIR/exec-dump/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-dump/feat-a"
+
+  - name: "Run a failing command across --all; dump lists both branches"
+    run: "git-worktree-exec --all -- sh -c 'echo marker-line; exit 1' 2>&1"
+    cwd: "$WORK_DIR/exec-dump/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "─── feat-a"
+        - "─── main"
+        - "exit 1"
+        - "marker-line"

@@ -17,6 +17,7 @@ ln -sf daft git-worktree-carry
 ln -sf daft git-worktree-branch
 ln -sf daft git-worktree-branch-delete
 ln -sf daft git-worktree-fetch
+ln -sf daft git-worktree-exec
 ln -sf daft git-worktree-flow-adopt
 ln -sf daft git-worktree-flow-eject
 ln -sf daft git-worktree-sync
