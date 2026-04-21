@@ -63,22 +63,17 @@ impl IncludeFilter {
 /// Check if a branch is included by the filters or by ownership.
 fn is_branch_included(
     branch: &str,
-    owner_email: Option<&str>,
-    user_email: Option<&str>,
+    owner: Option<&crate::core::ownership::BranchOwner>,
     filters: &[IncludeFilter],
 ) -> bool {
-    // Check ownership first
-    if let (Some(owner), Some(user)) = (owner_email, user_email) {
-        if owner == user {
-            return true;
-        }
+    if owner.is_some_and(|o| o.is_current_user) {
+        return true;
     }
-    // Check include filters
     for filter in filters {
         match filter {
             IncludeFilter::Unowned => return true,
             IncludeFilter::Email(email) => {
-                if owner_email == Some(email.as_str()) {
+                if owner.is_some_and(|o| o.email.eq_ignore_ascii_case(email)) {
                     return true;
                 }
             }
@@ -271,13 +266,14 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
         let project_root = get_project_root()?;
         let mut set = HashSet::new();
         for (path, branch) in &worktrees {
-            let owner = list::get_author_email_for_ref(branch, path);
-            if is_branch_included(
-                branch,
-                owner.as_deref(),
+            let commits =
+                crate::core::ownership::fetch_commit_records(&default_branch, branch, path);
+            let owner = crate::core::ownership::resolve_owner_from_records(
+                &commits,
+                settings.ownership_strategy,
                 user_email.as_deref(),
-                &include_filters,
-            ) {
+            );
+            if is_branch_included(branch, owner.as_ref(), &include_filters) {
                 set.insert(branch.clone());
             }
         }
@@ -289,13 +285,17 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
                 if branch.is_empty() || worktree_set.contains(branch) {
                     continue;
                 }
-                let owner = list::get_author_email_for_ref(branch, &project_root);
-                if is_branch_included(
+                let commits = crate::core::ownership::fetch_commit_records(
+                    &default_branch,
                     branch,
-                    owner.as_deref(),
+                    &project_root,
+                );
+                let owner = crate::core::ownership::resolve_owner_from_records(
+                    &commits,
+                    settings.ownership_strategy,
                     user_email.as_deref(),
-                    &include_filters,
-                ) {
+                );
+                if is_branch_included(branch, owner.as_ref(), &include_filters) {
                     set.insert(branch.to_string());
                 }
             }
@@ -532,12 +532,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         // Only show divider when user_email is known (otherwise all are unowned)
         user_email.as_ref().and_then(|_| {
             let idx = sorted.iter().position(|info| {
-                !is_branch_included(
-                    &info.name,
-                    info.owner_email.as_deref(),
-                    user_email.as_deref(),
-                    &include_filters,
-                )
+                !is_branch_included(&info.name, info.owner.as_ref(), &include_filters)
             });
             // Only emit a boundary when there are both owned and unowned rows
             idx.filter(|&i| i > 0 && i < sorted.len())
@@ -569,12 +564,13 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         )
         .collect();
     // Build owner lookup from the worktree_infos collected before TUI started
-    let shared_owner_lookup: Arc<HashMap<String, Option<String>>> = Arc::new(
-        worktree_infos
-            .iter()
-            .map(|info| (info.name.clone(), info.owner_email.clone()))
-            .collect(),
-    );
+    let shared_owner_lookup: Arc<HashMap<String, Option<crate::core::ownership::BranchOwner>>> =
+        Arc::new(
+            worktree_infos
+                .iter()
+                .map(|info| (info.name.clone(), info.owner.clone()))
+                .collect(),
+        );
     // Budget hook + job sub-rows per worktree (2 hooks x ~3 jobs each).
     // Not all worktrees will have hooks, but the ratatui inline viewport
     // cannot grow after creation, so over-allocate.
@@ -637,8 +633,6 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     // Ownership filtering for the orchestrator
     let shared_include: Arc<Vec<String>> = Arc::new(args.include.clone());
-    let shared_user_email: Arc<Option<String>> =
-        Arc::new(git.config_get("user.email").ok().flatten());
 
     let orchestrator_handle = std::thread::spawn(move || {
         // ── Phase 1: Fetch ─────────────────────────────────────────────
@@ -677,8 +671,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             live_worktrees.into_iter().partition(|(branch, _)| {
                 is_branch_included(
                     branch,
-                    shared_owner_lookup.get(branch).and_then(|e| e.as_deref()),
-                    shared_user_email.as_deref(),
+                    shared_owner_lookup.get(branch).and_then(|o| o.as_ref()),
                     &include_filters,
                 )
             });
