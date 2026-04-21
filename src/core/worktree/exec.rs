@@ -905,4 +905,62 @@ mod tests {
             "outer-value"
         );
     }
+
+    #[test]
+    fn sequential_stops_after_first_failure() {
+        let dir1 = TempDir::new().unwrap();
+        let dir2 = TempDir::new().unwrap();
+        let dir3 = TempDir::new().unwrap();
+        let targets = vec![
+            ResolvedTarget {
+                worktree_path: dir1.path().into(),
+                branch_name: "a".into(),
+            },
+            ResolvedTarget {
+                worktree_path: dir2.path().into(),
+                branch_name: "b".into(),
+            },
+            ResolvedTarget {
+                worktree_path: dir3.path().into(),
+                branch_name: "c".into(),
+            },
+        ];
+
+        // A pipeline whose first command uses the branch name to decide exit code.
+        let pipeline = vec![CommandSpec::Shell(
+            r#"case "$DAFT_BRANCH_NAME" in b) exit 1;; *) exit 0;; esac"#.into(),
+        )];
+        let report = run_scheduler(&targets, &pipeline, ExecMode::Sequential).unwrap();
+        assert_eq!(report.outcomes.len(), 2, "third target must not have run");
+        assert_eq!(report.outcomes[0].target.branch_name, "a");
+        assert_eq!(report.outcomes[1].target.branch_name, "b");
+        assert_eq!(report.aggregate_exit_code(), 1);
+    }
+
+    #[test]
+    fn keep_going_runs_all_despite_failures() {
+        let dir1 = TempDir::new().unwrap();
+        let dir2 = TempDir::new().unwrap();
+        let dir3 = TempDir::new().unwrap();
+        let targets = vec![
+            ResolvedTarget {
+                worktree_path: dir1.path().into(),
+                branch_name: "a".into(),
+            },
+            ResolvedTarget {
+                worktree_path: dir2.path().into(),
+                branch_name: "b".into(),
+            },
+            ResolvedTarget {
+                worktree_path: dir3.path().into(),
+                branch_name: "c".into(),
+            },
+        ];
+        let pipeline = vec![CommandSpec::Shell(
+            r#"case "$DAFT_BRANCH_NAME" in b) exit 1;; *) exit 0;; esac"#.into(),
+        )];
+        let report = run_scheduler(&targets, &pipeline, ExecMode::KeepGoing).unwrap();
+        assert_eq!(report.outcomes.len(), 3);
+        assert_eq!(report.aggregate_exit_code(), 1);
+    }
 }
