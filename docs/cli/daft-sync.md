@@ -39,16 +39,21 @@ separately.
 
 ### Ownership-gated rebase and push
 
-When `--rebase` or `--push` is specified, daft applies these operations only to
-branches you own. A branch is considered yours when its tip commit author email
+When `--rebase` or `--push` is specified, daft applies these operations only
+to branches you own. Ownership is deduced from the branch's commit range
+(`base..branch`) per the strategy set in `daft.ownership.strategy` (default:
+`recency-plurality`). A branch is "yours" when the resolved owner's email
 matches your `git config user.email`.
+
+Under the default strategy, you retain ownership of branches where you
+authored most commits, even if a teammate or bot wrote the tip commit.
 
 Branches owned by others are still fetched and updated (pulled), but they are
 not rebased or pushed. This protects teammates' branches from unintended rewrites
 when multiple people share a repository.
 
-The summary table shown after sync includes an **Owner** column displaying the
-tip commit author email for each branch, making it easy to see who owns what.
+The summary table's **Owner** column shows the author name of the resolved
+owner.
 
 ### Controlling which branches are rebased and pushed
 

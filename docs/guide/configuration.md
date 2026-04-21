@@ -145,6 +145,34 @@ branch).
 | `daft.sync.columns` |             | Default column selection for sync command                          |
 | `daft.sync.sort`    |             | Default sort order for sync command (e.g., `+branch`, `-activity`) |
 
+## Ownership Settings
+
+Controls how daft determines which branches are "yours" for the purposes of
+`daft sync --rebase` / `--push`, the Owner column in `daft list` / `daft sync` /
+`daft prune`, and the sync TUI divider between owned and unowned branches.
+
+| Key                       | Default             | Description                                                                                                                                               |
+| ------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `daft.ownership.strategy` | `recency-plurality` | Strategy for deducing branch ownership from the `base..branch` commit range. Values: `tip`, `any`, `first`, `plurality`, `majority`, `recency-plurality`. |
+
+Each strategy decides the branch owner from the commits in the range
+`base..branch` (your branch minus everything already in the default branch):
+
+- **`tip`** — owner is the author of the newest commit. Fast and simple, but
+  flips ownership whenever a teammate or bot pushes a single commit on top.
+- **`any`** — owner is you if any commit in range is yours; otherwise the tip
+  author. Most permissive.
+- **`first`** — owner is the author of the oldest commit in range — "who started
+  this branch."
+- **`plurality`** — owner is the author with the most commits. Ties broken by
+  most-recent-commit-of-tied-author.
+- **`majority`** — owner is the author with strictly more than 50% of commits.
+  No owner if no majority.
+- **`recency-plurality`** (default) — owner is the author with the highest
+  recency-weighted score. Each commit at rank `k` from the tip (`k=0` = tip)
+  contributes weight `1/(k+1)`. Ties broken by most-recent-commit. Matches the
+  intuition "favor recent work" while staying robust to drive-by commits on top.
+
 ## Multi-Remote Settings
 
 | Key                              | Default    | Description                                          |
