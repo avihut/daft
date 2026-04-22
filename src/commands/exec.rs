@@ -214,7 +214,7 @@ pub fn run() -> Result<()> {
     });
 
     let report = if args.verbose {
-        core::windows_renderer::run_with_live_windows(&targets, &pipeline, mode, &cancel)?
+        core::progress_renderer::run_with_progress(&targets, &pipeline, mode, &cancel)?
     } else {
         core::run_scheduler(&targets, &pipeline, mode, &cancel)?
     };

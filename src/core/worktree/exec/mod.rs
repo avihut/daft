@@ -5,7 +5,7 @@
 //! lives here; renderers are separate.
 
 pub mod list_renderer;
-pub mod windows_renderer;
+pub mod progress_renderer;
 
 use crate::executor::presenter::{JobPresenter, NullPresenter};
 use std::io::{BufRead, BufReader};

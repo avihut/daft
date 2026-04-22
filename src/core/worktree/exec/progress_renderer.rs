@@ -1,13 +1,11 @@
-//! Verbose "live windows" renderer for `daft worktree-exec`.
+//! Live progress renderer for multi-worktree `daft exec`.
 //!
-//! Reuses the existing `JobPresenter` / `CliPresenter` plumbing — the same
-//! mechanism that powers hook output — to drive one live panel per target
-//! worktree. Each command in the pipeline produces a short-lived window that
-//! tears down when the command finishes; output lines stream into each
-//! window in real time.
-//!
-//! The presenter is driven entirely from [`run_with_live_windows`]; the
-//! per-target runtime lives in
+//! Reuses the `JobPresenter` / `CliPresenter` plumbing — the same mechanism
+//! that powers hook output — to drive one live panel per target worktree.
+//! Each command in the pipeline produces a short-lived window that tears
+//! down when the command finishes; output lines stream into each window in
+//! real time. The presenter is driven entirely from [`run_with_progress`];
+//! the per-target runtime lives in
 //! [`super::run_pipeline_streaming`](crate::core::worktree::exec::run_pipeline_streaming).
 
 use super::{
@@ -24,7 +22,7 @@ use std::time::Instant;
 /// [`CliPresenter`]. Returns the aggregated [`ExecReport`] after the TUI has
 /// torn down so the command layer can still render a scrollback-friendly
 /// failure dump.
-pub fn run_with_live_windows(
+pub fn run_with_progress(
     targets: &[ResolvedTarget],
     pipeline: &[CommandSpec],
     mode: ExecMode,
@@ -120,7 +118,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn run_with_live_windows_single_target_success() {
+    fn run_with_progress_single_target_success() {
         let dir = TempDir::new().unwrap();
         let targets = vec![ResolvedTarget {
             worktree_path: dir.path().to_path_buf(),
@@ -128,8 +126,7 @@ mod tests {
         }];
         let pipeline = vec![CommandSpec::Argv(vec!["echo".into(), "hi".into()])];
         let report =
-            run_with_live_windows(&targets, &pipeline, ExecMode::Parallel, &CancelFlag::new())
-                .unwrap();
+            run_with_progress(&targets, &pipeline, ExecMode::Parallel, &CancelFlag::new()).unwrap();
         assert_eq!(report.outcomes.len(), 1);
         assert_eq!(report.aggregate_exit_code(), 0);
         assert!(report.outcomes[0].succeeded());
