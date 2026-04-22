@@ -94,6 +94,27 @@ git worktree-list [OPTIONS]
 | `-h`, `--help` | Print help information |
 | `-V`, `--version` | Print version information |
 
+## Structured Output
+
+`git worktree-list` supports machine-readable output via `--format`: `json`,
+`ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`, plus `--template <tera>`
+for custom output.
+
+```sh
+# Two columns for awk / cut
+daft list --format tsv --no-headers | cut -f2,5
+
+# Pipe to jq
+daft list --format json | jq '.[] | select(.is_current == true)'
+
+# Custom template
+daft list --template '{% for r in items %}{{ r.name }} -> {{ r.path }}
+{% endfor %}'
+```
+
+See the [Output Formats guide](../guide/output-formats.md) for format details
+and Tera syntax.
+
 ## See Also
 
 - [git-worktree-checkout](./git-worktree-checkout.md)

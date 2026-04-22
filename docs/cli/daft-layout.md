@@ -134,3 +134,20 @@ daft layout reset [PATH]
 | `-h`, `--help` | Print help information |
 | `-V`, `--version` | Print version information |
 
+## Structured Output
+
+`daft layout list` supports machine-readable output via `--format`: `json`,
+`ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`, plus `--template <tera>`
+for custom output.
+
+```sh
+# Layout names and templates as TSV
+daft layout list --format tsv | cut -f1,3
+
+# List layouts as JSON for tooling
+daft layout list --format json
+```
+
+See the [Output Formats guide](../guide/output-formats.md) for format details
+and Tera syntax.
+

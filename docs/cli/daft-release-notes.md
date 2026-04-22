@@ -47,3 +47,19 @@ daft release-notes [OPTIONS]
 | `-h`, `--help` | Print help information |
 | `-V`, `--version` | Print version information |
 
+## Structured Output
+
+`daft release-notes` supports machine-readable output via `--format`: `json`,
+`yaml`, `toon`, `markdown`, plus `--template <tera>` for custom output.
+
+```sh
+# Markdown prose, paste-ready for GitHub release
+daft release-notes 1.2.0 --format markdown
+
+# Versions as JSON for tooling
+daft release-notes --format json | jq '.[0].version'
+```
+
+See the [Output Formats guide](../guide/output-formats.md) for format details
+and Tera syntax.
+
