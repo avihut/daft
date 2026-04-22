@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### BREAKING
+
+- The `--json` flag is removed from `daft list` and `daft release-notes`. Use
+  `--format json` instead.
+- `daft list --format json` emits a flat `owner_name` and `owner_email`
+  (strings) in place of the previous nested `owner: {name, email}` object.
+  This is a schema change forced by the new format-agnostic emit path (other
+  formats like TSV and CSV cannot represent nested objects). Scripts reading
+  the old `.owner.name` / `.owner.email` need to switch to `.owner_name` /
+  `.owner_email`.
+
+### Added
+
+- `--format` on `list`, `release-notes`, `hooks trust list`, `layout list`,
+  `shared status`, `multi-remote status`, `hooks run` with seven declarative
+  formats: `json`, `ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`.
+- `--template <tera>` for custom output on the same commands.
+- `--no-headers` to suppress header rows in `tsv` / `csv` output.
+- New guide: `docs/guide/output-formats.md`.
+
 ## [1.7.2](https://github.com/avihut/daft/compare/v1.7.1...v1.7.2) - 2026-04-21
 
 ### Bug Fixes
