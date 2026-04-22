@@ -21,7 +21,6 @@ daft exec --all -- cargo test
 daft exec feat/auth 'feat/ui-*' -- pnpm lint
 daft exec --all -x 'mise install' -x 'pnpm build' -x 'pnpm test'
 daft exec feat/auth -- claude
-daft exec --all -v -- cargo test
 ```
 
 ## See Also

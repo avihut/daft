@@ -66,13 +66,11 @@ No UI renders; the child's exit code is propagated verbatim.
 
 ## Viewing output
 
-In multi-target runs, successful worktrees' output is discarded; failed
-worktrees' output is dumped at the end. Use `-v` to see everything live in
-hook-style windows:
-
-```bash
-daft exec --all -v -- cargo test
-```
+During a multi-worktree run, `daft exec` shows a live progress row per worktree
+with a rolling tail of output beneath each. When a worktree finishes, its row
+collapses to a single line: `✓ branch (1.8s)` on success or `✗ branch (1.2s)` on
+failure. After all worktrees complete, any that failed have their captured
+output dumped to stdout for easy scrollback review.
 
 ## Relationship to other commands
 
