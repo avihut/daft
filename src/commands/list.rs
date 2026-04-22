@@ -425,7 +425,7 @@ fn build_emit_table(
             let kind_str = match info.kind {
                 EntryKind::Worktree => "worktree",
                 EntryKind::LocalBranch => "branch",
-                EntryKind::RemoteBranch => "remote-branch",
+                EntryKind::RemoteBranch => "remote",
             };
             row.push(Cell::str(kind_str));
             row.push(Cell::str(&info.name));
