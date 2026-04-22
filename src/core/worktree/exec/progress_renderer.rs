@@ -18,9 +18,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
-/// Run the pipeline across all targets, drawing a live "windows" TUI via
-/// [`CliPresenter`]. Returns the aggregated [`ExecReport`] after the TUI has
-/// torn down so the command layer can still render a scrollback-friendly
+/// Run the pipeline across all targets, driving a live multi-panel progress
+/// TUI via [`CliPresenter`]. Returns the aggregated [`ExecReport`] after the
+/// TUI has torn down so the command layer can still render a scrollback-friendly
 /// failure dump.
 pub fn run_with_progress(
     targets: &[ResolvedTarget],
@@ -28,8 +28,8 @@ pub fn run_with_progress(
     mode: ExecMode,
     cancel: &CancelFlag,
 ) -> anyhow::Result<ExecReport> {
-    // Enable verbose-style command previews under each panel; other knobs
-    // match the defaults used by the hooks command.
+    // Enable command previews under each panel; other knobs match the
+    // defaults used by the hooks command.
     let cfg = HookOutputConfig {
         verbose: true,
         ..HookOutputConfig::default()
