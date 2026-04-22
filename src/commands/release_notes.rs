@@ -12,6 +12,8 @@ use std::io::{self, IsTerminal, Write};
 use termimad::crossterm::style::Color;
 use termimad::MadSkin;
 
+use crate::output::emit::{self, EmitArgs, EmitPayload, Format};
+
 /// Embedded CHANGELOG.md content (compiled into the binary)
 const CHANGELOG: &str = include_str!("../../CHANGELOG.md");
 
@@ -46,6 +48,9 @@ The pager can be navigated using standard less commands:
   - q: quit
 "#)]
 pub struct Args {
+    #[command(flatten)]
+    emit: EmitArgs,
+
     /// Show notes for a specific version (e.g., "1.0.5" or "v1.0.5")
     #[arg(value_name = "VERSION")]
     version: Option<String>,
@@ -57,10 +62,6 @@ pub struct Args {
     /// Show only the latest N releases (default: all)
     #[arg(short = 'n', long, value_name = "N")]
     latest: Option<usize>,
-
-    /// Output as JSON for scripting
-    #[arg(long)]
-    json: bool,
 
     /// Disable pager, print directly to stdout
     #[arg(long)]
@@ -103,9 +104,22 @@ pub fn run() -> Result<()> {
     };
 
     // Output based on format
-    if args.json {
-        output_json(&filtered_releases, args.list)?;
-    } else if args.list {
+    if args.emit.format == Some(Format::Markdown) {
+        // Pre-render as markdown prose, wrap as Document(String) so the markdown
+        // format prints it verbatim (top-level strings emit as-is).
+        let prose = render_releases_markdown(&filtered_releases, args.list);
+        let payload = EmitPayload::Document(serde_json::Value::String(prose));
+        return emit::emit_and_handle("release-notes", payload, &args.emit, &mut io::stdout())
+            .map_err(|e| anyhow::anyhow!("{e}"));
+    }
+
+    if args.emit.is_structured() {
+        let payload = build_release_notes_payload(&filtered_releases, args.list)?;
+        return emit::emit_and_handle("release-notes", payload, &args.emit, &mut io::stdout())
+            .map_err(|e| anyhow::anyhow!("{e}"));
+    }
+
+    if args.list {
         output_list(&filtered_releases, args.no_pager)?;
     } else {
         output_full(&filtered_releases, args.no_pager)?;
@@ -188,26 +202,80 @@ fn normalize_version(version: &str) -> String {
     version.trim_start_matches(['v', 'V']).to_lowercase()
 }
 
-/// Output releases as JSON
-fn output_json(releases: &[Release], list_only: bool) -> Result<()> {
-    let output = if list_only {
-        // Just version and date
-        let simplified: Vec<_> = releases
-            .iter()
-            .map(|r| {
-                serde_json::json!({
-                    "version": r.version,
-                    "date": r.date,
+/// Build an `EmitPayload` for structured emit (JSON, YAML, etc.).
+///
+/// In list mode emits `[{version, date}, ...]`; in full mode emits the
+/// complete `Vec<Release>` (with content).  This preserves the JSON shape
+/// that the old `--json` flag produced.
+fn build_release_notes_payload(releases: &[Release], list_mode: bool) -> Result<EmitPayload> {
+    let value = if list_mode {
+        serde_json::to_value(
+            releases
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "version": r.version,
+                        "date": r.date,
+                    })
                 })
-            })
-            .collect();
-        serde_json::to_string_pretty(&simplified)?
+                .collect::<Vec<_>>(),
+        )?
     } else {
-        serde_json::to_string_pretty(releases)?
+        serde_json::to_value(releases)?
     };
+    Ok(EmitPayload::Document(value))
+}
 
-    println!("{output}");
-    Ok(())
+/// Build a pure markdown string from the releases, suitable for `--format markdown`.
+///
+/// For full mode this matches the markup that `output_full` builds (same
+/// headers and separators) before it is handed to termimad/the pager.
+/// For list mode it produces one `## [version] - date` line per release,
+/// which is valid markdown (unlike the human `output_list` prose).
+fn render_releases_markdown(releases: &[Release], list_mode: bool) -> String {
+    if list_mode {
+        let mut out = String::new();
+        for release in releases {
+            if let Some(ref date) = release.date {
+                out.push_str(&format!("## [{}] - {}\n", release.version, date));
+            } else {
+                out.push_str(&format!("## [{}]\n", release.version));
+            }
+        }
+        out
+    } else {
+        build_full_markdown(releases)
+    }
+}
+
+/// Shared core of `output_full` and `render_releases_markdown` (full mode).
+///
+/// Returns the raw markdown prose without any termimad rendering or pager
+/// involvement so it can be re-used by the structured-emit path.
+fn build_full_markdown(releases: &[Release]) -> String {
+    let mut markdown = String::new();
+
+    for (i, release) in releases.iter().enumerate() {
+        if i > 0 {
+            markdown.push_str("\n---\n\n");
+        }
+
+        // Header
+        if let Some(ref date) = release.date {
+            markdown.push_str(&format!("## [{}] - {}\n", release.version, date));
+        } else {
+            markdown.push_str(&format!("## [{}]\n", release.version));
+        }
+
+        // Content
+        if !release.content.is_empty() {
+            markdown.push('\n');
+            markdown.push_str(&release.content);
+        }
+        markdown.push('\n');
+    }
+
+    markdown
 }
 
 /// Output just the version list
@@ -231,27 +299,7 @@ fn output_list(releases: &[Release], no_pager: bool) -> Result<()> {
 
 /// Output full release notes
 fn output_full(releases: &[Release], no_pager: bool) -> Result<()> {
-    let mut markdown = String::new();
-
-    for (i, release) in releases.iter().enumerate() {
-        if i > 0 {
-            markdown.push_str("\n---\n\n");
-        }
-
-        // Header
-        if let Some(ref date) = release.date {
-            markdown.push_str(&format!("## [{}] - {}\n", release.version, date));
-        } else {
-            markdown.push_str(&format!("## [{}]\n", release.version));
-        }
-
-        // Content
-        if !release.content.is_empty() {
-            markdown.push('\n');
-            markdown.push_str(&release.content);
-        }
-        markdown.push('\n');
-    }
+    let markdown = build_full_markdown(releases);
 
     // Render markdown if outputting to a terminal
     let output = if io::stdout().is_terminal() {

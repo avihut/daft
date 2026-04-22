@@ -33,9 +33,11 @@ daft release-notes [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|----------|
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
 | `-l, --list` | List all versions without full notes |  |
 | `-n, --latest <N>` | Show only the latest N releases (default: all) |  |
-| `--json` | Output as JSON for scripting |  |
 | `--no-pager` | Disable pager, print directly to stdout |  |
 
 ## Global Options
