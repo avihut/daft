@@ -153,3 +153,79 @@ pub(super) fn format_duration(d: Duration) -> String {
         }
     }
 }
+
+/// Render a finalized per-job row for compact-finalization mode.
+///
+/// Matches `crate::core::worktree::exec::list_renderer::render_outcome`'s
+/// visible shape: two-space indent, sigil, double space, 24-char left-padded
+/// name, single space, parenthesized duration. Colored variant adds ANSI
+/// escapes consistent with the summary formatting.
+#[allow(dead_code)] // Wired up by Task 3 (compact-finalization branching in renderers).
+pub(super) fn format_compact_row(
+    name: &str,
+    success: bool,
+    duration: Duration,
+    use_color: bool,
+) -> String {
+    let sigil = if success { "\u{2713}" } else { "\u{2717}" };
+    let elapsed = format_duration(duration);
+    if use_color {
+        let color = if success {
+            crate::styles::GREEN
+        } else {
+            crate::styles::RED
+        };
+        format!(
+            "  {color}{sigil}{}  {:<24}{} {GREY}({elapsed}){}",
+            crate::styles::RESET,
+            name,
+            crate::styles::RESET,
+            crate::styles::RESET
+        )
+    } else {
+        format!("  {sigil}  {:<24} ({elapsed})", name)
+    }
+}
+
+#[cfg(test)]
+mod compact_row_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn compact_row_success_plain() {
+        let row = format_compact_row("master", true, Duration::from_millis(1800), false);
+        // Matches list_renderer::render_outcome's visible format:
+        //   "  ✓  master                    (1.8s)"
+        assert!(row.contains("\u{2713}"), "expected ✓, got: {row:?}");
+        assert!(row.contains("master"), "missing name: {row:?}");
+        assert!(row.contains("(1.8s)"), "missing elapsed: {row:?}");
+    }
+
+    #[test]
+    fn compact_row_failure_plain() {
+        let row = format_compact_row("feat/dirty", false, Duration::from_millis(1200), false);
+        assert!(row.contains("\u{2717}"), "expected ✗, got: {row:?}");
+        assert!(row.contains("feat/dirty"));
+        assert!(row.contains("(1.2s)"));
+    }
+
+    #[test]
+    fn compact_row_has_leading_indent() {
+        let row = format_compact_row("x", true, Duration::from_secs(1), false);
+        assert!(
+            row.starts_with("  "),
+            "expected 2-space leading indent, got: {row:?}"
+        );
+    }
+
+    #[test]
+    fn compact_row_color_wraps_sigil_and_name() {
+        let row = format_compact_row("x", true, Duration::from_secs(1), true);
+        // Colored variant must include an ANSI reset somewhere.
+        assert!(
+            row.contains("\x1b["),
+            "expected ANSI escapes when use_color: {row:?}"
+        );
+    }
+}
