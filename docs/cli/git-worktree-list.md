@@ -39,7 +39,10 @@ Use --stat lines to show line-level change counts (insertions and deletions)
 instead of the default summary (commit counts for base/remote, file counts for
 changes). This is slower as it requires computing diffs for each worktree.
 
-Use --json for machine-readable output suitable for scripting.
+Use --format to emit machine-readable output suitable for scripting.
+Supported formats: json, ndjson, tsv, csv, yaml, toon, markdown. Use
+--template '<tera>' for custom output. See the Structured Output guide
+for details.
 
 Use --columns to select which columns are shown and in what order.
   Replace mode:  --columns branch,path,age (exact set and order)
@@ -73,7 +76,9 @@ git worktree-list [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|----------|
-| `--json` | Output in JSON format |  |
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
 | `-b, --branches` | Also show local branches without a worktree |  |
 | `-r, --remotes` | Also show remote tracking branches |  |

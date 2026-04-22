@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-list \- List all worktrees with status information
 .SH SYNOPSIS
-\fBgit\-worktree\-list\fR [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-\-sort\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBgit\-worktree\-list\fR [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-\-sort\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Lists all worktrees in the current project with enriched status information
@@ -33,7 +33,10 @@ Use \-\-stat lines to show line\-level change counts (insertions and deletions)
 instead of the default summary (commit counts for base/remote, file counts for
 changes). This is slower as it requires computing diffs for each worktree.
 .PP
-Use \-\-json for machine\-readable output suitable for scripting.
+Use \-\-format to emit machine\-readable output suitable for scripting.
+Supported formats: json, ndjson, tsv, csv, yaml, toon, markdown. Use
+\-\-template \*(Aq<tera>\*(Aq for custom output. See the Structured Output guide
+for details.
 .PP
 Use \-\-columns to select which columns are shown and in what order.
   Replace mode:  \-\-columns branch,path,age (exact set and order)
@@ -58,8 +61,34 @@ the output (e.g. \-\-sort \-size without \-\-columns +size). Defaults can be set
 with daft.list.sort.
 .SH OPTIONS
 .TP
-\fB\-\-json\fR
-Output in JSON format
+\fB\-\-format\fR \fI<FORMAT>\fR
+Output format. Mutually exclusive with \-\-template
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+json
+.IP \(bu 2
+ndjson
+.IP \(bu 2
+tsv
+.IP \(bu 2
+csv
+.IP \(bu 2
+yaml
+.IP \(bu 2
+toon
+.IP \(bu 2
+markdown
+.RE
+.TP
+\fB\-\-template\fR \fI<STR>\fR
+Tera template string. Mutually exclusive with \-\-format
+.TP
+\fB\-\-no\-headers\fR
+Omit header row (tsv/csv only)
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Be verbose; show detailed progress
