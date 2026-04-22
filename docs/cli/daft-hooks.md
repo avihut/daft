@@ -184,6 +184,9 @@ daft hooks run [OPTIONS] [HOOK_TYPE]
 | `--tag <TAG>` | Run only jobs with this tag (repeatable) |  |
 | `--dry-run` | Preview what would run without executing |  |
 | `-v, --verbose` | Show verbose output including skipped jobs |  |
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
 
 ### install
 

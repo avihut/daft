@@ -96,8 +96,16 @@ daft multi-remote disable [OPTIONS]
 Show current multi-remote configuration
 
 ```
-daft multi-remote status
+daft multi-remote status [OPTIONS]
 ```
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
 
 ### set-default
 

@@ -113,8 +113,16 @@ daft shared link [OPTIONS] <PATH> [WORKTREE]
 Show shared files and per-worktree state
 
 ```
-daft shared status
+daft shared status [OPTIONS]
 ```
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
 
 ### sync
 

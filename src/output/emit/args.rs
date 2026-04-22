@@ -2,7 +2,7 @@
 
 use crate::output::emit::format::Format;
 
-#[derive(clap::Args, Debug, Clone)]
+#[derive(clap::Args, Debug, Clone, Default)]
 pub struct EmitArgs {
     /// Output format. Mutually exclusive with --template.
     #[arg(long, value_enum, value_name = "FORMAT", conflicts_with = "template")]
