@@ -133,3 +133,25 @@ mod tests {
         assert!(msg.contains("supported formats: json, yaml, toon, markdown"));
     }
 }
+
+/// Returns true if an error is a broken-pipe IO error.
+pub fn is_broken_pipe(err: &EmitError) -> bool {
+    matches!(err, EmitError::Io(e) if e.kind() == std::io::ErrorKind::BrokenPipe)
+}
+
+#[cfg(test)]
+mod pipe_tests {
+    use super::*;
+
+    #[test]
+    fn broken_pipe_is_detected() {
+        let e = EmitError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        assert!(is_broken_pipe(&e));
+    }
+
+    #[test]
+    fn other_io_error_is_not_broken_pipe() {
+        let e = EmitError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(!is_broken_pipe(&e));
+    }
+}
