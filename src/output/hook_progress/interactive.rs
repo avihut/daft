@@ -327,44 +327,55 @@ impl HookProgressRenderer {
         }
         state.spinner.finish_and_clear();
 
-        // Print heading as a permanent line. Because the spinner is already
-        // cleared, mp.println() inserts this above remaining *active*
-        // spinners only — i.e. after all previously finished jobs' output.
-        let finished_name = if self.use_color {
-            format!("{ORANGE}{name}{}", styles::RESET)
+        if self.config.compact_finalization {
+            self.mp
+                .println(super::formatting::format_compact_row(
+                    name,
+                    success,
+                    duration,
+                    self.use_color,
+                ))
+                .ok();
         } else {
-            name.to_string()
-        };
-        self.mp
-            .println(format!(
-                "{}  {finished_name} {}",
-                self.pipe_str, self.arrow_str
-            ))
-            .ok();
-
-        // Print full output as permanent lines below the heading
-        let has_output = !state.output_buffer.is_empty();
-        if !self.config.quiet && has_output {
-            for line in &state.output_buffer {
-                self.mp.println(format!("{}  {line}", self.pipe_str)).ok();
-            }
-        }
-
-        if !self.config.quiet && !has_output {
-            let msg = if self.use_color {
-                format!(
-                    "{}  {DARK_GREY}{ITALIC}No output{}",
-                    self.pipe_str,
-                    styles::RESET
-                )
+            // Print heading as a permanent line. Because the spinner is already
+            // cleared, mp.println() inserts this above remaining *active*
+            // spinners only — i.e. after all previously finished jobs' output.
+            let finished_name = if self.use_color {
+                format!("{ORANGE}{name}{}", styles::RESET)
             } else {
-                format!("{}  No output", self.pipe_str)
+                name.to_string()
             };
-            self.mp.println(msg).ok();
-        }
+            self.mp
+                .println(format!(
+                    "{}  {finished_name} {}",
+                    self.pipe_str, self.arrow_str
+                ))
+                .ok();
 
-        // Empty line after each job's section
-        self.mp.println(String::new()).ok();
+            // Print full output as permanent lines below the heading
+            let has_output = !state.output_buffer.is_empty();
+            if !self.config.quiet && has_output {
+                for line in &state.output_buffer {
+                    self.mp.println(format!("{}  {line}", self.pipe_str)).ok();
+                }
+            }
+
+            if !self.config.quiet && !has_output {
+                let msg = if self.use_color {
+                    format!(
+                        "{}  {DARK_GREY}{ITALIC}No output{}",
+                        self.pipe_str,
+                        styles::RESET
+                    )
+                } else {
+                    format!("{}  No output", self.pipe_str)
+                };
+                self.mp.println(msg).ok();
+            }
+
+            // Empty line after each job's section
+            self.mp.println(String::new()).ok();
+        }
 
         // Record for summary
         self.finished_jobs.push(JobResultEntry {

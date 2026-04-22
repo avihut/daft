@@ -160,7 +160,6 @@ pub(super) fn format_duration(d: Duration) -> String {
 /// visible shape: two-space indent, sigil, double space, 24-char left-padded
 /// name, single space, parenthesized duration. Colored variant adds ANSI
 /// escapes consistent with the summary formatting.
-#[allow(dead_code)] // Wired up by Task 3 (compact-finalization branching in renderers).
 pub(super) fn format_compact_row(
     name: &str,
     success: bool,

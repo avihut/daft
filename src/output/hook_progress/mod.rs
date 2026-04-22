@@ -438,4 +438,37 @@ mod tests {
         let jobs = renderer.take_finished_jobs();
         assert_eq!(jobs.len(), 1);
     }
+
+    #[test]
+    fn compact_finalization_records_success_without_panicking() {
+        let config = HookOutputConfig {
+            compact_finalization: true,
+            ..Default::default()
+        };
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job("master", None);
+        renderer.update_job_output("master", "some build output");
+        renderer.finish_job_success("master", Duration::from_millis(1800));
+
+        let jobs = renderer.take_finished_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].name, "master");
+        assert!(matches!(jobs[0].outcome, JobOutcome::Success));
+    }
+
+    #[test]
+    fn compact_finalization_records_failure_without_panicking() {
+        let config = HookOutputConfig {
+            compact_finalization: true,
+            ..Default::default()
+        };
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job("feat/dirty", None);
+        renderer.update_job_output("feat/dirty", "panicked!");
+        renderer.finish_job_failure("feat/dirty", Duration::from_millis(1200));
+
+        let jobs = renderer.take_finished_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert!(matches!(jobs[0].outcome, JobOutcome::Failed));
+    }
 }
