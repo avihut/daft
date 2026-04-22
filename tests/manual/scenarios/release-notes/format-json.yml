@@ -1,0 +1,13 @@
+name: Release notes JSON format
+description: --format json emits structured release data as JSON array
+
+steps:
+  - name: JSON output is a non-empty array with version and date fields
+    run: daft release-notes --latest 2 --format json 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"version"'
+        - '"date"'
+        - '"content"'
+        - "["

@@ -1,0 +1,40 @@
+name: Hooks trust list TSV format
+description: daft hooks trust list --format tsv emits tab-separated rows
+
+repos:
+  - name: test-trust-list-tsv
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Trust list TSV format test"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: setup
+              run: echo done
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_TRUST_LIST_TSV
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-trust-list-tsv/main"
+    expect:
+      exit_code: 0
+
+  - name: TSV output has header with expected column names
+    run: daft hooks trust list --format tsv 2>&1
+    cwd: "$WORK_DIR/test-trust-list-tsv/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "repo_path"
+        - "trust_level"

@@ -1,0 +1,41 @@
+name: Hooks trust list YAML format
+description: daft hooks trust list --format yaml emits trusted repos as YAML
+
+repos:
+  - name: test-trust-list-yaml
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Trust list YAML format test"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: setup
+              run: echo done
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_TRUST_LIST_YAML
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-trust-list-yaml/main"
+    expect:
+      exit_code: 0
+
+  - name: YAML output has expected fields
+    run: daft hooks trust list --format yaml 2>&1
+    cwd: "$WORK_DIR/test-trust-list-yaml/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "repo_path:"
+        - "trust_level:"
+        - "allow"

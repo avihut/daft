@@ -1,0 +1,12 @@
+name: Release notes YAML format
+description: --format yaml emits structured release data as YAML
+
+steps:
+  - name: YAML output is non-empty with version field
+    run: daft release-notes --latest 2 --format yaml 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "version:"
+        - "date:"
+        - "content:"

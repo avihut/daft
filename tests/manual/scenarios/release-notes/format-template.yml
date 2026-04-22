@@ -1,0 +1,12 @@
+name: Release notes template format
+description: --template renders release data via Tera with data variable
+
+steps:
+  - name: Template iterates data array and emits pipe-separated versions
+    run:
+      "daft release-notes --latest 3 --template '{% for r in data %}{{ r.version
+      }}|{% endfor %}' 2>&1"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "|"

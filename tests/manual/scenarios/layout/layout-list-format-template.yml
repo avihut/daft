@@ -1,0 +1,22 @@
+name: Layout list template format
+description: daft layout list --template renders layouts via Tera
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Template iterates items and emits pipe-separated layout names
+    run:
+      "daft layout list --template '{% for r in items %}{{ r.name }}|{% endfor
+      %}' 2>&1"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "contained|"

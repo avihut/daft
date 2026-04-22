@@ -1,0 +1,34 @@
+name: Hooks run listing YAML format
+description: daft hooks run --format yaml (no hook type) emits hook list as YAML
+
+repos:
+  - name: test-hooks-run-yaml
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Hooks run YAML format test"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: setup
+              run: echo done
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_HOOKS_RUN_YAML
+    expect:
+      exit_code: 0
+
+  - name: YAML output lists available hooks
+    run: daft hooks run --format yaml 2>&1
+    cwd: "$WORK_DIR/test-hooks-run-yaml/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "worktree-post-create:"
+        - "job_name:"
