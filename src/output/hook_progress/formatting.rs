@@ -170,17 +170,13 @@ pub(super) fn format_compact_row(
     let sigil = if success { "\u{2713}" } else { "\u{2717}" };
     let elapsed = format_duration(duration);
     if use_color {
-        let color = if success {
-            crate::styles::GREEN
-        } else {
-            crate::styles::RED
-        };
+        let color = if success { styles::GREEN } else { styles::RED };
         format!(
-            "  {color}{sigil}{}  {:<24}{} {GREY}({elapsed}){}",
-            crate::styles::RESET,
+            "  {}{sigil}  {:<24}{} {GREY}({elapsed}){}",
+            color,
             name,
-            crate::styles::RESET,
-            crate::styles::RESET
+            styles::RESET,
+            styles::RESET
         )
     } else {
         format!("  {sigil}  {:<24} ({elapsed})", name)
@@ -222,10 +218,29 @@ mod compact_row_tests {
     #[test]
     fn compact_row_color_wraps_sigil_and_name() {
         let row = format_compact_row("x", true, Duration::from_secs(1), true);
-        // Colored variant must include an ANSI reset somewhere.
         assert!(
-            row.contains("\x1b["),
-            "expected ANSI escapes when use_color: {row:?}"
+            row.starts_with(&format!("  {}", crate::styles::GREEN)),
+            "colored success row should start with 2-space indent + GREEN, got: {row:?}"
+        );
+        // A RESET must appear before GREY to close the sigil+name color region.
+        let reset_idx = row.find(crate::styles::RESET).expect("must contain RESET");
+        let grey_idx = row.find(GREY).expect("must contain GREY");
+        assert!(
+            reset_idx < grey_idx,
+            "RESET must close the color span before GREY duration; got: {row:?}"
+        );
+        assert!(
+            row.ends_with(crate::styles::RESET),
+            "row must end with RESET, got: {row:?}"
+        );
+    }
+
+    #[test]
+    fn compact_row_failure_color_uses_red() {
+        let row = format_compact_row("x", false, Duration::from_secs(1), true);
+        assert!(
+            row.starts_with(&format!("  {}", crate::styles::RED)),
+            "colored failure row should start with 2-space indent + RED, got: {row:?}"
         );
     }
 }
