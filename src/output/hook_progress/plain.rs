@@ -12,6 +12,7 @@ pub struct PlainHookRenderer {
     finished_jobs: Vec<JobResultEntry>,
     jobs_with_output: std::collections::HashSet<String>,
     verbose: bool,
+    compact_finalization: bool,
 }
 
 impl PlainHookRenderer {
@@ -24,6 +25,16 @@ impl PlainHookRenderer {
             verbose,
             ..Self::default()
         }
+    }
+
+    /// Toggle the compact-finalization branch used by `daft exec` and friends.
+    ///
+    /// When enabled, `finish_job_success` / `finish_job_failure` emit a single
+    /// compact row (e.g. `  ✓  master  (1.8s)`) instead of the multi-line
+    /// heading + output dump. The per-job `JobResultEntry` is still recorded
+    /// in both modes so callers relying on `take_finished_jobs()` keep working.
+    pub fn set_compact_finalization(&mut self, on: bool) {
+        self.compact_finalization = on;
     }
 
     pub fn print_header(&self, hook_name: &str) {
@@ -66,7 +77,14 @@ impl PlainHookRenderer {
     }
 
     fn finish_job(&mut self, name: &str, success: bool, duration: Duration) {
-        if !self.jobs_with_output.contains(name) {
+        if self.compact_finalization {
+            // Compact mode: one line per finished job, no inline output dump.
+            // Plain renderer is the non-color branch, so `use_color = false`.
+            eprintln!(
+                "{}",
+                super::formatting::format_compact_row(name, success, duration, false)
+            );
+        } else if !self.jobs_with_output.contains(name) {
             eprintln!("\u{2503}  No output");
         }
         self.finished_jobs.push(JobResultEntry {

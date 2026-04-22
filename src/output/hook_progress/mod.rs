@@ -52,7 +52,9 @@ impl HookRenderer {
         if std::io::stderr().is_terminal() {
             HookRenderer::Progress(Box::new(HookProgressRenderer::new(config)))
         } else {
-            HookRenderer::Plain(PlainHookRenderer::with_verbose(config.verbose))
+            let mut plain = PlainHookRenderer::with_verbose(config.verbose);
+            plain.set_compact_finalization(config.compact_finalization);
+            HookRenderer::Plain(plain)
         }
     }
 
@@ -277,6 +279,50 @@ mod tests {
         let jobs = renderer.take_finished_jobs();
         assert_eq!(jobs.len(), 1);
         assert!(matches!(jobs[0].outcome, JobOutcome::Failed));
+    }
+
+    #[test]
+    fn plain_compact_finalization_records_success() {
+        let mut renderer = PlainHookRenderer::new();
+        renderer.set_compact_finalization(true);
+        renderer.start_job("master", None);
+        renderer.update_job_output("master", "build output");
+        renderer.finish_job_success("master", Duration::from_millis(1800));
+        let jobs = renderer.take_finished_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].name, "master");
+        assert!(matches!(jobs[0].outcome, JobOutcome::Success));
+    }
+
+    #[test]
+    fn plain_compact_finalization_records_failure() {
+        let mut renderer = PlainHookRenderer::new();
+        renderer.set_compact_finalization(true);
+        renderer.start_job("feat/dirty", None);
+        renderer.finish_job_failure("feat/dirty", Duration::from_millis(1200));
+        let jobs = renderer.take_finished_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert!(matches!(jobs[0].outcome, JobOutcome::Failed));
+    }
+
+    #[test]
+    fn plain_compact_finalization_propagates_via_auto() {
+        // Verify the HookRenderer::auto bridge: when config.compact_finalization
+        // is true and stderr is not a TTY, the Plain variant should be set up
+        // with compact_finalization enabled. Because auto() returns a hidden
+        // Progress renderer under cfg(test), we exercise the bridge path
+        // directly by mirroring its logic on a PlainHookRenderer.
+        let config = HookOutputConfig {
+            compact_finalization: true,
+            ..Default::default()
+        };
+        let mut plain = PlainHookRenderer::with_verbose(config.verbose);
+        plain.set_compact_finalization(config.compact_finalization);
+        plain.start_job("branch", None);
+        plain.finish_job_success("branch", Duration::from_millis(500));
+        let jobs = plain.take_finished_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert!(matches!(jobs[0].outcome, JobOutcome::Success));
     }
 
     #[test]
