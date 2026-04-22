@@ -2,7 +2,6 @@ use crate::{
     get_project_root,
     git::{should_show_gitoxide_notice, GitCommand},
     is_git_repository,
-    logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
     WorktreeConfig,
@@ -103,14 +102,12 @@ pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-exec"));
     validate_args(&args)?;
 
-    init_logging(false);
-
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
     }
 
     let settings = DaftSettings::load()?;
-    let config = OutputConfig::new(false, false);
+    let config = OutputConfig::default();
     let mut output = CliOutput::new(config);
 
     let wt_config = WorktreeConfig {
@@ -301,13 +298,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_verbose_flag_after_removal() {
+    fn rejects_unknown_verbose_flag() {
         let err = parse(&["--all", "--verbose", "--", "echo"]).unwrap_err();
-        assert!(
-            err.to_string().contains("unexpected")
-                || err.to_string().contains("unrecognized")
-                || err.to_string().contains("found"),
-            "expected parse error for removed --verbose, got: {err}"
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::UnknownArgument,
+            "expected UnknownArgument for --verbose, got: kind={:?}, msg={err}",
+            err.kind()
         );
     }
 }
