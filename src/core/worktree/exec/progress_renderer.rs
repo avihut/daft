@@ -16,28 +16,34 @@ use crate::executor::presenter::JobPresenter;
 use crate::settings::HookOutputConfig;
 use std::sync::Arc;
 use std::thread;
-use std::time::Instant;
 
-/// Run the pipeline across all targets, driving a live multi-panel progress
-/// TUI via [`CliPresenter`]. Returns the aggregated [`ExecReport`] after the
-/// TUI has torn down so the command layer can still render a scrollback-friendly
-/// failure dump.
+/// Run the pipeline across all targets, rendering a live per-worktree
+/// progress UI (spinner + rolling tail, finalized to a compact one-line row
+/// per worktree). Returns the aggregated [`ExecReport`] so the command layer
+/// can still render a scrollback-friendly failure dump.
 pub fn run_with_progress(
     targets: &[ResolvedTarget],
     pipeline: &[CommandSpec],
     mode: ExecMode,
     cancel: &CancelFlag,
 ) -> anyhow::Result<ExecReport> {
-    // Enable command previews under each panel; other knobs match the
-    // defaults used by the hooks command.
+    // Print the neutral "Commands / Worktrees" header directly — the
+    // presenter's on_phase_start would otherwise print a hook-branded box
+    // we don't want here.
+    {
+        let stderr = std::io::stderr();
+        let mut sink = stderr.lock();
+        super::list_renderer::render_header(&mut sink, pipeline)?;
+    }
+
     let cfg = HookOutputConfig {
-        verbose: true,
+        compact_finalization: true,
         ..HookOutputConfig::default()
     };
     let presenter: Arc<dyn JobPresenter> = CliPresenter::auto(&cfg);
 
-    presenter.on_phase_start("exec");
-    let phase_start = Instant::now();
+    // Deliberately skip presenter.on_phase_start — it prints the hook
+    // header. The list-mode header above replaces it.
 
     let outcomes = match mode {
         ExecMode::Parallel => run_parallel(targets, pipeline, &presenter, cancel)?,
@@ -45,7 +51,9 @@ pub fn run_with_progress(
         ExecMode::KeepGoing => run_sequential(targets, pipeline, true, &presenter, cancel)?,
     };
 
-    presenter.on_phase_complete(phase_start.elapsed());
+    // Deliberately skip presenter.on_phase_complete — it prints the hook
+    // summary block. Compact per-row finalization + the caller's failed-
+    // output dump already cover the user's needs.
 
     Ok(ExecReport {
         outcomes,
