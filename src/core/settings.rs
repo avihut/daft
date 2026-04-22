@@ -723,6 +723,10 @@ pub struct HookOutputConfig {
     pub tail_lines: u32,
     /// Show verbose output including skipped jobs and their reasons.
     pub verbose: bool,
+    /// When true, on job finish print a single compact row
+    /// (`✓ name (dur)` / `✗ name (dur)`) and drop the inline output dump.
+    /// Hooks leave this false; `daft exec` sets it true.
+    pub compact_finalization: bool,
 }
 
 impl Default for HookOutputConfig {
@@ -732,6 +736,7 @@ impl Default for HookOutputConfig {
             timer_delay_secs: 5,
             tail_lines: 6,
             verbose: false,
+            compact_finalization: false,
         }
     }
 }
