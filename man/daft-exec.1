@@ -4,7 +4,7 @@
 .SH NAME
 daft\-exec \- Run a command across one or more worktrees
 .SH SYNOPSIS
-\fBdaft\-exec\fR [\fB\-\-all\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-\-sequential\fR] [\fB\-\-keep\-going\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fITARGETS\fR] [\fICMD\fR] 
+\fBdaft\-exec\fR [\fB\-\-all\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-\-sequential\fR] [\fB\-\-keep\-going\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fITARGETS\fR] [\fICMD\fR] 
 .SH DESCRIPTION
 .PP
 Runs one or more commands against one or more selected worktrees without
@@ -36,9 +36,6 @@ Run worktrees one at a time and stop on first failure
 \fB\-\-keep\-going\fR
 Run worktrees one at a time and continue through failures
 .TP
-\fB\-v\fR, \fB\-\-verbose\fR
-Show hook\-style live windows instead of the list\-mode table
-.TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
@@ -66,8 +63,5 @@ EXAMPLES:
 
     Pass\-through to an interactive program (single target):
         daft exec feat/auth \-\- claude
-
-    Live "windows" output (like hooks):
-        daft exec \-\-all \-v \-\- cargo test
 .SH VERSION
 v1.7.2

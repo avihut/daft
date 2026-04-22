@@ -46,9 +46,6 @@ into the worktree first.
 
     Pass-through to an interactive program (single target):
         daft exec feat/auth -- claude
-
-    Live "windows" output (like hooks):
-        daft exec --all -v -- cargo test
 "#)]
 pub struct Args {
     #[arg(help = "Target worktree(s) by branch name, directory name, or glob")]
@@ -82,13 +79,6 @@ pub struct Args {
     )]
     pub keep_going: bool,
 
-    #[arg(
-        short,
-        long,
-        help = "Show hook-style live windows instead of the list-mode table"
-    )]
-    pub verbose: bool,
-
     /// Trailing command vector after `--`. Mutually exclusive with `-x`.
     #[arg(last = true, value_name = "CMD")]
     pub trailing: Vec<String>,
@@ -113,14 +103,14 @@ pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-exec"));
     validate_args(&args)?;
 
-    init_logging(args.verbose);
+    init_logging(false);
 
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
     }
 
     let settings = DaftSettings::load()?;
-    let config = OutputConfig::new(false, args.verbose);
+    let config = OutputConfig::new(false, false);
     let mut output = CliOutput::new(config);
 
     let wt_config = WorktreeConfig {
@@ -213,20 +203,10 @@ pub fn run() -> Result<()> {
         handler_flag.escalate();
     });
 
-    let report = if args.verbose {
-        core::progress_renderer::run_with_progress(&targets, &pipeline, mode, &cancel)?
-    } else {
-        core::run_scheduler(&targets, &pipeline, mode, &cancel)?
-    };
+    let report = core::progress_renderer::run_with_progress(&targets, &pipeline, mode, &cancel)?;
 
     let stdout = std::io::stdout();
     let mut sink = stdout.lock();
-    if !args.verbose {
-        core::list_renderer::render_header(&mut sink, &pipeline)?;
-        for outcome in &report.outcomes {
-            core::list_renderer::render_outcome(&mut sink, outcome, &pipeline)?;
-        }
-    }
     core::list_renderer::render_failed_output_dump(&mut sink, &report, &pipeline)?;
     drop(sink);
 
@@ -318,5 +298,16 @@ mod tests {
     fn accepts_minimal_valid_x_form() {
         let args = parse(&["--all", "-x", "echo"]).unwrap();
         validate(&args).unwrap();
+    }
+
+    #[test]
+    fn rejects_verbose_flag_after_removal() {
+        let err = parse(&["--all", "--verbose", "--", "echo"]).unwrap_err();
+        assert!(
+            err.to_string().contains("unexpected")
+                || err.to_string().contains("unrecognized")
+                || err.to_string().contains("found"),
+            "expected parse error for removed --verbose, got: {err}"
+        );
     }
 }
