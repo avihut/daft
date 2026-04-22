@@ -23,7 +23,7 @@ steps:
       exit_code: 0
 
   - name: JSON with --stat lines includes line count fields
-    run: git-worktree-list --stat lines --json 2>&1
+    run: git-worktree-list --stat lines --format json 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

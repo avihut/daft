@@ -19,7 +19,7 @@ steps:
       exit_code: 0
 
   - name: JSON with -b includes kind field
-    run: git-worktree-list -b --json 2>&1
+    run: git-worktree-list -b --format json 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

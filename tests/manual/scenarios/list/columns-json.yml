@@ -12,7 +12,7 @@ steps:
       exit_code: 0
 
   - name: JSON with subset of columns
-    run: git-worktree-list --json --columns branch,path 2>&1
+    run: git-worktree-list --format json --columns branch,path 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
@@ -30,7 +30,7 @@ steps:
         - '"is_current"'
 
   - name: JSON without --columns shows all fields
-    run: git-worktree-list --json 2>&1
+    run: git-worktree-list --format json 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
