@@ -1,0 +1,22 @@
+name: List NDJSON format
+description: --format ndjson emits one JSON object per line
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: NDJSON output has one JSON object per line
+    run: git-worktree-list --format ndjson 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"name"'
+        - '"kind"'
+        - '"is_current"'
