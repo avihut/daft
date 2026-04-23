@@ -201,6 +201,36 @@ pub(super) fn get_flag_descriptions(cmd: &Command) -> Vec<(String, String, Optio
     descriptions
 }
 
+/// Supported `--format` values for a given command invocation path.
+///
+/// The path is the canonical invocation — `git-worktree-list`, `release-notes`,
+/// `hooks trust list`, `layout list`, `shared status`, `multi-remote status`,
+/// `hooks run`. Returns `None` for commands that do not support `--format`.
+///
+/// This is the single source of truth for shell completion value lists. The
+/// underlying support matrix lives in `emit::dispatch::supported_formats`.
+pub(super) fn emit_formats_for(command_path: &str) -> Option<Vec<&'static str>> {
+    use crate::output::emit::dispatch::supported_formats;
+    use crate::output::emit::payload::Shape;
+
+    let shape = match command_path {
+        "git-worktree-list" | "list" => Shape::Tabular,
+        "release-notes" => Shape::Document,
+        "hooks trust list" => Shape::Tabular,
+        "layout list" => Shape::Tabular,
+        "shared status" => Shape::Matrix,
+        "multi-remote status" => Shape::Sectioned,
+        "hooks run" => Shape::Sectioned,
+        _ => return None,
+    };
+    Some(
+        supported_formats(shape)
+            .iter()
+            .map(|f| f.as_str())
+            .collect(),
+    )
+}
+
 #[derive(Parser)]
 #[command(name = "daft-completions")]
 #[command(about = "Generate shell completion scripts for daft commands")]
@@ -748,5 +778,101 @@ before adding flags (zsh flag-leak regression)"
                  guard_pos={guard_pos} flags_pos={flags_pos}",
             );
         }
+    }
+
+    #[test]
+    fn emit_formats_for_covers_every_emit_enabled_path() {
+        for path in [
+            "git-worktree-list",
+            "list",
+            "release-notes",
+            "hooks trust list",
+            "layout list",
+            "shared status",
+            "multi-remote status",
+            "hooks run",
+        ] {
+            assert!(
+                emit_formats_for(path).is_some(),
+                "emit_formats_for must return Some for known emit path: {path}"
+            );
+        }
+        assert!(
+            emit_formats_for("git-worktree-clone").is_none(),
+            "non-emit command must return None"
+        );
+    }
+
+    #[test]
+    fn bash_list_completion_offers_all_tabular_formats() {
+        let script = bash::generate_bash_completion_string("git-worktree-list")
+            .expect("generator must succeed");
+        assert!(
+            script.contains("prev\" == \"--format\""),
+            "bash list completion must branch on --format as prev word"
+        );
+        assert!(
+            script.contains("\"json ndjson tsv csv yaml toon markdown\""),
+            "bash list completion must offer all 7 tabular formats"
+        );
+    }
+
+    #[test]
+    fn zsh_list_completion_offers_all_tabular_formats() {
+        let script = zsh::generate_zsh_completion_string("git-worktree-list")
+            .expect("generator must succeed");
+        assert!(
+            script.contains("prev_word\" == \"--format\""),
+            "zsh list completion must branch on --format as prev word"
+        );
+        assert!(
+            script.contains("format_values=( json ndjson tsv csv yaml toon markdown )"),
+            "zsh list completion must offer all 7 tabular formats"
+        );
+    }
+
+    #[test]
+    fn fish_daft_umbrella_offers_format_per_subcommand_path() {
+        let script = fish::generate_daft_fish_completions();
+        for (path_condition, formats) in [
+            (
+                "__fish_seen_subcommand_from list",
+                "json ndjson tsv csv yaml toon markdown",
+            ),
+            (
+                "__fish_seen_subcommand_from release-notes",
+                "json yaml toon markdown",
+            ),
+            (
+                "__fish_seen_subcommand_from multi-remote; and __fish_seen_subcommand_from status",
+                "json yaml toon markdown",
+            ),
+            (
+                "__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from status",
+                "json ndjson tsv csv yaml toon markdown",
+            ),
+        ] {
+            let needle = format!("-n '{path_condition}' -l format -x -a '{formats}'");
+            assert!(
+                script.contains(&needle),
+                "fish umbrella must offer --format value completion for path: {path_condition}\n\
+                 expected: {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn bash_daft_umbrella_dispatches_format_by_subcommand_path() {
+        let script = bash::DAFT_BASH_COMPLETIONS;
+        assert!(
+            script.contains(
+                "list|worktree-list|\"hooks trust list\"|\"layout list\"|\"shared status\""
+            ),
+            "bash umbrella must dispatch tabular/matrix paths to all-7-format list"
+        );
+        assert!(
+            script.contains("release-notes|\"multi-remote status\"|\"hooks run\""),
+            "bash umbrella must dispatch document/sectioned paths to 4-format list"
+        );
     }
 }

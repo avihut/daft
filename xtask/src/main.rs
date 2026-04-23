@@ -787,6 +787,11 @@ fn render_command_markdown(command_name: &str, cmd: &clap::Command) -> String {
     md.push_str("| `-V`, `--version` | Print version information |\n");
     md.push('\n');
 
+    // Structured Output section for emit-enabled commands
+    if let Some(section) = structured_output_section(command_name) {
+        md.push_str(&section);
+    }
+
     // See Also
     let related = related_commands(command_name);
     if !related.is_empty() {
@@ -798,6 +803,86 @@ fn render_command_markdown(command_name: &str, cmd: &clap::Command) -> String {
     }
 
     md
+}
+
+/// Returns the per-command "Structured Output" section for emit-enabled
+/// commands. Body text is hand-curated to highlight realistic pipelines;
+/// updates should track the support matrix in `daft::output::emit::dispatch`.
+fn structured_output_section(command_name: &str) -> Option<String> {
+    let body = match command_name {
+        "git-worktree-list" => {
+            "`git worktree-list` supports machine-readable output via `--format`: `json`,\n\
+             `ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`, plus `--template <tera>`\n\
+             for custom output.\n\n\
+             ```sh\n\
+             # Two columns for awk / cut\n\
+             daft list --format tsv --no-headers | cut -f2,5\n\n\
+             # Pipe to jq\n\
+             daft list --format json | jq '.[] | select(.is_current == true)'\n\n\
+             # Custom template\n\
+             daft list --template '{% for r in items %}{{ r.name }} -> {{ r.path }}\n\
+             {% endfor %}'\n\
+             ```\n"
+        }
+        "daft-release-notes" => {
+            "`daft release-notes` supports machine-readable output via `--format`: `json`,\n\
+             `yaml`, `toon`, `markdown`, plus `--template <tera>` for custom output.\n\n\
+             ```sh\n\
+             # Markdown prose, paste-ready for GitHub release\n\
+             daft release-notes 1.2.0 --format markdown\n\n\
+             # Versions as JSON for tooling\n\
+             daft release-notes --format json | jq '.[0].version'\n\
+             ```\n"
+        }
+        "daft-hooks" => {
+            "`daft hooks trust list` and `daft hooks run` (listing mode) support\n\
+             machine-readable output via `--format`, plus `--template <tera>` for custom\n\
+             output.\n\n\
+             `hooks trust list` supports: `json`, `ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`.\n\n\
+             `hooks run` (listing mode) supports: `json`, `yaml`, `toon`, `markdown`.\n\n\
+             ```sh\n\
+             # List trusted repos as TSV for scripting\n\
+             daft hooks trust list --format tsv\n\n\
+             # List hook run results as JSON\n\
+             daft hooks run --format json\n\
+             ```\n"
+        }
+        "daft-layout" => {
+            "`daft layout list` supports machine-readable output via `--format`: `json`,\n\
+             `ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`, plus `--template <tera>`\n\
+             for custom output.\n\n\
+             ```sh\n\
+             # Layout names and templates as TSV\n\
+             daft layout list --format tsv | cut -f1,3\n\n\
+             # List layouts as JSON for tooling\n\
+             daft layout list --format json\n\
+             ```\n"
+        }
+        "daft-multi-remote" => {
+            "`daft multi-remote status` supports machine-readable output via `--format`:\n\
+             `json`, `yaml`, `toon`, `markdown`, plus `--template <tera>` for custom output.\n\n\
+             ```sh\n\
+             # Multi-remote configuration as YAML\n\
+             daft multi-remote status --format yaml\n\
+             ```\n"
+        }
+        "daft-shared" => {
+            "`daft shared status` supports machine-readable output via `--format`: `json`,\n\
+             `ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`, plus `--template <tera>`\n\
+             for custom output.\n\n\
+             ```sh\n\
+             # Shared file state as TSV (long-form: one row per file per worktree)\n\
+             daft shared status --format tsv\n\n\
+             # Wide pivot table in markdown for quick visual reading\n\
+             daft shared status --format markdown\n\
+             ```\n"
+        }
+        _ => return None,
+    };
+    let mut section = String::from("## Structured Output\n\n");
+    section.push_str(body);
+    section.push_str("\nSee the [Output Formats guide](../guide/output-formats.md) for format details\nand Tera syntax.\n\n");
+    Some(section)
 }
 
 /// Render a markdown table of positional arguments.

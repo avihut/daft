@@ -1,4 +1,7 @@
-use super::{extract_flags, get_command_for_name, uses_fetch_on_miss, uses_rich_completions};
+use super::{
+    emit_formats_for, extract_flags, get_command_for_name, uses_fetch_on_miss,
+    uses_rich_completions,
+};
 use anyhow::{Context, Result};
 
 /// Generate zsh completion string
@@ -160,6 +163,22 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            '-commit:Sort by last commit time descending'\n");
         output.push_str("        )\n");
         output.push_str("        _describe 'sort' sort_values\n");
+        output.push_str("        return\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
+    // Value completion for --format flag (emit-enabled commands only)
+    if let Some(formats) = emit_formats_for(command_name) {
+        let format_list = formats.join(" ");
+        if !has_branch_completions && !has_layout && !has_columns {
+            output.push_str("    local prev_word=\"${words[$((CURRENT-1))]}\"\n");
+        }
+        output.push_str("    # Format value completion for --format\n");
+        output.push_str("    if [[ \"$prev_word\" == \"--format\" ]]; then\n");
+        output.push_str("        local -a format_values\n");
+        output.push_str(&format!("        format_values=( {format_list} )\n"));
+        output.push_str("        compadd -a format_values\n");
         output.push_str("        return\n");
         output.push_str("    fi\n");
         output.push('\n');
@@ -370,6 +389,31 @@ compdef _{func_name} {command_name}
 pub(super) const DAFT_ZSH_COMPLETIONS: &str = r#"# daft subcommand completions
 _daft() {
     local curword="${words[$CURRENT]}"
+
+    # --format value completion (emit-enabled subcommand paths)
+    local _fmt_prev="${words[$((CURRENT-1))]}"
+    if [[ "$_fmt_prev" == "--format" ]]; then
+        local _fmt_path="" _fmt_i _fmt_w
+        for ((_fmt_i=2; _fmt_i<CURRENT; _fmt_i++)); do
+            _fmt_w="${words[$_fmt_i]}"
+            [[ "$_fmt_w" == -* ]] && break
+            if [[ -z "$_fmt_path" ]]; then
+                _fmt_path="$_fmt_w"
+            else
+                _fmt_path="$_fmt_path $_fmt_w"
+            fi
+        done
+        case "$_fmt_path" in
+            list|worktree-list|"hooks trust list"|"layout list"|"shared status")
+                compadd json ndjson tsv csv yaml toon markdown
+                return
+                ;;
+            release-notes|"multi-remote status"|"hooks run")
+                compadd json yaml toon markdown
+                return
+                ;;
+        esac
+    fi
 
     # hooks: subcommand and argument completion
     if (( CURRENT >= 3 )) && [[ "$words[2]" == "hooks" ]]; then
