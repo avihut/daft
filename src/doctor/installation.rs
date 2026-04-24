@@ -21,6 +21,7 @@ const EXPECTED_SYMLINKS: &[&str] = &[
     "git-worktree-flow-adopt",
     "git-worktree-flow-eject",
     "git-worktree-list",
+    "git-worktree-merge",
     "git-worktree-sync",
     "git-daft",
     "daft-go",
@@ -573,7 +574,7 @@ mod tests {
 
     #[test]
     fn test_expected_symlinks_count() {
-        assert_eq!(EXPECTED_SYMLINKS.len(), 17);
+        assert_eq!(EXPECTED_SYMLINKS.len(), 18);
     }
 
     #[test]
