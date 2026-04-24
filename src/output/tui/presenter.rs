@@ -125,7 +125,14 @@ impl JobPresenter for TuiPresenter {
         });
     }
 
-    fn on_job_skipped(&self, name: &str, reason: &str, duration: Duration, _show_duration: bool) {
+    fn on_job_skipped(
+        &self,
+        name: &str,
+        reason: &str,
+        duration: Duration,
+        _show_duration: bool,
+        _command_preview: Option<&str>,
+    ) {
         let _ = self.sender.send(DagEvent::JobCompleted {
             branch_name: self.branch_name.clone(),
             hook_type: self.hook_type,
@@ -134,6 +141,13 @@ impl JobPresenter for TuiPresenter {
             duration,
             skip_reason: Some(reason.to_string()),
         });
+    }
+
+    fn on_job_cancelled(&self, name: &str, duration: Duration) {
+        // Same shape as on_job_failure — emit a JobCompleted event with
+        // Failed status. The cancellation distinction is surfaced at the
+        // exec renderer layer, not here.
+        self.on_job_failure(name, duration);
     }
 
     fn on_message(&self, _msg: &str) {
@@ -390,11 +404,30 @@ mod tests {
     }
 
     #[test]
+    fn on_job_cancelled_sends_failed_event() {
+        let (tx, rx) = mpsc::channel();
+        let presenter = TuiPresenter::new(tx, "feat/x", HookType::PreRemove);
+
+        presenter.on_job_cancelled("deploy", Duration::from_secs(2));
+
+        let event = rx.try_recv().expect("should receive JobCompleted");
+        match event {
+            DagEvent::JobCompleted {
+                job_name, status, ..
+            } => {
+                assert_eq!(job_name, "deploy");
+                assert_eq!(status, JobCompletionStatus::Failed);
+            }
+            other => panic!("expected JobCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn on_job_skipped_sends_job_completed_with_reason() {
         let (tx, rx) = mpsc::channel();
         let presenter = TuiPresenter::new(tx, "main", HookType::PostCreate);
 
-        presenter.on_job_skipped("lint", "no files", Duration::ZERO, false);
+        presenter.on_job_skipped("lint", "no files", Duration::ZERO, false, None);
 
         let event = rx.try_recv().expect("should receive JobCompleted");
         match event {

@@ -1,0 +1,40 @@
+name: "Exec fail-fast emits skipped row"
+description:
+  "when the first -x command fails the pipeline stops; the second command never
+  runs (verifiable via file absence) and the overall exit code is 1. Note:
+  compact finalization rows (✗ / ○ sigils) are suppressed in the YAML test
+  environment (DAFT_TESTING=1); row-format assertions live in the bash
+  integration tests (test_worktree_exec.sh)."
+
+repos:
+  - name: exec-ffskip
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone the repository"
+    run: "git-worktree-clone --layout contained $REMOTE_EXEC_FFSKIP"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-ffskip/main"
+
+  - name: "Create a second worktree so --all has two targets"
+    run: "git-worktree-checkout -b feat-a"
+    cwd: "$WORK_DIR/exec-ffskip/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-ffskip/feat-a"
+
+  - name:
+      "Run --all with a failing first step; pipeline must stop, second command
+      must not run"
+    run:
+      "git-worktree-exec --all -x 'false' -x 'echo never > skipped_marker.txt'
+      2>&1"
+    cwd: "$WORK_DIR/exec-ffskip/main"
+    expect:
+      exit_code: 1
+      files_not_exist:
+        - "$WORK_DIR/exec-ffskip/main/skipped_marker.txt"
+        - "$WORK_DIR/exec-ffskip/feat-a/skipped_marker.txt"

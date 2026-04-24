@@ -1,0 +1,24 @@
+name: "Exec unmatched positional errors out"
+description: "an unmatched positional target errors out and runs no commands"
+
+repos:
+  - name: exec-nomatch
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone the repository"
+    run: "git-worktree-clone --layout contained $REMOTE_EXEC_NOMATCH"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-nomatch/main"
+
+  - name: "Positional that matches no worktree bails out without executing"
+    run:
+      "git-worktree-exec zzzzz-nonexistent -- sh -c 'echo ran >
+      unmatched_marker' 2>&1"
+    cwd: "$WORK_DIR/exec-nomatch/main"
+    expect:
+      exit_code: 1
+      files_not_exist:
+        - "$WORK_DIR/exec-nomatch/main/unmatched_marker"

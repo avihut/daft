@@ -1,0 +1,57 @@
+name: "Exec --sequential stops; --keep-going continues"
+description:
+  "--sequential halts at first failure; --keep-going runs every worktree"
+
+repos:
+  - name: exec-seq
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone the repository"
+    run: "git-worktree-clone --layout contained $REMOTE_EXEC_SEQ"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-seq/main"
+
+  - name: "Create feat-a worktree"
+    run: "git-worktree-checkout -b feat-a"
+    cwd: "$WORK_DIR/exec-seq/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-seq/feat-a"
+
+  - name: "Create feat-b worktree (will fail during exec)"
+    run: "git-worktree-checkout -b feat-b"
+    cwd: "$WORK_DIR/exec-seq/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-seq/feat-b"
+
+  - name: "Sequential run stops after feat-b fails; main never runs"
+    run:
+      'git-worktree-exec --all --sequential -x ''case "$DAFT_BRANCH_NAME" in
+      feat-b) exit 1;; *) echo did > seq_marker; esac'' 2>&1'
+    cwd: "$WORK_DIR/exec-seq/main"
+    expect:
+      exit_code: 1
+      files_exist:
+        - "$WORK_DIR/exec-seq/feat-a/seq_marker"
+      files_not_exist:
+        - "$WORK_DIR/exec-seq/feat-b/seq_marker"
+        - "$WORK_DIR/exec-seq/main/seq_marker"
+
+  - name: "--keep-going runs every worktree despite feat-b failing"
+    run:
+      'git-worktree-exec --all --keep-going -x ''case "$DAFT_BRANCH_NAME" in
+      feat-b) exit 1;; *) echo did > kg_marker; esac'' 2>&1'
+    cwd: "$WORK_DIR/exec-seq/main"
+    expect:
+      exit_code: 1
+      files_exist:
+        - "$WORK_DIR/exec-seq/feat-a/kg_marker"
+        - "$WORK_DIR/exec-seq/main/kg_marker"
+      files_not_exist:
+        - "$WORK_DIR/exec-seq/feat-b/kg_marker"

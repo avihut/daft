@@ -9,8 +9,9 @@ use clap::{Command, CommandFactory};
 use std::path::Path;
 
 use crate::commands::{
-    carry, checkout, clone, config, doctor, fetch, flow_adopt, flow_eject, hooks, init, layout,
-    list, multi_remote, prune, release_notes, shared, shell_init, shortcuts, sync, worktree_branch,
+    carry, checkout, clone, config, doctor, exec, fetch, flow_adopt, flow_eject, hooks, init,
+    layout, list, multi_remote, prune, release_notes, shared, shell_init, shortcuts, sync,
+    worktree_branch,
 };
 use crate::styles;
 
@@ -98,6 +99,14 @@ fn get_daft_categories() -> Vec<CommandCategory> {
             commands: vec![CommandEntry {
                 display_name: "carry",
                 command: carry::Args::command(),
+            }],
+        },
+        CommandCategory {
+            title: "run commands across worktrees",
+            layout: CategoryLayout::List,
+            commands: vec![CommandEntry {
+                display_name: "exec",
+                command: exec::Args::command(),
             }],
         },
         CommandCategory {
@@ -199,6 +208,14 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
             commands: vec![CommandEntry {
                 display_name: "worktree-carry",
                 command: carry::Args::command(),
+            }],
+        },
+        CommandCategory {
+            title: "run commands across worktrees",
+            layout: CategoryLayout::List,
+            commands: vec![CommandEntry {
+                display_name: "worktree-exec",
+                command: exec::Args::command(),
             }],
         },
         CommandCategory {

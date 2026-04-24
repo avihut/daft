@@ -1,0 +1,30 @@
+name: "Exec -x pipeline stops on failure"
+description:
+  "when a -x command fails, subsequent -x in the same worktree do not run"
+
+repos:
+  - name: exec-xstop
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone the repository"
+    run: "git-worktree-clone --layout contained $REMOTE_EXEC_XSTOP"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-xstop/main"
+
+  - name: "Run -x pipeline where the 2nd command fails"
+    run:
+      "git-worktree-exec main -x 'echo first > first.txt' -x 'false' -x 'echo
+      third > third.txt'"
+    cwd: "$WORK_DIR/exec-xstop/main"
+    expect:
+      exit_code: 1
+      files_exist:
+        - "$WORK_DIR/exec-xstop/main/first.txt"
+      files_not_exist:
+        - "$WORK_DIR/exec-xstop/main/third.txt"
+      file_contains:
+        - path: "$WORK_DIR/exec-xstop/main/first.txt"
+          content: "first"

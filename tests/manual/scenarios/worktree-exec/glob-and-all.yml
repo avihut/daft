@@ -1,0 +1,63 @@
+name: "Exec glob expansion and --all"
+description:
+  "glob targets match feat-* worktrees; --all expands to every worktree
+  including main"
+
+repos:
+  - name: exec-glob
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone the repository"
+    run: "git-worktree-clone --layout contained $REMOTE_EXEC_GLOB"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-glob/main"
+
+  - name: "Create feat-a worktree"
+    run: "git-worktree-checkout -b feat-a"
+    cwd: "$WORK_DIR/exec-glob/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-glob/feat-a"
+
+  - name: "Create feat-b worktree"
+    run: "git-worktree-checkout -b feat-b"
+    cwd: "$WORK_DIR/exec-glob/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-glob/feat-b"
+
+  - name: "Create feat-c worktree"
+    run: "git-worktree-checkout -b feat-c"
+    cwd: "$WORK_DIR/exec-glob/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-glob/feat-c"
+
+  - name: "Exec across feat-* glob only"
+    run: "git-worktree-exec 'feat-*' -- sh -c 'echo glob > glob_marker'"
+    cwd: "$WORK_DIR/exec-glob/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-glob/feat-a/glob_marker"
+        - "$WORK_DIR/exec-glob/feat-b/glob_marker"
+        - "$WORK_DIR/exec-glob/feat-c/glob_marker"
+      files_not_exist:
+        - "$WORK_DIR/exec-glob/main/glob_marker"
+
+  - name: "Exec across --all also hits main"
+    run: "git-worktree-exec --all -- sh -c 'echo all > all_marker'"
+    cwd: "$WORK_DIR/exec-glob/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-glob/main/all_marker"
+        - "$WORK_DIR/exec-glob/feat-a/all_marker"
+        - "$WORK_DIR/exec-glob/feat-b/all_marker"
+        - "$WORK_DIR/exec-glob/feat-c/all_marker"

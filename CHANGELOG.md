@@ -23,6 +23,16 @@ All notable changes to this project will be documented in this file.
 - `--template <tera>` for custom output on the same commands.
 - `--no-headers` to suppress header rows in `tsv` / `csv` output.
 - New guide: `docs/guide/output-formats.md`.
+- `daft worktree-exec` (alias `daft exec`) runs one or more commands across
+  one or more worktrees. Supports glob targets, `--all`,
+  parallel/sequential/keep-going modes, and single-target stdio pass-through.
+  Multi-worktree runs render a live progress row per worktree with a rolling
+  tail of output; each row finalizes to a self-describing compact line
+  (`✓ branch ❯ cmd (1.5s)` / `✗ branch ❯ cmd (1.2s)`). Steps cancelled
+  mid-flight surface as `⊘ branch ❯ cmd cancelled after N`; steps that never
+  started (fail-fast upstream or cancel before launch) surface as
+  `○ branch ❯ cmd skipped`. Failed worktrees' captured output is dumped to
+  stdout at the end for scrollback.
 
 ## [1.7.2](https://github.com/avihut/daft/compare/v1.7.1...v1.7.2) - 2026-04-21
 

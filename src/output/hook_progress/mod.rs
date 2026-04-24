@@ -4,6 +4,7 @@ mod formatting;
 mod interactive;
 mod plain;
 
+pub(crate) use formatting::DEFAULT_NAME_COLUMN_WIDTH;
 pub use interactive::HookProgressRenderer;
 pub use plain::PlainHookRenderer;
 
@@ -52,7 +53,9 @@ impl HookRenderer {
         if std::io::stderr().is_terminal() {
             HookRenderer::Progress(Box::new(HookProgressRenderer::new(config)))
         } else {
-            HookRenderer::Plain(PlainHookRenderer::with_verbose(config.verbose))
+            let mut plain = PlainHookRenderer::with_verbose(config.verbose);
+            plain.set_compact_finalization(config.compact_finalization);
+            HookRenderer::Plain(plain)
         }
     }
 
@@ -118,12 +121,29 @@ impl HookRenderer {
         reason: &str,
         duration: Duration,
         show_duration: bool,
+        command_preview: Option<&str>,
     ) {
         match self {
             HookRenderer::Progress(r) => {
-                r.finish_job_skipped(name, reason, duration, show_duration);
+                r.finish_job_skipped(name, reason, duration, show_duration, command_preview);
             }
-            HookRenderer::Plain(r) => r.finish_job_skipped(name, reason, duration, show_duration),
+            HookRenderer::Plain(r) => {
+                r.finish_job_skipped(name, reason, duration, show_duration, command_preview);
+            }
+        }
+    }
+
+    pub fn finish_job_cancelled(&mut self, name: &str, duration: Duration) {
+        match self {
+            HookRenderer::Progress(r) => r.finish_job_cancelled(name, duration),
+            HookRenderer::Plain(r) => r.finish_job_cancelled(name, duration),
+        }
+    }
+
+    pub fn set_name_column_width(&mut self, width: usize) {
+        match self {
+            HookRenderer::Progress(r) => r.set_name_column_width(width),
+            HookRenderer::Plain(r) => r.set_name_column_width(width),
         }
     }
 
@@ -280,6 +300,50 @@ mod tests {
     }
 
     #[test]
+    fn plain_compact_finalization_records_success() {
+        let mut renderer = PlainHookRenderer::new();
+        renderer.set_compact_finalization(true);
+        renderer.start_job("master", None);
+        renderer.update_job_output("master", "build output");
+        renderer.finish_job_success("master", Duration::from_millis(1800));
+        let jobs = renderer.take_finished_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].name, "master");
+        assert!(matches!(jobs[0].outcome, JobOutcome::Success));
+    }
+
+    #[test]
+    fn plain_compact_finalization_records_failure() {
+        let mut renderer = PlainHookRenderer::new();
+        renderer.set_compact_finalization(true);
+        renderer.start_job("feat/dirty", None);
+        renderer.finish_job_failure("feat/dirty", Duration::from_millis(1200));
+        let jobs = renderer.take_finished_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert!(matches!(jobs[0].outcome, JobOutcome::Failed));
+    }
+
+    #[test]
+    fn plain_compact_finalization_propagates_via_auto() {
+        // Verify the HookRenderer::auto bridge: when config.compact_finalization
+        // is true and stderr is not a TTY, the Plain variant should be set up
+        // with compact_finalization enabled. Because auto() returns a hidden
+        // Progress renderer under cfg(test), we exercise the bridge path
+        // directly by mirroring its logic on a PlainHookRenderer.
+        let config = HookOutputConfig {
+            compact_finalization: true,
+            ..Default::default()
+        };
+        let mut plain = PlainHookRenderer::with_verbose(config.verbose);
+        plain.set_compact_finalization(config.compact_finalization);
+        plain.start_job("branch", None);
+        plain.finish_job_success("branch", Duration::from_millis(500));
+        let jobs = plain.take_finished_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert!(matches!(jobs[0].outcome, JobOutcome::Success));
+    }
+
+    #[test]
     fn test_summary_tracking() {
         let config = HookOutputConfig::default();
         let mut renderer = HookProgressRenderer::new_hidden(&config);
@@ -367,6 +431,26 @@ mod tests {
     }
 
     #[test]
+    fn active_job_has_trailing_spacer_for_vertical_separation() {
+        // Parallel job blocks need a blank spacer line at the bottom so they
+        // render with breathing room between them while active. The trailer
+        // must exist immediately after start_job (before any output) and must
+        // be cleared when the job finishes.
+        let config = HookOutputConfig::default();
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job("job", None);
+        assert!(
+            renderer.has_trailer("job"),
+            "active jobs must have a trailing spacer bar"
+        );
+        renderer.finish_job_success("job", Duration::from_secs(1));
+        assert!(
+            !renderer.has_trailer("job"),
+            "trailer must be cleared when job finishes"
+        );
+    }
+
+    #[test]
     fn test_dynamic_window_starts_empty() {
         // Before any output, no tail bars should be allocated
         let config = HookOutputConfig {
@@ -437,5 +521,63 @@ mod tests {
         renderer.finish_job_success("silent-job", Duration::from_secs(1));
         let jobs = renderer.take_finished_jobs();
         assert_eq!(jobs.len(), 1);
+    }
+
+    #[test]
+    fn compact_finalization_records_success_without_panicking() {
+        let config = HookOutputConfig {
+            compact_finalization: true,
+            ..Default::default()
+        };
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job("master", None);
+        renderer.update_job_output("master", "some build output");
+        renderer.finish_job_success("master", Duration::from_millis(1800));
+
+        let jobs = renderer.take_finished_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].name, "master");
+        assert!(matches!(jobs[0].outcome, JobOutcome::Success));
+    }
+
+    #[test]
+    fn compact_finalization_records_failure_without_panicking() {
+        let config = HookOutputConfig {
+            compact_finalization: true,
+            ..Default::default()
+        };
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job("feat/dirty", None);
+        renderer.update_job_output("feat/dirty", "panicked!");
+        renderer.finish_job_failure("feat/dirty", Duration::from_millis(1200));
+
+        let jobs = renderer.take_finished_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert!(matches!(jobs[0].outcome, JobOutcome::Failed));
+    }
+
+    #[test]
+    fn compact_finalization_records_cancelled_without_panicking() {
+        let config = HookOutputConfig {
+            compact_finalization: true,
+            ..Default::default()
+        };
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job_with_description("cancelled-job", None, Some("sleep 10"));
+        renderer.finish_job_cancelled("cancelled-job", Duration::from_secs(2));
+        let jobs = renderer.take_finished_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert!(matches!(jobs[0].outcome, JobOutcome::Failed));
+    }
+
+    #[test]
+    fn plain_compact_finalization_cancelled_records_outcome() {
+        let mut renderer = PlainHookRenderer::new();
+        renderer.set_compact_finalization(true);
+        renderer.start_job_with_description("cancelled-job", None, Some("sleep 10"));
+        renderer.finish_job_cancelled("cancelled-job", Duration::from_secs(2));
+        let jobs = renderer.take_finished_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert!(matches!(jobs[0].outcome, JobOutcome::Failed));
     }
 }

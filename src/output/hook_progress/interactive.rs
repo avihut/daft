@@ -12,8 +12,10 @@ struct JobState {
     spinner: ProgressBar,
     separator: Option<ProgressBar>,
     tail_lines: Vec<ProgressBar>,
+    trailer: Option<ProgressBar>,
     output_buffer: Vec<String>,
     start_time: Instant,
+    command_preview: Option<String>,
 }
 
 pub struct HookProgressRenderer {
@@ -27,6 +29,8 @@ pub struct HookProgressRenderer {
     spinner_style: ProgressStyle,
     spinner_style_with_timer: ProgressStyle,
     tail_style: ProgressStyle,
+    trailer_style: ProgressStyle,
+    name_column_width: usize,
 }
 
 impl HookProgressRenderer {
@@ -60,7 +64,7 @@ impl HookProgressRenderer {
         };
 
         let spinner_style = ProgressStyle::with_template(&format!(
-            "{pipe_str}  {{spinner}} {{msg}} {arrow}"
+            "{pipe_str}  {{spinner}} {{msg}}"
         ))
         .unwrap()
         .tick_chars(
@@ -68,7 +72,7 @@ impl HookProgressRenderer {
         );
 
         let spinner_style_with_timer = ProgressStyle::with_template(&format!(
-            "{pipe_str}  {{spinner}} {{msg}} {arrow} [{{elapsed_precise}}]"
+            "{pipe_str}  {{spinner}} {{msg}} [{{elapsed_precise}}]"
         ))
         .unwrap()
         .tick_chars(
@@ -76,6 +80,12 @@ impl HookProgressRenderer {
         );
 
         let tail_style = ProgressStyle::with_template(&format!("{pipe_str}  {{msg}}")).unwrap();
+
+        // Single space (not empty) so indicatif's line-count accounting stays
+        // aligned with actual terminal lines — an empty template can desync
+        // the internal "drawn lines" counter and leave stale bars visible
+        // when other bars are finish-and-cleared (notably during Ctrl-C).
+        let trailer_style = ProgressStyle::with_template(" ").unwrap();
 
         Self {
             mp,
@@ -88,7 +98,15 @@ impl HookProgressRenderer {
             spinner_style,
             spinner_style_with_timer,
             tail_style,
+            trailer_style,
+            name_column_width: super::formatting::DEFAULT_NAME_COLUMN_WIDTH,
         }
+    }
+
+    /// Override the branch-name column width used in compact finalization rows.
+    /// Default is `DEFAULT_NAME_COLUMN_WIDTH` (matches `list_renderer::render_outcome`).
+    pub fn set_name_column_width(&mut self, width: usize) {
+        self.name_column_width = width;
     }
 
     pub fn print_header(&self, hook_name: &str) {
@@ -110,10 +128,20 @@ impl HookProgressRenderer {
         let spinner = self.mp.add(ProgressBar::new_spinner());
         spinner.set_style(self.spinner_style.clone());
 
-        let display_name = if self.use_color {
-            format!("{ORANGE}{name}{}", styles::RESET)
-        } else {
-            name.to_string()
+        let display_name = match command_preview {
+            Some(cmd) if self.use_color => format!(
+                "{ORANGE}{name}{}  {arrow} {DARK_GREY}{cmd}{}",
+                styles::RESET,
+                styles::RESET,
+                arrow = self.arrow_str,
+            ),
+            Some(cmd) => format!("{name}  \u{276f} {cmd}"),
+            None if self.use_color => format!(
+                "{ORANGE}{name}{}  {arrow}",
+                styles::RESET,
+                arrow = self.arrow_str,
+            ),
+            None => format!("{name}  \u{276f}"),
         };
         spinner.set_message(display_name);
         spinner.enable_steady_tick(Duration::from_millis(80));
@@ -134,21 +162,14 @@ impl HookProgressRenderer {
             last_bar = desc_bar;
         }
 
-        // Show rendered command below the description/spinner when verbose
-        if self.config.verbose {
-            if let Some(cmd) = command_preview {
-                let cmd_bar = self.mp.insert_after(&last_bar, ProgressBar::new_spinner());
-                let cmd_style =
-                    ProgressStyle::with_template(&format!("{}  {{msg}}", self.pipe_str)).unwrap();
-                cmd_bar.set_style(cmd_style);
-                let cmd_msg = if self.use_color {
-                    format!("{DARK_GREY}{cmd}{}", styles::RESET)
-                } else {
-                    cmd.to_string()
-                };
-                cmd_bar.set_message(cmd_msg);
-            }
-        }
+        // Trailer is a blank spacer bar that sits at the bottom of this job's
+        // block so parallel jobs running concurrently render with visual breathing
+        // room between them. It's inserted now (before any tails exist) so later
+        // insert_after(separator/tail) calls place tails between the separator
+        // and this trailer.
+        let trailer = self.mp.insert_after(&last_bar, ProgressBar::new_spinner());
+        trailer.set_style(self.trailer_style.clone());
+        trailer.set_message(String::new());
 
         // Separator and tail bars are created lazily in update_job_output as output arrives.
         self.jobs.insert(
@@ -157,8 +178,10 @@ impl HookProgressRenderer {
                 spinner,
                 separator: None,
                 tail_lines: Vec::new(),
+                trailer: Some(trailer),
                 output_buffer: Vec::new(),
                 start_time: Instant::now(),
+                command_preview: command_preview.map(str::to_string),
             },
         );
     }
@@ -265,41 +288,80 @@ impl HookProgressRenderer {
         self.finish_job(name, false, duration);
     }
 
+    pub fn finish_job_cancelled(&mut self, name: &str, duration: Duration) {
+        let Some(state) = self.jobs.remove(name) else {
+            return;
+        };
+
+        self.remove_job_bars(&state);
+
+        // Non-compact branch intentionally emits nothing: cancellation is only
+        // reachable from exec paths, which always enable compact_finalization.
+        if self.config.compact_finalization {
+            let preview = state.command_preview.as_deref();
+            self.mp
+                .println(super::formatting::format_compact_row(
+                    name,
+                    preview,
+                    super::formatting::RowState::Cancelled { duration },
+                    self.name_column_width,
+                    self.use_color,
+                ))
+                .ok();
+        }
+
+        // JobOutcome has no Cancelled variant; record as Failed so callers
+        // that inspect finished_jobs treat a cancelled step as non-success.
+        self.finished_jobs.push(JobResultEntry {
+            name: name.to_string(),
+            outcome: JobOutcome::Failed,
+            duration,
+        });
+    }
+
     pub fn finish_job_skipped(
         &mut self,
         name: &str,
         reason: &str,
         duration: Duration,
         show_duration: bool,
+        command_preview: Option<&str>,
     ) {
         use super::formatting::YELLOW;
 
-        // Remove job state and clear its bars
-        if let Some(state) = self.jobs.remove(name) {
-            if let Some(ref sep) = state.separator {
-                sep.finish_and_clear();
-            }
-            for pb in &state.tail_lines {
-                pb.finish_and_clear();
-            }
-            state.spinner.finish_and_clear();
+        let stored_preview = if let Some(state) = self.jobs.remove(name) {
+            self.remove_job_bars(&state);
+            state.command_preview
+        } else {
+            None
+        };
+
+        if self.config.compact_finalization {
+            let preview = command_preview.or(stored_preview.as_deref());
+            self.mp
+                .println(super::formatting::format_compact_row(
+                    name,
+                    preview,
+                    super::formatting::RowState::Skipped,
+                    self.name_column_width,
+                    self.use_color,
+                ))
+                .ok();
+        } else {
+            let msg = if self.use_color {
+                format!(
+                    "{}  {ORANGE}{name}{} {DARK_GREY}(skip){} {YELLOW}{reason}{}",
+                    self.pipe_str,
+                    styles::RESET,
+                    styles::RESET,
+                    styles::RESET
+                )
+            } else {
+                format!("{}  {name} (skip) {reason}", self.pipe_str)
+            };
+            self.mp.println(msg).ok();
         }
 
-        // Always print skip info as a single inline line (no blank line after)
-        let msg = if self.use_color {
-            format!(
-                "{}  {ORANGE}{name}{} {DARK_GREY}(skip){} {YELLOW}{reason}{}",
-                self.pipe_str,
-                styles::RESET,
-                styles::RESET,
-                styles::RESET
-            )
-        } else {
-            format!("{}  {name} (skip) {reason}", self.pipe_str)
-        };
-        self.mp.println(msg).ok();
-
-        // Skipped jobs are added to finished_jobs for the summary
         self.finished_jobs.push(JobResultEntry {
             name: name.to_string(),
             outcome: JobOutcome::Skipped {
@@ -310,61 +372,91 @@ impl HookProgressRenderer {
         });
     }
 
+    /// Remove the job's bars from MultiProgress instead of using
+    /// `finish_and_clear`. The latter transitions the bar to `DoneHidden`
+    /// and interacts with indicatif's zombie-line accounting: on drop,
+    /// the bar's `mark_zombie` can feed non-zero line counts into
+    /// `LineAdjust::Keep`, leaving the last-drawn spinner line stuck in
+    /// scrollback above subsequent `mp.println` output. `mp.remove`
+    /// hides the bar's draw target and unlinks it from the ordering,
+    /// so the next `mp.println` does an atomic redraw that cleanly
+    /// clears the old bar lines.
+    fn remove_job_bars(&self, state: &JobState) {
+        if let Some(ref sep) = state.separator {
+            self.mp.remove(sep);
+        }
+        for pb in &state.tail_lines {
+            self.mp.remove(pb);
+        }
+        if let Some(ref trailer) = state.trailer {
+            self.mp.remove(trailer);
+        }
+        self.mp.remove(&state.spinner);
+    }
+
     fn finish_job(&mut self, name: &str, success: bool, duration: Duration) {
         let Some(state) = self.jobs.remove(name) else {
             return;
         };
 
-        // Clear ALL bars from the draw area. Using finish_and_clear (not
-        // finish_with_message) avoids "zombie" bars that would flush on
-        // MultiProgress drop — potentially after the summary has already
-        // been printed to stderr.
-        if let Some(ref sep) = state.separator {
-            sep.finish_and_clear();
-        }
-        for pb in &state.tail_lines {
-            pb.finish_and_clear();
-        }
-        state.spinner.finish_and_clear();
+        self.remove_job_bars(&state);
 
-        // Print heading as a permanent line. Because the spinner is already
-        // cleared, mp.println() inserts this above remaining *active*
-        // spinners only — i.e. after all previously finished jobs' output.
-        let finished_name = if self.use_color {
-            format!("{ORANGE}{name}{}", styles::RESET)
-        } else {
-            name.to_string()
-        };
-        self.mp
-            .println(format!(
-                "{}  {finished_name} {}",
-                self.pipe_str, self.arrow_str
-            ))
-            .ok();
-
-        // Print full output as permanent lines below the heading
-        let has_output = !state.output_buffer.is_empty();
-        if !self.config.quiet && has_output {
-            for line in &state.output_buffer {
-                self.mp.println(format!("{}  {line}", self.pipe_str)).ok();
-            }
-        }
-
-        if !self.config.quiet && !has_output {
-            let msg = if self.use_color {
-                format!(
-                    "{}  {DARK_GREY}{ITALIC}No output{}",
-                    self.pipe_str,
-                    styles::RESET
-                )
+        if self.config.compact_finalization {
+            let preview = state.command_preview.as_deref();
+            let row_state = if success {
+                super::formatting::RowState::Success { duration }
             } else {
-                format!("{}  No output", self.pipe_str)
+                super::formatting::RowState::Failure { duration }
             };
-            self.mp.println(msg).ok();
-        }
+            self.mp
+                .println(super::formatting::format_compact_row(
+                    name,
+                    preview,
+                    row_state,
+                    self.name_column_width,
+                    self.use_color,
+                ))
+                .ok();
+        } else {
+            // Print heading as a permanent line. Because the spinner is already
+            // cleared, mp.println() inserts this above remaining *active*
+            // spinners only — i.e. after all previously finished jobs' output.
+            let finished_name = if self.use_color {
+                format!("{ORANGE}{name}{}", styles::RESET)
+            } else {
+                name.to_string()
+            };
+            self.mp
+                .println(format!(
+                    "{}  {finished_name} {}",
+                    self.pipe_str, self.arrow_str
+                ))
+                .ok();
 
-        // Empty line after each job's section
-        self.mp.println(String::new()).ok();
+            // Print full output as permanent lines below the heading
+            let has_output = !state.output_buffer.is_empty();
+            if !self.config.quiet && has_output {
+                for line in &state.output_buffer {
+                    self.mp.println(format!("{}  {line}", self.pipe_str)).ok();
+                }
+            }
+
+            if !self.config.quiet && !has_output {
+                let msg = if self.use_color {
+                    format!(
+                        "{}  {DARK_GREY}{ITALIC}No output{}",
+                        self.pipe_str,
+                        styles::RESET
+                    )
+                } else {
+                    format!("{}  No output", self.pipe_str)
+                };
+                self.mp.println(msg).ok();
+            }
+
+            // Empty line after each job's section
+            self.mp.println(String::new()).ok();
+        }
 
         // Record for summary
         self.finished_jobs.push(JobResultEntry {
@@ -404,6 +496,14 @@ impl HookProgressRenderer {
     #[cfg(test)]
     pub fn get_tail_line_count(&self, name: &str) -> usize {
         self.jobs.get(name).map(|s| s.tail_lines.len()).unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub fn has_trailer(&self, name: &str) -> bool {
+        self.jobs
+            .get(name)
+            .map(|s| s.trailer.is_some())
+            .unwrap_or(false)
     }
 
     pub fn println(&self, msg: &str) {

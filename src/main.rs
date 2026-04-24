@@ -80,6 +80,7 @@ fn main() -> Result<()> {
         "git-worktree-flow-eject" => commands::flow_eject::run(),
         "git-worktree-list" => commands::list::run(),
         "git-worktree-sync" => commands::sync::run(),
+        "git-worktree-exec" => commands::exec::run(),
 
         // Daft-style commands (via symlinks)
         "daft-go" => commands::checkout::run_go(),
@@ -139,6 +140,7 @@ fn main() -> Result<()> {
                     "remove" => commands::worktree_branch::run_remove(),
                     "adopt" => commands::flow_adopt::run(),
                     "eject" => commands::flow_eject::run(),
+                    "exec" => commands::exec::run(),
                     // Worktree commands accessible via `daft worktree-<command>`
                     "worktree-clone" => commands::clone::run(),
                     "worktree-init" => commands::init::run(),
@@ -153,6 +155,7 @@ fn main() -> Result<()> {
                     "worktree-flow-eject" => commands::flow_eject::run(),
                     "worktree-list" => commands::list::run(),
                     "worktree-sync" => commands::sync::run(),
+                    "worktree-exec" => commands::exec::run(),
                     "worktree-shared" => commands::shared::run(),
                     _ => daft::suggest::handle_unknown_subcommand(
                         label,

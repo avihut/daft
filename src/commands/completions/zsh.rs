@@ -620,6 +620,12 @@ _daft() {
                 __git_worktree_carry_impl
                 return
                 ;;
+            exec)
+                words=("git-worktree-exec" "${(@)words[3,-1]}")
+                CURRENT=$((CURRENT - 1))
+                __git_worktree_exec_impl
+                return
+                ;;
             update)
                 words=("git-worktree-fetch" "${(@)words[3,-1]}")
                 CURRENT=$((CURRENT - 1))
@@ -677,7 +683,7 @@ _daft() {
             compadd -- --version -V --help -h
         else
             compadd hooks shell-init setup multi-remote release-notes doctor layout shared \
-                    config clone init go start carry update list prune rename sync remove adopt eject
+                    config clone init go start carry exec update list prune rename sync remove adopt eject
         fi
         return
     fi

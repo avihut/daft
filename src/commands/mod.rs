@@ -11,6 +11,7 @@ pub mod completions;
 pub mod config;
 pub mod docs;
 pub mod doctor;
+pub mod exec;
 pub mod fetch;
 pub mod flow_adopt;
 pub mod flow_eject;

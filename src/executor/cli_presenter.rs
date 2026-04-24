@@ -34,6 +34,12 @@ impl CliPresenter {
         })
     }
 
+    /// Set the name-column width used when rendering compact finalization rows.
+    pub fn set_name_column_width(&self, width: usize) {
+        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
+        r.set_name_column_width(width);
+    }
+
     /// Convert a `JobResultEntry` (from `HookRenderer`) into our generic `JobResult`.
     fn entry_to_job_result(entry: JobResultEntry) -> JobResult {
         let status = match &entry.outcome {
@@ -80,9 +86,21 @@ impl JobPresenter for CliPresenter {
         r.finish_job_failure(name, duration);
     }
 
-    fn on_job_skipped(&self, name: &str, reason: &str, duration: Duration, show_duration: bool) {
+    fn on_job_skipped(
+        &self,
+        name: &str,
+        reason: &str,
+        duration: Duration,
+        show_duration: bool,
+        command_preview: Option<&str>,
+    ) {
         let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.finish_job_skipped(name, reason, duration, show_duration);
+        r.finish_job_skipped(name, reason, duration, show_duration, command_preview);
+    }
+
+    fn on_job_cancelled(&self, name: &str, duration: Duration) {
+        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
+        r.finish_job_cancelled(name, duration);
     }
 
     fn on_message(&self, msg: &str) {
@@ -169,7 +187,13 @@ mod tests {
         let presenter = CliPresenter::from_renderer(renderer);
 
         presenter.on_job_start("lint", None, None);
-        presenter.on_job_skipped("lint", "no files changed", Duration::from_millis(10), false);
+        presenter.on_job_skipped(
+            "lint",
+            "no files changed",
+            Duration::from_millis(10),
+            false,
+            None,
+        );
 
         let results = presenter.take_results();
         assert_eq!(results.len(), 1);

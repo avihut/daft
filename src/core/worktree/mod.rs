@@ -15,6 +15,7 @@ pub mod carry;
 pub mod checkout;
 pub mod checkout_branch;
 pub mod clone;
+pub mod exec;
 pub mod fetch;
 pub mod flow_adopt;
 pub mod flow_eject;

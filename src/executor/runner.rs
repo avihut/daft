@@ -83,6 +83,7 @@ fn run_sequential(
                     "previous job failed",
                     Duration::ZERO,
                     false,
+                    None,
                 );
                 results.push(JobResult {
                     name: remaining.name.clone(),
@@ -369,7 +370,13 @@ fn build_results_from_statuses(
             if status == NodeStatus::DepFailed {
                 // Notify presenter about dep-failed jobs.
                 if let Some(job) = job_map.get(name.as_str()) {
-                    presenter.on_job_skipped(&job.name, "dependency failed", Duration::ZERO, false);
+                    presenter.on_job_skipped(
+                        &job.name,
+                        "dependency failed",
+                        Duration::ZERO,
+                        false,
+                        None,
+                    );
                 }
             }
 
@@ -465,11 +472,25 @@ mod tests {
                 .push(format!("job_failure:{name}"));
         }
 
-        fn on_job_skipped(&self, name: &str, reason: &str, _duration: Duration, _show: bool) {
+        fn on_job_skipped(
+            &self,
+            name: &str,
+            reason: &str,
+            _duration: Duration,
+            _show: bool,
+            _command_preview: Option<&str>,
+        ) {
             self.events
                 .lock()
                 .unwrap()
                 .push(format!("job_skipped:{name}:{reason}"));
+        }
+
+        fn on_job_cancelled(&self, name: &str, _duration: Duration) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("job_cancelled:{name}"));
         }
 
         fn on_message(&self, msg: &str) {

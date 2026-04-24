@@ -18,8 +18,9 @@
 .DS_Store
 Thumbs.db
 
-# Claude Code settings
+# Claude Code settings and runtime state
 .claude/settings.*
+.claude/*.lock
 .aider*
 
 # Lefthook local overrides
