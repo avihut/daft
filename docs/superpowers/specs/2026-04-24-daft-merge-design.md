@@ -1,0 +1,466 @@
+# daft merge
+
+## Problem
+
+daft wraps git worktree workflows but has no first-class merge operation. Users
+fall back to raw `git merge` inside individual worktrees, which:
+
+- Forces `cd` into the target worktree before merging, even when the user is
+  standing in another branch's worktree and just wants to move a feature into
+  `main`.
+- Disconnects the merge from daft's configuration, hooks, and cross-worktree
+  state awareness (dirty state, in-progress operations, layout-aware worktree
+  resolution).
+- Makes finish-line operations (remove the merged feature's worktree, delete the
+  merged branch) a manual multi-step dance that doesn't fit daft's verb-oriented
+  command surface.
+
+This spec introduces `daft merge` — a cross-worktree merge command with full git
+flag parity, layered configuration, optional post-merge cleanup, and explicit
+handling of the edge cases that the worktree-per-branch model surfaces (target
+branch has no worktree, conflict lands in a non-current worktree, in-progress
+merge needs to be aborted from elsewhere).
+
+## Goals
+
+- Ship `daft merge <source>... [--into <target>]` as a cross-worktree merge verb
+  that mirrors `git merge` when `--into` is omitted.
+- Full git flag parity for the start form: all common `git merge` options are
+  accepted and passed through (strategies, signing, squash, fast-forward
+  control, commit control, signoff, etc.).
+- Multi-source automatically invokes git's octopus strategy, communicated
+  explicitly in daft's output.
+- Finish commands (`--abort`, `--continue`, `--quit`) take an optional
+  positional `<worktree|branch>` argument, default to CWD, and never require the
+  user to `cd` to a different worktree to act on an in-progress merge.
+- Layered defaults (user < project < CLI) let users configure their preferred
+  merge style (e.g. squash by default) while allowing projects to override (e.g.
+  team-wide `ff-only`).
+- Opt-in post-merge cleanup with `-r` (remove source worktree) and `-rb` (also
+  remove source branch).
+- Reuse existing daft infrastructure: worktree hooks, temp-worktree module,
+  layout resolver, error formatting, completion generation, man-page pipeline.
+
+## Non-goals
+
+- **No auto-fetch before merge.** User runs `daft sync` or `git fetch`
+  separately. `daft merge` does not reach the network.
+- **No auto-push after merge.** Same reasoning.
+- **No `--finish` composite flag.** If users want "merge and clean up", they
+  type `daft merge feat -rb`. Keeps the surface explicit.
+- **No force cleanup.** `-rb` uses `git branch -d` semantics (refuses unmerged
+  branches). No `-D`-style force variant in this spec; users who insist on
+  force-deleting after a squash merge fall out to raw git.
+- **No squash-reachability logic.** After a squash merge, `-rb` passes through
+  git's "not fully merged" error verbatim. daft does not attempt to verify "this
+  branch is squash-merged into target" via `git cherry` or similar.
+- **No new daft hook types.** Git's native `pre-merge-commit`, `commit-msg`, and
+  `post-merge` hooks fire unchanged inside the target worktree; daft's existing
+  worktree-remove / worktree-create hooks fire for their existing events. No
+  `merge-pre` / `merge-post` / `merge-conflict` hooks.
+- **No auto-cd on conflict.** When a merge conflicts, daft reports the target
+  worktree path and exits non-zero. It does not use the `DAFT_CD_FILE` mechanism
+  to move the user into the conflict worktree.
+- **No branch protection list.** A config like
+  `merge.protected_branches: [main]` is not in scope. Server-side branch
+  protection belongs on the remote, not duplicated client-side.
+- **No session hint env var.** A `DAFT_MERGE_TARGET` that lets
+  `--abort`/`--continue` guess based on the most recent merge launched from the
+  same shell is deferred.
+
+## CLI Surface
+
+### Start form
+
+```
+daft merge [FLAGS] [--into <target>] <source>...
+```
+
+- `--into <target>` — target worktree/branch. Defaults to the current worktree's
+  branch. Accepts either a worktree directory name or a branch name (following
+  `daft carry`'s convention — worktree name wins on conflict).
+- `<source>...` — one or more source branches/commits. One source ⇒ normal
+  merge. Two or more ⇒ octopus merge (explicitly announced in output).
+
+### Finish forms
+
+```
+daft merge --abort    [<worktree|branch>]
+daft merge --continue [<worktree|branch>]
+daft merge --quit     [<worktree|branch>]
+```
+
+Positional argument defaults to CWD's branch. If the resolved worktree has no
+in-progress merge, daft errors out and lists any worktrees that do, with a retry
+hint.
+
+### Status form
+
+Adds `--merging` flag to the existing `daft list` command — no new top-level
+verb. Shows all worktrees with active `MERGE_HEAD`, the branches being merged
+in, and how long ago the merge started.
+
+### Cleanup flags (start form only)
+
+- `-r`, `--remove` — remove source worktree after successful merge. Fires
+  existing `worktree-pre-remove` / `worktree-post-remove` hooks.
+- `-b`, `--and-branch` — also remove the source branch. Requires `-r`; `-b`
+  alone errors. Uses `git branch -d` semantics (refuses unmerged branches, no
+  force).
+
+### Target-worktree handling flags
+
+- `--adopt-target` — when `<target>` has no worktree and the merge is not a pure
+  fast-forward, create an ephemeral worktree without prompting.
+- `--no-adopt-target` — refuse in the same situation without prompting.
+- Neither flag and a TTY → prompt. Neither flag and non-TTY → refuse.
+
+### Passthrough flags (git parity)
+
+daft accepts and passes through these `git merge` flags on the start form. Where
+a flag conflicts with a daft-specific concept (e.g. `--abort`), the daft mode
+takes precedence.
+
+- Commit message and editor: `-m <msg>`, `-F <file>`, `--edit`, `--no-edit`,
+  `--cleanup <mode>`
+- Fast-forward control: `--ff`, `--no-ff`, `--ff-only`
+- Squash: `--squash`, `--no-squash`
+- Commit control: `--commit`, `--no-commit`
+- Signoff: `--signoff`, `--no-signoff`
+- Strategy: `-s <strategy>`, `-X <opt>`
+- GPG: `-S`, `--gpg-sign[=<keyid>]`, `--no-gpg-sign`
+- Verification: `--verify-signatures`, `--no-verify-signatures`
+- History: `--allow-unrelated-histories`
+- Stat control: `--stat`, `--no-stat`, `-n`
+- Verbose: `-q`, `-v` (daft-level verbose; not passed through)
+
+### Shortcut
+
+- `gwtm` — short alias for `git-worktree-merge`, registered in
+  `src/shortcuts.rs` and documented alongside other shortcuts.
+
+## Semantics
+
+### Resolution order
+
+1. **Parse and validate flags.** `-b` without `-r` → error. `--adopt-target` and
+   `--no-adopt-target` mutually exclusive.
+2. **Resolve target.** From `--into <t>` or CWD's branch. Accepts worktree name
+   or branch name, worktree wins.
+3. **Resolve sources.** Each must exist as a branch or commit. Sources also
+   accept worktree names (worktree's current HEAD commit).
+4. **Refuse impossible configurations:**
+   - Any source equals target.
+   - Target is invalid ref or bare repo root.
+5. **Inspect target worktree state:**
+   - Has `MERGE_HEAD`, `REBASE_HEAD`, `CHERRY_PICK_HEAD`, `BISECT_LOG`, etc. →
+     refuse with git's state surfaced in the error ("main is mid-rebase; finish
+     or abort it first").
+   - Working tree dirty (per `git status --porcelain`) and
+     `merge.require_clean_target` is true → refuse.
+6. **Handle "target has no worktree":**
+   - Compute whether the merge is a pure fast-forward. Pure FF means a single
+     source, no `--squash`, no `--no-ff`, target's ref is an ancestor of
+     source's ref.
+   - **Pure FF** → advance the ref via `git update-ref`. No worktree needed.
+     Skip ahead to post-merge cleanup.
+   - **Not pure FF** → consult `--adopt-target` / `--no-adopt-target` /
+     `merge.adopt_target_on_demand` / TTY state. If the answer is "no", refuse
+     with a hint to run `daft checkout <target>` first. If the answer is "yes",
+     create an ephemeral worktree via daft's `temp_worktree` module.
+7. **Announce opinionated defaults (verbose only).** If any effective flag value
+   came from a config layer rather than git's default, daft prints a one-line
+   notice per override:
+
+   ```
+   merge: squash=true (from user config)
+   merge: ff=never (from project config)
+   ```
+
+8. **Announce merge mode.** If sources.len() >= 2, daft prints an explicit
+   octopus notice:
+
+   ```
+   Merging 3 sources into main via octopus strategy
+   ```
+
+   For squash merges, daft prints an explicit squash notice.
+
+### Executing the merge
+
+The merge itself always runs as `git -C <worktree> merge [flags...] <sources>`
+inside the target's working tree (ephemeral or permanent). The only exception is
+pure fast-forward when the target has no worktree, which runs as
+`git update-ref` against the bare repo.
+
+### Conflict handling
+
+On conflict, daft:
+
+1. Leaves the target worktree in its conflicted state (git has already done
+   this).
+2. Prints the target worktree path and the list of conflicted files.
+3. Prints instructions: resolve in place, then run `daft merge --continue` or
+   `daft merge --abort`.
+4. Exits non-zero.
+
+daft does not auto-cd into the target, even if the user is in a different
+worktree. If the target worktree was ephemeral, daft first promotes it to the
+layout-resolved sibling path (see next section) and reports _that_ path in the
+conflict message.
+
+### Ephemeral worktree lifecycle
+
+When a non-FF merge is run against a target with no worktree, and the user
+accepted the adopt prompt (or passed `--adopt-target`):
+
+1. Create a temporary worktree in daft's temp area (reusing
+   `src/core/worktree/temp_worktree.rs`). Do **not** fire `worktree-pre-create`
+   / `worktree-post-create` yet — this is initially ephemeral.
+2. Run the merge inside the temp worktree.
+3. **On success** → remove the temp worktree, leaving only the updated ref. No
+   hooks fire, because the worktree was never promoted to a real one.
+4. **On conflict** → move the temp worktree to the layout-resolved sibling path
+   (using `src/core/layout`'s resolver), update daft's internal worktree
+   metadata / registry so the worktree is discoverable by `daft list` and the
+   finish commands, then fire `worktree-post-create` (retroactively, since the
+   worktree now exists as a real one). The user sees a conflicted worktree at
+   the expected path. Subsequent `daft merge --continue <target>` /
+   `--abort <target>` works against that promoted worktree just like any other.
+
+### Finish commands
+
+`daft merge --abort [<arg>]` and peers:
+
+1. Resolve the worktree. Explicit arg → named worktree or branch. No arg → CWD's
+   worktree.
+2. Check for an in-progress merge (presence of `MERGE_HEAD` in
+   `<worktree>/.git`).
+3. **If present** → run `git -C <worktree> merge --abort|--continue|--quit`.
+   Passthrough flags (`--no-edit`, etc.) are forwarded.
+4. **If absent** → error. List all worktrees in the project that have
+   `MERGE_HEAD` set, show what's being merged, and suggest retrying with a
+   positional argument.
+
+### Cleanup (post-success only)
+
+When `-r` is set and the merge (including any post-merge prompts) finished
+successfully:
+
+1. For each source, classify it:
+   - **Branch with a worktree** (whether specified by branch name or by worktree
+     name) → eligible for both worktree removal and branch deletion.
+   - **Branch without a worktree** (specified by branch name, no sibling
+     worktree exists) → eligible for branch deletion only; nothing to remove on
+     disk.
+   - **Commit SHA / detached ref** → skip; there is no branch or worktree to
+     clean up.
+2. For each source eligible for worktree removal, remove its worktree via daft's
+   existing worktree-remove code path. `worktree-pre-remove` and
+   `worktree-post-remove` fire as normal.
+3. If `-b` is also set, then for each source eligible for branch deletion, run
+   `git branch -d <branch>` (after any worktree removal for that source). If git
+   refuses (branch not fully merged — e.g. a squash merge), daft prints git's
+   error verbatim and exits non-zero, but does not undo any earlier worktree
+   removals in the same invocation.
+
+### Status display
+
+`daft list --merging` filters the existing `daft list` output to only worktrees
+with `MERGE_HEAD` set, and adds two columns:
+
+- `merging` — branch(es) being merged in (space-separated for octopus)
+- `since` — relative time since the merge was initiated
+
+Uses the existing list formatter (respects `--format`, `--no-headers`, etc. from
+the multi-format emit feature).
+
+## Configuration
+
+Layered configuration, merged in order:
+
+1. Git's defaults (baked into git merge).
+2. daft's user config (`~/.config/daft/config.toml` or XDG equivalent).
+3. daft's project config (`.daft/daft.yml`).
+4. CLI flags.
+
+Later layers override earlier ones. CLI always wins. daft prints the source of
+any non-default value in verbose mode.
+
+### Config schema
+
+```yaml
+merge:
+  # Git-parity options (mirror individual git merge flags)
+  ff: auto | only | never # default: auto (git's default)
+  squash: true | false # default: false
+  commit: true | false # default: true
+  edit: true | false # default: true (in TTY)
+  signoff: true | false # default: false
+  gpg_sign: true | false | <keyid> # default: false
+  verify_signatures: true | false # default: false
+  allow_unrelated_histories: true | false # default: false
+  strategy: ort | recursive | resolve | ours | octopus | subtree
+  strategy_options: [ours, theirs, ignore-space-change, ...]
+
+  # Daft-specific behavior
+  adopt_target_on_demand:
+    prompt | yes | no
+    # default: prompt in TTY, no otherwise
+  require_clean_target: true # default: true
+
+  post_merge:
+    remove_source_worktree: false
+    also_remove_source_branch:
+      false
+      # effective only when remove_source_worktree: true
+```
+
+The schema is orthogonal: `ff` and `squash` are independent axes that mirror
+git's actual flag structure. There is no composite `mode` enum.
+
+## Error handling
+
+| Condition                                                      | Behavior                                                           |
+| -------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Source equals target                                           | Refuse immediately with clear error                                |
+| Target has in-progress op (rebase, merge, cherry-pick, bisect) | Refuse; surface git's state                                        |
+| Target working tree dirty                                      | Refuse (mirror git); config `require_clean_target: false` disables |
+| Source already reachable from target ("already up to date")    | Exit 0 with git's message                                          |
+| Source is invalid ref                                          | Refuse; git's error                                                |
+| Target has no worktree, merge is pure FF                       | Advance ref via plumbing, no prompt                                |
+| Target has no worktree, merge is non-FF, TTY, no flag          | Prompt to create ephemeral                                         |
+| Target has no worktree, merge is non-FF, no TTY, no flag       | Refuse; suggest `daft checkout`                                    |
+| `--abort`/`--continue` on worktree with no `MERGE_HEAD`        | Refuse; list candidates                                            |
+| `-b` without `-r`                                              | Refuse at parse time                                               |
+| `-b` after squash merge (branch not marked merged)             | Surface git's `branch -d` error; don't retry with force            |
+| Ephemeral worktree merge conflicts                             | Promote to layout path; fire `worktree-post-create`                |
+| Ephemeral worktree merge succeeds                              | Remove temp worktree silently                                      |
+
+## Hooks
+
+**No new daft hooks.** Existing integrations:
+
+- Git's own `pre-merge-commit`, `commit-msg`, `post-merge` fire inside the
+  target worktree's `.git/hooks` directory, unchanged.
+- `worktree-pre-remove` / `worktree-post-remove` fire when `-r` removes a source
+  worktree.
+- `worktree-post-create` fires when an ephemeral worktree is promoted to a
+  permanent one on conflict. The `worktree-pre-create` hook does **not** fire
+  for ephemerals — they were not intended to become permanent when created.
+
+## Implementation plan (high-level)
+
+New files:
+
+- `src/commands/merge.rs` — clap `Args` struct with full flag surface, mode
+  dispatch (start vs abort vs continue vs quit), prompt handling, verbose
+  deviation-from-default output.
+- `src/core/worktree/merge.rs` — core merge logic: plumbing FF path,
+  worktree-delegated merge, ephemeral worktree lifecycle, status inspection
+  across worktrees.
+
+Modified files:
+
+- `src/commands/mod.rs` — register module.
+- `src/main.rs` — multicall routing for `git-worktree-merge` and `daft merge`.
+- `src/shortcuts.rs` — `gwtm` shortcut.
+- `src/commands/list.rs` — add `--merging` flag, status columns.
+- `xtask/src/main.rs` — add `merge` to `COMMANDS` array and
+  `get_command_for_name()`.
+- `src/commands/docs.rs` — add `merge` to help output in its category.
+- `src/commands/completions/{bash,zsh,fish,fig}.rs` — add `merge` + full flag
+  completions + `list --merging` flag.
+- `src/settings.rs` (or equivalent config module) — extend schema with the
+  `merge` section from the Configuration section.
+- `man/` — regenerated via `mise run man:gen`.
+
+New shell symlink:
+
+- `git-worktree-merge → daft` created by `daft setup` and equivalent installer
+  paths.
+
+New documentation:
+
+- `docs/cli/daft-merge.md` — reference page following `docs/cli/daft-doctor.md`
+  template.
+- `docs/guide/` — mention merge in relevant guide pages (hooks, configuration,
+  workflow).
+- `SKILL.md` — update to teach AI agents about `daft merge`.
+
+## Testing
+
+### YAML scenarios (`tests/manual/scenarios/merge/`)
+
+- `basic.yml` — simple merge into CWD branch.
+- `cross-worktree.yml` — `--into` from a different worktree.
+- `octopus.yml` — multi-source announces octopus; success case.
+- `octopus-conflict.yml` — multi-source with conflict; git refuses.
+- `ff.yml` — fast-forward succeeds.
+- `ff-only.yml` — `--ff-only` fails on non-FF.
+- `no-ff.yml` — `--no-ff` forces merge commit on FF-eligible merge.
+- `squash.yml` — squash merge produces single commit on target.
+- `squash-cleanup-fails.yml` — `-rb` after squash surfaces git's error.
+- `signoff.yml` — `--signoff` threads through.
+- `gpg.yml` — GPG signing threads through (CI may skip if no key).
+- `strategy-ours.yml` — `-s ours` threads through.
+- `strategy-option.yml` — `-X theirs` threads through.
+- `conflict.yml` — report-and-stay behavior; exit code; target path surfaced.
+- `abort.yml` — `--abort` from CWD (target worktree).
+- `abort-cross-worktree.yml` — `--abort main` from a different worktree.
+- `continue.yml` — continue after conflict resolution.
+- `quit.yml` — quit leaves state in place.
+- `abort-no-merge-in-progress.yml` — lists candidates.
+- `dirty-target.yml` — refuses cleanly.
+- `target-in-operation.yml` — refuses, surfaces state.
+- `same-source-target.yml` — refuses.
+- `already-up-to-date.yml` — exits 0 with git's message.
+- `no-target-worktree-ff.yml` — plumbing FF advances ref.
+- `no-target-worktree-prompt-accept.yml` — prompt, accept, ephemeral created and
+  removed on success.
+- `no-target-worktree-prompt-decline.yml` — prompt, decline, refused.
+- `no-target-worktree-no-tty.yml` — refuses without prompt in non-TTY.
+- `no-target-worktree-flag.yml` — `--adopt-target` bypasses prompt.
+- `ephemeral-conflict-promote.yml` — conflict in ephemeral promotes to layout
+  path.
+- `remove-source.yml` — `-r` removes worktree after success.
+- `remove-source-and-branch.yml` — `-rb` removes both.
+- `remove-unmerged-branch.yml` — `-rb` refused by git's `branch -d` semantics.
+- `config-layered-defaults.yml` — user config `squash=true` + project config
+  `ff=never` + CLI flag wins.
+- `config-verbose-reports-source.yml` — verbose output identifies config layers.
+- `status-list-merging.yml` — `daft list --merging` shows in-progress merges.
+
+### Unit tests
+
+- Plumbing FF ref advancement (`src/core/worktree/merge.rs`).
+- In-progress detection (scan for `MERGE_HEAD` across worktrees).
+- Flag parsing edge cases: `-b` without `-r`, `--adopt-target` +
+  `--no-adopt-target`, mutually exclusive modes (`--abort` with sources).
+- Config merging precedence.
+- Ephemeral-to-permanent promotion logic.
+
+### Bash integration tests
+
+Follow existing patterns in `tests/integration/`. Smoke test the happy path of
+each form of the command against a real temp repo.
+
+## Deferred / future work
+
+Captured for later consideration; explicitly out of scope for this spec.
+
+- `merge-pre` / `merge-post` daft-level hooks with cross-worktree env vars.
+- `--finish` composite that expands to `-rb` (and hypothetically `--push` once
+  that's in scope).
+- Auto-fetch before merge (`merge.fetch_before`).
+- Auto-push after merge (`merge.post_merge.push`).
+- Session-hint env var (`DAFT_MERGE_TARGET`) for ergonomic abort/continue after
+  launching a cross-worktree merge.
+- Branch protection list (`merge.protected_branches`).
+- Force-delete variants (`-D`, `--force`) for cleanup.
+- Squash-reachability detection (`git cherry`-based) to enable cleanup after
+  squash merges.
+- `merge-conflict` dedicated hook (users can branch on `DAFT_MERGE_RESULT` once
+  `merge-post` exists).
+- A dedicated `daft merge status` / `daft merge list` command, if the
+  `daft list --merging` extension proves cramped.
