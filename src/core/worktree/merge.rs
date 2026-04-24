@@ -175,47 +175,75 @@ pub fn render_flags(flags: &EffectiveFlags) -> Vec<String> {
 
 /// Target of a merge after resolution.
 ///
-/// Slice 3 always produces a [`ResolvedTarget`] with a concrete worktree path.
-/// A later slice (no-worktree target — ref-only merges) will likely change
-/// `path` to `Option<PathBuf>` to represent a target branch that has no
-/// checked-out worktree. Keeping the struct dedicated (rather than returning
-/// a bare `(String, PathBuf)` tuple) makes that future change a local edit.
+/// `path` is `None` when the user named a target branch that exists as a ref
+/// but has no checked-out worktree (Slice 9). With a worktree present, `path`
+/// holds its absolute filesystem path; without one, Slice 9's FF-plumbing and
+/// Slice 10's ephemeral-worktree flows take over.
 #[derive(Debug, Clone)]
 pub struct ResolvedTarget {
     /// Branch being merged into — used for display and comparisons.
     pub branch: String,
-    /// Path to the target worktree on disk.
-    pub path: PathBuf,
+    /// Path to the target worktree on disk, when one exists. `None` means the
+    /// target is a branch ref with no sibling worktree.
+    pub path: Option<PathBuf>,
 }
 
 /// Resolve the merge target.
 ///
-/// * `Some(t)` — delegate to [`GitCommand::resolve_worktree_path`] (which
+/// * `Some(t)` — try [`GitCommand::resolve_worktree_path`] first (which
 ///   matches `t` as a relative path, then a branch name, then a worktree
-///   directory name), then read the target worktree's current branch via
-///   [`branch_at_path`].
+///   directory name). If that finds a worktree, return it with its current
+///   branch via [`branch_at_path`]. If no worktree matches, fall back to
+///   checking whether `t` exists as a branch ref (`refs/heads/<t>`): if so,
+///   return `path: None, branch: t` (ref-only target). Otherwise error.
 /// * `None` — the target is the current worktree: path from
 ///   [`GitCommand::get_current_worktree_path`], branch via the same
 ///   [`branch_at_path`] helper so both arms produce identical error
 ///   formatting for the same failure modes (detached HEAD, read failure).
+///   `path` is always `Some` in this arm since the CWD is inside a worktree.
 ///
-/// Fails loudly on detached HEAD. Merging into a detached HEAD would fail
-/// downstream anyway; the explicit error here surfaces the problem earlier.
+/// Fails loudly on detached HEAD (worktree case). Merging into a detached
+/// HEAD would fail downstream anyway; the explicit error here surfaces the
+/// problem earlier.
 pub fn resolve_target(
     target: Option<&str>,
     git: &GitCommand,
     project_root: &Path,
 ) -> Result<ResolvedTarget> {
     match target {
-        Some(t) => {
-            let path = git.resolve_worktree_path(t, project_root)?;
-            let branch = branch_at_path(git, &path)?;
-            Ok(ResolvedTarget { branch, path })
-        }
+        Some(t) => match git.resolve_worktree_path(t, project_root) {
+            Ok(path) => {
+                let branch = branch_at_path(git, &path)?;
+                Ok(ResolvedTarget {
+                    branch,
+                    path: Some(path),
+                })
+            }
+            Err(_) => {
+                // No worktree matched. Fall back to branch-ref resolution so
+                // ref-only targets (Slice 9) are handled without forcing the
+                // user to materialize a worktree first.
+                let ref_name = format!("refs/heads/{t}");
+                if git.show_ref_exists(&ref_name)? {
+                    Ok(ResolvedTarget {
+                        branch: t.to_string(),
+                        path: None,
+                    })
+                } else {
+                    anyhow::bail!(
+                        "no worktree or branch named '{}'; specify an existing target",
+                        t
+                    )
+                }
+            }
+        },
         None => {
             let path = git.get_current_worktree_path()?;
             let branch = branch_at_path(git, &path)?;
-            Ok(ResolvedTarget { branch, path })
+            Ok(ResolvedTarget {
+                branch,
+                path: Some(path),
+            })
         }
     }
 }
@@ -379,11 +407,11 @@ pub fn detect_in_progress(worktree: &Path) -> Result<Option<InProgressOp>> {
 /// `require_clean = true` — always refuse dirty — because the settings
 /// plumbing lands later in the plan, and advertising a key users can't yet
 /// set would be misleading.
-pub fn validate_clean_target(git: &GitCommand, target: &ResolvedTarget) -> Result<()> {
-    if git.has_uncommitted_changes_in(&target.path)? {
+pub fn validate_clean_target(git: &GitCommand, path: &Path) -> Result<()> {
+    if git.has_uncommitted_changes_in(path)? {
         anyhow::bail!(
             "target worktree '{}' has uncommitted changes; commit or stash them before merging",
-            target.path.display()
+            path.display()
         );
     }
     Ok(())
@@ -528,17 +556,28 @@ pub fn execute_start(
     let resolved = resolve_target(params.target.as_deref(), git, project_root)?;
 
     // Pre-flight safety rails. Order matters: cheapest/purely-syntactic check
-    // first (source vs. target branch name), then state checks on the target
-    // worktree (in-progress op, dirty tree) which touch the filesystem.
+    // first (source vs. target branch name, which needs no path), then state
+    // checks on the target worktree (in-progress op, dirty tree) which touch
+    // the filesystem and therefore only apply when a worktree exists.
     validate_distinct(&params.sources, &resolved)?;
-    if let Some(op) = detect_in_progress(&resolved.path)? {
+    // Task 9.1 temporary: without a worktree, we have no filesystem state to
+    // check and no CWD for `git merge`. Task 9.2 replaces this with an FF
+    // plumbing branch; for now, bail cleanly.
+    let path = resolved.path.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "target branch '{}' has no worktree; run `daft checkout {}` first",
+            resolved.branch,
+            resolved.branch,
+        )
+    })?;
+    if let Some(op) = detect_in_progress(&path)? {
         anyhow::bail!(
             "target worktree '{}' is mid-{}; finish or abort it first",
             resolved.branch,
             op.description()
         );
     }
-    validate_clean_target(git, &resolved)?;
+    validate_clean_target(git, &path)?;
 
     // Detect "already up to date" via plumbing before invoking `git merge`, so
     // we don't need to capture stdout. Capturing stdout would break the
@@ -572,7 +611,7 @@ pub fn execute_start(
         return Ok(StartOutcome {
             already_up_to_date: true,
             failed: false,
-            target_path: resolved.path.clone(),
+            target_path: path.clone(),
             conflicted_files: Vec::new(),
         });
     }
@@ -596,14 +635,9 @@ pub fn execute_start(
     // capture stdout to detect it.
     let status = Command::new("git")
         .args(&argv)
-        .current_dir(&resolved.path)
+        .current_dir(&path)
         .status()
-        .with_context(|| {
-            format!(
-                "failed to invoke `git merge` in '{}'",
-                resolved.path.display()
-            )
-        })?;
+        .with_context(|| format!("failed to invoke `git merge` in '{}'", path.display()))?;
 
     let failed = !status.success();
     // Only probe `git status` on failure — the success path already left the
@@ -611,7 +645,7 @@ pub fn execute_start(
     // `conflicted_files` swallows IO errors into an empty list so a broken
     // status probe never masks the real merge error with a secondary one.
     let files = if failed {
-        conflicted_files(&resolved.path).unwrap_or_default()
+        conflicted_files(&path).unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -620,7 +654,7 @@ pub fn execute_start(
         // Already-up-to-date is handled by the pre-flight above.
         already_up_to_date: false,
         failed,
-        target_path: resolved.path.clone(),
+        target_path: path,
         conflicted_files: files,
     })
 }
@@ -704,16 +738,24 @@ fn list_worktrees_with_in_progress_merges(git: &GitCommand) -> Result<Vec<PathBu
 pub fn execute_finish(params: &FinishParams, git: &GitCommand, project_root: &Path) -> Result<()> {
     let resolved = resolve_target(params.worktree.as_deref(), git, project_root)?;
 
+    // Finish commands require an on-disk worktree: --abort/--continue/--quit
+    // act on MERGE_HEAD in the worktree's git dir, and a ref-only target has
+    // none. Bail with a clear pointer so the user knows the merge can't be
+    // in-progress on a branch without a worktree.
+    let path = resolved.path.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "target branch '{}' has no worktree; finish commands require an existing worktree",
+            resolved.branch
+        )
+    })?;
+
     // Route the "no merge in progress" check through the public predicate so
     // behaviour stays in sync with direct callers of `ensure_merge_in_progress`.
     // When the predicate fails, we swap its bare error for a richer message
     // listing candidate worktrees and a concrete retry hint.
-    if ensure_merge_in_progress(&resolved.path).is_err() {
+    if ensure_merge_in_progress(&path).is_err() {
         let candidates = list_worktrees_with_in_progress_merges(git).unwrap_or_default();
-        let mut msg = format!(
-            "no in-progress merge in worktree '{}'",
-            resolved.path.display()
-        );
+        let mut msg = format!("no in-progress merge in worktree '{}'", path.display());
         if !candidates.is_empty() {
             msg.push_str("\n\nmerges in progress elsewhere:");
             for c in &candidates {
@@ -757,18 +799,18 @@ pub fn execute_finish(params: &FinishParams, git: &GitCommand, project_root: &Pa
 
     let status = Command::new("git")
         .args(["merge", flag])
-        .current_dir(&resolved.path)
+        .current_dir(&path)
         .status()
         .with_context(|| {
             format!(
                 "failed to invoke git merge {} in '{}'",
                 flag,
-                resolved.path.display()
+                path.display()
             )
         })?;
 
     if !status.success() {
-        anyhow::bail!("git merge {} failed in '{}'", flag, resolved.path.display());
+        anyhow::bail!("git merge {} failed in '{}'", flag, path.display());
     }
     Ok(())
 }
@@ -1087,7 +1129,7 @@ mod tests {
     fn refuses_when_source_equals_target() {
         let target = ResolvedTarget {
             branch: "main".into(),
-            path: PathBuf::from("/repo/main"),
+            path: Some(PathBuf::from("/repo/main")),
         };
         let err = validate_distinct(&["main".to_string()], &target).unwrap_err();
         let msg = format!("{err:#}");
@@ -1098,7 +1140,7 @@ mod tests {
     fn allows_distinct_source_and_target() {
         let target = ResolvedTarget {
             branch: "main".into(),
-            path: PathBuf::from("/repo/main"),
+            path: Some(PathBuf::from("/repo/main")),
         };
         assert!(validate_distinct(&["feat".to_string()], &target).is_ok());
     }
@@ -1107,7 +1149,7 @@ mod tests {
     fn refuses_when_target_matches_later_source() {
         let target = ResolvedTarget {
             branch: "main".into(),
-            path: PathBuf::from("/tmp"),
+            path: Some(PathBuf::from("/tmp")),
         };
         let result = validate_distinct(&["feat".into(), "main".into()], &target);
         assert!(result.is_err());
@@ -1118,7 +1160,7 @@ mod tests {
     fn refuses_when_source_uses_refs_heads_prefix() {
         let target = ResolvedTarget {
             branch: "main".into(),
-            path: PathBuf::from("/tmp"),
+            path: Some(PathBuf::from("/tmp")),
         };
         let result = validate_distinct(&["refs/heads/main".into()], &target);
         assert!(result.is_err());
@@ -1189,11 +1231,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         let git = GitCommand::new(true);
-        let target = ResolvedTarget {
-            branch: "main".into(),
-            path: tmp.path().to_path_buf(),
-        };
-        assert!(validate_clean_target(&git, &target).is_ok());
+        assert!(validate_clean_target(&git, tmp.path()).is_ok());
     }
 
     #[test]
@@ -1203,11 +1241,7 @@ mod tests {
         // Untracked file — `git status --porcelain` reports it as `?? path`.
         std::fs::write(tmp.path().join("dirty.txt"), "hello\n").unwrap();
         let git = GitCommand::new(true);
-        let target = ResolvedTarget {
-            branch: "main".into(),
-            path: tmp.path().to_path_buf(),
-        };
-        let err = validate_clean_target(&git, &target).unwrap_err();
+        let err = validate_clean_target(&git, tmp.path()).unwrap_err();
         let msg = format!("{err:#}");
         assert!(
             msg.contains("uncommitted changes"),
