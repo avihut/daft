@@ -192,7 +192,12 @@ pub fn detect_in_progress(worktree: &Path) -> Result<Option<InProgressOp>> {
             .lines()
             .next()
             .and_then(|l| l.strip_prefix("gitdir: "))
-            .unwrap_or("")
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "malformed .git file at {}: expected 'gitdir: <path>' on first line",
+                    git_entry.display()
+                )
+            })?
             .trim();
         let p = PathBuf::from(rel);
         // Path::join replaces when its argument is absolute, so this is
@@ -206,10 +211,17 @@ pub fn detect_in_progress(worktree: &Path) -> Result<Option<InProgressOp>> {
         git_entry
     };
 
+    if !git_dir.is_dir() {
+        anyhow::bail!(
+            "target worktree at '{}' has no valid .git directory",
+            worktree.display()
+        );
+    }
+
     if git_dir.join("MERGE_HEAD").exists() {
         return Ok(Some(InProgressOp::Merge));
     }
-    if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+    if git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir() {
         return Ok(Some(InProgressOp::Rebase));
     }
     if git_dir.join("CHERRY_PICK_HEAD").exists() {
@@ -227,18 +239,18 @@ pub fn detect_in_progress(worktree: &Path) -> Result<Option<InProgressOp>> {
 /// so dirtiness is decided exactly the same way the rest of daft decides it
 /// (via `git status --porcelain`, which treats untracked files as dirty).
 ///
-/// The refusal message names the canonical remediation options and a TODO
-/// pointer for the Slice-13 config toggle.
+/// The refusal message names the canonical remediation options.
 ///
 /// TODO(slice-13): Make the refusal configurable via the
-/// `daft.merge.requireCleanTarget` setting. For Slice 4 we hard-code
+/// `daft.merge.requireCleanTarget` setting, and restore the full hint
+/// pointing users at that toggle. For Slice 4 we hard-code
 /// `require_clean = true` — always refuse dirty — because the settings
-/// plumbing lands later in the plan.
+/// plumbing lands later in the plan, and advertising a key users can't yet
+/// set would be misleading.
 pub fn validate_clean_target(git: &GitCommand, target: &ResolvedTarget) -> Result<()> {
     if git.has_uncommitted_changes_in(&target.path)? {
         anyhow::bail!(
-            "target worktree '{}' has uncommitted changes; commit, stash, or allow via \
-             `daft.merge.requireCleanTarget=false`",
+            "target worktree '{}' has uncommitted changes; commit or stash them before merging",
             target.path.display()
         );
     }
@@ -252,13 +264,21 @@ pub fn validate_clean_target(git: &GitCommand, target: &ResolvedTarget) -> Resul
 /// here — before we touch git — gives a clear, actionable error instead of
 /// a cryptic "Already up to date." when the user likely meant to target a
 /// different branch via `--into`.
+///
+/// Note: comparison is nominal, not OID-based. `origin/main` and commit SHAs
+/// are not normalized. Stronger resolution may land in a later slice.
 pub fn validate_distinct(sources: &[String], target: &ResolvedTarget) -> Result<()> {
+    let target_normalized = strip_refs_heads(&target.branch);
     for src in sources {
-        if src == &target.branch {
+        if strip_refs_heads(src) == target_normalized {
             anyhow::bail!("cannot merge branch '{}' into the same branch", src);
         }
     }
     Ok(())
+}
+
+fn strip_refs_heads(s: &str) -> &str {
+    s.strip_prefix("refs/heads/").unwrap_or(s)
 }
 
 /// Result of a merge-start operation.
@@ -454,6 +474,27 @@ mod tests {
     }
 
     #[test]
+    fn refuses_when_target_matches_later_source() {
+        let target = ResolvedTarget {
+            branch: "main".into(),
+            path: PathBuf::from("/tmp"),
+        };
+        let result = validate_distinct(&["feat".into(), "main".into()], &target);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("same branch"));
+    }
+
+    #[test]
+    fn refuses_when_source_uses_refs_heads_prefix() {
+        let target = ResolvedTarget {
+            branch: "main".into(),
+            path: PathBuf::from("/tmp"),
+        };
+        let result = validate_distinct(&["refs/heads/main".into()], &target);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn detects_in_progress_merge() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
@@ -543,7 +584,7 @@ mod tests {
             "unexpected error: {msg}"
         );
         assert!(
-            msg.contains("daft.merge.requireCleanTarget"),
+            msg.contains("commit or stash"),
             "expected remediation hint in error: {msg}"
         );
     }
