@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.0](https://github.com/avihut/daft/compare/v1.7.2...v1.8.0) - 2026-04-24
+
+### Features
+
+- multi-format emit support (--format, --template) ([#377](https://github.com/avihut/daft/pull/377))
+
 ### BREAKING
 
 - The `--json` flag is removed from `daft list` and `daft release-notes`. Use
