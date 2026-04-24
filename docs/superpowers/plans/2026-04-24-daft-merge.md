@@ -2166,7 +2166,7 @@ or honor `--adopt-target` / `--no-adopt-target` /
 temp area, perform the merge there, remove on success, promote on conflict
 (Slice 11).
 
-### Task 10.1: Add adopt flags + settings field
+### Task 10.1: Add adopt flags, `-y`, and settings field
 
 **Files:**
 
@@ -2180,9 +2180,113 @@ pub adopt_target: bool,
 
 #[arg(long = "no-adopt-target", conflicts_with = "adopt_target")]
 pub no_adopt_target: bool,
+
+/// Auto-accept all interactive prompts. Implies --adopt-target.
+/// Future-proofs any new prompts we add.
+#[arg(short = 'y', long = "yes")]
+pub yes: bool,
 ```
 
 (Settings field `merge_adopt_target_on_demand` added in Slice 13.)
+
+### Task 10.1.5: `-y` implies `--adopt-target` (unit tested)
+
+**Files:**
+
+- Modify: `src/commands/merge.rs`
+
+- [ ] **Step 1: Write failing test for `-y` coercion**
+
+Extend the `decide_adopt` tests (introduced in Task 10.2 — if 10.2 has not been
+implemented yet, add these tests there and skip this task). Otherwise, add a
+wrapper:
+
+```rust
+#[test]
+fn yes_flag_implies_adopt() {
+    // -y without explicit --adopt-target or --no-adopt-target
+    assert_eq!(
+        decide_adopt_with_yes(false, false, true /*yes*/, false, Preset::No),
+        Decision::Yes,
+    );
+}
+
+#[test]
+fn no_adopt_overrides_yes() {
+    // explicit --no-adopt-target wins even with -y
+    assert_eq!(
+        decide_adopt_with_yes(false, true, true, false, Preset::Yes),
+        Decision::No,
+    );
+}
+```
+
+- [ ] **Step 2: Implement coercion in command layer**
+
+In `run()`, before calling `decide_adopt`, coerce:
+
+```rust
+let effective_adopt_flag = args.adopt_target || args.yes;
+let decision = decide_adopt(effective_adopt_flag, args.no_adopt_target, is_tty, preset);
+```
+
+Log a one-line note when `-y` was the reason for auto-accepting a prompt, to
+keep the invocation self-describing:
+
+```
+merge: auto-accepting prompt 'create ephemeral worktree' because -y was passed
+```
+
+- [ ] **Step 3: Run tests, commit**
+
+```bash
+cargo test --lib --package daft -- core::worktree::merge::
+git add src/commands/merge.rs
+git commit -m "feat: -y/--yes flag auto-accepts prompts and implies --adopt-target"
+```
+
+### Task 10.1.6: YAML scenario for `-y`
+
+**Files:**
+
+- Create: `tests/manual/scenarios/merge/yes-flag.yml`
+
+- [ ] **Step 1: Scenario**
+
+```yaml
+name: Merge -y auto-accepts ephemeral-worktree prompt
+description: "-y bypasses the ephemeral adopt prompt and announces the coercion"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and set up a ref-only target
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      git branch target-no-wt
+    expect:
+      exit_code: 0
+
+  - name: Merge into ref-only target with -y, no stdin
+    run: sh -c 'git-worktree-merge main --into target-no-wt -y </dev/null'
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "auto-accepting"
+        - "-y"
+```
+
+- [ ] **Step 2: Run and commit**
+
+```bash
+mise run test:manual -- --ci merge:yes-flag
+git add tests/manual/scenarios/merge/yes-flag.yml
+git commit -m "test: -y auto-accepts ephemeral-worktree prompt"
+```
 
 ### Task 10.2: Prompt helper
 
@@ -3026,12 +3130,357 @@ git commit -m "feat: daft list --merging filter for in-progress merges"
 
 ---
 
-## Slice 15 — Shell completions
+## Slice 15 — Merge hooks (`merge-pre` / `merge-post`)
+
+Goal: Register two new daft hook types. `merge-pre` fires after pre-flight
+checks pass and before any git operation runs; its failure aborts the merge.
+`merge-post` fires after the merge operation completes (success or conflict);
+its failure is logged but does not roll back. Both carry daft-layer context
+(cross-worktree, octopus, ephemeral) via env vars that git's native hooks cannot
+see.
+
+### Task 15.1: Register new hook types in daft's hooks schema
+
+**Files:**
+
+- Modify: `src/hooks/yaml_config.rs` (or wherever the known-hook list lives —
+  grep first)
+
+- [ ] **Step 1: Locate the known-hooks registry**
+
+Run:
+`grep -rn "worktree-post-create\|worktree-pre-remove" src/hooks/ | grep -v test | head`
+Expected: a constant or enum listing the currently accepted hook names.
+
+- [ ] **Step 2: Write failing test**
+
+Add a test (or extend an existing one) asserting that `merge-pre` and
+`merge-post` are accepted as valid hook names and unknown hook names like
+`merge-never` are rejected.
+
+```rust
+#[test]
+fn merge_hooks_are_recognized() {
+    assert!(is_known_hook("merge-pre"));
+    assert!(is_known_hook("merge-post"));
+}
+
+#[test]
+fn unknown_merge_hook_rejected() {
+    assert!(!is_known_hook("merge-never"));
+}
+```
+
+- [ ] **Step 3: Add the names to the registry**
+
+Add `"merge-pre"` and `"merge-post"` to the known-hook list/enum/match arms. If
+hooks are represented as an enum, add two variants and wire them through parsers
+and serializers.
+
+- [ ] **Step 4: Run tests**
+
+Run: `cargo test --lib --package daft -- hooks::` Expected: all pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/hooks/
+git commit -m "feat: register merge-pre and merge-post hook types"
+```
+
+### Task 15.2: Build the env-var context struct
+
+**Files:**
+
+- Modify: `src/core/worktree/merge.rs`
+
+- [ ] **Step 1: Write tests for context construction**
+
+```rust
+#[test]
+fn pre_context_captures_octopus_mode() {
+    let ctx = MergeHookContext::for_pre(
+        &["feat-a".into(), "feat-b".into(), "feat-c".into()],
+        &ResolvedTarget { branch: "main".into(), path: Some("/repo/main".into()) },
+        &EffectiveFlags::default(),
+        false, // is_ephemeral
+        true,  // cross_worktree
+    );
+    assert_eq!(ctx.env.get("DAFT_MERGE_MODE").map(|s| s.as_str()), Some("octopus"));
+    assert_eq!(ctx.env.get("DAFT_MERGE_SOURCES").map(|s| s.as_str()), Some("feat-a feat-b feat-c"));
+    assert_eq!(ctx.env.get("DAFT_MERGE_CROSS_WORKTREE").map(|s| s.as_str()), Some("true"));
+    assert_eq!(ctx.env.get("DAFT_MERGE_EPHEMERAL").map(|s| s.as_str()), Some("false"));
+}
+
+#[test]
+fn pre_context_mode_squash_over_ff() {
+    let mut f = EffectiveFlags::default();
+    f.squash = Some(true);
+    let ctx = MergeHookContext::for_pre(
+        &["feat".into()],
+        &ResolvedTarget { branch: "main".into(), path: Some("/repo/main".into()) },
+        &f,
+        false,
+        false,
+    );
+    assert_eq!(ctx.env.get("DAFT_MERGE_MODE").map(|s| s.as_str()), Some("squash"));
+}
+
+#[test]
+fn post_context_captures_result() {
+    let pre = MergeHookContext::for_pre(
+        &["feat".into()],
+        &ResolvedTarget { branch: "main".into(), path: Some("/repo/main".into()) },
+        &EffectiveFlags::default(),
+        false, false,
+    );
+    let post = pre.extend_for_post(PostOutcome::Conflict {
+        files: vec!["a.txt".into(), "b.txt".into()],
+        promoted_from_ephemeral: false,
+    });
+    assert_eq!(post.env.get("DAFT_MERGE_RESULT").map(|s| s.as_str()), Some("conflict"));
+    assert_eq!(post.env.get("DAFT_MERGE_CONFLICTED_FILES").map(|s| s.as_str()),
+               Some("a.txt\nb.txt"));
+}
+```
+
+- [ ] **Step 2: Implement**
+
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone)]
+pub struct MergeHookContext {
+    pub env: BTreeMap<String, String>,
+}
+
+pub enum PostOutcome {
+    Success { commit_sha: String },
+    Conflict { files: Vec<String>, promoted_from_ephemeral: bool },
+    AlreadyUpToDate,
+}
+
+impl MergeHookContext {
+    pub fn for_pre(
+        sources: &[String],
+        target: &ResolvedTarget,
+        flags: &EffectiveFlags,
+        is_ephemeral: bool,
+        cross_worktree: bool,
+    ) -> Self {
+        let mode = if sources.len() >= 2 {
+            "octopus"
+        } else if flags.squash == Some(true) {
+            "squash"
+        } else if flags.ff == Some(FfMode::Only) {
+            "ff"
+        } else {
+            "merge"
+        };
+        let mut env = BTreeMap::new();
+        env.insert("DAFT_MERGE_SOURCES".into(), sources.join(" "));
+        env.insert("DAFT_MERGE_TARGET_BRANCH".into(), target.branch.clone());
+        env.insert(
+            "DAFT_MERGE_TARGET_PATH".into(),
+            target.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+        );
+        env.insert("DAFT_MERGE_MODE".into(), mode.into());
+        env.insert(
+            "DAFT_MERGE_STRATEGY".into(),
+            flags.strategy.clone().unwrap_or_default(),
+        );
+        env.insert("DAFT_MERGE_EPHEMERAL".into(), is_ephemeral.to_string());
+        env.insert("DAFT_MERGE_CROSS_WORKTREE".into(), cross_worktree.to_string());
+        Self { env }
+    }
+
+    pub fn extend_for_post(mut self, outcome: PostOutcome) -> Self {
+        let (result, sha, files, promoted) = match outcome {
+            PostOutcome::Success { commit_sha } => ("success", commit_sha, String::new(), "false".into()),
+            PostOutcome::Conflict { files, promoted_from_ephemeral } => (
+                "conflict",
+                String::new(),
+                files.join("\n"),
+                promoted_from_ephemeral.to_string(),
+            ),
+            PostOutcome::AlreadyUpToDate => ("already-up-to-date", String::new(), String::new(), "false".into()),
+        };
+        self.env.insert("DAFT_MERGE_RESULT".into(), result.into());
+        self.env.insert("DAFT_MERGE_COMMIT_SHA".into(), sha);
+        self.env.insert("DAFT_MERGE_CONFLICTED_FILES".into(), files);
+        self.env.insert("DAFT_MERGE_PROMOTED_FROM_EPHEMERAL".into(), promoted);
+        self
+    }
+}
+```
+
+- [ ] **Step 3: Run tests, commit**
+
+```bash
+cargo test --lib --package daft -- core::worktree::merge::
+git add src/core/worktree/merge.rs
+git commit -m "feat: merge hook context env-var construction"
+```
+
+### Task 15.3: Fire `merge-pre` and `merge-post` from `execute_start`
+
+**Files:**
+
+- Modify: `src/core/worktree/merge.rs`
+
+- [ ] **Step 1: Locate daft's hook executor**
+
+Run:
+`grep -rn "fn run_hook\|fn execute_hook\|HookExecutor" src/hooks/ | grep -v test | head`
+
+daft's hooks system exposes an API for running a named hook inside a project
+with a set of env vars. Existing call sites for comparison:
+`grep -rn "run_hook\|HookExecutor::" src/commands/ | head`.
+
+- [ ] **Step 2: Wire merge-pre invocation**
+
+After pre-flight checks pass and before any merge operation runs:
+
+```rust
+let pre_ctx = MergeHookContext::for_pre(
+    &params.sources, &target, &params.flags,
+    /* is_ephemeral */ target.path.is_none() && !pure_ff_eligible,
+    /* cross_worktree */ cwd_branch.as_deref() != Some(&target.branch),
+);
+let hook_result = crate::hooks::executor::run_hook(
+    project_root, "merge-pre", &pre_ctx.env,
+)?;
+if !hook_result.success() {
+    anyhow::bail!(
+        "merge-pre hook failed (exit {}); merge aborted",
+        hook_result.exit_code()
+    );
+}
+```
+
+(Adapt to the actual hook executor signature.)
+
+- [ ] **Step 3: Wire merge-post invocation**
+
+After the merge op completes (success, conflict, or already-up-to-date), extend
+the pre context with post fields and fire merge-post. Log a warning if it fails
+but do not return an error:
+
+```rust
+let post_ctx = pre_ctx.extend_for_post(outcome_to_post_outcome(&outcome));
+if let Err(e) = crate::hooks::executor::run_hook(project_root, "merge-post", &post_ctx.env) {
+    log::warn!("merge-post hook failed: {e}");
+}
+```
+
+- [ ] **Step 4: Wire across all merge paths**
+
+Fire `merge-pre` and `merge-post` for:
+
+- worktree-delegated merge (the main path)
+- pure-FF plumbing advancement (Slice 9)
+- ephemeral worktree merge (Slice 10)
+
+In the ephemeral + conflict promote-path, set
+`DAFT_MERGE_PROMOTED_FROM_EPHEMERAL=true` in the post context.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/core/worktree/merge.rs
+git commit -m "feat: fire merge-pre and merge-post hooks around merge execution"
+```
+
+### Task 15.4: YAML scenarios for merge hooks
+
+**Files:**
+
+- `tests/manual/scenarios/merge/hook-pre-aborts.yml`
+- `tests/manual/scenarios/merge/hook-post-fires-on-success.yml`
+- `tests/manual/scenarios/merge/hook-post-fires-on-conflict.yml`
+- `tests/manual/scenarios/merge/hook-env-vars.yml`
+
+Template for `hook-pre-aborts.yml`:
+
+```yaml
+name: merge-pre hook abort
+description: "A failing merge-pre hook aborts the merge"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and configure merge-pre hook that exits 1
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cat >> $WORK_DIR/test-repo/daft.yml <<'EOF'
+      hooks:
+        merge-pre:
+          jobs:
+            - name: always-abort
+              run: exit 1
+      EOF
+    expect:
+      exit_code: 0
+
+  - name: Attempt a merge — should be aborted by hook
+    run: git-worktree-merge feature/test-feature --into main
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "merge-pre hook failed"
+        - "merge aborted"
+```
+
+`hook-env-vars.yml` configures a hook that writes env vars to a sentinel file;
+the scenario asserts the file contains the expected keys and values.
+
+- [ ] **Step 1: Run**
+
+Run:
+`mise run test:manual -- --ci merge:hook-pre-aborts merge:hook-post-fires-on-success merge:hook-post-fires-on-conflict merge:hook-env-vars`
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add tests/manual/scenarios/merge/hook-*.yml
+git commit -m "test: merge-pre and merge-post hook scenarios"
+```
+
+### Task 15.5: Document merge hooks in the hooks guide
+
+**Files:**
+
+- Modify: `docs/guide/hooks.md` (or wherever hook docs live — grep first)
+- Modify: `SKILL.md`
+
+- [ ] **Step 1: Add `merge-pre` and `merge-post` sections**
+
+Document:
+
+- When each hook fires.
+- What env vars are provided (copy from the spec's Hooks section).
+- Failure semantics (merge-pre aborts; merge-post warns only).
+- A short example showing how to branch on `DAFT_MERGE_RESULT` to react to
+  conflicts.
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add docs/guide/hooks.md SKILL.md
+git commit -m "docs: merge-pre and merge-post hook reference"
+```
+
+---
+
+## Slice 16 — Shell completions
 
 Goal: `daft merge` completes subcommand correctly, with flags and source/target
 branches suggested across all four shells. `daft list --merging` also completes.
 
-### Task 15.1: Bash, zsh, fish, fig
+### Task 16.1: Bash, zsh, fish, fig
 
 **Files:**
 
@@ -3046,7 +3495,10 @@ In `src/commands/completions/bash.rs`, find `DAFT_BASH_COMPLETIONS` and:
 
 1. Add `"merge"` and `"worktree-merge"` to the top-level subcommand list.
 2. Add a completion case for `merge` with the full flag set and branch
-   completion for the `<source>` positional and `--into` value.
+   completion for the `<source>` positional and `--into` value. Include the
+   daft-specific flags: `--into`, `--abort`, `--continue`, `--quit`,
+   `--adopt-target`, `--no-adopt-target`, `-y` / `--yes`, `-r` / `--remove`,
+   `-b` / `--and-branch`, plus every git passthrough flag from Slice 6.
 3. Add `--merging` to the `list` flag completion.
 
 - [ ] **Step 2: Repeat for zsh, fish, fig**
@@ -3094,12 +3546,12 @@ git commit -m "feat: shell completions for daft merge and list --merging"
 
 ---
 
-## Slice 16 — Docs, man pages, SKILL
+## Slice 17 — Docs, man pages, SKILL
 
 Goal: Regenerate man pages; write `docs/cli/daft-merge.md`; update `SKILL.md`
 with the new command so AI agents learn it.
 
-### Task 16.1: Regenerate man pages
+### Task 17.1: Regenerate man pages
 
 **Files:**
 
@@ -3121,7 +3573,7 @@ git add man/
 git commit -m "docs: regenerate man pages for daft merge"
 ```
 
-### Task 16.2: Reference page
+### Task 17.2: Reference page
 
 **Files:**
 
@@ -3148,7 +3600,7 @@ git add docs/cli/daft-merge.md
 git commit -m "docs: add daft-merge reference page"
 ```
 
-### Task 16.3: Update SKILL.md
+### Task 17.3: Update SKILL.md
 
 **Files:**
 
@@ -3170,7 +3622,7 @@ git add SKILL.md
 git commit -m "docs: teach SKILL.md about daft merge"
 ```
 
-### Task 16.4: Update help output categories
+### Task 17.4: Update help output categories
 
 **Files:**
 
@@ -3196,7 +3648,7 @@ git commit -m "docs: list daft merge in help output"
 
 ---
 
-## Slice 17 — Final verification
+## Slice 18 — Final verification
 
 Goal: All tests pass, lints clean, format checked, full scenario matrix passes,
 CI equivalent succeeds locally.

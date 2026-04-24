@@ -41,6 +41,11 @@ merge needs to be aborted from elsewhere).
   remove source branch).
 - Reuse existing daft infrastructure: worktree hooks, temp-worktree module,
   layout resolver, error formatting, completion generation, man-page pipeline.
+- Expose `merge-pre` and `merge-post` hook types that carry daft-layer context
+  (cross-worktree invocation, octopus count, ephemeral-worktree state) —
+  information that git's native merge hooks cannot see.
+- Provide a `-y` / `--yes` flag to suppress interactive prompts for scripted /
+  non-TTY use.
 
 ## Non-goals
 
@@ -55,10 +60,9 @@ merge needs to be aborted from elsewhere).
 - **No squash-reachability logic.** After a squash merge, `-rb` passes through
   git's "not fully merged" error verbatim. daft does not attempt to verify "this
   branch is squash-merged into target" via `git cherry` or similar.
-- **No new daft hook types.** Git's native `pre-merge-commit`, `commit-msg`, and
-  `post-merge` hooks fire unchanged inside the target worktree; daft's existing
-  worktree-remove / worktree-create hooks fire for their existing events. No
-  `merge-pre` / `merge-post` / `merge-conflict` hooks.
+- **No `merge-conflict` dedicated hook.** Users branch on `DAFT_MERGE_RESULT`
+  inside `merge-post` to detect conflicts. Adding a third event-specific hook
+  would break daft's existing paired pre/post-only pattern.
 - **No auto-cd on conflict.** When a merge conflicts, daft reports the target
   worktree path and exits non-zero. It does not use the `DAFT_CD_FILE` mechanism
   to move the user into the conflict worktree.
@@ -115,6 +119,13 @@ in, and how long ago the merge started.
   fast-forward, create an ephemeral worktree without prompting.
 - `--no-adopt-target` — refuse in the same situation without prompting.
 - Neither flag and a TTY → prompt. Neither flag and non-TTY → refuse.
+
+### Non-interactive flag
+
+- `-y`, `--yes` — auto-accept all interactive prompts. Implies `--adopt-target`
+  for the ephemeral-worktree prompt. Future-proofs any new prompts daft might
+  add. Exits with an explicit message when a prompt that would have been shown
+  is auto-accepted so the log stays self-describing.
 
 ### Passthrough flags (git parity)
 
@@ -334,7 +345,51 @@ lowerCamelCase to match existing daft convention (`daft.checkout.push`,
 
 ## Hooks
 
-**No new daft hooks.** Existing integrations:
+Two new daft hook types, plus reuse of existing ones.
+
+### New: `merge-pre`
+
+Fires after all pre-flight checks pass and the target is resolved, but before
+any merge operation runs (whether plumbing FF, worktree-delegated merge, or
+ephemeral creation). Hook failure aborts the merge with the hook's exit code; no
+changes have been made yet so no rollback is needed.
+
+Environment variables:
+
+| Var                         | Value                                                             |
+| --------------------------- | ----------------------------------------------------------------- |
+| `DAFT_MERGE_SOURCES`        | Space-separated source refs (as passed on the CLI)                |
+| `DAFT_MERGE_TARGET_BRANCH`  | Target branch name                                                |
+| `DAFT_MERGE_TARGET_PATH`    | Target worktree path; empty if target has no worktree             |
+| `DAFT_MERGE_MODE`           | `merge`, `ff`, `squash`, or `octopus`                             |
+| `DAFT_MERGE_STRATEGY`       | Effective `-s` strategy, or empty if not set                      |
+| `DAFT_MERGE_EPHEMERAL`      | `true` if this merge will use an ephemeral worktree, else `false` |
+| `DAFT_MERGE_CROSS_WORKTREE` | `true` if invocation was from a worktree other than the target    |
+
+### New: `merge-post`
+
+Fires after the merge operation completes, regardless of success or conflict.
+Hook failure is logged as a warning but does not roll back the merge — the
+commit (or conflicted state) has already landed.
+
+Additional environment variables (on top of the `merge-pre` set):
+
+| Var                                  | Value                                                            |
+| ------------------------------------ | ---------------------------------------------------------------- |
+| `DAFT_MERGE_RESULT`                  | `success`, `conflict`, or `already-up-to-date`                   |
+| `DAFT_MERGE_COMMIT_SHA`              | SHA of the resulting merge commit, empty on conflict or FF-no-op |
+| `DAFT_MERGE_CONFLICTED_FILES`        | Newline-separated list of conflicted files, empty on success     |
+| `DAFT_MERGE_PROMOTED_FROM_EPHEMERAL` | `true` if an ephemeral worktree was promoted on conflict         |
+
+Rationale for adding these hooks: git's native `pre-merge-commit` and
+`post-merge` run inside the target worktree's `.git/hooks` directory and see
+only git-level state. They cannot observe daft-layer context — whether this was
+a cross-worktree invocation, whether an ephemeral worktree was involved, whether
+multiple sources were combined via octopus. Users who want to react to those
+conditions (notifications, ticket-system updates, telemetry) need hooks that
+carry that context.
+
+### Existing hooks that continue to fire
 
 - Git's own `pre-merge-commit`, `commit-msg`, `post-merge` fire inside the
   target worktree's `.git/hooks` directory, unchanged.
@@ -445,7 +500,6 @@ each form of the command against a real temp repo.
 
 Captured for later consideration; explicitly out of scope for this spec.
 
-- `merge-pre` / `merge-post` daft-level hooks with cross-worktree env vars.
 - `--finish` composite that expands to `-rb` (and hypothetically `--push` once
   that's in scope).
 - Auto-fetch before merge (`merge.fetch_before`).
@@ -456,7 +510,7 @@ Captured for later consideration; explicitly out of scope for this spec.
 - Force-delete variants (`-D`, `--force`) for cleanup.
 - Squash-reachability detection (`git cherry`-based) to enable cleanup after
   squash merges.
-- `merge-conflict` dedicated hook (users can branch on `DAFT_MERGE_RESULT` once
-  `merge-post` exists).
+- `merge-conflict` dedicated hook (users branch on `DAFT_MERGE_RESULT` inside
+  `merge-post` instead).
 - A dedicated `daft merge status` / `daft merge list` command, if the
   `daft list --merging` extension proves cramped.
