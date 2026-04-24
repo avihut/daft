@@ -39,6 +39,10 @@ steps:
       exit_code: 0
       output_contains:
         - "Fast-forwarded feat-no-wt"
+      # Core already printed the terminal status line; command layer must not
+      # double-print "Merge complete." on top of it.
+      output_not_contains:
+        - "Merge complete."
 
   - name: Verify feat-no-wt now points at main's tip
     run: |

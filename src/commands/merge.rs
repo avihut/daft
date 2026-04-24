@@ -359,8 +359,9 @@ pub fn run() -> Result<()> {
     let outcome = crate::core::worktree::merge::execute_start(&params, &git, &project_root)?;
 
     if outcome.already_up_to_date {
-        // `execute_start` re-emits git's captured stdout (which already says
-        // "Already up to date."). Printing it again here would double-print.
+        // Core already printed "Already up to date." from the up-to-date
+        // short-circuit (which also sets `emitted_terminal_message`). No
+        // further print here — duplicating the status line would be noise.
         Ok(())
     } else if outcome.failed {
         // Print a daft-authored conflict report to stderr and exit non-zero.
@@ -383,7 +384,13 @@ pub fn run() -> Result<()> {
         eprintln!("  daft merge --abort     # add <branch> if running from a different worktree");
         std::process::exit(1);
     } else {
-        println!("Merge complete.");
+        // Core may have already emitted a terminal status line (e.g.,
+        // "Fast-forwarded X to Y (no worktree)" from the ref-only FF path).
+        // Suppress the default "Merge complete." print in that case so a
+        // single successful merge produces a single stdout line.
+        if !outcome.emitted_terminal_message {
+            println!("Merge complete.");
+        }
         Ok(())
     }
 }

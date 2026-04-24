@@ -220,9 +220,15 @@ pub fn resolve_target(
                 })
             }
             Err(_) => {
-                // No worktree matched. Fall back to branch-ref resolution so
-                // ref-only targets (Slice 9) are handled without forcing the
-                // user to materialize a worktree first.
+                // No worktree matched. Fall back to local branch ref resolution.
+                //
+                // Only `refs/heads/<name>` is accepted. Remote-tracking refs like
+                // `origin/main` and tags are deliberately excluded — `daft merge
+                // --into` requires a movable local branch head. Merging into a
+                // tag or remote-tracking ref is semantically nonsense: tags are
+                // immutable and remote-tracking refs are updated only by fetch,
+                // so advancing them here would either fail or silently desync
+                // the local view from the remote.
                 let ref_name = format!("refs/heads/{t}");
                 if git.show_ref_exists(&ref_name)? {
                     Ok(ResolvedTarget {
@@ -471,10 +477,11 @@ pub struct StartOutcome {
     /// Slice 5+ will refine this into `conflicted` vs other failure modes via stderr parsing
     /// or `.git/MERGE_HEAD` inspection.
     pub failed: bool,
-    /// Absolute path to the resolved target worktree. Always populated so the
-    /// command layer can name the right directory in conflict reports and
-    /// success messages even when the user invoked cross-worktree via `--into`
-    /// and the CWD differs from the target.
+    /// Path of the target worktree, when one exists. Populated on success,
+    /// conflict, and regular merge paths. The ref-only FF and ref-only
+    /// up-to-date paths return an empty PathBuf because no worktree is
+    /// involved — callers in those paths must check `emitted_terminal_message`
+    /// or `already_up_to_date` before formatting the path.
     pub target_path: PathBuf,
     /// Files flagged with a conflict XY code by `git status --porcelain` in the
     /// target worktree after a failed `git merge`. Non-empty only when
@@ -482,6 +489,13 @@ pub struct StartOutcome {
     /// conflicted state; other failure modes (unknown ref, bad flags) leave
     /// this empty because `git status` reports no conflicts.
     pub conflicted_files: Vec<String>,
+    /// True if core has already emitted a terminal status line (e.g.,
+    /// "Already up to date." from the up-to-date short-circuit, or
+    /// "Fast-forwarded X to Y (no worktree)" from the ref-only FF plumbing
+    /// path). The command layer uses this to suppress its default
+    /// "Merge complete." print so a single successful merge produces a single
+    /// status line on stdout.
+    pub emitted_terminal_message: bool,
 }
 
 /// Parse `git status --porcelain` output for conflict entries.
@@ -610,6 +624,7 @@ pub fn execute_start(
             failed: false,
             target_path: resolved.path.clone().unwrap_or_default(),
             conflicted_files: Vec::new(),
+            emitted_terminal_message: true,
         });
     }
 
@@ -660,6 +675,7 @@ fn execute_start_in_worktree(params: &StartParams, path: PathBuf) -> Result<Star
         failed,
         target_path: path,
         conflicted_files: files,
+        emitted_terminal_message: false,
     })
 }
 
@@ -702,6 +718,7 @@ fn execute_start_ref_only(
             failed: false,
             target_path: PathBuf::new(),
             conflicted_files: Vec::new(),
+            emitted_terminal_message: true,
         });
     }
 
@@ -1187,6 +1204,7 @@ mod tests {
         assert!(!outcome.failed);
         assert_eq!(outcome.target_path, PathBuf::new());
         assert!(outcome.conflicted_files.is_empty());
+        assert!(!outcome.emitted_terminal_message);
     }
 
     #[test]
