@@ -598,6 +598,248 @@ fn build_fig_layout_subcommand() -> FigSubcommand {
     }
 }
 
+/// Build the `merge` subcommand with the full flag set and branch completion.
+///
+/// Wired inline in the daft umbrella spec (not via `COMMANDS`) so the shell
+/// completions pick it up without registering merge in the auto-generated list.
+fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
+    let branch_generator = FigGenerator {
+        script: vec![
+            "bash".into(),
+            "-c".into(),
+            "git for-each-ref --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null"
+                .into(),
+        ],
+        split_on: "\n".to_string(),
+    };
+
+    let source_arg = FigArg {
+        name: "source".to_string(),
+        description: Some(
+            "Source branches/commits to merge, OR optional target worktree/branch for finish mode"
+                .to_string(),
+        ),
+        generators: Some(branch_generator.clone()),
+    };
+
+    let cleanup_suggestions = Some(FigOptionArg {
+        suggestions: Some(vec![
+            FigSuggestion {
+                name: "default".into(),
+                description: "Default cleanup".into(),
+            },
+            FigSuggestion {
+                name: "scissors".into(),
+                description: "Remove below scissors line".into(),
+            },
+            FigSuggestion {
+                name: "strip".into(),
+                description: "Strip comments and trailing whitespace".into(),
+            },
+            FigSuggestion {
+                name: "verbatim".into(),
+                description: "No cleanup".into(),
+            },
+            FigSuggestion {
+                name: "whitespace".into(),
+                description: "Strip trailing whitespace only".into(),
+            },
+        ]),
+    });
+
+    let strategy_suggestions = Some(FigOptionArg {
+        suggestions: Some(
+            ["ours", "recursive", "resolve", "octopus", "subtree"]
+                .iter()
+                .map(|s| FigSuggestion {
+                    name: (*s).to_string(),
+                    description: format!("{s} merge strategy"),
+                })
+                .collect(),
+        ),
+    });
+
+    let into_suggestions = Some(FigOptionArg { suggestions: None });
+    let branch_arg_option = FigOption {
+        name: FigName::Single("--into".into()),
+        description: "Target worktree/branch for the merge".into(),
+        args: into_suggestions,
+    };
+
+    let options = vec![
+        branch_arg_option,
+        FigOption {
+            name: FigName::Single("--abort".into()),
+            description: "Abort an in-progress merge".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--continue".into()),
+            description: "Continue an in-progress merge".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--quit".into()),
+            description: "Quit an in-progress merge without resetting the index".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--adopt-target".into()),
+            description: "Adopt an ephemeral worktree for ref-only non-FF merges".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--no-adopt-target".into()),
+            description: "Refuse non-FF merges against target without a worktree".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Multiple(vec!["-y".into(), "--yes".into()]),
+            description: "Auto-accept interactive prompts".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Multiple(vec!["-r".into(), "--remove".into()]),
+            description: "Remove the source worktree after a successful merge".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Multiple(vec!["-b".into(), "--and-branch".into()]),
+            description: "Also delete the source branch (requires --remove)".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("-m".into()),
+            description: "Commit message for the merge commit".into(),
+            args: Some(FigOptionArg { suggestions: None }),
+        },
+        FigOption {
+            name: FigName::Multiple(vec!["-F".into(), "--file".into()]),
+            description: "Read the commit message from FILE".into(),
+            args: Some(FigOptionArg { suggestions: None }),
+        },
+        FigOption {
+            name: FigName::Single("--edit".into()),
+            description: "Launch editor for merge commit message".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--no-edit".into()),
+            description: "Accept auto-generated merge commit message".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--cleanup".into()),
+            description: "Commit message cleanup mode".into(),
+            args: cleanup_suggestions,
+        },
+        FigOption {
+            name: FigName::Single("--ff".into()),
+            description: "Allow fast-forward merges".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--no-ff".into()),
+            description: "Always create a merge commit".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--ff-only".into()),
+            description: "Refuse merge if fast-forward is not possible".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--squash".into()),
+            description: "Squash source changes into a single staged diff".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--no-squash".into()),
+            description: "Explicitly disable squash".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--commit".into()),
+            description: "Automatically create the merge commit".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--no-commit".into()),
+            description: "Leave the merge staged without committing".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--signoff".into()),
+            description: "Add Signed-off-by trailer".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--no-signoff".into()),
+            description: "Explicitly disable signoff".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Multiple(vec!["-s".into(), "--strategy".into()]),
+            description: "Merge strategy to use".into(),
+            args: strategy_suggestions,
+        },
+        FigOption {
+            name: FigName::Multiple(vec!["-X".into(), "--strategy-option".into()]),
+            description: "Strategy-specific option".into(),
+            args: Some(FigOptionArg { suggestions: None }),
+        },
+        FigOption {
+            name: FigName::Multiple(vec!["-S".into(), "--gpg-sign".into()]),
+            description: "GPG-sign the merge commit (optional KEYID)".into(),
+            args: Some(FigOptionArg { suggestions: None }),
+        },
+        FigOption {
+            name: FigName::Single("--no-gpg-sign".into()),
+            description: "Do not GPG-sign the merge commit".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--verify-signatures".into()),
+            description: "Verify source signature".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--no-verify-signatures".into()),
+            description: "Do not verify source signature".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--allow-unrelated-histories".into()),
+            description: "Allow merging histories with no common ancestor".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--stat".into()),
+            description: "Show a diffstat at the end of the merge".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Multiple(vec!["-n".into(), "--no-stat".into()]),
+            description: "Suppress the diffstat".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Multiple(vec!["-v".into(), "--verbose".into()]),
+            description: "Show detailed progress".into(),
+            args: None,
+        },
+    ];
+
+    FigSubcommand {
+        name: name.to_string(),
+        description: Some("Merge branches across worktrees".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(FigArgs::Single(source_arg)),
+        options: Some(options),
+    }
+}
+
 /// Generate the daft.js umbrella spec with subcommands
 pub(super) fn generate_fig_daft_spec() -> Result<String> {
     let simple_subcommands = [
@@ -611,6 +853,8 @@ pub(super) fn generate_fig_daft_spec() -> Result<String> {
         build_fig_multi_remote_subcommand(),
         build_fig_layout_subcommand(),
         build_fig_repo_subcommand(),
+        build_fig_merge_subcommand("merge"),
+        build_fig_merge_subcommand("worktree-merge"),
     ];
     subcommands.extend(
         simple_subcommands

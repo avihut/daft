@@ -1,0 +1,70 @@
+name: Merge subcommand completions
+description: Shell completions include merge subcommand and --merging flag
+
+steps:
+  - name: Bash completions include merge subcommand
+    run: daft completions bash 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "merge"
+        - "worktree-merge"
+        - "--merging"
+
+  - name: Bash completions include merge-specific flags
+    run: daft completions bash 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "--into"
+        - "--adopt-target"
+        - "--no-adopt-target"
+        - "--ff-only"
+        - "--allow-unrelated-histories"
+
+  - name: Zsh completions include merge subcommand
+    run: daft completions zsh 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "merge"
+        - "worktree-merge"
+        - "--merging"
+
+  - name: Zsh completions include merge-specific flags
+    run: daft completions zsh 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "--into"
+        - "--adopt-target"
+        - "--ff-only"
+
+  - name: Fish completions include merge subcommand
+    run: daft completions fish 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "'merge'"
+        - "'worktree-merge'"
+        - "--merging"
+
+  - name: Fish completions include merge-specific flags
+    run: daft completions fish 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "-l into"
+        - "-l adopt-target"
+        - "-l ff-only"
+        - "-l allow-unrelated-histories"
+
+  - name: Fig completions include merge subcommand
+    run: daft completions fig 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"name": "merge"'
+        - '"name": "worktree-merge"'
+        - '"--into"'
+        - '"--adopt-target"'
