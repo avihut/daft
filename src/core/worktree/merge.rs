@@ -51,18 +51,18 @@ pub struct StartParams {
 /// Caller-provided flag state for the adopt-target decision.
 ///
 /// Maps 1:1 to the CLI:
-/// * `flag_yes` — `--adopt-target` was passed.
-/// * `flag_no` — `--no-adopt-target` was passed.
-/// * `yes_flag` — `-y`/`--yes` was passed.
+/// * `adopt_target` — `--adopt-target` was passed.
+/// * `no_adopt_target` — `--no-adopt-target` was passed.
+/// * `yes` — `-y`/`--yes` was passed.
 ///
-/// Clap enforces at parse time that `flag_yes` and `flag_no` are not both set.
-/// `yes_flag` is orthogonal and coerces to `flag_yes` only when neither adopt
-/// flag is set (see [`resolve_adopt_flags`]).
+/// Clap enforces at parse time that `adopt_target` and `no_adopt_target` are
+/// not both set. `yes` is orthogonal and coerces to `adopt_target` only when
+/// neither adopt flag is set (see [`resolve_adopt_flags`]).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AdoptChoice {
-    pub flag_yes: bool,
-    pub flag_no: bool,
-    pub yes_flag: bool,
+    pub adopt_target: bool,
+    pub no_adopt_target: bool,
+    pub yes: bool,
 }
 
 /// User-configured default for adopt-target behavior.
@@ -133,11 +133,11 @@ pub fn decide_adopt(
 /// already set, `-y` is a no-op on this axis (explicit wins over implicit);
 /// no announcement is emitted.
 pub fn resolve_adopt_flags(adopt: &AdoptChoice) -> (bool, bool) {
-    if adopt.yes_flag && !adopt.flag_yes && !adopt.flag_no {
+    if adopt.yes && !adopt.adopt_target && !adopt.no_adopt_target {
         eprintln!("merge: auto-accepting adopt-target prompt because -y was passed");
         (true, false)
     } else {
-        (adopt.flag_yes, adopt.flag_no)
+        (adopt.adopt_target, adopt.no_adopt_target)
     }
 }
 
@@ -1809,9 +1809,9 @@ mod tests {
     fn resolve_adopt_flags_yes_coerces_when_neither_set() {
         // `-y` alone means "--adopt-target" for the adopt axis.
         let adopt = AdoptChoice {
-            flag_yes: false,
-            flag_no: false,
-            yes_flag: true,
+            adopt_target: false,
+            no_adopt_target: false,
+            yes: true,
         };
         assert_eq!(resolve_adopt_flags(&adopt), (true, false));
     }
@@ -1821,9 +1821,9 @@ mod tests {
         // Explicit --adopt-target already covers the decision; `-y` is a
         // no-op on this axis (no announcement, no change).
         let adopt = AdoptChoice {
-            flag_yes: true,
-            flag_no: false,
-            yes_flag: true,
+            adopt_target: true,
+            no_adopt_target: false,
+            yes: true,
         };
         assert_eq!(resolve_adopt_flags(&adopt), (true, false));
     }
@@ -1834,9 +1834,9 @@ mod tests {
         // `-y` is only future-proofing for _prompts_, not an override of
         // explicit refusal.
         let adopt = AdoptChoice {
-            flag_yes: false,
-            flag_no: true,
-            yes_flag: true,
+            adopt_target: false,
+            no_adopt_target: true,
+            yes: true,
         };
         assert_eq!(resolve_adopt_flags(&adopt), (false, true));
     }
@@ -1847,12 +1847,12 @@ mod tests {
         let neither = AdoptChoice::default();
         assert_eq!(resolve_adopt_flags(&neither), (false, false));
         let only_adopt = AdoptChoice {
-            flag_yes: true,
+            adopt_target: true,
             ..AdoptChoice::default()
         };
         assert_eq!(resolve_adopt_flags(&only_adopt), (true, false));
         let only_no_adopt = AdoptChoice {
-            flag_no: true,
+            no_adopt_target: true,
             ..AdoptChoice::default()
         };
         assert_eq!(resolve_adopt_flags(&only_no_adopt), (false, true));

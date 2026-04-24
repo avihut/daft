@@ -377,9 +377,9 @@ pub fn run() -> Result<()> {
     // `resolve_adopt_flags` inside the ref-only non-FF branch so the log
     // line fires exactly once, at the point the coercion matters.
     let adopt = crate::core::worktree::merge::AdoptChoice {
-        flag_yes: args.adopt_target,
-        flag_no: args.no_adopt_target,
-        yes_flag: args.yes,
+        adopt_target: args.adopt_target,
+        no_adopt_target: args.no_adopt_target,
+        yes: args.yes,
     };
     let params = crate::core::worktree::merge::StartParams {
         sources: args.sources,
