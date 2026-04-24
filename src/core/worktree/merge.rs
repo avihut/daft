@@ -141,29 +141,41 @@ pub struct StartOutcome {
     pub failed: bool,
 }
 
-/// Execute a merge in `target_worktree`.
+/// Execute a merge against the resolved target.
 ///
-/// **Caller invariant:** `target_worktree` must be the root of a git worktree.
-/// This function does not validate the path — it delegates to `git merge`, which
-/// will surface any error itself. The command layer enforces the invariant via
-/// `is_git_repository()` before calling this function. Slice 3 introduces
-/// `--into` target resolution that preserves the invariant by construction.
+/// Resolves the target (explicit `--into` value or current worktree) through
+/// [`resolve_target`], then dispatches `git merge <sources...>` with the
+/// target worktree as CWD so git updates the correct worktree's index and
+/// working tree.
 ///
-/// Returns [`StartOutcome`] describing the result. In this Slice-2 form we
-/// detect failure solely via git's exit status; `already_up_to_date` is
+/// Returns [`StartOutcome`] describing the result. In this Slice-3 form we
+/// still detect failure solely via git's exit status; `already_up_to_date` is
 /// always reported as `false` here and will be upgraded in later slices.
-pub fn execute_start(target_worktree: &Path, params: &StartParams) -> Result<StartOutcome> {
+///
+/// # Signature stability
+///
+/// Taking `git: &GitCommand` and `project_root: &Path` lets later slices add
+/// flag passthrough (Slice 6, via `StartParams`) and ref-only targets
+/// (Slice 9, via changes to [`ResolvedTarget`]) without another signature
+/// churn.
+pub fn execute_start(
+    params: &StartParams,
+    git: &GitCommand,
+    project_root: &Path,
+) -> Result<StartOutcome> {
+    let resolved = resolve_target(params.target.as_deref(), git, project_root)?;
+
     let mut argv: Vec<String> = vec!["merge".to_string()];
     argv.extend(params.sources.iter().cloned());
 
     let status = Command::new("git")
         .args(&argv)
-        .current_dir(target_worktree)
+        .current_dir(&resolved.path)
         .status()
         .with_context(|| {
             format!(
                 "failed to invoke `git merge` in '{}'",
-                target_worktree.display()
+                resolved.path.display()
             )
         })?;
 

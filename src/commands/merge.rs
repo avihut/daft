@@ -6,6 +6,10 @@
 //! --continue, --quit) take an optional positional <worktree|branch>
 //! argument, default to CWD.
 
+use crate::{
+    get_project_root, git::GitCommand, is_git_repository, logging::init_logging,
+    settings::DaftSettings,
+};
 use anyhow::Result;
 use clap::Parser;
 
@@ -40,18 +44,21 @@ pub struct Args {
 
 pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-merge"));
-    crate::logging::init_logging(args.verbose);
+    init_logging(args.verbose);
 
-    if !crate::is_git_repository()? {
+    if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
     }
 
-    let cwd = std::env::current_dir()?;
+    let settings = DaftSettings::load()?;
+    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let project_root = get_project_root()?;
+
     let params = crate::core::worktree::merge::StartParams {
         sources: args.sources,
         target: args.into,
     };
-    let outcome = crate::core::worktree::merge::execute_start(&cwd, &params)?;
+    let outcome = crate::core::worktree::merge::execute_start(&params, &git, &project_root)?;
 
     if outcome.already_up_to_date {
         println!("Already up to date.");
