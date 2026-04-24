@@ -413,6 +413,26 @@ mod tests {
     }
 
     #[test]
+    fn active_job_has_trailing_spacer_for_vertical_separation() {
+        // Parallel job blocks need a blank spacer line at the bottom so they
+        // render with breathing room between them while active. The trailer
+        // must exist immediately after start_job (before any output) and must
+        // be cleared when the job finishes.
+        let config = HookOutputConfig::default();
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job("job", None);
+        assert!(
+            renderer.has_trailer("job"),
+            "active jobs must have a trailing spacer bar"
+        );
+        renderer.finish_job_success("job", Duration::from_secs(1));
+        assert!(
+            !renderer.has_trailer("job"),
+            "trailer must be cleared when job finishes"
+        );
+    }
+
+    #[test]
     fn test_dynamic_window_starts_empty() {
         // Before any output, no tail bars should be allocated
         let config = HookOutputConfig {

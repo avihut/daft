@@ -12,6 +12,7 @@ struct JobState {
     spinner: ProgressBar,
     separator: Option<ProgressBar>,
     tail_lines: Vec<ProgressBar>,
+    trailer: Option<ProgressBar>,
     output_buffer: Vec<String>,
     start_time: Instant,
 }
@@ -27,6 +28,7 @@ pub struct HookProgressRenderer {
     spinner_style: ProgressStyle,
     spinner_style_with_timer: ProgressStyle,
     tail_style: ProgressStyle,
+    trailer_style: ProgressStyle,
 }
 
 impl HookProgressRenderer {
@@ -77,6 +79,8 @@ impl HookProgressRenderer {
 
         let tail_style = ProgressStyle::with_template(&format!("{pipe_str}  {{msg}}")).unwrap();
 
+        let trailer_style = ProgressStyle::with_template("").unwrap();
+
         Self {
             mp,
             jobs: HashMap::new(),
@@ -88,6 +92,7 @@ impl HookProgressRenderer {
             spinner_style,
             spinner_style_with_timer,
             tail_style,
+            trailer_style,
         }
     }
 
@@ -147,8 +152,18 @@ impl HookProgressRenderer {
                     cmd.to_string()
                 };
                 cmd_bar.set_message(cmd_msg);
+                last_bar = cmd_bar;
             }
         }
+
+        // Trailer is a blank spacer bar that sits at the bottom of this job's
+        // block so parallel jobs running concurrently render with visual breathing
+        // room between them. It's inserted now (before any tails exist) so later
+        // insert_after(separator/tail) calls place tails between the separator
+        // and this trailer.
+        let trailer = self.mp.insert_after(&last_bar, ProgressBar::new_spinner());
+        trailer.set_style(self.trailer_style.clone());
+        trailer.set_message(String::new());
 
         // Separator and tail bars are created lazily in update_job_output as output arrives.
         self.jobs.insert(
@@ -157,6 +172,7 @@ impl HookProgressRenderer {
                 spinner,
                 separator: None,
                 tail_lines: Vec::new(),
+                trailer: Some(trailer),
                 output_buffer: Vec::new(),
                 start_time: Instant::now(),
             },
@@ -282,6 +298,9 @@ impl HookProgressRenderer {
             for pb in &state.tail_lines {
                 pb.finish_and_clear();
             }
+            if let Some(ref trailer) = state.trailer {
+                trailer.finish_and_clear();
+            }
             state.spinner.finish_and_clear();
         }
 
@@ -324,6 +343,9 @@ impl HookProgressRenderer {
         }
         for pb in &state.tail_lines {
             pb.finish_and_clear();
+        }
+        if let Some(ref trailer) = state.trailer {
+            trailer.finish_and_clear();
         }
         state.spinner.finish_and_clear();
 
@@ -415,6 +437,14 @@ impl HookProgressRenderer {
     #[cfg(test)]
     pub fn get_tail_line_count(&self, name: &str) -> usize {
         self.jobs.get(name).map(|s| s.tail_lines.len()).unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub fn has_trailer(&self, name: &str) -> bool {
+        self.jobs
+            .get(name)
+            .map(|s| s.trailer.is_some())
+            .unwrap_or(false)
     }
 
     pub fn println(&self, msg: &str) {
