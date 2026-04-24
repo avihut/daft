@@ -152,6 +152,79 @@ test_exec_unmatched_positional_errors() {
     return 0
 }
 
+# Multi-command pipeline finalization rows include the inline command name
+# and distinguish success/failure/skipped states.
+test_exec_multi_command_shows_inline_command_names() {
+    local remote_repo
+    remote_repo=$(create_test_remote "exec-multi" "main")
+
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "exec-multi/main" || return 1
+    # Create a second worktree so we trigger the multi-target path
+    # (single-target invocations use pass-through mode with no compact rows).
+    git-worktree-checkout -b feat-a || return 1
+    cd "../main" || return 1
+
+    # Capture stderr (where the compact rows are printed).
+    local err
+    err=$(git-worktree-exec --all -x 'true' -x 'echo second' 2>&1 >/dev/null)
+
+    # Each finalization row names its command inline (not `[N/M]`).
+    if [[ "$err" != *"❯ true"* ]]; then
+        log_error "missing inline command name '❯ true' in output: $err"
+        return 1
+    fi
+    if [[ "$err" != *"❯ echo second"* ]]; then
+        log_error "missing inline command name '❯ echo second' in output: $err"
+        return 1
+    fi
+
+    log_success "multi-command pipeline shows inline command names"
+    return 0
+}
+
+# Fail-fast: when a -x step fails, subsequent steps emit a skipped row
+# rather than being silent.
+test_exec_fail_fast_emits_skipped_row() {
+    local remote_repo
+    remote_repo=$(create_test_remote "exec-skipped" "main")
+
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "exec-skipped/main" || return 1
+    # Create a second worktree so we trigger the multi-target path
+    # (single-target invocations use pass-through mode with no compact rows).
+    git-worktree-checkout -b feat-a || return 1
+    cd "../main" || return 1
+
+    local err
+    set +e
+    err=$(git-worktree-exec --all -x 'false' -x 'echo never' 2>&1 >/dev/null)
+    local code=$?
+    set -e
+
+    if [[ $code -ne 1 ]]; then
+        log_error "expected exit 1 for failing pipeline, got $code"
+        return 1
+    fi
+    # The failure row shows ✗ and the inline command.
+    if [[ "$err" != *"✗"* ]]; then
+        log_error "missing failure sigil ✗: $err"
+        return 1
+    fi
+    # The skipped row shows ○ and ends with 'skipped'.
+    if [[ "$err" != *"○"* ]]; then
+        log_error "missing skipped sigil ○: $err"
+        return 1
+    fi
+    if [[ "$err" != *"echo never"*"skipped"* ]]; then
+        log_error "missing 'echo never ... skipped' row: $err"
+        return 1
+    fi
+
+    log_success "fail-fast pipeline emits skipped row"
+    return 0
+}
+
 # --- Test runner ---
 run_worktree_exec_tests() {
     run_test "exec single-target pwd uses worktree cwd" \
@@ -164,6 +237,10 @@ run_worktree_exec_tests() {
         test_exec_keep_going_runs_all_despite_failure
     run_test "exec unmatched positional errors out" \
         test_exec_unmatched_positional_errors
+    run_test "exec multi-command pipeline shows inline command names" \
+        test_exec_multi_command_shows_inline_command_names
+    run_test "exec fail-fast emits skipped row" \
+        test_exec_fail_fast_emits_skipped_row
 }
 
 # Main execution (when run directly)

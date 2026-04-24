@@ -68,9 +68,18 @@ No UI renders; the child's exit code is propagated verbatim.
 
 During a multi-worktree run, `daft exec` shows a live progress row per worktree
 with a rolling tail of output beneath each. When a worktree finishes, its row
-collapses to a single line: `✓ branch (1.8s)` on success or `✗ branch (1.2s)` on
-failure. After all worktrees complete, any that failed have their captured
-output dumped to stdout for easy scrollback review.
+collapses to a single compact line that names the command inline. After all
+worktrees complete, any that failed have their captured output dumped to stdout
+for easy scrollback review.
+
+Each finalized row shows the worktree name, the command that ran, and a
+state-specific suffix:
+
+- `✓ branch ❯ cmd (1.5s)` — command succeeded
+- `✗ branch ❯ cmd (1.2s)` — command exited non-zero
+- `⊘ branch ❯ cmd cancelled after 0.4s` — command was running when Ctrl-C fired
+- `○ branch ❯ cmd skipped` — command never started (fail-fast upstream or cancel
+  before launch)
 
 ## Relationship to other commands
 

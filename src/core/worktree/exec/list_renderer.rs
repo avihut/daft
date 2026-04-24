@@ -1,6 +1,6 @@
 //! List-mode renderer for `daft exec` multi-target runs.
 //!
-//! Prints a commands header once, then one line per worktree as each
+//! Prints a header once, then one line per worktree as each
 //! completes. Not interactive; no in-place terminal repainting.
 
 use super::{CommandSpec, ExecReport, WorktreeOutcome};
