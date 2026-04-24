@@ -97,13 +97,13 @@ pub fn run_with_progress(
     // Ctrl-C cancellation doesn't corrupt indicatif's terminal tracking.
     let _echoctl_guard = EchoCtlGuard::new();
 
-    // Print the neutral "Commands / Worktrees" header directly — the
-    // presenter's on_phase_start would otherwise print a hook-branded box
-    // we don't want here.
+    // Print the scope-summary header directly — the presenter's
+    // on_phase_start would otherwise print a hook-branded box we don't
+    // want here.
     {
         let stderr = std::io::stderr();
         let mut sink = stderr.lock();
-        super::list_renderer::render_header(&mut sink, pipeline)?;
+        super::list_renderer::render_header(&mut sink, targets.len(), pipeline)?;
     }
 
     let cfg = HookOutputConfig {

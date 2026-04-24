@@ -10,13 +10,38 @@ use super::{CommandSpec, ExecReport, WorktreeOutcome};
 pub trait Sink: std::io::Write {}
 impl<T: std::io::Write> Sink for T {}
 
-pub fn render_header<W: Sink>(sink: &mut W, _pipeline: &[CommandSpec]) -> std::io::Result<()> {
+pub fn render_header<W: Sink>(
+    sink: &mut W,
+    target_count: usize,
+    pipeline: &[CommandSpec],
+) -> std::io::Result<()> {
+    let wt_label = if target_count == 1 {
+        "worktree"
+    } else {
+        "worktrees"
+    };
+    let cmd_label = if pipeline.len() == 1 {
+        "command"
+    } else {
+        "commands"
+    };
+    let summary = format!(
+        "{} {} · {} {}",
+        target_count,
+        wt_label,
+        pipeline.len(),
+        cmd_label,
+    );
+    const TOTAL_WIDTH: usize = 60;
+    const PREFIX_DASHES: usize = 8;
+    let summary_cols = summary.chars().count() + 2;
+    let suffix_dashes = TOTAL_WIDTH.saturating_sub(PREFIX_DASHES + summary_cols);
     writeln!(
         sink,
-        "────────────────────────────────────────────────────────────"
-    )?;
-    writeln!(sink, "Worktrees")?;
-    Ok(())
+        "{} {summary} {}",
+        "─".repeat(PREFIX_DASHES),
+        "─".repeat(suffix_dashes),
+    )
 }
 
 pub fn render_outcome<W: Sink>(

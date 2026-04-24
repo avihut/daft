@@ -1188,15 +1188,17 @@ mod tests {
         };
 
         let mut out: Vec<u8> = Vec::new();
-        render_header(&mut out, &pipeline).unwrap();
+        render_header(&mut out, report.outcomes.len(), &pipeline).unwrap();
         for o in &report.outcomes {
             render_outcome(&mut out, o, &pipeline).unwrap();
         }
         render_failed_output_dump(&mut out, &report, &pipeline).unwrap();
 
         let s = String::from_utf8(out).unwrap();
-        assert!(s.contains("Worktrees"), "missing Worktrees header");
-        assert!(!s.contains("Commands"), "Commands block must be absent");
+        assert!(
+            s.contains("2 worktrees · 1 command"),
+            "missing scope-summary header: {s}"
+        );
         assert!(
             s.contains("✓") && s.contains("master"),
             "missing success row"
