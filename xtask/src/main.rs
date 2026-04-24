@@ -229,6 +229,9 @@ fn daft_verb_tip(command_name: &str) -> Option<&'static str> {
         "git-worktree-exec" => Some(
             "::: tip\nThis command is also available as `daft exec`. See [daft exec](./daft-exec.md).\n:::\n",
         ),
+        "git-worktree-merge" => Some(
+            "::: tip\nThis command is also available as `daft merge`. See [daft merge](./daft-merge.md).\n:::\n",
+        ),
         _ => None,
     }
 }
@@ -288,6 +291,12 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
             "git-worktree-sync",
             "git-worktree-list",
             "git-worktree-carry",
+        ],
+        "git-worktree-merge" => vec![
+            "git-worktree-list",
+            "git-worktree-carry",
+            "git-worktree-sync",
+            "git-worktree-flow-adopt",
         ],
         // Config cluster
         "daft-doctor" => vec!["git-worktree-clone", "git-worktree-init"],

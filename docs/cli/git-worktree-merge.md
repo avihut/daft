@@ -7,6 +7,10 @@ description: Merge branches across worktrees
 
 Merge branches across worktrees
 
+::: tip
+This command is also available as `daft merge`. See [daft merge](./daft-merge.md).
+:::
+
 ## Description
 
 Merges one or more source branches into a target worktree's branch.
@@ -76,4 +80,11 @@ git worktree-merge [OPTIONS] [SOURCE_OR_TARGET]
 |--------|-------------|
 | `-h`, `--help` | Print help information |
 | `-V`, `--version` | Print version information |
+
+## See Also
+
+- [git-worktree-list](./git-worktree-list.md)
+- [git-worktree-carry](./git-worktree-carry.md)
+- [git-worktree-sync](./git-worktree-sync.md)
+- [git-worktree-flow-adopt](./git-worktree-flow-adopt.md)
 
