@@ -15,6 +15,10 @@ pub(super) const BRIGHT_WHITE: &str = "\x1b[97m";
 pub(super) const DARK_GREY: &str = "\x1b[38;5;240m";
 pub(super) const ITALIC: &str = "\x1b[3m";
 
+/// Default name-column width used when no target list is available to compute
+/// the actual maximum. Matches the legacy `list_renderer::render_outcome` format.
+pub(super) const DEFAULT_NAME_COLUMN_WIDTH: usize = 24;
+
 /// Check if hook visual output should be suppressed (e.g. during tests).
 ///
 /// Returns true when running unit tests (`cfg!(test)`) or when `DAFT_TESTING`
@@ -163,13 +167,23 @@ pub(super) enum RowState {
     Failure {
         duration: Duration,
     },
-    // Used by Tasks 7-8 when exec pipeline emits cancel/skip events.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "emitted when a running step is interrupted by cancellation; wired up in a later commit"
+        )
+    )]
     Cancelled {
         duration: Duration,
     },
-    // Used by Tasks 7-8 when exec runner emits skips for unlaunched targets.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "emitted when a step was never started (fail-fast upstream or cancel before dispatch); wired up in a later commit"
+        )
+    )]
     Skipped,
 }
 
@@ -234,7 +248,7 @@ pub(super) fn format_compact_row_legacy(
     } else {
         RowState::Failure { duration }
     };
-    format_compact_row(name, None, state, 24, use_color)
+    format_compact_row(name, None, state, DEFAULT_NAME_COLUMN_WIDTH, use_color)
 }
 
 #[cfg(test)]
@@ -410,6 +424,46 @@ mod compact_row_tests {
         assert!(
             row.contains(DARK_GREY),
             "colored skipped row should include DARK_GREY, got: {row:?}"
+        );
+    }
+
+    #[test]
+    fn colored_failure_uses_red_sigil() {
+        let row = format_compact_row(
+            "x",
+            Some("cmd"),
+            RowState::Failure {
+                duration: Duration::from_secs(1),
+            },
+            4,
+            true,
+        );
+        assert!(
+            row.contains(crate::styles::RED),
+            "colored failure row should include RED, got: {row:?}"
+        );
+    }
+
+    #[test]
+    fn colored_row_bounds_color_spans_correctly() {
+        let row = format_compact_row(
+            "x",
+            Some("cmd"),
+            RowState::Success {
+                duration: Duration::from_secs(1),
+            },
+            4,
+            true,
+        );
+        assert!(
+            row.ends_with(crate::styles::RESET),
+            "row must terminate with RESET to prevent color bleed: {row:?}"
+        );
+        let first_reset = row.find(crate::styles::RESET).expect("must contain RESET");
+        let grey_idx = row.find(GREY).expect("must contain GREY");
+        assert!(
+            first_reset < grey_idx,
+            "RESET must precede GREY to close the sigil color region: {row:?}"
         );
     }
 }
