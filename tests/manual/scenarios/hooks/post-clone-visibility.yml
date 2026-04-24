@@ -23,18 +23,10 @@ repos:
               run: echo clone-setup-output
 
 steps:
-  - name: Trust and clone the repository (triggers post-clone hook)
-    run: |
-      git-worktree-clone --layout contained $REMOTE_TEST_POST_CLONE_VIS
-      cd test-post-clone-vis/main
-      daft hooks trust --force 2>&1
-    expect:
-      exit_code: 0
-
-  - name: Re-clone with trust in place (post-clone should fire now)
-    run: |
-      rm -rf test-post-clone-vis
-      env -u DAFT_TESTING git-worktree-clone --layout contained $REMOTE_TEST_POST_CLONE_VIS 2>&1
+  - name: Clone with --trust-hooks so post-clone fires
+    run:
+      env -u DAFT_TESTING git-worktree-clone --trust-hooks --layout contained
+      $REMOTE_TEST_POST_CLONE_VIS 2>&1
     expect:
       exit_code: 0
       output_contains:
