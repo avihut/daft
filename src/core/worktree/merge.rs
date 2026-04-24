@@ -555,29 +555,24 @@ pub fn execute_start(
 ) -> Result<StartOutcome> {
     let resolved = resolve_target(params.target.as_deref(), git, project_root)?;
 
-    // Pre-flight safety rails. Order matters: cheapest/purely-syntactic check
-    // first (source vs. target branch name, which needs no path), then state
-    // checks on the target worktree (in-progress op, dirty tree) which touch
-    // the filesystem and therefore only apply when a worktree exists.
+    // Pre-flight safety rails. Cheapest purely-syntactic check first (source
+    // vs. target branch name, which needs no path).
     validate_distinct(&params.sources, &resolved)?;
-    // Task 9.1 temporary: without a worktree, we have no filesystem state to
-    // check and no CWD for `git merge`. Task 9.2 replaces this with an FF
-    // plumbing branch; for now, bail cleanly.
-    let path = resolved.path.clone().ok_or_else(|| {
-        anyhow::anyhow!(
-            "target branch '{}' has no worktree; run `daft checkout {}` first",
-            resolved.branch,
-            resolved.branch,
-        )
-    })?;
-    if let Some(op) = detect_in_progress(&path)? {
-        anyhow::bail!(
-            "target worktree '{}' is mid-{}; finish or abort it first",
-            resolved.branch,
-            op.description()
-        );
+
+    // Filesystem-state checks only apply when a worktree exists. For a
+    // ref-only target there is no MERGE_HEAD to find and no working tree to
+    // be dirty, so these rails are skipped — Slice 9's FF-plumbing path
+    // operates on the ref alone.
+    if let Some(ref path) = resolved.path {
+        if let Some(op) = detect_in_progress(path)? {
+            anyhow::bail!(
+                "target worktree '{}' is mid-{}; finish or abort it first",
+                resolved.branch,
+                op.description()
+            );
+        }
+        validate_clean_target(git, path)?;
     }
-    validate_clean_target(git, &path)?;
 
     // Detect "already up to date" via plumbing before invoking `git merge`, so
     // we don't need to capture stdout. Capturing stdout would break the
@@ -588,7 +583,9 @@ pub fn execute_start(
     // is already reachable from the target tip, there is nothing to merge.
     //
     // Checked before the octopus announcement so an up-to-date multi-source
-    // invocation doesn't herald a strategy we won't actually run.
+    // invocation doesn't herald a strategy we won't actually run. The check
+    // operates on refs only (rev-parse + merge-base), so it works uniformly
+    // for both worktree-backed and ref-only targets.
     let target_sha = git
         .rev_parse(&format!("refs/heads/{}", resolved.branch))
         .with_context(|| format!("failed to resolve target branch '{}'", resolved.branch))?;
@@ -611,7 +608,7 @@ pub fn execute_start(
         return Ok(StartOutcome {
             already_up_to_date: true,
             failed: false,
-            target_path: path.clone(),
+            target_path: resolved.path.clone().unwrap_or_default(),
             conflicted_files: Vec::new(),
         });
     }
@@ -625,14 +622,22 @@ pub fn execute_start(
         eprintln!("{msg}");
     }
 
+    match resolved.path {
+        Some(path) => execute_start_in_worktree(params, path),
+        None => execute_start_ref_only(params, git, &resolved.branch, target_sha),
+    }
+}
+
+/// Worktree-backed merge: shell out to `git merge` with the target worktree as CWD.
+///
+/// Stdio is inherited so `$EDITOR` works for non-FF merges without `-m`. On
+/// failure, probe the worktree's `git status --porcelain` for conflicted files
+/// so the caller can render a conflict report.
+fn execute_start_in_worktree(params: &StartParams, path: PathBuf) -> Result<StartOutcome> {
     let mut argv: Vec<String> = vec!["merge".to_string()];
     argv.extend(render_flags(&params.flags));
     argv.extend(params.sources.iter().cloned());
 
-    // Inherit stdio via `.status()` so the interactive commit-message editor
-    // works for non-FF merges without `-m`. The "already up to date" case is
-    // handled above by the plumbing pre-flight, so we no longer need to
-    // capture stdout to detect it.
     let status = Command::new("git")
         .args(&argv)
         .current_dir(&path)
@@ -651,12 +656,118 @@ pub fn execute_start(
     };
 
     Ok(StartOutcome {
-        // Already-up-to-date is handled by the pre-flight above.
         already_up_to_date: false,
         failed,
         target_path: path,
         conflicted_files: files,
     })
+}
+
+/// Ref-only merge: the target branch has no worktree.
+///
+/// Only pure fast-forwards are supported here — we advance the branch ref
+/// via `git update-ref` without touching a working tree. Non-FF merges
+/// against ref-only targets require a worktree (materialized by the user
+/// via `daft checkout`, or ephemerally by Slice 10's future adopt-target
+/// flow) and currently bail with explicit guidance.
+fn execute_start_ref_only(
+    params: &StartParams,
+    git: &GitCommand,
+    target_branch: &str,
+    target_sha: String,
+) -> Result<StartOutcome> {
+    if params.sources.len() != 1 {
+        anyhow::bail!(
+            "target branch '{}' has no worktree; octopus merges into ref-only targets are not supported. \
+             Run `daft checkout {}` first.",
+            target_branch,
+            target_branch,
+        );
+    }
+    let source = &params.sources[0];
+    let source_sha = git
+        .rev_parse(source)
+        .with_context(|| format!("failed to resolve source '{}'", source))?;
+    // `merge_base_is_ancestor(target, source)` returns true when `target` is
+    // an ancestor of `source` — i.e., the source has only new commits on top
+    // of the target tip, so a pure fast-forward is possible.
+    let is_ancestor = git.merge_base_is_ancestor(&target_sha, &source_sha)?;
+
+    if is_pure_ff_eligible(params.sources.len(), &params.flags, Some(is_ancestor)) {
+        advance_ref_via_plumbing(git, target_branch, &source_sha)?;
+        let short = &source_sha[..12.min(source_sha.len())];
+        println!("Fast-forwarded {target_branch} to {short} (no worktree)");
+        return Ok(StartOutcome {
+            already_up_to_date: false,
+            failed: false,
+            target_path: PathBuf::new(),
+            conflicted_files: Vec::new(),
+        });
+    }
+
+    // Non-FF (divergent histories, --no-ff, --squash): materializing a
+    // worktree is required. Slice 10 will add an --adopt-target flow; for
+    // now, bail with an explicit checkout hint.
+    anyhow::bail!(
+        "target branch '{}' has no worktree and merge cannot fast-forward (histories diverge, \
+         or --no-ff/--squash requested); run `daft checkout {}` first to materialize a worktree, \
+         then retry",
+        target_branch,
+        target_branch,
+    );
+}
+
+/// Returns true when a merge can be a pure fast-forward of the target ref to
+/// the source commit.
+///
+/// Purely fast-forwarding means advancing the target's branch ref to the
+/// source SHA without recording a merge commit. That's only possible when:
+///
+/// * Exactly one source (octopus merges always create a merge commit).
+/// * `--squash` is not requested (squash intentionally creates a new commit).
+/// * `--no-ff` is not requested (it forces a merge commit).
+/// * The target is an ancestor of the source (`is_ancestor == Some(true)`).
+///
+/// `is_ancestor == None` is treated conservatively as "not known to be an
+/// ancestor", returning false so the caller never advances a ref without
+/// proof.
+pub fn is_pure_ff_eligible(
+    sources_len: usize,
+    flags: &EffectiveFlags,
+    is_ancestor: Option<bool>,
+) -> bool {
+    if sources_len != 1 {
+        return false;
+    }
+    if flags.squash == Some(true) {
+        return false;
+    }
+    if flags.ff == Some(FfMode::Never) {
+        return false;
+    }
+    is_ancestor == Some(true)
+}
+
+/// Advance a branch ref to a new commit via `git update-ref`.
+///
+/// Caller must have verified (via [`is_pure_ff_eligible`]) that the move is
+/// a valid fast-forward. `update-ref` by itself does no such check — it
+/// blindly rewrites the ref — so callers must not invoke this without that
+/// pre-flight.
+pub fn advance_ref_via_plumbing(
+    _git: &GitCommand,
+    target_branch: &str,
+    source_sha: &str,
+) -> Result<()> {
+    let target_ref = format!("refs/heads/{target_branch}");
+    let status = Command::new("git")
+        .args(["update-ref", &target_ref, source_sha])
+        .status()
+        .with_context(|| format!("failed to invoke git update-ref for '{}'", target_ref))?;
+    if !status.success() {
+        anyhow::bail!("git update-ref failed for '{}'", target_ref);
+    }
+    Ok(())
 }
 
 /// Which finish operation to execute.
@@ -1309,5 +1420,73 @@ mod tests {
             detect_in_progress(&worktree).unwrap(),
             Some(InProgressOp::Rebase)
         );
+    }
+
+    #[test]
+    fn ff_eligible_for_single_ancestor_default_flags() {
+        assert!(is_pure_ff_eligible(
+            1,
+            &EffectiveFlags::default(),
+            Some(true)
+        ));
+    }
+
+    #[test]
+    fn ff_not_eligible_for_multi_source() {
+        // Octopus merges always create a merge commit — never a pure FF.
+        assert!(!is_pure_ff_eligible(
+            2,
+            &EffectiveFlags::default(),
+            Some(true)
+        ));
+    }
+
+    #[test]
+    fn ff_not_eligible_when_not_ancestor() {
+        // Divergent histories: target is NOT an ancestor of source.
+        assert!(!is_pure_ff_eligible(
+            1,
+            &EffectiveFlags::default(),
+            Some(false)
+        ));
+    }
+
+    #[test]
+    fn ff_not_eligible_when_squash() {
+        let flags = EffectiveFlags {
+            squash: Some(true),
+            ..EffectiveFlags::default()
+        };
+        assert!(!is_pure_ff_eligible(1, &flags, Some(true)));
+    }
+
+    #[test]
+    fn ff_not_eligible_when_no_ff() {
+        let flags = EffectiveFlags {
+            ff: Some(FfMode::Never),
+            ..EffectiveFlags::default()
+        };
+        assert!(!is_pure_ff_eligible(1, &flags, Some(true)));
+    }
+
+    #[test]
+    fn ff_not_eligible_when_is_ancestor_unknown() {
+        // Conservative: without proof, never advance a ref.
+        assert!(!is_pure_ff_eligible(1, &EffectiveFlags::default(), None));
+    }
+
+    #[test]
+    fn ff_eligible_allows_explicit_ff_auto_and_only() {
+        // --ff (Auto) and --ff-only (Only) do not forbid FF — they require it.
+        let auto = EffectiveFlags {
+            ff: Some(FfMode::Auto),
+            ..EffectiveFlags::default()
+        };
+        let only = EffectiveFlags {
+            ff: Some(FfMode::Only),
+            ..EffectiveFlags::default()
+        };
+        assert!(is_pure_ff_eligible(1, &auto, Some(true)));
+        assert!(is_pure_ff_eligible(1, &only, Some(true)));
     }
 }
