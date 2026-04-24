@@ -4,7 +4,7 @@
 .SH NAME
 daft\-merge \- Merge branches across worktrees
 .SH SYNOPSIS
-\fBdaft\-merge\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBdaft\-merge\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE\fR] 
 .SH DESCRIPTION
 .PP
 Merges one or more source branches into a target worktree\*(Aqs branch.
@@ -27,5 +27,8 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
 \fB\-V\fR, \fB\-\-version\fR
 Print version
+.TP
+[\fISOURCE\fR]
+Source branches/commits to merge. Two or more invoke octopus
 .SH VERSION
 v1.7.2

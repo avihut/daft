@@ -23,8 +23,14 @@ Finish commands (--abort, --continue, --quit) take an optional positional
 ## Usage
 
 ```
-git worktree-merge [OPTIONS]
+git worktree-merge [OPTIONS] [SOURCE]
 ```
+
+## Arguments
+
+| Argument | Description | Required |
+|----------|-------------|----------|
+| `<SOURCE>` | Source branches/commits to merge. Two or more invoke octopus | No |
 
 ## Options
 
