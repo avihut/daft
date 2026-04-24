@@ -135,28 +135,38 @@ Right-column text, after the command label:
 
 ### Presenter / renderer surface changes
 
-`JobPresenter` (`src/executor/presenter.rs`) gains two new event methods:
+`JobPresenter` (`src/executor/presenter.rs`) gains one new method and one
+extended signature:
 
 ```rust
 pub trait JobPresenter: Send + Sync {
-    // existing:
-    fn on_job_start(&self, name: &str, total: Option<usize>, preview: Option<&str>);
+    // existing, unchanged:
+    fn on_job_start(&self, name: &str, description: Option<&str>, command_preview: Option<&str>);
     fn on_job_output(&self, name: &str, line: &str);
     fn on_job_success(&self, name: &str, duration: Duration);
     fn on_job_failure(&self, name: &str, duration: Duration);
 
     // new:
     fn on_job_cancelled(&self, name: &str, duration: Duration);
-    fn on_job_skipped(&self, name: &str, preview: Option<&str>);
+
+    // extended (trailing `command_preview` param added):
+    fn on_job_skipped(
+        &self,
+        name: &str,
+        reason: &str,
+        duration: Duration,
+        show_duration: bool,
+        command_preview: Option<&str>,
+    );
 }
 ```
 
-`CliPresenter` and the in-process test presenter implement both. The two
-`HookProgressRenderer` flavors (`interactive.rs`, `plain.rs`) grow matching
-`finish_job_cancelled` / `finish_job_skipped_with_preview` entry points. The
-existing `finish_job_skipped` used for hook-skip scenarios stays — it's called
-from `src/output/hook_progress/mod.rs` with its own semantics; we're adding a
-sibling that carries the command preview so it composes with the compact row.
+All existing hook-skip call sites pass `None` for `command_preview` and render
+unchanged. Exec call sites pass `Some(&preview)` so the compact row includes the
+command label. `CliPresenter`, `TuiPresenter`, and `NullPresenter` all update
+accordingly. On the renderer side, `HookProgressRenderer` and
+`PlainHookRenderer` gain a `finish_job_cancelled(name, duration)` method and
+extend their `finish_job_skipped` to the same trailing-`command_preview` shape.
 
 ### Row format
 
