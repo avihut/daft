@@ -17,6 +17,72 @@ use crate::settings::HookOutputConfig;
 use std::sync::Arc;
 use std::thread;
 
+/// Temporarily disable the terminal driver's `^C` echo on stderr.
+///
+/// Indicatif tracks the terminal viewport by maintaining its own count of
+/// the last drawn lines; any write to the terminal that bypasses indicatif
+/// (such as the TTY driver echoing `^C` when the user presses Ctrl-C)
+/// desyncs this counter and leaves orphan spinner lines above the compact
+/// finalization rows. Disabling `ECHOCTL` suppresses that echo for the
+/// lifetime of this guard; the original termios is restored on drop.
+#[cfg(unix)]
+struct EchoCtlGuard {
+    fd: libc::c_int,
+    original: Option<libc::termios>,
+}
+
+#[cfg(unix)]
+impl EchoCtlGuard {
+    fn new() -> Self {
+        use std::io::IsTerminal;
+        use std::os::unix::io::AsRawFd;
+
+        let stderr = std::io::stderr();
+        let fd = stderr.as_raw_fd();
+        if !stderr.is_terminal() {
+            return Self { fd, original: None };
+        }
+
+        // SAFETY: `fd` is a valid stderr file descriptor confirmed to be a
+        // TTY. `tcgetattr` fills in a zeroed termios on success.
+        let mut current: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(fd, &mut current) } != 0 {
+            return Self { fd, original: None };
+        }
+
+        let mut modified = current;
+        modified.c_lflag &= !libc::ECHOCTL;
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &modified) } != 0 {
+            return Self { fd, original: None };
+        }
+        Self {
+            fd,
+            original: Some(current),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for EchoCtlGuard {
+    fn drop(&mut self) {
+        if let Some(ref original) = self.original {
+            // Best-effort restore; if the fd is gone (process torn down),
+            // there's nothing useful we can do.
+            unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, original) };
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct EchoCtlGuard;
+
+#[cfg(not(unix))]
+impl EchoCtlGuard {
+    fn new() -> Self {
+        Self
+    }
+}
+
 /// Run the pipeline across all targets, rendering a live per-worktree
 /// progress UI (spinner + rolling tail, finalized to a compact one-line row
 /// per worktree). Returns the aggregated [`ExecReport`] so the command layer
@@ -27,6 +93,10 @@ pub fn run_with_progress(
     mode: ExecMode,
     cancel: &CancelFlag,
 ) -> anyhow::Result<ExecReport> {
+    // Suppress the TTY's `^C` echo for the duration of the live render so
+    // Ctrl-C cancellation doesn't corrupt indicatif's terminal tracking.
+    let _echoctl_guard = EchoCtlGuard::new();
+
     // Print the neutral "Commands / Worktrees" header directly — the
     // presenter's on_phase_start would otherwise print a hook-branded box
     // we don't want here.

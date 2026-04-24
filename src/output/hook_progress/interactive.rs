@@ -79,7 +79,11 @@ impl HookProgressRenderer {
 
         let tail_style = ProgressStyle::with_template(&format!("{pipe_str}  {{msg}}")).unwrap();
 
-        let trailer_style = ProgressStyle::with_template("").unwrap();
+        // Single space (not empty) so indicatif's line-count accounting stays
+        // aligned with actual terminal lines — an empty template can desync
+        // the internal "drawn lines" counter and leave stale bars visible
+        // when other bars are finish-and-cleared (notably during Ctrl-C).
+        let trailer_style = ProgressStyle::with_template(" ").unwrap();
 
         Self {
             mp,
@@ -290,18 +294,19 @@ impl HookProgressRenderer {
     ) {
         use super::formatting::YELLOW;
 
-        // Remove job state and clear its bars
+        // Remove job state and unlink its bars (see `finish_job` for why
+        // we use `mp.remove` instead of `finish_and_clear`).
         if let Some(state) = self.jobs.remove(name) {
             if let Some(ref sep) = state.separator {
-                sep.finish_and_clear();
+                self.mp.remove(sep);
             }
             for pb in &state.tail_lines {
-                pb.finish_and_clear();
+                self.mp.remove(pb);
             }
             if let Some(ref trailer) = state.trailer {
-                trailer.finish_and_clear();
+                self.mp.remove(trailer);
             }
-            state.spinner.finish_and_clear();
+            self.mp.remove(&state.spinner);
         }
 
         // Always print skip info as a single inline line (no blank line after)
@@ -334,20 +339,25 @@ impl HookProgressRenderer {
             return;
         };
 
-        // Clear ALL bars from the draw area. Using finish_and_clear (not
-        // finish_with_message) avoids "zombie" bars that would flush on
-        // MultiProgress drop — potentially after the summary has already
-        // been printed to stderr.
+        // Remove the job's bars from MultiProgress instead of using
+        // `finish_and_clear`. The latter transitions the bar to `DoneHidden`
+        // and interacts with indicatif's zombie-line accounting: on drop,
+        // the bar's `mark_zombie` can feed non-zero line counts into
+        // `LineAdjust::Keep`, leaving the last-drawn spinner line stuck in
+        // scrollback above subsequent `mp.println` output. `mp.remove`
+        // hides the bar's draw target and unlinks it from the ordering,
+        // so the next `mp.println` does an atomic redraw that cleanly
+        // clears the old bar lines.
         if let Some(ref sep) = state.separator {
-            sep.finish_and_clear();
+            self.mp.remove(sep);
         }
         for pb in &state.tail_lines {
-            pb.finish_and_clear();
+            self.mp.remove(pb);
         }
         if let Some(ref trailer) = state.trailer {
-            trailer.finish_and_clear();
+            self.mp.remove(trailer);
         }
-        state.spinner.finish_and_clear();
+        self.mp.remove(&state.spinner);
 
         if self.config.compact_finalization {
             self.mp
