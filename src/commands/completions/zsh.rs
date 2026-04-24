@@ -404,7 +404,7 @@ _daft() {
             fi
         done
         case "$_fmt_path" in
-            list|worktree-list|"hooks trust list"|"layout list"|"shared status")
+            list|worktree-list|"hooks trust list"|"hooks jobs"|"layout list"|"shared status")
                 compadd json ndjson tsv csv yaml toon markdown
                 return
                 ;;
@@ -573,7 +573,7 @@ _daft() {
                     return
                 fi
                 if [[ "$curword" == -* ]]; then
-                    compadd -- --all --json --worktree --status --hook -h --help
+                    compadd -- --all --format --template --no-headers --worktree --status --hook -h --help
                 fi
                 return
                 ;;

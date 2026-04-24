@@ -1,0 +1,57 @@
+name: Hooks jobs list TSV format
+description:
+  daft hooks jobs --format tsv emits a header row and tab-separated rows
+
+repos:
+  - name: test-jobs-fmt-tsv
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Jobs format tsv"
+        commits:
+          - message: "Initial commit"
+      - name: feature/fmt-tsv
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: greet
+              run: echo hi
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_JOBS_FMT_TSV
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-tsv/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout branch to trigger hook
+    run: git-worktree-checkout feature/fmt-tsv 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-tsv/main"
+    expect:
+      exit_code: 0
+
+  - name: TSV includes header and a row for greet
+    run: daft hooks jobs --format tsv 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-tsv/feature/fmt-tsv"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "invocation_id\tinvocation_short"
+        - "\tgreet\tcompleted\t"
+
+  - name: --no-headers suppresses the header row
+    run: daft hooks jobs --format tsv --no-headers 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-tsv/feature/fmt-tsv"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "invocation_id\tinvocation_short"

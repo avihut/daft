@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::coordinator::client::CoordinatorClient;
 use crate::coordinator::log_store::{InvocationMeta, JobStatus, LogStore};
+use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
 use crate::output::format::shorthand_from_seconds;
 use crate::output::Output;
 use crate::styles::{blue, bold, dim, dim_underline, green, red, yellow};
@@ -30,39 +31,6 @@ fn format_duration(secs: i64) -> String {
     }
 }
 
-#[derive(serde::Serialize)]
-struct JsonOutput {
-    worktrees: Vec<JsonWorktree>,
-}
-
-#[derive(serde::Serialize)]
-struct JsonWorktree {
-    name: String,
-    invocations: Vec<JsonInvocation>,
-}
-
-#[derive(serde::Serialize)]
-struct JsonInvocation {
-    id: String,
-    short_id: String,
-    trigger_command: String,
-    hook_type: String,
-    created_at: String,
-    jobs: Vec<JsonJob>,
-}
-
-#[derive(serde::Serialize)]
-struct JsonJob {
-    name: String,
-    background: bool,
-    status: String,
-    exit_code: Option<i32>,
-    started_at: String,
-    finished_at: Option<String>,
-    duration_secs: i64,
-    command: String,
-}
-
 #[derive(Parser, Debug)]
 #[command(about = "Manage background hook jobs")]
 pub struct JobsArgs {
@@ -72,10 +40,6 @@ pub struct JobsArgs {
     /// Show jobs across all worktrees.
     #[arg(long, conflicts_with = "worktree")]
     all: bool,
-
-    /// Output in JSON format.
-    #[arg(long)]
-    json: bool,
 
     /// Filter to a specific worktree (can be deleted).
     #[arg(long, conflicts_with = "all")]
@@ -88,6 +52,9 @@ pub struct JobsArgs {
     /// Filter to invocations of this hook type.
     #[arg(long = "hook")]
     hook_filter: Option<String>,
+
+    #[command(flatten)]
+    emit: EmitArgs,
 }
 
 #[derive(Subcommand, Debug)]
@@ -469,90 +436,90 @@ fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
     }
 }
 
-fn print_json_output(
+/// Build a flat `Tabular` payload with one row per (invocation, job).
+///
+/// Each row carries its invocation context (id, short id, worktree, hook type,
+/// trigger command, created_at) alongside the job fields — flat so every
+/// emit format including tsv/csv/ndjson works.
+fn build_jobs_payload(
     invocations: &[InvocationMeta],
     store: &LogStore,
     coordinator_alive: bool,
-    output: &mut dyn Output,
-) -> Result<()> {
+) -> Result<EmitPayload> {
     let now = chrono::Utc::now();
 
-    // Group invocations by worktree (BTreeMap for stable ordering).
-    let mut groups: std::collections::BTreeMap<String, Vec<&InvocationMeta>> =
-        std::collections::BTreeMap::new();
+    let mut table = Table::new([
+        "invocation_id",
+        "invocation_short",
+        "worktree",
+        "hook_type",
+        "trigger_command",
+        "invocation_created_at",
+        "name",
+        "status",
+        "background",
+        "started_at",
+        "finished_at",
+        "duration_secs",
+        "exit_code",
+        "command",
+    ]);
+
     for inv in invocations {
-        groups.entry(inv.worktree.clone()).or_default().push(inv);
-    }
+        let short_id = inv.invocation_id[..4.min(inv.invocation_id.len())].to_string();
+        let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
 
-    let mut json_worktrees: Vec<JsonWorktree> = Vec::new();
+        for dir in &job_dirs {
+            let meta = match store.read_meta(dir) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
 
-    for (worktree, inv_list) in &groups {
-        let mut json_invocations: Vec<JsonInvocation> = Vec::new();
+            let status_str = match &meta.status {
+                JobStatus::Running if !coordinator_alive => "running (stale)",
+                JobStatus::Running => "running",
+                JobStatus::Completed => "completed",
+                JobStatus::Failed => "failed",
+                JobStatus::Cancelled => "cancelled",
+                JobStatus::Skipped => "skipped",
+            };
 
-        for inv in inv_list {
-            let short_id = inv.invocation_id[..4.min(inv.invocation_id.len())].to_string();
-
-            let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
-            let mut json_jobs: Vec<JsonJob> = Vec::new();
-
-            for dir in &job_dirs {
-                if let Ok(meta) = store.read_meta(dir) {
-                    let status_str = match &meta.status {
-                        JobStatus::Running if !coordinator_alive => "running (stale)".to_string(),
-                        JobStatus::Running => "running".to_string(),
-                        JobStatus::Completed => "completed".to_string(),
-                        JobStatus::Failed => "failed".to_string(),
-                        JobStatus::Cancelled => "cancelled".to_string(),
-                        JobStatus::Skipped => "skipped".to_string(),
-                    };
-
-                    let duration_secs = match (&meta.status, meta.finished_at) {
-                        (_, Some(finished)) => finished
-                            .signed_duration_since(meta.started_at)
-                            .num_seconds(),
-                        (JobStatus::Running, None) => {
-                            now.signed_duration_since(meta.started_at).num_seconds()
-                        }
-                        _ => 0,
-                    };
-
-                    json_jobs.push(JsonJob {
-                        name: meta.name.clone(),
-                        background: meta.background,
-                        status: status_str,
-                        exit_code: meta.exit_code,
-                        started_at: meta.started_at.to_rfc3339(),
-                        finished_at: meta.finished_at.map(|t| t.to_rfc3339()),
-                        duration_secs,
-                        command: meta.command.clone(),
-                    });
+            let duration_secs = match (&meta.status, meta.finished_at) {
+                (_, Some(finished)) => Some(
+                    finished
+                        .signed_duration_since(meta.started_at)
+                        .num_seconds(),
+                ),
+                (JobStatus::Running, None) => {
+                    Some(now.signed_duration_since(meta.started_at).num_seconds())
                 }
-            }
+                _ => None,
+            };
 
-            json_invocations.push(JsonInvocation {
-                id: inv.invocation_id.clone(),
-                short_id,
-                trigger_command: inv.trigger_command.clone(),
-                hook_type: inv.hook_type.clone(),
-                created_at: inv.created_at.to_rfc3339(),
-                jobs: json_jobs,
-            });
+            table = table.row([
+                Cell::str(&inv.invocation_id),
+                Cell::str(&short_id),
+                Cell::str(&inv.worktree),
+                Cell::str(&inv.hook_type),
+                Cell::str(&inv.trigger_command),
+                Cell::str(inv.created_at.to_rfc3339()),
+                Cell::str(&meta.name),
+                Cell::str(status_str),
+                Cell::bool(meta.background),
+                Cell::str(meta.started_at.to_rfc3339()),
+                meta.finished_at
+                    .map(|t| Cell::str(t.to_rfc3339()))
+                    .unwrap_or(Cell::Null),
+                duration_secs.map(Cell::int).unwrap_or(Cell::Null),
+                meta.exit_code
+                    .map(|c| Cell::int(c as i64))
+                    .unwrap_or(Cell::Null),
+                Cell::str(&meta.command),
+            ]);
         }
-
-        json_worktrees.push(JsonWorktree {
-            name: worktree.clone(),
-            invocations: json_invocations,
-        });
     }
 
-    let json_output = JsonOutput {
-        worktrees: json_worktrees,
-    };
-
-    let serialized =
-        serde_json::to_string_pretty(&json_output).context("Failed to serialize jobs to JSON")?;
-    output.info(&serialized);
-    Ok(())
+    Ok(EmitPayload::Tabular(table))
 }
 
 /// Default subcommand: list jobs grouped by worktree and invocation.
@@ -617,8 +584,10 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
         return Ok(());
     }
 
-    if args.json {
-        return print_json_output(&invocations, &store, coordinator_alive, output);
+    if args.emit.is_structured() {
+        let payload = build_jobs_payload(&invocations, &store, coordinator_alive)?;
+        return emit::emit_and_handle("hooks jobs", payload, &args.emit, &mut std::io::stdout())
+            .map_err(|e| anyhow::anyhow!("{e}"));
     }
 
     // Group invocations by worktree.

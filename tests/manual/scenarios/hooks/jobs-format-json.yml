@@ -1,0 +1,54 @@
+name: Hooks jobs list JSON format
+description:
+  daft hooks jobs --format json emits a flat array of job rows with invocation
+  context
+
+repos:
+  - name: test-jobs-fmt-json
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Jobs format json"
+        commits:
+          - message: "Initial commit"
+      - name: feature/fmt-json
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: greet
+              run: echo hi
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_JOBS_FMT_JSON
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-json/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout branch to trigger hook
+    run: git-worktree-checkout feature/fmt-json 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-json/main"
+    expect:
+      exit_code: 0
+
+  - name: JSON output is a flat array of job rows
+    run: daft hooks jobs --format json 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-json/feature/fmt-json"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"name": "greet"'
+        - '"status": "completed"'
+        - '"invocation_id"'
+        - '"invocation_short"'
+        - '"hook_type": "worktree-post-create"'
+        - '"trigger_command"'

@@ -377,7 +377,9 @@ complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcomma
 # hooks jobs: sub-subcommands and flags
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -f -a 'logs cancel retry clean'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs' -l all -d 'Show jobs from all worktrees'
-complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs' -l json -d 'Output as JSON'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -l format -x -a 'json ndjson tsv csv yaml toon markdown' -d 'Output format'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -l template -r -d 'Tera template string'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -l no-headers -d 'Omit header row (tsv/csv)'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from logs cancel' -l inv -d 'Invocation ID prefix'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from retry' -l hook -d 'Force hook name interpretation'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from retry' -l inv -d 'Force invocation prefix interpretation'

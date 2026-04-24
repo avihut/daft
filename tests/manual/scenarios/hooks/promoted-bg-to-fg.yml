@@ -62,7 +62,7 @@ steps:
         - "using-shared"
 
   - name: JSON output confirms both jobs are recorded as background=false
-    run: daft hooks jobs --json 2>&1
+    run: daft hooks jobs --format json 2>&1
     cwd: "$WORK_DIR/test-promoted-bg-to-fg/feature/promoted"
     expect:
       exit_code: 0

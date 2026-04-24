@@ -37,10 +37,14 @@ daft hooks jobs [OPTIONS] [COMMAND]
 ## Options
 
 | Option | Description | Default |
-|--------|-------------|---------|
-| `--all-repos` | Show jobs across all repositories | |
-| `--worktree <path>` | Filter to a specific worktree | |
-| `--json` | Output in JSON format | |
+|--------|-------------|----------|
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
+| `--all` | Show jobs across all worktrees |  |
+| `--worktree <name>` | Filter to a specific worktree (can be deleted) |  |
+| `--status <status>` | Filter to invocations containing jobs with this status (`running`, `completed`, `failed`, `cancelled`, `skipped`) |  |
+| `--hook <type>` | Filter to invocations of this hook type |  |
 
 ## Global Options
 
@@ -48,6 +52,33 @@ daft hooks jobs [OPTIONS] [COMMAND]
 |--------|-------------|
 | `-h`, `--help` | Print help information |
 | `-V`, `--version` | Print version information |
+
+## Structured Output
+
+`daft hooks jobs` supports machine-readable output via `--format`: `json`,
+`ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`, plus `--template <tera>`
+for custom output.
+
+The listing is a flat table — one row per job, each carrying its invocation
+context (`invocation_id`, `invocation_short`, `worktree`, `hook_type`,
+`trigger_command`, `invocation_created_at`) alongside job fields (`name`,
+`status`, `background`, `started_at`, `finished_at`, `duration_secs`,
+`exit_code`, `command`).
+
+```sh
+# Pipe to jq
+daft hooks jobs --format json | jq '.[] | select(.status == "failed")'
+
+# Pluck one field per row with cut
+daft hooks jobs --format tsv --no-headers | cut -f2,7,8
+
+# Custom template
+daft hooks jobs --template '{% for j in items %}{{ j.name }}: {{ j.status }}
+{% endfor %}'
+```
+
+See the [Output Formats guide](../guide/output-formats.md) for format details
+and Tera syntax.
 
 ## Examples
 
@@ -74,4 +105,5 @@ daft hooks jobs clean
 ## See Also
 
 - [Hooks guide](../guide/hooks.md#background-jobs)
+- [Output Formats guide](../guide/output-formats.md)
 - [git-daft-hooks](./git-daft-hooks.md)

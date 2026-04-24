@@ -251,6 +251,21 @@ daft hooks dump
 
 Manage background hook jobs
 
+Manage background hook jobs.
+
+Hooks that declare `background: true` run asynchronously after the
+triggering command returns. This subcommand provides visibility and
+control over those jobs — listing, inspecting logs, cancelling,
+retrying, and cleaning up old records.
+
+Subcommands:
+  logs     View the output log for a background job
+  cancel   Cancel a running background job
+  retry    Re-run failed jobs from an invocation
+  clean    Remove logs older than the retention period
+
+Without a subcommand, lists jobs grouped by worktree and invocation. Use --format for structured output.
+
 ```
 daft hooks jobs [OPTIONS]
 ```
@@ -260,10 +275,12 @@ daft hooks jobs [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|----------|
 | `--all` | Show jobs across all worktrees |  |
-| `--json` | Output in JSON format |  |
 | `--worktree <WORKTREE>` | Filter to a specific worktree (can be deleted) |  |
 | `--status <STATUS>` | Filter to invocations containing jobs with this status |  |
 | `--hook <HOOK_FILTER>` | Filter to invocations of this hook type |  |
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
 
 ### migrate
 

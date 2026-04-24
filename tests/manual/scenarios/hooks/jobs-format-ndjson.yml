@@ -1,0 +1,56 @@
+name: Hooks jobs list NDJSON format
+description: daft hooks jobs --format ndjson emits one JSON object per line
+
+repos:
+  - name: test-jobs-fmt-ndjson
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Jobs format ndjson"
+        commits:
+          - message: "Initial commit"
+      - name: feature/fmt-ndjson
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: greet
+              run: echo hi
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_JOBS_FMT_NDJSON
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-ndjson/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout branch to trigger hook
+    run: git-worktree-checkout feature/fmt-ndjson 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-ndjson/main"
+    expect:
+      exit_code: 0
+
+  - name: NDJSON is parseable per-line JSON
+    run: |
+      out=$(daft hooks jobs --format ndjson 2>&1)
+      echo "$out"
+      # Each line must be valid JSON
+      echo "$out" | while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        echo "$line" | jq -e 'has("name") and has("status")' >/dev/null
+      done
+      echo "NDJSON_OK"
+    cwd: "$WORK_DIR/test-jobs-fmt-ndjson/feature/fmt-ndjson"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"name":"greet"'
+        - "NDJSON_OK"

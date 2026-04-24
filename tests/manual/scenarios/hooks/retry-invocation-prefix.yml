@@ -42,7 +42,7 @@ steps:
 
   - name: Retry using --inv flag with a short prefix from the listing
     run: |
-      short_id=$(daft hooks jobs --json 2>/dev/null | grep -o '"short_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      short_id=$(daft hooks jobs --format json 2>/dev/null | jq -r '.[0].invocation_short')
       daft hooks jobs retry --inv "$short_id" 2>&1
     cwd: "$WORK_DIR/test-retry-inv/feature/inv"
     expect:

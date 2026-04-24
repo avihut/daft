@@ -230,7 +230,7 @@ _daft() {
             fi
         done
         case "$_fmt_path" in
-            list|worktree-list|"hooks trust list"|"layout list"|"shared status")
+            list|worktree-list|"hooks trust list"|"hooks jobs"|"layout list"|"shared status")
                 COMPREPLY=( $(compgen -W "json ndjson tsv csv yaml toon markdown" -- "$cur") )
                 return 0
                 ;;
@@ -397,7 +397,7 @@ _daft() {
                     return 0
                 fi
                 if [[ "$cur" == -* ]]; then
-                    COMPREPLY=( $(compgen -W "--all --json --worktree --status --hook -h --help" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "--all --format --template --no-headers --worktree --status --hook -h --help" -- "$cur") )
                     return 0
                 fi
                 return 0

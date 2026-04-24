@@ -1,0 +1,48 @@
+name: Hooks jobs list TOON format
+description: daft hooks jobs --format toon emits toon-format output
+
+repos:
+  - name: test-jobs-fmt-toon
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Jobs format toon"
+        commits:
+          - message: "Initial commit"
+      - name: feature/fmt-toon
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: greet
+              run: echo hi
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_JOBS_FMT_TOON
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-toon/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout branch to trigger hook
+    run: git-worktree-checkout feature/fmt-toon 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-toon/main"
+    expect:
+      exit_code: 0
+
+  - name: TOON output references job name and status
+    run: daft hooks jobs --format toon 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-toon/feature/fmt-toon"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "greet"
+        - "completed"

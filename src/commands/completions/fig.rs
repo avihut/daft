@@ -416,23 +416,32 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
             fig_subcommand("clean", "Remove completed job records"),
         ]),
         args: None,
-        options: Some(vec![
-            FigOption {
-                name: FigName::Single("--all-repos".into()),
-                description: "Show jobs from all repos".into(),
-                args: None,
-            },
-            FigOption {
-                name: FigName::Single("--worktree".into()),
-                description: "Filter by worktree name".into(),
-                args: Some(FigOptionArg { suggestions: None }),
-            },
-            FigOption {
-                name: FigName::Single("--json".into()),
-                description: "Output as JSON".into(),
-                args: None,
-            },
-        ]),
+        options: Some({
+            let mut opts = vec![
+                FigOption {
+                    name: FigName::Single("--all".into()),
+                    description: "Show jobs across all worktrees".into(),
+                    args: None,
+                },
+                FigOption {
+                    name: FigName::Single("--worktree".into()),
+                    description: "Filter to a specific worktree".into(),
+                    args: Some(FigOptionArg { suggestions: None }),
+                },
+                FigOption {
+                    name: FigName::Single("--status".into()),
+                    description: "Filter by job status".into(),
+                    args: Some(FigOptionArg { suggestions: None }),
+                },
+                FigOption {
+                    name: FigName::Single("--hook".into()),
+                    description: "Filter to invocations of this hook type".into(),
+                    args: Some(FigOptionArg { suggestions: None }),
+                },
+            ];
+            opts.extend(build_emit_options("hooks jobs"));
+            opts
+        }),
     };
 
     FigSubcommand {

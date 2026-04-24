@@ -1,0 +1,25 @@
+name: Hooks jobs list format error cases
+description:
+  Invalid format values, flag conflicts, and legacy --json are rejected
+
+steps:
+  - name: --format bogus is rejected by clap
+    run: daft hooks jobs --format bogus 2>&1
+    expect:
+      exit_code: 2
+      output_contains:
+        - "invalid value"
+
+  - name: --format and --template conflict
+    run: "daft hooks jobs --format json --template 'x' 2>&1"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "cannot be used with"
+
+  - name: legacy --json is no longer recognized
+    run: daft hooks jobs --json 2>&1
+    expect:
+      exit_code: 2
+      output_contains:
+        - "unexpected argument"

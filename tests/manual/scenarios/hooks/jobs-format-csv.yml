@@ -1,0 +1,48 @@
+name: Hooks jobs list CSV format
+description: daft hooks jobs --format csv emits a CSV with header row
+
+repos:
+  - name: test-jobs-fmt-csv
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Jobs format csv"
+        commits:
+          - message: "Initial commit"
+      - name: feature/fmt-csv
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: greet
+              run: echo hi
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_JOBS_FMT_CSV
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-csv/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout branch to trigger hook
+    run: git-worktree-checkout feature/fmt-csv 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-csv/main"
+    expect:
+      exit_code: 0
+
+  - name: CSV output includes header and job row
+    run: daft hooks jobs --format csv 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-csv/feature/fmt-csv"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "invocation_id,invocation_short"
+        - ",greet,completed,"
