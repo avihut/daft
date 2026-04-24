@@ -34,6 +34,12 @@ impl CliPresenter {
         })
     }
 
+    /// Set the name-column width used when rendering compact finalization rows.
+    pub fn set_name_column_width(&self, width: usize) {
+        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
+        r.set_name_column_width(width);
+    }
+
     /// Convert a `JobResultEntry` (from `HookRenderer`) into our generic `JobResult`.
     fn entry_to_job_result(entry: JobResultEntry) -> JobResult {
         let status = match &entry.outcome {

@@ -10,15 +10,7 @@ use super::{CommandSpec, ExecReport, WorktreeOutcome};
 pub trait Sink: std::io::Write {}
 impl<T: std::io::Write> Sink for T {}
 
-pub fn render_header<W: Sink>(sink: &mut W, pipeline: &[CommandSpec]) -> std::io::Result<()> {
-    writeln!(
-        sink,
-        "────────────────────────────────────────────────────────────"
-    )?;
-    writeln!(sink, "Commands")?;
-    for (i, spec) in pipeline.iter().enumerate() {
-        writeln!(sink, "  {}. {}", i + 1, spec.display())?;
-    }
+pub fn render_header<W: Sink>(sink: &mut W, _pipeline: &[CommandSpec]) -> std::io::Result<()> {
     writeln!(
         sink,
         "────────────────────────────────────────────────────────────"

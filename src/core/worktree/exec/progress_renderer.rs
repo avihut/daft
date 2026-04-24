@@ -110,7 +110,14 @@ pub fn run_with_progress(
         compact_finalization: true,
         ..HookOutputConfig::default()
     };
-    let presenter: Arc<dyn JobPresenter> = CliPresenter::auto(&cfg);
+    let presenter_concrete = CliPresenter::auto(&cfg);
+    let max_name = targets
+        .iter()
+        .map(|t| t.branch_name.len())
+        .max()
+        .unwrap_or(crate::output::hook_progress::DEFAULT_NAME_COLUMN_WIDTH);
+    presenter_concrete.set_name_column_width(max_name);
+    let presenter: Arc<dyn JobPresenter> = presenter_concrete;
 
     // Deliberately skip presenter.on_phase_start — it prints the hook
     // header. The list-mode header above replaces it.
@@ -124,6 +131,27 @@ pub fn run_with_progress(
     // Deliberately skip presenter.on_phase_complete — it prints the hook
     // summary block. Compact per-row finalization + the caller's failed-
     // output dump already cover the user's needs.
+
+    // Emit skip rows for targets that never launched (e.g. cancelled before
+    // dispatch). This ensures every target gets a visible finalization row.
+    let dispatched: std::collections::HashSet<_> = outcomes
+        .iter()
+        .map(|o| o.target.worktree_path.clone())
+        .collect();
+    for target in targets {
+        if dispatched.contains(&target.worktree_path) {
+            continue;
+        }
+        for step in pipeline {
+            presenter.on_job_skipped(
+                &target.branch_name,
+                "",
+                std::time::Duration::ZERO,
+                false,
+                Some(&step.display()),
+            );
+        }
+    }
 
     Ok(ExecReport {
         outcomes,

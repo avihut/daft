@@ -1195,8 +1195,8 @@ mod tests {
         render_failed_output_dump(&mut out, &report, &pipeline).unwrap();
 
         let s = String::from_utf8(out).unwrap();
-        assert!(s.contains("Commands"), "missing Commands header");
-        assert!(s.contains("1. cargo test"), "missing pipeline row");
+        assert!(s.contains("Worktrees"), "missing Worktrees header");
+        assert!(!s.contains("Commands"), "Commands block must be absent");
         assert!(
             s.contains("✓") && s.contains("master"),
             "missing success row"

@@ -17,7 +17,7 @@ pub(super) const ITALIC: &str = "\x1b[3m";
 
 /// Default name-column width used when no target list is available to compute
 /// the actual maximum. Matches the legacy `list_renderer::render_outcome` format.
-pub(super) const DEFAULT_NAME_COLUMN_WIDTH: usize = 24;
+pub(crate) const DEFAULT_NAME_COLUMN_WIDTH: usize = 24;
 
 /// Check if hook visual output should be suppressed (e.g. during tests).
 ///
