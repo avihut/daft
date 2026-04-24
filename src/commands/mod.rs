@@ -21,6 +21,7 @@ pub mod layout;
 pub mod list;
 pub mod list_empty;
 pub mod list_live;
+pub mod merge;
 pub mod multi_remote;
 pub mod prune;
 pub mod release_notes;
