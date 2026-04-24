@@ -1,0 +1,59 @@
+name: Merge non-FF against ref-only target with no TTY refuses without prompting
+description:
+  "Prompt preset + non-TTY stdin folds to refuse; the adopt prompt must not be
+  shown"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create ref-only divergent target
+    run: |
+      # Anchor target-no-wt at main, then author a commit on top of it via
+      # plumbing so no worktree is materialized. Separately advance main on a
+      # different file so histories diverge without content-conflicting.
+      base=$(git rev-parse main)
+      tree=$(git rev-parse main^{tree})
+      side_sha=$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t \
+                 GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+                 git commit-tree $tree -p $base -m "target-side")
+      git update-ref refs/heads/target-no-wt $side_sha
+      echo m > main-ahead.txt
+      git add main-ahead.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "main ahead"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Merge with no TTY (`</dev/null`) and no flags — refuses silently
+    # `sh -c '... </dev/null'` forces stdin to be non-TTY. With the default
+    # Prompt preset and no --adopt-target, the decision collapses to No
+    # without ever emitting the prompt text.
+    run: sh -c 'git-worktree-merge main --into target-no-wt </dev/null 2>&1'
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no worktree"
+      output_not_contains:
+        # The prompt line ends with "[y/N]" — its absence is the signal that
+        # no prompt was emitted. The bail message mentions "create an
+        # ephemeral worktree" too, so we can't key on that alone.
+        - "[y/N]"
+
+  - name: Verify target-no-wt did not advance
+    run: |
+      # It still points at the side commit we created; main's "main ahead"
+      # commit is not part of target-no-wt's history.
+      git log --oneline target-no-wt
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "main ahead"

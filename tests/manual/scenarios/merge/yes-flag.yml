@@ -1,0 +1,69 @@
+name: Merge -y auto-accepts ephemeral-worktree prompt and announces the coercion
+description:
+  "`-y` coerces the adopt decision to Yes, announces the coercion on stderr, and
+  completes the ephemeral merge without prompting"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create ref-only divergent target with non-conflicting change
+    run: |
+      # Author a side commit on top of main without materializing a worktree,
+      # then advance main on a separate file so the two diverge without
+      # conflict.
+      base=$(git rev-parse main)
+      tree=$(git rev-parse main^{tree})
+      side_sha=$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t \
+                 GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+                 git commit-tree $tree -p $base -m "target-side commit")
+      git update-ref refs/heads/target-no-wt $side_sha
+      echo m > main-ahead.txt
+      git add main-ahead.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "main ahead"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Merge with -y and no stdin — coerces, announces, and completes
+    # `-y` must imply --adopt-target when no explicit adopt flag is passed,
+    # and must print the auto-accept announcement. `-m` avoids $EDITOR
+    # inside the ephemeral worktree where stdin is /dev/null.
+    run:
+      sh -c 'git-worktree-merge main --into target-no-wt -y -m "merge main into
+      target-no-wt" </dev/null 2>&1'
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "auto-accepting"
+        - "-y"
+        - "Merge complete."
+      output_not_contains:
+        # Prompt-only sentinel. With -y we should never prompt, even though
+        # the coercion log does mention "-y" and "auto-accepting".
+        - "[y/N]"
+
+  - name: Verify target-no-wt advanced
+    run: git log --oneline target-no-wt
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main ahead"
+        - "target-side commit"
+
+  - name: Verify no leftover ephemeral worktree
+    run: |
+      bare=$(git rev-parse --git-common-dir)
+      test ! -e "$bare/.daft-tmp/target-no-wt" && echo "cleaned"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["cleaned"]
