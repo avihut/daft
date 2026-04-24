@@ -67,12 +67,13 @@ pub struct AdoptChoice {
 
 /// User-configured default for adopt-target behavior.
 ///
-/// Drives [`decide_adopt`] when neither explicit adopt flag is set.
-/// Slice 13 will source this from `daft.merge.adoptTargetOnDemand`; until then
-/// the command layer hard-codes `Prompt`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Drives [`decide_adopt`] when neither explicit adopt flag is set. Sourced
+/// from `daft.merge.adoptTargetOnDemand` via `DaftSettings` and threaded
+/// through [`AdoptChoice::preset`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum AdoptPreset {
     /// Prompt the user in TTY, refuse in non-TTY (default).
+    #[default]
     Prompt,
     /// Always adopt.
     Yes,
