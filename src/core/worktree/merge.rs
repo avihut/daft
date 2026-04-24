@@ -1307,6 +1307,148 @@ pub fn execute_finish(params: &FinishParams, git: &GitCommand, project_root: &Pa
     Ok(())
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Post-merge cleanup (Slice 12): `-r` removes the source worktree; `-rb` also
+// deletes the source branch via `git branch -d` semantics (no force).
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Options for post-merge cleanup.
+///
+/// Constructed from the `-r`/`--remove` and `-b`/`--and-branch` CLI flags
+/// by the command layer. `also_branch` is only meaningful when
+/// `remove_worktree` is true (clap enforces `-b` requires `-r`).
+#[derive(Debug, Clone, Default)]
+pub struct CleanupOptions {
+    /// Remove the source worktree (if one exists).
+    pub remove_worktree: bool,
+    /// Also delete the source branch via `git branch -d`. Requires
+    /// `remove_worktree`.
+    pub also_branch: bool,
+}
+
+/// Classification of a source reference for cleanup purposes.
+///
+/// Each variant captures just enough state for [`execute_cleanup`] to decide
+/// what to do: which worktree path to remove (if any) and which branch name
+/// to delete (if `also_branch` is requested). Commit SHAs, tags, and other
+/// non-branch refs fall into `CommitOrOther`, for which no cleanup is
+/// possible and the source is silently skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceClass {
+    /// Source is a branch that has a worktree in the project.
+    BranchWithWorktree {
+        worktree_path: PathBuf,
+        branch: String,
+    },
+    /// Source is a branch that does NOT have a worktree.
+    BranchNoWorktree { branch: String },
+    /// Source is not a branch (commit SHA, tag, etc.) — nothing to clean up.
+    CommitOrOther,
+}
+
+/// Classify a source ref for cleanup.
+///
+/// Probes [`GitCommand::resolve_worktree_path`] first, which matches `source`
+/// against worktree paths, branch names, and directory names. On a hit, the
+/// worktree's current branch is read via [`branch_at_path`]; if that read
+/// fails (e.g. detached HEAD at the worktree path), we fall back to using
+/// `source` itself as the branch name so `also_branch` deletion still has
+/// something to target — `git branch -d` will produce its own error in that
+/// case.
+///
+/// On miss, we fall back to [`GitCommand::show_ref_exists`] on
+/// `refs/heads/<source>` to detect plain branch refs. Anything else (commit
+/// SHAs, tags, remote-tracking refs) returns `CommitOrOther` — no cleanup
+/// work is possible and no error is raised here; the caller silently skips.
+pub fn classify_source(source: &str, git: &GitCommand, project_root: &Path) -> SourceClass {
+    if let Ok(worktree_path) = git.resolve_worktree_path(source, project_root) {
+        let branch = branch_at_path(git, &worktree_path).unwrap_or_else(|_| source.to_string());
+        return SourceClass::BranchWithWorktree {
+            worktree_path,
+            branch,
+        };
+    }
+    if git
+        .show_ref_exists(&format!("refs/heads/{source}"))
+        .unwrap_or(false)
+    {
+        return SourceClass::BranchNoWorktree {
+            branch: source.to_string(),
+        };
+    }
+    SourceClass::CommitOrOther
+}
+
+/// Execute post-merge cleanup. Called only after a successful merge (not on
+/// conflict, not on already-up-to-date, not on failure).
+///
+/// For each source, classify via [`classify_source`] and then:
+/// * `BranchWithWorktree` — if `remove_worktree`, invoke `git worktree
+///   remove` without `--force`. If that fails, record the error and skip
+///   branch deletion for this source (we don't delete the branch of a
+///   worktree we couldn't remove). If `also_branch`, invoke `git branch -d`
+///   on the resolved branch name.
+/// * `BranchNoWorktree` — nothing to remove; if `also_branch`, invoke
+///   `git branch -d` on the branch.
+/// * `CommitOrOther` — silently skip; there is no worktree or branch to
+///   touch.
+///
+/// Errors are accumulated across sources and surfaced as a single combined
+/// error at the end. Partial cleanup is the norm (e.g., worktree removal
+/// succeeds but `git branch -d` refuses an unmerged branch); already-completed
+/// work is not rolled back.
+pub fn execute_cleanup(
+    sources: &[String],
+    options: &CleanupOptions,
+    git: &GitCommand,
+    project_root: &Path,
+) -> Result<()> {
+    let mut errors: Vec<String> = Vec::new();
+
+    for src in sources {
+        match classify_source(src, git, project_root) {
+            SourceClass::BranchWithWorktree {
+                worktree_path,
+                branch,
+            } => {
+                if options.remove_worktree {
+                    if let Err(e) = git.worktree_remove(&worktree_path, false) {
+                        errors.push(format!(
+                            "failed to remove worktree '{}': {}",
+                            worktree_path.display(),
+                            e
+                        ));
+                        // Don't attempt branch deletion for a source whose
+                        // worktree we failed to remove; git will refuse with
+                        // "checked out at" and the secondary error adds noise.
+                        continue;
+                    }
+                }
+                if options.also_branch {
+                    if let Err(e) = git.branch_delete(&branch, false) {
+                        errors.push(format!("failed to delete branch '{}': {}", branch, e));
+                    }
+                }
+            }
+            SourceClass::BranchNoWorktree { branch } => {
+                if options.also_branch {
+                    if let Err(e) = git.branch_delete(&branch, false) {
+                        errors.push(format!("failed to delete branch '{}': {}", branch, e));
+                    }
+                }
+            }
+            SourceClass::CommitOrOther => {
+                // Nothing to clean up — the source is not a branch.
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        anyhow::bail!("cleanup errors:\n  {}", errors.join("\n  "));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     //! Test coverage notes for [`resolve_target`]:
@@ -2000,5 +2142,38 @@ mod tests {
             ..AdoptChoice::default()
         };
         assert_eq!(resolve_adopt_flags(&only_no_adopt), (false, true));
+    }
+
+    // --- CleanupOptions (Slice 12) -----------------------------------------
+    //
+    // Most of the cleanup machinery — `classify_source` and `execute_cleanup`
+    // — interacts with real git (`resolve_worktree_path`, `show_ref_exists`,
+    // `worktree_remove`, `branch_delete`) and is verified end-to-end by the
+    // YAML scenarios in `tests/manual/scenarios/merge/remove-source*.yml`.
+    // The static shape is worth a dedicated assertion so changes to the
+    // struct shape surface here and not only in integration.
+
+    #[test]
+    fn cleanup_options_default_is_noop() {
+        let opts = CleanupOptions::default();
+        assert!(!opts.remove_worktree);
+        assert!(!opts.also_branch);
+    }
+
+    #[test]
+    fn cleanup_options_construction_preserves_fields() {
+        let opts = CleanupOptions {
+            remove_worktree: true,
+            also_branch: false,
+        };
+        assert!(opts.remove_worktree);
+        assert!(!opts.also_branch);
+
+        let opts_rb = CleanupOptions {
+            remove_worktree: true,
+            also_branch: true,
+        };
+        assert!(opts_rb.remove_worktree);
+        assert!(opts_rb.also_branch);
     }
 }

@@ -463,6 +463,30 @@ pub fn run() -> Result<()> {
         if !outcome.emitted_terminal_message {
             println!("Merge complete.");
         }
+
+        // Post-merge cleanup (Slice 12). Only runs on successful,
+        // non-up-to-date merges — the `already_up_to_date` and `failed`
+        // arms above have already returned or exited.
+        //
+        // Clap guarantees `-b` requires `-r`, so `args.and_branch` without
+        // `args.remove` is unreachable; the outer `args.remove` gate is
+        // sufficient. When cleanup errors happen (e.g. `git branch -d`
+        // refusing an unmerged branch after `--squash`), the merge itself
+        // succeeded — the cleanup error is surfaced so the caller knows
+        // which post-merge step failed, but any earlier successful cleanup
+        // step (worktree removal) is not rolled back.
+        if args.remove {
+            let cleanup_opts = crate::core::worktree::merge::CleanupOptions {
+                remove_worktree: args.remove,
+                also_branch: args.and_branch,
+            };
+            crate::core::worktree::merge::execute_cleanup(
+                &params.sources,
+                &cleanup_opts,
+                &git,
+                &project_root,
+            )?;
+        }
         Ok(())
     }
 }
