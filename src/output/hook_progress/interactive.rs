@@ -300,17 +300,10 @@ impl HookProgressRenderer {
             return;
         };
 
-        if let Some(ref sep) = state.separator {
-            self.mp.remove(sep);
-        }
-        for pb in &state.tail_lines {
-            self.mp.remove(pb);
-        }
-        if let Some(ref trailer) = state.trailer {
-            self.mp.remove(trailer);
-        }
-        self.mp.remove(&state.spinner);
+        self.remove_job_bars(&state);
 
+        // Non-compact branch intentionally emits nothing: cancellation is only
+        // reachable from exec paths, which always enable compact_finalization.
         if self.config.compact_finalization {
             let preview = state.command_preview.as_deref();
             self.mp
@@ -324,6 +317,8 @@ impl HookProgressRenderer {
                 .ok();
         }
 
+        // JobOutcome has no Cancelled variant; record as Failed so callers
+        // that inspect finished_jobs treat a cancelled step as non-success.
         self.finished_jobs.push(JobResultEntry {
             name: name.to_string(),
             outcome: JobOutcome::Failed,
@@ -342,16 +337,7 @@ impl HookProgressRenderer {
         use super::formatting::YELLOW;
 
         let stored_preview = if let Some(state) = self.jobs.remove(name) {
-            if let Some(ref sep) = state.separator {
-                self.mp.remove(sep);
-            }
-            for pb in &state.tail_lines {
-                self.mp.remove(pb);
-            }
-            if let Some(ref trailer) = state.trailer {
-                self.mp.remove(trailer);
-            }
-            self.mp.remove(&state.spinner);
+            self.remove_job_bars(&state);
             state.command_preview
         } else {
             None
@@ -393,20 +379,16 @@ impl HookProgressRenderer {
         });
     }
 
-    fn finish_job(&mut self, name: &str, success: bool, duration: Duration) {
-        let Some(state) = self.jobs.remove(name) else {
-            return;
-        };
-
-        // Remove the job's bars from MultiProgress instead of using
-        // `finish_and_clear`. The latter transitions the bar to `DoneHidden`
-        // and interacts with indicatif's zombie-line accounting: on drop,
-        // the bar's `mark_zombie` can feed non-zero line counts into
-        // `LineAdjust::Keep`, leaving the last-drawn spinner line stuck in
-        // scrollback above subsequent `mp.println` output. `mp.remove`
-        // hides the bar's draw target and unlinks it from the ordering,
-        // so the next `mp.println` does an atomic redraw that cleanly
-        // clears the old bar lines.
+    /// Remove the job's bars from MultiProgress instead of using
+    /// `finish_and_clear`. The latter transitions the bar to `DoneHidden`
+    /// and interacts with indicatif's zombie-line accounting: on drop,
+    /// the bar's `mark_zombie` can feed non-zero line counts into
+    /// `LineAdjust::Keep`, leaving the last-drawn spinner line stuck in
+    /// scrollback above subsequent `mp.println` output. `mp.remove`
+    /// hides the bar's draw target and unlinks it from the ordering,
+    /// so the next `mp.println` does an atomic redraw that cleanly
+    /// clears the old bar lines.
+    fn remove_job_bars(&self, state: &JobState) {
         if let Some(ref sep) = state.separator {
             self.mp.remove(sep);
         }
@@ -417,6 +399,14 @@ impl HookProgressRenderer {
             self.mp.remove(trailer);
         }
         self.mp.remove(&state.spinner);
+    }
+
+    fn finish_job(&mut self, name: &str, success: bool, duration: Duration) {
+        let Some(state) = self.jobs.remove(name) else {
+            return;
+        };
+
+        self.remove_job_bars(&state);
 
         if self.config.compact_finalization {
             let preview = state.command_preview.as_deref();

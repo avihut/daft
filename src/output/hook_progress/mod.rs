@@ -554,4 +554,29 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert!(matches!(jobs[0].outcome, JobOutcome::Failed));
     }
+
+    #[test]
+    fn compact_finalization_records_cancelled_without_panicking() {
+        let config = HookOutputConfig {
+            compact_finalization: true,
+            ..Default::default()
+        };
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job_with_description("cancelled-job", None, Some("sleep 10"));
+        renderer.finish_job_cancelled("cancelled-job", Duration::from_secs(2));
+        let jobs = renderer.take_finished_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert!(matches!(jobs[0].outcome, JobOutcome::Failed));
+    }
+
+    #[test]
+    fn plain_compact_finalization_cancelled_records_outcome() {
+        let mut renderer = PlainHookRenderer::new();
+        renderer.set_compact_finalization(true);
+        renderer.start_job_with_description("cancelled-job", None, Some("sleep 10"));
+        renderer.finish_job_cancelled("cancelled-job", Duration::from_secs(2));
+        let jobs = renderer.take_finished_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert!(matches!(jobs[0].outcome, JobOutcome::Failed));
+    }
 }

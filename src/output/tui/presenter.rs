@@ -404,6 +404,25 @@ mod tests {
     }
 
     #[test]
+    fn on_job_cancelled_sends_failed_event() {
+        let (tx, rx) = mpsc::channel();
+        let presenter = TuiPresenter::new(tx, "feat/x", HookType::PreRemove);
+
+        presenter.on_job_cancelled("deploy", Duration::from_secs(2));
+
+        let event = rx.try_recv().expect("should receive JobCompleted");
+        match event {
+            DagEvent::JobCompleted {
+                job_name, status, ..
+            } => {
+                assert_eq!(job_name, "deploy");
+                assert_eq!(status, JobCompletionStatus::Failed);
+            }
+            other => panic!("expected JobCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn on_job_skipped_sends_job_completed_with_reason() {
         let (tx, rx) = mpsc::channel();
         let presenter = TuiPresenter::new(tx, "main", HookType::PostCreate);

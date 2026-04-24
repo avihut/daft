@@ -130,6 +130,8 @@ impl PlainHookRenderer {
     }
 
     pub fn finish_job_cancelled(&mut self, name: &str, duration: Duration) {
+        // Non-compact branch intentionally emits nothing: cancellation is only
+        // reachable from exec paths, which always enable compact_finalization.
         if self.compact_finalization {
             let preview = self.previews.remove(name);
             eprintln!(
@@ -143,6 +145,8 @@ impl PlainHookRenderer {
                 )
             );
         }
+        // JobOutcome has no Cancelled variant; record as Failed so callers
+        // that inspect finished_jobs treat a cancelled step as non-success.
         self.finished_jobs.push(JobResultEntry {
             name: name.to_string(),
             outcome: JobOutcome::Failed,
