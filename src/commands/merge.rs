@@ -363,7 +363,25 @@ pub fn run() -> Result<()> {
         // "Already up to date."). Printing it again here would double-print.
         Ok(())
     } else if outcome.failed {
-        anyhow::bail!("merge conflicted — resolve then run `daft merge --continue`");
+        // Print a daft-authored conflict report to stderr and exit non-zero.
+        // We bypass the usual `anyhow::bail!` plumbing because anyhow-printed
+        // errors get the "Error:" prefix; for a multi-line report we want the
+        // user to read verbatim, that prefix would be noise. `std::process::exit`
+        // skips the rest of `main` — acceptable here because there's no further
+        // cleanup to run: git left the worktree in a conflicted state that the
+        // user now owns via --continue or --abort.
+        eprintln!("merge conflicted in {}", outcome.target_path.display());
+        if !outcome.conflicted_files.is_empty() {
+            eprintln!("conflicted files:");
+            for f in &outcome.conflicted_files {
+                eprintln!("  {}", f);
+            }
+        }
+        eprintln!();
+        eprintln!("resolve in the target worktree, then run:");
+        eprintln!("  daft merge --continue  # add <branch> if running from a different worktree");
+        eprintln!("  daft merge --abort     # add <branch> if running from a different worktree");
+        std::process::exit(1);
     } else {
         println!("Merge complete.");
         Ok(())

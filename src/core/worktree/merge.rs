@@ -443,6 +443,64 @@ pub struct StartOutcome {
     /// Slice 5+ will refine this into `conflicted` vs other failure modes via stderr parsing
     /// or `.git/MERGE_HEAD` inspection.
     pub failed: bool,
+    /// Absolute path to the resolved target worktree. Always populated so the
+    /// command layer can name the right directory in conflict reports and
+    /// success messages even when the user invoked cross-worktree via `--into`
+    /// and the CWD differs from the target.
+    pub target_path: PathBuf,
+    /// Files flagged with a conflict XY code by `git status --porcelain` in the
+    /// target worktree after a failed `git merge`. Non-empty only when
+    /// [`StartOutcome::failed`] is true and git actually left the worktree in a
+    /// conflicted state; other failure modes (unknown ref, bad flags) leave
+    /// this empty because `git status` reports no conflicts.
+    pub conflicted_files: Vec<String>,
+}
+
+/// Parse `git status --porcelain` output for conflict entries.
+///
+/// Kept as a pure string function (no IO) so it can be unit-tested without a
+/// real repository. The XY code in columns 1–2 encodes index/working-tree
+/// state; any of `UU`, `AA`, `DD`, `AU`, `UA`, `DU`, `UD` marks an unmerged
+/// entry ([Git docs][porcelain]). Everything else — `?? `, ` M `, ` A `, etc.
+/// — is a normal index/worktree diff and is ignored.
+///
+/// [porcelain]: https://git-scm.com/docs/git-status#_porcelain_format_version_1
+fn parse_conflicted_files_from_porcelain(porcelain: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    for line in porcelain.lines() {
+        let code: String = line.chars().take(2).collect();
+        let is_conflict = matches!(
+            code.as_str(),
+            "UU" | "AA" | "DD" | "AU" | "UA" | "DU" | "UD"
+        );
+        if is_conflict && line.len() > 3 {
+            files.push(line[3..].to_string());
+        }
+    }
+    files
+}
+
+/// Return the list of files with merge conflicts in the given worktree.
+///
+/// Reads `git status --porcelain` and filters via
+/// [`parse_conflicted_files_from_porcelain`]. Returns an empty list — not an
+/// error — if status itself fails (a broken worktree shouldn't surface a
+/// second error on top of the merge conflict the caller is already reporting).
+pub fn conflicted_files(worktree: &Path) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .args([
+            "-C",
+            &worktree.display().to_string(),
+            "status",
+            "--porcelain",
+        ])
+        .output()
+        .with_context(|| format!("failed to read status in '{}'", worktree.display()))?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    let porcelain = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_conflicted_files_from_porcelain(&porcelain))
 }
 
 /// Execute a merge against the resolved target.
@@ -514,6 +572,8 @@ pub fn execute_start(
         return Ok(StartOutcome {
             already_up_to_date: true,
             failed: false,
+            target_path: resolved.path.clone(),
+            conflicted_files: Vec::new(),
         });
     }
 
@@ -545,10 +605,23 @@ pub fn execute_start(
             )
         })?;
 
+    let failed = !status.success();
+    // Only probe `git status` on failure — the success path already left the
+    // worktree clean, and conflict state is only meaningful post-failure.
+    // `conflicted_files` swallows IO errors into an empty list so a broken
+    // status probe never masks the real merge error with a secondary one.
+    let files = if failed {
+        conflicted_files(&resolved.path).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     Ok(StartOutcome {
         // Already-up-to-date is handled by the pre-flight above.
         already_up_to_date: false,
-        failed: !status.success(),
+        failed,
+        target_path: resolved.path.clone(),
+        conflicted_files: files,
     })
 }
 
@@ -959,6 +1032,55 @@ mod tests {
         let outcome = StartOutcome::default();
         assert!(!outcome.already_up_to_date);
         assert!(!outcome.failed);
+        assert_eq!(outcome.target_path, PathBuf::new());
+        assert!(outcome.conflicted_files.is_empty());
+    }
+
+    #[test]
+    fn parses_uu_conflict_line() {
+        assert_eq!(
+            parse_conflicted_files_from_porcelain("UU c.txt\n"),
+            vec!["c.txt"]
+        );
+    }
+
+    #[test]
+    fn parses_multiple_conflict_types() {
+        let input = "UU a.txt\nAA b.txt\n M normal.txt\nDD c.txt\n";
+        assert_eq!(
+            parse_conflicted_files_from_porcelain(input),
+            vec!["a.txt", "b.txt", "c.txt"]
+        );
+    }
+
+    #[test]
+    fn parses_all_conflict_xy_codes() {
+        // Every code listed in the porcelain docs as unmerged.
+        let input = "UU a\nAA b\nDD c\nAU d\nUA e\nDU f\nUD g\n";
+        assert_eq!(
+            parse_conflicted_files_from_porcelain(input),
+            vec!["a", "b", "c", "d", "e", "f", "g"]
+        );
+    }
+
+    #[test]
+    fn skips_non_conflict_status_codes() {
+        let input = " M modified.txt\n?? untracked.txt\n A added.txt\n M  deleted.txt\n";
+        assert!(parse_conflicted_files_from_porcelain(input).is_empty());
+    }
+
+    #[test]
+    fn handles_empty_porcelain() {
+        assert!(parse_conflicted_files_from_porcelain("").is_empty());
+    }
+
+    #[test]
+    fn conflicted_files_on_non_git_dir_returns_empty() {
+        // `git status` fails on a plain dir with no .git; helper swallows that
+        // into an empty list rather than bubbling an error up.
+        let tmp = tempfile::tempdir().unwrap();
+        let files = conflicted_files(tmp.path()).unwrap_or_default();
+        assert!(files.is_empty());
     }
 
     #[test]
