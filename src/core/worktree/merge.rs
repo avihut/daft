@@ -29,6 +29,7 @@
 
 use crate::git::GitCommand;
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -333,6 +334,124 @@ pub struct ResolvedTarget {
     /// Path to the target worktree on disk, when one exists. `None` means the
     /// target is a branch ref with no sibling worktree.
     pub path: Option<PathBuf>,
+}
+
+/// Env-var context carried to merge-pre / merge-post hooks.
+///
+/// Constructed once per merge (after target resolution and pre-flight) and
+/// injected into the hook environment via
+/// [`HookContext::with_extra_env`](crate::hooks::HookContext::with_extra_env)
+/// alongside the universal `DAFT_*` vars. Kept as a flat `BTreeMap` rather
+/// than a typed struct so adding new env vars is a one-line change and hook
+/// scripts see them via the same mechanism as every other DAFT_* variable.
+///
+/// `BTreeMap` rather than `HashMap` so ordering is deterministic — tests and
+/// debug logs read the same every run.
+#[derive(Debug, Clone)]
+pub struct MergeHookContext {
+    pub env: BTreeMap<String, String>,
+}
+
+/// Outcome of a merge operation as carried to `merge-post`.
+///
+/// Captures just enough to populate `DAFT_MERGE_RESULT`, `DAFT_MERGE_COMMIT_SHA`,
+/// `DAFT_MERGE_CONFLICTED_FILES`, and `DAFT_MERGE_PROMOTED_FROM_EPHEMERAL`.
+/// `AlreadyUpToDate` is included for completeness even though the current
+/// merge flow short-circuits on that check before firing merge-pre — a future
+/// slice that moves hooks earlier will want this variant.
+#[derive(Debug, Clone)]
+pub enum PostOutcome {
+    Success {
+        commit_sha: String,
+    },
+    Conflict {
+        files: Vec<String>,
+        promoted_from_ephemeral: bool,
+    },
+    AlreadyUpToDate,
+}
+
+impl MergeHookContext {
+    /// Build the merge-pre env-var set from the resolved merge plan.
+    ///
+    /// `mode` derives from the flag combination (octopus wins over squash
+    /// wins over ff-only; single-source merges without those flags are
+    /// `"merge"`). `is_ephemeral` is set by the caller when the merge will
+    /// be performed in an ephemeral worktree. `cross_worktree` is true when
+    /// the target worktree is not the current worktree.
+    pub fn for_pre(
+        sources: &[String],
+        target: &ResolvedTarget,
+        flags: &EffectiveFlags,
+        is_ephemeral: bool,
+        cross_worktree: bool,
+    ) -> Self {
+        let mode = if sources.len() >= 2 {
+            "octopus"
+        } else if flags.squash == Some(true) {
+            "squash"
+        } else if flags.ff == Some(FfMode::Only) {
+            "ff"
+        } else {
+            "merge"
+        };
+        let mut env = BTreeMap::new();
+        env.insert("DAFT_MERGE_SOURCES".into(), sources.join(" "));
+        env.insert("DAFT_MERGE_TARGET_BRANCH".into(), target.branch.clone());
+        env.insert(
+            "DAFT_MERGE_TARGET_PATH".into(),
+            target
+                .path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+        );
+        env.insert("DAFT_MERGE_MODE".into(), mode.into());
+        env.insert(
+            "DAFT_MERGE_STRATEGY".into(),
+            flags.strategy.clone().unwrap_or_default(),
+        );
+        env.insert("DAFT_MERGE_EPHEMERAL".into(), is_ephemeral.to_string());
+        env.insert(
+            "DAFT_MERGE_CROSS_WORKTREE".into(),
+            cross_worktree.to_string(),
+        );
+        Self { env }
+    }
+
+    /// Extend a pre context with post-outcome fields, consuming `self`.
+    ///
+    /// Overrides any pre-existing values for the post-only keys; other keys
+    /// (sources, target, mode, etc.) pass through untouched so hook scripts
+    /// can correlate pre and post.
+    pub fn extend_for_post(mut self, outcome: PostOutcome) -> Self {
+        let (result, sha, files, promoted) = match outcome {
+            PostOutcome::Success { commit_sha } => {
+                ("success", commit_sha, String::new(), "false".to_string())
+            }
+            PostOutcome::Conflict {
+                files,
+                promoted_from_ephemeral,
+            } => (
+                "conflict",
+                String::new(),
+                files.join("\n"),
+                promoted_from_ephemeral.to_string(),
+            ),
+            PostOutcome::AlreadyUpToDate => (
+                "already-up-to-date",
+                String::new(),
+                String::new(),
+                "false".to_string(),
+            ),
+        };
+        self.env.insert("DAFT_MERGE_RESULT".into(), result.into());
+        self.env.insert("DAFT_MERGE_COMMIT_SHA".into(), sha);
+        self.env.insert("DAFT_MERGE_CONFLICTED_FILES".into(), files);
+        self.env
+            .insert("DAFT_MERGE_PROMOTED_FROM_EPHEMERAL".into(), promoted);
+        self
+    }
 }
 
 /// Resolve the merge target.
@@ -2200,5 +2319,214 @@ mod tests {
         };
         assert!(opts_rb.remove_worktree);
         assert!(opts_rb.also_branch);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // MergeHookContext — env-var construction for merge-pre / merge-post.
+    // These tests lock the exact string values hook scripts will observe.
+    // ─────────────────────────────────────────────────────────────────
+
+    fn target_with_worktree(branch: &str, path: &str) -> ResolvedTarget {
+        ResolvedTarget {
+            branch: branch.into(),
+            path: Some(PathBuf::from(path)),
+        }
+    }
+
+    #[test]
+    fn pre_context_octopus_mode() {
+        let flags = EffectiveFlags::default();
+        let target = target_with_worktree("main", "/p/main");
+        let sources = vec!["feat-a".into(), "feat-b".into(), "feat-c".into()];
+        let ctx = MergeHookContext::for_pre(&sources, &target, &flags, false, false);
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_MODE").map(String::as_str),
+            Some("octopus")
+        );
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_SOURCES").map(String::as_str),
+            Some("feat-a feat-b feat-c")
+        );
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_TARGET_BRANCH").map(String::as_str),
+            Some("main")
+        );
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_TARGET_PATH").map(String::as_str),
+            Some("/p/main")
+        );
+    }
+
+    #[test]
+    fn pre_context_squash_mode() {
+        let flags = EffectiveFlags {
+            squash: Some(true),
+            ..EffectiveFlags::default()
+        };
+        let target = target_with_worktree("main", "/p/main");
+        let ctx = MergeHookContext::for_pre(&["feat".into()], &target, &flags, false, false);
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_MODE").map(String::as_str),
+            Some("squash")
+        );
+    }
+
+    #[test]
+    fn pre_context_ff_mode() {
+        let flags = EffectiveFlags {
+            ff: Some(FfMode::Only),
+            ..EffectiveFlags::default()
+        };
+        let target = target_with_worktree("main", "/p/main");
+        let ctx = MergeHookContext::for_pre(&["feat".into()], &target, &flags, false, false);
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_MODE").map(String::as_str),
+            Some("ff")
+        );
+    }
+
+    #[test]
+    fn pre_context_merge_mode_default() {
+        // Single source, no squash, no ff-only → plain "merge".
+        let flags = EffectiveFlags::default();
+        let target = target_with_worktree("main", "/p/main");
+        let ctx = MergeHookContext::for_pre(&["feat".into()], &target, &flags, false, false);
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_MODE").map(String::as_str),
+            Some("merge")
+        );
+    }
+
+    #[test]
+    fn pre_context_cross_worktree_true() {
+        let flags = EffectiveFlags::default();
+        let target = target_with_worktree("main", "/p/main");
+        let ctx = MergeHookContext::for_pre(&["feat".into()], &target, &flags, false, true);
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_CROSS_WORKTREE").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_EPHEMERAL").map(String::as_str),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn pre_context_ephemeral_true() {
+        let flags = EffectiveFlags::default();
+        let target = ResolvedTarget {
+            branch: "main".into(),
+            path: None,
+        };
+        let ctx = MergeHookContext::for_pre(&["feat".into()], &target, &flags, true, false);
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_EPHEMERAL").map(String::as_str),
+            Some("true")
+        );
+        // Ref-only target → target path is empty string (consistent; scripts
+        // can test `[ -z "$DAFT_MERGE_TARGET_PATH" ]`).
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_TARGET_PATH").map(String::as_str),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn pre_context_strategy_passthrough() {
+        let flags = EffectiveFlags {
+            strategy: Some("ours".into()),
+            ..EffectiveFlags::default()
+        };
+        let target = target_with_worktree("main", "/p/main");
+        let ctx = MergeHookContext::for_pre(&["feat".into()], &target, &flags, false, false);
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_STRATEGY").map(String::as_str),
+            Some("ours")
+        );
+    }
+
+    #[test]
+    fn post_context_success_sets_sha() {
+        let flags = EffectiveFlags::default();
+        let target = target_with_worktree("main", "/p/main");
+        let pre = MergeHookContext::for_pre(&["feat".into()], &target, &flags, false, false);
+        let post = pre.extend_for_post(PostOutcome::Success {
+            commit_sha: "deadbeef1234".into(),
+        });
+        assert_eq!(
+            post.env.get("DAFT_MERGE_RESULT").map(String::as_str),
+            Some("success")
+        );
+        assert_eq!(
+            post.env.get("DAFT_MERGE_COMMIT_SHA").map(String::as_str),
+            Some("deadbeef1234")
+        );
+        assert_eq!(
+            post.env
+                .get("DAFT_MERGE_CONFLICTED_FILES")
+                .map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            post.env
+                .get("DAFT_MERGE_PROMOTED_FROM_EPHEMERAL")
+                .map(String::as_str),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn post_context_conflict_sets_files_and_promoted() {
+        let flags = EffectiveFlags::default();
+        let target = target_with_worktree("main", "/p/main");
+        let pre = MergeHookContext::for_pre(&["feat".into()], &target, &flags, true, false);
+        let post = pre.extend_for_post(PostOutcome::Conflict {
+            files: vec!["a.txt".into(), "b.txt".into()],
+            promoted_from_ephemeral: true,
+        });
+        assert_eq!(
+            post.env.get("DAFT_MERGE_RESULT").map(String::as_str),
+            Some("conflict")
+        );
+        assert_eq!(
+            post.env.get("DAFT_MERGE_COMMIT_SHA").map(String::as_str),
+            Some("")
+        );
+        // Files are newline-joined so scripts can iterate with `while read`.
+        assert_eq!(
+            post.env
+                .get("DAFT_MERGE_CONFLICTED_FILES")
+                .map(String::as_str),
+            Some("a.txt\nb.txt")
+        );
+        assert_eq!(
+            post.env
+                .get("DAFT_MERGE_PROMOTED_FROM_EPHEMERAL")
+                .map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn post_context_already_up_to_date() {
+        let flags = EffectiveFlags::default();
+        let target = target_with_worktree("main", "/p/main");
+        let pre = MergeHookContext::for_pre(&["feat".into()], &target, &flags, false, false);
+        let post = pre.extend_for_post(PostOutcome::AlreadyUpToDate);
+        assert_eq!(
+            post.env.get("DAFT_MERGE_RESULT").map(String::as_str),
+            Some("already-up-to-date")
+        );
+        assert_eq!(
+            post.env.get("DAFT_MERGE_COMMIT_SHA").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            post.env
+                .get("DAFT_MERGE_CONFLICTED_FILES")
+                .map(String::as_str),
+            Some("")
+        );
     }
 }

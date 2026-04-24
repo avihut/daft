@@ -5,7 +5,7 @@
 
 use super::HookType;
 use crate::hooks::tracking::TrackedAttribute;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Context information for hook execution.
@@ -61,6 +61,13 @@ pub struct HookContext {
     pub old_branch_name: Option<String>,
     /// During move hooks, the set of changed attributes for job filtering.
     pub changed_attributes: Option<HashSet<TrackedAttribute>>,
+
+    /// Hook-specific additional env vars merged into the executed hook's
+    /// environment on top of the universal `DAFT_*` set. Populated by
+    /// hook-firing call sites that carry their own context (e.g. the merge
+    /// command injects `DAFT_MERGE_*` here). Ordering is kept stable
+    /// (`BTreeMap`) so overriding/appending is deterministic in tests.
+    pub extra_env: BTreeMap<String, String>,
 }
 
 /// Reason why a worktree is being removed.
@@ -116,7 +123,17 @@ impl HookContext {
             old_worktree_path: None,
             old_branch_name: None,
             changed_attributes: None,
+            extra_env: BTreeMap::new(),
         }
+    }
+
+    /// Attach hook-specific additional env vars (e.g. `DAFT_MERGE_*` for
+    /// merge hooks). Merged into the hook environment after the universal
+    /// vars, so later calls win over earlier ones — a no-op here since
+    /// `new()` starts with an empty map.
+    pub fn with_extra_env(mut self, extra: BTreeMap<String, String>) -> Self {
+        self.extra_env = extra;
+        self
     }
 
     /// Set whether this is a new branch.
@@ -209,6 +226,14 @@ impl HookEnvironment {
             if let Some(ref old_branch) = ctx.old_branch_name {
                 env.set("DAFT_OLD_BRANCH_NAME", old_branch);
             }
+        }
+
+        // Hook-specific extra vars — applied last so callers can override
+        // the universal defaults if needed (e.g. MergeHookContext stamps
+        // `DAFT_MERGE_*` here). No sanitization: callers are trusted and
+        // values are shell-escaped downstream in the executor.
+        for (k, v) in &ctx.extra_env {
+            env.set(k, v);
         }
 
         env
@@ -444,6 +469,7 @@ mod tests {
             old_worktree_path: Some(PathBuf::from("/project/old-wt")),
             old_branch_name: Some("feat/old-name".to_string()),
             changed_attributes: None,
+            extra_env: BTreeMap::new(),
         };
         let env = HookEnvironment::from_context(&ctx);
         assert_eq!(env.vars.get("DAFT_IS_MOVE").unwrap(), "true");
@@ -477,6 +503,7 @@ mod tests {
             old_worktree_path: None,
             old_branch_name: None,
             changed_attributes: None,
+            extra_env: BTreeMap::new(),
         };
         let env = HookEnvironment::from_context(&ctx);
         assert!(!env.vars.contains_key("DAFT_IS_MOVE"));
