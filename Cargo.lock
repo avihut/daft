@@ -711,6 +711,7 @@ dependencies = [
  "globset",
  "ignore",
  "indicatif",
+ "libc",
  "nucleo-matcher",
  "pager",
  "pathdiff",
