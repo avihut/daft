@@ -371,10 +371,21 @@ pub fn run() -> Result<()> {
     }
 
     let flags = effective_flags_from_args(&args);
+    // Pass the adopt-related CLI flags through verbatim; clap enforces
+    // `--adopt-target` vs `--no-adopt-target` mutual exclusion upstream, and
+    // `-y`'s coercion to `--adopt-target` (and its announcement) happens in
+    // `resolve_adopt_flags` inside the ref-only non-FF branch so the log
+    // line fires exactly once, at the point the coercion matters.
+    let adopt = crate::core::worktree::merge::AdoptChoice {
+        flag_yes: args.adopt_target,
+        flag_no: args.no_adopt_target,
+        yes_flag: args.yes,
+    };
     let params = crate::core::worktree::merge::StartParams {
         sources: args.sources,
         target: args.into,
         flags,
+        adopt,
     };
     let outcome = crate::core::worktree::merge::execute_start(&params, &git, &project_root)?;
 

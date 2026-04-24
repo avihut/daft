@@ -42,6 +42,128 @@ pub struct StartParams {
     /// Git passthrough flags. Serialized into the `git merge` argv between the
     /// `merge` keyword and the source list.
     pub flags: EffectiveFlags,
+    /// Caller's stance on adopting a ref-only target via an ephemeral worktree
+    /// when the merge cannot fast-forward. Consulted only on the ref-only
+    /// non-FF branch of [`execute_start`]; ignored elsewhere.
+    pub adopt: AdoptChoice,
+}
+
+/// Caller-provided flag state for the adopt-target decision.
+///
+/// Maps 1:1 to the CLI:
+/// * `flag_yes` — `--adopt-target` was passed.
+/// * `flag_no` — `--no-adopt-target` was passed.
+/// * `yes_flag` — `-y`/`--yes` was passed.
+///
+/// Clap enforces at parse time that `flag_yes` and `flag_no` are not both set.
+/// `yes_flag` is orthogonal and coerces to `flag_yes` only when neither adopt
+/// flag is set (see [`resolve_adopt_flags`]).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AdoptChoice {
+    pub flag_yes: bool,
+    pub flag_no: bool,
+    pub yes_flag: bool,
+}
+
+/// User-configured default for adopt-target behavior.
+///
+/// Drives [`decide_adopt`] when neither explicit adopt flag is set.
+/// Slice 13 will source this from `daft.merge.adoptTargetOnDemand`; until then
+/// the command layer hard-codes `Prompt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdoptPreset {
+    /// Prompt the user in TTY, refuse in non-TTY (default).
+    Prompt,
+    /// Always adopt.
+    Yes,
+    /// Always refuse.
+    No,
+}
+
+/// Result of the adopt-target decision.
+///
+/// `Yes`/`No` are final; `Ask` means the caller must prompt the user (e.g.
+/// via [`ask_adopt_user`]) and proceed based on the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdoptDecision {
+    /// Proceed with ephemeral worktree creation.
+    Yes,
+    /// Refuse; bail with guidance.
+    No,
+    /// Prompt the user interactively.
+    Ask,
+}
+
+/// Decide whether to create an ephemeral worktree.
+///
+/// Flags win over preset; `--adopt-target` and `--no-adopt-target` are
+/// mutually exclusive (enforced by clap upstream). Without flags, `preset`
+/// drives the decision: `Yes`/`No` are always final, and `Prompt` returns
+/// `Ask` when stdin is a TTY or `No` otherwise so piped/non-interactive
+/// invocations never hang.
+///
+/// Pure — no I/O, no global state. The `is_tty` input is the caller's
+/// observation of stdin at the moment of the decision.
+pub fn decide_adopt(
+    flag_yes: bool,
+    flag_no: bool,
+    is_tty: bool,
+    preset: AdoptPreset,
+) -> AdoptDecision {
+    if flag_yes {
+        return AdoptDecision::Yes;
+    }
+    if flag_no {
+        return AdoptDecision::No;
+    }
+    match (preset, is_tty) {
+        (AdoptPreset::Yes, _) => AdoptDecision::Yes,
+        (AdoptPreset::No, _) => AdoptDecision::No,
+        (AdoptPreset::Prompt, true) => AdoptDecision::Ask,
+        (AdoptPreset::Prompt, false) => AdoptDecision::No,
+    }
+}
+
+/// Coerce `-y` into an explicit `--adopt-target` when neither adopt flag is
+/// supplied, emitting a single-line announcement for traceability.
+///
+/// Returns `(flag_yes, flag_no)` ready to feed into [`decide_adopt`]. When
+/// `-y` triggered the coercion we log to stderr so the invocation stays
+/// self-describing in scripts and CI logs. If either explicit adopt flag is
+/// already set, `-y` is a no-op on this axis (explicit wins over implicit);
+/// no announcement is emitted.
+pub fn resolve_adopt_flags(adopt: &AdoptChoice) -> (bool, bool) {
+    if adopt.yes_flag && !adopt.flag_yes && !adopt.flag_no {
+        eprintln!("merge: auto-accepting adopt-target prompt because -y was passed");
+        (true, false)
+    } else {
+        (adopt.flag_yes, adopt.flag_no)
+    }
+}
+
+/// Prompt the user to confirm ephemeral worktree creation for a non-FF merge
+/// against a ref-only target.
+///
+/// Writes the prompt to stderr (keeping stdout clean for the final status
+/// line) and reads a single line from stdin. Only an exact `y`/`yes`
+/// (case-insensitive, trimmed) returns true; any other response — including
+/// an empty line or EOF — is treated as "no", matching the `[y/N]` default.
+pub fn ask_adopt_user(target_branch: &str) -> Result<bool> {
+    use std::io::{self, Write};
+    eprint!(
+        "target '{}' has no worktree and this merge cannot fast-forward.\n\
+         create an ephemeral worktree to perform the merge? [y/N] ",
+        target_branch
+    );
+    io::stderr().flush().ok();
+    let mut buf = String::new();
+    io::stdin()
+        .read_line(&mut buf)
+        .context("failed to read answer for adopt-target prompt")?;
+    Ok(matches!(
+        buf.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 /// Fast-forward mode explicitly requested on the CLI.
@@ -681,11 +803,17 @@ fn execute_start_in_worktree(params: &StartParams, path: PathBuf) -> Result<Star
 
 /// Ref-only merge: the target branch has no worktree.
 ///
-/// Only pure fast-forwards are supported here — we advance the branch ref
-/// via `git update-ref` without touching a working tree. Non-FF merges
-/// against ref-only targets require a worktree (materialized by the user
-/// via `daft checkout`, or ephemerally by Slice 10's future adopt-target
-/// flow) and currently bail with explicit guidance.
+/// Two outcomes are supported:
+///
+/// * Pure fast-forward — advance the branch ref via `git update-ref`
+///   without touching a working tree.
+/// * Non-FF — consult the adopt-target decision. On `Yes`, materialize an
+///   ephemeral worktree, perform the merge there, and remove it on success
+///   (Slice 10). On `No`, bail with guidance. `Ask` means prompt the user
+///   interactively via [`ask_adopt_user`].
+///
+/// Octopus merges (>= 2 sources) into ref-only targets are rejected upfront:
+/// octopus always creates a merge commit, which requires a working tree.
 fn execute_start_ref_only(
     params: &StartParams,
     git: &GitCommand,
@@ -722,16 +850,109 @@ fn execute_start_ref_only(
         });
     }
 
-    // Non-FF (divergent histories, --no-ff, --squash): materializing a
-    // worktree is required. Slice 10 will add an --adopt-target flow; for
-    // now, bail with an explicit checkout hint.
-    anyhow::bail!(
-        "target branch '{}' has no worktree and merge cannot fast-forward (histories diverge, \
-         or --no-ff/--squash requested); run `daft checkout {}` first to materialize a worktree, \
-         then retry",
-        target_branch,
-        target_branch,
-    );
+    // Non-FF path: decide whether to materialize an ephemeral worktree.
+    //
+    // `-y` coerces to `--adopt-target` when neither adopt flag is explicit
+    // (announced on stderr for traceability). The preset is hard-coded to
+    // `Prompt` for now; TODO(slice-13): load `daft.merge.adoptTargetOnDemand`
+    // from `DaftSettings` and thread it through here.
+    let (flag_yes, flag_no) = resolve_adopt_flags(&params.adopt);
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let preset = AdoptPreset::Prompt;
+    let decision = decide_adopt(flag_yes, flag_no, is_tty, preset);
+
+    let should_adopt = match decision {
+        AdoptDecision::Yes => true,
+        AdoptDecision::No => false,
+        AdoptDecision::Ask => ask_adopt_user(target_branch)?,
+    };
+
+    if !should_adopt {
+        anyhow::bail!(
+            "target branch '{}' has no worktree and merge cannot fast-forward (histories diverge, \
+             or --no-ff/--squash requested); run `daft checkout {}` first to materialize a worktree, \
+             or re-run with --adopt-target (or -y) to create an ephemeral worktree",
+            target_branch,
+            target_branch,
+        );
+    }
+
+    execute_ephemeral_merge(params, target_branch)
+}
+
+/// Materialize an ephemeral worktree for a ref-only target, run the merge
+/// there, and clean up on success.
+///
+/// Slice 10 behavior:
+/// * Success — remove the temp worktree (the ref has already advanced via
+///   the merge commit in the worktree).
+/// * Conflict — leave the temp worktree in place and report its path.
+///   Slice 11 will promote the conflicted worktree to its layout-resolved
+///   path and fire `worktree-post-create` so the user can resolve in a
+///   canonical location.
+///
+/// Pure failure modes other than conflict (e.g. malformed flags, missing
+/// refs) propagate through git's non-zero exit and are surfaced by the
+/// caller's existing conflict-report path. `conflicted_files` swallows
+/// status errors into an empty list so a broken worktree never masks the
+/// real merge error with a secondary one.
+fn execute_ephemeral_merge(params: &StartParams, target_branch: &str) -> Result<StartOutcome> {
+    let bare_root = crate::get_git_common_dir()
+        .context("failed to locate bare git directory for ephemeral worktree")?;
+    let temp_path = crate::core::worktree::temp_worktree::create(&bare_root, target_branch)
+        .with_context(|| {
+            format!(
+                "failed to create ephemeral worktree for '{}'",
+                target_branch
+            )
+        })?;
+
+    let mut argv: Vec<String> = vec!["merge".to_string()];
+    argv.extend(render_flags(&params.flags));
+    argv.extend(params.sources.iter().cloned());
+
+    let status = Command::new("git")
+        .args(&argv)
+        .current_dir(&temp_path)
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to invoke git merge in ephemeral worktree at '{}'",
+                temp_path.display()
+            )
+        })?;
+
+    if status.success() {
+        // Ref advanced inside the temp worktree via the merge commit; the
+        // worktree itself is no longer needed. `temp_worktree::remove` does
+        // best-effort cleanup (falls back to rm -rf + prune) so a stale
+        // pointer from a half-removed worktree doesn't block future merges.
+        crate::core::worktree::temp_worktree::remove(&temp_path).with_context(|| {
+            format!(
+                "failed to remove ephemeral worktree at '{}'",
+                temp_path.display()
+            )
+        })?;
+        return Ok(StartOutcome {
+            already_up_to_date: false,
+            failed: false,
+            target_path: PathBuf::new(),
+            conflicted_files: Vec::new(),
+            emitted_terminal_message: false,
+        });
+    }
+
+    // Conflict path: leave the ephemeral worktree in place so the user (or
+    // Slice 11) can resolve. Report conflicted files so the command layer's
+    // conflict report has something useful to show.
+    let files = conflicted_files(&temp_path).unwrap_or_default();
+    Ok(StartOutcome {
+        already_up_to_date: false,
+        failed: true,
+        target_path: temp_path,
+        conflicted_files: files,
+        emitted_terminal_message: false,
+    })
 }
 
 /// Returns true when a merge can be a pure fast-forward of the target ref to
@@ -1026,6 +1247,7 @@ mod tests {
             sources: vec!["feature/x".to_string(), "feature/y".to_string()],
             target: None,
             flags: EffectiveFlags::default(),
+            adopt: AdoptChoice::default(),
         };
         assert_eq!(params.sources.len(), 2);
         assert_eq!(params.sources[0], "feature/x");
@@ -1038,6 +1260,7 @@ mod tests {
             sources: vec!["feature/x".to_string()],
             target: Some("main".to_string()),
             flags: EffectiveFlags::default(),
+            adopt: AdoptChoice::default(),
         };
         assert_eq!(params.target.as_deref(), Some("main"));
     }
@@ -1506,5 +1729,132 @@ mod tests {
         };
         assert!(is_pure_ff_eligible(1, &auto, Some(true)));
         assert!(is_pure_ff_eligible(1, &only, Some(true)));
+    }
+
+    // --- decide_adopt -------------------------------------------------------
+
+    #[test]
+    fn decide_adopt_flag_yes_wins_over_preset() {
+        // Even a No preset loses to an explicit --adopt-target flag.
+        assert_eq!(
+            decide_adopt(true, false, false, AdoptPreset::No),
+            AdoptDecision::Yes
+        );
+        assert_eq!(
+            decide_adopt(true, false, true, AdoptPreset::Prompt),
+            AdoptDecision::Yes
+        );
+    }
+
+    #[test]
+    fn decide_adopt_flag_no_wins_over_preset() {
+        // Even a Yes preset loses to an explicit --no-adopt-target flag.
+        assert_eq!(
+            decide_adopt(false, true, true, AdoptPreset::Yes),
+            AdoptDecision::No
+        );
+        assert_eq!(
+            decide_adopt(false, true, false, AdoptPreset::Prompt),
+            AdoptDecision::No
+        );
+    }
+
+    #[test]
+    fn decide_adopt_preset_yes_no_flag() {
+        // Preset::Yes is final regardless of TTY state.
+        assert_eq!(
+            decide_adopt(false, false, true, AdoptPreset::Yes),
+            AdoptDecision::Yes
+        );
+        assert_eq!(
+            decide_adopt(false, false, false, AdoptPreset::Yes),
+            AdoptDecision::Yes
+        );
+    }
+
+    #[test]
+    fn decide_adopt_preset_no_no_flag() {
+        // Preset::No is final regardless of TTY state.
+        assert_eq!(
+            decide_adopt(false, false, true, AdoptPreset::No),
+            AdoptDecision::No
+        );
+        assert_eq!(
+            decide_adopt(false, false, false, AdoptPreset::No),
+            AdoptDecision::No
+        );
+    }
+
+    #[test]
+    fn decide_adopt_preset_prompt_tty_asks() {
+        // Prompt preset + TTY → Ask (caller must run ask_adopt_user).
+        assert_eq!(
+            decide_adopt(false, false, true, AdoptPreset::Prompt),
+            AdoptDecision::Ask
+        );
+    }
+
+    #[test]
+    fn decide_adopt_preset_prompt_no_tty_refuses() {
+        // Prompt preset + non-TTY → No. Piped/CI invocations never hang.
+        assert_eq!(
+            decide_adopt(false, false, false, AdoptPreset::Prompt),
+            AdoptDecision::No
+        );
+    }
+
+    // --- resolve_adopt_flags (-y coercion) ---------------------------------
+
+    #[test]
+    fn resolve_adopt_flags_yes_coerces_when_neither_set() {
+        // `-y` alone means "--adopt-target" for the adopt axis.
+        let adopt = AdoptChoice {
+            flag_yes: false,
+            flag_no: false,
+            yes_flag: true,
+        };
+        assert_eq!(resolve_adopt_flags(&adopt), (true, false));
+    }
+
+    #[test]
+    fn resolve_adopt_flags_yes_is_noop_when_adopt_target_already_set() {
+        // Explicit --adopt-target already covers the decision; `-y` is a
+        // no-op on this axis (no announcement, no change).
+        let adopt = AdoptChoice {
+            flag_yes: true,
+            flag_no: false,
+            yes_flag: true,
+        };
+        assert_eq!(resolve_adopt_flags(&adopt), (true, false));
+    }
+
+    #[test]
+    fn resolve_adopt_flags_yes_is_noop_when_no_adopt_target_set() {
+        // Explicit --no-adopt-target beats `-y`: user asked to refuse, and
+        // `-y` is only future-proofing for _prompts_, not an override of
+        // explicit refusal.
+        let adopt = AdoptChoice {
+            flag_yes: false,
+            flag_no: true,
+            yes_flag: true,
+        };
+        assert_eq!(resolve_adopt_flags(&adopt), (false, true));
+    }
+
+    #[test]
+    fn resolve_adopt_flags_passthrough_when_no_yes_flag() {
+        // Without `-y`, resolve is a pure passthrough.
+        let neither = AdoptChoice::default();
+        assert_eq!(resolve_adopt_flags(&neither), (false, false));
+        let only_adopt = AdoptChoice {
+            flag_yes: true,
+            ..AdoptChoice::default()
+        };
+        assert_eq!(resolve_adopt_flags(&only_adopt), (true, false));
+        let only_no_adopt = AdoptChoice {
+            flag_no: true,
+            ..AdoptChoice::default()
+        };
+        assert_eq!(resolve_adopt_flags(&only_no_adopt), (false, true));
     }
 }
