@@ -1,0 +1,31 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH daft-merge 1  "daft-merge 1.7.2" 
+.SH NAME
+daft\-merge \- Merge branches across worktrees
+.SH SYNOPSIS
+\fBdaft\-merge\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+.SH DESCRIPTION
+.PP
+Merges one or more source branches into a target worktree\*(Aqs branch.
+.PP
+When \-\-into is omitted, the target is the current worktree\*(Aqs branch,
+mirroring `git merge`. When \-\-into <target> is supplied, the merge is
+performed against that worktree\*(Aqs branch from wherever you are.
+.PP
+Multiple sources invoke git\*(Aqs octopus strategy, announced explicitly.
+.PP
+Finish commands (\-\-abort, \-\-continue, \-\-quit) take an optional positional
+<worktree|branch>; default to the current worktree\*(Aqs branch.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Be verbose; show detailed progress
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH VERSION
+v1.7.2
