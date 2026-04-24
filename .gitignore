@@ -4,7 +4,6 @@
 # Rust build artifacts
 /target/
 **/*.rs.bk
-Cargo.lock
 
 # Generated files are tracked (see CLAUDE.md for details)
 
