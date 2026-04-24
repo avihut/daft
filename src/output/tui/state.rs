@@ -310,6 +310,8 @@ impl TuiState {
                         HookType::PreCreate => "pre-create",
                         HookType::PostCreate => "post-create",
                         HookType::PostClone => "post-clone",
+                        HookType::MergePre => "merge-pre",
+                        HookType::MergePost => "merge-post",
                     };
                     row.status = WorktreeStatus::Active(label.to_string());
                     // Add sub-row if in verbose TUI mode

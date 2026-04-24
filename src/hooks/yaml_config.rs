@@ -15,6 +15,8 @@ pub const KNOWN_HOOK_NAMES: &[&str] = &[
     "worktree-post-create",
     "worktree-pre-remove",
     "worktree-post-remove",
+    "merge-pre",
+    "merge-post",
 ];
 
 /// Top-level YAML configuration.
