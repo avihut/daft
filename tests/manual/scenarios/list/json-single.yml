@@ -19,7 +19,7 @@ steps:
       exit_code: 0
 
   - name: JSON returns single entry for master
-    run: git-worktree-list --json 2>&1
+    run: git-worktree-list --format json 2>&1
     cwd: "$WORK_DIR/json-single-test/master"
     expect:
       exit_code: 0

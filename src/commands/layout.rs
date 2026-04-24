@@ -12,7 +12,10 @@ use crate::{
     git::GitCommand,
     hooks::{yaml_config_loader, HookExecutor, HooksConfig, TrustDatabase},
     is_git_repository,
-    output::{CliOutput, Output, OutputConfig},
+    output::{
+        emit::{self, Cell, EmitArgs, EmitPayload, Table},
+        CliOutput, Output, OutputConfig,
+    },
     settings::DaftSettings,
     styles::{self, bold, dim, dim_underline},
     utils::*,
@@ -58,7 +61,10 @@ pub struct LayoutArgs {
 #[derive(Subcommand)]
 enum LayoutCommand {
     /// List all available layouts
-    List,
+    List {
+        #[command(flatten)]
+        emit: EmitArgs,
+    },
     /// Show the resolved layout for the current repo
     Show(ShowArgs),
     /// Transform the current repo to a different layout
@@ -122,7 +128,7 @@ pub fn run() -> Result<()> {
     let mut output = CliOutput::new(OutputConfig::new(false, false));
 
     match layout_args.command {
-        Some(LayoutCommand::List) => cmd_list(&mut output),
+        Some(LayoutCommand::List { emit }) => cmd_list(&emit, &mut output),
         Some(LayoutCommand::Show(show_args)) => cmd_show(&show_args, &mut output),
         None => cmd_show(&ShowArgs { path: None }, &mut output),
         Some(LayoutCommand::Transform(transform_args)) => {
@@ -139,7 +145,7 @@ pub fn run() -> Result<()> {
 
 // ── layout list ────────────────────────────────────────────────────────────
 
-fn cmd_list(output: &mut dyn Output) -> Result<()> {
+fn cmd_list(emit_args: &EmitArgs, output: &mut dyn Output) -> Result<()> {
     let global_config = GlobalConfig::load().unwrap_or_default();
     let default_layout_name = global_config
         .defaults
@@ -181,6 +187,17 @@ fn cmd_list(output: &mut dyn Output) -> Result<()> {
             is_default,
             is_selected,
         });
+    }
+
+    if emit_args.is_structured() {
+        let table = build_layout_table(&layouts);
+        return emit::emit_and_handle(
+            "layout list",
+            EmitPayload::Tabular(table),
+            emit_args,
+            &mut std::io::stdout(),
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"));
     }
 
     // Build table with tabled (matches list command style)
@@ -241,6 +258,20 @@ fn cmd_list(output: &mut dyn Output) -> Result<()> {
     output.info(&table.to_string());
 
     Ok(())
+}
+
+/// Build a structured `Table` payload from layout rows.
+fn build_layout_table(layouts: &[LayoutRow]) -> Table {
+    let mut table = Table::new(["name", "template", "is_default", "is_selected"]);
+    for row in layouts {
+        table = table.row([
+            Cell::str(&row.name),
+            Cell::str(&row.template),
+            Cell::bool(row.is_default),
+            Cell::bool(row.is_selected),
+        ]);
+    }
+    table
 }
 
 /// Syntax-highlight a template string using the shared [`SYNTAX`] palette.

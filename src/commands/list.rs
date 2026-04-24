@@ -9,6 +9,7 @@ use crate::{
     is_git_repository,
     logging::init_logging,
     output::{
+        emit::{self, Cell, EmitArgs, EmitPayload, Table},
         format::{
             compute_column_values, format_ahead_behind, format_head_status, format_human_size,
             format_remote_status, format_shorthand_age, relative_display_path,
@@ -61,7 +62,10 @@ Use --stat lines to show line-level change counts (insertions and deletions)
 instead of the default summary (commit counts for base/remote, file counts for
 changes). This is slower as it requires computing diffs for each worktree.
 
-Use --json for machine-readable output suitable for scripting.
+Use --format to emit machine-readable output suitable for scripting.
+Supported formats: json, ndjson, tsv, csv, yaml, toon, markdown. Use
+--template '<tera>' for custom output. See the Structured Output guide
+for details.
 
 Use --columns to select which columns are shown and in what order.
   Replace mode:  --columns branch,path,age (exact set and order)
@@ -86,8 +90,8 @@ the output (e.g. --sort -size without --columns +size). Defaults can be set
 with daft.list.sort.
 "#)]
 pub struct Args {
-    #[arg(long, help = "Output in JSON format")]
-    json: bool,
+    #[command(flatten)]
+    emit: EmitArgs,
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
@@ -274,8 +278,17 @@ pub fn run() -> Result<()> {
         result
     };
 
-    if args.json {
-        return print_json(&infos, &project_root, &cwd, stat, selected_columns);
+    let now = Utc::now().timestamp();
+
+    if args.emit.is_structured() {
+        let table = build_emit_table(&infos, &project_root, &cwd, stat, selected_columns, now);
+        return emit::emit_and_handle(
+            "git-worktree-list",
+            EmitPayload::Tabular(table),
+            &args.emit,
+            &mut std::io::stdout(),
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"));
     }
 
     print_table(
@@ -289,167 +302,300 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn print_json(
+/// Determine which logical column groups are active for emit output.
+struct EmitColumns {
+    branch: bool,
+    annotation: bool,
+    path: bool,
+    size: bool,
+    base: bool,
+    base_lines: bool,
+    changes: bool,
+    changes_lines: bool,
+    remote: bool,
+    remote_lines: bool,
+    age: bool,
+    owner: bool,
+    hash: bool,
+    last_commit: bool,
+}
+
+impl EmitColumns {
+    fn compute(is_default: bool, selected: &[ListColumn], stat: Stat) -> Self {
+        let has = |col: ListColumn| is_default || selected.contains(&col);
+        let has_lines = stat == Stat::Lines;
+        Self {
+            branch: has(ListColumn::Branch),
+            annotation: has(ListColumn::Annotation),
+            path: has(ListColumn::Path),
+            size: selected.contains(&ListColumn::Size),
+            base: has(ListColumn::Base),
+            base_lines: has(ListColumn::Base) && has_lines,
+            changes: has(ListColumn::Changes),
+            changes_lines: has(ListColumn::Changes) && has_lines,
+            remote: has(ListColumn::Remote),
+            remote_lines: has(ListColumn::Remote) && has_lines,
+            age: has(ListColumn::Age),
+            owner: has(ListColumn::Owner),
+            hash: selected.contains(&ListColumn::Hash),
+            last_commit: has(ListColumn::LastCommit),
+        }
+    }
+
+    fn headers(&self) -> Vec<String> {
+        let mut h = Vec::new();
+        if self.branch {
+            h.push("kind".into());
+            h.push("name".into());
+        }
+        if self.annotation {
+            h.push("is_current".into());
+            h.push("is_default_branch".into());
+            h.push("is_sandbox".into());
+        }
+        if self.path {
+            h.push("path".into());
+        }
+        if self.size {
+            h.push("size_bytes".into());
+            h.push("size".into());
+        }
+        if self.base {
+            h.push("ahead".into());
+            h.push("behind".into());
+        }
+        if self.base_lines {
+            h.push("base_lines_inserted".into());
+            h.push("base_lines_deleted".into());
+        }
+        if self.changes {
+            h.push("staged".into());
+            h.push("unstaged".into());
+            h.push("untracked".into());
+        }
+        if self.changes_lines {
+            h.push("staged_lines_inserted".into());
+            h.push("staged_lines_deleted".into());
+            h.push("unstaged_lines_inserted".into());
+            h.push("unstaged_lines_deleted".into());
+        }
+        if self.remote {
+            h.push("remote_ahead".into());
+            h.push("remote_behind".into());
+        }
+        if self.remote_lines {
+            h.push("remote_lines_inserted".into());
+            h.push("remote_lines_deleted".into());
+        }
+        if self.age {
+            h.push("branch_age".into());
+        }
+        if self.owner {
+            h.push("owner_name".into());
+            h.push("owner_email".into());
+        }
+        if self.hash {
+            h.push("hash".into());
+        }
+        if self.last_commit {
+            h.push("last_commit_age".into());
+            h.push("last_commit_subject".into());
+        }
+        h
+    }
+}
+
+fn build_emit_table(
     infos: &[crate::core::worktree::list::WorktreeInfo],
     project_root: &std::path::Path,
     cwd: &std::path::Path,
     stat: Stat,
     selected_columns: &[ListColumn],
-) -> Result<()> {
-    let now = Utc::now().timestamp();
+    now: i64,
+) -> Table {
     let is_default_columns = selected_columns == ListColumn::list_defaults();
+    let cols = EmitColumns::compute(is_default_columns, selected_columns, stat);
+    let headers = cols.headers();
+    let mut table = Table::new(headers);
 
-    let entries: Vec<serde_json::Value> = infos
-        .iter()
-        .map(|info| {
-            let mut obj = serde_json::Map::new();
+    for info in infos {
+        let mut row: Vec<Cell> = Vec::new();
 
-            if is_default_columns || selected_columns.contains(&ListColumn::Branch) {
-                obj.insert(
-                    "kind".into(),
-                    serde_json::json!(match info.kind {
-                        EntryKind::Worktree => "worktree",
-                        EntryKind::LocalBranch => "branch",
-                        EntryKind::RemoteBranch => "remote",
-                    }),
-                );
-                obj.insert("name".into(), serde_json::json!(info.name));
+        if cols.branch {
+            let kind_str = match info.kind {
+                EntryKind::Worktree => "worktree",
+                EntryKind::LocalBranch => "branch",
+                EntryKind::RemoteBranch => "remote",
+            };
+            row.push(Cell::str(kind_str));
+            row.push(Cell::str(&info.name));
+        }
+        if cols.annotation {
+            row.push(Cell::bool(info.is_current));
+            row.push(Cell::bool(info.is_default_branch));
+            row.push(Cell::bool(info.is_sandbox));
+        }
+        if cols.path {
+            let rel_path = info
+                .path
+                .as_ref()
+                .map(|p| relative_display_path(p, project_root, cwd));
+            match rel_path {
+                Some(p) => row.push(Cell::str(p)),
+                None => row.push(Cell::null()),
             }
-
-            if is_default_columns || selected_columns.contains(&ListColumn::Annotation) {
-                obj.insert("is_current".into(), serde_json::json!(info.is_current));
-                obj.insert(
-                    "is_default_branch".into(),
-                    serde_json::json!(info.is_default_branch),
-                );
-                obj.insert("is_sandbox".into(), serde_json::json!(info.is_sandbox));
-            }
-
-            if is_default_columns || selected_columns.contains(&ListColumn::Path) {
-                let rel_path = info
-                    .path
-                    .as_ref()
-                    .map(|p| relative_display_path(p, project_root, cwd));
-                obj.insert("path".into(), serde_json::json!(rel_path));
-            }
-
-            if selected_columns.contains(&ListColumn::Size) {
-                obj.insert("size_bytes".into(), serde_json::json!(info.size_bytes));
-                let size = info.size_bytes.map(format_human_size).unwrap_or_default();
-                obj.insert("size".into(), serde_json::json!(size));
-            }
-
-            if is_default_columns || selected_columns.contains(&ListColumn::Base) {
-                obj.insert("ahead".into(), serde_json::json!(info.ahead));
-                obj.insert("behind".into(), serde_json::json!(info.behind));
-                if stat == Stat::Lines {
-                    obj.insert(
-                        "base_lines_inserted".into(),
-                        serde_json::json!(info.base_lines_inserted),
-                    );
-                    obj.insert(
-                        "base_lines_deleted".into(),
-                        serde_json::json!(info.base_lines_deleted),
-                    );
+        }
+        if cols.size {
+            match info.size_bytes {
+                Some(b) => {
+                    row.push(Cell::Int(b as i64));
+                    row.push(Cell::str(format_human_size(b)));
+                }
+                None => {
+                    row.push(Cell::null());
+                    row.push(Cell::null());
                 }
             }
-
-            if is_default_columns || selected_columns.contains(&ListColumn::Changes) {
-                obj.insert("staged".into(), serde_json::json!(info.staged));
-                obj.insert("unstaged".into(), serde_json::json!(info.unstaged));
-                obj.insert("untracked".into(), serde_json::json!(info.untracked));
-                if stat == Stat::Lines {
-                    obj.insert(
-                        "staged_lines_inserted".into(),
-                        serde_json::json!(info.staged_lines_inserted),
-                    );
-                    obj.insert(
-                        "staged_lines_deleted".into(),
-                        serde_json::json!(info.staged_lines_deleted),
-                    );
-                    obj.insert(
-                        "unstaged_lines_inserted".into(),
-                        serde_json::json!(info.unstaged_lines_inserted),
-                    );
-                    obj.insert(
-                        "unstaged_lines_deleted".into(),
-                        serde_json::json!(info.unstaged_lines_deleted),
-                    );
+        }
+        if cols.base {
+            row.push(
+                info.ahead
+                    .map(|v| Cell::Int(v as i64))
+                    .unwrap_or(Cell::null()),
+            );
+            row.push(
+                info.behind
+                    .map(|v| Cell::Int(v as i64))
+                    .unwrap_or(Cell::null()),
+            );
+        }
+        if cols.base_lines {
+            row.push(
+                info.base_lines_inserted
+                    .map(|v| Cell::Int(v as i64))
+                    .unwrap_or(Cell::null()),
+            );
+            row.push(
+                info.base_lines_deleted
+                    .map(|v| Cell::Int(v as i64))
+                    .unwrap_or(Cell::null()),
+            );
+        }
+        if cols.changes {
+            row.push(Cell::Int(info.staged as i64));
+            row.push(Cell::Int(info.unstaged as i64));
+            row.push(Cell::Int(info.untracked as i64));
+        }
+        if cols.changes_lines {
+            row.push(
+                info.staged_lines_inserted
+                    .map(|v| Cell::Int(v as i64))
+                    .unwrap_or(Cell::null()),
+            );
+            row.push(
+                info.staged_lines_deleted
+                    .map(|v| Cell::Int(v as i64))
+                    .unwrap_or(Cell::null()),
+            );
+            row.push(
+                info.unstaged_lines_inserted
+                    .map(|v| Cell::Int(v as i64))
+                    .unwrap_or(Cell::null()),
+            );
+            row.push(
+                info.unstaged_lines_deleted
+                    .map(|v| Cell::Int(v as i64))
+                    .unwrap_or(Cell::null()),
+            );
+        }
+        if cols.remote {
+            row.push(
+                info.remote_ahead
+                    .map(|v| Cell::Int(v as i64))
+                    .unwrap_or(Cell::null()),
+            );
+            row.push(
+                info.remote_behind
+                    .map(|v| Cell::Int(v as i64))
+                    .unwrap_or(Cell::null()),
+            );
+        }
+        if cols.remote_lines {
+            row.push(
+                info.remote_lines_inserted
+                    .map(|v| Cell::Int(v as i64))
+                    .unwrap_or(Cell::null()),
+            );
+            row.push(
+                info.remote_lines_deleted
+                    .map(|v| Cell::Int(v as i64))
+                    .unwrap_or(Cell::null()),
+            );
+        }
+        if cols.age {
+            let branch_age = info
+                .branch_creation_timestamp
+                .map(|ts| shorthand_from_seconds(now - ts))
+                .unwrap_or_default();
+            row.push(Cell::str(branch_age));
+        }
+        if cols.owner {
+            match &info.owner {
+                Some(o) => {
+                    row.push(Cell::str(&o.name));
+                    row.push(Cell::str(&o.email));
+                }
+                None => {
+                    row.push(Cell::null());
+                    row.push(Cell::null());
                 }
             }
-
-            if is_default_columns || selected_columns.contains(&ListColumn::Remote) {
-                obj.insert("remote_ahead".into(), serde_json::json!(info.remote_ahead));
-                obj.insert(
-                    "remote_behind".into(),
-                    serde_json::json!(info.remote_behind),
-                );
-                if stat == Stat::Lines {
-                    obj.insert(
-                        "remote_lines_inserted".into(),
-                        serde_json::json!(info.remote_lines_inserted),
-                    );
-                    obj.insert(
-                        "remote_lines_deleted".into(),
-                        serde_json::json!(info.remote_lines_deleted),
-                    );
-                }
+        }
+        if cols.hash {
+            match &info.last_commit_hash {
+                Some(h) => row.push(Cell::str(h)),
+                None => row.push(Cell::null()),
             }
+        }
+        if cols.last_commit {
+            let last_commit_age = info
+                .last_commit_timestamp
+                .map(|ts| shorthand_from_seconds(now - ts))
+                .unwrap_or_default();
+            row.push(Cell::str(last_commit_age));
+            row.push(Cell::str(&info.last_commit_subject));
+        }
 
-            if is_default_columns || selected_columns.contains(&ListColumn::Age) {
-                let branch_age = info
-                    .branch_creation_timestamp
-                    .map(|ts| shorthand_from_seconds(now - ts))
-                    .unwrap_or_default();
-                obj.insert("branch_age".into(), serde_json::json!(branch_age));
-            }
+        table = table.row(row);
+    }
 
-            if is_default_columns || selected_columns.contains(&ListColumn::Owner) {
-                let owner_json = info.owner.as_ref().map_or(serde_json::Value::Null, |o| {
-                    serde_json::json!({
-                        "name": o.name,
-                        "email": o.email,
-                    })
-                });
-                obj.insert("owner".into(), owner_json);
-            }
-
-            if selected_columns.contains(&ListColumn::Hash) {
-                obj.insert("hash".into(), serde_json::json!(info.last_commit_hash));
-            }
-
-            if is_default_columns || selected_columns.contains(&ListColumn::LastCommit) {
-                let last_commit_age = info
-                    .last_commit_timestamp
-                    .map(|ts| shorthand_from_seconds(now - ts))
-                    .unwrap_or_default();
-                obj.insert("last_commit_age".into(), serde_json::json!(last_commit_age));
-                obj.insert(
-                    "last_commit_subject".into(),
-                    serde_json::json!(info.last_commit_subject),
-                );
-            }
-
-            serde_json::Value::Object(obj)
-        })
-        .collect();
-
-    if selected_columns.contains(&ListColumn::Size) {
+    // Append a TOTAL summary row when the size column is active.
+    if cols.size {
         let total_bytes: u64 = infos
             .iter()
             .filter(|i| i.kind == EntryKind::Worktree)
             .filter_map(|i| i.size_bytes)
             .sum();
-        let output = serde_json::json!({
-            "worktrees": entries,
-            "total_size_bytes": total_bytes,
-            "total_size": format_human_size(total_bytes),
-        });
-        println!("{}", serde_json::to_string_pretty(&output)?);
-    } else {
-        println!("{}", serde_json::to_string_pretty(&entries)?);
+
+        let header_count = table.headers.len();
+        let mut total_row: Vec<Cell> = vec![Cell::null(); header_count];
+
+        // Find the column indices for path, size_bytes, and size.
+        let headers = &table.headers;
+        if let Some(idx) = headers.iter().position(|h| h == "path") {
+            total_row[idx] = Cell::str("TOTAL");
+        }
+        if let Some(idx) = headers.iter().position(|h| h == "size_bytes") {
+            total_row[idx] = Cell::Int(total_bytes as i64);
+        }
+        if let Some(idx) = headers.iter().position(|h| h == "size") {
+            total_row[idx] = Cell::str(format_human_size(total_bytes));
+        }
+
+        table = table.row(total_row);
     }
-    Ok(())
+
+    table
 }
 
 fn print_table(
@@ -867,4 +1013,94 @@ fn strip_ansi(s: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_emit_table_headers_match_default_columns() {
+        let selected = ListColumn::list_defaults();
+        let table = build_emit_table(
+            &[],
+            std::path::Path::new("/tmp/proj"),
+            std::path::Path::new("/tmp/proj"),
+            Stat::Summary,
+            selected,
+            0,
+        );
+        // Default columns include: kind, name, is_current, is_default_branch,
+        // is_sandbox, path, ahead, behind, staged, unstaged, untracked,
+        // remote_ahead, remote_behind, branch_age, last_commit_age,
+        // last_commit_subject, owner_name, owner_email.
+        assert!(table.headers.contains(&"name".to_string()));
+        assert!(table.headers.contains(&"ahead".to_string()));
+        assert!(table.headers.contains(&"path".to_string()));
+        assert!(table.headers.contains(&"owner_name".to_string()));
+        assert!(table.headers.contains(&"owner_email".to_string()));
+        // Size column is NOT in defaults; should not appear.
+        assert!(!table.headers.contains(&"size_bytes".to_string()));
+        // Hash column is NOT in defaults; should not appear.
+        assert!(!table.headers.contains(&"hash".to_string()));
+        // Empty infos means no rows.
+        assert_eq!(table.rows.len(), 0);
+    }
+
+    #[test]
+    fn build_emit_table_size_column_adds_total_row() {
+        use crate::core::worktree::list::{EntryKind, WorktreeInfo};
+        let info = WorktreeInfo {
+            kind: EntryKind::Worktree,
+            name: "main".to_string(),
+            path: Some(std::path::PathBuf::from("/tmp/proj")),
+            is_current: true,
+            is_default_branch: true,
+            ahead: None,
+            behind: None,
+            staged: 0,
+            unstaged: 0,
+            untracked: 0,
+            remote_ahead: None,
+            remote_behind: None,
+            last_commit_timestamp: None,
+            last_commit_hash: None,
+            last_commit_subject: String::new(),
+            branch_creation_timestamp: None,
+            base_lines_inserted: None,
+            base_lines_deleted: None,
+            staged_lines_inserted: None,
+            staged_lines_deleted: None,
+            unstaged_lines_inserted: None,
+            unstaged_lines_deleted: None,
+            remote_lines_inserted: None,
+            remote_lines_deleted: None,
+            owner: None,
+            size_bytes: Some(1024),
+            working_tree_mtime: None,
+            is_sandbox: false,
+        };
+        let selected = &[ListColumn::Branch, ListColumn::Path, ListColumn::Size];
+        let table = build_emit_table(
+            &[info],
+            std::path::Path::new("/tmp/proj"),
+            std::path::Path::new("/tmp/proj"),
+            Stat::Summary,
+            selected,
+            0,
+        );
+        assert!(table.headers.contains(&"size_bytes".to_string()));
+        // One data row + one TOTAL row.
+        assert_eq!(table.rows.len(), 2);
+        // Last row's path cell should be "TOTAL".
+        let total_row = table.rows.last().unwrap();
+        let path_idx = table.headers.iter().position(|h| h == "path").unwrap();
+        assert_eq!(total_row[path_idx], Cell::str("TOTAL"));
+        let size_bytes_idx = table
+            .headers
+            .iter()
+            .position(|h| h == "size_bytes")
+            .unwrap();
+        assert_eq!(total_row[size_bytes_idx], Cell::Int(1024));
+    }
 }

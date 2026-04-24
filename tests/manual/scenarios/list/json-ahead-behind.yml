@@ -23,7 +23,7 @@ steps:
       exit_code: 0
 
   - name: JSON shows non-zero ahead count for develop
-    run: git-worktree-list --json 2>&1
+    run: git-worktree-list --format json 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

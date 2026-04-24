@@ -1,6 +1,6 @@
 use super::{
-    get_command_for_name, get_flag_descriptions, uses_fetch_on_miss, uses_rich_completions,
-    VERB_ALIAS_GROUPS,
+    emit_formats_for, get_command_for_name, get_flag_descriptions, uses_fetch_on_miss,
+    uses_rich_completions, VERB_ALIAS_GROUPS,
 };
 use anyhow::{Context, Result};
 
@@ -166,6 +166,19 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
             output.push_str(&format!(
                 "complete -c {} -l sort -x -a '{} +{} -{}' -d '{}'\n",
                 command_name, name, name, name, desc
+            ));
+        }
+    }
+
+    // Format value completions for --format (emit-enabled commands only)
+    if let Some(formats) = emit_formats_for(command_name) {
+        let format_list = formats.join(" ");
+        output.push_str(&format!(
+            "\n# Format value completions for --format\ncomplete -c {command_name} -l format -x -a '{format_list}'\n"
+        ));
+        if is_git_command {
+            output.push_str(&format!(
+                "complete -c git -n '__fish_seen_subcommand_from {git_subcommand}' -l format -x -a '{format_list}'\n"
             ));
         }
     }
@@ -371,5 +384,13 @@ complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcomm
 complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from link materialize' -f -a "(daft __complete shared-files '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from link materialize' -f -a "(daft __complete shared-worktrees '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from link materialize' -l override -d 'Replace even if local differs'
+# --format value completions (emit-enabled subcommands)
+complete -c daft -n '__fish_seen_subcommand_from list' -l format -x -a 'json ndjson tsv csv yaml toon markdown'
+complete -c daft -n '__fish_seen_subcommand_from release-notes' -l format -x -a 'json yaml toon markdown'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from trust; and __fish_seen_subcommand_from list' -l format -x -a 'json ndjson tsv csv yaml toon markdown'
+complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from list' -l format -x -a 'json ndjson tsv csv yaml toon markdown'
+complete -c daft -n '__fish_seen_subcommand_from shared; and __fish_seen_subcommand_from status' -l format -x -a 'json ndjson tsv csv yaml toon markdown'
+complete -c daft -n '__fish_seen_subcommand_from multi-remote; and __fish_seen_subcommand_from status' -l format -x -a 'json yaml toon markdown'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l format -x -a 'json yaml toon markdown'
 complete -c git-daft -w daft
 "#;

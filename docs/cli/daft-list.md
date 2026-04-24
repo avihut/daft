@@ -44,10 +44,11 @@ Use `--stat lines` to show line-level change counts (insertions and deletions)
 instead of the default summary (commit counts for base/remote, file counts for
 changes). This is slower as it requires computing diffs for each worktree.
 
-Use `--json` for machine-readable output suitable for scripting. JSON output
-includes fields like `is_default_branch`, `staged`, `unstaged`, `untracked`,
-`remote_ahead`, `remote_behind`, `branch_age`, and `owner` (an object
-`{name, email}` or `null`).
+Use `--format` for machine-readable output suitable for scripting. Supported
+formats: `json`, `ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`. JSON
+output includes fields like `is_default_branch`, `staged`, `unstaged`,
+`untracked`, `remote_ahead`, `remote_behind`, `branch_age`, `owner_name`, and
+`owner_email`. Use `--template '<tera>'` for custom output.
 
 Use `--columns` to select which columns are shown and in what order.
 
@@ -66,7 +67,9 @@ divider is only shown when both sections are non-empty.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--json` | Output in JSON format | |
+| `--format <FORMAT>` | Output format: `json`, `ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown` | |
+| `--template <STR>` | Tera template string for custom output | |
+| `--no-headers` | Omit header row (tsv/csv only) | |
 | `-v, --verbose` | Be verbose; show detailed progress | |
 | `-b, --branches` | Also show local branches without a worktree | |
 | `-r, --remotes` | Also show remote tracking branches | |
@@ -98,10 +101,10 @@ daft list --all
 daft list --stat lines
 
 # Machine-readable JSON output
-daft list --json
+daft list --format json
 
 # Pipe JSON to jq for filtering
-daft list --json | jq '.[] | select(.unstaged > 0)'
+daft list --format json | jq '.[] | select(.unstaged > 0)'
 
 # Show only branch, path, and age columns (replace mode)
 daft list --columns branch,path,age
@@ -115,6 +118,27 @@ daft list --columns +owner
 # Show branch, path, and owner only
 daft list --columns branch,path,owner
 ```
+
+## Structured Output
+
+`daft list` supports machine-readable output via `--format`: `json`, `ndjson`,
+`tsv`, `csv`, `yaml`, `toon`, `markdown`, plus `--template <tera>` for custom
+output.
+
+```sh
+# Two columns for awk / cut
+daft list --format tsv --no-headers | cut -f2,3
+
+# Pipe to jq
+daft list --format json | jq '.[] | select(.is_current == true)'
+
+# Custom one-liner per worktree
+daft list --template '{% for r in items %}{{ r.name }} -> {{ r.path }}
+{% endfor %}'
+```
+
+See the [Output Formats guide](../guide/output-formats.md) for format details
+and Tera syntax.
 
 ## See Also
 

@@ -1,4 +1,6 @@
-use super::{get_command_for_name, get_flag_descriptions, uses_rich_completions, COMMANDS};
+use super::{
+    emit_formats_for, get_command_for_name, get_flag_descriptions, uses_rich_completions, COMMANDS,
+};
 use anyhow::{Context, Result};
 use clap::Command;
 use serde::Serialize;
@@ -255,6 +257,19 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                 Some(FigOptionArg {
                     suggestions: Some(suggestions),
                 })
+            } else if long == "--format" {
+                emit_formats_for(command_name).map(|formats| {
+                    let suggestions = formats
+                        .into_iter()
+                        .map(|name| FigSuggestion {
+                            name: name.to_string(),
+                            description: format!("{name} output format"),
+                        })
+                        .collect();
+                    FigOptionArg {
+                        suggestions: Some(suggestions),
+                    }
+                })
             } else {
                 None
             };
@@ -313,6 +328,40 @@ fn fig_subcommand(name: &str, description: &str) -> FigSubcommand {
     }
 }
 
+/// Build the `--format`, `--template`, and `--no-headers` options for an
+/// emit-enabled subcommand. Returns empty vec if the path is not emit-enabled.
+fn build_emit_options(command_path: &str) -> Vec<FigOption> {
+    let Some(formats) = emit_formats_for(command_path) else {
+        return Vec::new();
+    };
+    let suggestions = formats
+        .into_iter()
+        .map(|name| FigSuggestion {
+            name: name.to_string(),
+            description: format!("{name} output format"),
+        })
+        .collect();
+    vec![
+        FigOption {
+            name: FigName::Single("--format".into()),
+            description: "Output format. Mutually exclusive with --template.".into(),
+            args: Some(FigOptionArg {
+                suggestions: Some(suggestions),
+            }),
+        },
+        FigOption {
+            name: FigName::Single("--template".into()),
+            description: "Tera template string. Mutually exclusive with --format.".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--no-headers".into()),
+            description: "Omit header row (tsv/csv only).".into(),
+            args: None,
+        },
+    ]
+}
+
 /// Build the hooks subcommand with nested subcommands including `run` with a generator
 fn build_fig_hooks_subcommand() -> FigSubcommand {
     let hooks_run = FigSubcommand {
@@ -333,23 +382,27 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
                 split_on: "\n".to_string(),
             }),
         })),
-        options: Some(vec![
-            FigOption {
-                name: FigName::Single("--job".into()),
-                description: "Run only the named job".into(),
-                args: None,
-            },
-            FigOption {
-                name: FigName::Single("--tag".into()),
-                description: "Run only jobs with this tag".into(),
-                args: None,
-            },
-            FigOption {
-                name: FigName::Single("--dry-run".into()),
-                description: "Preview what would run".into(),
-                args: None,
-            },
-        ]),
+        options: Some({
+            let mut opts = vec![
+                FigOption {
+                    name: FigName::Single("--job".into()),
+                    description: "Run only the named job".into(),
+                    args: None,
+                },
+                FigOption {
+                    name: FigName::Single("--tag".into()),
+                    description: "Run only jobs with this tag".into(),
+                    args: None,
+                },
+                FigOption {
+                    name: FigName::Single("--dry-run".into()),
+                    description: "Preview what would run".into(),
+                    args: None,
+                },
+            ];
+            opts.extend(build_emit_options("hooks run"));
+            opts
+        }),
     };
 
     FigSubcommand {

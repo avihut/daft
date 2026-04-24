@@ -12,7 +12,10 @@ use crate::{
         migration::{list_worktrees, MigrationPlan},
         path::calculate_worktree_path,
     },
-    output::{CliOutput, Output, OutputConfig},
+    output::{
+        emit::{self, Cell, EmitArgs, EmitPayload, Section, Table},
+        CliOutput, Output, OutputConfig,
+    },
     settings::DaftSettings,
 };
 use anyhow::{Context, Result};
@@ -97,7 +100,10 @@ Use --dry-run to preview the migration without making changes.
     },
 
     /// Show current multi-remote configuration
-    Status,
+    Status {
+        #[command(flatten)]
+        emit: EmitArgs,
+    },
 
     /// Change the default remote for new branches
     SetDefault {
@@ -158,7 +164,7 @@ pub fn run() -> Result<()> {
             force,
         }) => cmd_enable(default, dry_run, force),
         Some(MultiRemoteCommand::Disable { dry_run, force }) => cmd_disable(dry_run, force),
-        Some(MultiRemoteCommand::Status) => cmd_status(),
+        Some(MultiRemoteCommand::Status { emit }) => cmd_status(&emit),
         Some(MultiRemoteCommand::SetDefault { remote }) => cmd_set_default(&remote),
         Some(MultiRemoteCommand::Move {
             branch,
@@ -169,7 +175,7 @@ pub fn run() -> Result<()> {
             dry_run,
             force,
         }) => cmd_move(&branch, &to, set_upstream, push, delete_old, dry_run, force),
-        None => cmd_status(), // Default to status
+        None => cmd_status(&EmitArgs::default()), // Default to status
     }
 }
 
@@ -348,7 +354,7 @@ fn cmd_disable(dry_run: bool, skip_confirm: bool) -> Result<()> {
 }
 
 /// Show current status.
-fn cmd_status() -> Result<()> {
+fn cmd_status(emit_args: &EmitArgs) -> Result<()> {
     if !is_git_repository()? {
         anyhow::bail!("Not in a git repository");
     }
@@ -357,6 +363,48 @@ fn cmd_status() -> Result<()> {
     let project_root = get_project_root()?;
     let git = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
     let mut output = CliOutput::new(OutputConfig::new(false, false));
+
+    // List remotes
+    let remotes = git.remote_list()?;
+    // List worktrees
+    let worktrees = list_worktrees(&git, &project_root)?;
+    let regular_worktrees: Vec<_> = worktrees
+        .iter()
+        .filter(|w| !w.path.ends_with(".git"))
+        .collect();
+
+    if emit_args.is_structured() {
+        // Section 1: remotes (name + is_default; url not available from remote_list)
+        let mut remotes_table = Table::new(["name", "is_default"]);
+        for remote in &remotes {
+            remotes_table = remotes_table.row([
+                Cell::str(remote),
+                Cell::bool(remote == &settings.multi_remote_default),
+            ]);
+        }
+
+        // Section 2: worktrees (branch, remote, path)
+        let mut worktrees_table = Table::new(["branch", "remote", "path"]);
+        for wt in &regular_worktrees {
+            worktrees_table = worktrees_table.row([
+                Cell::str(wt.branch.as_deref().unwrap_or("")),
+                Cell::str(wt.remote.as_deref().unwrap_or("")),
+                Cell::str(wt.path.display().to_string()),
+            ]);
+        }
+
+        let sections = vec![
+            Section::new("remotes", EmitPayload::Tabular(remotes_table)),
+            Section::new("worktrees", EmitPayload::Tabular(worktrees_table)),
+        ];
+        return emit::emit_and_handle(
+            "multi-remote status",
+            EmitPayload::Sectioned(sections),
+            emit_args,
+            &mut std::io::stdout(),
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"));
+    }
 
     output.detail("Repository", &project_root.display().to_string());
     output.info("");
@@ -372,7 +420,6 @@ fn cmd_status() -> Result<()> {
     output.info("");
 
     // List remotes
-    let remotes = git.remote_list()?;
     output.info("Configured remotes:");
     if remotes.is_empty() {
         output.info("  (none)");
@@ -389,12 +436,6 @@ fn cmd_status() -> Result<()> {
     output.info("");
 
     // List worktrees
-    let worktrees = list_worktrees(&git, &project_root)?;
-    let regular_worktrees: Vec<_> = worktrees
-        .iter()
-        .filter(|w| !w.path.ends_with(".git"))
-        .collect();
-
     output.info("Worktrees:");
     if regular_worktrees.is_empty() {
         output.info("  (none)");

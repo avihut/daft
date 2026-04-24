@@ -1,0 +1,22 @@
+name: Multi-remote status template format
+description: daft multi-remote status --template renders status data via Tera
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Template renders worktrees section
+    run:
+      "daft multi-remote status --template '{% for wt in worktrees %}{{
+      wt.branch }}|{% endfor %}' 2>&1"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "|"

@@ -4,6 +4,7 @@ use crate::hooks::yaml_executor::JobFilter;
 use crate::hooks::{
     yaml_config, yaml_config_loader, HookExecutor, HookType, HooksConfig, TrustDatabase, TrustLevel,
 };
+use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Section, Table};
 use crate::output::Output;
 use crate::styles::{bold, cyan, dim};
 use crate::{get_current_branch, get_current_worktree_path, get_git_common_dir, get_project_root};
@@ -32,7 +33,7 @@ pub(super) fn cmd_run(args: &HooksRunArgs, output: &mut dyn Output) -> Result<()
     let hook_type_str = match args.hook_type {
         Some(ref s) => s.clone(),
         None => {
-            return cmd_run_list_hooks(&yaml_config, output);
+            return cmd_run_list_hooks(&yaml_config, &args.emit, output);
         }
     };
 
@@ -237,8 +238,42 @@ pub(super) fn cmd_run(args: &HooksRunArgs, output: &mut dyn Output) -> Result<()
 }
 
 /// List available hooks when `hooks run` is invoked with no arguments.
-fn cmd_run_list_hooks(config: &yaml_config::YamlConfig, output: &mut dyn Output) -> Result<()> {
+fn cmd_run_list_hooks(
+    config: &yaml_config::YamlConfig,
+    emit_args: &EmitArgs,
+    output: &mut dyn Output,
+) -> Result<()> {
     use crate::hooks::yaml_config_loader::get_effective_jobs;
+
+    if emit_args.is_structured() {
+        let mut names: Vec<&String> = config.hooks.keys().collect();
+        names.sort();
+
+        let sections: Vec<Section> = names
+            .iter()
+            .map(|name| {
+                let hook_def = &config.hooks[*name];
+                let jobs = get_effective_jobs(hook_def);
+                let mut table = Table::new(["job_name", "description", "tags"]);
+                for job in &jobs {
+                    table = table.row([
+                        Cell::str(job.name.as_deref().unwrap_or("")),
+                        Cell::str(job.description.as_deref().unwrap_or("")),
+                        Cell::str(job.tags.as_deref().unwrap_or(&[]).join(",")),
+                    ]);
+                }
+                Section::new(name.as_str(), EmitPayload::Tabular(table))
+            })
+            .collect();
+
+        return emit::emit_and_handle(
+            "hooks run",
+            EmitPayload::Sectioned(sections),
+            emit_args,
+            &mut std::io::stdout(),
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"));
+    }
 
     if config.hooks.is_empty() {
         output.info(&dim("No hooks defined in daft.yml."));

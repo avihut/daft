@@ -113,8 +113,16 @@ daft shared link [OPTIONS] <PATH> [WORKTREE]
 Show shared files and per-worktree state
 
 ```
-daft shared status
+daft shared status [OPTIONS]
 ```
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
 
 ### sync
 
@@ -138,4 +146,21 @@ daft shared manage
 |--------|-------------|
 | `-h`, `--help` | Print help information |
 | `-V`, `--version` | Print version information |
+
+## Structured Output
+
+`daft shared status` supports machine-readable output via `--format`: `json`,
+`ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`, plus `--template <tera>`
+for custom output.
+
+```sh
+# Shared file state as TSV (long-form: one row per file per worktree)
+daft shared status --format tsv
+
+# Wide pivot table in markdown for quick visual reading
+daft shared status --format markdown
+```
+
+See the [Output Formats guide](../guide/output-formats.md) for format details
+and Tera syntax.
 

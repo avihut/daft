@@ -1,0 +1,41 @@
+name: Hooks trust list template format
+description: daft hooks trust list --template renders trust entries via Tera
+
+repos:
+  - name: test-trust-list-tmpl
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Trust list template format test"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: setup
+              run: echo done
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_TRUST_LIST_TMPL
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-trust-list-tmpl/main"
+    expect:
+      exit_code: 0
+
+  - name: Template iterates items and emits pipe-separated trust levels
+    run:
+      "daft hooks trust list --template '{% for r in items %}{{ r.trust_level
+      }}|{% endfor %}' 2>&1"
+    cwd: "$WORK_DIR/test-trust-list-tmpl/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "allow|"

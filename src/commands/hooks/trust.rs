@@ -1,5 +1,6 @@
 use super::{find_project_hooks, styled_trust_level};
 use crate::hooks::{get_remote_url_for_git_dir, TrustDatabase, TrustLevel};
+use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
 use crate::output::Output;
 use crate::styles::{bold, cyan, dim, green, red, yellow};
 use crate::{get_git_common_dir, is_git_repository};
@@ -229,7 +230,11 @@ pub(super) fn cmd_prune(output: &mut dyn Output) -> Result<()> {
 }
 
 /// List all trusted repositories.
-pub(super) fn cmd_list(show_all: bool, output: &mut dyn Output) -> Result<()> {
+pub(super) fn cmd_list(
+    show_all: bool,
+    emit_args: &EmitArgs,
+    output: &mut dyn Output,
+) -> Result<()> {
     let db = TrustDatabase::load().context("Failed to load trust database")?;
 
     let repos: Vec<(&str, &crate::hooks::TrustEntry)> = if show_all {
@@ -240,6 +245,17 @@ pub(super) fn cmd_list(show_all: bool, output: &mut dyn Output) -> Result<()> {
     } else {
         db.list_trusted()
     };
+
+    if emit_args.is_structured() {
+        let table = build_trust_table(&repos);
+        return emit::emit_and_handle(
+            "hooks trust list",
+            EmitPayload::Tabular(table),
+            emit_args,
+            &mut std::io::stdout(),
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"));
+    }
 
     if repos.is_empty() {
         if show_all {
@@ -311,6 +327,33 @@ pub(super) fn cmd_list(show_all: bool, output: &mut dyn Output) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Build a structured `Table` payload from trust entries.
+fn build_trust_table(repos: &[(&str, &crate::hooks::TrustEntry)]) -> Table {
+    use chrono::{TimeZone, Utc};
+
+    let mut table = Table::new([
+        "repo_path",
+        "trust_level",
+        "remote_fingerprint",
+        "timestamp",
+    ]);
+    for (path, entry) in repos {
+        let repo_path = path.strip_suffix("/.git").unwrap_or(path);
+        let timestamp = Utc
+            .timestamp_opt(entry.granted_at, 0)
+            .single()
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_else(|| "unknown".to_string());
+        table = table.row([
+            Cell::str(repo_path),
+            Cell::str(entry.level.to_string()),
+            Cell::str(entry.fingerprint.as_deref().unwrap_or("")),
+            Cell::str(timestamp),
+        ]);
+    }
+    table
 }
 
 /// Output text through a pager if available.

@@ -1,0 +1,23 @@
+name: Layout list JSON format
+description: daft layout list --format json emits all layouts as JSON array
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: JSON output has expected fields
+    run: daft layout list --format json 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"name"'
+        - '"template"'
+        - '"is_default"'
+        - '"contained"'

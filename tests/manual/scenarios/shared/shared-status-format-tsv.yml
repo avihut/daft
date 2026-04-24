@@ -1,0 +1,31 @@
+name: Shared status TSV format
+description:
+  daft shared status --format tsv emits tab-separated shared file rows
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with contained layout
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Add a shared file
+    run: |
+      echo "SECRET=yes" > .env
+      daft shared add .env
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: TSV output has header with column names
+    run: daft shared status --format tsv 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "path"
+        - "worktree"
+        - "state"

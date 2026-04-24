@@ -1,4 +1,7 @@
-use super::{extract_flags, get_command_for_name, uses_fetch_on_miss, uses_rich_completions};
+use super::{
+    emit_formats_for, extract_flags, get_command_for_name, uses_fetch_on_miss,
+    uses_rich_completions,
+};
 use anyhow::{Context, Result};
 
 /// Generate bash completion string
@@ -81,6 +84,19 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
         output.push_str("        local prefixed=\"\"\n");
         output.push_str("        for c in $cols; do prefixed=\"$prefixed $c +$c -$c\"; done\n");
         output.push_str("        COMPREPLY=( $(compgen -W \"$prefixed\" -- \"$cur\") )\n");
+        output.push_str("        return 0\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
+    // Value completion for --format flag (emit-enabled commands only)
+    if let Some(formats) = emit_formats_for(command_name) {
+        let format_list = formats.join(" ");
+        output.push_str("    # Format value completion for --format\n");
+        output.push_str("    if [[ \"$prev\" == \"--format\" ]]; then\n");
+        output.push_str(&format!(
+            "        COMPREPLY=( $(compgen -W \"{format_list}\" -- \"$cur\") )\n"
+        ));
         output.push_str("        return 0\n");
         output.push_str("    fi\n");
         output.push('\n');
@@ -200,6 +216,30 @@ pub(super) const DAFT_BASH_COMPLETIONS: &str = r#"# daft subcommand completions
 _daft() {
     local cur prev words cword
     _init_completion || return
+
+    # --format value completion (emit-enabled subcommand paths)
+    if [[ "$prev" == "--format" ]]; then
+        local _fmt_path="" _fmt_i _fmt_w
+        for ((_fmt_i=1; _fmt_i<cword; _fmt_i++)); do
+            _fmt_w="${words[$_fmt_i]}"
+            [[ "$_fmt_w" == -* ]] && break
+            if [[ -z "$_fmt_path" ]]; then
+                _fmt_path="$_fmt_w"
+            else
+                _fmt_path="$_fmt_path $_fmt_w"
+            fi
+        done
+        case "$_fmt_path" in
+            list|worktree-list|"hooks trust list"|"layout list"|"shared status")
+                COMPREPLY=( $(compgen -W "json ndjson tsv csv yaml toon markdown" -- "$cur") )
+                return 0
+                ;;
+            release-notes|"multi-remote status"|"hooks run")
+                COMPREPLY=( $(compgen -W "json yaml toon markdown" -- "$cur") )
+                return 0
+                ;;
+        esac
+    fi
 
     # hooks: subcommand and argument completion
     if [[ $cword -ge 2 && "${words[1]}" == "hooks" ]]; then

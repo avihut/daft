@@ -33,9 +33,11 @@ daft release-notes [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|----------|
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
 | `-l, --list` | List all versions without full notes |  |
 | `-n, --latest <N>` | Show only the latest N releases (default: all) |  |
-| `--json` | Output as JSON for scripting |  |
 | `--no-pager` | Disable pager, print directly to stdout |  |
 
 ## Global Options
@@ -44,4 +46,20 @@ daft release-notes [OPTIONS]
 |--------|-------------|
 | `-h`, `--help` | Print help information |
 | `-V`, `--version` | Print version information |
+
+## Structured Output
+
+`daft release-notes` supports machine-readable output via `--format`: `json`,
+`yaml`, `toon`, `markdown`, plus `--template <tera>` for custom output.
+
+```sh
+# Markdown prose, paste-ready for GitHub release
+daft release-notes 1.2.0 --format markdown
+
+# Versions as JSON for tooling
+daft release-notes --format json | jq '.[0].version'
+```
+
+See the [Output Formats guide](../guide/output-formats.md) for format details
+and Tera syntax.
 

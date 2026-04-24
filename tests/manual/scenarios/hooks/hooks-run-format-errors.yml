@@ -1,0 +1,49 @@
+name: Hooks run listing format error cases
+description: Unsupported formats and invalid values are rejected in listing mode
+
+repos:
+  - name: test-hooks-run-errs
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Hooks run format errors test"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: setup
+              run: echo done
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_HOOKS_RUN_ERRS
+    expect:
+      exit_code: 0
+
+  - name: --format tsv is unsupported for Sectioned shape
+    run: daft hooks run --format tsv 2>&1
+    cwd: "$WORK_DIR/test-hooks-run-errs/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "does not support"
+
+  - name: --format bogus is rejected by clap
+    run: daft hooks run --format bogus 2>&1
+    cwd: "$WORK_DIR/test-hooks-run-errs/main"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "invalid value"
+
+  - name: --format and --template conflict
+    run: "daft hooks run --format json --template 'x' 2>&1"
+    cwd: "$WORK_DIR/test-hooks-run-errs/main"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "cannot be used with"

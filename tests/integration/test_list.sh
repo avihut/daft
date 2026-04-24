@@ -135,10 +135,10 @@ test_list_json() {
     git-worktree-checkout develop || return 1
     echo "dirty" >> develop/README.md
 
-    # Run list with --json
+    # Run list with --format json
     cd main
     local output
-    output=$(git-worktree-list --json 2>&1)
+    output=$(git-worktree-list --format json 2>&1)
 
     # Verify it's valid JSON (check for array brackets)
     if ! echo "$output" | grep -q '^\['; then
@@ -282,7 +282,7 @@ test_list_json_single() {
 
     # JSON should return an array with exactly one entry
     local output
-    output=$(git-worktree-list --json 2>&1)
+    output=$(git-worktree-list --format json 2>&1)
 
     if ! echo "$output" | grep -q '^\['; then
         log_error "JSON output should be a valid JSON array"
@@ -447,10 +447,10 @@ test_list_json_ahead_behind() {
     git commit -m "Ahead commit" >/dev/null 2>&1
     cd ..
 
-    # Run list with --json
+    # Run list with --format json
     cd main
     local output
-    output=$(git-worktree-list --json 2>&1)
+    output=$(git-worktree-list --format json 2>&1)
 
     # Verify develop has non-zero ahead count in JSON
     # Find the block containing "name": "develop" and check its "ahead" field
@@ -530,10 +530,10 @@ test_list_json_branch_age() {
     git-worktree-clone --layout contained "$remote_repo" || return 1
     cd "test-repo-list-json-age"
 
-    # Run list with --json
+    # Run list with --format json
     cd main
     local output
-    output=$(git-worktree-list --json 2>&1)
+    output=$(git-worktree-list --format json 2>&1)
 
     # Check for branch_age field
     if ! echo "$output" | grep -q '"branch_age"'; then
@@ -662,7 +662,7 @@ test_list_json_head_remote() {
 
     cd main
     local output
-    output=$(git-worktree-list --json 2>&1)
+    output=$(git-worktree-list --format json 2>&1)
 
     # Check for staged/unstaged/untracked fields
     for field in "staged" "unstaged" "untracked"; do
@@ -753,7 +753,7 @@ test_list_stat_lines_json() {
 
     cd main
     local output
-    output=$(git-worktree-list --stat lines --json 2>&1)
+    output=$(git-worktree-list --stat lines --format json 2>&1)
 
     # Check for line count fields in JSON
     local line_fields=("base_lines_inserted" "base_lines_deleted" "staged_lines_inserted" "staged_lines_deleted" "unstaged_lines_inserted" "unstaged_lines_deleted" "remote_lines_inserted" "remote_lines_deleted")
@@ -968,7 +968,7 @@ test_list_branches_json() {
     git branch feature/json-test origin/feature/json-test >/dev/null 2>&1
 
     local output
-    output=$(git-worktree-list -b --json 2>&1)
+    output=$(git-worktree-list -b --format json 2>&1)
 
     # Check for kind field
     if ! echo "$output" | grep -q '"kind"'; then

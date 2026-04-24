@@ -1,8 +1,7 @@
 name: List JSON owner shape
 description:
-  "--json owner field is an object {name, email} or null, not a bare string.
-  Regression test for the breaking change away from the legacy email-string
-  shape."
+  "--format json emits owner_name and owner_email as flat string fields.
+  Regression test confirming the current flat-field owner shape."
 
 repos:
   - name: json-shape-repo
@@ -38,16 +37,15 @@ steps:
     expect:
       exit_code: 0
 
-  - name: JSON output has owner as a {name, email} object
-    run: NO_COLOR=1 git-worktree-list --json --columns branch,owner
+  - name: JSON output has owner_name and owner_email as flat fields
+    run: NO_COLOR=1 git-worktree-list --format json --columns branch,owner
     cwd: "$WORK_DIR/json-shape-repo/develop"
     expect:
       exit_code: 0
       output_contains:
-        - '"owner"'
-        - '"name"'
-        - '"email"'
+        - '"owner_name"'
+        - '"owner_email"'
         - "Me Testuser"
         - "me@example.com"
       output_not_contains:
-        - '"owner_email"'
+        - '"owner": {'

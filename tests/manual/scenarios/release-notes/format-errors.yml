@@ -1,0 +1,24 @@
+name: Release notes format error cases
+description: Unsupported formats and invalid values are rejected
+
+steps:
+  - name: --format tsv is unsupported for Document shape
+    run: daft release-notes --format tsv 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "does not support"
+
+  - name: --format bogus is rejected by clap
+    run: daft release-notes --format bogus 2>&1
+    expect:
+      exit_code: 2
+      output_contains:
+        - "invalid value"
+
+  - name: --format and --template conflict
+    run: "daft release-notes --format json --template 'x' 2>&1"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "cannot be used with"

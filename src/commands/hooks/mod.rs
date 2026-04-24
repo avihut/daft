@@ -380,6 +380,9 @@ pub(super) struct HooksRunArgs {
     /// Show verbose output including skipped jobs
     #[arg(short, long, help = "Show verbose output including skipped jobs")]
     pub verbose: bool,
+
+    #[command(flatten)]
+    pub emit: crate::output::emit::EmitArgs,
 }
 
 mod trust_cmd {
@@ -407,6 +410,9 @@ mod trust_cmd {
         List {
             #[arg(long, help = "Include repositories with deny trust level")]
             all: bool,
+
+            #[command(flatten)]
+            emit: crate::output::emit::EmitArgs,
         },
 
         /// Remove trust entry for a repository or clear all trust settings
@@ -449,7 +455,9 @@ pub fn run() -> Result<()> {
 
     match args.command {
         Some(HooksCommand::Trust(trust_args)) => match trust_args.command {
-            Some(trust_cmd::TrustSubcommand::List { all }) => trust::cmd_list(all, &mut output),
+            Some(trust_cmd::TrustSubcommand::List { all, emit }) => {
+                trust::cmd_list(all, &emit, &mut output)
+            }
             Some(trust_cmd::TrustSubcommand::Prune) => trust::cmd_prune(&mut output),
             Some(trust_cmd::TrustSubcommand::Reset(reset_args)) => match reset_args.command {
                 Some(trust_cmd::ResetSubcommand::All { force }) => {

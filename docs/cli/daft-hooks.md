@@ -184,6 +184,9 @@ daft hooks run [OPTIONS] [HOOK_TYPE]
 | `--tag <TAG>` | Run only jobs with this tag (repeatable) |  |
 | `--dry-run` | Preview what would run without executing |  |
 | `-v, --verbose` | Show verbose output including skipped jobs |  |
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
 
 ### install
 
@@ -280,4 +283,25 @@ daft hooks migrate [OPTIONS]
 |--------|-------------|
 | `-h`, `--help` | Print help information |
 | `-V`, `--version` | Print version information |
+
+## Structured Output
+
+`daft hooks trust list` and `daft hooks run` (listing mode) support
+machine-readable output via `--format`, plus `--template <tera>` for custom
+output.
+
+`hooks trust list` supports: `json`, `ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`.
+
+`hooks run` (listing mode) supports: `json`, `yaml`, `toon`, `markdown`.
+
+```sh
+# List trusted repos as TSV for scripting
+daft hooks trust list --format tsv
+
+# List hook run results as JSON
+daft hooks run --format json
+```
+
+See the [Output Formats guide](../guide/output-formats.md) for format details
+and Tera syntax.
 

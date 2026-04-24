@@ -96,8 +96,16 @@ daft multi-remote disable [OPTIONS]
 Show current multi-remote configuration
 
 ```
-daft multi-remote status
+daft multi-remote status [OPTIONS]
 ```
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
 
 ### set-default
 
@@ -156,4 +164,17 @@ daft multi-remote move [OPTIONS] <BRANCH>
 |--------|-------------|
 | `-h`, `--help` | Print help information |
 | `-V`, `--version` | Print version information |
+
+## Structured Output
+
+`daft multi-remote status` supports machine-readable output via `--format`:
+`json`, `yaml`, `toon`, `markdown`, plus `--template <tera>` for custom output.
+
+```sh
+# Multi-remote configuration as YAML
+daft multi-remote status --format yaml
+```
+
+See the [Output Formats guide](../guide/output-formats.md) for format details
+and Tera syntax.
 

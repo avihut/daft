@@ -1,0 +1,33 @@
+name: Hooks run listing template format
+description: daft hooks run --template renders hook list data via Tera
+
+repos:
+  - name: test-hooks-run-tmpl
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Hooks run template format test"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: setup
+              run: echo done
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_HOOKS_RUN_TMPL
+    expect:
+      exit_code: 0
+
+  - name: Template renders successfully with hook data
+    run: "daft hooks run --template 'found' 2>&1"
+    cwd: "$WORK_DIR/test-hooks-run-tmpl/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "found"

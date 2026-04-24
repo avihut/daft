@@ -167,7 +167,7 @@ See all worktrees with status indicators, ahead/behind counts, and branch age:
 daft list
 ```
 
-Use `daft list --json` for machine-readable output.
+Use `daft list --format json` for machine-readable output.
 
 ### Cleaning Up
 

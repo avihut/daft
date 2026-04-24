@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use crate::core::layout;
 use crate::core::repo;
 use crate::core::shared;
-use crate::output::{CliOutput, Output};
+use crate::output::{
+    emit::{self, Cell, EmitArgs, EmitPayload, Matrix},
+    CliOutput, Output,
+};
 
 #[derive(Parser)]
 #[command(name = "daft-shared")]
@@ -96,7 +99,10 @@ struct LinkArgs {
 }
 
 #[derive(Parser)]
-struct StatusArgs;
+struct StatusArgs {
+    #[command(flatten)]
+    emit: EmitArgs,
+}
 
 #[derive(Parser)]
 struct SyncArgs;
@@ -117,7 +123,8 @@ pub fn run() -> Result<()> {
         Some(SharedCommand::Remove(remove_args)) => run_remove(remove_args, &mut output),
         Some(SharedCommand::Materialize(mat_args)) => run_materialize(mat_args, &mut output),
         Some(SharedCommand::Link(link_args)) => run_link(link_args, &mut output),
-        Some(SharedCommand::Status(_)) | None => run_status(&mut output),
+        Some(SharedCommand::Status(status_args)) => run_status(&status_args.emit, &mut output),
+        None => run_status(&EmitArgs::default(), &mut output),
         Some(SharedCommand::Sync(_)) => run_sync(&mut output),
         Some(SharedCommand::Manage(_)) => run_manage(&mut output),
     }
@@ -456,7 +463,7 @@ fn run_link(args: LinkArgs, output: &mut dyn Output) -> Result<()> {
     Ok(())
 }
 
-fn run_status(output: &mut dyn Output) -> Result<()> {
+fn run_status(emit_args: &EmitArgs, output: &mut dyn Output) -> Result<()> {
     use crate::styles;
 
     let git_common_dir = repo::get_git_common_dir()?;
@@ -466,6 +473,47 @@ fn run_status(output: &mut dyn Output) -> Result<()> {
     let shared_paths = shared::read_shared_paths(&config_root)?;
     let worktree_paths = shared::list_worktree_paths()?;
     let materialized = shared::MaterializedState::load(&git_common_dir)?;
+
+    if emit_args.is_structured() {
+        let mut matrix = Matrix::new("path", "worktree", "state");
+        for rel_path in &shared_paths {
+            let shared_target = shared::shared_file_path(&git_common_dir, rel_path);
+            let has_source = shared_target.exists();
+            for wt in &worktree_paths {
+                let wt_name = wt.file_name().unwrap_or_default().to_string_lossy();
+                let state = if !has_source {
+                    "uncollected"
+                } else if materialized.is_materialized(rel_path, wt) {
+                    "materialized"
+                } else if wt.join(rel_path).is_symlink() {
+                    let link = wt.join(rel_path);
+                    let target = fs::read_link(&link).ok();
+                    let expected = shared::relative_symlink_target(
+                        link.parent().unwrap_or(wt),
+                        &shared_target,
+                    )
+                    .ok();
+                    if target == expected {
+                        "linked"
+                    } else {
+                        "broken"
+                    }
+                } else if wt.join(rel_path).exists() {
+                    "conflict"
+                } else {
+                    "missing"
+                };
+                matrix.set(rel_path.as_str(), wt_name.as_ref(), Cell::str(state));
+            }
+        }
+        return emit::emit_and_handle(
+            "shared status",
+            EmitPayload::Matrix(matrix),
+            emit_args,
+            &mut std::io::stdout(),
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"));
+    }
 
     if shared_paths.is_empty() {
         output.info("No shared files declared.");
