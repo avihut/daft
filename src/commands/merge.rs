@@ -39,17 +39,66 @@ pub struct Args {
     #[arg(long = "into", value_name = "TARGET")]
     pub into: Option<String>,
 
-    // --- Finish mode flags (mutually exclusive) ---
+    // --- Finish mode flags (mutually exclusive, and mutually exclusive with
+    // every start-only flag so that `daft merge --abort -m msg` etc. errors
+    // at parse time instead of silently ignoring the start-mode flag).
+    // `into` is NOT included: it is accepted in finish mode as a fallback
+    // target when no positional is given (see dispatch in `run()`).
     /// Abort an in-progress merge in the named worktree (defaults to CWD).
-    #[arg(long = "abort", conflicts_with_all = ["continue_merge", "quit"])]
+    #[arg(
+        long = "abort",
+        conflicts_with_all = [
+            "continue_merge", "quit",
+            "message", "file", "edit", "no_edit", "cleanup",
+            "ff", "no_ff", "ff_only",
+            "squash", "no_squash",
+            "commit", "no_commit",
+            "signoff", "no_signoff",
+            "strategy", "strategy_options",
+            "gpg_sign", "no_gpg_sign",
+            "verify_signatures", "no_verify_signatures",
+            "allow_unrelated_histories",
+            "stat", "no_stat",
+        ],
+    )]
     pub abort: bool,
 
     /// Continue an in-progress merge in the named worktree (defaults to CWD).
-    #[arg(long = "continue", conflicts_with_all = ["abort", "quit"])]
+    #[arg(
+        long = "continue",
+        conflicts_with_all = [
+            "abort", "quit",
+            "message", "file", "edit", "no_edit", "cleanup",
+            "ff", "no_ff", "ff_only",
+            "squash", "no_squash",
+            "commit", "no_commit",
+            "signoff", "no_signoff",
+            "strategy", "strategy_options",
+            "gpg_sign", "no_gpg_sign",
+            "verify_signatures", "no_verify_signatures",
+            "allow_unrelated_histories",
+            "stat", "no_stat",
+        ],
+    )]
     pub continue_merge: bool,
 
     /// Quit an in-progress merge without resetting the index (defaults to CWD).
-    #[arg(long = "quit", conflicts_with_all = ["abort", "continue_merge"])]
+    #[arg(
+        long = "quit",
+        conflicts_with_all = [
+            "abort", "continue_merge",
+            "message", "file", "edit", "no_edit", "cleanup",
+            "ff", "no_ff", "ff_only",
+            "squash", "no_squash",
+            "commit", "no_commit",
+            "signoff", "no_signoff",
+            "strategy", "strategy_options",
+            "gpg_sign", "no_gpg_sign",
+            "verify_signatures", "no_verify_signatures",
+            "allow_unrelated_histories",
+            "stat", "no_stat",
+        ],
+    )]
     pub quit: bool,
 
     // --- Commit message and editor ---
@@ -267,10 +316,15 @@ pub fn run() -> Result<()> {
     // Finish mode: --abort / --continue / --quit dispatch to execute_finish.
     // Clap's conflicts_with_all guarantees at most one of these is set.
     // In finish mode the positional `sources` is repurposed as an optional
-    // target worktree/branch (max one positional).
+    // target worktree/branch (max one positional). `--into` is also accepted
+    // as a fallback target when no positional is given, since both the
+    // positional and `--into` name a merge target — but not both at once.
     if args.abort || args.continue_merge || args.quit {
+        if !args.sources.is_empty() && args.into.is_some() {
+            anyhow::bail!("specify target via positional OR --into, not both");
+        }
         let worktree_arg = match args.sources.as_slice() {
-            [] => None,
+            [] => args.into.clone(),
             [one] => Some(one.clone()),
             _ => anyhow::bail!(
                 "finish commands (--abort/--continue/--quit) take at most one positional <worktree|branch>"

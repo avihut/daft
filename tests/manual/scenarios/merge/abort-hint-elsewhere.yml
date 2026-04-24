@@ -1,0 +1,52 @@
+name: Merge abort hint when conflict is elsewhere
+description:
+  "daft merge --abort from a non-merging worktree lists conflict worktrees and a
+  concrete retry target"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Check out feature (sibling worktree on a different branch)
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Create conflict-src branch with a conflicting commit in main
+    run: |
+      git checkout -b conflict-src
+      echo "a" > c.txt
+      git add c.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "a"
+      git checkout main
+      echo "b" > c.txt
+      git add c.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "b"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Trigger conflict in main (from main)
+    run: git-worktree-merge conflict-src 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+
+  - name: Abort from feature worktree without positional - should list main
+    run: git-worktree-merge --abort 2>&1
+    cwd: "$WORK_DIR/test-repo/feature/test-feature"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no in-progress merge"
+        - "merges in progress elsewhere"
+        - "main"

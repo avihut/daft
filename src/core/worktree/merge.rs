@@ -631,7 +631,11 @@ fn list_worktrees_with_in_progress_merges(git: &GitCommand) -> Result<Vec<PathBu
 pub fn execute_finish(params: &FinishParams, git: &GitCommand, project_root: &Path) -> Result<()> {
     let resolved = resolve_target(params.worktree.as_deref(), git, project_root)?;
 
-    if detect_in_progress(&resolved.path)? != Some(InProgressOp::Merge) {
+    // Route the "no merge in progress" check through the public predicate so
+    // behaviour stays in sync with direct callers of `ensure_merge_in_progress`.
+    // When the predicate fails, we swap its bare error for a richer message
+    // listing candidate worktrees and a concrete retry hint.
+    if ensure_merge_in_progress(&resolved.path).is_err() {
         let candidates = list_worktrees_with_in_progress_merges(git).unwrap_or_default();
         let mut msg = format!(
             "no in-progress merge in worktree '{}'",
@@ -640,15 +644,34 @@ pub fn execute_finish(params: &FinishParams, git: &GitCommand, project_root: &Pa
         if !candidates.is_empty() {
             msg.push_str("\n\nmerges in progress elsewhere:");
             for c in &candidates {
-                msg.push_str(&format!("\n  {}", c.display()));
+                // Best-effort branch resolution: if we can read the current
+                // branch at the candidate path, show it alongside the path so
+                // the user can paste it straight into the retry hint below.
+                match branch_at_path(git, c) {
+                    Ok(branch) => {
+                        msg.push_str(&format!("\n  {} (branch: {})", c.display(), branch))
+                    }
+                    Err(_) => msg.push_str(&format!("\n  {}", c.display())),
+                }
             }
-            msg.push_str("\n\nretry with: daft merge --");
-            msg.push_str(match params.mode {
+            let flag = match params.mode {
                 FinishMode::Abort => "abort",
                 FinishMode::Continue => "continue",
                 FinishMode::Quit => "quit",
-            });
-            msg.push_str(" <branch>");
+            };
+            // Single candidate → concrete retry command; multiple candidates
+            // or a resolution failure → fall back to `<branch>` placeholder.
+            let retry_target = if candidates.len() == 1 {
+                branch_at_path(git, &candidates[0]).ok()
+            } else {
+                None
+            };
+            match retry_target {
+                Some(branch) => {
+                    msg.push_str(&format!("\n\nretry with: daft merge --{flag} {branch}"))
+                }
+                None => msg.push_str(&format!("\n\nretry with: daft merge --{flag} <branch>")),
+            }
         }
         anyhow::bail!(msg);
     }
