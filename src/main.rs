@@ -96,6 +96,7 @@ fn main() -> Result<()> {
         "git-worktree-flow-adopt" => commands::flow_adopt::run(),
         "git-worktree-flow-eject" => commands::flow_eject::run(),
         "git-worktree-list" => commands::list::run(),
+        "git-worktree-merge" => commands::merge::run(),
         "git-worktree-sync" => commands::sync::run(),
         "git-worktree-exec" => commands::exec::run(),
 
@@ -159,6 +160,7 @@ fn main() -> Result<()> {
                     "rename" => commands::worktree_branch::run_rename(),
                     "sync" => commands::sync::run(),
                     "list" => commands::list::run(),
+                    "merge" => commands::merge::run(),
                     "remove" => commands::worktree_branch::run_remove(),
                     "adopt" => commands::flow_adopt::run(),
                     "eject" => commands::flow_eject::run(),
@@ -176,6 +178,7 @@ fn main() -> Result<()> {
                     "worktree-branch-delete" => commands::branch_delete::run(),
                     "worktree-flow-eject" => commands::flow_eject::run(),
                     "worktree-list" => commands::list::run(),
+                    "worktree-merge" => commands::merge::run(),
                     "worktree-sync" => commands::sync::run(),
                     "worktree-exec" => commands::exec::run(),
                     "worktree-shared" => commands::shared::run(),

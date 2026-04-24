@@ -116,8 +116,8 @@ pub fn daft_state_dir() -> anyhow::Result<std::path::PathBuf> {
 
 /// Daft verb aliases that route through to worktree commands.
 const DAFT_VERBS: &[&str] = &[
-    "adopt", "carry", "clone", "eject", "exec", "go", "init", "list", "prune", "remove", "rename",
-    "start", "sync", "update",
+    "adopt", "carry", "clone", "eject", "exec", "go", "init", "list", "merge", "prune", "remove",
+    "rename", "start", "sync", "update",
 ];
 
 /// Returns args suitable for clap parsing, handling symlink, subcommand, and verb invocations.
