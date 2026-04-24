@@ -145,6 +145,82 @@ fn branch_at_path(git: &GitCommand, path: &Path) -> Result<String> {
         .map(|s| s.trim().to_string())
 }
 
+/// An in-progress git operation detected on a worktree.
+///
+/// These correspond to the well-known state files git writes into the
+/// worktree's `.git` directory when a merge/rebase/cherry-pick/bisect is
+/// paused awaiting user input. We refuse to start a new merge against a
+/// target in one of these states; stacking operations would bury the
+/// user under two layers of conflicts.
+#[derive(Debug, PartialEq, Eq)]
+pub enum InProgressOp {
+    Merge,
+    Rebase,
+    CherryPick,
+    Bisect,
+}
+
+impl InProgressOp {
+    /// Human-readable name, used in refusal messages (e.g. "mid-rebase").
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::Rebase => "rebase",
+            Self::CherryPick => "cherry-pick",
+            Self::Bisect => "bisect",
+        }
+    }
+}
+
+/// Detect whether a worktree has an in-progress merge/rebase/cherry-pick/bisect.
+///
+/// Inspects the worktree's real git directory for the marker files git
+/// writes when an operation is paused. In a linked worktree, `.git` is a
+/// file with `gitdir: <path>` pointing at the actual per-worktree git dir
+/// (e.g. `.git/worktrees/<name>`); in the main worktree, `.git` is itself
+/// a directory. Both shapes are handled.
+///
+/// We intentionally check for directory/file *existence* rather than
+/// parsing contents — git populates these atomically and their presence
+/// alone is the signal git itself uses (see `git status` output).
+pub fn detect_in_progress(worktree: &Path) -> Result<Option<InProgressOp>> {
+    let git_entry = worktree.join(".git");
+    let git_dir = if git_entry.is_file() {
+        let content = std::fs::read_to_string(&git_entry)
+            .with_context(|| format!("failed to read .git at {}", git_entry.display()))?;
+        let rel = content
+            .lines()
+            .next()
+            .and_then(|l| l.strip_prefix("gitdir: "))
+            .unwrap_or("")
+            .trim();
+        let p = PathBuf::from(rel);
+        // Path::join replaces when its argument is absolute, so this is
+        // correct whether the pointer is absolute or relative.
+        if p.is_absolute() {
+            p
+        } else {
+            worktree.join(p)
+        }
+    } else {
+        git_entry
+    };
+
+    if git_dir.join("MERGE_HEAD").exists() {
+        return Ok(Some(InProgressOp::Merge));
+    }
+    if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+        return Ok(Some(InProgressOp::Rebase));
+    }
+    if git_dir.join("CHERRY_PICK_HEAD").exists() {
+        return Ok(Some(InProgressOp::CherryPick));
+    }
+    if git_dir.join("BISECT_LOG").exists() {
+        return Ok(Some(InProgressOp::Bisect));
+    }
+    Ok(None)
+}
+
 /// Refuse merging a branch into itself.
 ///
 /// A `git merge X` run from a worktree whose branch is `X` is always a
@@ -200,6 +276,13 @@ pub fn execute_start(
     // first (source vs. target branch name), then state checks on the target
     // worktree (in-progress op, dirty tree) which touch the filesystem.
     validate_distinct(&params.sources, &resolved)?;
+    if let Some(op) = detect_in_progress(&resolved.path)? {
+        anyhow::bail!(
+            "target worktree '{}' is mid-{}; finish or abort it first",
+            resolved.branch,
+            op.description()
+        );
+    }
 
     let mut argv: Vec<String> = vec!["merge".to_string()];
     argv.extend(params.sources.iter().cloned());
@@ -343,5 +426,88 @@ mod tests {
             path: PathBuf::from("/repo/main"),
         };
         assert!(validate_distinct(&["feat".to_string()], &target).is_ok());
+    }
+
+    #[test]
+    fn detects_in_progress_merge() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".git/MERGE_HEAD"), "deadbeef").unwrap();
+        assert_eq!(
+            detect_in_progress(tmp.path()).unwrap(),
+            Some(InProgressOp::Merge)
+        );
+    }
+
+    #[test]
+    fn detects_in_progress_rebase() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git/rebase-merge")).unwrap();
+        assert_eq!(
+            detect_in_progress(tmp.path()).unwrap(),
+            Some(InProgressOp::Rebase)
+        );
+    }
+
+    #[test]
+    fn detects_in_progress_rebase_apply_variant() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git/rebase-apply")).unwrap();
+        assert_eq!(
+            detect_in_progress(tmp.path()).unwrap(),
+            Some(InProgressOp::Rebase)
+        );
+    }
+
+    #[test]
+    fn detects_in_progress_cherry_pick() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".git/CHERRY_PICK_HEAD"), "c0ffee").unwrap();
+        assert_eq!(
+            detect_in_progress(tmp.path()).unwrap(),
+            Some(InProgressOp::CherryPick)
+        );
+    }
+
+    #[test]
+    fn detects_in_progress_bisect() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".git/BISECT_LOG"), "").unwrap();
+        assert_eq!(
+            detect_in_progress(tmp.path()).unwrap(),
+            Some(InProgressOp::Bisect)
+        );
+    }
+
+    #[test]
+    fn clean_worktree_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        assert_eq!(detect_in_progress(tmp.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn follows_linked_worktree_gitdir_pointer() {
+        // Simulate a linked worktree layout: .git is a file whose first line
+        // reads `gitdir: <relative-path>` pointing at the per-worktree dir.
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().join("wt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let real_gitdir = tmp.path().join("real-gitdir");
+        std::fs::create_dir_all(real_gitdir.join("rebase-merge")).unwrap();
+        // .git is a file pointing at the real gitdir (using an absolute path
+        // here exercises the is_absolute() branch in detect_in_progress).
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", real_gitdir.display()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            detect_in_progress(&worktree).unwrap(),
+            Some(InProgressOp::Rebase)
+        );
     }
 }
