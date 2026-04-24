@@ -281,6 +281,27 @@ fn strip_refs_heads(s: &str) -> &str {
     s.strip_prefix("refs/heads/").unwrap_or(s)
 }
 
+/// Returns the octopus announcement for `sources` merging into `target_branch`,
+/// or `None` for a single source.
+///
+/// Format: `"Merging N sources into <target> via octopus strategy"`.
+///
+/// Pure function — no I/O. The caller decides how to surface the message
+/// (stderr, logger, TUI). [`execute_start`] prints it to stderr before invoking
+/// `git merge` so the announcement is visible even if git's octopus strategy
+/// refuses with a conflict.
+pub fn announcement(sources: &[String], target_branch: &str) -> Option<String> {
+    if sources.len() >= 2 {
+        Some(format!(
+            "Merging {} sources into {} via octopus strategy",
+            sources.len(),
+            target_branch
+        ))
+    } else {
+        None
+    }
+}
+
 /// Result of a merge-start operation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StartOutcome {
@@ -328,6 +349,15 @@ pub fn execute_start(
         );
     }
     validate_clean_target(git, &resolved)?;
+
+    // Announce octopus before invoking git so users see the strategy name even
+    // if git's octopus refuses with a conflict. Single-source merges emit
+    // nothing — `git merge <source>` is the plain case and needs no herald.
+    // Stderr keeps progress output out of stdout (reserved for the final
+    // "Merge complete." / "Already up to date." result line).
+    if let Some(msg) = announcement(&params.sources, &resolved.branch) {
+        eprintln!("{msg}");
+    }
 
     let mut argv: Vec<String> = vec!["merge".to_string()];
     argv.extend(params.sources.iter().cloned());
@@ -587,6 +617,21 @@ mod tests {
             msg.contains("commit or stash"),
             "expected remediation hint in error: {msg}"
         );
+    }
+
+    #[test]
+    fn announces_octopus_for_multi_source() {
+        let sources = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let msg = announcement(&sources, "main").expect("multi-source should announce");
+        assert!(msg.contains("3 sources"), "unexpected message: {msg}");
+        assert!(msg.contains("octopus"), "unexpected message: {msg}");
+        assert!(msg.contains("main"), "unexpected message: {msg}");
+    }
+
+    #[test]
+    fn no_announcement_for_single_source() {
+        let sources = vec!["feat".to_string()];
+        assert!(announcement(&sources, "main").is_none());
     }
 
     #[test]
