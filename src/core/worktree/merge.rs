@@ -336,6 +336,37 @@ pub struct ResolvedTarget {
     pub path: Option<PathBuf>,
 }
 
+/// Fires merge-pre / merge-post hooks.
+///
+/// Implemented by the command layer (wrapping [`HookExecutor`]) and by a
+/// no-op [`NullHookRunner`] for unit tests that exercise `execute_start`
+/// without the full hook infrastructure. The runner owns its target
+/// worktree path so callers don't have to thread it through the trait.
+///
+/// Failure semantics are the runner's responsibility:
+/// * `fire_merge_pre` returning `Err` aborts the merge (caller propagates).
+/// * `fire_merge_post` returning `Err` is surfaced by the caller as a
+///   warning; the merge result is never rolled back.
+pub trait HookRunner {
+    /// Fire the `merge-pre` hook. Returning `Err` aborts the merge.
+    fn fire_merge_pre(&mut self, ctx: &MergeHookContext) -> Result<()>;
+    /// Fire the `merge-post` hook. Returning `Err` does NOT roll back the
+    /// merge; the command layer surfaces it as a warning.
+    fn fire_merge_post(&mut self, ctx: &MergeHookContext) -> Result<()>;
+}
+
+/// No-op [`HookRunner`] for unit tests and callers that don't wire hooks.
+pub struct NullHookRunner;
+
+impl HookRunner for NullHookRunner {
+    fn fire_merge_pre(&mut self, _: &MergeHookContext) -> Result<()> {
+        Ok(())
+    }
+    fn fire_merge_post(&mut self, _: &MergeHookContext) -> Result<()> {
+        Ok(())
+    }
+}
+
 /// Env-var context carried to merge-pre / merge-post hooks.
 ///
 /// Constructed once per merge (after target resolution and pre-flight) and
@@ -837,6 +868,7 @@ pub fn execute_start(
     params: &StartParams,
     git: &GitCommand,
     project_root: &Path,
+    hooks: &mut dyn HookRunner,
 ) -> Result<StartOutcome> {
     let resolved = resolve_target(params.target.as_deref(), git, project_root)?;
 
@@ -894,6 +926,11 @@ pub fn execute_start(
         // All sources already reachable from the target — equivalent to git's
         // "Already up to date." outcome. Short-circuit without invoking
         // `git merge`, preserving the interactive editor path for real merges.
+        //
+        // Hooks deliberately do NOT fire on this path. `merge-pre` fires
+        // "before any merge operation"; since none runs, neither does the
+        // pre hook. `merge-post` stays paired with it — an up-to-date merge
+        // is not an observable event that hook scripts need to react to.
         println!("Already up to date.");
         return Ok(StartOutcome {
             already_up_to_date: true,
@@ -914,9 +951,27 @@ pub fn execute_start(
         eprintln!("{msg}");
     }
 
-    match resolved.path {
-        Some(path) => execute_start_in_worktree(params, path),
-        None => execute_start_ref_only(params, git, project_root, &resolved.branch, target_sha),
+    // Cross-worktree detection: target worktree is not the current worktree.
+    // Computed once here, surfaced to merge-pre / merge-post via
+    // DAFT_MERGE_CROSS_WORKTREE. If the CWD lookup fails (e.g. detached HEAD
+    // during test harness setup) default to false — the observable wrongness
+    // is cosmetic and the merge itself is unaffected.
+    let cross_worktree = match (git.get_current_worktree_path().ok(), &resolved.path) {
+        (Some(cwd), Some(target_path)) => cwd != *target_path,
+        _ => false,
+    };
+
+    match resolved.path.clone() {
+        Some(path) => execute_start_in_worktree(params, &resolved, path, cross_worktree, hooks),
+        None => execute_start_ref_only(
+            params,
+            git,
+            project_root,
+            &resolved,
+            target_sha,
+            cross_worktree,
+            hooks,
+        ),
     }
 }
 
@@ -925,7 +980,28 @@ pub fn execute_start(
 /// Stdio is inherited so `$EDITOR` works for non-FF merges without `-m`. On
 /// failure, probe the worktree's `git status --porcelain` for conflicted files
 /// so the caller can render a conflict report.
-fn execute_start_in_worktree(params: &StartParams, path: PathBuf) -> Result<StartOutcome> {
+///
+/// Fires `merge-pre` before `git merge` (failure aborts) and `merge-post`
+/// after (failure is only surfaced as a warning to the caller).
+fn execute_start_in_worktree(
+    params: &StartParams,
+    resolved: &ResolvedTarget,
+    path: PathBuf,
+    cross_worktree: bool,
+    hooks: &mut dyn HookRunner,
+) -> Result<StartOutcome> {
+    // Build the merge-pre env-var context. This is the worktree-backed
+    // path, so `is_ephemeral = false`.
+    let pre_ctx = MergeHookContext::for_pre(
+        &params.sources,
+        resolved,
+        &params.flags,
+        false,
+        cross_worktree,
+    );
+    // `fire_merge_pre` failure aborts the merge before any state is touched.
+    hooks.fire_merge_pre(&pre_ctx)?;
+
     let mut argv: Vec<String> = vec!["merge".to_string()];
     argv.extend(render_flags(&params.flags));
     argv.extend(params.sources.iter().cloned());
@@ -947,6 +1023,26 @@ fn execute_start_in_worktree(params: &StartParams, path: PathBuf) -> Result<Star
         Vec::new()
     };
 
+    // Build the merge-post outcome. On success, read the target worktree's
+    // HEAD to report the new commit SHA; if that read fails, fall back to an
+    // empty SHA (hook scripts can test for `""`). On failure, record the
+    // conflicted files — same list the caller will print.
+    let outcome = if failed {
+        PostOutcome::Conflict {
+            files: files.clone(),
+            promoted_from_ephemeral: false,
+        }
+    } else {
+        let sha = read_head_sha(&path).unwrap_or_default();
+        PostOutcome::Success { commit_sha: sha }
+    };
+    let post_ctx = pre_ctx.extend_for_post(outcome);
+    // merge-post never rolls back the merge — surface errors as warnings at
+    // the caller, not Err here.
+    if let Err(e) = hooks.fire_merge_post(&post_ctx) {
+        eprintln!("warning: merge-post hook failed: {e}");
+    }
+
     Ok(StartOutcome {
         already_up_to_date: false,
         failed,
@@ -955,6 +1051,28 @@ fn execute_start_in_worktree(params: &StartParams, path: PathBuf) -> Result<Star
         emitted_terminal_message: false,
         ephemeral_promoted: false,
     })
+}
+
+/// Read a worktree's HEAD SHA via `git rev-parse HEAD`.
+///
+/// Used to populate `DAFT_MERGE_COMMIT_SHA` in the `merge-post` env after a
+/// successful merge. Best-effort: a failed read returns `None` and the
+/// caller stamps an empty string so hook scripts can still pattern-match on
+/// `DAFT_MERGE_RESULT=success` without relying on the SHA.
+fn read_head_sha(worktree: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["-C", &worktree.display().to_string(), "rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 /// Ref-only merge: the target branch has no worktree.
@@ -974,9 +1092,12 @@ fn execute_start_ref_only(
     params: &StartParams,
     git: &GitCommand,
     project_root: &Path,
-    target_branch: &str,
+    resolved: &ResolvedTarget,
     target_sha: String,
+    cross_worktree: bool,
+    hooks: &mut dyn HookRunner,
 ) -> Result<StartOutcome> {
+    let target_branch = resolved.branch.as_str();
     if params.sources.len() != 1 {
         anyhow::bail!(
             "target branch '{}' has no worktree; octopus merges into ref-only targets are not supported. \
@@ -995,9 +1116,30 @@ fn execute_start_ref_only(
     let is_ancestor = git.merge_base_is_ancestor(&target_sha, &source_sha)?;
 
     if is_pure_ff_eligible(params.sources.len(), &params.flags, Some(is_ancestor)) {
+        // Pure FF via plumbing — no worktree involvement, no conflicts.
+        // Fire merge-pre before the ref moves; merge-post after. The "path"
+        // in the env stays empty so scripts can detect the ref-only FF case
+        // via `[ -z "$DAFT_MERGE_TARGET_PATH" ]`.
+        let pre_ctx = MergeHookContext::for_pre(
+            &params.sources,
+            resolved,
+            &params.flags,
+            false,
+            cross_worktree,
+        );
+        hooks.fire_merge_pre(&pre_ctx)?;
+
         advance_ref_via_plumbing(git, target_branch, &source_sha)?;
         let short = &source_sha[..12.min(source_sha.len())];
         println!("Fast-forwarded {target_branch} to {short} (no worktree)");
+
+        let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
+            commit_sha: source_sha.clone(),
+        });
+        if let Err(e) = hooks.fire_merge_post(&post_ctx) {
+            eprintln!("warning: merge-post hook failed: {e}");
+        }
+
         return Ok(StartOutcome {
             already_up_to_date: false,
             failed: false,
@@ -1034,7 +1176,7 @@ fn execute_start_ref_only(
         );
     }
 
-    execute_ephemeral_merge(params, git, project_root, target_branch)
+    execute_ephemeral_merge(params, git, project_root, resolved, cross_worktree, hooks)
 }
 
 /// Materialize an ephemeral worktree for a ref-only target, run the merge
@@ -1061,8 +1203,11 @@ fn execute_ephemeral_merge(
     params: &StartParams,
     git: &GitCommand,
     project_root: &Path,
-    target_branch: &str,
+    resolved: &ResolvedTarget,
+    cross_worktree: bool,
+    hooks: &mut dyn HookRunner,
 ) -> Result<StartOutcome> {
+    let target_branch = resolved.branch.as_str();
     let bare_root = crate::get_git_common_dir()
         .context("failed to locate bare git directory for ephemeral worktree")?;
     let temp_path = crate::core::worktree::temp_worktree::create(&bare_root, target_branch)
@@ -1072,6 +1217,33 @@ fn execute_ephemeral_merge(
                 target_branch
             )
         })?;
+
+    // Fire merge-pre after the ephemeral worktree exists (so
+    // DAFT_MERGE_TARGET_PATH / the hook's cwd can point at it) but before
+    // the merge runs. `is_ephemeral = true` so scripts can branch on it.
+    //
+    // `resolved.path` is None on this path (ref-only target), so we swap in
+    // the ephemeral temp_path for env-var purposes — hook scripts operating
+    // on DAFT_MERGE_TARGET_PATH get the path that actually contains the
+    // in-progress merge.
+    let ephemeral_resolved = ResolvedTarget {
+        branch: resolved.branch.clone(),
+        path: Some(temp_path.clone()),
+    };
+    let pre_ctx = MergeHookContext::for_pre(
+        &params.sources,
+        &ephemeral_resolved,
+        &params.flags,
+        true,
+        cross_worktree,
+    );
+    if let Err(e) = hooks.fire_merge_pre(&pre_ctx) {
+        // merge-pre aborted the merge. Clean up the ephemeral worktree we
+        // just created so a failed hook doesn't leave state behind.
+        // Best-effort: surface the hook error regardless of cleanup result.
+        let _ = crate::core::worktree::temp_worktree::remove(&temp_path);
+        return Err(e);
+    }
 
     let mut argv: Vec<String> = vec!["merge".to_string()];
     argv.extend(render_flags(&params.flags));
@@ -1089,6 +1261,14 @@ fn execute_ephemeral_merge(
         })?;
 
     if status.success() {
+        // Fire merge-post BEFORE tearing down the ephemeral worktree so
+        // scripts still see DAFT_MERGE_TARGET_PATH pointing at a live dir.
+        let sha = read_head_sha(&temp_path).unwrap_or_default();
+        let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success { commit_sha: sha });
+        if let Err(e) = hooks.fire_merge_post(&post_ctx) {
+            eprintln!("warning: merge-post hook failed: {e}");
+        }
+
         // Ref advanced inside the temp worktree via the merge commit; the
         // worktree itself is no longer needed. `temp_worktree::remove` does
         // best-effort cleanup (falls back to rm -rf + prune) so a stale
@@ -1130,6 +1310,18 @@ fn execute_ephemeral_merge(
 
     // Probe conflicts at the PROMOTED path — the temp path no longer exists.
     let files = conflicted_files(&layout_path).unwrap_or_default();
+
+    // Fire merge-post after promotion so DAFT_MERGE_TARGET_PATH points at
+    // the canonical sibling location, and `promoted_from_ephemeral=true`
+    // lets scripts react to the promotion (e.g., notify the user).
+    let post_ctx = pre_ctx.extend_for_post(PostOutcome::Conflict {
+        files: files.clone(),
+        promoted_from_ephemeral: true,
+    });
+    if let Err(e) = hooks.fire_merge_post(&post_ctx) {
+        eprintln!("warning: merge-post hook failed: {e}");
+    }
+
     Ok(StartOutcome {
         already_up_to_date: false,
         failed: true,

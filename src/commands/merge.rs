@@ -7,18 +7,19 @@
 //! argument, default to CWD.
 
 use crate::{
+    core::worktree::merge::{HookRunner, MergeHookContext},
     executor::cli_presenter::CliPresenter,
-    get_git_common_dir, get_project_root,
+    get_current_worktree_path, get_git_common_dir, get_project_root,
     git::GitCommand,
     hooks::{HookContext, HookExecutor, HookType, HooksConfig},
     is_git_repository,
     logging::init_logging,
-    output::{CliOutput, OutputConfig},
+    output::{CliOutput, Output, OutputConfig},
     settings::{DaftSettings, HookOutputConfig},
 };
 use anyhow::Result;
 use clap::Parser;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "git-worktree-merge")]
@@ -467,7 +468,21 @@ pub fn run() -> Result<()> {
         adopt,
         require_clean_target: settings.merge_require_clean_target,
     };
-    let outcome = crate::core::worktree::merge::execute_start(&params, &git, &project_root)?;
+    // Build the MergeHookRunner used to fire merge-pre / merge-post hooks
+    // from inside `execute_start`. Holding the executor + output here (in
+    // the command layer) keeps core free of presenter/output dependencies.
+    let git_dir = get_git_common_dir()?;
+    let source_worktree = get_current_worktree_path().unwrap_or_else(|_| project_root.clone());
+    let mut output = CliOutput::new(OutputConfig::new(false, args.verbose));
+    let mut runner = MergeHookRunner::new(
+        &mut output,
+        project_root.clone(),
+        git_dir,
+        settings.remote.clone(),
+        source_worktree,
+    )?;
+    let outcome =
+        crate::core::worktree::merge::execute_start(&params, &git, &project_root, &mut runner)?;
 
     if outcome.already_up_to_date {
         // Core already printed "Already up to date." from the up-to-date
@@ -601,4 +616,98 @@ fn fire_worktree_post_create_hook(
     let presenter = CliPresenter::auto(&HookOutputConfig::default());
     executor.execute(&ctx, &mut output, presenter)?;
     Ok(())
+}
+
+/// [`HookRunner`] backed by a [`HookExecutor`] and a CLI output sink.
+///
+/// Built in `run()` before calling `execute_start` so the core merge logic
+/// can fire `merge-pre` / `merge-post` without pulling `HookExecutor`,
+/// `Output`, or `JobPresenter` into the core crate. The static context
+/// (project_root, git_dir, remote, source worktree) is captured at
+/// construction; target path + branch come from the `MergeHookContext`'s
+/// env vars on each call, since they may differ between pre and post
+/// (e.g., ephemeral promotion switches the path mid-merge).
+struct MergeHookRunner<'a> {
+    executor: HookExecutor,
+    output: &'a mut dyn Output,
+    project_root: PathBuf,
+    git_dir: PathBuf,
+    remote: String,
+    source_worktree: PathBuf,
+}
+
+impl<'a> MergeHookRunner<'a> {
+    fn new(
+        output: &'a mut dyn Output,
+        project_root: PathBuf,
+        git_dir: PathBuf,
+        remote: String,
+        source_worktree: PathBuf,
+    ) -> Result<Self> {
+        let hooks_config = HooksConfig::default();
+        let executor = HookExecutor::new(hooks_config)?;
+        Ok(Self {
+            executor,
+            output,
+            project_root,
+            git_dir,
+            remote,
+            source_worktree,
+        })
+    }
+
+    /// Build a `HookContext` for a merge hook, reading target path/branch
+    /// from the `MergeHookContext`'s env vars and attaching the full env
+    /// map as `extra_env` so hook scripts observe every `DAFT_MERGE_*`.
+    fn build_ctx(&self, hook_type: HookType, merge_ctx: &MergeHookContext) -> HookContext {
+        // Ref-only FF path stamps an empty DAFT_MERGE_TARGET_PATH; fall
+        // back to the source worktree so the hook cwd is a real dir.
+        let target_path = merge_ctx
+            .env
+            .get("DAFT_MERGE_TARGET_PATH")
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.source_worktree.clone());
+        let branch = merge_ctx
+            .env
+            .get("DAFT_MERGE_TARGET_BRANCH")
+            .cloned()
+            .unwrap_or_default();
+        HookContext::new(
+            hook_type,
+            "merge",
+            self.project_root.clone(),
+            self.git_dir.clone(),
+            self.remote.clone(),
+            self.source_worktree.clone(),
+            target_path,
+            branch,
+        )
+        .with_extra_env(merge_ctx.env.clone())
+    }
+
+    fn fire(&mut self, hook_type: HookType, merge_ctx: &MergeHookContext) -> Result<()> {
+        let ctx = self.build_ctx(hook_type, merge_ctx);
+        let presenter = CliPresenter::auto(&HookOutputConfig::default());
+        // `execute` returns Err when a hook fails AND its fail mode is
+        // Abort. merge-pre defaults to Abort, merge-post to Warn, so the
+        // trait method's "Err aborts" contract is honored by the
+        // executor's own fail-mode plumbing.
+        self.executor.execute(&ctx, self.output, presenter)?;
+        Ok(())
+    }
+}
+
+impl<'a> HookRunner for MergeHookRunner<'a> {
+    fn fire_merge_pre(&mut self, ctx: &MergeHookContext) -> Result<()> {
+        self.fire(HookType::MergePre, ctx)
+    }
+
+    fn fire_merge_post(&mut self, ctx: &MergeHookContext) -> Result<()> {
+        // merge-post's fail mode is Warn by default, so executor.execute()
+        // won't return Err. If the user has configured it to Abort, we
+        // still surface the error here — the core layer will log it and
+        // not roll back the merge.
+        self.fire(HookType::MergePost, ctx)
+    }
 }
