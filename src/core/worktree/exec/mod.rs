@@ -542,15 +542,20 @@ pub fn run_pipeline_streaming(
         // launching the next command.
         if cancel.is_cancelled() {
             cancelled = true;
+            for step in pipeline.iter().skip(idx) {
+                presenter.on_job_skipped(
+                    base_name,
+                    "",
+                    Duration::ZERO,
+                    false,
+                    Some(&step.display()),
+                );
+            }
             break;
         }
 
         last_index = idx;
-        let job_name = if pipeline.len() > 1 {
-            format!("{} [{}/{}]", base_name, idx + 1, pipeline.len())
-        } else {
-            base_name.to_string()
-        };
+        let job_name = base_name.to_string();
         let preview = spec.display();
         let cmd_start = Instant::now();
         presenter.on_job_start(&job_name, None, Some(&preview));
@@ -609,13 +614,31 @@ pub fn run_pipeline_streaming(
         let cmd_elapsed = cmd_start.elapsed();
         if cancel.is_cancelled() {
             cancelled = true;
-            presenter.on_job_failure(&job_name, cmd_elapsed);
+            presenter.on_job_cancelled(&job_name, cmd_elapsed);
+            for step in pipeline.iter().skip(idx + 1) {
+                presenter.on_job_skipped(
+                    &job_name,
+                    "",
+                    Duration::ZERO,
+                    false,
+                    Some(&step.display()),
+                );
+            }
             break;
         }
         if exit_code == 0 {
             presenter.on_job_success(&job_name, cmd_elapsed);
         } else {
             presenter.on_job_failure(&job_name, cmd_elapsed);
+            for step in pipeline.iter().skip(idx + 1) {
+                presenter.on_job_skipped(
+                    &job_name,
+                    "",
+                    Duration::ZERO,
+                    false,
+                    Some(&step.display()),
+                );
+            }
             break;
         }
     }
@@ -1213,5 +1236,131 @@ mod tests {
         assert_eq!(f.level(), 2);
         f.escalate(); // saturates
         assert_eq!(f.level(), 2);
+    }
+}
+
+#[cfg(test)]
+mod streaming_skip_emission_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct EventRecorder {
+        events: Mutex<Vec<String>>,
+    }
+
+    impl EventRecorder {
+        fn arc() -> Arc<Self> {
+            Arc::new(Self::default())
+        }
+
+        fn log(&self, event: &str) {
+            self.events.lock().unwrap().push(event.to_string());
+        }
+
+        fn take(&self) -> Vec<String> {
+            std::mem::take(&mut self.events.lock().unwrap())
+        }
+    }
+
+    impl crate::executor::presenter::JobPresenter for EventRecorder {
+        fn on_phase_start(&self, _: &str) {}
+        fn on_job_start(&self, name: &str, _: Option<&str>, preview: Option<&str>) {
+            self.log(&format!("start:{name}:{}", preview.unwrap_or("")));
+        }
+        fn on_job_output(&self, _: &str, _: &str) {}
+        fn on_job_success(&self, name: &str, _: std::time::Duration) {
+            self.log(&format!("success:{name}"));
+        }
+        fn on_job_failure(&self, name: &str, _: std::time::Duration) {
+            self.log(&format!("failure:{name}"));
+        }
+        fn on_job_cancelled(&self, name: &str, _: std::time::Duration) {
+            self.log(&format!("cancelled:{name}"));
+        }
+        fn on_job_skipped(
+            &self,
+            name: &str,
+            _reason: &str,
+            _duration: std::time::Duration,
+            _show: bool,
+            preview: Option<&str>,
+        ) {
+            self.log(&format!("skipped:{name}:{}", preview.unwrap_or("")));
+        }
+        fn on_message(&self, _: &str) {}
+        fn on_phase_complete(&self, _: std::time::Duration) {}
+        fn take_results(&self) -> Vec<crate::executor::JobResult> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn fail_fast_emits_skipped_for_unrun_steps() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = ResolvedTarget {
+            worktree_path: dir.path().to_path_buf(),
+            branch_name: "branch-a".into(),
+        };
+        let pipeline = vec![
+            CommandSpec::Argv(vec!["false".into()]),
+            CommandSpec::Argv(vec!["echo".into(), "never".into()]),
+        ];
+        let recorder = EventRecorder::arc();
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> =
+            Arc::clone(&recorder) as Arc<dyn crate::executor::presenter::JobPresenter>;
+
+        let outcome =
+            run_pipeline_streaming(&target, &pipeline, "", &presenter, &CancelFlag::new()).unwrap();
+
+        assert!(!outcome.succeeded(), "first step should fail");
+        let events = recorder.take();
+        let starts: Vec<&String> = events.iter().filter(|e| e.starts_with("start:")).collect();
+        assert_eq!(starts.len(), 1, "only first step should start: {events:?}");
+        assert!(
+            events.iter().any(|e| e == "failure:branch-a"),
+            "missing failure event: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| e == "skipped:branch-a:echo never"),
+            "missing skipped event for step 2: {events:?}"
+        );
+    }
+
+    #[test]
+    fn pre_cancel_emits_skipped_for_all_steps() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = ResolvedTarget {
+            worktree_path: dir.path().to_path_buf(),
+            branch_name: "branch-b".into(),
+        };
+        let pipeline = vec![
+            CommandSpec::Argv(vec!["echo".into(), "one".into()]),
+            CommandSpec::Argv(vec!["echo".into(), "two".into()]),
+        ];
+        let recorder = EventRecorder::arc();
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> =
+            Arc::clone(&recorder) as Arc<dyn crate::executor::presenter::JobPresenter>;
+
+        let cancel = CancelFlag::new();
+        cancel.escalate();
+
+        let outcome = run_pipeline_streaming(&target, &pipeline, "", &presenter, &cancel).unwrap();
+
+        assert!(outcome.cancelled, "expected cancelled outcome");
+        let events = recorder.take();
+        let starts = events.iter().filter(|e| e.starts_with("start:")).count();
+        assert_eq!(
+            starts, 0,
+            "no steps should start when pre-cancelled: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| e == "skipped:branch-b:echo one"),
+            "missing skipped event for step 1: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| e == "skipped:branch-b:echo two"),
+            "missing skipped event for step 2: {events:?}"
+        );
     }
 }
