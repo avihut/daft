@@ -42,10 +42,6 @@ pub fn run() -> Result<()> {
         anyhow::bail!("Not inside a Git repository");
     }
 
-    if args.sources.is_empty() {
-        anyhow::bail!("specify at least one source to merge");
-    }
-
     let cwd = std::env::current_dir()?;
     let params = crate::core::worktree::merge::StartParams {
         sources: args.sources,
@@ -54,7 +50,7 @@ pub fn run() -> Result<()> {
 
     if outcome.already_up_to_date {
         println!("Already up to date.");
-    } else if outcome.conflicted {
+    } else if outcome.failed {
         anyhow::bail!("merge conflicted — resolve then run `daft merge --continue`");
     } else {
         println!("Merge complete.");

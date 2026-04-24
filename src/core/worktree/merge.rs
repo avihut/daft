@@ -7,11 +7,12 @@
 //! fast-forward vs. true merge, octopus announcements, target resolution)
 //! lands in later slices.
 //!
-//! The established pattern for ad-hoc git invocations is
-//! `std::process::Command::new("git").args(...).current_dir(...).status()`,
-//! mirroring `src/core/worktree/rebase.rs`. `GitCommand` intentionally does
-//! not expose a generic `run` helper, so we go through `std::process::Command`
-//! directly.
+//! The direct use of `std::process::Command::new("git")` here is a Slice-2
+//! shortcut. A later slice will replace it with a `GitCommand::merge_in`
+//! helper (analogous to `GitCommand::rebase_in` in `src/git/remote.rs`) once
+//! we need to capture stdout/stderr to detect signals like
+//! "Already up to date." and distinguish true merge conflicts from other
+//! failure modes.
 //!
 //! # Parameters
 //!
@@ -21,9 +22,10 @@
 //! # Outcome
 //!
 //! [`StartOutcome`] reports the result: whether the merge was a no-op because
-//! the target was already up to date, and whether the merge left conflicts.
-//! Later slices will expand this to distinguish fast-forward, true merge, and
-//! octopus cases.
+//! the target was already up to date, and whether the `git merge` invocation
+//! exited non-zero. Later slices will expand this to distinguish fast-forward,
+//! true merge, and octopus cases, and to separate real conflicts from other
+//! failure modes.
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -41,14 +43,22 @@ pub struct StartParams {
 pub struct StartOutcome {
     /// The target branch was already up to date with the sources; nothing to do.
     pub already_up_to_date: bool,
-    /// `git merge` reported conflicts and left the worktree mid-merge.
-    pub conflicted: bool,
+    /// True if `git merge` exited non-zero for any reason (conflict, unknown ref, bad state).
+    /// Slice 5+ will refine this into `conflicted` vs other failure modes via stderr parsing
+    /// or `.git/MERGE_HEAD` inspection.
+    pub failed: bool,
 }
 
-/// Run `git merge <sources...>` inside `target_worktree`.
+/// Execute a merge in `target_worktree`.
+///
+/// **Caller invariant:** `target_worktree` must be the root of a git worktree.
+/// This function does not validate the path — it delegates to `git merge`, which
+/// will surface any error itself. The command layer enforces the invariant via
+/// `is_git_repository()` before calling this function. Slice 3 introduces
+/// `--into` target resolution that preserves the invariant by construction.
 ///
 /// Returns [`StartOutcome`] describing the result. In this Slice-2 form we
-/// detect conflicts solely via git's exit status; `already_up_to_date` is
+/// detect failure solely via git's exit status; `already_up_to_date` is
 /// always reported as `false` here and will be upgraded in later slices.
 pub fn execute_start(target_worktree: &Path, params: &StartParams) -> Result<StartOutcome> {
     let mut argv: Vec<String> = vec!["merge".to_string()];
@@ -67,7 +77,7 @@ pub fn execute_start(target_worktree: &Path, params: &StartParams) -> Result<Sta
 
     Ok(StartOutcome {
         already_up_to_date: false,
-        conflicted: !status.success(),
+        failed: !status.success(),
     })
 }
 
@@ -88,15 +98,6 @@ mod tests {
     fn start_outcome_default_is_clean() {
         let outcome = StartOutcome::default();
         assert!(!outcome.already_up_to_date);
-        assert!(!outcome.conflicted);
-    }
-
-    #[test]
-    fn module_exports_are_visible() {
-        // Smoke test: the public types and function are reachable through the
-        // module path the commands layer will use.
-        fn _assert_signature(p: &Path, params: &StartParams) -> Result<StartOutcome> {
-            execute_start(p, params)
-        }
+        assert!(!outcome.failed);
     }
 }

@@ -30,3 +30,5 @@ steps:
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
+      output_contains:
+        - "Add feature branch"
