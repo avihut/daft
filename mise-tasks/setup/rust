@@ -22,6 +22,7 @@ ln -sf daft git-worktree-flow-adopt
 ln -sf daft git-worktree-flow-eject
 ln -sf daft git-worktree-sync
 ln -sf daft git-worktree-list
+ln -sf daft git-worktree-merge
 ln -sf daft git-daft
 ln -sf daft daft-remove
 ln -sf daft daft-rename
