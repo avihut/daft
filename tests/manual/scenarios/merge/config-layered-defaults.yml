@@ -1,0 +1,46 @@
+name: Merge respects daft.merge.* config
+description:
+  "daft.merge.ff=never turns plain `daft merge <src>` into a merge commit, with
+  no CLI flag"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Checkout feature
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: Set local daft.merge.ff=never
+    run: git config daft.merge.ff never
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Merge feature (config should force --no-ff)
+    run: git-worktree-merge feature/test-feature -m "merge via config" 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Merge complete."
+
+  - name: Verify main HEAD has two parents (merge commit, not FF)
+    run: |
+      parents=$(git rev-list --parents -n 1 HEAD | awk '{print NF-1}')
+      echo "parent_count=$parents"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "parent_count=2"
+
+  - name: Clear config
+    run: git config --unset daft.merge.ff
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0 }

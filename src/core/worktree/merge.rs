@@ -46,14 +46,37 @@ pub struct StartParams {
     /// when the merge cannot fast-forward. Consulted only on the ref-only
     /// non-FF branch of [`execute_start`]; ignored elsewhere.
     pub adopt: AdoptChoice,
+    /// Require the target worktree to be clean (no uncommitted changes) before
+    /// starting the merge. Sourced by the command layer from
+    /// `daft.merge.requireCleanTarget`; defaults to `true`.
+    pub require_clean_target: bool,
+}
+
+impl Default for StartParams {
+    /// Default [`StartParams`]: no sources, current-worktree target, default
+    /// flags and adopt state, and `require_clean_target = true` to match the
+    /// safety-first config default. Used by unit tests; the command layer
+    /// always constructs StartParams explicitly from CLI args + settings.
+    fn default() -> Self {
+        Self {
+            sources: Vec::new(),
+            target: None,
+            flags: EffectiveFlags::default(),
+            adopt: AdoptChoice::default(),
+            require_clean_target: true,
+        }
+    }
 }
 
 /// Caller-provided flag state for the adopt-target decision.
 ///
-/// Maps 1:1 to the CLI:
+/// Maps to the CLI plus settings:
 /// * `adopt_target` — `--adopt-target` was passed.
 /// * `no_adopt_target` — `--no-adopt-target` was passed.
 /// * `yes` — `-y`/`--yes` was passed.
+/// * `preset` — user-configured default from
+///   `daft.merge.adoptTargetOnDemand`; used by [`decide_adopt`] when neither
+///   explicit adopt flag is set.
 ///
 /// Clap enforces at parse time that `adopt_target` and `no_adopt_target` are
 /// not both set. `yes` is orthogonal and coerces to `adopt_target` only when
@@ -63,6 +86,7 @@ pub struct AdoptChoice {
     pub adopt_target: bool,
     pub no_adopt_target: bool,
     pub yes: bool,
+    pub preset: AdoptPreset,
 }
 
 /// User-configured default for adopt-target behavior.
@@ -530,12 +554,11 @@ pub fn detect_in_progress(worktree: &Path) -> Result<Option<InProgressOp>> {
 ///
 /// The refusal message names the canonical remediation options.
 ///
-/// TODO(slice-13): Make the refusal configurable via the
-/// `daft.merge.requireCleanTarget` setting, and restore the full hint
-/// pointing users at that toggle. For Slice 4 we hard-code
-/// `require_clean = true` — always refuse dirty — because the settings
-/// plumbing lands later in the plan, and advertising a key users can't yet
-/// set would be misleading.
+/// Gated at the call site by `StartParams::require_clean_target`, which is
+/// sourced from `daft.merge.requireCleanTarget` (default `true`). When that
+/// key is `false`, the command layer skips this check entirely — git's own
+/// `git merge` will then take over the dirty-tree decision (it stashes/merges
+/// when non-conflicting, errors out when conflicting).
 pub fn validate_clean_target(git: &GitCommand, path: &Path) -> Result<()> {
     if git.has_uncommitted_changes_in(path)? {
         anyhow::bail!(
@@ -714,7 +737,12 @@ pub fn execute_start(
                 op.description()
             );
         }
-        validate_clean_target(git, path)?;
+        // `daft.merge.requireCleanTarget` (default true) gates the dirty
+        // check. Opt-out matches `git merge`'s own behavior, which happily
+        // stashes/merges with uncommitted changes if they don't conflict.
+        if params.require_clean_target {
+            validate_clean_target(git, path)?;
+        }
     }
 
     // Detect "already up to date" via plumbing before invoking `git merge`, so
@@ -864,13 +892,12 @@ fn execute_start_ref_only(
     // Non-FF path: decide whether to materialize an ephemeral worktree.
     //
     // `-y` coerces to `--adopt-target` when neither adopt flag is explicit
-    // (announced on stderr for traceability). The preset is hard-coded to
-    // `Prompt` for now; TODO(slice-13): load `daft.merge.adoptTargetOnDemand`
-    // from `DaftSettings` and thread it through here.
+    // (announced on stderr for traceability). The preset comes from
+    // `daft.merge.adoptTargetOnDemand` via `AdoptChoice::preset`; defaults to
+    // `Prompt`, which means ask in TTY / refuse in non-TTY.
     let (flag_yes, flag_no) = resolve_adopt_flags(&params.adopt);
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
-    let preset = AdoptPreset::Prompt;
-    let decision = decide_adopt(flag_yes, flag_no, is_tty, preset);
+    let decision = decide_adopt(flag_yes, flag_no, is_tty, params.adopt.preset);
 
     let should_adopt = match decision {
         AdoptDecision::Yes => true,
@@ -1532,8 +1559,7 @@ mod tests {
         let params = StartParams {
             sources: vec!["feature/x".to_string(), "feature/y".to_string()],
             target: None,
-            flags: EffectiveFlags::default(),
-            adopt: AdoptChoice::default(),
+            ..StartParams::default()
         };
         assert_eq!(params.sources.len(), 2);
         assert_eq!(params.sources[0], "feature/x");
@@ -1545,8 +1571,7 @@ mod tests {
         let params = StartParams {
             sources: vec!["feature/x".to_string()],
             target: Some("main".to_string()),
-            flags: EffectiveFlags::default(),
-            adopt: AdoptChoice::default(),
+            ..StartParams::default()
         };
         assert_eq!(params.target.as_deref(), Some("main"));
     }
@@ -2096,9 +2121,8 @@ mod tests {
     fn resolve_adopt_flags_yes_coerces_when_neither_set() {
         // `-y` alone means "--adopt-target" for the adopt axis.
         let adopt = AdoptChoice {
-            adopt_target: false,
-            no_adopt_target: false,
             yes: true,
+            ..AdoptChoice::default()
         };
         assert_eq!(resolve_adopt_flags(&adopt), (true, false));
     }
@@ -2109,8 +2133,8 @@ mod tests {
         // no-op on this axis (no announcement, no change).
         let adopt = AdoptChoice {
             adopt_target: true,
-            no_adopt_target: false,
             yes: true,
+            ..AdoptChoice::default()
         };
         assert_eq!(resolve_adopt_flags(&adopt), (true, false));
     }
@@ -2121,9 +2145,9 @@ mod tests {
         // `-y` is only future-proofing for _prompts_, not an override of
         // explicit refusal.
         let adopt = AdoptChoice {
-            adopt_target: false,
             no_adopt_target: true,
             yes: true,
+            ..AdoptChoice::default()
         };
         assert_eq!(resolve_adopt_flags(&adopt), (false, true));
     }

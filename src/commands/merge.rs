@@ -240,19 +240,33 @@ pub struct Args {
     pub verbose: bool,
 }
 
-/// Translate parsed CLI [`Args`] into [`EffectiveFlags`].
+/// Translate parsed CLI [`Args`] + [`DaftSettings`] into [`EffectiveFlags`].
 ///
 /// Clap's `conflicts_with`/`conflicts_with_all` attrs guarantee at parse time
 /// that each paired bool (e.g. `edit`/`no_edit`) has at most one side true,
 /// so `else if` chains below are exhaustive in practice.
 ///
+/// Precedence: CLI flags > `daft.merge.*` config > built-in defaults. A
+/// paired negation flag (e.g. `--no-ff`, `--no-signoff`) always wins over the
+/// config-provided default; that's why each chain checks both the positive
+/// and negative CLI flag before consulting settings.
+///
 /// `-S` has dual semantics in git: bare `-S` means "use the default key",
 /// and `-S<KEYID>` binds a specific key. Clap exposes this via
 /// `num_args = 0..=1` + `default_missing_value = ""`: an empty string means
-/// "passed with no value", a non-empty string means a key ID.
-fn effective_flags_from_args(args: &Args) -> crate::core::worktree::merge::EffectiveFlags {
+/// "passed with no value", a non-empty string means a key ID. The same
+/// convention is mirrored in `daft.merge.gpgSign` (`true` → default key,
+/// `false` → unset, anything else → KEYID).
+fn effective_flags_from_args_and_settings(
+    args: &Args,
+    settings: &DaftSettings,
+) -> crate::core::worktree::merge::EffectiveFlags {
     use crate::core::worktree::merge::{EffectiveFlags, FfMode, GpgSign};
 
+    // ff: CLI wins; else always emit the setting's preference so git sees
+    // a concrete flag. Emitting `Some(Auto)` even for the default is
+    // deliberate: `render_flags` turns it into `--ff`, which is a no-op for
+    // git but makes the invocation self-describing in verbose logs.
     let ff = if args.ff_only {
         Some(FfMode::Only)
     } else if args.no_ff {
@@ -260,37 +274,50 @@ fn effective_flags_from_args(args: &Args) -> crate::core::worktree::merge::Effec
     } else if args.ff {
         Some(FfMode::Auto)
     } else {
-        None
+        Some(settings.merge_ff)
     };
 
+    // squash: CLI wins; else only emit when settings enables it (the default
+    // `merge_squash = false` matches `None = git's default`, so stay `None`
+    // to keep the argv minimal).
     let squash = if args.squash {
         Some(true)
     } else if args.no_squash {
         Some(false)
+    } else if settings.merge_squash {
+        Some(true)
     } else {
         None
     };
 
+    // commit: CLI wins; else only emit when settings overrides to `false`
+    // (`merge_commit = true` is git's default, so stay `None`). `--no-commit`
+    // and a false config value collapse into the same `Some(false)` outcome —
+    // there's no observable difference to git.
     let commit = if args.commit {
         Some(true)
-    } else if args.no_commit {
+    } else if args.no_commit || !settings.merge_commit {
         Some(false)
     } else {
         None
     };
 
+    // edit: CLI wins; else settings provides `Option<bool>` directly (None
+    // = let git decide from TTY).
     let edit = if args.edit {
         Some(true)
     } else if args.no_edit {
         Some(false)
     } else {
-        None
+        settings.merge_edit
     };
 
     let signoff = if args.signoff {
         Some(true)
     } else if args.no_signoff {
         Some(false)
+    } else if settings.merge_signoff {
+        Some(true)
     } else {
         None
     };
@@ -298,6 +325,12 @@ fn effective_flags_from_args(args: &Args) -> crate::core::worktree::merge::Effec
     let gpg_sign = if args.no_gpg_sign {
         Some(GpgSign::Disabled)
     } else if let Some(k) = &args.gpg_sign {
+        if k.is_empty() {
+            Some(GpgSign::Default)
+        } else {
+            Some(GpgSign::KeyId(k.clone()))
+        }
+    } else if let Some(k) = &settings.merge_gpg_sign {
         if k.is_empty() {
             Some(GpgSign::Default)
         } else {
@@ -311,10 +344,14 @@ fn effective_flags_from_args(args: &Args) -> crate::core::worktree::merge::Effec
         Some(true)
     } else if args.no_verify_signatures {
         Some(false)
+    } else if settings.merge_verify_signatures {
+        Some(true)
     } else {
         None
     };
 
+    // stat has no settings key (deliberately — it's a visual-output flag, not
+    // a semantic default worth persisting). Preserve the original behavior.
     let stat = if args.stat {
         Some(true)
     } else if args.no_stat {
@@ -322,6 +359,23 @@ fn effective_flags_from_args(args: &Args) -> crate::core::worktree::merge::Effec
     } else {
         None
     };
+
+    // strategy: CLI wins over config; either may be `None`.
+    let strategy = args
+        .strategy
+        .clone()
+        .or_else(|| settings.merge_strategy.clone());
+
+    // strategy_options accumulate: config first, then CLI appended. Duplicate
+    // `-X` entries are harmless to git (last wins) and mirror the way
+    // strategy options stack on the CLI itself.
+    let mut strategy_options = settings.merge_strategy_options.clone();
+    strategy_options.extend(args.strategy_options.iter().cloned());
+
+    // allow_unrelated_histories: either side can enable; there is no
+    // negating CLI flag, so CLI-false + config-true yields `true`.
+    let allow_unrelated_histories =
+        args.allow_unrelated_histories || settings.merge_allow_unrelated_histories;
 
     EffectiveFlags {
         message: args.message.clone(),
@@ -332,11 +386,11 @@ fn effective_flags_from_args(args: &Args) -> crate::core::worktree::merge::Effec
         squash,
         commit,
         signoff,
-        strategy: args.strategy.clone(),
-        strategy_options: args.strategy_options.clone(),
+        strategy,
+        strategy_options,
         gpg_sign,
         verify_signatures,
-        allow_unrelated_histories: args.allow_unrelated_histories,
+        allow_unrelated_histories,
         stat,
     }
 }
@@ -390,16 +444,18 @@ pub fn run() -> Result<()> {
         anyhow::bail!("specify at least one source to merge");
     }
 
-    let flags = effective_flags_from_args(&args);
+    let flags = effective_flags_from_args_and_settings(&args, &settings);
     // Pass the adopt-related CLI flags through verbatim; clap enforces
     // `--adopt-target` vs `--no-adopt-target` mutual exclusion upstream, and
     // `-y`'s coercion to `--adopt-target` (and its announcement) happens in
     // `resolve_adopt_flags` inside the ref-only non-FF branch so the log
-    // line fires exactly once, at the point the coercion matters.
+    // line fires exactly once, at the point the coercion matters. `preset`
+    // comes from `daft.merge.adoptTargetOnDemand`.
     let adopt = crate::core::worktree::merge::AdoptChoice {
         adopt_target: args.adopt_target,
         no_adopt_target: args.no_adopt_target,
         yes: args.yes,
+        preset: settings.merge_adopt_target_on_demand,
     };
     // Capture before move: needed for the worktree-post-create hook when the
     // ephemeral-promote path fires. Non-ephemeral paths don't use this.
@@ -409,6 +465,7 @@ pub fn run() -> Result<()> {
         target: args.into,
         flags,
         adopt,
+        require_clean_target: settings.merge_require_clean_target,
     };
     let outcome = crate::core::worktree::merge::execute_start(&params, &git, &project_root)?;
 
@@ -468,17 +525,29 @@ pub fn run() -> Result<()> {
         // non-up-to-date merges — the `already_up_to_date` and `failed`
         // arms above have already returned or exited.
         //
-        // Clap guarantees `-b` requires `-r`, so `args.and_branch` without
-        // `args.remove` is unreachable; the outer `args.remove` gate is
-        // sufficient. When cleanup errors happen (e.g. `git branch -d`
-        // refusing an unmerged branch after `--squash`), the merge itself
-        // succeeded — the cleanup error is surfaced so the caller knows
-        // which post-merge step failed, but any earlier successful cleanup
-        // step (worktree removal) is not rolled back.
-        if args.remove {
+        // Precedence: CLI flags can only *add* to the cleanup scope on top
+        // of config defaults. Config-driven cleanup is intentionally
+        // opt-in via `daft.merge.postMerge.removeSourceWorktree` and
+        // `.alsoRemoveSourceBranch`. Clap already enforces that `-b`
+        // requires `-r` on the CLI side — that's an interaction check for
+        // user-typed flags, not for config defaults — so the code below
+        // must also guard `and_branch` behind `effective_remove` or it
+        // could request branch deletion without worktree removal when the
+        // user sets `alsoRemoveSourceBranch = true` without enabling the
+        // worktree-removal key. That's a config misconfiguration; gate it.
+        //
+        // When cleanup errors happen (e.g. `git branch -d` refusing an
+        // unmerged branch after `--squash`), the merge itself succeeded —
+        // the cleanup error is surfaced so the caller knows which
+        // post-merge step failed, but any earlier successful cleanup step
+        // (worktree removal) is not rolled back.
+        let effective_remove = args.remove || settings.merge_post_merge_remove_source_worktree;
+        let effective_and_branch = effective_remove
+            && (args.and_branch || settings.merge_post_merge_also_remove_source_branch);
+        if effective_remove {
             let cleanup_opts = crate::core::worktree::merge::CleanupOptions {
-                remove_worktree: args.remove,
-                also_branch: args.and_branch,
+                remove_worktree: effective_remove,
+                also_branch: effective_and_branch,
             };
             crate::core::worktree::merge::execute_cleanup(
                 &params.sources,
