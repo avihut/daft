@@ -552,6 +552,131 @@ pub fn execute_start(
     })
 }
 
+/// Which finish operation to execute.
+///
+/// Each variant maps one-to-one to a git-merge subflag (`--abort`,
+/// `--continue`, `--quit`). Distinguished here rather than threading raw
+/// strings through the call graph so the caller's intent is type-checked and
+/// exhaustive matches catch future variants at compile time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishMode {
+    Abort,
+    Continue,
+    Quit,
+}
+
+/// Inputs to a merge-finish operation.
+///
+/// `worktree` mirrors [`StartParams::target`]: `None` means the current
+/// worktree, `Some(t)` is resolved via [`resolve_target`] (branch name, dir
+/// name, or relative path).
+#[derive(Debug, Clone)]
+pub struct FinishParams {
+    pub worktree: Option<String>,
+    pub mode: FinishMode,
+}
+
+/// Verify the given worktree has an in-progress merge.
+///
+/// Returns `Ok(())` iff `.git/MERGE_HEAD` (or its linked-worktree equivalent)
+/// is present. Fails with "no in-progress merge in worktree '<path>'" for all
+/// other states (clean, mid-rebase, mid-cherry-pick, mid-bisect). Callers
+/// that want to surface candidate worktrees on failure should use
+/// [`execute_finish`]; this helper is the bare predicate, kept public for
+/// direct unit testing.
+pub fn ensure_merge_in_progress(worktree: &Path) -> Result<()> {
+    if detect_in_progress(worktree)? == Some(InProgressOp::Merge) {
+        Ok(())
+    } else {
+        anyhow::bail!("no in-progress merge in worktree '{}'", worktree.display())
+    }
+}
+
+/// Enumerate worktrees in the project that have an in-progress merge.
+///
+/// Used by [`execute_finish`] to produce a helpful "merges in progress
+/// elsewhere" hint when the user runs a finish command against a worktree
+/// without one. Parses `git worktree list --porcelain` for worktree paths
+/// (each stanza begins with a `worktree <path>` line) and probes each with
+/// [`detect_in_progress`]. Paths whose probe errors (malformed or missing
+/// `.git`) are silently skipped — listing is best-effort, not authoritative.
+fn list_worktrees_with_in_progress_merges(git: &GitCommand) -> Result<Vec<PathBuf>> {
+    let porcelain = git.worktree_list_porcelain()?;
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for line in porcelain.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            paths.push(PathBuf::from(p));
+        }
+    }
+    let mut matches = Vec::new();
+    for path in paths {
+        if detect_in_progress(&path).ok().flatten() == Some(InProgressOp::Merge) {
+            matches.push(path);
+        }
+    }
+    Ok(matches)
+}
+
+/// Execute a finish command (abort/continue/quit) against the resolved target.
+///
+/// Resolves the target via [`resolve_target`] (same logic as
+/// [`execute_start`]), then verifies the target has an in-progress merge. If
+/// it doesn't, enumerates sibling worktrees with in-progress merges so the
+/// error message points the user at where the state actually lives.
+///
+/// On the happy path, dispatches `git merge --abort|--continue|--quit` with
+/// the target worktree as CWD so the correct worktree's index is touched.
+/// Stdio is inherited so `--continue`'s commit-message editor (when no `-m`
+/// was supplied on the original start) works interactively.
+pub fn execute_finish(params: &FinishParams, git: &GitCommand, project_root: &Path) -> Result<()> {
+    let resolved = resolve_target(params.worktree.as_deref(), git, project_root)?;
+
+    if detect_in_progress(&resolved.path)? != Some(InProgressOp::Merge) {
+        let candidates = list_worktrees_with_in_progress_merges(git).unwrap_or_default();
+        let mut msg = format!(
+            "no in-progress merge in worktree '{}'",
+            resolved.path.display()
+        );
+        if !candidates.is_empty() {
+            msg.push_str("\n\nmerges in progress elsewhere:");
+            for c in &candidates {
+                msg.push_str(&format!("\n  {}", c.display()));
+            }
+            msg.push_str("\n\nretry with: daft merge --");
+            msg.push_str(match params.mode {
+                FinishMode::Abort => "abort",
+                FinishMode::Continue => "continue",
+                FinishMode::Quit => "quit",
+            });
+            msg.push_str(" <branch>");
+        }
+        anyhow::bail!(msg);
+    }
+
+    let flag = match params.mode {
+        FinishMode::Abort => "--abort",
+        FinishMode::Continue => "--continue",
+        FinishMode::Quit => "--quit",
+    };
+
+    let status = Command::new("git")
+        .args(["merge", flag])
+        .current_dir(&resolved.path)
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to invoke git merge {} in '{}'",
+                flag,
+                resolved.path.display()
+            )
+        })?;
+
+    if !status.success() {
+        anyhow::bail!("git merge {} failed in '{}'", flag, resolved.path.display());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     //! Test coverage notes for [`resolve_target`]:
@@ -962,6 +1087,26 @@ mod tests {
     fn no_announcement_for_single_source() {
         let sources = vec!["feat".to_string()];
         assert!(announcement(&sources, "main").is_none());
+    }
+
+    #[test]
+    fn ensure_merge_ok_when_head_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".git/MERGE_HEAD"), "deadbeef").unwrap();
+        assert!(ensure_merge_in_progress(tmp.path()).is_ok());
+    }
+
+    #[test]
+    fn ensure_merge_errors_when_no_merge() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        let err = ensure_merge_in_progress(tmp.path()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no in-progress merge"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]
