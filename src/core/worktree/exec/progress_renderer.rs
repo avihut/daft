@@ -237,4 +237,42 @@ mod tests {
         assert_eq!(report.aggregate_exit_code(), 0);
         assert!(report.outcomes[0].succeeded());
     }
+
+    #[test]
+    fn pre_cancelled_sequential_run_returns_empty_outcomes_without_panicking() {
+        // Exercises the post-scheduler skip-emission branch: when the
+        // sequential scheduler sees a pre-escalated cancel flag, no targets
+        // launch, `outcomes` is empty, and `run_with_progress` must emit
+        // skip rows (via the presenter) for every target × step and return
+        // cleanly. This test asserts the no-panic path; the event-level
+        // skip emission is covered by the presenter's internal recorders
+        // and the streaming_skip_emission_tests module in exec/mod.rs.
+        let dir1 = TempDir::new().unwrap();
+        let dir2 = TempDir::new().unwrap();
+        let targets = vec![
+            ResolvedTarget {
+                worktree_path: dir1.path().to_path_buf(),
+                branch_name: "a".into(),
+            },
+            ResolvedTarget {
+                worktree_path: dir2.path().to_path_buf(),
+                branch_name: "b".into(),
+            },
+        ];
+        let pipeline = vec![
+            CommandSpec::Argv(vec!["echo".into(), "one".into()]),
+            CommandSpec::Argv(vec!["echo".into(), "two".into()]),
+        ];
+        let cancel = CancelFlag::new();
+        cancel.escalate();
+
+        let report = run_with_progress(&targets, &pipeline, ExecMode::Sequential, &cancel).unwrap();
+
+        assert!(
+            report.outcomes.is_empty(),
+            "pre-cancelled sequential run should produce no outcomes: {:?}",
+            report.outcomes
+        );
+        assert_eq!(report.aggregate_exit_code(), 0);
+    }
 }

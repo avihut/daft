@@ -130,12 +130,12 @@ impl HookProgressRenderer {
 
         let display_name = match command_preview {
             Some(cmd) if self.use_color => format!(
-                "{ORANGE}{name}{}  {arrow}  {DARK_GREY}{cmd}{}",
+                "{ORANGE}{name}{}  {arrow} {DARK_GREY}{cmd}{}",
                 styles::RESET,
                 styles::RESET,
                 arrow = self.arrow_str,
             ),
-            Some(cmd) => format!("{name}  \u{276f}  {cmd}"),
+            Some(cmd) => format!("{name}  \u{276f} {cmd}"),
             None if self.use_color => format!(
                 "{ORANGE}{name}{}  {arrow}",
                 styles::RESET,
