@@ -495,10 +495,16 @@ pub fn execute_start(
     argv.extend(render_flags(&params.flags));
     argv.extend(params.sources.iter().cloned());
 
-    let status = Command::new("git")
+    // Capture git's output so we can detect the "Already up to date." signal
+    // on stdout and suppress the caller's duplicate print. The captured bytes
+    // are re-emitted to our own stdio so the user still sees everything git
+    // said, preserving stdout/stderr separation (interleaving within a single
+    // stream is lost — inherent to `.output()` — but neither fd is buffered
+    // against the other in a way that matters for merge UX).
+    let output = Command::new("git")
         .args(&argv)
         .current_dir(&resolved.path)
-        .status()
+        .output()
         .with_context(|| {
             format!(
                 "failed to invoke `git merge` in '{}'",
@@ -506,9 +512,16 @@ pub fn execute_start(
             )
         })?;
 
+    use std::io::Write;
+    std::io::stdout().write_all(&output.stdout).ok();
+    std::io::stderr().write_all(&output.stderr).ok();
+
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let already_up_to_date = output.status.success() && stdout_str.contains("Already up to date.");
+
     Ok(StartOutcome {
-        already_up_to_date: false,
-        failed: !status.success(),
+        already_up_to_date,
+        failed: !output.status.success(),
     })
 }
 

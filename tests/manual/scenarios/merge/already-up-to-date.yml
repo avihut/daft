@@ -30,3 +30,7 @@ steps:
       exit_code: 0
       output_contains:
         - "Already up to date"
+      # git itself prints "Already up to date." — daft must not double-print
+      # "Merge complete." on top of it.
+      output_not_contains:
+        - "Merge complete."

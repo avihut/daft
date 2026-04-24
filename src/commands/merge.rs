@@ -129,7 +129,7 @@ pub struct Args {
     /// Show a diffstat at the end of the merge.
     #[arg(long = "stat", conflicts_with = "no_stat")]
     pub stat: bool,
-    /// Suppress the diffstat at the end of the merge (also `-n`).
+    /// Suppress the diffstat at the end of the merge.
     #[arg(short = 'n', long = "no-stat", conflicts_with = "stat")]
     pub no_stat: bool,
 
@@ -259,11 +259,13 @@ pub fn run() -> Result<()> {
     let outcome = crate::core::worktree::merge::execute_start(&params, &git, &project_root)?;
 
     if outcome.already_up_to_date {
-        println!("Already up to date.");
+        // `execute_start` re-emits git's captured stdout (which already says
+        // "Already up to date."). Printing it again here would double-print.
+        Ok(())
     } else if outcome.failed {
         anyhow::bail!("merge conflicted — resolve then run `daft merge --continue`");
     } else {
         println!("Merge complete.");
+        Ok(())
     }
-    Ok(())
 }

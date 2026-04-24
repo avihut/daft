@@ -59,7 +59,7 @@ git worktree-merge [OPTIONS] [SOURCE]
 | `--no-verify-signatures` | Do not verify signatures on the source tip commit |  |
 | `--allow-unrelated-histories` | Allow merging histories that share no common ancestor |  |
 | `--stat` | Show a diffstat at the end of the merge |  |
-| `-n, --no-stat` | Suppress the diffstat at the end of the merge (also `-n`) |  |
+| `-n, --no-stat` | Suppress the diffstat at the end of the merge |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
 
 ## Global Options
