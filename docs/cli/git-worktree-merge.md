@@ -23,20 +23,23 @@ Finish commands (--abort, --continue, --quit) take an optional positional
 ## Usage
 
 ```
-git worktree-merge [OPTIONS] [SOURCE]
+git worktree-merge [OPTIONS] [SOURCE_OR_TARGET]
 ```
 
 ## Arguments
 
 | Argument | Description | Required |
 |----------|-------------|----------|
-| `<SOURCE>` | Source branches/commits to merge. Two or more invoke octopus | No |
+| `<SOURCE_OR_TARGET>` | Source branches/commits to merge (start mode), OR optional target worktree/branch for --abort / --continue / --quit (finish mode; max one positional) | No |
 
 ## Options
 
 | Option | Description | Default |
 |--------|-------------|----------|
 | `--into <TARGET>` | Target worktree/branch. Defaults to the current worktree's branch |  |
+| `--abort` | Abort an in-progress merge in the named worktree (defaults to CWD) |  |
+| `--continue` | Continue an in-progress merge in the named worktree (defaults to CWD) |  |
+| `--quit` | Quit an in-progress merge without resetting the index (defaults to CWD) |  |
 | `-m <MSG>` | Commit message for the merge commit (mirrors `git merge -m`) |  |
 | `-F, --file <FILE>` | Read the commit message from FILE (mirrors `git merge -F`) |  |
 | `--edit` | Launch the editor to edit the merge commit message |  |

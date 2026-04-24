@@ -4,7 +4,7 @@
 .SH NAME
 daft\-merge \- Merge branches across worktrees
 .SH SYNOPSIS
-\fBdaft\-merge\fR [\fB\-\-into\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-ff\fR] [\fB\-\-no\-ff\fR] [\fB\-\-ff\-only\fR] [\fB\-\-squash\fR] [\fB\-\-no\-squash\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE\fR] 
+\fBdaft\-merge\fR [\fB\-\-into\fR] [\fB\-\-abort\fR] [\fB\-\-continue\fR] [\fB\-\-quit\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-ff\fR] [\fB\-\-no\-ff\fR] [\fB\-\-ff\-only\fR] [\fB\-\-squash\fR] [\fB\-\-no\-squash\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE_OR_TARGET\fR] 
 .SH DESCRIPTION
 .PP
 Merges one or more source branches into a target worktree\*(Aqs branch.
@@ -21,6 +21,15 @@ Finish commands (\-\-abort, \-\-continue, \-\-quit) take an optional positional
 .TP
 \fB\-\-into\fR \fI<TARGET>\fR
 Target worktree/branch. Defaults to the current worktree\*(Aqs branch
+.TP
+\fB\-\-abort\fR
+Abort an in\-progress merge in the named worktree (defaults to CWD)
+.TP
+\fB\-\-continue\fR
+Continue an in\-progress merge in the named worktree (defaults to CWD)
+.TP
+\fB\-\-quit\fR
+Quit an in\-progress merge without resetting the index (defaults to CWD)
 .TP
 \fB\-m\fR \fI<MSG>\fR
 Commit message for the merge commit (mirrors `git merge \-m`)
@@ -100,7 +109,7 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 \fB\-V\fR, \fB\-\-version\fR
 Print version
 .TP
-[\fISOURCE\fR]
-Source branches/commits to merge. Two or more invoke octopus
+[\fISOURCE_OR_TARGET\fR]
+Source branches/commits to merge (start mode), OR optional target worktree/branch for \-\-abort / \-\-continue / \-\-quit (finish mode; max one positional)
 .SH VERSION
 v1.7.2

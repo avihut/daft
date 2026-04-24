@@ -30,13 +30,27 @@ Finish commands (--abort, --continue, --quit) take an optional positional
 <worktree|branch>; default to the current worktree's branch.
 "#)]
 pub struct Args {
-    /// Source branches/commits to merge. Two or more invoke octopus.
-    #[arg(value_name = "SOURCE", num_args = 1..)]
+    /// Source branches/commits to merge (start mode), OR optional target worktree/branch
+    /// for --abort / --continue / --quit (finish mode; max one positional).
+    #[arg(value_name = "SOURCE_OR_TARGET", num_args = 0..)]
     pub sources: Vec<String>,
 
     /// Target worktree/branch. Defaults to the current worktree's branch.
     #[arg(long = "into", value_name = "TARGET")]
     pub into: Option<String>,
+
+    // --- Finish mode flags (mutually exclusive) ---
+    /// Abort an in-progress merge in the named worktree (defaults to CWD).
+    #[arg(long = "abort", conflicts_with_all = ["continue_merge", "quit"])]
+    pub abort: bool,
+
+    /// Continue an in-progress merge in the named worktree (defaults to CWD).
+    #[arg(long = "continue", conflicts_with_all = ["abort", "quit"])]
+    pub continue_merge: bool,
+
+    /// Quit an in-progress merge without resetting the index (defaults to CWD).
+    #[arg(long = "quit", conflicts_with_all = ["abort", "continue_merge"])]
+    pub quit: bool,
 
     // --- Commit message and editor ---
     /// Commit message for the merge commit (mirrors `git merge -m`).
@@ -249,6 +263,38 @@ pub fn run() -> Result<()> {
     let settings = DaftSettings::load()?;
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
+
+    // Finish mode: --abort / --continue / --quit dispatch to execute_finish.
+    // Clap's conflicts_with_all guarantees at most one of these is set.
+    // In finish mode the positional `sources` is repurposed as an optional
+    // target worktree/branch (max one positional).
+    if args.abort || args.continue_merge || args.quit {
+        let worktree_arg = match args.sources.as_slice() {
+            [] => None,
+            [one] => Some(one.clone()),
+            _ => anyhow::bail!(
+                "finish commands (--abort/--continue/--quit) take at most one positional <worktree|branch>"
+            ),
+        };
+        let mode = if args.abort {
+            crate::core::worktree::merge::FinishMode::Abort
+        } else if args.continue_merge {
+            crate::core::worktree::merge::FinishMode::Continue
+        } else {
+            crate::core::worktree::merge::FinishMode::Quit
+        };
+        let params = crate::core::worktree::merge::FinishParams {
+            worktree: worktree_arg,
+            mode,
+        };
+        return crate::core::worktree::merge::execute_finish(&params, &git, &project_root);
+    }
+
+    // Start mode. Clap's `num_args = 0..` on `sources` allows zero positionals
+    // (needed for finish mode above); re-assert the start-mode minimum here.
+    if args.sources.is_empty() {
+        anyhow::bail!("specify at least one source to merge");
+    }
 
     let flags = effective_flags_from_args(&args);
     let params = crate::core::worktree::merge::StartParams {
