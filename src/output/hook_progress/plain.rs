@@ -13,18 +13,28 @@ pub struct PlainHookRenderer {
     jobs_with_output: std::collections::HashSet<String>,
     verbose: bool,
     compact_finalization: bool,
+    name_column_width: usize,
+    previews: std::collections::HashMap<String, String>,
 }
 
 impl PlainHookRenderer {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            name_column_width: super::formatting::DEFAULT_NAME_COLUMN_WIDTH,
+            ..Self::default()
+        }
     }
 
     pub fn with_verbose(verbose: bool) -> Self {
         Self {
             verbose,
+            name_column_width: super::formatting::DEFAULT_NAME_COLUMN_WIDTH,
             ..Self::default()
         }
+    }
+
+    pub fn set_name_column_width(&mut self, width: usize) {
+        self.name_column_width = width;
     }
 
     /// Toggle the compact-finalization branch used by `daft exec` and friends.
@@ -68,6 +78,9 @@ impl PlainHookRenderer {
                 self.output_lines.push(cmd_msg);
             }
         }
+        if let Some(cmd) = command_preview {
+            self.previews.insert(name.to_string(), cmd.to_string());
+        }
     }
 
     pub fn update_job_output(&mut self, name: &str, line: &str) {
@@ -78,11 +91,21 @@ impl PlainHookRenderer {
 
     fn finish_job(&mut self, name: &str, success: bool, duration: Duration) {
         if self.compact_finalization {
-            // Compact mode: one line per finished job, no inline output dump.
-            // Plain renderer is the non-color branch, so `use_color = false`.
+            let preview = self.previews.remove(name);
+            let state = if success {
+                super::formatting::RowState::Success { duration }
+            } else {
+                super::formatting::RowState::Failure { duration }
+            };
             eprintln!(
                 "{}",
-                super::formatting::format_compact_row_legacy(name, success, duration, false)
+                super::formatting::format_compact_row(
+                    name,
+                    preview.as_deref(),
+                    state,
+                    self.name_column_width,
+                    false,
+                )
             );
         } else if !self.jobs_with_output.contains(name) {
             eprintln!("\u{2503}  No output");
@@ -106,14 +129,51 @@ impl PlainHookRenderer {
         self.finish_job(name, false, duration);
     }
 
+    pub fn finish_job_cancelled(&mut self, name: &str, duration: Duration) {
+        if self.compact_finalization {
+            let preview = self.previews.remove(name);
+            eprintln!(
+                "{}",
+                super::formatting::format_compact_row(
+                    name,
+                    preview.as_deref(),
+                    super::formatting::RowState::Cancelled { duration },
+                    self.name_column_width,
+                    false,
+                )
+            );
+        }
+        self.finished_jobs.push(JobResultEntry {
+            name: name.to_string(),
+            outcome: JobOutcome::Failed,
+            duration,
+        });
+    }
+
     pub fn finish_job_skipped(
         &mut self,
         name: &str,
         reason: &str,
         duration: Duration,
         show_duration: bool,
+        command_preview: Option<&str>,
     ) {
-        eprintln!("\u{2503}  {name} (skip) {reason}");
+        let stored = self.previews.remove(name);
+        let preview = command_preview.or(stored.as_deref());
+        if self.compact_finalization {
+            eprintln!(
+                "{}",
+                super::formatting::format_compact_row(
+                    name,
+                    preview,
+                    super::formatting::RowState::Skipped,
+                    self.name_column_width,
+                    false,
+                )
+            );
+        } else {
+            eprintln!("\u{2503}  {name} (skip) {reason}");
+        }
         self.finished_jobs.push(JobResultEntry {
             name: name.to_string(),
             outcome: JobOutcome::Skipped {

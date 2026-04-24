@@ -125,7 +125,14 @@ impl JobPresenter for TuiPresenter {
         });
     }
 
-    fn on_job_skipped(&self, name: &str, reason: &str, duration: Duration, _show_duration: bool) {
+    fn on_job_skipped(
+        &self,
+        name: &str,
+        reason: &str,
+        duration: Duration,
+        _show_duration: bool,
+        _command_preview: Option<&str>,
+    ) {
         let _ = self.sender.send(DagEvent::JobCompleted {
             branch_name: self.branch_name.clone(),
             hook_type: self.hook_type,
@@ -134,6 +141,13 @@ impl JobPresenter for TuiPresenter {
             duration,
             skip_reason: Some(reason.to_string()),
         });
+    }
+
+    fn on_job_cancelled(&self, name: &str, duration: Duration) {
+        // Same shape as on_job_failure — emit a JobCompleted event with
+        // Failed status. The cancellation distinction is surfaced at the
+        // exec renderer layer, not here.
+        self.on_job_failure(name, duration);
     }
 
     fn on_message(&self, _msg: &str) {
@@ -394,7 +408,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let presenter = TuiPresenter::new(tx, "main", HookType::PostCreate);
 
-        presenter.on_job_skipped("lint", "no files", Duration::ZERO, false);
+        presenter.on_job_skipped("lint", "no files", Duration::ZERO, false, None);
 
         let event = rx.try_recv().expect("should receive JobCompleted");
         match event {

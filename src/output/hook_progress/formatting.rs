@@ -161,29 +161,9 @@ pub(super) fn format_duration(d: Duration) -> String {
 /// Lifecycle state of a finalized row (one per pipeline step).
 #[derive(Debug, Clone, Copy)]
 pub(super) enum RowState {
-    Success {
-        duration: Duration,
-    },
-    Failure {
-        duration: Duration,
-    },
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "emitted when a running step is interrupted by cancellation; wired up in a later commit"
-        )
-    )]
-    Cancelled {
-        duration: Duration,
-    },
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "emitted when a step was never started (fail-fast upstream or cancel before dispatch); wired up in a later commit"
-        )
-    )]
+    Success { duration: Duration },
+    Failure { duration: Duration },
+    Cancelled { duration: Duration },
     Skipped,
 }
 
@@ -233,22 +213,6 @@ pub(super) fn format_compact_row(
     } else {
         format!("  {sigil}  {name_part}{preview_segment}  {right}")
     }
-}
-
-/// Compatibility shim over the 4-arg signature used by existing callers.
-/// Will be removed in Task 3 once renderers migrate to the full API.
-pub(super) fn format_compact_row_legacy(
-    name: &str,
-    success: bool,
-    duration: Duration,
-    use_color: bool,
-) -> String {
-    let state = if success {
-        RowState::Success { duration }
-    } else {
-        RowState::Failure { duration }
-    };
-    format_compact_row(name, None, state, DEFAULT_NAME_COLUMN_WIDTH, use_color)
 }
 
 #[cfg(test)]

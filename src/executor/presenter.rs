@@ -32,7 +32,17 @@ pub trait JobPresenter: Send + Sync {
     fn on_job_failure(&self, name: &str, duration: Duration);
 
     /// A job was skipped.
-    fn on_job_skipped(&self, name: &str, reason: &str, duration: Duration, show_duration: bool);
+    fn on_job_skipped(
+        &self,
+        name: &str,
+        reason: &str,
+        duration: Duration,
+        show_duration: bool,
+        command_preview: Option<&str>,
+    );
+
+    /// A job was cancelled by SIGINT while still running.
+    fn on_job_cancelled(&self, name: &str, duration: Duration);
 
     /// A general informational message (not tied to a specific job).
     fn on_message(&self, msg: &str);
@@ -78,8 +88,12 @@ impl JobPresenter for NullPresenter {
         _reason: &str,
         _duration: Duration,
         _show_duration: bool,
+        _command_preview: Option<&str>,
     ) {
     }
+
+    fn on_job_cancelled(&self, _name: &str, _duration: Duration) {}
+
     fn on_message(&self, _msg: &str) {}
     fn on_phase_complete(&self, _total_duration: Duration) {}
     fn take_results(&self) -> Vec<JobResult> {
@@ -113,7 +127,8 @@ mod tests {
         p.on_job_output("job", "line");
         p.on_job_success("job", Duration::from_secs(1));
         p.on_job_failure("job", Duration::from_secs(1));
-        p.on_job_skipped("job", "reason", Duration::from_secs(0), false);
+        p.on_job_skipped("job", "reason", Duration::from_secs(0), false, None);
+        p.on_job_cancelled("job", Duration::from_secs(1));
         p.on_message("hello");
         p.on_phase_complete(Duration::from_secs(5));
     }

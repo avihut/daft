@@ -120,12 +120,29 @@ impl HookRenderer {
         reason: &str,
         duration: Duration,
         show_duration: bool,
+        command_preview: Option<&str>,
     ) {
         match self {
             HookRenderer::Progress(r) => {
-                r.finish_job_skipped(name, reason, duration, show_duration);
+                r.finish_job_skipped(name, reason, duration, show_duration, command_preview);
             }
-            HookRenderer::Plain(r) => r.finish_job_skipped(name, reason, duration, show_duration),
+            HookRenderer::Plain(r) => {
+                r.finish_job_skipped(name, reason, duration, show_duration, command_preview);
+            }
+        }
+    }
+
+    pub fn finish_job_cancelled(&mut self, name: &str, duration: Duration) {
+        match self {
+            HookRenderer::Progress(r) => r.finish_job_cancelled(name, duration),
+            HookRenderer::Plain(r) => r.finish_job_cancelled(name, duration),
+        }
+    }
+
+    pub fn set_name_column_width(&mut self, width: usize) {
+        match self {
+            HookRenderer::Progress(r) => r.set_name_column_width(width),
+            HookRenderer::Plain(r) => r.set_name_column_width(width),
         }
     }
 

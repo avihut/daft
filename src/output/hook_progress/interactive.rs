@@ -15,6 +15,7 @@ struct JobState {
     trailer: Option<ProgressBar>,
     output_buffer: Vec<String>,
     start_time: Instant,
+    command_preview: Option<String>,
 }
 
 pub struct HookProgressRenderer {
@@ -29,6 +30,7 @@ pub struct HookProgressRenderer {
     spinner_style_with_timer: ProgressStyle,
     tail_style: ProgressStyle,
     trailer_style: ProgressStyle,
+    name_column_width: usize,
 }
 
 impl HookProgressRenderer {
@@ -97,7 +99,14 @@ impl HookProgressRenderer {
             spinner_style_with_timer,
             tail_style,
             trailer_style,
+            name_column_width: super::formatting::DEFAULT_NAME_COLUMN_WIDTH,
         }
+    }
+
+    /// Override the branch-name column width used in compact finalization rows.
+    /// Default is `DEFAULT_NAME_COLUMN_WIDTH` (matches `list_renderer::render_outcome`).
+    pub fn set_name_column_width(&mut self, width: usize) {
+        self.name_column_width = width;
     }
 
     pub fn print_header(&self, hook_name: &str) {
@@ -179,6 +188,7 @@ impl HookProgressRenderer {
                 trailer: Some(trailer),
                 output_buffer: Vec::new(),
                 start_time: Instant::now(),
+                command_preview: command_preview.map(str::to_string),
             },
         );
     }
@@ -285,18 +295,53 @@ impl HookProgressRenderer {
         self.finish_job(name, false, duration);
     }
 
+    pub fn finish_job_cancelled(&mut self, name: &str, duration: Duration) {
+        let Some(state) = self.jobs.remove(name) else {
+            return;
+        };
+
+        if let Some(ref sep) = state.separator {
+            self.mp.remove(sep);
+        }
+        for pb in &state.tail_lines {
+            self.mp.remove(pb);
+        }
+        if let Some(ref trailer) = state.trailer {
+            self.mp.remove(trailer);
+        }
+        self.mp.remove(&state.spinner);
+
+        if self.config.compact_finalization {
+            let preview = state.command_preview.as_deref();
+            self.mp
+                .println(super::formatting::format_compact_row(
+                    name,
+                    preview,
+                    super::formatting::RowState::Cancelled { duration },
+                    self.name_column_width,
+                    self.use_color,
+                ))
+                .ok();
+        }
+
+        self.finished_jobs.push(JobResultEntry {
+            name: name.to_string(),
+            outcome: JobOutcome::Failed,
+            duration,
+        });
+    }
+
     pub fn finish_job_skipped(
         &mut self,
         name: &str,
         reason: &str,
         duration: Duration,
         show_duration: bool,
+        command_preview: Option<&str>,
     ) {
         use super::formatting::YELLOW;
 
-        // Remove job state and unlink its bars (see `finish_job` for why
-        // we use `mp.remove` instead of `finish_and_clear`).
-        if let Some(state) = self.jobs.remove(name) {
+        let stored_preview = if let Some(state) = self.jobs.remove(name) {
             if let Some(ref sep) = state.separator {
                 self.mp.remove(sep);
             }
@@ -307,23 +352,37 @@ impl HookProgressRenderer {
                 self.mp.remove(trailer);
             }
             self.mp.remove(&state.spinner);
+            state.command_preview
+        } else {
+            None
+        };
+
+        if self.config.compact_finalization {
+            let preview = command_preview.or(stored_preview.as_deref());
+            self.mp
+                .println(super::formatting::format_compact_row(
+                    name,
+                    preview,
+                    super::formatting::RowState::Skipped,
+                    self.name_column_width,
+                    self.use_color,
+                ))
+                .ok();
+        } else {
+            let msg = if self.use_color {
+                format!(
+                    "{}  {ORANGE}{name}{} {DARK_GREY}(skip){} {YELLOW}{reason}{}",
+                    self.pipe_str,
+                    styles::RESET,
+                    styles::RESET,
+                    styles::RESET
+                )
+            } else {
+                format!("{}  {name} (skip) {reason}", self.pipe_str)
+            };
+            self.mp.println(msg).ok();
         }
 
-        // Always print skip info as a single inline line (no blank line after)
-        let msg = if self.use_color {
-            format!(
-                "{}  {ORANGE}{name}{} {DARK_GREY}(skip){} {YELLOW}{reason}{}",
-                self.pipe_str,
-                styles::RESET,
-                styles::RESET,
-                styles::RESET
-            )
-        } else {
-            format!("{}  {name} (skip) {reason}", self.pipe_str)
-        };
-        self.mp.println(msg).ok();
-
-        // Skipped jobs are added to finished_jobs for the summary
         self.finished_jobs.push(JobResultEntry {
             name: name.to_string(),
             outcome: JobOutcome::Skipped {
@@ -360,11 +419,18 @@ impl HookProgressRenderer {
         self.mp.remove(&state.spinner);
 
         if self.config.compact_finalization {
+            let preview = state.command_preview.as_deref();
+            let row_state = if success {
+                super::formatting::RowState::Success { duration }
+            } else {
+                super::formatting::RowState::Failure { duration }
+            };
             self.mp
-                .println(super::formatting::format_compact_row_legacy(
+                .println(super::formatting::format_compact_row(
                     name,
-                    success,
-                    duration,
+                    preview,
+                    row_state,
+                    self.name_column_width,
                     self.use_color,
                 ))
                 .ok();
