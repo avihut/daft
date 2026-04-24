@@ -165,9 +165,12 @@ test_exec_multi_command_shows_inline_command_names() {
     git-worktree-checkout -b feat-a || return 1
     cd "../main" || return 1
 
-    # Capture stderr (where the compact rows are printed).
+    # Capture stderr (where the compact rows are printed). The harness
+    # exports DAFT_TESTING=1 to silence the hook renderer for YAML
+    # scenarios; unset it here since this test asserts on the renderer
+    # output itself.
     local err
-    err=$(git-worktree-exec --all -x 'true' -x 'echo second' 2>&1 >/dev/null)
+    err=$(env -u DAFT_TESTING git-worktree-exec --all -x 'true' -x 'echo second' 2>&1 >/dev/null)
 
     # Each finalization row names its command inline (not `[N/M]`).
     if [[ "$err" != *"❯ true"* ]]; then
@@ -196,9 +199,12 @@ test_exec_fail_fast_emits_skipped_row() {
     git-worktree-checkout -b feat-a || return 1
     cd "../main" || return 1
 
+    # The harness sets DAFT_TESTING=1 to silence the hook renderer for YAML
+    # scenarios; unset it here since this test asserts on the renderer
+    # output itself.
     local err
     set +e
-    err=$(git-worktree-exec --all -x 'false' -x 'echo never' 2>&1 >/dev/null)
+    err=$(env -u DAFT_TESTING git-worktree-exec --all -x 'false' -x 'echo never' 2>&1 >/dev/null)
     local code=$?
     set -e
 
