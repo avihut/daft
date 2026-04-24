@@ -228,9 +228,27 @@ impl HookExecutor {
         // Determine the worktree to read hooks from
         let hook_source_worktree = get_hook_source_worktree(ctx);
 
-        // Try YAML config first
+        // Try YAML config first. `try_yaml_hook` returns:
+        // * `Ok(Some(result))` when the YAML hook was run (including failed
+        //   runs — the caller translates those to Err-or-warn based on the
+        //   configured fail mode below).
+        // * `Ok(None)` when no YAML config applies to this hook type.
+        // * `Err(_)` only when YAML loading/parsing itself failed — an
+        //   infrastructure error that we treat as "fall back to legacy"
+        //   rather than a hook-semantic failure.
         match self.try_yaml_hook(ctx, &hook_source_worktree, hook_config, output, &presenter) {
-            Ok(Some(result)) => return Ok(result),
+            Ok(Some(result)) => {
+                // The YAML hook was invoked. If the hook itself failed
+                // (exit != 0) and was not skipped, translate per its
+                // configured fail mode — Abort bails, Warn logs and
+                // returns a success-ish HookResult so the caller can
+                // continue. Skipped or successful results pass through
+                // unchanged.
+                if !result.success && !result.skipped {
+                    return self.handle_hook_failure(ctx.hook_type, hook_config, result, output);
+                }
+                return Ok(result);
+            }
             Ok(None) => {} // No YAML config or no definition for this hook — fall through to legacy
             Err(e) => {
                 output.warning(&format!(
@@ -245,13 +263,17 @@ impl HookExecutor {
 
     /// Try to execute a hook via YAML configuration.
     ///
-    /// Returns `Ok(Some(result))` if YAML config exists and defines this hook.
-    /// Returns `Ok(None)` if no YAML config or no definition for this hook type.
+    /// Returns `Ok(Some(result))` if YAML config exists and defines this
+    /// hook — including failed runs. Failure translation (Abort-vs-Warn)
+    /// is the caller's responsibility via `handle_hook_failure`.
+    /// Returns `Ok(None)` if no YAML config or no definition for this
+    /// hook type. `Err` signals a YAML load/parse error, not a hook
+    /// invocation failure.
     fn try_yaml_hook(
         &self,
         ctx: &HookContext,
         hook_source_worktree: &Path,
-        hook_config: &HookConfig,
+        _hook_config: &HookConfig,
         output: &mut dyn Output,
         presenter: &Arc<dyn JobPresenter>,
     ) -> Result<Option<HookResult>> {
@@ -335,15 +357,11 @@ impl HookExecutor {
             yaml_config.log.as_ref(),
         )?;
 
-        if !result.success && !result.skipped {
-            return Ok(Some(self.handle_hook_failure(
-                ctx.hook_type,
-                hook_config,
-                result,
-                output,
-            )?));
-        }
-
+        // Return the raw result — failure translation (Abort → Err, Warn →
+        // logged-and-continue) is the caller's responsibility via
+        // `handle_hook_failure` in `execute`. Doing it here would
+        // misclassify Abort-mode hook failures as "YAML config load error"
+        // at the outer dispatch and silently fall back to legacy scripts.
         Ok(Some(result))
     }
 

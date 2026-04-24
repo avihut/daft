@@ -1,0 +1,67 @@
+name: Merge merge-pre hook aborts
+description: "A failing merge-pre hook aborts the merge before any git merge runs."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test-feature
+        from: main
+        files:
+          - path: feature.txt
+            content: "feature content"
+        commits:
+          - message: "Add feature branch"
+    daft_yml: |
+      hooks:
+        merge-pre:
+          jobs:
+            - name: always-abort
+              run: |
+                touch "$DAFT_MERGE_TARGET_PATH/.merge-pre-ran"
+                exit 1
+
+steps:
+  - name: Clone with trust so the merge-pre hook is allowed to run
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Materialize feature branch as a sibling worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Attempt the merge — merge-pre exit 1 aborts the merge
+    run: git-worktree-merge feature/test-feature 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      # Non-zero exit propagated from the aborted merge.
+      exit_code: 1
+      output_contains:
+        # merge-pre's Abort fail mode prints this translation line.
+        - "merge-pre hook failed"
+      output_not_contains:
+        # Aborted: no "Merge complete." was emitted.
+        - "Merge complete."
+
+  - name: Verify merge-pre ran (sentinel from the failing hook exists)
+    run: test -f "$WORK_DIR/test-repo/main/.merge-pre-ran"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify main was not advanced (merge was aborted pre-flight)
+    # `feature.txt` is only on feature. If the merge had partially applied
+    # we'd see feature.txt in main's worktree.
+    run: test ! -f "$WORK_DIR/test-repo/main/feature.txt"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
