@@ -60,16 +60,12 @@ pub struct ResolvedTarget {
 ///
 /// * `Some(t)` — delegate to [`GitCommand::resolve_worktree_path`] (which
 ///   matches `t` as a relative path, then a branch name, then a worktree
-///   directory name), then read the target worktree's current branch by
-///   shelling out `git -C <path> symbolic-ref --short HEAD`.
+///   directory name), then read the target worktree's current branch via
+///   [`branch_at_path`].
 /// * `None` — the target is the current worktree: path from
-///   [`GitCommand::get_current_worktree_path`], branch from
-///   [`GitCommand::symbolic_ref_short_head`] (both operate on CWD).
-///
-/// No dedicated "branch-at-path" helper exists in `src/git/` today, so the
-/// explicit target branch is resolved via `std::process::Command` — the same
-/// shell-out style used in [`execute_start`]. If a later slice introduces a
-/// `GitCommand::branch_at(&Path)` helper, this function should switch to it.
+///   [`GitCommand::get_current_worktree_path`], branch via the same
+///   [`branch_at_path`] helper so both arms produce identical error
+///   formatting for the same failure modes (detached HEAD, read failure).
 ///
 /// Fails loudly on detached HEAD. Merging into a detached HEAD would fail
 /// downstream anyway; the explicit error here surfaces the problem earlier.
@@ -81,53 +77,72 @@ pub fn resolve_target(
     match target {
         Some(t) => {
             let path = git.resolve_worktree_path(t, project_root)?;
-            let branch = branch_at_path(&path)?;
+            let branch = branch_at_path(git, &path)?;
             Ok(ResolvedTarget { branch, path })
         }
         None => {
             let path = git.get_current_worktree_path()?;
-            let branch = git.symbolic_ref_short_head()?;
+            let branch = branch_at_path(git, &path)?;
             Ok(ResolvedTarget { branch, path })
         }
     }
 }
 
-/// Read the short branch name at `path` by shelling out
-/// `git -C <path> symbolic-ref --short HEAD`.
+/// Read the short branch name at `path`.
 ///
-/// Returns an error on detached HEAD or any other git failure.
-fn branch_at_path(path: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .args(["-C"])
-        .arg(path)
-        .args(["symbolic-ref", "--short", "HEAD"])
-        .output()
-        .with_context(|| {
-            format!(
-                "failed to invoke `git symbolic-ref` in '{}'",
+/// Respects [`GitCommand::use_gitoxide`]: when enabled, opens a
+/// `gix::ThreadSafeRepository` at `path` and reads `HEAD` through gitoxide;
+/// otherwise shells out `git -C <path> symbolic-ref --short HEAD`.
+///
+/// Both paths emit the same error message on detached HEAD ("detached HEAD")
+/// so [`resolve_target`]'s two arms are indistinguishable from the user's
+/// point of view for that failure mode.
+fn branch_at_path(git: &GitCommand, path: &Path) -> Result<String> {
+    if git.use_gitoxide {
+        let ts = gix::ThreadSafeRepository::discover(path)
+            .with_context(|| format!("failed to open git repo at '{}'", path.display()))?;
+        let repo = ts.to_thread_local();
+        let head = repo
+            .head_ref()
+            .with_context(|| format!("failed to read HEAD at '{}'", path.display()))?;
+        return match head {
+            Some(reference) => Ok(reference.name().shorten().to_string()),
+            None => anyhow::bail!(
+                "target worktree at '{}' has detached HEAD; checkout a branch first",
                 path.display()
-            )
-        })?;
+            ),
+        };
+    }
+
+    let output = Command::new("git")
+        .args([
+            "-C",
+            &path.display().to_string(),
+            "symbolic-ref",
+            "--short",
+            "HEAD",
+        ])
+        .output()
+        .with_context(|| format!("failed to read branch at '{}'", path.display()))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("not a symbolic ref") {
+            anyhow::bail!(
+                "target worktree at '{}' has detached HEAD; checkout a branch first",
+                path.display()
+            );
+        }
         anyhow::bail!(
-            "failed to read current branch at '{}': {}",
+            "failed to read branch at '{}': {}",
             path.display(),
             stderr.trim()
         );
     }
 
-    let branch = String::from_utf8(output.stdout)
-        .with_context(|| format!("non-UTF-8 branch name at '{}'", path.display()))?
-        .trim()
-        .to_string();
-
-    if branch.is_empty() {
-        anyhow::bail!("no branch detected at '{}'", path.display());
-    }
-
-    Ok(branch)
+    String::from_utf8(output.stdout)
+        .context("invalid UTF-8 in branch name")
+        .map(|s| s.trim().to_string())
 }
 
 /// Result of a merge-start operation.
@@ -230,7 +245,18 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
 
-        let branch = branch_at_path(tmp.path()).unwrap();
+        let git = GitCommand::new(true);
+        let branch = branch_at_path(&git, tmp.path()).unwrap();
+        assert_eq!(branch, "main");
+    }
+
+    #[test]
+    fn branch_at_path_reads_via_gitoxide() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+
+        let git = GitCommand::new(true).with_gitoxide(true);
+        let branch = branch_at_path(&git, tmp.path()).unwrap();
         assert_eq!(branch, "main");
     }
 
@@ -245,12 +271,10 @@ mod tests {
             .status()
             .unwrap();
 
-        let err = branch_at_path(tmp.path()).unwrap_err();
+        let git = GitCommand::new(true);
+        let err = branch_at_path(&git, tmp.path()).unwrap_err();
         let msg = format!("{err:#}");
-        assert!(
-            msg.contains("failed to read current branch"),
-            "unexpected error: {msg}"
-        );
+        assert!(msg.contains("detached HEAD"), "unexpected error: {msg}");
     }
 
     #[test]

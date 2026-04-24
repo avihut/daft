@@ -32,3 +32,12 @@ steps:
       exit_code: 0
       output_contains:
         - "Add feature branch"
+
+  - name: Verify source worktree branch unchanged
+    run:
+      git -C $WORK_DIR/test-repo/feature/test-feature symbolic-ref --short HEAD
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature/test-feature"
