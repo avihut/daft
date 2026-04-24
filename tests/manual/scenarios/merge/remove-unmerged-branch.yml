@@ -1,0 +1,72 @@
+name: Merge --squash -rb refuses branch deletion
+description:
+  "After --squash, the source branch's commits don't appear on the target (the
+  squash creates a single new commit). `git branch -d` refuses to delete an
+  unmerged branch, so cleanup reports the error; worktree removal still succeeds
+  as partial cleanup."
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Create feature worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name:
+      Add a local-only commit on feature so its tip is ahead of its upstream.
+      (git branch -d succeeds with a warning when a branch is merged into its
+      upstream even if not reachable from HEAD; a local-only commit on top makes
+      it strictly unmerged, which is what this scenario exercises.)
+    run: |
+      echo "local extra" > local-only.txt
+      git add local-only.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "local-only commit"
+    cwd: "$WORK_DIR/test-repo/feature/test-feature"
+    expect: { exit_code: 0 }
+
+  - name:
+      Squash merge with -rb — worktree removed, branch deletion refused by git
+    run: git-worktree-merge feature/test-feature --squash -rb 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "cleanup errors"
+        - "feature/test-feature"
+
+  - name: Verify worktree was removed (cleanup succeeded partially)
+    run: test ! -d $WORK_DIR/test-repo/feature/test-feature && echo "wt_removed"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["wt_removed"]
+
+  - name: Verify source branch still exists (cleanup failed at branch deletion)
+    run:
+      git -C $WORK_DIR/test-repo/main show-ref --verify --quiet
+      refs/heads/feature/test-feature && echo "branch_exists"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["branch_exists"]
+
+  - name:
+      Verify squash staged changes are present on main (merge itself succeeded)
+    run: |
+      if git -C $WORK_DIR/test-repo/main diff --cached --quiet; then
+        echo "no_staged"
+      else
+        echo "has_staged"
+      fi
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["has_staged"]
