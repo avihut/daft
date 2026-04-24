@@ -355,7 +355,6 @@ fn build_trust_table(repos: &[(&str, &crate::hooks::TrustEntry)]) -> Table {
     table
 }
 
-
 /// Clear all trust settings.
 pub(super) fn cmd_reset_trust(force: bool, output: &mut dyn Output) -> Result<()> {
     let db = TrustDatabase::load().context("Failed to load trust database")?;
