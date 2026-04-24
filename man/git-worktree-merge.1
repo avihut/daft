@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-merge \- Merge branches across worktrees
 .SH SYNOPSIS
-\fBgit\-worktree\-merge\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE\fR] 
+\fBgit\-worktree\-merge\fR [\fB\-\-into\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE\fR] 
 .SH DESCRIPTION
 .PP
 Merges one or more source branches into a target worktree\*(Aqs branch.
@@ -18,6 +18,9 @@ Multiple sources invoke git\*(Aqs octopus strategy, announced explicitly.
 Finish commands (\-\-abort, \-\-continue, \-\-quit) take an optional positional
 <worktree|branch>; default to the current worktree\*(Aqs branch.
 .SH OPTIONS
+.TP
+\fB\-\-into\fR \fI<TARGET>\fR
+Target worktree/branch. Defaults to the current worktree\*(Aqs branch
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Be verbose; show detailed progress

@@ -36,6 +36,7 @@ git worktree-merge [OPTIONS] [SOURCE]
 
 | Option | Description | Default |
 |--------|-------------|----------|
+| `--into <TARGET>` | Target worktree/branch. Defaults to the current worktree's branch |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
 
 ## Global Options

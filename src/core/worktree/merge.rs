@@ -36,6 +36,8 @@ use std::process::Command;
 pub struct StartParams {
     /// One or more source refs to merge into the target worktree's branch.
     pub sources: Vec<String>,
+    /// Optional target worktree/branch. `None` → current worktree's branch.
+    pub target: Option<String>,
 }
 
 /// Result of a merge-start operation.
@@ -89,9 +91,20 @@ mod tests {
     fn start_params_holds_sources() {
         let params = StartParams {
             sources: vec!["feature/x".to_string(), "feature/y".to_string()],
+            target: None,
         };
         assert_eq!(params.sources.len(), 2);
         assert_eq!(params.sources[0], "feature/x");
+        assert!(params.target.is_none());
+    }
+
+    #[test]
+    fn start_params_holds_target() {
+        let params = StartParams {
+            sources: vec!["feature/x".to_string()],
+            target: Some("main".to_string()),
+        };
+        assert_eq!(params.target.as_deref(), Some("main"));
     }
 
     #[test]

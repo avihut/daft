@@ -30,6 +30,10 @@ pub struct Args {
     #[arg(value_name = "SOURCE", num_args = 1..)]
     pub sources: Vec<String>,
 
+    /// Target worktree/branch. Defaults to the current worktree's branch.
+    #[arg(long = "into", value_name = "TARGET")]
+    pub into: Option<String>,
+
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     pub verbose: bool,
 }
@@ -45,6 +49,7 @@ pub fn run() -> Result<()> {
     let cwd = std::env::current_dir()?;
     let params = crate::core::worktree::merge::StartParams {
         sources: args.sources,
+        target: args.into,
     };
     let outcome = crate::core::worktree::merge::execute_start(&cwd, &params)?;
 
