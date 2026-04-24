@@ -482,6 +482,41 @@ pub fn execute_start(
     }
     validate_clean_target(git, &resolved)?;
 
+    // Detect "already up to date" via plumbing before invoking `git merge`, so
+    // we don't need to capture stdout. Capturing stdout would break the
+    // interactive editor path for non-FF merges without `-m`: git launches
+    // `$EDITOR` for the commit message, which requires stdio to be inherited
+    // from the parent TTY. Running `merge-base --is-ancestor` per source is
+    // equivalent to git's own "Already up to date." outcome: if every source
+    // is already reachable from the target tip, there is nothing to merge.
+    //
+    // Checked before the octopus announcement so an up-to-date multi-source
+    // invocation doesn't herald a strategy we won't actually run.
+    let target_sha = git
+        .rev_parse(&format!("refs/heads/{}", resolved.branch))
+        .with_context(|| format!("failed to resolve target branch '{}'", resolved.branch))?;
+    let all_sources_are_ancestors = params.sources.iter().all(|src| {
+        // If rev-parse fails (invalid ref), treat as "not an ancestor" and let
+        // `git merge` surface the real error with its usual formatting.
+        let src_sha = match git.rev_parse(src) {
+            Ok(sha) => sha,
+            Err(_) => return false,
+        };
+        git.merge_base_is_ancestor(&src_sha, &target_sha)
+            .unwrap_or(false)
+    });
+
+    if all_sources_are_ancestors {
+        // All sources already reachable from the target — equivalent to git's
+        // "Already up to date." outcome. Short-circuit without invoking
+        // `git merge`, preserving the interactive editor path for real merges.
+        println!("Already up to date.");
+        return Ok(StartOutcome {
+            already_up_to_date: true,
+            failed: false,
+        });
+    }
+
     // Announce octopus before invoking git so users see the strategy name even
     // if git's octopus refuses with a conflict. Single-source merges emit
     // nothing — `git merge <source>` is the plain case and needs no herald.
@@ -495,16 +530,14 @@ pub fn execute_start(
     argv.extend(render_flags(&params.flags));
     argv.extend(params.sources.iter().cloned());
 
-    // Capture git's output so we can detect the "Already up to date." signal
-    // on stdout and suppress the caller's duplicate print. The captured bytes
-    // are re-emitted to our own stdio so the user still sees everything git
-    // said, preserving stdout/stderr separation (interleaving within a single
-    // stream is lost — inherent to `.output()` — but neither fd is buffered
-    // against the other in a way that matters for merge UX).
-    let output = Command::new("git")
+    // Inherit stdio via `.status()` so the interactive commit-message editor
+    // works for non-FF merges without `-m`. The "already up to date" case is
+    // handled above by the plumbing pre-flight, so we no longer need to
+    // capture stdout to detect it.
+    let status = Command::new("git")
         .args(&argv)
         .current_dir(&resolved.path)
-        .output()
+        .status()
         .with_context(|| {
             format!(
                 "failed to invoke `git merge` in '{}'",
@@ -512,16 +545,10 @@ pub fn execute_start(
             )
         })?;
 
-    use std::io::Write;
-    std::io::stdout().write_all(&output.stdout).ok();
-    std::io::stderr().write_all(&output.stderr).ok();
-
-    let stdout_str = String::from_utf8_lossy(&output.stdout);
-    let already_up_to_date = output.status.success() && stdout_str.contains("Already up to date.");
-
     Ok(StartOutcome {
-        already_up_to_date,
-        failed: !output.status.success(),
+        // Already-up-to-date is handled by the pre-flight above.
+        already_up_to_date: false,
+        failed: !status.success(),
     })
 }
 
