@@ -1,0 +1,32 @@
+name: Merge refuses dirty target
+description: "daft merge refuses when target has uncommitted changes"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Check out feature
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Dirty the main worktree with an untracked file
+    run: echo "dirty" > $WORK_DIR/test-repo/main/new-file.txt
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Attempt merge into main — must refuse
+    run: git-worktree-merge feature/test-feature --into main
+    cwd: "$WORK_DIR/test-repo/feature/test-feature"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "uncommitted changes"

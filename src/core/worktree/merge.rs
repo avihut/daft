@@ -221,6 +221,30 @@ pub fn detect_in_progress(worktree: &Path) -> Result<Option<InProgressOp>> {
     Ok(None)
 }
 
+/// Refuse a merge when the target worktree has uncommitted/untracked changes.
+///
+/// Delegates to [`GitCommand::has_uncommitted_changes_in`] (`src/git/stash.rs`)
+/// so dirtiness is decided exactly the same way the rest of daft decides it
+/// (via `git status --porcelain`, which treats untracked files as dirty).
+///
+/// The refusal message names the canonical remediation options and a TODO
+/// pointer for the Slice-13 config toggle.
+///
+/// TODO(slice-13): Make the refusal configurable via the
+/// `daft.merge.requireCleanTarget` setting. For Slice 4 we hard-code
+/// `require_clean = true` — always refuse dirty — because the settings
+/// plumbing lands later in the plan.
+pub fn validate_clean_target(git: &GitCommand, target: &ResolvedTarget) -> Result<()> {
+    if git.has_uncommitted_changes_in(&target.path)? {
+        anyhow::bail!(
+            "target worktree '{}' has uncommitted changes; commit, stash, or allow via \
+             `daft.merge.requireCleanTarget=false`",
+            target.path.display()
+        );
+    }
+    Ok(())
+}
+
 /// Refuse merging a branch into itself.
 ///
 /// A `git merge X` run from a worktree whose branch is `X` is always a
@@ -283,6 +307,7 @@ pub fn execute_start(
             op.description()
         );
     }
+    validate_clean_target(git, &resolved)?;
 
     let mut argv: Vec<String> = vec!["merge".to_string()];
     argv.extend(params.sources.iter().cloned());
@@ -486,6 +511,41 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
         assert_eq!(detect_in_progress(tmp.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn validate_clean_target_ok_on_clean_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let git = GitCommand::new(true);
+        let target = ResolvedTarget {
+            branch: "main".into(),
+            path: tmp.path().to_path_buf(),
+        };
+        assert!(validate_clean_target(&git, &target).is_ok());
+    }
+
+    #[test]
+    fn validate_clean_target_refuses_untracked_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        // Untracked file — `git status --porcelain` reports it as `?? path`.
+        std::fs::write(tmp.path().join("dirty.txt"), "hello\n").unwrap();
+        let git = GitCommand::new(true);
+        let target = ResolvedTarget {
+            branch: "main".into(),
+            path: tmp.path().to_path_buf(),
+        };
+        let err = validate_clean_target(&git, &target).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("uncommitted changes"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            msg.contains("daft.merge.requireCleanTarget"),
+            "expected remediation hint in error: {msg}"
+        );
     }
 
     #[test]
