@@ -183,6 +183,7 @@ git commit -m "feat: scaffold daft merge command module"
 **Files:**
 
 - Modify: `src/main.rs`
+- Modify: `src/lib.rs`
 
 - [ ] **Step 1: Add the symlink route and two subcommand routes**
 
@@ -198,20 +199,40 @@ Example location for the first: after line 81
 alias: after line 138 (`"list" => commands::list::run(),`). Example location for
 worktree-prefixed: after line 154 (`"worktree-list" => commands::list::run(),`).
 
-- [ ] **Step 2: Build and invoke `--help`**
+- [ ] **Step 2: Add `"merge"` to `DAFT_VERBS` in `src/lib.rs`**
+
+`src/lib.rs` has a `DAFT_VERBS` constant (around line 79) that lists every verb
+recognized by `daft <verb>` rewriting. Without the new verb here,
+`daft merge <args>` fails to rewrite to `git-worktree-merge <args>` and clap
+rejects the invocation. Add `"merge"` alphabetically between `"list"` and
+`"prune"`:
+
+```rust
+const DAFT_VERBS: &[&str] = &[
+    "adopt", "carry", "clone", "eject", "go", "init", "list", "merge", "prune",
+    "remove", "rename", "start", "sync", "update",
+];
+```
+
+- [ ] **Step 3: Build and invoke `--help`**
 
 Run: `cargo build --bin daft && ./target/debug/daft merge --help` Expected: help
 text appears, exit 0.
 
-- [ ] **Step 3: Invoke without args**
+- [ ] **Step 4: Invoke without args**
 
 Run: `./target/debug/daft merge` Expected: error "daft merge: not yet
 implemented", exit non-zero.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Verify symlink and worktree-prefixed paths too**
+
+`ln -sf "$(pwd)/target/debug/daft" /tmp/git-worktree-merge && /tmp/git-worktree-merge --help && rm /tmp/git-worktree-merge`
+— expect help. `./target/debug/daft worktree-merge --help` — expect help.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/main.rs
+git add src/main.rs src/lib.rs
 git commit -m "feat: route daft merge through main dispatch"
 ```
 
@@ -3548,8 +3569,55 @@ git commit -m "feat: shell completions for daft merge and list --merging"
 
 ## Slice 17 — Docs, man pages, SKILL
 
-Goal: Regenerate man pages; write `docs/cli/daft-merge.md`; update `SKILL.md`
-with the new command so AI agents learn it.
+Goal: Regenerate man pages; wire the CLI-doc-stub helpers so the auto-generated
+`docs/cli/git-worktree-merge.md` gets the same tip box and See Also section its
+peers have; write `docs/cli/daft-merge.md`; update `SKILL.md` with the new
+command so AI agents learn it.
+
+### Task 17.0: Wire `daft_verb_tip()` and `related_commands()` for merge
+
+**Files:**
+
+- Modify: `xtask/src/main.rs`
+
+Context: when xtask registers a command (Task 1.4), pre-commit hooks
+auto-generate `docs/cli/git-worktree-merge.md`. That generator consults two
+helpers in `xtask/src/main.rs`:
+
+- `daft_verb_tip()` — emits a `::: tip` box telling users the `daft` verb
+  equivalent (e.g. "This command is also available as `daft merge`").
+- `related_commands()` — emits a `## See Also` section with links to peer
+  commands.
+
+Both helpers had to omit `git-worktree-merge` until the `daft-merge.md` target
+existed. This task adds the entries now that `daft-merge.md` is about to be
+authored in Task 17.2.
+
+- [ ] **Step 1: Add the `daft_verb_tip` arm**
+
+In `xtask/src/main.rs`, find `daft_verb_tip()` (grep:
+`grep -n "fn daft_verb_tip" xtask/src/main.rs`). Add a match arm for
+`"git-worktree-merge"` that returns the tip pointing at `daft-merge.md`,
+matching the shape of the `"git-worktree-list" =>` arm.
+
+- [ ] **Step 2: Add the `related_commands` entry**
+
+In the same file, find `related_commands()` and add an entry for
+`"git-worktree-merge"` with peer commands per the spec's "See also" list:
+`git-worktree-list`, `git-worktree-carry`, `git-worktree-sync`. Mirror the exact
+pattern of `"git-worktree-list" =>`.
+
+- [ ] **Step 3: Regenerate and verify**
+
+Run: `mise run man:gen` Expected: `docs/cli/git-worktree-merge.md` now contains
+a `::: tip` block pointing at `daft-merge.md` and a `## See Also` section.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add xtask/src/main.rs docs/cli/git-worktree-merge.md
+git commit -m "feat: tip box and See Also for git-worktree-merge docs"
+```
 
 ### Task 17.1: Regenerate man pages
 
@@ -3653,7 +3721,7 @@ git commit -m "docs: list daft merge in help output"
 Goal: All tests pass, lints clean, format checked, full scenario matrix passes,
 CI equivalent succeeds locally.
 
-### Task 17.1: Full local CI
+### Task 18.1: Full local CI
 
 - [ ] **Step 1: Run full test and lint suite**
 
@@ -3682,7 +3750,7 @@ Run: `mise run ci` Expected: exit 0.
 Run: `git log --oneline master..HEAD` Expected: a clean series of
 conventional-commit messages, each tied to one logical unit of work.
 
-### Task 17.2: PR readiness
+### Task 18.2: PR readiness
 
 - [ ] **Step 1: Verify per CLAUDE.md requirements**
 
