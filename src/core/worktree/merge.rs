@@ -145,6 +145,22 @@ fn branch_at_path(git: &GitCommand, path: &Path) -> Result<String> {
         .map(|s| s.trim().to_string())
 }
 
+/// Refuse merging a branch into itself.
+///
+/// A `git merge X` run from a worktree whose branch is `X` is always a
+/// semantic no-op at best and an ambiguous user mistake at worst. Failing
+/// here — before we touch git — gives a clear, actionable error instead of
+/// a cryptic "Already up to date." when the user likely meant to target a
+/// different branch via `--into`.
+pub fn validate_distinct(sources: &[String], target: &ResolvedTarget) -> Result<()> {
+    for src in sources {
+        if src == &target.branch {
+            anyhow::bail!("cannot merge branch '{}' into the same branch", src);
+        }
+    }
+    Ok(())
+}
+
 /// Result of a merge-start operation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StartOutcome {
@@ -179,6 +195,11 @@ pub fn execute_start(
     project_root: &Path,
 ) -> Result<StartOutcome> {
     let resolved = resolve_target(params.target.as_deref(), git, project_root)?;
+
+    // Pre-flight safety rails. Order matters: cheapest/purely-syntactic check
+    // first (source vs. target branch name), then state checks on the target
+    // worktree (in-progress op, dirty tree) which touch the filesystem.
+    validate_distinct(&params.sources, &resolved)?;
 
     let mut argv: Vec<String> = vec!["merge".to_string()];
     argv.extend(params.sources.iter().cloned());
@@ -302,5 +323,25 @@ mod tests {
         let outcome = StartOutcome::default();
         assert!(!outcome.already_up_to_date);
         assert!(!outcome.failed);
+    }
+
+    #[test]
+    fn refuses_when_source_equals_target() {
+        let target = ResolvedTarget {
+            branch: "main".into(),
+            path: PathBuf::from("/repo/main"),
+        };
+        let err = validate_distinct(&["main".to_string()], &target).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("same branch"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn allows_distinct_source_and_target() {
+        let target = ResolvedTarget {
+            branch: "main".into(),
+            path: PathBuf::from("/repo/main"),
+        };
+        assert!(validate_distinct(&["feat".to_string()], &target).is_ok());
     }
 }
