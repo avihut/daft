@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-merge \- Merge branches across worktrees
 .SH SYNOPSIS
-\fBgit\-worktree\-merge\fR [\fB\-\-into\fR] [\fB\-\-abort\fR] [\fB\-\-continue\fR] [\fB\-\-quit\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-ff\fR] [\fB\-\-no\-ff\fR] [\fB\-\-ff\-only\fR] [\fB\-\-squash\fR] [\fB\-\-no\-squash\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE_OR_TARGET\fR] 
+\fBgit\-worktree\-merge\fR [\fB\-\-into\fR] [\fB\-\-abort\fR] [\fB\-\-continue\fR] [\fB\-\-quit\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-ff\fR] [\fB\-\-no\-ff\fR] [\fB\-\-ff\-only\fR] [\fB\-\-squash\fR] [\fB\-\-no\-squash\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-\-adopt\-target\fR] [\fB\-\-no\-adopt\-target\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE_OR_TARGET\fR] 
 .SH DESCRIPTION
 .PP
 Merges one or more source branches into a target worktree\*(Aqs branch.
@@ -99,6 +99,15 @@ Show a diffstat at the end of the merge
 .TP
 \fB\-n\fR, \fB\-\-no\-stat\fR
 Suppress the diffstat at the end of the merge
+.TP
+\fB\-\-adopt\-target\fR
+When the target has no worktree and the merge is not a pure fast\-forward, create an ephemeral worktree to perform the merge without prompting
+.TP
+\fB\-\-no\-adopt\-target\fR
+When the target has no worktree and the merge is not a pure fast\-forward, refuse without prompting
+.TP
+\fB\-y\fR, \fB\-\-yes\fR
+Auto\-accept interactive prompts. Implies \-\-adopt\-target when neither \-\-adopt\-target nor \-\-no\-adopt\-target is supplied. Future\-proofs any new prompts we add
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Be verbose; show detailed progress

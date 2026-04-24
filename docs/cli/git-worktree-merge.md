@@ -63,6 +63,9 @@ git worktree-merge [OPTIONS] [SOURCE_OR_TARGET]
 | `--allow-unrelated-histories` | Allow merging histories that share no common ancestor |  |
 | `--stat` | Show a diffstat at the end of the merge |  |
 | `-n, --no-stat` | Suppress the diffstat at the end of the merge |  |
+| `--adopt-target` | When the target has no worktree and the merge is not a pure fast-forward, create an ephemeral worktree to perform the merge without prompting |  |
+| `--no-adopt-target` | When the target has no worktree and the merge is not a pure fast-forward, refuse without prompting |  |
+| `-y, --yes` | Auto-accept interactive prompts. Implies --adopt-target when neither --adopt-target nor --no-adopt-target is supplied. Future-proofs any new prompts we add |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
 
 ## Global Options

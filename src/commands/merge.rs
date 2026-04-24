@@ -59,6 +59,7 @@ pub struct Args {
             "verify_signatures", "no_verify_signatures",
             "allow_unrelated_histories",
             "stat", "no_stat",
+            "adopt_target", "no_adopt_target", "yes",
         ],
     )]
     pub abort: bool,
@@ -78,6 +79,7 @@ pub struct Args {
             "verify_signatures", "no_verify_signatures",
             "allow_unrelated_histories",
             "stat", "no_stat",
+            "adopt_target", "no_adopt_target", "yes",
         ],
     )]
     pub continue_merge: bool,
@@ -97,6 +99,7 @@ pub struct Args {
             "verify_signatures", "no_verify_signatures",
             "allow_unrelated_histories",
             "stat", "no_stat",
+            "adopt_target", "no_adopt_target", "yes",
         ],
     )]
     pub quit: bool,
@@ -195,6 +198,23 @@ pub struct Args {
     /// Suppress the diffstat at the end of the merge.
     #[arg(short = 'n', long = "no-stat", conflicts_with = "stat")]
     pub no_stat: bool,
+
+    // --- Adopt target (ephemeral worktree for ref-only non-FF merges) ---
+    /// When the target has no worktree and the merge is not a pure fast-forward,
+    /// create an ephemeral worktree to perform the merge without prompting.
+    #[arg(long = "adopt-target", conflicts_with = "no_adopt_target")]
+    pub adopt_target: bool,
+
+    /// When the target has no worktree and the merge is not a pure fast-forward,
+    /// refuse without prompting.
+    #[arg(long = "no-adopt-target", conflicts_with = "adopt_target")]
+    pub no_adopt_target: bool,
+
+    /// Auto-accept interactive prompts. Implies --adopt-target when neither
+    /// --adopt-target nor --no-adopt-target is supplied. Future-proofs any
+    /// new prompts we add.
+    #[arg(short = 'y', long = "yes")]
+    pub yes: bool,
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     pub verbose: bool,
