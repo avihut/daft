@@ -4,7 +4,7 @@
 .SH NAME
 daft\-merge \- Merge branches across worktrees
 .SH SYNOPSIS
-\fBdaft\-merge\fR [\fB\-\-into\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE\fR] 
+\fBdaft\-merge\fR [\fB\-\-into\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-ff\fR] [\fB\-\-no\-ff\fR] [\fB\-\-ff\-only\fR] [\fB\-\-squash\fR] [\fB\-\-no\-squash\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE\fR] 
 .SH DESCRIPTION
 .PP
 Merges one or more source branches into a target worktree\*(Aqs branch.
@@ -21,6 +21,75 @@ Finish commands (\-\-abort, \-\-continue, \-\-quit) take an optional positional
 .TP
 \fB\-\-into\fR \fI<TARGET>\fR
 Target worktree/branch. Defaults to the current worktree\*(Aqs branch
+.TP
+\fB\-m\fR \fI<MSG>\fR
+Commit message for the merge commit (mirrors `git merge \-m`)
+.TP
+\fB\-F\fR, \fB\-\-file\fR \fI<FILE>\fR
+Read the commit message from FILE (mirrors `git merge \-F`)
+.TP
+\fB\-\-edit\fR
+Launch the editor to edit the merge commit message
+.TP
+\fB\-\-no\-edit\fR
+Accept the auto\-generated merge commit message without editing
+.TP
+\fB\-\-cleanup\fR \fI<MODE>\fR
+Message cleanup mode (mirrors `git merge \-\-cleanup`)
+.TP
+\fB\-\-ff\fR
+Allow fast\-forward merges (git\*(Aqs default behavior)
+.TP
+\fB\-\-no\-ff\fR
+Always create a merge commit, even when fast\-forward is possible
+.TP
+\fB\-\-ff\-only\fR
+Refuse to merge if fast\-forward is not possible
+.TP
+\fB\-\-squash\fR
+Squash the source\*(Aqs changes into a single staged diff, without creating a merge commit
+.TP
+\fB\-\-no\-squash\fR
+Explicitly disable squash (cancel a config default of `merge.squash`)
+.TP
+\fB\-\-commit\fR
+Automatically create the merge commit after a successful merge
+.TP
+\fB\-\-no\-commit\fR
+Leave the merge staged without committing
+.TP
+\fB\-\-signoff\fR
+Add a Signed\-off\-by trailer to the merge commit
+.TP
+\fB\-\-no\-signoff\fR
+Explicitly disable signoff (cancel a config default)
+.TP
+\fB\-s\fR, \fB\-\-strategy\fR \fI<STRAT>\fR
+Merge strategy to use (e.g. `ours`, `recursive`, `octopus`)
+.TP
+\fB\-X\fR, \fB\-\-strategy\-option\fR \fI<OPT>\fR
+Strategy\-specific option (repeatable; mirrors `git merge \-X`)
+.TP
+\fB\-S\fR, \fB\-\-gpg\-sign\fR [\fI<KEYID>\fR]
+GPG\-sign the merge commit. Accepts an optional KEYID; omit to use the default key
+.TP
+\fB\-\-no\-gpg\-sign\fR
+Do not GPG\-sign the merge commit (cancels `commit.gpgsign` config)
+.TP
+\fB\-\-verify\-signatures\fR
+Verify that the tip commit of the source is signed with a valid key
+.TP
+\fB\-\-no\-verify\-signatures\fR
+Do not verify signatures on the source tip commit
+.TP
+\fB\-\-allow\-unrelated\-histories\fR
+Allow merging histories that share no common ancestor
+.TP
+\fB\-\-stat\fR
+Show a diffstat at the end of the merge
+.TP
+\fB\-n\fR, \fB\-\-no\-stat\fR
+Suppress the diffstat at the end of the merge (also `\-n`)
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Be verbose; show detailed progress

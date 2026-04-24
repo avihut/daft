@@ -39,6 +39,138 @@ pub struct StartParams {
     pub sources: Vec<String>,
     /// Optional target worktree/branch. `None` → current worktree's branch.
     pub target: Option<String>,
+    /// Git passthrough flags. Serialized into the `git merge` argv between the
+    /// `merge` keyword and the source list.
+    pub flags: EffectiveFlags,
+}
+
+/// Fast-forward mode explicitly requested on the CLI.
+///
+/// `Auto` corresponds to `--ff` (git's default behavior), `Only` to `--ff-only`
+/// (refuse if FF is not possible), and `Never` to `--no-ff` (always create a
+/// merge commit). `None` on [`EffectiveFlags::ff`] means the user didn't
+/// specify and git's own default (effectively `Auto`) applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FfMode {
+    Auto,
+    Only,
+    Never,
+}
+
+/// GPG signing request for the merge commit.
+///
+/// * `Default` — `-S` with no value; git uses `user.signingKey` or the
+///   default secret key.
+/// * `KeyId(id)` — `-S<KEYID>`; sign with a specific key.
+/// * `Disabled` — `--no-gpg-sign`; explicitly disable signing even if
+///   `commit.gpgsign` is set in config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GpgSign {
+    Default,
+    KeyId(String),
+    Disabled,
+}
+
+/// All git-merge passthrough flags resolved to their effective values.
+///
+/// Each field is `Option<_>` (or a bool for truly additive flags) so that
+/// `None` means "user didn't specify — let git use its default". This keeps
+/// [`render_flags`] output minimal: we only emit a flag when the user asked
+/// for one, and we never stamp a redundant default onto git's argv.
+///
+/// Slice-13 will layer repo/global config defaults in; for now these values
+/// come strictly from the CLI.
+#[derive(Debug, Default, Clone)]
+pub struct EffectiveFlags {
+    pub message: Option<String>,
+    pub file: Option<PathBuf>,
+    pub edit: Option<bool>,
+    pub cleanup: Option<String>,
+    pub ff: Option<FfMode>,
+    pub squash: Option<bool>,
+    pub commit: Option<bool>,
+    pub signoff: Option<bool>,
+    pub strategy: Option<String>,
+    pub strategy_options: Vec<String>,
+    pub gpg_sign: Option<GpgSign>,
+    pub verify_signatures: Option<bool>,
+    pub allow_unrelated_histories: bool,
+    pub stat: Option<bool>,
+}
+
+/// Serialize [`EffectiveFlags`] into `git merge` argv fragments.
+///
+/// The caller splices the returned vector between the `merge` keyword and the
+/// source refs, producing e.g. `git merge --no-ff -m "msg" feature/x`.
+///
+/// Order of emitted flags follows the struct's field order, which mirrors
+/// git's own reference grouping (message/editor, ff, squash, commit, signoff,
+/// strategy, gpg, verify, allow-unrelated, stat). Order isn't semantically
+/// meaningful for git — none of these flags interact positionally — but a
+/// stable order makes test assertions deterministic and diffs readable.
+pub fn render_flags(flags: &EffectiveFlags) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(m) = &flags.message {
+        out.extend(["-m".into(), m.clone()]);
+    }
+    if let Some(f) = &flags.file {
+        out.extend(["-F".into(), f.display().to_string()]);
+    }
+    match flags.edit {
+        Some(true) => out.push("--edit".into()),
+        Some(false) => out.push("--no-edit".into()),
+        None => {}
+    }
+    if let Some(c) = &flags.cleanup {
+        out.extend(["--cleanup".into(), c.clone()]);
+    }
+    match flags.ff {
+        Some(FfMode::Auto) => out.push("--ff".into()),
+        Some(FfMode::Only) => out.push("--ff-only".into()),
+        Some(FfMode::Never) => out.push("--no-ff".into()),
+        None => {}
+    }
+    match flags.squash {
+        Some(true) => out.push("--squash".into()),
+        Some(false) => out.push("--no-squash".into()),
+        None => {}
+    }
+    match flags.commit {
+        Some(true) => out.push("--commit".into()),
+        Some(false) => out.push("--no-commit".into()),
+        None => {}
+    }
+    match flags.signoff {
+        Some(true) => out.push("--signoff".into()),
+        Some(false) => out.push("--no-signoff".into()),
+        None => {}
+    }
+    if let Some(s) = &flags.strategy {
+        out.extend(["-s".into(), s.clone()]);
+    }
+    for x in &flags.strategy_options {
+        out.extend(["-X".into(), x.clone()]);
+    }
+    match &flags.gpg_sign {
+        Some(GpgSign::Default) => out.push("-S".into()),
+        Some(GpgSign::KeyId(k)) => out.push(format!("-S{k}")),
+        Some(GpgSign::Disabled) => out.push("--no-gpg-sign".into()),
+        None => {}
+    }
+    match flags.verify_signatures {
+        Some(true) => out.push("--verify-signatures".into()),
+        Some(false) => out.push("--no-verify-signatures".into()),
+        None => {}
+    }
+    if flags.allow_unrelated_histories {
+        out.push("--allow-unrelated-histories".into());
+    }
+    match flags.stat {
+        Some(true) => out.push("--stat".into()),
+        Some(false) => out.push("--no-stat".into()),
+        None => {}
+    }
+    out
 }
 
 /// Target of a merge after resolution.
@@ -360,6 +492,7 @@ pub fn execute_start(
     }
 
     let mut argv: Vec<String> = vec!["merge".to_string()];
+    argv.extend(render_flags(&params.flags));
     argv.extend(params.sources.iter().cloned());
 
     let status = Command::new("git")
@@ -461,6 +594,7 @@ mod tests {
         let params = StartParams {
             sources: vec!["feature/x".to_string(), "feature/y".to_string()],
             target: None,
+            flags: EffectiveFlags::default(),
         };
         assert_eq!(params.sources.len(), 2);
         assert_eq!(params.sources[0], "feature/x");
@@ -472,8 +606,164 @@ mod tests {
         let params = StartParams {
             sources: vec!["feature/x".to_string()],
             target: Some("main".to_string()),
+            flags: EffectiveFlags::default(),
         };
         assert_eq!(params.target.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn render_flags_empty_returns_empty_vec() {
+        let flags = EffectiveFlags::default();
+        assert!(render_flags(&flags).is_empty());
+    }
+
+    #[test]
+    fn render_flags_message_and_file_paired() {
+        let flags = EffectiveFlags {
+            message: Some("hello".into()),
+            file: Some(PathBuf::from("/tmp/msg.txt")),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(
+            render_flags(&flags),
+            vec!["-m", "hello", "-F", "/tmp/msg.txt"]
+        );
+    }
+
+    #[test]
+    fn render_flags_ff_auto() {
+        let flags = EffectiveFlags {
+            ff: Some(FfMode::Auto),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_flags(&flags), vec!["--ff"]);
+    }
+
+    #[test]
+    fn render_flags_ff_only() {
+        let flags = EffectiveFlags {
+            ff: Some(FfMode::Only),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_flags(&flags), vec!["--ff-only"]);
+    }
+
+    #[test]
+    fn render_flags_ff_never() {
+        let flags = EffectiveFlags {
+            ff: Some(FfMode::Never),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_flags(&flags), vec!["--no-ff"]);
+    }
+
+    #[test]
+    fn render_flags_multiple_strategy_options_separate_pairs() {
+        let flags = EffectiveFlags {
+            strategy_options: vec!["ours".into(), "ignore-space-at-eol".into()],
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(
+            render_flags(&flags),
+            vec!["-X", "ours", "-X", "ignore-space-at-eol"]
+        );
+    }
+
+    #[test]
+    fn render_flags_gpg_default_emits_bare_dash_s() {
+        let flags = EffectiveFlags {
+            gpg_sign: Some(GpgSign::Default),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_flags(&flags), vec!["-S"]);
+    }
+
+    #[test]
+    fn render_flags_gpg_keyid_emits_concatenated() {
+        let flags = EffectiveFlags {
+            gpg_sign: Some(GpgSign::KeyId("ABC123".into())),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_flags(&flags), vec!["-SABC123"]);
+    }
+
+    #[test]
+    fn render_flags_gpg_disabled_emits_no_gpg_sign() {
+        let flags = EffectiveFlags {
+            gpg_sign: Some(GpgSign::Disabled),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_flags(&flags), vec!["--no-gpg-sign"]);
+    }
+
+    #[test]
+    fn render_flags_edit_variants() {
+        let yes = EffectiveFlags {
+            edit: Some(true),
+            ..EffectiveFlags::default()
+        };
+        let no = EffectiveFlags {
+            edit: Some(false),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_flags(&yes), vec!["--edit"]);
+        assert_eq!(render_flags(&no), vec!["--no-edit"]);
+    }
+
+    #[test]
+    fn render_flags_combination_preserves_declared_order() {
+        // Interleave many flags to lock down the canonical emission order
+        // (message, edit, cleanup, ff, squash, commit, signoff, strategy,
+        // strategy-options, gpg, verify, allow-unrelated, stat).
+        let flags = EffectiveFlags {
+            message: Some("m".into()),
+            edit: Some(false),
+            cleanup: Some("strip".into()),
+            ff: Some(FfMode::Never),
+            squash: Some(true),
+            commit: Some(false),
+            signoff: Some(true),
+            strategy: Some("recursive".into()),
+            strategy_options: vec!["theirs".into()],
+            gpg_sign: Some(GpgSign::Default),
+            verify_signatures: Some(true),
+            allow_unrelated_histories: true,
+            stat: Some(false),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(
+            render_flags(&flags),
+            vec![
+                "-m",
+                "m",
+                "--no-edit",
+                "--cleanup",
+                "strip",
+                "--no-ff",
+                "--squash",
+                "--no-commit",
+                "--signoff",
+                "-s",
+                "recursive",
+                "-X",
+                "theirs",
+                "-S",
+                "--verify-signatures",
+                "--allow-unrelated-histories",
+                "--no-stat",
+            ]
+        );
+    }
+
+    #[test]
+    fn render_flags_allow_unrelated_histories_only_when_true() {
+        let off = EffectiveFlags::default();
+        assert!(render_flags(&off).is_empty());
+        let on = EffectiveFlags {
+            allow_unrelated_histories: true,
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_flags(&on), vec!["--allow-unrelated-histories"]);
     }
 
     #[test]

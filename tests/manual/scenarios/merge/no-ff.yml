@@ -1,0 +1,37 @@
+name: Merge no-ff forces merge commit
+description:
+  "daft merge --no-ff creates a merge commit even when FF is possible"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Checkout feature
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: --no-ff merge feature into main
+    run:
+      git-worktree-merge feature/test-feature --no-ff -m "merge feature via
+      --no-ff" 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Merge complete."
+
+  - name: Verify HEAD has two parents
+    run: |
+      parents=$(git rev-list --parents -n 1 HEAD | awk '{print NF-1}')
+      echo "parent_count=$parents"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "parent_count=2"
