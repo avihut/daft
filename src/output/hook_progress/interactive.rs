@@ -361,7 +361,7 @@ impl HookProgressRenderer {
 
         if self.config.compact_finalization {
             self.mp
-                .println(super::formatting::format_compact_row(
+                .println(super::formatting::format_compact_row_legacy(
                     name,
                     success,
                     duration,

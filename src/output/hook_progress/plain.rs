@@ -82,7 +82,7 @@ impl PlainHookRenderer {
             // Plain renderer is the non-color branch, so `use_color = false`.
             eprintln!(
                 "{}",
-                super::formatting::format_compact_row(name, success, duration, false)
+                super::formatting::format_compact_row_legacy(name, success, duration, false)
             );
         } else if !self.jobs_with_output.contains(name) {
             eprintln!("\u{2503}  No output");

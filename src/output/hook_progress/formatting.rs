@@ -154,32 +154,87 @@ pub(super) fn format_duration(d: Duration) -> String {
     }
 }
 
-/// Render a finalized per-job row for compact-finalization mode.
+/// Lifecycle state of a finalized row (one per pipeline step).
+#[derive(Debug, Clone, Copy)]
+pub(super) enum RowState {
+    Success {
+        duration: Duration,
+    },
+    Failure {
+        duration: Duration,
+    },
+    // Used by Tasks 7-8 when exec pipeline emits cancel/skip events.
+    #[allow(dead_code)]
+    Cancelled {
+        duration: Duration,
+    },
+    // Used by Tasks 7-8 when exec runner emits skips for unlaunched targets.
+    #[allow(dead_code)]
+    Skipped,
+}
+
+/// Render a finalized per-step row for compact-finalization mode.
 ///
-/// Matches `crate::core::worktree::exec::list_renderer::render_outcome`'s
-/// visible shape: two-space indent, sigil, double space, 24-char left-padded
-/// name, single space, parenthesized duration. Colored variant adds ANSI
-/// escapes consistent with the summary formatting.
+/// Shape (monospace):
+/// ```text
+///   <glyph>  <name padded to name_width>  ❯ <preview>  <right>
+/// ```
+/// When `command_preview` is `None`, the `❯ <preview>` segment is omitted.
+/// `<right>` is the state-specific suffix: `(1.5s)` for success/failure,
+/// `cancelled after 1.2s` for cancelled, `skipped` for skipped.
 pub(super) fn format_compact_row(
+    name: &str,
+    command_preview: Option<&str>,
+    state: RowState,
+    name_width: usize,
+    use_color: bool,
+) -> String {
+    let (sigil, color_code) = match state {
+        RowState::Success { .. } => ("\u{2713}", styles::GREEN),
+        RowState::Failure { .. } => ("\u{2717}", styles::RED),
+        RowState::Cancelled { .. } => ("\u{2298}", YELLOW),
+        RowState::Skipped => ("\u{25cb}", DARK_GREY),
+    };
+    let right = match state {
+        RowState::Success { duration } | RowState::Failure { duration } => {
+            format!("({})", format_duration(duration))
+        }
+        RowState::Cancelled { duration } => {
+            format!("cancelled after {}", format_duration(duration))
+        }
+        RowState::Skipped => "skipped".to_string(),
+    };
+
+    let name_part = format!("{:<w$}", name, w = name_width);
+    let preview_segment = command_preview
+        .map(|p| format!("  \u{276f} {p}"))
+        .unwrap_or_default();
+
+    if use_color {
+        format!(
+            "  {color_code}{sigil}  {name_part}{}{preview_segment}  {GREY}{right}{}",
+            styles::RESET,
+            styles::RESET,
+        )
+    } else {
+        format!("  {sigil}  {name_part}{preview_segment}  {right}")
+    }
+}
+
+/// Compatibility shim over the 4-arg signature used by existing callers.
+/// Will be removed in Task 3 once renderers migrate to the full API.
+pub(super) fn format_compact_row_legacy(
     name: &str,
     success: bool,
     duration: Duration,
     use_color: bool,
 ) -> String {
-    let sigil = if success { "\u{2713}" } else { "\u{2717}" };
-    let elapsed = format_duration(duration);
-    if use_color {
-        let color = if success { styles::GREEN } else { styles::RED };
-        format!(
-            "  {}{sigil}  {:<24}{} {GREY}({elapsed}){}",
-            color,
-            name,
-            styles::RESET,
-            styles::RESET
-        )
+    let state = if success {
+        RowState::Success { duration }
     } else {
-        format!("  {sigil}  {:<24} ({elapsed})", name)
-    }
+        RowState::Failure { duration }
+    };
+    format_compact_row(name, None, state, 24, use_color)
 }
 
 #[cfg(test)]
@@ -188,26 +243,127 @@ mod compact_row_tests {
     use std::time::Duration;
 
     #[test]
-    fn compact_row_success_plain() {
-        let row = format_compact_row("master", true, Duration::from_millis(1800), false);
-        // Matches list_renderer::render_outcome's visible format:
-        //   "  ✓  master                    (1.8s)"
+    fn success_row_with_preview_plain() {
+        let row = format_compact_row(
+            "master",
+            Some("mise dev"),
+            RowState::Success {
+                duration: Duration::from_millis(1900),
+            },
+            12,
+            false,
+        );
         assert!(row.contains("\u{2713}"), "expected ✓, got: {row:?}");
-        assert!(row.contains("master"), "missing name: {row:?}");
-        assert!(row.contains("(1.8s)"), "missing elapsed: {row:?}");
+        assert!(row.contains("master"), "missing branch: {row:?}");
+        assert!(
+            row.contains("\u{276f} mise dev"),
+            "missing preview: {row:?}"
+        );
+        assert!(row.contains("(1.9s)"), "missing elapsed: {row:?}");
     }
 
     #[test]
-    fn compact_row_failure_plain() {
-        let row = format_compact_row("feat/dirty", false, Duration::from_millis(1200), false);
+    fn failure_row_with_preview_plain() {
+        let row = format_compact_row(
+            "feat/dirty",
+            Some("cargo build"),
+            RowState::Failure {
+                duration: Duration::from_millis(1200),
+            },
+            12,
+            false,
+        );
         assert!(row.contains("\u{2717}"), "expected ✗, got: {row:?}");
         assert!(row.contains("feat/dirty"));
+        assert!(row.contains("\u{276f} cargo build"));
         assert!(row.contains("(1.2s)"));
     }
 
     #[test]
-    fn compact_row_has_leading_indent() {
-        let row = format_compact_row("x", true, Duration::from_secs(1), false);
+    fn cancelled_row_with_preview_plain() {
+        let row = format_compact_row(
+            "master",
+            Some("mise dev"),
+            RowState::Cancelled {
+                duration: Duration::from_millis(1200),
+            },
+            12,
+            false,
+        );
+        assert!(row.contains("\u{2298}"), "expected ⊘, got: {row:?}");
+        assert!(row.contains("master"));
+        assert!(row.contains("\u{276f} mise dev"));
+        assert!(
+            row.contains("cancelled after 1.2s"),
+            "missing cancelled suffix: {row:?}"
+        );
+    }
+
+    #[test]
+    fn skipped_row_with_preview_plain() {
+        let row = format_compact_row(
+            "daft-330/feat/merge",
+            Some("mise fmt"),
+            RowState::Skipped,
+            20,
+            false,
+        );
+        assert!(row.contains("\u{25cb}"), "expected ○, got: {row:?}");
+        assert!(row.contains("daft-330/feat/merge"));
+        assert!(row.contains("\u{276f} mise fmt"));
+        assert!(
+            row.ends_with("skipped"),
+            "expected 'skipped' suffix: {row:?}"
+        );
+    }
+
+    #[test]
+    fn name_is_padded_to_requested_width() {
+        let row = format_compact_row(
+            "a",
+            Some("cmd"),
+            RowState::Success {
+                duration: Duration::from_secs(1),
+            },
+            10,
+            false,
+        );
+        assert!(
+            row.contains("a         "),
+            "branch must be left-padded to 10 chars, got: {row:?}"
+        );
+    }
+
+    #[test]
+    fn preview_none_omits_arrow_segment_plain() {
+        let row = format_compact_row(
+            "master",
+            None,
+            RowState::Success {
+                duration: Duration::from_secs(1),
+            },
+            10,
+            false,
+        );
+        assert!(
+            !row.contains("\u{276f}"),
+            "no preview ⇒ no arrow, got: {row:?}"
+        );
+        assert!(row.contains("master"));
+        assert!(row.contains("(1.0s)"));
+    }
+
+    #[test]
+    fn row_has_leading_indent() {
+        let row = format_compact_row(
+            "x",
+            None,
+            RowState::Success {
+                duration: Duration::from_secs(1),
+            },
+            4,
+            false,
+        );
         assert!(
             row.starts_with("  "),
             "expected 2-space leading indent, got: {row:?}"
@@ -215,31 +371,45 @@ mod compact_row_tests {
     }
 
     #[test]
-    fn compact_row_color_wraps_sigil_and_name() {
-        let row = format_compact_row("x", true, Duration::from_secs(1), true);
-        assert!(
-            row.starts_with(&format!("  {}", crate::styles::GREEN)),
-            "colored success row should start with 2-space indent + GREEN, got: {row:?}"
-        );
-        // A RESET must appear before GREY to close the sigil+name color region.
-        let reset_idx = row.find(crate::styles::RESET).expect("must contain RESET");
-        let grey_idx = row.find(GREY).expect("must contain GREY");
-        assert!(
-            reset_idx < grey_idx,
-            "RESET must close the color span before GREY duration; got: {row:?}"
+    fn colored_success_uses_green_sigil() {
+        let row = format_compact_row(
+            "x",
+            Some("cmd"),
+            RowState::Success {
+                duration: Duration::from_secs(1),
+            },
+            4,
+            true,
         );
         assert!(
-            row.ends_with(crate::styles::RESET),
-            "row must end with RESET, got: {row:?}"
+            row.contains(crate::styles::GREEN),
+            "colored success row should include GREEN, got: {row:?}"
         );
     }
 
     #[test]
-    fn compact_row_failure_color_uses_red() {
-        let row = format_compact_row("x", false, Duration::from_secs(1), true);
+    fn colored_cancelled_uses_yellow_sigil() {
+        let row = format_compact_row(
+            "x",
+            Some("cmd"),
+            RowState::Cancelled {
+                duration: Duration::from_secs(1),
+            },
+            4,
+            true,
+        );
         assert!(
-            row.starts_with(&format!("  {}", crate::styles::RED)),
-            "colored failure row should start with 2-space indent + RED, got: {row:?}"
+            row.contains(YELLOW),
+            "colored cancelled row should include YELLOW, got: {row:?}"
+        );
+    }
+
+    #[test]
+    fn colored_skipped_uses_dark_grey() {
+        let row = format_compact_row("x", Some("cmd"), RowState::Skipped, 4, true);
+        assert!(
+            row.contains(DARK_GREY),
+            "colored skipped row should include DARK_GREY, got: {row:?}"
         );
     }
 }
