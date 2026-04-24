@@ -514,11 +514,14 @@ pub fn run_pipeline(
     run_pipeline_streaming(target, pipeline, "", &presenter, cancel)
 }
 
-/// Run the pipeline against a single worktree, streaming every stdout/stderr
-/// line to the given presenter *and* capturing it into a tail buffer. Stops
-/// on first failing command. Job names presented are `{name_prefix}` for
-/// single-command pipelines or `{name_prefix} [{i+1}/{n}]` for multi-command
-/// pipelines; when `name_prefix` is empty, the branch name is used.
+/// Run the full pipeline against one worktree, streaming output through the
+/// presenter. Returns a `WorktreeOutcome` describing the final exit code,
+/// captured output, and cancellation state.
+///
+/// The job name passed to the presenter is `name_prefix` when non-empty,
+/// otherwise the target's branch name. Step identity within a multi-command
+/// pipeline is conveyed via the `command_preview` argument on `on_job_start`
+/// — not via the job name itself.
 pub fn run_pipeline_streaming(
     target: &ResolvedTarget,
     pipeline: &[CommandSpec],
@@ -537,25 +540,23 @@ pub fn run_pipeline_streaming(
         name_prefix
     };
 
+    let job_name = base_name.to_string();
+    let emit_skips = |start: usize| {
+        for step in pipeline.iter().skip(start) {
+            presenter.on_job_skipped(&job_name, "", Duration::ZERO, false, Some(&step.display()));
+        }
+    };
+
     for (idx, spec) in pipeline.iter().enumerate() {
         // Between commands: if cancel has been requested, stop before
         // launching the next command.
         if cancel.is_cancelled() {
             cancelled = true;
-            for step in pipeline.iter().skip(idx) {
-                presenter.on_job_skipped(
-                    base_name,
-                    "",
-                    Duration::ZERO,
-                    false,
-                    Some(&step.display()),
-                );
-            }
+            emit_skips(idx);
             break;
         }
 
         last_index = idx;
-        let job_name = base_name.to_string();
         let preview = spec.display();
         let cmd_start = Instant::now();
         presenter.on_job_start(&job_name, None, Some(&preview));
@@ -615,30 +616,14 @@ pub fn run_pipeline_streaming(
         if cancel.is_cancelled() {
             cancelled = true;
             presenter.on_job_cancelled(&job_name, cmd_elapsed);
-            for step in pipeline.iter().skip(idx + 1) {
-                presenter.on_job_skipped(
-                    &job_name,
-                    "",
-                    Duration::ZERO,
-                    false,
-                    Some(&step.display()),
-                );
-            }
+            emit_skips(idx + 1);
             break;
         }
         if exit_code == 0 {
             presenter.on_job_success(&job_name, cmd_elapsed);
         } else {
             presenter.on_job_failure(&job_name, cmd_elapsed);
-            for step in pipeline.iter().skip(idx + 1) {
-                presenter.on_job_skipped(
-                    &job_name,
-                    "",
-                    Duration::ZERO,
-                    false,
-                    Some(&step.display()),
-                );
-            }
+            emit_skips(idx + 1);
             break;
         }
     }
@@ -1307,6 +1292,7 @@ mod streaming_skip_emission_tests {
             CommandSpec::Argv(vec!["echo".into(), "never".into()]),
         ];
         let recorder = EventRecorder::arc();
+        // explicit cast required: Arc::clone returns Arc<EventRecorder>, not Arc<dyn Trait>
         let presenter: Arc<dyn crate::executor::presenter::JobPresenter> =
             Arc::clone(&recorder) as Arc<dyn crate::executor::presenter::JobPresenter>;
 
@@ -1339,6 +1325,7 @@ mod streaming_skip_emission_tests {
             CommandSpec::Argv(vec!["echo".into(), "two".into()]),
         ];
         let recorder = EventRecorder::arc();
+        // explicit cast required: Arc::clone returns Arc<EventRecorder>, not Arc<dyn Trait>
         let presenter: Arc<dyn crate::executor::presenter::JobPresenter> =
             Arc::clone(&recorder) as Arc<dyn crate::executor::presenter::JobPresenter>;
 
@@ -1361,6 +1348,57 @@ mod streaming_skip_emission_tests {
         assert!(
             events.iter().any(|e| e == "skipped:branch-b:echo two"),
             "missing skipped event for step 2: {events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| e.starts_with("cancelled:")),
+            "top-of-loop cancel must not emit cancelled event: {events:?}"
+        );
+    }
+
+    #[test]
+    fn mid_flight_cancel_emits_cancelled_not_failure() {
+        // Exercises the post-child-exit `cancel.is_cancelled()` check: start a
+        // slow child, escalate cancel from a background thread, let
+        // run_pipeline_streaming observe the cancel flag AFTER the child has been
+        // SIGTERM'd. The in-flight step must emit on_job_cancelled (not
+        // on_job_failure), and the remaining step(s) must emit on_job_skipped.
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = ResolvedTarget {
+            worktree_path: dir.path().to_path_buf(),
+            branch_name: "branch-mid".into(),
+        };
+        let pipeline = vec![
+            CommandSpec::Shell("sleep 5".into()),
+            CommandSpec::Argv(vec!["echo".into(), "never".into()]),
+        ];
+        let recorder = EventRecorder::arc();
+        // explicit cast required: Arc::clone returns Arc<EventRecorder>, not Arc<dyn Trait>
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> =
+            Arc::clone(&recorder) as Arc<dyn crate::executor::presenter::JobPresenter>;
+
+        let cancel = CancelFlag::new();
+        let outcome = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                cancel.escalate();
+            });
+            run_pipeline_streaming(&target, &pipeline, "", &presenter, &cancel)
+        })
+        .unwrap();
+
+        assert!(outcome.cancelled, "expected cancelled outcome");
+        let events = recorder.take();
+        assert!(
+            events.iter().any(|e| e == "cancelled:branch-mid"),
+            "mid-flight cancel must emit cancelled event, not failure: {events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| e.starts_with("failure:")),
+            "mid-flight cancel must NOT emit failure event: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| e == "skipped:branch-mid:echo never"),
+            "mid-flight cancel must emit skipped for remaining step: {events:?}"
         );
     }
 }
