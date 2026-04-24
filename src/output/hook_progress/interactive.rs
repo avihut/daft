@@ -64,7 +64,7 @@ impl HookProgressRenderer {
         };
 
         let spinner_style = ProgressStyle::with_template(&format!(
-            "{pipe_str}  {{spinner}} {{msg}} {arrow}"
+            "{pipe_str}  {{spinner}} {{msg}}"
         ))
         .unwrap()
         .tick_chars(
@@ -72,7 +72,7 @@ impl HookProgressRenderer {
         );
 
         let spinner_style_with_timer = ProgressStyle::with_template(&format!(
-            "{pipe_str}  {{spinner}} {{msg}} {arrow} [{{elapsed_precise}}]"
+            "{pipe_str}  {{spinner}} {{msg}} [{{elapsed_precise}}]"
         ))
         .unwrap()
         .tick_chars(
@@ -128,10 +128,20 @@ impl HookProgressRenderer {
         let spinner = self.mp.add(ProgressBar::new_spinner());
         spinner.set_style(self.spinner_style.clone());
 
-        let display_name = if self.use_color {
-            format!("{ORANGE}{name}{}", styles::RESET)
-        } else {
-            name.to_string()
+        let display_name = match command_preview {
+            Some(cmd) if self.use_color => format!(
+                "{ORANGE}{name}{}  {arrow}  {DARK_GREY}{cmd}{}",
+                styles::RESET,
+                styles::RESET,
+                arrow = self.arrow_str,
+            ),
+            Some(cmd) => format!("{name}  \u{276f}  {cmd}"),
+            None if self.use_color => format!(
+                "{ORANGE}{name}{}  {arrow}",
+                styles::RESET,
+                arrow = self.arrow_str,
+            ),
+            None => format!("{name}  \u{276f}"),
         };
         spinner.set_message(display_name);
         spinner.enable_steady_tick(Duration::from_millis(80));
@@ -150,23 +160,6 @@ impl HookProgressRenderer {
             };
             desc_bar.set_message(desc_msg);
             last_bar = desc_bar;
-        }
-
-        // Show rendered command below the description/spinner when verbose
-        if self.config.verbose {
-            if let Some(cmd) = command_preview {
-                let cmd_bar = self.mp.insert_after(&last_bar, ProgressBar::new_spinner());
-                let cmd_style =
-                    ProgressStyle::with_template(&format!("{}  {{msg}}", self.pipe_str)).unwrap();
-                cmd_bar.set_style(cmd_style);
-                let cmd_msg = if self.use_color {
-                    format!("{DARK_GREY}{cmd}{}", styles::RESET)
-                } else {
-                    cmd.to_string()
-                };
-                cmd_bar.set_message(cmd_msg);
-                last_bar = cmd_bar;
-            }
         }
 
         // Trailer is a blank spacer bar that sits at the bottom of this job's
