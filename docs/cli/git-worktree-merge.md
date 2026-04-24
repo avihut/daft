@@ -66,6 +66,8 @@ git worktree-merge [OPTIONS] [SOURCE_OR_TARGET]
 | `--adopt-target` | When the target has no worktree and the merge is not a pure fast-forward, create an ephemeral worktree to perform the merge without prompting |  |
 | `--no-adopt-target` | When the target has no worktree and the merge is not a pure fast-forward, refuse without prompting |  |
 | `-y, --yes` | Auto-accept interactive prompts. Implies --adopt-target when neither --adopt-target nor --no-adopt-target is supplied. Future-proofs any new prompts we add |  |
+| `-r, --remove` | Remove the source worktree after a successful merge |  |
+| `-b, --and-branch` | Also delete the source branch (requires --remove). Uses `git branch -d` semantics; refuses to delete if the branch is not fully merged |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
 
 ## Global Options

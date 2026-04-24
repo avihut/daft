@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-merge \- Merge branches across worktrees
 .SH SYNOPSIS
-\fBgit\-worktree\-merge\fR [\fB\-\-into\fR] [\fB\-\-abort\fR] [\fB\-\-continue\fR] [\fB\-\-quit\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-ff\fR] [\fB\-\-no\-ff\fR] [\fB\-\-ff\-only\fR] [\fB\-\-squash\fR] [\fB\-\-no\-squash\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-\-adopt\-target\fR] [\fB\-\-no\-adopt\-target\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE_OR_TARGET\fR] 
+\fBgit\-worktree\-merge\fR [\fB\-\-into\fR] [\fB\-\-abort\fR] [\fB\-\-continue\fR] [\fB\-\-quit\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-ff\fR] [\fB\-\-no\-ff\fR] [\fB\-\-ff\-only\fR] [\fB\-\-squash\fR] [\fB\-\-no\-squash\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-\-adopt\-target\fR] [\fB\-\-no\-adopt\-target\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-r\fR|\fB\-\-remove\fR] [\fB\-b\fR|\fB\-\-and\-branch\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE_OR_TARGET\fR] 
 .SH DESCRIPTION
 .PP
 Merges one or more source branches into a target worktree\*(Aqs branch.
@@ -108,6 +108,12 @@ When the target has no worktree and the merge is not a pure fast\-forward, refus
 .TP
 \fB\-y\fR, \fB\-\-yes\fR
 Auto\-accept interactive prompts. Implies \-\-adopt\-target when neither \-\-adopt\-target nor \-\-no\-adopt\-target is supplied. Future\-proofs any new prompts we add
+.TP
+\fB\-r\fR, \fB\-\-remove\fR
+Remove the source worktree after a successful merge
+.TP
+\fB\-b\fR, \fB\-\-and\-branch\fR
+Also delete the source branch (requires \-\-remove). Uses `git branch \-d` semantics; refuses to delete if the branch is not fully merged
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Be verbose; show detailed progress

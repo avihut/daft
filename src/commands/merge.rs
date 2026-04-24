@@ -67,6 +67,7 @@ pub struct Args {
             "allow_unrelated_histories",
             "stat", "no_stat",
             "adopt_target", "no_adopt_target", "yes",
+            "remove", "and_branch",
         ],
     )]
     pub abort: bool,
@@ -87,6 +88,7 @@ pub struct Args {
             "allow_unrelated_histories",
             "stat", "no_stat",
             "adopt_target", "no_adopt_target", "yes",
+            "remove", "and_branch",
         ],
     )]
     pub continue_merge: bool,
@@ -107,6 +109,7 @@ pub struct Args {
             "allow_unrelated_histories",
             "stat", "no_stat",
             "adopt_target", "no_adopt_target", "yes",
+            "remove", "and_branch",
         ],
     )]
     pub quit: bool,
@@ -222,6 +225,16 @@ pub struct Args {
     /// new prompts we add.
     #[arg(short = 'y', long = "yes")]
     pub yes: bool,
+
+    // --- Post-merge cleanup (start-mode only) ---
+    /// Remove the source worktree after a successful merge.
+    #[arg(short = 'r', long = "remove")]
+    pub remove: bool,
+
+    /// Also delete the source branch (requires --remove). Uses `git branch -d`
+    /// semantics; refuses to delete if the branch is not fully merged.
+    #[arg(short = 'b', long = "and-branch", requires = "remove")]
+    pub and_branch: bool,
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     pub verbose: bool,
