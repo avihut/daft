@@ -7,11 +7,18 @@
 //! argument, default to CWD.
 
 use crate::{
-    get_project_root, git::GitCommand, is_git_repository, logging::init_logging,
-    settings::DaftSettings,
+    executor::cli_presenter::CliPresenter,
+    get_git_common_dir, get_project_root,
+    git::GitCommand,
+    hooks::{HookContext, HookExecutor, HookType, HooksConfig},
+    is_git_repository,
+    logging::init_logging,
+    output::{CliOutput, OutputConfig},
+    settings::{DaftSettings, HookOutputConfig},
 };
 use anyhow::Result;
 use clap::Parser;
+use std::path::Path;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-merge")]
@@ -381,6 +388,9 @@ pub fn run() -> Result<()> {
         no_adopt_target: args.no_adopt_target,
         yes: args.yes,
     };
+    // Capture before move: needed for the worktree-post-create hook when the
+    // ephemeral-promote path fires. Non-ephemeral paths don't use this.
+    let into_branch = args.into.clone();
     let params = crate::core::worktree::merge::StartParams {
         sources: args.sources,
         target: args.into,
@@ -395,6 +405,24 @@ pub fn run() -> Result<()> {
         // further print here — duplicating the status line would be noise.
         Ok(())
     } else if outcome.failed {
+        // Ephemeral-promote path: a ref-only target was adopted into a
+        // canonical worktree at its layout-resolved sibling path. Fire
+        // `worktree-post-create` so hook-installed environment setup
+        // (direnv/mise/etc.) is available while the user resolves conflicts.
+        // Best-effort: a hook failure must not replace the conflict report.
+        if outcome.ephemeral_promoted {
+            if let Some(branch) = into_branch.as_deref() {
+                if let Err(e) = fire_worktree_post_create_hook(
+                    &outcome.target_path,
+                    branch,
+                    &project_root,
+                    &settings,
+                ) {
+                    eprintln!("warning: worktree-post-create hook failed: {e}");
+                }
+            }
+        }
+
         // Print a daft-authored conflict report to stderr and exit non-zero.
         // We bypass the usual `anyhow::bail!` plumbing because anyhow-printed
         // errors get the "Error:" prefix; for a multi-line report we want the
@@ -424,4 +452,47 @@ pub fn run() -> Result<()> {
         }
         Ok(())
     }
+}
+
+/// Fire the `worktree-post-create` hook for a worktree promoted from the
+/// ephemeral `.daft-tmp/<branch>` path to its layout-resolved sibling path.
+///
+/// Mirrors `flow_adopt::run_post_adopt_hook` in shape — construct a
+/// `HookContext` for the new worktree (`source_worktree` == `worktree_path`
+/// because no source worktree is involved in a promotion), run the executor
+/// with a plain-CLI presenter, and surface the outcome without blocking.
+///
+/// Hook failures propagate as `Err` so the caller can print a warning; they
+/// do not cause the conflict report to be suppressed.
+fn fire_worktree_post_create_hook(
+    worktree_path: &Path,
+    branch: &str,
+    project_root: &Path,
+    settings: &DaftSettings,
+) -> Result<()> {
+    let hooks_config = HooksConfig::default();
+    let executor = HookExecutor::new(hooks_config)?;
+
+    let git_dir = get_git_common_dir()?;
+
+    let ctx = HookContext::new(
+        HookType::PostCreate,
+        "merge",
+        project_root,
+        &git_dir,
+        &settings.remote,
+        worktree_path,
+        worktree_path,
+        branch,
+    )
+    .with_new_branch(false);
+
+    // Minimal CLI output — `CliPresenter::auto` picks a progress style suited
+    // to the current TTY. The merge command is already past its own output
+    // phase here (about to print a conflict report), so a plain output sink
+    // is sufficient.
+    let mut output = CliOutput::new(OutputConfig::new(false, false));
+    let presenter = CliPresenter::auto(&HookOutputConfig::default());
+    executor.execute(&ctx, &mut output, presenter)?;
+    Ok(())
 }

@@ -618,6 +618,12 @@ pub struct StartOutcome {
     /// "Merge complete." print so a single successful merge produces a single
     /// status line on stdout.
     pub emitted_terminal_message: bool,
+    /// True if the conflict path promoted an ephemeral worktree to its
+    /// layout-resolved sibling path. The command layer uses this to fire the
+    /// `worktree-post-create` hook for the newly-registered worktree (see
+    /// [`promote_ephemeral_to_layout`]). Always false outside the ephemeral
+    /// conflict path.
+    pub ephemeral_promoted: bool,
 }
 
 /// Parse `git status --porcelain` output for conflict entries.
@@ -747,6 +753,7 @@ pub fn execute_start(
             target_path: resolved.path.clone().unwrap_or_default(),
             conflicted_files: Vec::new(),
             emitted_terminal_message: true,
+            ephemeral_promoted: false,
         });
     }
 
@@ -761,7 +768,7 @@ pub fn execute_start(
 
     match resolved.path {
         Some(path) => execute_start_in_worktree(params, path),
-        None => execute_start_ref_only(params, git, &resolved.branch, target_sha),
+        None => execute_start_ref_only(params, git, project_root, &resolved.branch, target_sha),
     }
 }
 
@@ -798,6 +805,7 @@ fn execute_start_in_worktree(params: &StartParams, path: PathBuf) -> Result<Star
         target_path: path,
         conflicted_files: files,
         emitted_terminal_message: false,
+        ephemeral_promoted: false,
     })
 }
 
@@ -817,6 +825,7 @@ fn execute_start_in_worktree(params: &StartParams, path: PathBuf) -> Result<Star
 fn execute_start_ref_only(
     params: &StartParams,
     git: &GitCommand,
+    project_root: &Path,
     target_branch: &str,
     target_sha: String,
 ) -> Result<StartOutcome> {
@@ -847,6 +856,7 @@ fn execute_start_ref_only(
             target_path: PathBuf::new(),
             conflicted_files: Vec::new(),
             emitted_terminal_message: true,
+            ephemeral_promoted: false,
         });
     }
 
@@ -877,26 +887,35 @@ fn execute_start_ref_only(
         );
     }
 
-    execute_ephemeral_merge(params, target_branch)
+    execute_ephemeral_merge(params, git, project_root, target_branch)
 }
 
 /// Materialize an ephemeral worktree for a ref-only target, run the merge
-/// there, and clean up on success.
+/// there, and — on conflict — promote it to the layout-resolved sibling path.
 ///
-/// Slice 10 behavior:
+/// Behavior:
 /// * Success — remove the temp worktree (the ref has already advanced via
 ///   the merge commit in the worktree).
-/// * Conflict — leave the temp worktree in place and report its path.
-///   Slice 11 will promote the conflicted worktree to its layout-resolved
-///   path and fire `worktree-post-create` so the user can resolve in a
-///   canonical location.
+/// * Conflict — promote the temp worktree to its layout-resolved sibling path
+///   via [`promote_ephemeral_to_layout`], set `ephemeral_promoted: true`, and
+///   return the layout path in `target_path`. The command layer fires
+///   `worktree-post-create` so hook-installed environment setup (direnv,
+///   mise, etc.) is available while the user resolves the conflict.
+///
+/// On promotion failure the ephemeral worktree is LEFT IN PLACE for manual
+/// recovery and the error is surfaced with both paths mentioned.
 ///
 /// Pure failure modes other than conflict (e.g. malformed flags, missing
 /// refs) propagate through git's non-zero exit and are surfaced by the
 /// caller's existing conflict-report path. `conflicted_files` swallows
 /// status errors into an empty list so a broken worktree never masks the
 /// real merge error with a secondary one.
-fn execute_ephemeral_merge(params: &StartParams, target_branch: &str) -> Result<StartOutcome> {
+fn execute_ephemeral_merge(
+    params: &StartParams,
+    git: &GitCommand,
+    project_root: &Path,
+    target_branch: &str,
+) -> Result<StartOutcome> {
     let bare_root = crate::get_git_common_dir()
         .context("failed to locate bare git directory for ephemeral worktree")?;
     let temp_path = crate::core::worktree::temp_worktree::create(&bare_root, target_branch)
@@ -939,20 +958,144 @@ fn execute_ephemeral_merge(params: &StartParams, target_branch: &str) -> Result<
             target_path: PathBuf::new(),
             conflicted_files: Vec::new(),
             emitted_terminal_message: false,
+            ephemeral_promoted: false,
         });
     }
 
-    // Conflict path: leave the ephemeral worktree in place so the user (or
-    // Slice 11) can resolve. Report conflicted files so the command layer's
-    // conflict report has something useful to show.
-    let files = conflicted_files(&temp_path).unwrap_or_default();
+    // Conflict path: promote the ephemeral worktree to its layout-resolved
+    // sibling path so subsequent `daft list` / `git worktree list` surface it
+    // and the user can resolve the conflict in a canonical location.
+    //
+    // `git worktree move` (wrapped by `GitCommand::worktree_move`) rewrites
+    // git's internal gitdir pointer and the worktree's `.git` link file
+    // atomically, so no bookkeeping is needed beyond the single call.
+    let layout_path =
+        match promote_ephemeral_to_layout(&temp_path, target_branch, git, project_root) {
+            Ok(p) => p,
+            Err(e) => {
+                return Err(e.context(format!(
+                    "ephemeral merge conflicted but promotion failed; \
+                 ephemeral worktree remains at '{}' for manual recovery",
+                    temp_path.display()
+                )));
+            }
+        };
+
+    // Probe conflicts at the PROMOTED path — the temp path no longer exists.
+    let files = conflicted_files(&layout_path).unwrap_or_default();
     Ok(StartOutcome {
         already_up_to_date: false,
         failed: true,
-        target_path: temp_path,
+        target_path: layout_path,
         conflicted_files: files,
         emitted_terminal_message: false,
+        ephemeral_promoted: true,
     })
+}
+
+/// Move an ephemeral worktree (created by `temp_worktree::create`) to the
+/// layout-resolved sibling path for `target_branch`, updating git's internal
+/// tracking so the worktree is discoverable by `git worktree list` and
+/// `daft list`.
+///
+/// Called on conflict from [`execute_ephemeral_merge`]. Called nowhere else.
+/// Firing of the `worktree-post-create` hook happens in the command layer
+/// (see `commands::merge`) so this module does not take on `Output` and
+/// `JobPresenter` dependencies.
+///
+/// Layout resolution mirrors the chain used by `checkout` (repo store → yaml
+/// → global config → filesystem detection → default). The merge command
+/// doesn't expose `--layout`, so the CLI slot stays empty.
+///
+/// Returns the layout-resolved path on success. On any failure the ephemeral
+/// worktree is left in place and the error is returned so the caller can
+/// surface both paths for manual recovery.
+pub fn promote_ephemeral_to_layout(
+    ephemeral_path: &Path,
+    target_branch: &str,
+    git: &GitCommand,
+    project_root: &Path,
+) -> Result<PathBuf> {
+    use crate::core::global_config::GlobalConfig;
+    use crate::core::layout::resolver::{resolve_layout, LayoutResolutionContext};
+    use crate::core::multi_remote::path::build_template_context;
+    use crate::hooks::TrustDatabase;
+
+    // TODO(refactor): share this resolution block with
+    // `commands::checkout::resolve_checkout_layout`. Duplicated here to keep
+    // Slice 11 focused; extracting cleanly would expand its scope.
+    let global_config = GlobalConfig::load().unwrap_or_default();
+    let git_dir = crate::get_git_common_dir().ok();
+    let trust_db = TrustDatabase::load().unwrap_or_default();
+
+    let yaml_layout: Option<String> = crate::get_current_worktree_path()
+        .ok()
+        .and_then(|wt| {
+            crate::hooks::yaml_config_loader::load_merged_config(&wt)
+                .ok()
+                .flatten()
+        })
+        .and_then(|cfg| cfg.layout);
+
+    let repo_store_layout = git_dir
+        .as_ref()
+        .and_then(|d| trust_db.get_layout(d).map(String::from));
+
+    let detection = if repo_store_layout.is_none() && yaml_layout.is_none() {
+        git_dir
+            .as_ref()
+            .map(|d| crate::core::layout::detect::detect_layout(d, &global_config))
+    } else {
+        None
+    };
+
+    let (layout, _source) = resolve_layout(&LayoutResolutionContext {
+        cli_layout: None,
+        repo_store_layout: repo_store_layout.as_deref(),
+        yaml_layout: yaml_layout.as_deref(),
+        global_config: &global_config,
+        detection,
+    });
+
+    // For wrapped non-bare layouts (e.g. `contained-classic`), worktree
+    // template paths are resolved relative to the wrapper, which is the
+    // parent of the current non-bare repo root. Mirrors `checkout.rs:...`.
+    let effective_root: PathBuf = if layout.needs_wrapper() {
+        project_root
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| project_root.to_path_buf())
+    } else {
+        project_root.to_path_buf()
+    };
+    let tctx = build_template_context(&effective_root, target_branch);
+    let layout_path = layout.worktree_path(&tctx)?;
+
+    if layout_path.exists() {
+        anyhow::bail!(
+            "cannot promote ephemeral worktree: destination '{}' already exists",
+            layout_path.display()
+        );
+    }
+
+    if let Some(parent) = layout_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create parent directory '{}'", parent.display()))?;
+    }
+
+    // `git worktree move` updates git's internal gitdir pointer and the
+    // worktree's `.git` link atomically, so the moved worktree is immediately
+    // discoverable by `git worktree list`.
+    git.worktree_move(ephemeral_path, &layout_path)
+        .with_context(|| {
+            format!(
+                "failed to move ephemeral worktree from '{}' to '{}'",
+                ephemeral_path.display(),
+                layout_path.display()
+            )
+        })?;
+
+    Ok(layout_path)
 }
 
 /// Returns true when a merge can be a pure fast-forward of the target ref to
@@ -1428,6 +1571,7 @@ mod tests {
         assert_eq!(outcome.target_path, PathBuf::new());
         assert!(outcome.conflicted_files.is_empty());
         assert!(!outcome.emitted_terminal_message);
+        assert!(!outcome.ephemeral_promoted);
     }
 
     #[test]
