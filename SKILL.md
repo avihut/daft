@@ -131,6 +131,7 @@ daft provides short verb aliases for common commands:
 | `daft init`   | `daft worktree-init`        |
 | `daft carry`  | `daft worktree-carry`       |
 | `daft exec`   | `daft worktree-exec`        |
+| `daft merge`  | `daft worktree-merge`       |
 | `daft list`   | `daft worktree-list`        |
 | `daft update` | `daft worktree-fetch`       |
 | `daft prune`  | `daft worktree-prune`       |
@@ -167,21 +168,22 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 
 ### Worktree Lifecycle
 
-| Command                                                                                                                                            | Description                                                                                                                                                                                                                                                                                                                                                                                                               |
-| -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `daft worktree-clone <url> [--layout <LAYOUT>]`                                                                                                    | Clone a remote repository into daft's worktree layout (use `--layout` to choose: `contained`, `sibling`, `nested`, `centralized`, or custom)                                                                                                                                                                                                                                                                              |
-| `daft worktree-init <name> [--layout <LAYOUT>]`                                                                                                    | Initialize a new local repository in worktree layout (use `--layout` to choose layout)                                                                                                                                                                                                                                                                                                                                    |
-| `daft worktree-checkout <branch>`                                                                                                                  | Create a worktree for an existing local or remote branch; pass `--local` to skip the remote fetch even when `daft.checkout.fetch` is enabled                                                                                                                                                                                                                                                                              |
-| `daft worktree-checkout -- -`                                                                                                                      | Switch to the previous worktree (`cd -` style toggle)                                                                                                                                                                                                                                                                                                                                                                     |
-| `daft worktree-checkout -s <branch>`                                                                                                               | Same as above, but auto-creates branch if not found (also `daft.go.autoStart`)                                                                                                                                                                                                                                                                                                                                            |
-| `daft worktree-checkout -b <new-branch> [base]`                                                                                                    | Create a new branch and worktree from current or specified base; by default does not push (see `daft.checkout.push`); pass `--local` to skip remote even when push is enabled                                                                                                                                                                                                                                             |
-| `daft worktree-branch -d <branch>`                                                                                                                 | Safely delete a branch: its worktree and local branch ref; remote branch is deleted only when `daft.branchDelete.remote` is enabled; pass `--local` to skip remote, `--remote` to delete only the remote branch                                                                                                                                                                                                           |
-| `daft worktree-branch -D <branch>`                                                                                                                 | Force-delete a branch bypassing safety checks; for the default branch, removes worktree only (preserves branch ref and remote)                                                                                                                                                                                                                                                                                            |
-| `daft worktree-prune [-f] [-v\|-vv] [--stat summary\|lines]`                                                                                       | Remove worktrees whose remote branches have been deleted (`-v` hook details, `-vv` full sequential)                                                                                                                                                                                                                                                                                                                       |
-| `daft worktree-carry <targets>`                                                                                                                    | Transfer uncommitted changes to one or more other worktrees                                                                                                                                                                                                                                                                                                                                                               |
-| `daft worktree-fetch [targets]`                                                                                                                    | Update worktree branches from remote (supports refspec syntax source:destination)                                                                                                                                                                                                                                                                                                                                         |
-| `daft worktree-branch -m <source> <new-branch>`                                                                                                    | Rename a branch, move its worktree, and rename the remote branch                                                                                                                                                                                                                                                                                                                                                          |
-| `daft git-worktree-sync [-f] [-v\|-vv] [--rebase BRANCH [--autostash]] [--push [--force-with-lease]] [--include VALUE]... [--stat summary\|lines]` | Synchronize all worktrees: prune stale + update all + optional rebase + optional push (`-f`/`--prune-dirty` for dirty worktrees, `-v` hook details, `-vv` full sequential). By default, rebase and push apply only to branches you own (matching `git config user.email`). Use `--include` to add more branches: `unowned` for all, an email address for a teammate's branches, or a branch name for one specific branch. |
+| Command                                                                                                                                                   | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `daft worktree-clone <url> [--layout <LAYOUT>]`                                                                                                           | Clone a remote repository into daft's worktree layout (use `--layout` to choose: `contained`, `sibling`, `nested`, `centralized`, or custom)                                                                                                                                                                                                                                                                                                                                      |
+| `daft worktree-init <name> [--layout <LAYOUT>]`                                                                                                           | Initialize a new local repository in worktree layout (use `--layout` to choose layout)                                                                                                                                                                                                                                                                                                                                                                                            |
+| `daft worktree-checkout <branch>`                                                                                                                         | Create a worktree for an existing local or remote branch; pass `--local` to skip the remote fetch even when `daft.checkout.fetch` is enabled                                                                                                                                                                                                                                                                                                                                      |
+| `daft worktree-checkout -- -`                                                                                                                             | Switch to the previous worktree (`cd -` style toggle)                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `daft worktree-checkout -s <branch>`                                                                                                                      | Same as above, but auto-creates branch if not found (also `daft.go.autoStart`)                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `daft worktree-checkout -b <new-branch> [base]`                                                                                                           | Create a new branch and worktree from current or specified base; by default does not push (see `daft.checkout.push`); pass `--local` to skip remote even when push is enabled                                                                                                                                                                                                                                                                                                     |
+| `daft worktree-branch -d <branch>`                                                                                                                        | Safely delete a branch: its worktree and local branch ref; remote branch is deleted only when `daft.branchDelete.remote` is enabled; pass `--local` to skip remote, `--remote` to delete only the remote branch                                                                                                                                                                                                                                                                   |
+| `daft worktree-branch -D <branch>`                                                                                                                        | Force-delete a branch bypassing safety checks; for the default branch, removes worktree only (preserves branch ref and remote)                                                                                                                                                                                                                                                                                                                                                    |
+| `daft worktree-prune [-f] [-v\|-vv] [--stat summary\|lines]`                                                                                              | Remove worktrees whose remote branches have been deleted (`-v` hook details, `-vv` full sequential)                                                                                                                                                                                                                                                                                                                                                                               |
+| `daft worktree-carry <targets>`                                                                                                                           | Transfer uncommitted changes to one or more other worktrees                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `daft worktree-fetch [targets]`                                                                                                                           | Update worktree branches from remote (supports refspec syntax source:destination)                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `daft worktree-branch -m <source> <new-branch>`                                                                                                           | Rename a branch, move its worktree, and rename the remote branch                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `daft git-worktree-sync [-f] [-v\|-vv] [--rebase BRANCH [--autostash]] [--push [--force-with-lease]] [--include VALUE]... [--stat summary\|lines]`        | Synchronize all worktrees: prune stale + update all + optional rebase + optional push (`-f`/`--prune-dirty` for dirty worktrees, `-v` hook details, `-vv` full sequential). By default, rebase and push apply only to branches you own (matching `git config user.email`). Use `--include` to add more branches: `unowned` for all, an email address for a teammate's branches, or a branch name for one specific branch.                                                         |
+| `daft worktree-merge [SOURCE...] [--into <TARGET>] [--squash] [--ff\|--no-ff\|--ff-only] [-s <STRAT>] [--adopt-target\|--no-adopt-target] [-y] [-r [-b]]` | Merge one or more source branches into a target worktree's branch. Without `--into`, the target is the current worktree. With `--into <target>`, merges into another worktree without changing directories. Multiple sources trigger octopus. `-r`/`-b` remove the source worktree (and branch) after success. `--adopt-target` creates an ephemeral worktree when the target branch has no worktree. Finish with `daft worktree-merge --abort\|--continue\|--quit [<worktree>]`. |
 
 ### Adoption and Ejection
 
@@ -229,6 +231,71 @@ daft worktree-init my-project -x 'echo "ready"'
 The option is repeatable -- commands run sequentially in the worktree directory,
 after hooks complete. Execution stops on first failure. Interactive programs
 (claude, vim) work because stdio is fully inherited.
+
+### Cross-worktree Merges (`daft merge`)
+
+`daft merge` (= `daft worktree-merge`) performs `git merge` without forcing you
+to `git switch` into the target branch first. Use it whenever you would
+otherwise cd into the target worktree, run `git merge`, and cd back.
+
+```bash
+# Merge feature/api into the current worktree's branch (like `git merge`)
+daft merge feature/api
+
+# Merge into another worktree from anywhere — shell stays put
+daft merge feature/api --into main
+
+# Octopus: merge multiple sources into the target in one commit
+daft merge feature/a feature/b feature/c --into main
+
+# Squash, strategy flags, etc. — mirrors git merge
+daft merge --squash feature/api
+daft merge -s ours --into release feature/old
+
+# Cleanup on success: remove source worktree (`-r`) and branch (`-b`)
+daft merge feature/done --into main -r
+daft merge feature/done --into main -rb
+
+# Ephemeral target worktree: merge into a branch that has no worktree
+daft merge feature/hotfix --into release/1.2 --adopt-target
+# Or auto-accept all prompts (CI-friendly):
+daft merge feature/hotfix --into release/1.2 -y
+```
+
+**When to reach for it:**
+
+- Landing a feature branch into `main` (or another long-lived branch) while you
+  keep working in the feature worktree.
+- Octopus merges across many worktrees without context-switching.
+- Scripting merges (`-y` auto-accepts prompts; `--adopt-target` /
+  `--no-adopt-target` make adoption explicit).
+- Tidy up after a merge (`-r` removes the source worktree, `-rb` also deletes
+  the branch using safe `git branch -d` semantics).
+
+**Common pitfalls to communicate to the user:**
+
+- **Target must be clean.** By default `daft.merge.requireCleanTarget=true`
+  refuses to merge when the target worktree has uncommitted changes. Ask the
+  user to commit, stash, or carry those changes first (`daft carry <target>` is
+  a natural fit).
+- **Conflicts do not hijack the shell.** On conflict, daft reports the
+  conflicted files and the exact `--continue` / `--abort` command — your shell
+  stays where it was. Resolve in the target worktree, `git add`, then run
+  `daft merge --continue [<target>]`. To bail out, run
+  `daft merge --abort [<target>]`.
+- **Octopus aborts on conflict.** Multi-source merges are all-or-nothing;
+  there's no mid-flight resolution.
+- **`-b` requires `-r`** and uses `git branch -d` (safe) semantics — it refuses
+  to delete a branch that isn't fully merged. Use `git branch -D` manually if
+  you really want a force-delete.
+- **Ephemeral target behavior.** With no worktree for the target, the default is
+  to prompt. `--adopt-target` accepts without asking; `--no-adopt-target`
+  refuses. Configure the default with `daft.merge.adoptTargetOnDemand` =
+  `prompt` | `yes` | `no`.
+
+`merge-pre` and `merge-post` hooks (see the Hooks section below) fire around the
+merge with `DAFT_MERGE_*` env vars describing sources, target, mode, strategy,
+and result.
 
 ## Shell Integration
 

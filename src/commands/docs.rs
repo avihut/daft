@@ -10,7 +10,8 @@ use std::path::Path;
 
 use crate::commands::{
     carry, checkout, clone, config, doctor, exec, fetch, flow_adopt, flow_eject, hooks, init,
-    layout, list, multi_remote, prune, release_notes, repo, shared, shell_init, shortcuts, sync,
+    layout, list, merge, multi_remote, prune, release_notes, repo, shared, shell_init, shortcuts,
+    sync,
     worktree_branch,
 };
 use crate::styles;
@@ -96,10 +97,16 @@ fn get_daft_categories() -> Vec<CommandCategory> {
         CommandCategory {
             title: "share changes across worktrees",
             layout: CategoryLayout::List,
-            commands: vec![CommandEntry {
-                display_name: "carry",
-                command: carry::Args::command(),
-            }],
+            commands: vec![
+                CommandEntry {
+                    display_name: "carry",
+                    command: carry::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "merge",
+                    command: merge::Args::command(),
+                },
+            ],
         },
         CommandCategory {
             title: "run commands across worktrees",
@@ -213,10 +220,16 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
         CommandCategory {
             title: "share changes across worktrees",
             layout: CategoryLayout::List,
-            commands: vec![CommandEntry {
-                display_name: "worktree-carry",
-                command: carry::Args::command(),
-            }],
+            commands: vec![
+                CommandEntry {
+                    display_name: "worktree-carry",
+                    command: carry::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-merge",
+                    command: merge::Args::command(),
+                },
+            ],
         },
         CommandCategory {
             title: "run commands across worktrees",
@@ -471,7 +484,9 @@ fn render_git_daft() -> Result<()> {
     println!("short aliases (daft <verb>)");
     println!("   go <branch>          Check out an existing branch worktree");
     println!("   start <branch>       Create a new branch worktree (-b)");
-    println!("   clone, init, carry, update, list, prune, rename, sync, remove, adopt, eject");
+    println!(
+        "   clone, init, carry, merge, update, list, prune, rename, sync, remove, adopt, eject"
+    );
 
     println!();
     println!("'git worktree-<command> --help' to read about a specific command.");
