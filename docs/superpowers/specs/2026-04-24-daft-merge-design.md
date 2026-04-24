@@ -33,9 +33,10 @@ merge needs to be aborted from elsewhere).
 - Finish commands (`--abort`, `--continue`, `--quit`) take an optional
   positional `<worktree|branch>` argument, default to CWD, and never require the
   user to `cd` to a different worktree to act on an in-progress merge.
-- Layered defaults (user < project < CLI) let users configure their preferred
-  merge style (e.g. squash by default) while allowing projects to override (e.g.
-  team-wide `ff-only`).
+- Layered defaults via git config (global < local < CLI) let users configure
+  their preferred merge style (e.g. squash by default in their global
+  `~/.gitconfig`) while allowing projects to override per-repo (e.g. team-wide
+  `ff-only` in the repo's local config).
 - Opt-in post-merge cleanup with `-r` (remove source worktree) and `-rb` (also
   remove source branch).
 - Reuse existing daft infrastructure: worktree hooks, temp-worktree module,
@@ -277,47 +278,41 @@ the multi-format emit feature).
 
 ## Configuration
 
-Layered configuration, merged in order:
+Merge settings follow daft's existing convention: `git config daft.merge.*`
+keys, read by `DaftSettings::load()`. Layering, merged in order:
 
-1. Git's defaults (baked into git merge).
-2. daft's user config (`~/.config/daft/config.toml` or XDG equivalent).
-3. daft's project config (`.daft/daft.yml`).
-4. CLI flags.
+1. Git's built-in defaults for unset flags.
+2. daft's built-in defaults for `daft.merge.*` keys.
+3. Global git config (`git config --global daft.merge.x`).
+4. Repository-local git config (`git config daft.merge.x`).
+5. CLI flags.
 
 Later layers override earlier ones. CLI always wins. daft prints the source of
 any non-default value in verbose mode.
 
-### Config schema
+### Config keys
 
-```yaml
-merge:
-  # Git-parity options (mirror individual git merge flags)
-  ff: auto | only | never # default: auto (git's default)
-  squash: true | false # default: false
-  commit: true | false # default: true
-  edit: true | false # default: true (in TTY)
-  signoff: true | false # default: false
-  gpg_sign: true | false | <keyid> # default: false
-  verify_signatures: true | false # default: false
-  allow_unrelated_histories: true | false # default: false
-  strategy: ort | recursive | resolve | ours | octopus | subtree
-  strategy_options: [ours, theirs, ignore-space-change, ...]
+| Key                                           | Type                        | Default                          | Purpose                                                                 |
+| --------------------------------------------- | --------------------------- | -------------------------------- | ----------------------------------------------------------------------- |
+| `daft.merge.ff`                               | `auto` \| `only` \| `never` | `auto`                           | Fast-forward policy                                                     |
+| `daft.merge.squash`                           | bool                        | `false`                          | Default to squash merge                                                 |
+| `daft.merge.commit`                           | bool                        | `true`                           | Create commit automatically after merge                                 |
+| `daft.merge.edit`                             | bool                        | `true` (TTY) / `false` (non-TTY) | Open editor on merge commit message                                     |
+| `daft.merge.signoff`                          | bool                        | `false`                          | Add `Signed-off-by` trailer                                             |
+| `daft.merge.gpgSign`                          | bool \| string              | `false`                          | GPG sign the merge commit (`true`, `false`, or a key id)                |
+| `daft.merge.verifySignatures`                 | bool                        | `false`                          | Verify source commit signatures                                         |
+| `daft.merge.allowUnrelatedHistories`          | bool                        | `false`                          | Allow merging unrelated histories                                       |
+| `daft.merge.strategy`                         | string                      | unset                            | Merge strategy (e.g. `ort`, `octopus`, `ours`)                          |
+| `daft.merge.strategyOption`                   | string                      | unset                            | Passed as `-X <value>`; comma-separated for multiple                    |
+| `daft.merge.adoptTargetOnDemand`              | `prompt` \| `yes` \| `no`   | `prompt` (TTY) / `no` (non-TTY)  | Behavior when target has no worktree and merge is not FF                |
+| `daft.merge.requireCleanTarget`               | bool                        | `true`                           | Refuse if target worktree is dirty                                      |
+| `daft.merge.postMerge.removeSourceWorktree`   | bool                        | `false`                          | Default `-r` behavior                                                   |
+| `daft.merge.postMerge.alsoRemoveSourceBranch` | bool                        | `false`                          | Default `-b` behavior; effective only when `removeSourceWorktree: true` |
 
-  # Daft-specific behavior
-  adopt_target_on_demand:
-    prompt | yes | no
-    # default: prompt in TTY, no otherwise
-  require_clean_target: true # default: true
-
-  post_merge:
-    remove_source_worktree: false
-    also_remove_source_branch:
-      false
-      # effective only when remove_source_worktree: true
-```
-
-The schema is orthogonal: `ff` and `squash` are independent axes that mirror
-git's actual flag structure. There is no composite `mode` enum.
+The key set is orthogonal: `ff` and `squash` are independent axes that mirror
+git's actual flag structure. There is no composite `mode` enum. Key names use
+lowerCamelCase to match existing daft convention (`daft.checkout.push`,
+`daft.go.autoStart`, etc.).
 
 ## Error handling
 
@@ -371,8 +366,9 @@ Modified files:
 - `src/commands/docs.rs` — add `merge` to help output in its category.
 - `src/commands/completions/{bash,zsh,fish,fig}.rs` — add `merge` + full flag
   completions + `list --merging` flag.
-- `src/settings.rs` (or equivalent config module) — extend schema with the
-  `merge` section from the Configuration section.
+- `src/core/settings.rs` — extend `DaftSettings` struct with merge fields, add
+  default constants, extend `load()` to read the new `daft.merge.*` keys; extend
+  `src/core/settings/keys.rs` (or equivalent) with the new key names.
 - `man/` — regenerated via `mise run man:gen`.
 
 New shell symlink:
