@@ -258,18 +258,29 @@ Hooks automate worktree lifecycle events. The recommended approach is a
 
 ### Hook Types
 
-| Hook                   | Trigger                       | Runs From                   |
-| ---------------------- | ----------------------------- | --------------------------- |
-| `post-clone`           | After `daft worktree-clone`   | New default branch worktree |
-| `worktree-pre-create`  | Before new worktree is added  | Source worktree             |
-| `worktree-post-create` | After new worktree is created | New worktree                |
-| `worktree-pre-remove`  | Before worktree is removed    | Worktree being removed      |
-| `worktree-post-remove` | After worktree is removed     | Current worktree            |
+| Hook                   | Trigger                                                | Runs From                   |
+| ---------------------- | ------------------------------------------------------ | --------------------------- |
+| `post-clone`           | After `daft worktree-clone`                            | New default branch worktree |
+| `worktree-pre-create`  | Before new worktree is added                           | Source worktree             |
+| `worktree-post-create` | After new worktree is created                          | New worktree                |
+| `worktree-pre-remove`  | Before worktree is removed                             | Worktree being removed      |
+| `worktree-post-remove` | After worktree is removed                              | Current worktree            |
+| `merge-pre`            | After pre-flight checks, before the merge runs         | Target worktree             |
+| `merge-post`           | After the merge completes (success or conflict)        | Target worktree             |
 
 During `daft worktree-clone`, hooks fire in this order: `post-clone` first
 (one-time repo bootstrap), then `worktree-post-create` (per-worktree setup).
 This lets `post-clone` install foundational tools that `worktree-post-create`
 may depend on.
+
+`merge-pre` aborts the merge on failure (default fail mode: `abort`);
+`merge-post` logs warnings on failure but never rolls back the merge
+(default: `warn`). Both expose `DAFT_MERGE_*` env vars: `SOURCES`,
+`TARGET_BRANCH`, `TARGET_PATH`, `MODE` (`merge`/`ff`/`squash`/`octopus`),
+`STRATEGY`, `EPHEMERAL`, `CROSS_WORKTREE`. `merge-post` additionally gets
+`RESULT` (`success`/`conflict`/`already-up-to-date`), `COMMIT_SHA`,
+`CONFLICTED_FILES` (newline-separated), and `PROMOTED_FROM_EPHEMERAL`.
+Neither fires when the merge is a no-op (already up to date).
 
 ### daft.yml Format
 

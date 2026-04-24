@@ -16,13 +16,15 @@ and more. For simple cases, you can also use **executable shell scripts** in
 
 ## Hook Types
 
-| Hook                   | Trigger                       | Runs From                            |
-| ---------------------- | ----------------------------- | ------------------------------------ |
-| `post-clone`           | After `daft clone` completes  | New default branch worktree          |
-| `worktree-pre-create`  | Before new worktree is added  | Source worktree (where command runs) |
-| `worktree-post-create` | After new worktree is created | New worktree                         |
-| `worktree-pre-remove`  | Before worktree is removed    | Worktree being removed               |
-| `worktree-post-remove` | After worktree is removed     | Current worktree (where prune runs)  |
+| Hook                   | Trigger                                                 | Runs From                            |
+| ---------------------- | ------------------------------------------------------- | ------------------------------------ |
+| `post-clone`           | After `daft clone` completes                            | New default branch worktree          |
+| `worktree-pre-create`  | Before new worktree is added                            | Source worktree (where command runs) |
+| `worktree-post-create` | After new worktree is created                           | New worktree                         |
+| `worktree-pre-remove`  | Before worktree is removed                              | Worktree being removed               |
+| `worktree-post-remove` | After worktree is removed                               | Current worktree (where prune runs)  |
+| `merge-pre`            | After pre-flight checks pass, before the merge runs     | Target worktree                      |
+| `merge-post`           | After the merge operation completes (success/conflict)  | Target worktree                      |
 
 ### Execution Order During Clone
 
@@ -35,6 +37,78 @@ When running `daft clone`, hooks fire in this order:
 
 This lets `post-clone` install foundational tools (pnpm, bun, uv, etc.) that
 `worktree-post-create` may depend on.
+
+### Merge Hooks
+
+`daft merge` fires two lifecycle hooks around the merge operation, giving
+scripts a chance to gate merges on custom preconditions (merge-pre) or react
+to the outcome (merge-post) without forking the merge command.
+
+**When they fire:**
+
+- `merge-pre` runs after all pre-flight safety rails (distinct-source check,
+  clean-target check, in-progress-merge detection, already-up-to-date
+  short-circuit) pass, but before any merge operation touches state. It
+  fires uniformly for all three merge paths: worktree-backed merges,
+  ref-only fast-forward via `git update-ref`, and ephemeral worktree
+  merges.
+- `merge-post` runs after the merge operation completes, whether it
+  succeeded, hit a conflict, or ended via `--ff-only` refusal. Both hooks
+  read their config from the target worktree (the branch being merged
+  into).
+
+Neither hook fires when the merge is a no-op because the target is already
+up to date.
+
+**Failure semantics:**
+
+- A `merge-pre` hook that exits non-zero **aborts the merge** with that
+  exit code. No merge operation runs; no state is touched. The default
+  fail mode is `abort` (same as `worktree-pre-create`).
+- A `merge-post` hook that exits non-zero is **logged as a warning** but
+  does not roll back the merge. The default fail mode is `warn`. Override
+  via `fail_mode: abort` in `daft.yml` if you want post-merge failures to
+  bubble up as errors.
+
+**Env vars provided to both hooks:**
+
+| Variable                   | Value                                                                 |
+| -------------------------- | --------------------------------------------------------------------- |
+| `DAFT_MERGE_SOURCES`       | Space-separated list of source refs (branches/commits being merged)   |
+| `DAFT_MERGE_TARGET_BRANCH` | Name of the branch being merged into                                  |
+| `DAFT_MERGE_TARGET_PATH`   | Filesystem path of the target worktree (empty on ref-only FF)         |
+| `DAFT_MERGE_MODE`          | `merge` / `ff` / `squash` / `octopus`                                 |
+| `DAFT_MERGE_STRATEGY`      | Value of `-s`/`--strategy` (empty when not set)                       |
+| `DAFT_MERGE_EPHEMERAL`     | `true` if the merge runs in an ephemeral worktree; otherwise `false`  |
+| `DAFT_MERGE_CROSS_WORKTREE`| `true` if the target worktree is not the current worktree             |
+
+**Additional env vars for `merge-post`:**
+
+| Variable                            | Value                                                                 |
+| ----------------------------------- | --------------------------------------------------------------------- |
+| `DAFT_MERGE_RESULT`                 | `success` / `conflict` / `already-up-to-date`                         |
+| `DAFT_MERGE_COMMIT_SHA`             | SHA of the new tip on success (empty otherwise)                       |
+| `DAFT_MERGE_CONFLICTED_FILES`       | Newline-separated list of conflicted files (empty when not conflicted)|
+| `DAFT_MERGE_PROMOTED_FROM_EPHEMERAL`| `true` when a ref-only ephemeral merge was promoted to a sibling path |
+
+All the universal `DAFT_*` variables (`DAFT_PROJECT_ROOT`, `DAFT_GIT_DIR`,
+`DAFT_WORKTREE_PATH`, `DAFT_BRANCH_NAME`, etc.) are also set.
+
+**Example:** branch on `DAFT_MERGE_RESULT` in `merge-post` to notify only
+on conflicts:
+
+```yaml
+hooks:
+  merge-post:
+    jobs:
+      - name: notify-on-conflict
+        run: |
+          if [ "$DAFT_MERGE_RESULT" = "conflict" ]; then
+            echo "Merge of $DAFT_MERGE_SOURCES into $DAFT_MERGE_TARGET_BRANCH \
+                  conflicted; files: $DAFT_MERGE_CONFLICTED_FILES" \
+              | mail -s "daft merge conflict" "$USER"
+          fi
+```
 
 ## Trust Model
 
