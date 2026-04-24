@@ -118,6 +118,12 @@ pub struct Args {
     pub(crate) all: bool,
 
     #[arg(
+        long = "merging",
+        help = "Only show worktrees with an in-progress merge"
+    )]
+    merging: bool,
+
+    #[arg(
         long,
         value_enum,
         help = "Statistics mode: summary or lines (default: from git config daft.list.stat, or summary)"
@@ -222,7 +228,7 @@ fn run_blocking(args: Args, settings: DaftSettings) -> Result<()> {
     let show_remote = args.remotes || args.all;
     let needs_spinner = stat == Stat::Lines || show_local || show_remote || has_size;
 
-    let infos = if needs_spinner {
+    let mut infos = if needs_spinner {
         let mut output = CliOutput::new(OutputConfig::new(false, args.verbose));
         let msg = if stat == Stat::Lines {
             "Computing line statistics..."
@@ -293,6 +299,17 @@ fn run_blocking(args: Args, settings: DaftSettings) -> Result<()> {
         sort_spec.sort(&mut result);
         result
     };
+
+    if args.merging {
+        infos.retain(|info| {
+            info.path.as_ref().is_some_and(|p| {
+                matches!(
+                    crate::core::worktree::merge::detect_in_progress(p),
+                    Ok(Some(crate::core::worktree::merge::InProgressOp::Merge))
+                )
+            })
+        });
+    }
 
     let now = Utc::now().timestamp();
 

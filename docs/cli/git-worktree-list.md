@@ -83,6 +83,7 @@ git worktree-list [OPTIONS]
 | `-b, --branches` | Also show local branches without a worktree |  |
 | `-r, --remotes` | Also show remote tracking branches |  |
 | `-a, --all` | Show all branches (equivalent to -b -r) |  |
+| `--merging` | Only show worktrees with an in-progress merge |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.list.stat, or summary) |  |
 | `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit |  |
 | `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit |  |
