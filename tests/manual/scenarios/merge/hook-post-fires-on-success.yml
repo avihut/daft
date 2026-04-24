@@ -1,5 +1,6 @@
 name: Merge merge-post hook fires on success
-description: "merge-post runs after a successful merge and sees DAFT_MERGE_RESULT=success."
+description:
+  "merge-post runs after a successful merge and sees DAFT_MERGE_RESULT=success."
 
 repos:
   - name: test-repo

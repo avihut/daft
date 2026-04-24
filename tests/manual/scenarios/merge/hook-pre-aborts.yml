@@ -1,5 +1,6 @@
 name: Merge merge-pre hook aborts
-description: "A failing merge-pre hook aborts the merge before any git merge runs."
+description:
+  "A failing merge-pre hook aborts the merge before any git merge runs."
 
 repos:
   - name: test-repo

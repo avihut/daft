@@ -1,8 +1,8 @@
 name: Merge hooks observe DAFT_MERGE_* env vars
 description:
-  "merge-pre and merge-post see the full set of DAFT_MERGE_* env vars.
-  Exercised over a cross-worktree merge so DAFT_MERGE_CROSS_WORKTREE=true
-  is verified end-to-end."
+  "merge-pre and merge-post see the full set of DAFT_MERGE_* env vars. Exercised
+  over a cross-worktree merge so DAFT_MERGE_CROSS_WORKTREE=true is verified
+  end-to-end."
 
 repos:
   - name: test-repo
