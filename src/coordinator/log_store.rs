@@ -721,6 +721,18 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
         assert_eq!(remaining.len(), 3);
+        assert!(
+            remaining.contains(&"0000".to_string()),
+            "expected most-recent invocation 0000 to survive, got: {remaining:?}"
+        );
+        assert!(
+            remaining.contains(&"0001".to_string()),
+            "expected 0001 to survive, got: {remaining:?}"
+        );
+        assert!(
+            remaining.contains(&"0002".to_string()),
+            "expected 0002 to survive, got: {remaining:?}"
+        );
     }
 
     #[test]
