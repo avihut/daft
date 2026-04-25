@@ -15,7 +15,7 @@ use super::{
 use crate::executor::command::run_command;
 use crate::executor::{JobResult, JobSpec, NodeStatus};
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +25,12 @@ use std::time::Instant;
 /// Shared state for tracking running child processes.
 /// Maps job name to the child process PID, allowing cancellation.
 type ChildPidMap = Arc<Mutex<HashMap<String, u32>>>;
+
+/// Shared set of job names that have been cancelled individually
+/// (as opposed to a global `cancel_all`). Consulted by the post-run
+/// status classifier so per-job cancel records `JobStatus::Cancelled`
+/// instead of `JobStatus::Failed`.
+type CancelledJobs = Arc<Mutex<HashSet<String>>>;
 
 /// State for a coordinator process managing background jobs.
 pub struct CoordinatorState {
@@ -66,6 +72,7 @@ impl CoordinatorState {
             store,
             &ChildPidMap::default(),
             &Arc::new(AtomicBool::new(false)),
+            &CancelledJobs::default(),
         )
     }
 
@@ -74,11 +81,15 @@ impl CoordinatorState {
     /// `child_pids` is shared with the socket listener so it can send
     /// SIGTERM to running child processes. `cancel_all` is a global flag
     /// that, when set, causes new jobs to skip and running jobs to be killed.
+    /// `cancelled_jobs` is a per-job cancellation set: when a job's name
+    /// appears here, the post-run classifier records it as
+    /// `JobStatus::Cancelled` rather than `JobStatus::Failed`.
     fn run_all_with_cancel(
         &self,
         store: &LogStore,
         child_pids: &ChildPidMap,
         cancel_all: &Arc<AtomicBool>,
+        cancelled_jobs: &CancelledJobs,
     ) -> Result<Vec<JobResult>> {
         let mut handles = Vec::new();
         let results = Arc::new(Mutex::new(Vec::new()));
@@ -90,6 +101,7 @@ impl CoordinatorState {
             let results = Arc::clone(&results);
             let child_pids = Arc::clone(child_pids);
             let cancel_all = Arc::clone(cancel_all);
+            let cancelled_jobs = Arc::clone(cancelled_jobs);
             let hook_type = self.hook_type.clone();
             let worktree = self.worktree.clone();
 
@@ -107,6 +119,7 @@ impl CoordinatorState {
                     &results,
                     &child_pids,
                     &cancel_all,
+                    &cancelled_jobs,
                 );
             });
             handles.push(handle);
@@ -142,6 +155,7 @@ fn run_single_background_job(
     results: &Arc<Mutex<Vec<JobResult>>>,
     child_pids: &ChildPidMap,
     cancel_all: &Arc<AtomicBool>,
+    cancelled_jobs: &CancelledJobs,
 ) {
     let start = Instant::now();
 
@@ -216,9 +230,12 @@ fn run_single_background_job(
 
     // 4. Spawn a log writer thread that reads from the channel and writes
     //    to output.log.
-    let log_path = LogStore::log_path(&job_dir);
+    let log_path_for_writer = LogStore::log_path(&job_dir);
     let log_writer_handle = std::thread::spawn(move || {
-        let file = OpenOptions::new().create(true).append(true).open(&log_path);
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path_for_writer);
         match file {
             Ok(mut f) => {
                 for line in rx {
@@ -233,26 +250,49 @@ fn run_single_background_job(
         }
     });
 
-    // 5. Call run_command() to execute the shell command.
+    // 5. Set up a one-shot PID channel; register the spawned child's PID
+    //    in `child_pids` so the socket listener can SIGTERM it on cancel.
+    let (pid_tx, pid_rx) = std::sync::mpsc::channel::<u32>();
+    let job_name_for_register = job.name.clone();
+    let child_pids_for_register = child_pids.clone();
+    let registrar = std::thread::spawn(move || {
+        if let Ok(pid) = pid_rx.recv() {
+            child_pids_for_register
+                .lock()
+                .unwrap()
+                .insert(job_name_for_register, pid);
+        }
+    });
+
+    // 6. Call run_command() to execute the shell command (now also
+    //    forwarding `pid_tx` so the registrar above can pick up the PID).
     let cmd_result = run_command(
         &job.command,
         &job.env,
         &job.working_dir,
         job.timeout,
         Some(tx),
-        None,
+        Some(pid_tx),
     );
+
+    // Wait for the registrar (if the child died before send, the channel
+    // closes and recv() returns Err — registrar exits cleanly either way).
+    let _ = registrar.join();
 
     // Remove from the child PID map now that the command has finished.
     child_pids.lock().unwrap().remove(&job.name);
 
-    // 6. Wait for the log writer thread to finish.
+    // 7. Wait for the log writer thread to finish.
     log_writer_handle.join().ok();
 
     let duration = start.elapsed();
 
-    // 7. Determine final status, considering cancellation.
-    let was_cancelled = cancel_all.load(Ordering::Relaxed);
+    // 8. Determine final status, considering both global and per-job
+    //    cancellation. Either signal routes the job to Cancelled rather
+    //    than Failed.
+    let was_cancelled_globally = cancel_all.load(Ordering::Relaxed);
+    let was_cancelled_per_job = cancelled_jobs.lock().unwrap().contains(&job.name);
+    let was_cancelled = was_cancelled_globally || was_cancelled_per_job;
 
     let (status, node_status, exit_code) = if was_cancelled {
         (JobStatus::Cancelled, NodeStatus::Skipped, None)
@@ -316,6 +356,7 @@ fn start_socket_listener(
     store_base: std::path::PathBuf,
     child_pids: ChildPidMap,
     cancel_all: Arc<AtomicBool>,
+    cancelled_jobs: CancelledJobs,
     shutdown: Arc<AtomicBool>,
 ) -> Result<(std::thread::JoinHandle<()>, std::path::PathBuf)> {
     let socket_path = coordinator_socket_path(repo_hash)?;
@@ -341,7 +382,14 @@ fn start_socket_listener(
 
             match listener.accept() {
                 Ok((stream, _)) => {
-                    handle_client_connection(stream, &store, &child_pids, &cancel_all, &shutdown);
+                    handle_client_connection(
+                        stream,
+                        &store,
+                        &child_pids,
+                        &cancel_all,
+                        &cancelled_jobs,
+                        &shutdown,
+                    );
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     // No pending connection; sleep briefly and retry.
@@ -367,6 +415,7 @@ fn handle_client_connection(
     store: &LogStore,
     child_pids: &ChildPidMap,
     cancel_all: &Arc<AtomicBool>,
+    cancelled_jobs: &CancelledJobs,
     shutdown: &Arc<AtomicBool>,
 ) {
     use std::io::{BufRead, BufReader};
@@ -401,7 +450,9 @@ fn handle_client_connection(
             let jobs = build_job_list(store);
             CoordinatorResponse::Jobs(jobs)
         }
-        CoordinatorRequest::CancelJob { name } => cancel_single_job(&name, child_pids, store),
+        CoordinatorRequest::CancelJob { name } => {
+            cancel_single_job(&name, child_pids, cancelled_jobs, store)
+        }
         CoordinatorRequest::CancelAll => {
             cancel_all.store(true, Ordering::Relaxed);
             let pids: Vec<(String, u32)> = child_pids
@@ -479,14 +530,18 @@ fn build_job_list(store: &LogStore) -> Vec<JobInfo> {
     jobs
 }
 
-/// Cancel a single job by name.
+/// Cancel a single job by name. Records the name in `cancelled_jobs` so
+/// the post-run classifier reports `JobStatus::Cancelled` rather than
+/// `JobStatus::Failed`.
 fn cancel_single_job(
     name: &str,
     child_pids: &ChildPidMap,
+    cancelled_jobs: &CancelledJobs,
     _store: &LogStore,
 ) -> CoordinatorResponse {
     let pids = child_pids.lock().unwrap();
     if let Some(&pid) = pids.get(name) {
+        cancelled_jobs.lock().unwrap().insert(name.to_string());
         // SAFETY: Sending SIGTERM to a child process we own.
         unsafe {
             libc::kill(pid as libc::pid_t, libc::SIGTERM);
@@ -565,6 +620,7 @@ pub fn fork_coordinator(
             // Shared state for cancellation.
             let child_pids: ChildPidMap = Arc::new(Mutex::new(HashMap::new()));
             let cancel_all = Arc::new(AtomicBool::new(false));
+            let cancelled_jobs: CancelledJobs = Arc::new(Mutex::new(HashSet::new()));
             let shutdown = Arc::new(AtomicBool::new(false));
 
             // Start the socket listener thread.
@@ -573,12 +629,14 @@ pub fn fork_coordinator(
                 store.base_dir.clone(),
                 Arc::clone(&child_pids),
                 Arc::clone(&cancel_all),
+                Arc::clone(&cancelled_jobs),
                 Arc::clone(&shutdown),
             )
             .ok();
 
             // Run all jobs (blocking).
-            let _results = state.run_all_with_cancel(&store, &child_pids, &cancel_all)?;
+            let _results =
+                state.run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)?;
 
             // Signal the listener to stop and wait for it.
             shutdown.store(true, Ordering::Relaxed);
@@ -758,8 +816,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = LogStore::new(tmp.path().to_path_buf());
         let child_pids: ChildPidMap = Arc::new(Mutex::new(HashMap::new()));
+        let cancelled_jobs: CancelledJobs = Arc::new(Mutex::new(HashSet::new()));
 
-        let response = cancel_single_job("nonexistent", &child_pids, &store);
+        let response = cancel_single_job("nonexistent", &child_pids, &cancelled_jobs, &store);
         assert!(matches!(
             response,
             CoordinatorResponse::Error { message } if message.contains("not found")
@@ -775,9 +834,10 @@ mod tests {
 
         let child_pids: ChildPidMap = Arc::new(Mutex::new(HashMap::new()));
         let cancel_all = Arc::new(AtomicBool::new(true)); // Already cancelled
+        let cancelled_jobs: CancelledJobs = Arc::new(Mutex::new(HashSet::new()));
 
         let results = state
-            .run_all_with_cancel(&store, &child_pids, &cancel_all)
+            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, NodeStatus::Skipped);
@@ -852,6 +912,7 @@ mod tests {
 
         let child_pids: ChildPidMap = Arc::new(Mutex::new(HashMap::new()));
         let cancel_all = Arc::new(AtomicBool::new(false));
+        let cancelled_jobs: CancelledJobs = Arc::new(Mutex::new(HashSet::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = Arc::clone(&shutdown);
 
@@ -868,6 +929,7 @@ mod tests {
                             &store,
                             &child_pids,
                             &cancel_all,
+                            &cancelled_jobs,
                             &shutdown_clone,
                         );
                     }
@@ -939,5 +1001,120 @@ mod tests {
         ));
 
         handle.join().unwrap();
+    }
+
+    fn make_ctx(inv: &str) -> JobInvocationContext<'_> {
+        JobInvocationContext {
+            invocation_id: inv,
+            hook_type: "worktree-post-create",
+            worktree: "feat/x",
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn make_test_state() -> (
+        TempDir,
+        LogStore,
+        ChildPidMap,
+        Arc<AtomicBool>,
+        CancelledJobs,
+        Arc<Mutex<Vec<JobResult>>>,
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().join("jobs").join("test-repo"));
+        let child_pids: ChildPidMap = Arc::new(Mutex::new(HashMap::new()));
+        let cancel_all = Arc::new(AtomicBool::new(false));
+        let cancelled_jobs: CancelledJobs = Arc::new(Mutex::new(HashSet::new()));
+        let results = Arc::new(Mutex::new(Vec::new()));
+        (tmp, store, child_pids, cancel_all, cancelled_jobs, results)
+    }
+
+    #[test]
+    fn run_single_background_job_registers_and_deregisters_pid() {
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, results) = make_test_state();
+        let job = JobSpec {
+            name: "sleep-job".to_string(),
+            command: "sleep 0.4 && echo done".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            ..Default::default()
+        };
+        let ctx = make_ctx("00000000-0000-0000-0000-000000000001");
+
+        let pids_probe = Arc::clone(&child_pids);
+        let probe = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            pids_probe.lock().unwrap().clone()
+        });
+
+        run_single_background_job(
+            &job,
+            &ctx,
+            &store,
+            &results,
+            &child_pids,
+            &cancel_all,
+            &cancelled_jobs,
+        );
+
+        let mid = probe.join().unwrap();
+        assert!(
+            mid.contains_key("sleep-job"),
+            "PID should be registered mid-run"
+        );
+        assert!(
+            !child_pids.lock().unwrap().contains_key("sleep-job"),
+            "PID should be deregistered after completion"
+        );
+    }
+
+    #[test]
+    fn per_job_cancel_marks_status_cancelled_not_failed() {
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, results) = make_test_state();
+        let job = JobSpec {
+            name: "long-job".to_string(),
+            command: "sleep 5".to_string(),
+            working_dir: std::env::temp_dir(),
+            timeout: std::time::Duration::from_secs(30),
+            background: true,
+            ..Default::default()
+        };
+        let inv_id = "00000000-0000-0000-0000-000000000002".to_string();
+        let ctx = make_ctx(&inv_id);
+
+        let killer = {
+            let pids = Arc::clone(&child_pids);
+            let cancelled = Arc::clone(&cancelled_jobs);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                cancelled.lock().unwrap().insert("long-job".to_string());
+                if let Some(&pid) = pids.lock().unwrap().get("long-job") {
+                    // SAFETY: Sending SIGTERM to a child process spawned by
+                    // run_single_background_job inside this test.
+                    unsafe {
+                        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+                    }
+                }
+            })
+        };
+
+        run_single_background_job(
+            &job,
+            &ctx,
+            &store,
+            &results,
+            &child_pids,
+            &cancel_all,
+            &cancelled_jobs,
+        );
+        killer.join().unwrap();
+
+        let job_dir = store.base_dir.join(&inv_id).join("long-job");
+        let meta = store.read_meta(&job_dir).expect("meta should exist");
+        assert!(
+            matches!(meta.status, JobStatus::Cancelled),
+            "expected Cancelled, got {:?}",
+            meta.status
+        );
     }
 }
