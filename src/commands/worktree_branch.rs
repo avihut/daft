@@ -461,6 +461,7 @@ fn run_branch_delete(
             settings.branch_delete_remote
         },
         remote_only,
+        keep_local_branch: false,
         prune_cd_target: settings.prune_cd_target,
     };
 

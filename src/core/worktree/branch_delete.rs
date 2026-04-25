@@ -28,6 +28,12 @@ pub struct BranchDeleteParams {
     pub delete_remote: bool,
     /// Only delete the remote branch, keep local worktree and branch.
     pub remote_only: bool,
+    /// Skip local branch deletion and remote branch deletion. Only the
+    /// worktree is removed, with `worktree-pre-remove` /
+    /// `worktree-post-remove` hooks firing as usual. Used by `daft merge -r`
+    /// (without `-b`) to remove a source worktree while keeping the local
+    /// branch ref intact.
+    pub keep_local_branch: bool,
     /// Where to cd after deleting the current worktree.
     pub prune_cd_target: PruneCdTarget,
 }
@@ -170,6 +176,7 @@ pub fn execute(
         &resolved,
         params.force,
         params.remote_only,
+        params.keep_local_branch,
         &worktree_map,
         current_wt_path.as_ref(),
         current_branch.as_deref(),
@@ -327,14 +334,15 @@ fn try_resolve_relative_to_root(
 ///   2. Default branch protection: without --force, always refused; with
 ///      --force, allowed as worktree-only removal (skips checks 3-5)
 ///   3. No uncommitted changes in worktree (skip with --force)
-///   4. Merged into default branch (skip with --force)
-///   5. Local/remote in sync (skip with --force)
+///   4. Merged into default branch (skip with --force or keep_local_branch)
+///   5. Local/remote in sync (skip with --force or keep_local_branch)
 #[allow(clippy::too_many_arguments)]
 fn validate_branches(
     ctx: &BranchDeleteContext,
     branches: &[String],
     force: bool,
     remote_only: bool,
+    keep_local_branch: bool,
     worktree_map: &HashMap<String, PathBuf>,
     current_wt_path: Option<&PathBuf>,
     current_branch: Option<&str>,
@@ -475,8 +483,8 @@ fn validate_branches(
             }
         }
 
-        // Check 4: Merged into default branch (skip with --force)
-        if !force {
+        // Check 4: Merged into default branch (skip with --force or keep_local_branch)
+        if !force && !keep_local_branch {
             match is_branch_merged(ctx, branch) {
                 Ok(true) => {
                     sink.on_step(&format!("Branch '{branch}' is merged into default branch"));
@@ -504,8 +512,8 @@ fn validate_branches(
         // Determine remote tracking info for this branch
         let (remote_name, remote_branch_name) = resolve_remote_tracking(ctx, branch);
 
-        // Check 5: Local/remote in sync (skip with --force)
-        if !force {
+        // Check 5: Local/remote in sync (skip with --force or keep_local_branch)
+        if !force && !keep_local_branch {
             if let Some(ref remote) = remote_name {
                 if let Some(ref remote_branch) = remote_branch_name {
                     match check_local_remote_sync(ctx, branch, remote, remote_branch) {
@@ -714,6 +722,7 @@ fn execute_deletions(
             params.force,
             params.delete_remote,
             params.remote_only,
+            params.keep_local_branch,
             sink,
         );
         deletions.push(result);
@@ -755,6 +764,7 @@ fn execute_deletions(
                 params.force,
                 params.delete_remote,
                 params.remote_only,
+                params.keep_local_branch,
                 sink,
             );
 
@@ -771,6 +781,7 @@ fn execute_deletions(
                 params.force,
                 params.delete_remote,
                 params.remote_only,
+                params.keep_local_branch,
                 sink,
             );
             deletions.push(result);
@@ -791,6 +802,7 @@ fn delete_single_branch(
     force: bool,
     delete_remote: bool,
     remote_only: bool,
+    keep_local_branch: bool,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> DeletionResult {
     let mut result = DeletionResult {
@@ -814,8 +826,9 @@ fn delete_single_branch(
     }
 
     // Step 2: Delete remote branch (hardest to recreate, do first)
-    // Skipped for worktree-only removal (default branch) or when remote deletion is disabled.
-    if !branch.worktree_only && (delete_remote || remote_only) {
+    // Skipped for worktree-only removal (default branch), keep_local_branch mode,
+    // or when remote deletion is disabled.
+    if !keep_local_branch && !branch.worktree_only && (delete_remote || remote_only) {
         if let (Some(ref remote), Some(ref remote_branch)) =
             (&branch.remote_name, &branch.remote_branch_name)
         {
@@ -903,8 +916,8 @@ fn delete_single_branch(
     }
 
     // Step 4: Delete local branch
-    // Skipped for worktree-only removal (default branch).
-    if !branch.worktree_only {
+    // Skipped for worktree-only removal (default branch) or keep_local_branch mode.
+    if !keep_local_branch && !branch.worktree_only {
         // Always use force-delete (-D) here because our validation has already passed.
         sink.on_step(&format!("Deleting local branch {}...", branch.name));
         match ctx.git.branch_delete(&branch.name, true) {
@@ -1238,5 +1251,170 @@ mod tests {
         };
         assert!(!result.has_errors());
         assert_eq!(result.deleted_parts(), "remote branch");
+    }
+
+    // ── keep_local_branch integration tests ────────────────────────────────
+
+    use serial_test::serial;
+    use std::process::Command as ShellCommand;
+
+    /// RAII helper: saves cwd on construction and restores on drop.
+    struct CwdGuard {
+        original: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn new() -> Self {
+            Self {
+                original: std::env::current_dir().expect("cwd readable at test start"),
+            }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            if std::env::set_current_dir(&self.original).is_err() {
+                let _ = std::env::set_current_dir(std::env::temp_dir());
+            }
+        }
+    }
+
+    fn init_repo(path: &std::path::Path) {
+        ShellCommand::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(path)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .status()
+            .unwrap();
+        ShellCommand::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "init"])
+            .current_dir(path)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+        // Create a fake origin/HEAD so get_default_branch_local() can resolve
+        // "main" without needing a real remote.
+        let remotes_dir = path.join(".git/refs/remotes/origin");
+        std::fs::create_dir_all(&remotes_dir).unwrap();
+        std::fs::write(remotes_dir.join("HEAD"), "ref: refs/remotes/origin/main\n").unwrap();
+    }
+
+    fn setup_worktree(root: &std::path::Path, branch: &str, wt_path: &std::path::Path) {
+        ShellCommand::new("git")
+            .args([
+                "worktree",
+                "add",
+                "-q",
+                &wt_path.display().to_string(),
+                "-b",
+                branch,
+            ])
+            .current_dir(root)
+            .status()
+            .unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn keep_local_branch_removes_worktree_only() {
+        use crate::core::CommandBridge;
+        use crate::hooks::{HookExecutor, HooksConfig};
+        use crate::output::TestOutput;
+
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let params = BranchDeleteParams {
+            branches: vec!["feature".to_string()],
+            force: false,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: true,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+        };
+        let mut output = TestOutput::new();
+        let executor = HookExecutor::new(HooksConfig::default()).unwrap();
+        let mut bridge = CommandBridge::new(&mut output, executor);
+        let result = execute(&params, &mut bridge).expect("keep_local_branch should succeed");
+
+        assert_eq!(result.deletions.len(), 1);
+        assert!(
+            result.deletions[0].worktree_removed,
+            "worktree must be removed"
+        );
+        assert!(
+            !result.deletions[0].branch_deleted,
+            "branch must NOT be deleted"
+        );
+        assert!(!feat_wt.exists(), "worktree directory must be gone");
+
+        // Verify the branch ref still exists.
+        let git = GitCommand::new(true);
+        assert!(
+            git.show_ref_exists("refs/heads/feature").unwrap_or(false),
+            "feature branch must still exist after keep_local_branch=true"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn keep_local_branch_skips_merged_into_default_check() {
+        use crate::core::CommandBridge;
+        use crate::hooks::{HookExecutor, HooksConfig};
+        use crate::output::TestOutput;
+
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+
+        // Add a commit on feature that is NOT merged into main.
+        ShellCommand::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "feature work"])
+            .current_dir(&feat_wt)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let params = BranchDeleteParams {
+            branches: vec!["feature".to_string()],
+            force: false,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: true,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+        };
+        let mut output = TestOutput::new();
+        let executor = HookExecutor::new(HooksConfig::default()).unwrap();
+        let mut bridge = CommandBridge::new(&mut output, executor);
+        let result = execute(&params, &mut bridge).unwrap();
+
+        assert!(
+            result.validation_errors.is_empty(),
+            "merged-into-default check must be skipped under keep_local_branch"
+        );
+        assert_eq!(result.deletions.len(), 1);
+        assert!(result.deletions[0].worktree_removed);
+        assert!(!result.deletions[0].branch_deleted);
     }
 }

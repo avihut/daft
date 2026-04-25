@@ -99,6 +99,7 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
             settings.branch_delete_remote
         },
         remote_only: args.remote,
+        keep_local_branch: false,
         prune_cd_target: settings.prune_cd_target,
     };
 
