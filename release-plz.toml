@@ -6,6 +6,11 @@ git_release_enable = false
 pr_labels = ["release"]
 # We don't publish to crates.io
 publish = false
+# Skip the cargo package --verify compile step. release-plz runs it in a temp
+# worktree without honoring our committed Cargo.lock, so it re-resolves from
+# scratch and lands on a broken winnow / gix-object combo that our lockfile
+# avoids. Since publish = false, the verify compile buys us nothing.
+publish_no_verify = true
 # Use git tags for version comparison instead of cargo registry
 # This is required because our crates.io version (0.1.5) is stale
 git_only = true
