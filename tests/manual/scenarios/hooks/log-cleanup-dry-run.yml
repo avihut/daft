@@ -1,0 +1,111 @@
+name: Log cleanup --dry-run lists candidates without removing
+description:
+  "With log.retention=1d set on the job and the meta.json backdated to 2 days
+  ago, `daft hooks jobs clean --dry-run` must report what would be removed but
+  leave the invocation dir untouched on disk."
+
+env:
+  DAFT_NO_LOG_CLEAN: "1"
+
+repos:
+  - name: test-log-cleanup-dryrun
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Cleanup dry-run test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/dry
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: build
+              run: echo build-output
+              log:
+                retention: 1d
+                keep_last: 0
+
+steps:
+  - name: Clone the repository with --trust-hooks
+    run:
+      env -u DAFT_TESTING git-worktree-clone --trust-hooks --layout contained
+      $REMOTE_TEST_LOG_CLEANUP_DRYRUN 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (fires the hook)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/dry 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-dryrun/main"
+    expect:
+      exit_code: 0
+
+  - name: Backdate every meta.json to 2 days ago
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-dryrun/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      python3 - "$JOBS_DIR" <<'PY'
+      import sys, json, os, datetime
+      root = sys.argv[1]
+      old = (datetime.datetime.utcnow() - datetime.timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+      for dirpath, _, files in os.walk(root):
+          for f in files:
+              if f != "meta.json":
+                  continue
+              p = os.path.join(dirpath, f)
+              with open(p) as fh:
+                  m = json.load(fh)
+              for k in ("created_at", "started_at", "finished_at"):
+                  if isinstance(m.get(k), str) and m.get(k):
+                      m[k] = old
+              with open(p, "w") as fh:
+                  json.dump(m, fh)
+      print("BACKDATE_OK")
+      PY
+    expect:
+      exit_code: 0
+      output_contains:
+        - "BACKDATE_OK"
+
+  - name: Snapshot the invocation count before --dry-run
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-dryrun/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+      echo "INV_COUNT_BEFORE=$INV_COUNT"
+      mkdir -p "$WORK_DIR/.scratch"
+      printf '%s' "$INV_COUNT" > "$WORK_DIR/.scratch/before"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INV_COUNT_BEFORE="
+
+  - name:
+      Run `daft hooks jobs clean --dry-run` — must list "Would remove" but leave
+      the disk untouched
+    run: daft hooks jobs clean --dry-run 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-dryrun/feature/dry"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Would remove"
+      output_not_contains:
+        - "Removed"
+
+  - name: Confirm no invocation dirs were actually removed
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-dryrun/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+      BEFORE=$(cat "$WORK_DIR/.scratch/before")
+      echo "INV_COUNT_AFTER=$INV_COUNT"
+      echo "INV_COUNT_BEFORE=$BEFORE"
+      [ "$INV_COUNT" = "$BEFORE" ] || { echo "dry-run modified the disk: $BEFORE -> $INV_COUNT"; exit 1; }
+      echo "DRY_RUN_PRESERVED=1"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "DRY_RUN_PRESERVED=1"

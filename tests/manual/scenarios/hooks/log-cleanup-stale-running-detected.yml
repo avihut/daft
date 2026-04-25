@@ -1,0 +1,125 @@
+name: Log cleanup detects stale Running invocations
+description:
+  "When a Running invocation is older than stale_running_after and no
+  coordinator socket exists, cleanup must treat it as cancelled and remove it.
+  This guards against orphaned status=running entries left by crashed daft
+  processes."
+
+env:
+  DAFT_NO_LOG_CLEAN: "1"
+
+repos:
+  - name: test-log-cleanup-stale
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Stale running detection test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/s
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: marker
+              run: echo done
+              log:
+                # 1h stale-Running threshold; the synthetic invocation will
+                # be 48h old so it qualifies.
+                stale_running_after: 1h
+                keep_last: 0
+
+steps:
+  - name: Clone the repository with --trust-hooks
+    run:
+      env -u DAFT_TESTING git-worktree-clone --trust-hooks --layout contained
+      $REMOTE_TEST_LOG_CLEANUP_STALE 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch so the repo policy is written
+    run: env -u DAFT_TESTING git-worktree-checkout feature/s 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-stale/main"
+    expect:
+      exit_code: 0
+
+  - name:
+      Construct a synthetic Running invocation that started 48h ago, with no
+      coordinator socket file
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-stale/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      INV_ID=deadbeefdeadbeef
+      mkdir -p "$JOBS_DIR/$INV_ID/zombiejob"
+      python3 - "$JOBS_DIR/$INV_ID" "$INV_ID" <<'PY'
+      import json, sys, datetime, os
+      inv_dir, inv_id = sys.argv[1], sys.argv[2]
+      old = (datetime.datetime.utcnow() - datetime.timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+      inv_meta = {
+          "invocation_id": inv_id,
+          "trigger_command": "test-stale",
+          "hook_type": "worktree-post-create",
+          "worktree": "feature/s",
+          "created_at": old,
+      }
+      with open(os.path.join(inv_dir, "invocation.json"), "w") as f:
+          json.dump(inv_meta, f)
+      job_meta = {
+          "name": "zombiejob",
+          "hook_type": "worktree-post-create",
+          "worktree": "feature/s",
+          "command": "sleep 9999",
+          "working_dir": "/tmp",
+          "env": {},
+          "started_at": old,
+          "status": "running",
+          "exit_code": None,
+          "pid": None,
+          "background": True,
+          "finished_at": None,
+          "needs": [],
+          "retention_seconds": None,
+          "max_log_size_bytes": None,
+          "log_truncated": False,
+          "original_size_bytes": None,
+      }
+      with open(os.path.join(inv_dir, "zombiejob", "meta.json"), "w") as f:
+          json.dump(job_meta, f)
+      open(os.path.join(inv_dir, "zombiejob", "output.log"), "w").close()
+      print("ZOMBIE_OK")
+      PY
+      # Make sure no coordinator socket lingers for this repo so the
+      # stale-Running detector decides the job is dead.
+      rm -f "$HOME/.local/state/daft/coordinator-${REPO_ID}.sock"
+      rm -f "$HOME/.local/state/daft/coordinator-${REPO_ID}.pid"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "ZOMBIE_OK"
+
+  - name:
+      Run `daft hooks jobs clean --older-than 0s` — the stale-Running job must
+      be detected and removed even though its status is "running"
+    run: daft hooks jobs clean --older-than 0s 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-stale/feature/s"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Removed"
+
+  - name: The stale invocation dir is gone
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-stale/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      if [ -d "$JOBS_DIR/deadbeefdeadbeef" ]; then
+        echo "stale invocation still present"
+        exit 1
+      fi
+      echo "CLEANED=1"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "CLEANED=1"

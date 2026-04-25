@@ -1,0 +1,152 @@
+name: Log cleanup never removes Running jobs
+description:
+  "Constructs a synthetic invocation on disk with status=Running and a recent
+  started_at, then verifies that `daft hooks jobs clean` (with retention
+  override 0s and keep_last=0) refuses to remove it. After flipping the status
+  to Completed, the same clean call removes it."
+
+env:
+  DAFT_NO_LOG_CLEAN: "1"
+
+repos:
+  - name: test-log-cleanup-running
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Cleanup skips running test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/r
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: marker
+              run: echo done
+              log:
+                keep_last: 0
+
+steps:
+  - name: Clone the repository with --trust-hooks (creates the repo identity)
+    run:
+      env -u DAFT_TESTING git-worktree-clone --trust-hooks --layout contained
+      $REMOTE_TEST_LOG_CLEANUP_RUNNING 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (fires worktree-post-create once)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/r 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-running/main"
+    expect:
+      exit_code: 0
+
+  - name:
+      Construct a synthetic Running invocation on disk — fresh started_at, no
+      finished_at, status=running. This simulates a hook invocation that was
+      started but never reached a terminal state (e.g. the daft process crashed,
+      or a coordinator is genuinely still running).
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-running/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      INV_ID=feedfeedfeedfeed
+      mkdir -p "$JOBS_DIR/$INV_ID/longjob"
+      python3 - "$JOBS_DIR/$INV_ID" "$INV_ID" <<'PY'
+      import json, sys, datetime, os
+      inv_dir, inv_id = sys.argv[1], sys.argv[2]
+      now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+      inv_meta = {
+          "invocation_id": inv_id,
+          "trigger_command": "test-synthetic",
+          "hook_type": "worktree-post-create",
+          "worktree": "feature/r",
+          "created_at": now,
+      }
+      with open(os.path.join(inv_dir, "invocation.json"), "w") as f:
+          json.dump(inv_meta, f)
+      job_meta = {
+          "name": "longjob",
+          "hook_type": "worktree-post-create",
+          "worktree": "feature/r",
+          "command": "sleep 9999",
+          "working_dir": "/tmp",
+          "env": {},
+          "started_at": now,
+          "status": "running",
+          "exit_code": None,
+          "pid": None,
+          "background": True,
+          "finished_at": None,
+          "needs": [],
+          "retention_seconds": None,
+          "max_log_size_bytes": None,
+          "log_truncated": False,
+          "original_size_bytes": None,
+      }
+      with open(os.path.join(inv_dir, "longjob", "meta.json"), "w") as f:
+          json.dump(job_meta, f)
+      open(os.path.join(inv_dir, "longjob", "output.log"), "w").close()
+      print("SYNTH_OK")
+      PY
+    expect:
+      exit_code: 0
+      output_contains:
+        - "SYNTH_OK"
+
+  - name:
+      Run `daft hooks jobs clean --older-than 0s` — must NOT remove the
+      synthetic Running invocation (running jobs are skipped)
+    run: daft hooks jobs clean --older-than 0s 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-running/feature/r"
+    expect:
+      exit_code: 0
+
+  - name: The synthetic Running invocation dir must still exist
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-running/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      [ -d "$JOBS_DIR/feedfeedfeedfeed" ] || { echo "Running invocation was removed"; exit 1; }
+      echo "RUNNING_PRESERVED=1"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "RUNNING_PRESERVED=1"
+
+  - name:
+      Flip the synthetic invocation's status to completed and re-run clean — now
+      it must be removed
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-running/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      META="$JOBS_DIR/feedfeedfeedfeed/longjob/meta.json"
+      python3 -c "
+      import json,sys,datetime
+      p = sys.argv[1]
+      with open(p) as f: m = json.load(f)
+      m['status'] = 'completed'
+      m['exit_code'] = 0
+      m['finished_at'] = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+      with open(p, 'w') as f: json.dump(m, f)
+      " "$META"
+      daft hooks jobs clean --older-than 0s 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-running/feature/r"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Removed"
+
+  - name: The (now-terminal) synthetic invocation dir is gone
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-running/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      if [ -d "$JOBS_DIR/feedfeedfeedfeed" ]; then
+        echo "synthetic invocation still present"
+        exit 1
+      fi
+      echo "CLEANED=1"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "CLEANED=1"

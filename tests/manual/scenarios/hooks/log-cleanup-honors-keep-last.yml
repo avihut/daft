@@ -1,0 +1,133 @@
+name: Log cleanup honors keep_last sanity floor
+description:
+  "Sets retention=1d and keep_last=3, fires the hook five times, backdates every
+  meta.json to 2 days ago, then runs `daft hooks jobs clean`. Even though every
+  invocation is past retention, the keep_last floor must preserve the three most
+  recent ones."
+
+repos:
+  - name: test-log-cleanup-keep-last
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Log cleanup keep_last test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/k
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: build
+              run: echo build-output
+              log:
+                retention: 1d
+                keep_last: 3
+
+steps:
+  - name: Clone the repository with --trust-hooks
+    run:
+      env -u DAFT_TESTING git-worktree-clone --trust-hooks --layout contained
+      $REMOTE_TEST_LOG_CLEANUP_KEEP_LAST 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-log-cleanup-keep-last/main"
+
+  - name: Checkout the feature branch once (creates first invocation)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/k 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-keep-last/main"
+    expect:
+      exit_code: 0
+
+  - name:
+      Fire the same hook four more times via `daft hooks run` so that all five
+      invocations land on the same worktree (so keep_last applies)
+    run: |
+      cd "$WORK_DIR/test-log-cleanup-keep-last/feature/k"
+      for i in 1 2 3 4; do
+        daft hooks run worktree-post-create 2>&1 || exit 1
+        # Ensure distinct started_at timestamps.
+        sleep 0.1
+      done
+      echo MANUAL_RUNS_DONE
+    expect:
+      exit_code: 0
+      output_contains:
+        - "MANUAL_RUNS_DONE"
+
+  - name:
+      Confirm at least 6 invocation dirs exist (main post-create, feature/k
+      post-create, plus 4 manual runs)
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-keep-last/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+      echo "INV_COUNT_BEFORE=$INV_COUNT"
+      [ "$INV_COUNT" -ge "6" ] || { echo "expected >=6, got $INV_COUNT"; exit 1; }
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INV_COUNT_BEFORE="
+
+  - name: Backdate every meta.json to 2 days ago, but keep the relative ordering
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-keep-last/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      python3 - "$JOBS_DIR" <<'PY'
+      import sys, json, os, datetime
+      root = sys.argv[1]
+      # Build a list of meta files with their original started/created timestamps,
+      # then shift them all back by 2 days uniformly so ordering is preserved.
+      delta = datetime.timedelta(days=2)
+      def shift(ts):
+          dt = datetime.datetime.strptime(ts.rstrip("Z").split("+")[0][:26], "%Y-%m-%dT%H:%M:%S.%f") if "." in ts else datetime.datetime.strptime(ts.rstrip("Z").split("+")[0], "%Y-%m-%dT%H:%M:%S")
+          return (dt - delta).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+      patched = 0
+      for dirpath, _, files in os.walk(root):
+          for f in files:
+              if f != "meta.json":
+                  continue
+              p = os.path.join(dirpath, f)
+              with open(p) as fh:
+                  m = json.load(fh)
+              for k in ("created_at", "started_at", "finished_at"):
+                  v = m.get(k)
+                  if isinstance(v, str) and v:
+                      try:
+                          m[k] = shift(v)
+                      except Exception:
+                          pass
+              with open(p, "w") as fh:
+                  json.dump(m, fh)
+              patched += 1
+      print(f"PATCHED={patched}")
+      PY
+    expect:
+      exit_code: 0
+      output_contains:
+        - "PATCHED="
+
+  - name:
+      Run `daft hooks jobs clean` — keep_last=3 must protect three invocations
+    run: daft hooks jobs clean 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-keep-last/feature/k"
+    expect:
+      exit_code: 0
+
+  - name:
+      Confirm exactly 4 invocation dirs remain — 1 protected on main worktree, 3
+      protected on feature/k worktree (keep_last=3)
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-keep-last/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+      echo "INV_COUNT_AFTER=$INV_COUNT"
+      [ "$INV_COUNT" = "4" ] || { echo "expected 4, got $INV_COUNT"; exit 1; }
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INV_COUNT_AFTER=4"

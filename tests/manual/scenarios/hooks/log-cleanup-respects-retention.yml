@@ -1,0 +1,113 @@
+name: Log cleanup honors per-job retention
+description:
+  "Sets log.retention=1d on a worktree-post-create job, fires the hook, then
+  backdates the resulting meta.json to 2 days ago. `daft hooks jobs clean` must
+  remove the invocation directory because the job is older than its declared
+  retention window."
+
+repos:
+  - name: test-log-cleanup-retention
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Log cleanup retention test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/retain
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: build
+              run: echo build-output
+              log:
+                retention: 1d
+                keep_last: 0
+
+steps:
+  - name: Clone the repository with --trust-hooks
+    run:
+      env -u DAFT_TESTING git-worktree-clone --trust-hooks --layout contained
+      $REMOTE_TEST_LOG_CLEANUP_RETENTION 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-log-cleanup-retention/main"
+
+  - name: Checkout feature branch (fires worktree-post-create hook)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/retain 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-retention/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "build-output"
+
+  - name: Confirm an invocation dir exists for this repo
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-retention/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      ls "$JOBS_DIR" >/dev/null 2>&1 || { echo "NO_JOBS_DIR: $JOBS_DIR"; exit 1; }
+      INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+      echo "INV_COUNT_BEFORE=$INV_COUNT"
+      [ "$INV_COUNT" -ge 1 ] || exit 1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INV_COUNT_BEFORE="
+
+  - name: Backdate every meta.json under this repo to 2 days ago
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-retention/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      python3 - "$JOBS_DIR" <<'PY'
+      import sys, json, os, datetime
+      root = sys.argv[1]
+      old = (datetime.datetime.utcnow() - datetime.timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+      patched = 0
+      for dirpath, _, files in os.walk(root):
+          for f in files:
+              if f != "meta.json":
+                  continue
+              p = os.path.join(dirpath, f)
+              with open(p) as fh:
+                  m = json.load(fh)
+              # Both InvocationMeta (created_at) and JobMeta (started_at)
+              if "created_at" in m:
+                  m["created_at"] = old
+              if "started_at" in m:
+                  m["started_at"] = old
+              if m.get("finished_at"):
+                  m["finished_at"] = old
+              with open(p, "w") as fh:
+                  json.dump(m, fh)
+              patched += 1
+      print(f"PATCHED={patched}")
+      PY
+    expect:
+      exit_code: 0
+      output_contains:
+        - "PATCHED="
+
+  - name: Run `daft hooks jobs clean` — should remove the aged invocation
+    run: daft hooks jobs clean 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-retention/feature/retain"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Removed"
+        - "job(s)"
+
+  - name: Confirm the invocation dir is gone
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-retention/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+      echo "INV_COUNT_AFTER=$INV_COUNT"
+      [ "$INV_COUNT" = "0" ] || { echo "expected 0 invocation dirs, found $INV_COUNT"; exit 1; }
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INV_COUNT_AFTER=0"

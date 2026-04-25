@@ -1,0 +1,87 @@
+name: Log cleanup truncates oversized output.log files
+description:
+  "Sets log.max_log_size=1KB on a job that prints 4KB. After cleanup runs, the
+  output.log must be truncated to ~1KB, end with the truncation footer, and
+  meta.json must record log_truncated=true plus the original size."
+
+repos:
+  - name: test-log-cleanup-truncate
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Log truncation cap test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/spam
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: spam
+              run: |
+                # Print 4KB of output.
+                python3 -c "import sys; sys.stdout.write('x' * 4096); sys.stdout.flush()"
+              log:
+                max_log_size: 1KB
+
+steps:
+  - name: Clone the repository with --trust-hooks
+    run:
+      env -u DAFT_TESTING git-worktree-clone --trust-hooks --layout contained
+      $REMOTE_TEST_LOG_CLEANUP_TRUNCATE 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (fires the spam job)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/spam 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-truncate/main"
+    expect:
+      exit_code: 0
+
+  - name: Confirm the log is the full 4KB before cleanup
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-truncate/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      LOG=$(find "$JOBS_DIR" -name 'output.log' -path '*/spam/*' | head -1)
+      [ -n "$LOG" ] || { echo "no spam output.log"; exit 1; }
+      SIZE=$(wc -c < "$LOG" | tr -d ' ')
+      echo "PRE_TRUNC_SIZE=$SIZE"
+      [ "$SIZE" -ge 4096 ] || { echo "expected >= 4096, got $SIZE"; exit 1; }
+    expect:
+      exit_code: 0
+      output_contains:
+        - "PRE_TRUNC_SIZE="
+
+  - name:
+      Run the background cleanup pass (`daft __clean-logs`) — this is where the
+      per-file truncation pre-pass happens
+    run: daft __clean-logs 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-truncate/feature/spam"
+    expect:
+      exit_code: 0
+
+  - name:
+      Verify the log is now <=1024 bytes, ends with the truncation footer, and
+      meta.json has log_truncated=true with original_size_bytes set
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-truncate/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      LOG=$(find "$JOBS_DIR" -name 'output.log' -path '*/spam/*' | head -1)
+      META=$(find "$JOBS_DIR" -name 'meta.json' -path '*/spam/*' | head -1)
+      [ -n "$LOG" ] || { echo "no log"; exit 1; }
+      [ -n "$META" ] || { echo "no meta"; exit 1; }
+      SIZE=$(wc -c < "$LOG" | tr -d ' ')
+      echo "POST_TRUNC_SIZE=$SIZE"
+      [ "$SIZE" -le 1024 ] || { echo "expected <=1024, got $SIZE"; exit 1; }
+      tail -c 80 "$LOG"
+      echo
+      python3 -c "import json,sys; m=json.load(open(sys.argv[1])); assert m.get('log_truncated') is True, m; assert m.get('original_size_bytes', 0) >= 4096, m; print('META_OK')" "$META"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "POST_TRUNC_SIZE="
+        - "[output truncated at"
+        - "META_OK"
