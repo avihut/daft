@@ -12,108 +12,52 @@ without user intervention — using the same `__hidden-subcommand` pattern as
 `update_check` and `trust_prune`.
 
 **Architecture:** Cleanup policy is captured **at hook-fire time** into
-`InvocationMeta` and `JobMeta` (this is a deliberate amendment to the spec — see
-"Spec amendments" below). A new `src/log_clean.rs` module mirrors
-`src/trust_prune.rs`: every `daft` invocation calls `maybe_clean_logs()`, which
-throttles via a JSON cache and spawns a detached `daft __clean-logs` child. The
-cleanup itself is layered: per-log truncation pre-pass → retention sweep →
-per-repo budget post-pass, all gated by a sanity floor and a single-flight
-`flock`.
+`JobMeta` (per-job retention and per-log cap) and into a `repo-policy.json`
+sidecar (repo-level total budget, sanity floor, stale-Running threshold). A new
+`src/log_clean.rs` module mirrors `src/trust_prune.rs`: every `daft` invocation
+calls `maybe_clean_logs()`, which throttles via a JSON cache and spawns a
+detached `daft __clean-logs` child. The cleanup itself is layered: per-log
+truncation pre-pass → retention sweep → per-repo budget post-pass, all gated by
+a sanity floor and a single-flight `fs2` lock.
 
 **Tech Stack:** Rust, `chrono` (already a dep), `fs2 = "0.4"` (new direct dep —
-already transitive via `tabled`/test deps; promoting to direct for its
-cross-platform `FileExt::try_lock_exclusive`), `serde` + `serde_json` (already
-deps), `nix` (already a transitive dep, promoting to direct for `kill(pid, 0)`
-liveness check on Unix). Manual YAML scenarios under
-`tests/manual/scenarios/hooks/`.
+already transitive via test deps; promoting to direct for its cross-platform
+`FileExt::try_lock_exclusive`), `serde` + `serde_json` (already deps), `nix`
+(already a transitive dep, promoting to direct for `kill(pid, 0)` liveness check
+on Unix). Manual YAML scenarios under `tests/manual/scenarios/hooks/`.
 
 **Spec:** `docs/superpowers/specs/2026-04-25-hooks-jobs-log-maintenance.md`
-(read the v1 section before starting).
+(read the v1 section first — it covers the architecture decisions implemented
+here).
 
 **Tracking issue for v2:** [#399](https://github.com/avihut/daft/issues/399).
 
 ---
 
-## Spec amendments — read before coding
-
-Three decisions in this plan diverge from or sharpen the spec. Each is
-load-bearing; if you disagree with one, raise it before Task 1.
-
-### Amendment A — capture retention at hook-fire time, not at cleanup time
-
-**Spec said:** Cleanup re-reads `daft.yml` from each worktree's recorded path at
-cleanup time.
-
-**Plan says:** Resolve retention (and `max_log_size`) from the full config-merge
-chain at the moment a hook fires, then store the resolved value into
-`JobMeta.retention_seconds: Option<i64>` and
-`JobMeta.max_log_size_bytes: Option<u64>`. Cleanup reads these directly from
-`meta.json` and never touches `daft.yml`.
-
-**Why:** (1) Predictable: "the retention you had configured when the hook ran
-governs that invocation's lifespan" matches user intuition better than "we'll
-honor whatever you have in daft.yml right now." (2) Cleanup survives worktree
-deletion, repo relocation, config corruption — none of these break the cleanup
-path. (3) Removes a whole category of failure modes (missing daft.yml, failed
-re-parse, race between `daft.yml` edits and cleanup).
-
-**Cost:** Two new fields on `JobMeta`. Pre-v1 jobs without these fields fall
-back to the repo-level defaults read from a sidecar `repo-policy.json` (see
-Amendment B), and ultimately to the built-in `7d` / `10MB`.
-
-### Amendment B — repo-level policy stored in a sidecar file
-
-**Spec said:** `max_total_size` and `keep_last` are repo-level only; the spec
-didn't pin down where the cleanup process reads them from.
-
-**Plan says:** Each hook fire writes the resolved repo-level policy
-(`max_total_size_bytes`, `keep_last`, `stale_running_after_seconds`) to
-`<state>/jobs/<repo-uuid>/repo-policy.json`. The most recent write wins. Cleanup
-reads this file once per repo.
-
-**Why:** Consistent with Amendment A. No `daft.yml` lookups at cleanup time. The
-file is small (3 fields) and cheap to overwrite on every hook fire.
-
-**Fallback:** If the file is missing (orphaned state dir whose repo no longer
-fires hooks), use built-in defaults.
-
-### Amendment C — `fs2` for cross-platform file locking, not `nix::fcntl::flock`
-
-**Spec said:** `nix::fcntl::flock` for the single-flight lock.
-
-**Plan says:** `fs2::FileExt::try_lock_exclusive`.
-
-**Why:** `fs2` is cross-platform (works on macOS, Linux, Windows — though we're
-Unix-only today, future portability is cheap to keep) and its API is more
-ergonomic. `nix` flock on macOS is BSD `flock(2)` which has quirky NFS behavior;
-`fs2` wraps that with a stable API. `fs2` is already in our transitive dep graph
-(via `tabled` test deps); promoting to direct adds zero binary size.
-
----
-
 ## Branch strategy
 
-**Decision:** Fresh branch off `master`, **after** `feat/background-hook-jobs`
-squash-merges. Branch name: `feat/log-maintenance`.
+**Decision:** Stack v1 on top of `feat/background-hook-jobs` directly. The work
+commits land on the same branch and ship in the same squash-merge.
 
 **Rationale:**
 
-- `feat/background-hook-jobs` already has 125 commits and is about to PR.
-  Stacking 10 more makes the parent PR harder to review.
-- Log maintenance is a coherent, self-contained feature deserving its own PR
-  title and changelog entry.
-- The new `JobMeta` / `InvocationMeta` fields land in the universal-hook-
-  logging code (master after this PR). No conflict expected.
-- Sequencing means execution waits on the parent PR landing — that's acceptable
-  since this is captured-but-deferred work.
+- The user requested stacking; speed-to-ship beats per-feature PR granularity
+  here.
+- The new `JobMeta` / sidecar fields are tightly coupled with the
+  universal-hook-logging code already on this branch — co-locating the changes
+  avoids a temporary master state where logs accumulate unbounded.
+- The squash-merged commit will combine both features into one `feat(hooks)!`
+  entry; CHANGELOG should mention both surfaces.
 
 **Pre-flight before Task 1:**
 
 ```bash
-# After feat/background-hook-jobs squash-merges to master:
-git fetch origin master
-git checkout -b feat/log-maintenance origin/master
+# Confirm starting state (no rebase, no fresh branch needed):
+git status   # working tree clean
+git log --oneline -3   # tip is f5a50be1 docs(plans): ...
 ```
+
+Each task's commit lands directly on `feat/background-hook-jobs`.
 
 ---
 
@@ -2328,8 +2272,8 @@ log:
 
 Update the table to reflect the new fields, defaults, and override scope
 (per-job vs repo-only). Add a "Behavior" subsection explaining the
-hook-fire-time capture (Amendment A) and what happens on missing
-`repo-policy.json` (default fallback).
+hook-fire-time capture (see spec § Retention resolution) and what happens on
+missing `repo-policy.json` (default fallback).
 
 - [ ] **Step 3: Update `SKILL.md`**
 
@@ -2510,7 +2454,8 @@ automatic cleanup may remove old logs that previously persisted indefinitely.
 **Spec coverage check**
 
 - ✓ Trigger surface (background + foreground) — Tasks 6 + 7
-- ✓ Retention resolution at hook-fire time — Task 2 (with Amendment A)
+- ✓ Retention resolution at hook-fire time — Task 2 (matches spec § Retention
+  resolution)
 - ✓ Size limits (per-log + per-repo budget) — Tasks 4 + 5
 - ✓ Sanity floor — Task 3
 - ✓ Stale-Running detection — Task 3
@@ -2530,7 +2475,8 @@ are defined in Task 1 / 2 / 3 / 6 in that order, no later task references a
 renamed version. `JobMeta` field names match across Tasks 2, 3, 4.
 `LogStore::clean` signature is consistent (Task 3 final form).
 
-**Underspec resolved before coding:** Amendments A, B, C at the top of the plan.
+**Underspec resolved before coding:** All architectural decisions are now in the
+spec (capture-at-hook-fire-time, sidecar repo-policy.json, fs2 locking).
 PID-recycle false-negative documented in Task 3 Step 4 (best-effort,
 acceptable). Truncation footer edge case (cap < footer len) handled by
 `MIN_CAP = 1024` in Task 4 Step 3.

@@ -123,15 +123,52 @@ Not in v1. Coordinator forks add complexity — leave to v2.
 4. Local config (`daft-local.yml` `log.retention`).
 5. Per-job (`hooks.<type>.jobs[].log.retention`).
 
-For the cleanup path, this resolution happens **at cleanup time**, not at hook
-fire time. We re-read `daft.yml` from each worktree's path stored in the
-invocation's `meta.json`, fall back to `7d` if the file is gone (worktree
-deleted, repo moved). Reasoning: users update `daft.yml` more often than they
-re-fire hooks; honoring the live value matches expectations.
+**Resolution happens at hook-fire time, not at cleanup time.** The merged value
+is captured into `JobMeta.retention_seconds: Option<i64>` at the moment the hook
+fires. Cleanup reads it directly from `meta.json` and never touches `daft.yml`.
+
+Why this matters: (1) **predictable** — "the retention you had configured when
+the hook ran governs that invocation's lifespan" matches user intuition better
+than "we honor whatever's in daft.yml right now"; (2) **survives worktree
+deletion, repo relocation, and config corruption** — none of these break the
+cleanup path; (3) **removes a class of failure modes** around missing
+`daft.yml`, failed re-parse, and races between config edits and cleanup runs.
+
+The same capture-at-fire-time treatment applies to `max_log_size` (stored into
+`JobMeta.max_log_size_bytes: Option<u64>`).
+
+For repo-level fields (`max_total_size`, `keep_last`, `stale_running_after`),
+see § Repo-level policy sidecar below.
 
 **Parse failure handling:** `"7days"`, `"1week"`, malformed `"abc"` — log a
-warning to stderr (only in foreground mode, not background), fall back to the
-default. Never abort cleanup over a config typo.
+warning to stderr at hook-fire time (when we have a real terminal), fall back to
+the default. Never abort cleanup over a config typo.
+
+## Repo-level policy sidecar
+
+The repo-level fields — `max_total_size`, `keep_last`, `stale_running_after` —
+cannot live on a per-job `JobMeta` because they govern decisions across all
+invocations under a repo. They're also too small (3 values) to justify a
+database.
+
+Each hook fire writes the resolved repo-level policy to a sidecar at
+`<state>/jobs/<repo-uuid>/repo-policy.json`. Most-recent-write wins. Cleanup
+reads this file once per repo at the start of its run; if the file is missing
+(orphaned state dir whose repo no longer fires hooks), built-in defaults apply.
+
+The sidecar contains:
+
+```json
+{
+  "version": 1,
+  "max_total_size_bytes": 524288000,
+  "keep_last": 3,
+  "stale_running_after_seconds": 86400
+}
+```
+
+All three fields are `Option<T>` in the on-disk shape; `None` triggers the
+built-in defaults at read time.
 
 ## Size limits
 
@@ -205,19 +242,30 @@ That's a separate bug, captured in v2.
 ## Concurrency safety
 
 **Single-flight lock.** The 24h throttle alone is insufficient if two `daft`
-invocations fire within the same second. Add an advisory `flock` on the cache
-file's lock sibling:
+invocations fire within the same second. Add an advisory file lock on the cache
+file's lock sibling, using `fs2::FileExt::try_lock_exclusive` for its
+cross-platform behavior:
 
 ```rust
+use fs2::FileExt;
+
 let lock_path = cache_path.with_extension("lock");
-let lock_file = OpenOptions::new().write(true).create(true).open(&lock_path)?;
-match nix::fcntl::flock(lock_file.as_raw_fd(), FlockArg::LockExclusiveNonblock) {
+let lock_file = OpenOptions::new()
+    .write(true)
+    .create(true)
+    .truncate(false)
+    .open(&lock_path)?;
+match lock_file.try_lock_exclusive() {
     Ok(_) => { /* proceed */ }
     Err(_) => return Ok(()),  // another cleanup is running, defer to it
 }
 ```
 
-The `nix` crate is already a dependency.
+`fs2` was chosen over `nix::fcntl::flock` because its API is portable across
+macOS, Linux, and Windows (we're Unix-only today, but cross-platform is cheap to
+keep) and avoids the BSD `flock(2)` NFS quirks on macOS. `fs2` is already a
+transitive dependency via test infrastructure; promoting to direct adds zero
+binary size.
 
 **Atomic remove.** Replace `fs::remove_dir_all(&job_dir)` with
 rename-then-remove:
