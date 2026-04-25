@@ -19,6 +19,7 @@ use crate::{
 };
 use anyhow::Result;
 use clap::Parser;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -452,12 +453,39 @@ pub fn run() -> Result<()> {
     // or receive EOF and abort, leaving the worktree in a half-merged state.
     // Callers in non-TTY contexts (CI, piped scripts) should supply
     // --no-edit, -m <msg>, or -F <file> instead.
-    use std::io::IsTerminal;
     if flags.squash_would_open_editor() && !std::io::stdin().is_terminal() {
         anyhow::bail!(
             "No TTY available for the commit-message editor.\n\
              Pass --no-edit to use the auto-generated message, \
              -m <msg> for an explicit message, or -F <file> to read from a file."
+        );
+    }
+
+    // Pre-flight cleanup-vs-no-commit guard: catch the diagonal case where
+    // `daft.merge.commit=false` is set in git config (captured as
+    // `flags.commit == Some(false)`) while cleanup is requested via CLI flags
+    // or config (`-r`, `-rb`, `daft.merge.postMerge.removeSourceWorktree=true`,
+    // `daft.merge.postMerge.alsoRemoveSourceBranch=true`).
+    //
+    // Clap's `conflicts_with_all` on `--no-commit` catches the pure-CLI case
+    // at parse time (exit 2). `validate_merge_settings` in `DaftSettings::load`
+    // catches the pure-config case. Neither catches this diagonal: config
+    // disables commit while CLI adds cleanup. We check it here, after
+    // `effective_flags_from_args_and_settings` has merged both sources, so
+    // we see the true effective intent.
+    //
+    // Compute the effective cleanup flags here for the guard; they are also
+    // consumed in the success branch below. `args` and `settings` are still
+    // in scope at both sites.
+    let effective_remove = args.remove || settings.merge_post_merge_remove_source_worktree;
+    let effective_and_branch = effective_remove
+        && (args.and_branch || settings.merge_post_merge_also_remove_source_branch);
+    if matches!(flags.commit, Some(false)) && (effective_remove || effective_and_branch) {
+        anyhow::bail!(
+            "--no-commit / daft.merge.commit=false is incompatible with cleanup \
+             (-r / -rb / daft.merge.postMerge.removeSourceWorktree=true / \
+             daft.merge.postMerge.alsoRemoveSourceBranch=true): \
+             cleanup requires a committed merge."
         );
     }
 
@@ -555,25 +583,15 @@ pub fn run() -> Result<()> {
         // non-up-to-date merges — the `already_up_to_date` and `failed`
         // arms above have already returned or exited.
         //
-        // Precedence: CLI flags can only *add* to the cleanup scope on top
-        // of config defaults. Config-driven cleanup is intentionally
-        // opt-in via `daft.merge.postMerge.removeSourceWorktree` and
-        // `.alsoRemoveSourceBranch`. Clap already enforces that `-b`
-        // requires `-r` on the CLI side — that's an interaction check for
-        // user-typed flags, not for config defaults — so the code below
-        // must also guard `and_branch` behind `effective_remove` or it
-        // could request branch deletion without worktree removal when the
-        // user sets `alsoRemoveSourceBranch = true` without enabling the
-        // worktree-removal key. That's a config misconfiguration; gate it.
+        // `effective_remove` and `effective_and_branch` were computed
+        // pre-flight above (before `execute_start`) to allow the
+        // no-commit + cleanup guard to fire early. Reuse them here.
         //
         // When cleanup errors happen (e.g. `git branch -d` refusing an
         // unmerged branch after `--squash`), the merge itself succeeded —
         // the cleanup error is surfaced so the caller knows which
         // post-merge step failed, but any earlier successful cleanup step
         // (worktree removal) is not rolled back.
-        let effective_remove = args.remove || settings.merge_post_merge_remove_source_worktree;
-        let effective_and_branch = effective_remove
-            && (args.and_branch || settings.merge_post_merge_also_remove_source_branch);
         if effective_remove {
             let cleanup_opts = crate::core::worktree::merge::CleanupOptions {
                 remove_worktree: effective_remove,
