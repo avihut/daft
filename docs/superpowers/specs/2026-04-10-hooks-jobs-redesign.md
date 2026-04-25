@@ -92,51 +92,85 @@ Unchanged layout. `invocation.json` is the only new file.
 
 ## Display Format
 
+The listing is rendered as a vertical timeline per worktree: a dim spine (`│`)
+on the left, with each invocation pinned to the spine as a bullet node (`●`).
+Jobs hang from each node along the spine, grouped visually by their parent
+invocation. The spine runs continuously through every job line in a worktree and
+terminates naturally at the last job — no explicit terminator glyph.
+
 ### Default: Current Worktree
 
 ```
-2h ago — worktree-post-create                            [c9d4]
-  Job            Status         Started    Duration
-  ↻ db-migrate   ✓ completed    12:01:00   3s
-  ↻ db-seed      ✓ completed    12:01:03   2s
-  ↻ warm-build   ✓ completed    12:01:00   40s
+> feature/tax-calc
 
-1h ago — hooks run worktree-post-create                  [e7f2]
-  Job            Status         Started    Duration
-  ↻ db-migrate   ✓ completed    13:05:12   3s
-  ↻ db-seed      ✓ completed    13:05:15   2s
-  ↻ warm-build   ✗ failed       13:05:12   40s
-
-3 min ago — hooks jobs retry warm-build                  [a3f2]
-  Job            Status         Started    Duration
-  ↻ warm-build   ✗ failed       14:32:05   45s
+  ●  2h ago · worktree-post-create [c9d4]
+  │
+  │     Job            Status         Started    Duration   Size
+  │     ↪ db-migrate   ✓ completed    12:01:00   3s         1.2 KB
+  │     ↪ db-seed      ✓ completed    12:01:03   2s         640 B
+  │     ↪ warm-build   ✓ completed    12:01:00   40s        4.1 KB
+  │
+  ●  1h ago · hooks run worktree-post-create [e7f2]
+  │
+  │     Job            Status         Started    Duration   Size
+  │     ↪ db-migrate   ✓ completed    13:05:12   3s         1.2 KB
+  │     ↪ db-seed      ✓ completed    13:05:15   2s         640 B
+  │     ↪ warm-build   ✗ failed       13:05:12   40s        2.8 KB
+  │
+  ●  3m ago · hooks jobs retry warm-build [a3f2]
+  │
+  │     Job            Status         Started    Duration   Size
+  │     ↪ warm-build   ✗ failed       14:32:05   45s        2.9 KB
 ```
+
+The current worktree gets the `>` prefix (existing `CURRENT_WORKTREE_SYMBOL`);
+other worktrees get a leading space.
 
 ### With --all: Multiple Worktrees
 
-Top-level grouping by worktree name (bold):
+Each worktree owns its own spine, separated by a blank line. Worktrees are not
+connected by a meta-spine — they are parallel timelines, not one continuous
+stream.
 
 ```
-feature/tax-calc
-  2h ago — worktree-post-create                          [c9d4]
-    Job            Status         Started    Duration
-    ↻ db-migrate   ✓ completed    12:01:00   3s
-    ...
+> feature/tax-calc
 
-feature/auth
-  20 min ago — worktree-post-create                      [d8a3]
-    Job            Status         Started    Duration
-    ↻ db-migrate   ✓ completed    14:12:00   2s
-    ...
+  ●  2h ago · worktree-post-create [c9d4]
+  │
+  │     Job            Status         Started    Duration   Size
+  │     ↪ db-migrate   ✓ completed    12:01:00   3s         1.2 KB
+  │     ↪ db-seed      ✓ completed    12:01:03   2s         640 B
+  │     ↪ warm-build   ✓ completed    12:01:00   40s        4.1 KB
+
+  feature/auth
+
+  ●  20m ago · worktree-post-create [d8a3]
+  │
+  │     Job            Status         Started    Duration   Size
+  │     ↪ db-migrate   ✓ completed    14:12:00   2s         960 B
 ```
 
 ### Rendering Details
 
 - **Ordering**: Oldest invocations first within each worktree group. Worktrees
   ordered by their oldest invocation.
-- **Invocation header**: `{relative_time} — {trigger_command}` with
-  `[{short_id}]` right-aligned. Relative time uses `shorthand_from_seconds()`
-  with "ago" suffix.
+- **Spine**: Two-space left margin (`"  "`) before the spine glyph, then the
+  spine column itself. Layout per line:
+  - Worktree header: `"{marker} {worktree_name}"` (no spine).
+  - Blank separator: `""` (no spine — visual breathing room between worktrees
+    and around invocation nodes).
+  - Invocation node: `"  ●  {time_ago} · {trigger_command} [{short_id}]"`.
+  - Job rows (and the table header): `"  │     {…}"` — five spaces between the
+    spine and the inner content so jobs sit clearly inboard of the spine.
+  - Spine character `│` and node character `●` rendered with `dim()`. The spine
+    is a grouping cue, not primary content, so it must read as background.
+  - The spine runs continuously through every job line of every invocation in a
+    worktree, including the last invocation. It terminates at the last job's row
+    — no extra terminator glyph after the table ends.
+- **Invocation header**: `{relative_time} · {trigger_command} [{short_id}]`.
+  Relative time uses `shorthand_from_seconds()` with "ago" suffix. The middle
+  dot (`·`, U+00B7) replaces the previous em-dash separator. The `[{short_id}]`
+  segment is dimmed; the trigger command is normal weight.
 - **Short invocation ID**: First 4 hex characters of the invocation_id.
 - **Column headers**: `dim_underline` style (matching `daft list`).
 - **Background prefix**: Blue `↻` for background jobs. No prefix for foreground
@@ -161,8 +195,12 @@ feature/auth
   Running jobs append `...` (e.g. `45s...`). Negative deltas (clock skew) clamp
   to `0ms`.
 
-- **Table rendering**: `tabled::Builder` with `Style::blank()`, matching
-  existing daft table patterns.
+- **Table rendering**: Inner job table is built with `tabled::Builder` and
+  `Style::blank()`. Each rendered row is then prefixed with the spine column
+  (`"  │     "`) before being emitted, so the spine is composed line-by-line
+  rather than embedded in `tabled`.
+- **Empty invocation**: When an invocation has no jobs, render
+  `"  │     (no jobs declared)"` (dim) in place of the table.
 - **No jobs**:
   `"No background job history for this worktree.\nUse --all to see jobs across all worktrees."`
 
