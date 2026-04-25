@@ -36,7 +36,7 @@ pub enum Body {
     /// Emitted with the spine glyph + a 4-space gutter prepended so the
     /// placeholder aligns under typical tabled body content (which carries
     /// 1 char of its own left padding under `Style::blank()`).
-    Empty(String),
+    Placeholder(String),
 }
 
 /// Render the outline, emitting one line at a time via `emit`.
@@ -45,7 +45,7 @@ pub fn render(outline: &Outline, mut emit: impl FnMut(&str)) {
     const BULLET: &str = "\u{25cf}"; // ●
     const TERMINATOR: &str = "\u{2570}\u{2500}\u{2574}"; // ╰─╴
     const LINES_GUTTER: &str = "   "; // 3 spaces — body lines carry their own padding
-    const EMPTY_GUTTER: &str = "    "; // 4 spaces — placeholder text aligns with table content
+    const PLACEHOLDER_GUTTER: &str = "    "; // 4 spaces — placeholder text aligns with table content
 
     for section in &outline.sections {
         emit(&section.header);
@@ -72,8 +72,8 @@ pub fn render(outline: &Outline, mut emit: impl FnMut(&str)) {
                         emit(&format!("{spine}{LINES_GUTTER}{line}"));
                     }
                 }
-                Body::Empty(text) => {
-                    emit(&format!("{}{EMPTY_GUTTER}{text}", dim(SPINE)));
+                Body::Placeholder(text) => {
+                    emit(&format!("{}{PLACEHOLDER_GUTTER}{text}", dim(SPINE)));
                 }
             }
         }
@@ -142,13 +142,13 @@ mod tests {
     }
 
     #[test]
-    fn render_node_with_empty_body_uses_4_space_gutter() {
+    fn render_node_with_placeholder_body_uses_4_space_gutter() {
         let outline = Outline {
             sections: vec![Section {
                 header: "h".into(),
                 nodes: vec![Node {
                     label: "n".into(),
-                    body: Body::Empty("(no body)".into()),
+                    body: Body::Placeholder("(no body)".into()),
                 }],
             }],
         };
