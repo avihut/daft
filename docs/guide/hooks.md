@@ -441,12 +441,16 @@ x Background job 'warm build cache' failed (exit 1) -- daft hooks jobs logs warm
 
 ### Log Configuration
 
-The `log` field controls log file storage and retention:
+The `log` field controls log file storage, retention, and cleanup:
 
 ```yaml
 # Top-level default
 log:
-  retention: 14d
+  retention: 14d # how long to keep logs
+  max_log_size: 10MB # per-log file cap
+  max_total_size: 500MB # per-repo total budget (repo-only)
+  keep_last: 3 # sanity floor — keep at least this many invocations per worktree
+  stale_running_after: 24h # how long before a stuck Running job is treated as cancelled
 
 hooks:
   worktree-post-create:
@@ -456,21 +460,38 @@ hooks:
         background: true
         log:
           retention: 1d # per-job override
+          max_log_size: 50MB # per-job override
           path: ./build-logs/build.log # custom log path
 ```
 
-| Field       | Type   | Default       | Description                                      |
-| ----------- | ------ | ------------- | ------------------------------------------------ |
-| `retention` | string | `7d`          | How long to keep logs (e.g., `7d`, `24h`, `30m`) |
-| `path`      | string | XDG state dir | Override log file location                       |
+| Field                 | Type   | Default       | Scope     | Description                                                                                         |
+| --------------------- | ------ | ------------- | --------- | --------------------------------------------------------------------------------------------------- |
+| `retention`           | string | `7d`          | per-job   | How long to keep logs (e.g., `7d`, `24h`, `30m`).                                                   |
+| `max_log_size`        | string | `10MB`        | per-job   | Truncate `output.log` to this size with a footer marker.                                            |
+| `max_total_size`      | string | `500MB`       | repo-only | Total disk budget for all logs under this repo. LRU eviction when exceeded.                         |
+| `keep_last`           | int    | `3`           | repo-only | Always retain at least this many invocations per worktree, regardless of retention or budget.       |
+| `stale_running_after` | string | `24h`         | repo-only | A `Running` job older than this with no live coordinator socket is treated as cancelled by cleanup. |
+| `path`                | string | XDG state dir | per-job   | Override log file location. Custom paths are user-managed and never auto-cleaned.                   |
 
-`retention` is resolved in precedence order: built-in default, global config,
-repository config (`daft.yml`), local config (`daft-local.yml`), per-job.
+`retention` and `max_log_size` are resolved at hook-fire time and captured into
+the job's `meta.json`. Cleanup reads these directly — editing `daft.yml` after a
+hook fires will not retroactively change retention for already-completed jobs.
+
+`max_total_size`, `keep_last`, and `stale_running_after` are persisted to
+`<state>/jobs/<repo-uuid>/repo-policy.json` on every hook fire (most-recent-
+write wins). Cleanup reads this file at run time; if it's missing (orphaned
+state dir whose repo no longer fires hooks), built-in defaults apply.
 
 Custom `path` values can be absolute or relative to the worktree root. Template
-variables (`{branch}`, `{worktree_path}`) are available. Retention cleanup
-(`daft hooks jobs clean`) only manages files in the XDG state directory --
-custom paths are the user's responsibility.
+variables (`{branch}`, `{worktree_path}`) are available. Retention cleanup (both
+automatic and `daft hooks jobs clean`) only manages files in the XDG state
+directory — custom paths are the user's responsibility.
+
+#### Automatic cleanup
+
+A background cleanup runs once every 24 hours, auto-disabled in CI. See
+[`daft hooks jobs`](../cli/daft-hooks-jobs.md#automatic-cleanup) for details. To
+opt out: `export DAFT_NO_LOG_CLEAN=1`.
 
 ### Managing Background Jobs
 

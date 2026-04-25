@@ -46,12 +46,31 @@ daft hooks jobs [OPTIONS] [COMMAND]
 | `--status <status>` | Filter to invocations containing jobs with this status (`running`, `completed`, `failed`, `cancelled`, `skipped`) |  |
 | `--hook <type>` | Filter to invocations of this hook type |  |
 
+### `clean` options
+
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | List candidates without removing anything. |
+| `--older-than <DURATION>` | Override retention for this run (e.g., `30d`, `12h`). |
+
 ## Global Options
 
 | Option | Description |
 |--------|-------------|
 | `-h`, `--help` | Print help information |
 | `-V`, `--version` | Print version information |
+
+## Listing columns
+
+The default human-readable listing shows the following columns per job:
+
+| Column | Description |
+|--------|-------------|
+| `Job` | Job name |
+| `Status` | `running`, `completed`, `failed`, `cancelled`, or `skipped` |
+| `Started` | Relative time since the job started (e.g., `3m ago`) |
+| `Duration` | Elapsed wall-clock time |
+| `Size` | Human-readable size of `output.log` (e.g., `4.2 KB`, `1.1 MB`). Renders as `—` for missing or zero-byte logs. |
 
 ## Structured Output
 
@@ -63,7 +82,11 @@ The listing is a flat table — one row per job, each carrying its invocation
 context (`invocation_id`, `invocation_short`, `worktree`, `hook_type`,
 `trigger_command`, `invocation_created_at`) alongside job fields (`name`,
 `status`, `background`, `started_at`, `finished_at`, `duration_secs`,
-`exit_code`, `command`).
+`exit_code`, `command`, `size_bytes`).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `size_bytes` | int \| null | Bytes of `output.log` for this job. Null when the log file is absent. |
 
 ```sh
 # Pipe to jq
@@ -100,6 +123,39 @@ daft hooks jobs retry warm-build-cache
 
 # Clean up old logs
 daft hooks jobs clean
+
+# Preview what would be cleaned without removing anything
+daft hooks jobs clean --dry-run
+
+# Override retention for a one-off run
+daft hooks jobs clean --older-than 30d
+```
+
+## Automatic cleanup
+
+`daft` runs an automatic background cleanup once every 24 hours. On each
+invocation, if the cache file at `$XDG_CONFIG_HOME/daft/log-clean.json` is
+missing or stale, a detached `daft __clean-logs` child is spawned. The child
+acquires a single-flight file lock and runs three layered passes per repo:
+
+1. **Per-log truncation** — any `output.log` exceeding `max_log_size` (default
+   10 MB) is truncated with a `[output truncated at N bytes]` footer.
+2. **Retention sweep** — invocations older than the captured per-job
+   `retention` (default 7 days) are removed, subject to the `keep_last`
+   sanity floor (default 3 most-recent invocations per worktree).
+3. **Per-repo budget** — if total disk usage still exceeds `max_total_size`
+   (default 500 MB), oldest invocations are evicted LRU-style.
+
+To disable automatic cleanup: `export DAFT_NO_LOG_CLEAN=1`. Manual cleanup
+is always available via `daft hooks jobs clean`.
+
+Cleanup is auto-disabled in CI environments.
+
+The most recent cleanup result is summarized as a footer line in the
+`daft hooks jobs --all` listing:
+
+```text
+Last cleanup 4h ago: removed 23 job(s) (4.2 MB freed)
 ```
 
 ## See Also
