@@ -51,6 +51,23 @@ pub struct StartParams {
     /// starting the merge. Sourced by the command layer from
     /// `daft.merge.requireCleanTarget`; defaults to `true`.
     pub require_clean_target: bool,
+    /// When set, the core writes this as the daft-merge-intent.json marker
+    /// file BEFORE invoking `git commit` on the squash path. This allows
+    /// `--continue` to resume cleanup after an editor abort. The core removes
+    /// the marker on a successful commit. `None` means no cleanup was
+    /// requested (or the path is `--no-commit`).
+    pub cleanup_intent: Option<MergeIntentTemplate>,
+}
+
+/// Template for the cleanup intent marker, provided by the command layer
+/// before `source_shas` are available.
+///
+/// The core fills in `source_shas` from the captured SHAs before writing
+/// the final `MergeIntent` JSON.
+#[derive(Debug, Clone)]
+pub struct MergeIntentTemplate {
+    pub remove_worktree: bool,
+    pub also_branch: bool,
 }
 
 impl Default for StartParams {
@@ -65,6 +82,7 @@ impl Default for StartParams {
             flags: EffectiveFlags::default(),
             adopt: AdoptChoice::default(),
             require_clean_target: true,
+            cleanup_intent: None,
         }
     }
 }
@@ -1278,6 +1296,32 @@ fn execute_start_in_worktree(
         // forwarded via render_commit_flags. Stdio is inherited so the editor
         // opens correctly (TTY guard earlier ensured stdin is a terminal when
         // no message-supplying flag is set).
+
+        // Write the cleanup intent marker BEFORE git commit so that if the
+        // editor is aborted, `--continue` can resume cleanup after re-commit.
+        // The marker is removed on successful commit or on `--abort`.
+        let intent_path_opt = if let Some(ref tmpl) = params.cleanup_intent {
+            match resolve_worktree_git_dir(&path) {
+                Ok(gd) => {
+                    let intent = MergeIntent {
+                        sources: params.sources.clone(),
+                        source_shas: source_shas.to_vec(),
+                        remove_worktree: tmpl.remove_worktree,
+                        also_branch: tmpl.also_branch,
+                    };
+                    let ip = gd.join("daft-merge-intent.json");
+                    write_intent_marker(&gd, &intent);
+                    Some(ip)
+                }
+                Err(e) => {
+                    eprintln!("warning: failed to resolve git dir for intent marker: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let mut commit_argv: Vec<String> = vec!["commit".to_string()];
         commit_argv.extend(render_commit_flags(&params.flags));
 
@@ -1290,6 +1334,7 @@ fn execute_start_in_worktree(
         if !commit_status.success() {
             // Commit aborted (editor empty, pre-commit hook refused, GPG fail,
             // etc.). Squash changes remain staged; cleanup must be skipped.
+            // Intent marker remains for --continue to pick up.
             // TODO(slice-6): fire post-merge with RESULT=aborted here.
             // For now, fire as Success with empty SHA to preserve pre/post pairing.
             let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
@@ -1311,6 +1356,11 @@ fn execute_start_in_worktree(
                 target_branch: resolved.branch.clone(),
                 source_shas: source_shas.to_vec(),
             });
+        }
+
+        // Squash committed successfully. Remove the intent marker (if written).
+        if let Some(ref ip) = intent_path_opt {
+            let _ = std::fs::remove_file(ip);
         }
 
         // Squash committed. Read the new HEAD SHA for the status line and hook env.

@@ -544,12 +544,26 @@ pub fn run() -> Result<()> {
     // ephemeral-promote path fires, and for the state-aware terminal message.
     let into_branch = args.into.clone();
     let sources_for_message = args.sources.clone();
+    // Populate the cleanup intent template when squash + cleanup is requested.
+    // This is passed to the core so it can write the daft-merge-intent.json
+    // marker BEFORE git commit, enabling --continue to resume cleanup after
+    // an editor abort.
+    let squash_requested = flags.squash == Some(true);
+    let cleanup_intent = if squash_requested && effective_remove {
+        Some(crate::core::worktree::merge::MergeIntentTemplate {
+            remove_worktree: effective_remove,
+            also_branch: effective_and_branch,
+        })
+    } else {
+        None
+    };
     let params = crate::core::worktree::merge::StartParams {
         sources: args.sources,
         target: args.into,
         flags,
         adopt,
         require_clean_target: settings.merge_require_clean_target,
+        cleanup_intent,
     };
     // Build the MergeHookRunner used to fire pre-merge / post-merge hooks
     // from inside `execute_start`. Holding the executor + output here (in

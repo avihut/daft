@@ -1,0 +1,60 @@
+name: --continue resumes squash + cleanup after editor abort
+description:
+  "When SQUASH_MSG and intent marker are present (squash staged, commit
+  pending), --continue with --no-edit commits and runs cleanup."
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+steps:
+  - name: Clone + materialize feature with local-only commit
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout feature/test-feature
+      cd $WORK_DIR/test-repo/feature/test-feature
+      echo "extra" > extra.txt
+      git add extra.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t \
+        GIT_COMMITTER_EMAIL=t@t git commit -m "local extra"
+    expect: { exit_code: 0 }
+  - name: Stage squash without committing (sets up SQUASH_MSG)
+    run: git-worktree-merge feature/test-feature --squash --no-commit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["Squash staged on main"]
+  - name:
+      Manually write the daft-merge-intent.json marker (simulating editor abort)
+    run: |
+      real=$(git -C $WORK_DIR/test-repo/main rev-parse --absolute-git-dir)
+      feat_sha=$(git -C $WORK_DIR/test-repo/main rev-parse feature/test-feature)
+      cat > "$real/daft-merge-intent.json" << EOF
+      {"sources":["feature/test-feature"],"source_shas":["$feat_sha"],"remove_worktree":true,"also_branch":true}
+      EOF
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0 }
+  - name: Verify squash-staged state is recognized
+    run: |
+      real=$(git -C $WORK_DIR/test-repo/main rev-parse --absolute-git-dir)
+      [ -e "$real/SQUASH_MSG" ] && echo "has_squash_msg"
+      [ -e "$real/daft-merge-intent.json" ] && echo "has_intent"
+      git -C $WORK_DIR/test-repo/main diff --cached --quiet && echo "no_staged" || echo "has_staged"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["has_squash_msg", "has_intent", "has_staged"]
+  - name: --continue --no-edit commits and runs cleanup
+    run: git-worktree-merge --continue --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["Squash merged and cleaned up"]
+  - name: Verify worktree gone and branch gone
+    run: |
+      [ ! -d "$WORK_DIR/test-repo/feature/test-feature" ] && echo "wt_gone"
+      git -C $WORK_DIR/test-repo/main show-ref --verify --quiet refs/heads/feature/test-feature || echo "branch_gone"
+      git -C $WORK_DIR/test-repo/main diff --cached --quiet && echo "no_staged"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["wt_gone", "branch_gone", "no_staged"]
