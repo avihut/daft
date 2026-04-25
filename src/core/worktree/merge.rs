@@ -2307,7 +2307,12 @@ fn list_worktrees_with_in_progress_merges(git: &GitCommand) -> Result<Vec<PathBu
 ///
 /// Stdio is inherited so `--continue`'s commit-message editor works
 /// interactively.
-pub fn execute_finish(params: &FinishParams, git: &GitCommand, project_root: &Path) -> Result<()> {
+pub fn execute_finish(
+    params: &FinishParams,
+    git: &GitCommand,
+    project_root: &Path,
+    runner: &mut dyn HookRunner,
+) -> Result<()> {
     let resolved = resolve_target(params.worktree.as_deref(), git, project_root)?;
 
     // Finish commands require an on-disk worktree: --abort/--continue/--quit
@@ -2372,7 +2377,7 @@ pub fn execute_finish(params: &FinishParams, git: &GitCommand, project_root: &Pa
     let target_branch = resolved.branch.clone();
     match op {
         InProgressOp::SquashStaged => {
-            finish_squash_staged(params, git, project_root, &path, &target_branch)?;
+            finish_squash_staged(params, git, project_root, &path, &target_branch, runner)?;
         }
         InProgressOp::Merge => {
             let flag = match params.mode {
@@ -2420,6 +2425,7 @@ fn finish_squash_staged(
     project_root: &Path,
     path: &Path,
     target_branch: &str,
+    runner: &mut dyn HookRunner,
 ) -> Result<()> {
     let git_dir = resolve_worktree_git_dir(path)?;
     // `git merge --squash` writes SQUASH_MSG as the pre-populated commit
@@ -2454,10 +2460,24 @@ fn finish_squash_staged(
             let mut commit_argv: Vec<String> = vec!["commit".to_string()];
             commit_argv.extend(render_commit_flags(&params.commit_flags));
 
-            let status = Command::new("git")
+            // Determine whether git will open an editor: no explicit message
+            // (-m / -F) and --no-edit not set → editor will run. Pause the
+            // spinner before spawning so the editor inherits a clean terminal.
+            let commit_opens_editor = params.commit_flags.message.is_none()
+                && params.commit_flags.file.is_none()
+                && !matches!(params.commit_flags.edit, Some(false));
+
+            if commit_opens_editor {
+                runner.pause_spinner();
+            }
+            let status_result = Command::new("git")
                 .args(&commit_argv)
                 .current_dir(path)
-                .status()
+                .status();
+            if commit_opens_editor {
+                runner.resume_spinner();
+            }
+            let status = status_result
                 .context("failed to invoke `git commit` for squash-staged continue")?;
 
             if !status.success() {
@@ -4749,6 +4769,72 @@ mod tests {
         assert_eq!(
             runner.resume_count, 1,
             "resume_spinner must fire exactly once around the editor-opening git commit"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn finish_squash_staged_continue_brackets_runner_pause_resume() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+        // Add a real file commit on feature so squash-merge produces staged
+        // changes (detect_in_progress requires staged changes for SquashStaged).
+        std::fs::write(feat_wt.join("feature.txt"), b"feature content\n").unwrap();
+        ShellCommand::new("git")
+            .args(["add", "feature.txt"])
+            .current_dir(&feat_wt)
+            .status()
+            .unwrap();
+        ShellCommand::new("git")
+            .args(["commit", "-q", "-m", "feature work"])
+            .current_dir(&feat_wt)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+
+        // Run `git merge --squash feature` from main to create the squash-staged
+        // state: SQUASH_MSG is written, MERGE_HEAD is NOT, staged changes present.
+        ShellCommand::new("git")
+            .args(["merge", "--squash", "feature"])
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        // Stub editor: exits 0 without modifying the file. Git uses SQUASH_MSG
+        // as the commit-message template so the commit proceeds successfully.
+        std::env::set_var("GIT_EDITOR", "/usr/bin/true");
+        std::env::set_var("VISUAL", "/usr/bin/true");
+        std::env::set_var("EDITOR", "/usr/bin/true");
+
+        let git = GitCommand::new(false);
+        let mut runner = PauseTrackingRunner::default();
+        // No --no-edit / -m / -F → commit_opens_editor == true → pause/resume fires.
+        let params = FinishParams {
+            worktree: None,
+            mode: FinishMode::Continue,
+            commit_flags: EffectiveFlags::default(),
+        };
+        let _ = execute_finish(&params, &git, tmp.path(), &mut runner);
+
+        assert_eq!(
+            runner.pause_count, 1,
+            "pause must fire exactly once around the --continue editor invocation"
+        );
+        assert_eq!(
+            runner.resume_count, 1,
+            "resume must fire exactly once around the --continue editor invocation"
         );
     }
 }

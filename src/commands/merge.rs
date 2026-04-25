@@ -487,7 +487,13 @@ pub fn run() -> Result<()> {
             mode,
             commit_flags,
         };
-        return crate::core::worktree::merge::execute_finish(&params, &git, &project_root);
+        let mut runner = crate::core::worktree::merge::NullHookRunner;
+        return crate::core::worktree::merge::execute_finish(
+            &params,
+            &git,
+            &project_root,
+            &mut runner,
+        );
     }
 
     // Start mode. Clap's `num_args = 0..` on `sources` allows zero positionals
