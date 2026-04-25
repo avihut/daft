@@ -1,9 +1,9 @@
 name: Merge --squash -rb refuses branch deletion
 description:
   "After --squash, the source branch's commits don't appear on the target (the
-  squash creates a single new commit). `git branch -d` refuses to delete an
-  unmerged branch, so cleanup reports the error; worktree removal still succeeds
-  as partial cleanup."
+  squash creates a single new commit). Without --no-edit/-m, the TTY guard
+  refuses before any merge work because a non-TTY context cannot open an editor
+  for the squash commit. The worktree and branch are untouched."
 
 repos:
   - name: test-repo
@@ -21,9 +21,6 @@ steps:
 
   - name:
       Add a local-only commit on feature so its tip is ahead of its upstream.
-      (git branch -d succeeds with a warning when a branch is merged into its
-      upstream even if not reachable from HEAD; a local-only commit on top makes
-      it strictly unmerged, which is what this scenario exercises.)
     run: |
       echo "local extra" > local-only.txt
       git add local-only.txt
@@ -33,23 +30,23 @@ steps:
     expect: { exit_code: 0 }
 
   - name:
-      Squash merge with -rb — worktree removed, branch deletion refused by git
+      Squash merge with -rb without --no-edit — TTY guard refuses before merge
     run: git-worktree-merge feature/test-feature --squash -rb 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 1
       output_contains:
-        - "cleanup errors"
-        - "feature/test-feature"
+        - "No TTY available"
+        - "--no-edit"
 
-  - name: Verify worktree was removed (cleanup succeeded partially)
-    run: test ! -d $WORK_DIR/test-repo/feature/test-feature && echo "wt_removed"
+  - name: Verify worktree is still present (no merge work ran)
+    run: test -d $WORK_DIR/test-repo/feature/test-feature && echo "wt_present"
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
-      output_contains: ["wt_removed"]
+      output_contains: ["wt_present"]
 
-  - name: Verify source branch still exists (cleanup failed at branch deletion)
+  - name: Verify source branch still exists
     run:
       git -C $WORK_DIR/test-repo/main show-ref --verify --quiet
       refs/heads/feature/test-feature && echo "branch_exists"
@@ -58,15 +55,10 @@ steps:
       exit_code: 0
       output_contains: ["branch_exists"]
 
-  - name:
-      Verify squash staged changes are present on main (merge itself succeeded)
+  - name: Verify no staged changes on main (no merge ran)
     run: |
-      if git -C $WORK_DIR/test-repo/main diff --cached --quiet; then
-        echo "no_staged"
-      else
-        echo "has_staged"
-      fi
+      git -C $WORK_DIR/test-repo/main diff --cached --quiet && echo "no_staged" || echo "has_staged"
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
-      output_contains: ["has_staged"]
+      output_contains: ["no_staged"]

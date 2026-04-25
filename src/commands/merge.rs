@@ -502,8 +502,9 @@ pub fn run() -> Result<()> {
         preset: settings.merge_adopt_target_on_demand,
     };
     // Capture before move: needed for the worktree-post-create hook when the
-    // ephemeral-promote path fires. Non-ephemeral paths don't use this.
+    // ephemeral-promote path fires, and for the state-aware terminal message.
     let into_branch = args.into.clone();
+    let sources_for_message = args.sources.clone();
     let params = crate::core::worktree::merge::StartParams {
         sources: args.sources,
         target: args.into,
@@ -533,6 +534,20 @@ pub fn run() -> Result<()> {
         // further print here — duplicating the status line would be noise.
         Ok(())
     } else if outcome.failed {
+        // Commit-aborted path: squash staged, `git commit` was aborted (editor
+        // empty, pre-commit hook refused, GPG-sign fail, etc.). Changes remain
+        // staged on the target. Cleanup is skipped — there is nothing to clean
+        // up: the branch still has useful staged content the user wants to commit.
+        if outcome.commit_aborted {
+            let target = &outcome.target_branch;
+            eprintln!(
+                "Commit aborted; squash changes are still staged on {target}. Cleanup skipped."
+            );
+            eprintln!("  Commit manually: git commit");
+            eprintln!("  Or reset: git reset --merge");
+            std::process::exit(1);
+        }
+
         // Ephemeral-promote path: a ref-only target was adopted into a
         // canonical worktree at its layout-resolved sibling path. Fire
         // `worktree-post-create` so hook-installed environment setup
@@ -573,10 +588,24 @@ pub fn run() -> Result<()> {
     } else {
         // Core may have already emitted a terminal status line (e.g.,
         // "Fast-forwarded X to Y (no worktree)" from the ref-only FF path).
-        // Suppress the default "Merge complete." print in that case so a
-        // single successful merge produces a single stdout line.
+        // Suppress the default status print in that case so a single
+        // successful merge produces a single stdout line.
         if !outcome.emitted_terminal_message {
-            println!("Merge complete.");
+            // State-aware terminal messaging per the spec.
+            if outcome.squash_staged_only {
+                // --squash --no-commit: staged but not committed.
+                let target = &outcome.target_branch;
+                println!("Squash staged on {target}. Commit when ready.");
+            } else if let Some(ref sha) = outcome.squash_commit_sha {
+                // --squash with commit: a real commit landed.
+                let sources_display = sources_for_message.join(", ");
+                let target = &outcome.target_branch;
+                let short = &sha[..12.min(sha.len())];
+                println!("Squash merged {sources_display} into {target} as {short}.");
+            } else {
+                // Regular (non-squash) merge commit.
+                println!("Merge complete.");
+            }
         }
 
         // Post-merge cleanup (Slice 12). Only runs on successful,

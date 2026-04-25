@@ -849,7 +849,8 @@ pub fn announcement(sources: &[String], target_branch: &str) -> Option<String> {
 pub struct StartOutcome {
     /// The target branch was already up to date with the sources; nothing to do.
     pub already_up_to_date: bool,
-    /// True if `git merge` exited non-zero for any reason (conflict, unknown ref, bad state).
+    /// True if `git merge` exited non-zero for any reason (conflict, unknown ref, bad state),
+    /// OR if the squash-commit step was aborted (editor empty, pre-commit hook fail, etc.).
     /// Slice 5+ will refine this into `conflicted` vs other failure modes via stderr parsing
     /// or `.git/MERGE_HEAD` inspection.
     pub failed: bool,
@@ -878,6 +879,27 @@ pub struct StartOutcome {
     /// [`promote_ephemeral_to_layout`]). Always false outside the ephemeral
     /// conflict path.
     pub ephemeral_promoted: bool,
+    /// Set when `--squash` was used with `--no-commit` (or `commit=false`):
+    /// the squash changes are staged but no commit was made. The command
+    /// layer uses this to print the "Squash staged on <target>. Commit when
+    /// ready." line instead of the squash-committed line.
+    pub squash_staged_only: bool,
+    /// The SHA of the squash commit, when `--squash` succeeded and committed.
+    /// `None` in all other cases: non-squash merges, `--no-commit`, or abort.
+    pub squash_commit_sha: Option<String>,
+    /// True if the squash-commit step was explicitly aborted (editor empty,
+    /// pre-commit hook fail, GPG-sign fail, etc.). The command layer uses this
+    /// to print the abort message and skip cleanup.
+    ///
+    /// When this is true, `failed` is also true and `squash_commit_sha` is
+    /// `None`. Slice 6 will wire `post-merge` with `RESULT=aborted` when this
+    /// is set; for now just the plumbing.
+    pub commit_aborted: bool,
+    /// The resolved target branch name, populated on every non-error path.
+    /// Used by the command layer for state-aware terminal messages (e.g.
+    /// "Squash merged <source> into <target> as <sha>"). Empty string on
+    /// already-up-to-date and ref-only FF paths that emit their own line.
+    pub target_branch: String,
 }
 
 /// Parse `git status --porcelain` output for conflict entries.
@@ -1019,6 +1041,7 @@ pub fn execute_start(
             conflicted_files: Vec::new(),
             emitted_terminal_message: true,
             ephemeral_promoted: false,
+            ..StartOutcome::default()
         });
     }
 
@@ -1061,8 +1084,16 @@ pub fn execute_start(
 /// failure, probe the worktree's `git status --porcelain` for conflicted files
 /// so the caller can render a conflict report.
 ///
+/// For `--squash` merges, after a successful `git merge --squash`, runs a
+/// `git commit` step (unless `--no-commit` / `commit=false` is set). The
+/// commit step forwards message-composing flags via [`render_commit_flags`].
+/// If the commit step fails (editor aborted, pre-commit hook refused, GPG-sign
+/// error), the outcome has `failed=true` and `commit_aborted=true` so the
+/// command layer can print the abort message and skip cleanup.
+///
 /// Fires `pre-merge` before `git merge` (failure aborts) and `post-merge`
-/// after (failure is only surfaced as a warning to the caller).
+/// after the final outcome is determined (failure is only surfaced as a
+/// warning to the caller).
 fn execute_start_in_worktree(
     params: &StartParams,
     resolved: &ResolvedTarget,
@@ -1103,20 +1134,119 @@ fn execute_start_in_worktree(
         Vec::new()
     };
 
-    // Build the post-merge outcome. On success, read the target worktree's
-    // HEAD to report the new commit SHA; if that read fails, fall back to an
-    // empty SHA (hook scripts can test for `""`). On failure, record the
-    // conflicted files — same list the caller will print.
-    let outcome = if failed {
-        PostOutcome::Conflict {
+    if failed {
+        let post_ctx = pre_ctx.extend_for_post(PostOutcome::Conflict {
             files: files.clone(),
             promoted_from_ephemeral: false,
+        });
+        if let Err(e) = hooks.fire_post_merge(&post_ctx) {
+            eprintln!("warning: post-merge hook failed: {e}");
         }
-    } else {
+        return Ok(StartOutcome {
+            already_up_to_date: false,
+            failed: true,
+            target_path: path,
+            conflicted_files: files,
+            emitted_terminal_message: false,
+            ephemeral_promoted: false,
+            ..StartOutcome::default()
+        });
+    }
+
+    // `git merge --squash` succeeded. Determine whether to commit or stage-only.
+    let is_squash = params.flags.squash == Some(true);
+    let no_commit = params.flags.commit == Some(false);
+
+    if is_squash && !no_commit {
+        // Squash-then-commit: run `git commit` with message-composing flags
+        // forwarded via render_commit_flags. Stdio is inherited so the editor
+        // opens correctly (TTY guard earlier ensured stdin is a terminal when
+        // no message-supplying flag is set).
+        let mut commit_argv: Vec<String> = vec!["commit".to_string()];
+        commit_argv.extend(render_commit_flags(&params.flags));
+
+        let commit_status = Command::new("git")
+            .args(&commit_argv)
+            .current_dir(&path)
+            .status()
+            .with_context(|| format!("failed to invoke `git commit` in '{}'", path.display()))?;
+
+        if !commit_status.success() {
+            // Commit aborted (editor empty, pre-commit hook refused, GPG fail,
+            // etc.). Squash changes remain staged; cleanup must be skipped.
+            // TODO(slice-6): fire post-merge with RESULT=aborted here.
+            // For now, fire as Success with empty SHA to preserve pre/post pairing.
+            let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
+                commit_sha: String::new(),
+            });
+            if let Err(e) = hooks.fire_post_merge(&post_ctx) {
+                eprintln!("warning: post-merge hook failed: {e}");
+            }
+            return Ok(StartOutcome {
+                already_up_to_date: false,
+                failed: true,
+                target_path: path,
+                conflicted_files: Vec::new(),
+                emitted_terminal_message: false,
+                ephemeral_promoted: false,
+                squash_staged_only: false,
+                squash_commit_sha: None,
+                commit_aborted: true,
+                target_branch: resolved.branch.clone(),
+            });
+        }
+
+        // Squash committed. Read the new HEAD SHA for the status line and hook env.
         let sha = read_head_sha(&path).unwrap_or_default();
-        PostOutcome::Success { commit_sha: sha }
-    };
-    let post_ctx = pre_ctx.extend_for_post(outcome);
+        let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
+            commit_sha: sha.clone(),
+        });
+        if let Err(e) = hooks.fire_post_merge(&post_ctx) {
+            eprintln!("warning: post-merge hook failed: {e}");
+        }
+        return Ok(StartOutcome {
+            already_up_to_date: false,
+            failed: false,
+            target_path: path,
+            conflicted_files: Vec::new(),
+            emitted_terminal_message: false,
+            ephemeral_promoted: false,
+            squash_staged_only: false,
+            squash_commit_sha: Some(sha),
+            commit_aborted: false,
+            target_branch: resolved.branch.clone(),
+        });
+    }
+
+    if is_squash && no_commit {
+        // Stage-only path: --squash --no-commit. Changes staged, no commit made.
+        // Post-merge fires as Success with empty SHA (consistent with how
+        // a staged-but-uncommitted squash is observable from hook scripts).
+        let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
+            commit_sha: String::new(),
+        });
+        if let Err(e) = hooks.fire_post_merge(&post_ctx) {
+            eprintln!("warning: post-merge hook failed: {e}");
+        }
+        return Ok(StartOutcome {
+            already_up_to_date: false,
+            failed: false,
+            target_path: path,
+            conflicted_files: Vec::new(),
+            emitted_terminal_message: false,
+            ephemeral_promoted: false,
+            squash_staged_only: true,
+            squash_commit_sha: None,
+            commit_aborted: false,
+            target_branch: resolved.branch.clone(),
+        });
+    }
+
+    // Regular (non-squash) merge succeeded. Read the target worktree's HEAD to
+    // report the new commit SHA; if that read fails, fall back to an empty SHA
+    // (hook scripts can test for `""`).
+    let sha = read_head_sha(&path).unwrap_or_default();
+    let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success { commit_sha: sha });
     // post-merge never rolls back the merge — surface errors as warnings at
     // the caller, not Err here.
     if let Err(e) = hooks.fire_post_merge(&post_ctx) {
@@ -1125,11 +1255,13 @@ fn execute_start_in_worktree(
 
     Ok(StartOutcome {
         already_up_to_date: false,
-        failed,
+        failed: false,
         target_path: path,
-        conflicted_files: files,
+        conflicted_files: Vec::new(),
         emitted_terminal_message: false,
         ephemeral_promoted: false,
+        target_branch: resolved.branch.clone(),
+        ..StartOutcome::default()
     })
 }
 
@@ -1227,6 +1359,7 @@ fn execute_start_ref_only(
             conflicted_files: Vec::new(),
             emitted_terminal_message: true,
             ephemeral_promoted: false,
+            ..StartOutcome::default()
         });
     }
 
@@ -1341,6 +1474,107 @@ fn execute_ephemeral_merge(
         })?;
 
     if status.success() {
+        // `git merge --squash` succeeded: run commit step if needed.
+        let is_squash = params.flags.squash == Some(true);
+        let no_commit = params.flags.commit == Some(false);
+
+        if is_squash && !no_commit {
+            // Squash-then-commit in the ephemeral worktree.
+            let mut commit_argv: Vec<String> = vec!["commit".to_string()];
+            commit_argv.extend(render_commit_flags(&params.flags));
+
+            let commit_status = Command::new("git")
+                .args(&commit_argv)
+                .current_dir(&temp_path)
+                .status()
+                .with_context(|| {
+                    format!(
+                        "failed to invoke `git commit` in ephemeral worktree at '{}'",
+                        temp_path.display()
+                    )
+                })?;
+
+            if !commit_status.success() {
+                // Commit aborted. Leave ephemeral worktree; caller will report.
+                // TODO(slice-6): fire post-merge with RESULT=aborted here.
+                let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
+                    commit_sha: String::new(),
+                });
+                if let Err(e) = hooks.fire_post_merge(&post_ctx) {
+                    eprintln!("warning: post-merge hook failed: {e}");
+                }
+                return Ok(StartOutcome {
+                    already_up_to_date: false,
+                    failed: true,
+                    target_path: temp_path,
+                    conflicted_files: Vec::new(),
+                    emitted_terminal_message: false,
+                    ephemeral_promoted: false,
+                    squash_staged_only: false,
+                    squash_commit_sha: None,
+                    commit_aborted: true,
+                    target_branch: resolved.branch.clone(),
+                });
+            }
+
+            // Squash committed in ephemeral. Read SHA, fire post-merge, tear down.
+            let sha = read_head_sha(&temp_path).unwrap_or_default();
+            let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
+                commit_sha: sha.clone(),
+            });
+            if let Err(e) = hooks.fire_post_merge(&post_ctx) {
+                eprintln!("warning: post-merge hook failed: {e}");
+            }
+
+            crate::core::worktree::temp_worktree::remove(&temp_path).with_context(|| {
+                format!(
+                    "failed to remove ephemeral worktree at '{}'",
+                    temp_path.display()
+                )
+            })?;
+            return Ok(StartOutcome {
+                already_up_to_date: false,
+                failed: false,
+                target_path: PathBuf::new(),
+                conflicted_files: Vec::new(),
+                emitted_terminal_message: false,
+                ephemeral_promoted: false,
+                squash_staged_only: false,
+                squash_commit_sha: Some(sha),
+                commit_aborted: false,
+                target_branch: resolved.branch.clone(),
+            });
+        }
+
+        if is_squash && no_commit {
+            // Stage-only path in ephemeral worktree (--squash --no-commit).
+            let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
+                commit_sha: String::new(),
+            });
+            if let Err(e) = hooks.fire_post_merge(&post_ctx) {
+                eprintln!("warning: post-merge hook failed: {e}");
+            }
+            crate::core::worktree::temp_worktree::remove(&temp_path).with_context(|| {
+                format!(
+                    "failed to remove ephemeral worktree at '{}'",
+                    temp_path.display()
+                )
+            })?;
+            return Ok(StartOutcome {
+                already_up_to_date: false,
+                failed: false,
+                target_path: PathBuf::new(),
+                conflicted_files: Vec::new(),
+                emitted_terminal_message: false,
+                ephemeral_promoted: false,
+                squash_staged_only: true,
+                squash_commit_sha: None,
+                commit_aborted: false,
+                target_branch: resolved.branch.clone(),
+            });
+        }
+
+        // Regular (non-squash) ephemeral merge succeeded.
         // Fire post-merge BEFORE tearing down the ephemeral worktree so
         // scripts still see DAFT_MERGE_TARGET_PATH pointing at a live dir.
         let sha = read_head_sha(&temp_path).unwrap_or_default();
@@ -1366,6 +1600,7 @@ fn execute_ephemeral_merge(
             conflicted_files: Vec::new(),
             emitted_terminal_message: false,
             ephemeral_promoted: false,
+            ..StartOutcome::default()
         });
     }
 
@@ -1409,6 +1644,7 @@ fn execute_ephemeral_merge(
         conflicted_files: files,
         emitted_terminal_message: false,
         ephemeral_promoted: true,
+        ..StartOutcome::default()
     })
 }
 
@@ -2169,6 +2405,9 @@ mod tests {
         assert!(outcome.conflicted_files.is_empty());
         assert!(!outcome.emitted_terminal_message);
         assert!(!outcome.ephemeral_promoted);
+        assert!(!outcome.squash_staged_only);
+        assert!(outcome.squash_commit_sha.is_none());
+        assert!(!outcome.commit_aborted);
     }
 
     #[test]

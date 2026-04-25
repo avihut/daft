@@ -1,6 +1,7 @@
-name: Merge squash stages without committing
+name: --squash with --no-edit creates a real commit
 description:
-  "daft merge --squash stages changes without creating a merge commit"
+  "daft merge --squash --no-edit produces a commit on the target; no stale
+  MERGE_HEAD/MERGE_MSG; no staged changes left over."
 
 repos:
   - name: test-repo
@@ -11,33 +12,31 @@ steps:
     run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
     expect: { exit_code: 0 }
 
-  - name: Checkout feature
+  - name: Materialize feature
     run: git-worktree-checkout feature/test-feature
     cwd: "$WORK_DIR/test-repo"
     expect: { exit_code: 0 }
 
-  - name: Squash merge
-    run: git-worktree-merge feature/test-feature --squash 2>&1
+  - name: Squash + commit
+    run: git-worktree-merge feature/test-feature --squash --no-edit 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
+      output_contains:
+        - "Squash merged feature/test-feature into main"
 
-  - name: Verify changes staged but no MERGE_HEAD
+  - name: Verify a real commit landed (no MERGE_HEAD/MERGE_MSG, no staged)
     run: |
       real=$(git -C $WORK_DIR/test-repo/main rev-parse --absolute-git-dir)
-      if [ -e "$real/MERGE_HEAD" ]; then
-        echo "has_merge_head"
-      else
-        echo "no_merge_head"
-      fi
-      if git -C $WORK_DIR/test-repo/main diff --cached --quiet; then
-        echo "no_staged"
-      else
-        echo "has_staged"
-      fi
+      [ ! -e "$real/MERGE_HEAD" ] && echo "no_merge_head"
+      [ ! -e "$real/MERGE_MSG" ] && echo "no_merge_msg"
+      git -C $WORK_DIR/test-repo/main diff --cached --quiet && echo "no_staged"
+      git -C $WORK_DIR/test-repo/main log --oneline -1 main
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       output_contains:
         - "no_merge_head"
-        - "has_staged"
+        - "no_merge_msg"
+        - "no_staged"
+        - "Squashed commit"
