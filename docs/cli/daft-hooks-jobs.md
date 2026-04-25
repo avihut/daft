@@ -155,7 +155,7 @@ The most recent cleanup result is summarized as a footer line in the
 `daft hooks jobs --all` listing:
 
 ```text
-Last cleanup 4h ago: removed 23 job(s) (4.2 MB freed)
+Last log cleanup 4h ago: removed 23 job log(s) (4.2 MB freed)
 ```
 
 ## See Also

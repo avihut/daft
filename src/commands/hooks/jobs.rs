@@ -724,7 +724,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                         let ago = shorthand_from_seconds(age);
                         output.info("");
                         output.info(&dim(&format!(
-                            "Last cleanup {ago} ago: removed {} job(s) ({} freed)",
+                            "Last log cleanup {ago} ago: removed {} job log(s) ({} freed)",
                             s.removed_jobs,
                             format_bytes(s.freed_bytes),
                         )));
