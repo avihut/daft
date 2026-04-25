@@ -2175,47 +2175,46 @@ pub fn execute_finish(params: &FinishParams, git: &GitCommand, project_root: &Pa
     // callers of `ensure_merge_in_progress`. When the predicate fails, we swap
     // its bare error for a richer message listing candidate worktrees and a
     // concrete retry hint.
-    let op = match detect_in_progress(&path)? {
-        Some(InProgressOp::Merge) | Some(InProgressOp::SquashStaged) => {
-            detect_in_progress(&path)?.unwrap()
-        }
-        _ => {
-            let candidates = list_worktrees_with_in_progress_merges(git).unwrap_or_default();
-            let mut msg = format!("no in-progress merge in worktree '{}'", path.display());
-            if !candidates.is_empty() {
-                msg.push_str("\n\nmerges in progress elsewhere:");
-                for c in &candidates {
-                    // Best-effort branch resolution: if we can read the current
-                    // branch at the candidate path, show it alongside the path
-                    // so the user can paste it straight into the retry hint.
-                    match branch_at_path(git, c) {
-                        Ok(branch) => {
-                            msg.push_str(&format!("\n  {} (branch: {})", c.display(), branch))
-                        }
-                        Err(_) => msg.push_str(&format!("\n  {}", c.display())),
+    let op = if let Some(op @ (InProgressOp::Merge | InProgressOp::SquashStaged)) =
+        detect_in_progress(&path)?
+    {
+        op
+    } else {
+        let candidates = list_worktrees_with_in_progress_merges(git).unwrap_or_default();
+        let mut msg = format!("no in-progress merge in worktree '{}'", path.display());
+        if !candidates.is_empty() {
+            msg.push_str("\n\nmerges in progress elsewhere:");
+            for c in &candidates {
+                // Best-effort branch resolution: if we can read the current
+                // branch at the candidate path, show it alongside the path
+                // so the user can paste it straight into the retry hint.
+                match branch_at_path(git, c) {
+                    Ok(branch) => {
+                        msg.push_str(&format!("\n  {} (branch: {})", c.display(), branch))
                     }
-                }
-                let flag = match params.mode {
-                    FinishMode::Abort => "abort",
-                    FinishMode::Continue => "continue",
-                    FinishMode::Quit => "quit",
-                };
-                // Single candidate → concrete retry command; multiple
-                // candidates or resolution failure → placeholder.
-                let retry_target = if candidates.len() == 1 {
-                    branch_at_path(git, &candidates[0]).ok()
-                } else {
-                    None
-                };
-                match retry_target {
-                    Some(branch) => {
-                        msg.push_str(&format!("\n\nretry with: daft merge --{flag} {branch}"))
-                    }
-                    None => msg.push_str(&format!("\n\nretry with: daft merge --{flag} <branch>")),
+                    Err(_) => msg.push_str(&format!("\n  {}", c.display())),
                 }
             }
-            anyhow::bail!(msg);
+            let flag = match params.mode {
+                FinishMode::Abort => "abort",
+                FinishMode::Continue => "continue",
+                FinishMode::Quit => "quit",
+            };
+            // Single candidate → concrete retry command; multiple
+            // candidates or resolution failure → placeholder.
+            let retry_target = if candidates.len() == 1 {
+                branch_at_path(git, &candidates[0]).ok()
+            } else {
+                None
+            };
+            match retry_target {
+                Some(branch) => {
+                    msg.push_str(&format!("\n\nretry with: daft merge --{flag} {branch}"))
+                }
+                None => msg.push_str(&format!("\n\nretry with: daft merge --{flag} <branch>")),
+            }
         }
+        anyhow::bail!(msg);
     };
 
     // Dispatch based on detected state.

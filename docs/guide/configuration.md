@@ -167,6 +167,34 @@ system-wide; CLI flag arguments always override the configured default.
 | `daft.merge.postMerge.removeSourceWorktree`   | `false`    | Default for `-r`: remove the source worktree on success                                                |
 | `daft.merge.postMerge.alsoRemoveSourceBranch` | `false`    | Default for `-b`: also delete the source branch (requires `-r`; uses safe `branch -d` semantics)       |
 
+### Default squash + cleanup recipe
+
+To make `daft merge <source>` always squash, commit, and remove the source
+worktree + branch by default:
+
+```bash
+git config daft.merge.squash true
+git config daft.merge.postMerge.removeSourceWorktree true
+git config daft.merge.postMerge.alsoRemoveSourceBranch true
+```
+
+For non-interactive or CI use, also suppress the editor so the auto-generated
+squash message is used verbatim:
+
+```bash
+git config daft.merge.edit false
+```
+
+With these settings, `daft merge feature/done` becomes a one-shot squash +
+commit + full cleanup. Run `daft merge feature/done --no-edit` explicitly, or
+rely on `daft.merge.edit = false`, to skip the editor in scripts.
+
+**Contradictory combination:** setting both `daft.merge.commit = false` and
+`daft.merge.postMerge.alsoRemoveSourceBranch = true` is rejected at startup with
+a clear error. Branch cleanup requires a commit to justify the force delete;
+staging without committing and then deleting the branch would silently discard
+unmerged work.
+
 See the [`daft merge` reference](/cli/daft-merge) for flag-level details and the
 [hooks guide](/guide/hooks#merge-hooks) for `pre-merge` / `post-merge` hook
 configuration.

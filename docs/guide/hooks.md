@@ -82,18 +82,25 @@ date.
 
 **Additional env vars for `post-merge`:**
 
-| Variable                             | Value                                                                  |
-| ------------------------------------ | ---------------------------------------------------------------------- |
-| `DAFT_MERGE_RESULT`                  | `success` / `conflict` / `already-up-to-date`                          |
-| `DAFT_MERGE_COMMIT_SHA`              | SHA of the new tip on success (empty otherwise)                        |
-| `DAFT_MERGE_CONFLICTED_FILES`        | Newline-separated list of conflicted files (empty when not conflicted) |
-| `DAFT_MERGE_PROMOTED_FROM_EPHEMERAL` | `true` when a ref-only ephemeral merge was promoted to a sibling path  |
+| Variable                             | Value                                                                                                                |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `DAFT_MERGE_RESULT`                  | `success` / `conflict` / `already-up-to-date` / `aborted`                                                            |
+| `DAFT_MERGE_COMMIT_SHA`              | SHA of the new tip on success (empty otherwise, including when `aborted`)                                            |
+| `DAFT_MERGE_CONFLICTED_FILES`        | Newline-separated list of conflicted files (empty when not conflicted)                                               |
+| `DAFT_MERGE_PROMOTED_FROM_EPHEMERAL` | `true` when a ref-only ephemeral merge was promoted to a sibling path                                                |
+| `DAFT_MERGE_SOURCE_SHAS`             | Space-separated SHA list of source branch tips captured before the merge ran (one per source; empty for ref-only FF) |
+
+`RESULT=aborted` fires when a squash-commit step is abandoned — the editor was
+closed without saving, a pre-commit hook exited non-zero, or GPG signing failed.
+The squash changes remain staged on the target; `COMMIT_SHA` is empty. Use
+`daft merge --continue` or `git commit` to resume, or `daft merge --abort` to
+undo the staged changes.
 
 All the universal `DAFT_*` variables (`DAFT_PROJECT_ROOT`, `DAFT_GIT_DIR`,
 `DAFT_WORKTREE_PATH`, `DAFT_BRANCH_NAME`, etc.) are also set.
 
-**Example:** branch on `DAFT_MERGE_RESULT` in `post-merge` to notify only on
-conflicts:
+**Example:** branch on `DAFT_MERGE_RESULT` in `post-merge` to notify on
+conflicts or aborted squash commits:
 
 ```yaml
 hooks:
@@ -105,6 +112,10 @@ hooks:
             echo "Merge of $DAFT_MERGE_SOURCES into $DAFT_MERGE_TARGET_BRANCH \
                   conflicted; files: $DAFT_MERGE_CONFLICTED_FILES" \
               | mail -s "daft merge conflict" "$USER"
+          elif [ "$DAFT_MERGE_RESULT" = "aborted" ]; then
+            echo "Squash commit for $DAFT_MERGE_SOURCES was aborted; \
+                  staged changes remain on $DAFT_MERGE_TARGET_BRANCH" \
+              | mail -s "daft merge aborted" "$USER"
           fi
 ```
 

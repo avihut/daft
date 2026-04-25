@@ -52,20 +52,21 @@ The full flag surface mirrors `git merge` and is documented in
 [git worktree-merge](./git-worktree-merge.md). The flags below are the ones
 that are unique to daft merge or that shape the cross-worktree workflow.
 
-| Option                  | Description                                                                                         |
-| ----------------------- | --------------------------------------------------------------------------------------------------- |
-| `--into <TARGET>`       | Target worktree/branch; omit to merge into the current worktree.                                    |
-| `--abort`               | Abort an in-progress merge in the named worktree (default: CWD).                                    |
-| `--continue`            | Continue a conflicted merge after you resolve conflicts.                                            |
-| `--quit`                | Quit a merge without resetting the index.                                                           |
-| `--adopt-target`        | When the target has no worktree, create an ephemeral worktree and run the merge there — no prompt. |
-| `--no-adopt-target`     | Refuse instead of prompting when the target has no worktree.                                        |
-| `-y, --yes`             | Auto-accept interactive prompts; implies `--adopt-target` unless overridden.                        |
-| `-r, --remove`          | Remove the source worktree after a successful merge.                                                |
-| `-b, --and-branch`      | Also delete the source branch (requires `-r`). Uses `git branch -d` safety semantics.               |
-| `--squash`              | Squash the source's changes into a staged diff; no merge commit is created.                         |
-| `-s, --strategy <STRAT>`| Merge strategy (`recursive`, `ours`, `octopus`, etc.).                                              |
-| `-X, --strategy-option` | Strategy-specific option (repeatable).                                                              |
+| Option                  | Description                                                                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--into <TARGET>`       | Target worktree/branch; omit to merge into the current worktree.                                                                            |
+| `--abort`               | Abort an in-progress merge (or squash-staged state) in the named worktree (default: CWD).                                                   |
+| `--continue`            | Continue after resolving conflicts, or resume a squash-staged commit.                                                                       |
+| `--quit`                | Quit a merge without resetting the index.                                                                                                   |
+| `--adopt-target`        | When the target has no worktree, create an ephemeral worktree and run the merge there — no prompt.                                          |
+| `--no-adopt-target`     | Refuse instead of prompting when the target has no worktree.                                                                                |
+| `-y, --yes`             | Auto-accept interactive prompts; implies `--adopt-target` unless overridden.                                                                |
+| `-r, --remove`          | Remove the source worktree after a successful merge.                                                                                        |
+| `-b, --and-branch`      | Also delete the source branch (requires `-r`). Regular merges use `git branch -d` safety semantics; squash + commit uses `branch -D` (see [Cleanup](#cleanup-r-and--rb)). |
+| `--squash`              | Squash all source commits into a single commit on the target. The commit is created automatically by default (editor opens for the message); use `--no-commit` to stage without committing. |
+| `--no-commit`           | After `--squash`, stage the changes without creating a commit. Incompatible with `-r`/`-rb`.                                                |
+| `-s, --strategy <STRAT>`| Merge strategy (`recursive`, `ours`, `octopus`, etc.).                                                                                      |
+| `-X, --strategy-option` | Strategy-specific option (repeatable).                                                                                                      |
 
 ## Examples
 
@@ -101,13 +102,31 @@ the whole merge (octopus merges don't allow resolving conflicts mid-flight).
 ### Squash merge
 
 ```bash
-# Stage feature/api's changes on the current branch without a merge commit
+# Squash feature/api's commits into one commit on the current branch.
+# An editor opens pre-populated with a "Squashed commit of the following:"
+# message; save and close to create the commit.
 daft merge --squash feature/api
+
+# Skip the editor and use the auto-generated message verbatim:
+daft merge --squash --no-edit feature/api
+
+# Supply an explicit message (no editor):
+daft merge --squash -m "feat: squash feature/api" feature/api
+
+# Opt out of the automatic commit — stage only, commit by hand:
+daft merge --squash --no-commit feature/api
 ```
 
-The merge leaves changes staged; commit them yourself when ready.
+By default `--squash` creates a real commit on the target after staging the
+squashed changes. The editor opens pre-populated from `.git/SQUASH_MSG` so
+you can review and adjust the message before committing. Pass `--no-edit` or
+`-m <msg>` to skip the editor. Pass `--no-commit` to restore git's historical
+"stage only" behavior (incompatible with `-r`/`-rb`; see [Cleanup](#cleanup-r-and--rb)).
 
-### Abort a conflicted merge
+When no TTY is available (e.g. piped in CI), daft refuses to open an editor
+and exits with a clear hint to pass `--no-edit` or `-m`.
+
+### Abort a conflicted merge or squash-staged state
 
 ```bash
 # In the worktree where the merge is in progress:
@@ -117,27 +136,63 @@ daft merge --abort
 daft merge --abort main
 ```
 
-### Continue after resolving conflicts
+`--abort` handles two in-progress states:
+
+- **Regular merge conflict** — runs `git merge --abort`; restores the index
+  and working tree to the pre-merge state.
+- **Squash staged, commit pending** — runs `git reset --merge`; resets the
+  index to HEAD, discards `SQUASH_MSG`. This state arises when the commit
+  editor was closed without saving, or when `--squash --no-commit` was used.
+
+### Continue after resolving conflicts or resume a squash commit
 
 ```bash
-# Edit conflicted files, `git add` them, then:
+# After resolving conflict files, `git add` them, then:
 daft merge --continue
 
 # Or from anywhere:
 daft merge --continue main
+
+# Resume a squash commit with a specific message (skip the editor):
+daft merge --continue --no-edit main
+daft merge --continue -m "feat: squash feature" main
 ```
 
-### Cleanup after a successful merge
+`--continue` also handles two in-progress states:
+
+- **Regular merge conflict** — runs `git merge --continue`; creates the merge
+  commit once all conflicts are resolved.
+- **Squash staged, commit pending** — re-opens the editor on the preserved
+  `SQUASH_MSG` (same as running `git commit`). Pass `--no-edit`, `-m`, or
+  `-F` on the `--continue` invocation to skip the editor. If cleanup was
+  originally requested (`-r`/`-rb`), it runs after the commit succeeds.
+
+### Cleanup after a successful merge {#cleanup-r-and--rb}
 
 ```bash
 # Merge and delete the source worktree afterwards
 daft merge feature/done --into main -r
 
-# Also delete the source branch (safe -d semantics)
+# Also delete the source branch (safe -d semantics for regular merges)
 daft merge feature/done --into main -rb
+
+# Squash + commit + full cleanup in one step (editor opens for message)
+daft merge feature/done --into main --squash -rb
+
+# Same, but skip the editor (auto-generated message)
+daft merge feature/done --into main --squash --no-edit -rb
 ```
 
-`-b` requires `-r` and refuses to delete branches that aren't fully merged.
+`-b` requires `-r`. For regular merges, `-b` uses `git branch -d` (safe)
+semantics — it refuses to delete a branch that isn't fully merged into the
+target. For squash merges, daft uses `branch -D` because the squash commit
+captures the source's content; git's reachability check would always refuse
+a squash-only branch. Before force-deleting, daft re-checks that the source
+branch tip hasn't moved since the merge started. If it has (e.g. a concurrent
+push happened during the editor session), cleanup is refused and a recovery
+hint is shown; the squash commit already landed on the target.
+
+`--no-commit` is incompatible with `-r`/`-rb` because cleanup requires a commit.
 
 ### Ephemeral target worktree
 

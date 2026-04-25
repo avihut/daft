@@ -248,8 +248,17 @@ daft merge feature/api --into main
 # Octopus: merge multiple sources into the target in one commit
 daft merge feature/a feature/b feature/c --into main
 
-# Squash, strategy flags, etc. — mirrors git merge
+# Squash: all source commits become one commit on the target.
+# An editor opens pre-populated with the squash message by default.
 daft merge --squash feature/api
+# Skip the editor:
+daft merge --squash --no-edit feature/api
+# Squash + full cleanup in one shot (editor opens, then removes worktree+branch):
+daft merge --squash -rb feature/done --into main
+# Non-interactive / CI squash with cleanup:
+daft merge --squash --no-edit -rb feature/done --into main
+
+# Strategy flags
 daft merge -s ours --into release feature/old
 
 # Cleanup on success: remove source worktree (`-r`) and branch (`-b`)
@@ -270,10 +279,18 @@ daft merge feature/hotfix --into release/1.2 -y
 - Scripting merges (`-y` auto-accepts prompts; `--adopt-target` /
   `--no-adopt-target` make adoption explicit).
 - Tidy up after a merge (`-r` removes the source worktree, `-rb` also deletes
-  the branch using safe `git branch -d` semantics).
+  the branch). For regular merges `-b` uses safe `git branch -d` semantics; for
+  squash merges, daft uses `branch -D` after verifying the squash captured all
+  source content (stability check — refuses if the source tip moved since merge
+  start).
 
 **Common pitfalls to communicate to the user:**
 
+- **`--squash` always commits by default.** An editor opens pre-populated with
+  the squash message. Pass `--no-edit` to use the message verbatim, or `-m` to
+  supply your own. Use `--no-commit` to stage without committing (incompatible
+  with `-r`/`-rb`). Without a TTY and without `--no-edit`/`-m`, daft refuses
+  before merging.
 - **Target must be clean.** By default `daft.merge.requireCleanTarget=true`
   refuses to merge when the target worktree has uncommitted changes. Ask the
   user to commit, stash, or carry those changes first (`daft carry <target>` is
@@ -283,11 +300,16 @@ daft merge feature/hotfix --into release/1.2 -y
   stays where it was. Resolve in the target worktree, `git add`, then run
   `daft merge --continue [<target>]`. To bail out, run
   `daft merge --abort [<target>]`.
+- **Squash-staged state.** If the squash commit editor is closed without saving,
+  the squash changes remain staged (squash-staged state). Use
+  `daft merge --continue` to re-open the editor, or `daft merge --abort` to
+  reset the index.
 - **Octopus aborts on conflict.** Multi-source merges are all-or-nothing;
   there's no mid-flight resolution.
-- **`-b` requires `-r`** and uses `git branch -d` (safe) semantics — it refuses
-  to delete a branch that isn't fully merged. Use `git branch -D` manually if
-  you really want a force-delete.
+- **`-b` requires `-r`.** For regular merges, uses `git branch -d` (safe)
+  semantics. For squash + commit, uses `branch -D` — safe because daft has
+  content-equivalence proof. If the source branch moved during the editor
+  session, cleanup is refused and a hint is shown.
 - **Ephemeral target behavior.** With no worktree for the target, the default is
   to prompt. `--adopt-target` accepts without asking; `--no-adopt-target`
   refuses. Configure the default with `daft.merge.adoptTargetOnDemand` =
@@ -344,10 +366,13 @@ may depend on.
 `post-merge` logs warnings on failure but never rolls back the merge (default:
 `warn`). Both expose `DAFT_MERGE_*` env vars: `SOURCES`, `TARGET_BRANCH`,
 `TARGET_PATH`, `MODE` (`merge`/`ff`/`squash`/`octopus`), `STRATEGY`,
-`EPHEMERAL`, `CROSS_WORKTREE`. `post-merge` additionally gets `RESULT`
-(`success`/`conflict`/`already-up-to-date`), `COMMIT_SHA`, `CONFLICTED_FILES`
-(newline-separated), and `PROMOTED_FROM_EPHEMERAL`. Neither fires when the merge
-is a no-op (already up to date).
+`EPHEMERAL`, `CROSS_WORKTREE`, `SOURCE_SHAS` (space-separated SHA list of source
+tips captured before merge). `post-merge` additionally gets `RESULT`
+(`success`/`conflict`/`already-up-to-date`/`aborted`), `COMMIT_SHA`,
+`CONFLICTED_FILES` (newline-separated), and `PROMOTED_FROM_EPHEMERAL`.
+`RESULT=aborted` fires when a squash commit is abandoned (editor closed without
+saving, pre-commit hook fail, GPG-sign fail); `COMMIT_SHA` is empty in this
+case. Neither hook fires when the merge is a no-op (already up to date).
 
 ### daft.yml Format
 
