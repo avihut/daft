@@ -6,11 +6,14 @@ use crate::{
             resolver::{resolve_layout, LayoutResolutionContext},
             Layout, TemplateContext,
         },
+        ownership::OwnershipStrategy,
         worktree::{
             branch_source::{BranchPlan, BranchSource},
             clone,
-            list::WorktreeInfo,
-            sync_dag::{DagEvent, OperationPhase, TaskMessage, TaskStatus},
+            info_field::FieldSet,
+            list::{EntryKind, Stat, WorktreeInfo},
+            list_stream,
+            sync_dag::{DagEvent, OperationPhase, PatchSource, TaskMessage, TaskStatus},
         },
         HookRunner, NullSink, OutputSink, TuiBridge,
     },
@@ -807,6 +810,8 @@ fn create_satellite_worktrees_tui(
     let shared_remote_name = Arc::new(bare_params.remote_name.clone());
     let shared_checkout_upstream = settings.checkout_upstream;
     let shared_use_gitoxide = settings.use_gitoxide;
+    let shared_ownership_strategy = settings.ownership_strategy;
+    let shared_default_branch = Arc::new(base_result.default_branch.clone());
     let shared_satellite_paths = Arc::new(satellite_paths);
     let shared_git_dir = Arc::new(base_result.git_dir.clone());
     let shared_parent_dir = Arc::new(base_result.parent_dir.clone());
@@ -880,6 +885,21 @@ fn create_satellite_worktrees_tui(
 
                     let _ = bridge.run_hook(&ctx);
                 }
+            }
+
+            // Refresh last_commit + branch_age cells via PostTask patches so
+            // the post-clone TUI rows show real values (not empty cells).
+            if let Some(ref bp) = shared_base_path {
+                spawn_post_clone_refresh(
+                    base,
+                    bp,
+                    shared_use_gitoxide,
+                    &shared_default_branch,
+                    &shared_remote_name,
+                    shared_ownership_strategy,
+                    None,
+                    &tx,
+                );
             }
 
             let _ = tx.send(DagEvent::TaskCompleted {
@@ -1034,6 +1054,19 @@ fn create_satellite_worktrees_tui(
                             }
                         }
                     }
+
+                    // Refresh last_commit + branch_age cells via PostTask patches so
+                    // the post-clone TUI rows show real values (not empty cells).
+                    spawn_post_clone_refresh(
+                        branch,
+                        worktree_path,
+                        shared_use_gitoxide,
+                        &shared_default_branch,
+                        &shared_remote_name,
+                        shared_ownership_strategy,
+                        None,
+                        &tx,
+                    );
 
                     let _ = tx.send(DagEvent::TaskCompleted {
                         phase: OperationPhase::Setup,
@@ -1309,4 +1342,50 @@ fn run_post_create_hook(
     executor.execute(&ctx, output, presenter)?;
 
     Ok(())
+}
+
+/// Spawn a streaming-collector run that re-emits `LAST_COMMIT | BRANCH_AGE`
+/// for the freshly-created worktree as `PatchSource::PostTask(Setup)`
+/// patches. Blocks briefly so the patches land before the accompanying
+/// `TaskCompleted` event, keeping the renderer state consistent (no empty
+/// "Age"/"Commit" cells in the post-clone TUI).
+///
+/// Mirrors `sync.rs::spawn_post_task_refresh` but tailored to clone: the
+/// only refreshed cells are commit metadata for the just-created worktree,
+/// and the operation phase is always `Setup`.
+#[allow(clippy::too_many_arguments)]
+fn spawn_post_clone_refresh(
+    branch_name: &str,
+    path: &std::path::Path,
+    use_gitoxide: bool,
+    base_branch: &str,
+    remote_name: &str,
+    ownership_strategy: OwnershipStrategy,
+    user_email: Option<&str>,
+    tx: &std::sync::mpsc::Sender<DagEvent>,
+) {
+    let target = list_stream::CollectorTarget {
+        branch_name: branch_name.to_string(),
+        path: Some(path.to_path_buf()),
+        kind: EntryKind::Worktree,
+        is_detached: false,
+    };
+    let ctx = Arc::new(list_stream::CollectorContext {
+        use_gitoxide,
+        base_branch: base_branch.to_string(),
+        remote_name: remote_name.to_string(),
+        ownership_strategy,
+        user_email: user_email.map(|s| s.to_string()),
+    });
+    let handle = list_stream::spawn(
+        list_stream::CollectorRequest {
+            targets: vec![target],
+            fields: FieldSet::LAST_COMMIT | FieldSet::BRANCH_AGE,
+            stat: Stat::Summary,
+            source: PatchSource::PostTask(OperationPhase::Setup),
+            ctx,
+        },
+        tx.clone(),
+    );
+    handle.join();
 }
