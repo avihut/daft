@@ -1104,6 +1104,8 @@ fn create_satellite_worktrees_tui(
             sort_spec: None,
             extra_rows: 5 + (satellite_count as u16) * 8,
             verbosity,
+            pin_default_branch: true,
+            partition_by_owner: false, // Clone does not partition by owner.
         },
         None,
     );

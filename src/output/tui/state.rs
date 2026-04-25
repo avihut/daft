@@ -152,20 +152,23 @@ impl TuiState {
         columns_explicit: bool,
         unowned_start_index: Option<usize>,
         sort_spec: Option<SortSpec>,
+        pin_default_branch: bool,
+        partition_by_owner: bool,
     ) -> Self {
-        // Task 9 preserves today's behavior: prune/sync compute
-        // `unowned_start_index` externally and pass it in. We disable
-        // `partition_by_owner` so `LiveTable::resort_and_repartition` does
-        // not overwrite the externally-computed boundary, then inject the
-        // value directly. Task 10 will flip `partition_by_owner` to true and
-        // delete the parameter.
+        // For prune/sync the caller passes `partition_by_owner: false` and
+        // injects an externally-computed `unowned_start_index` (richer
+        // predicate via `is_branch_included` with include_filters). Setting
+        // `partition_by_owner: true` would let
+        // `LiveTable::resort_and_repartition` overwrite that injected value,
+        // so callers that supply an external boundary MUST pass `false`.
+        // `daft list` (Phase 2) sets `true` to let LiveTable own partitioning.
         let cfg = LiveTableConfig {
             stat,
             columns,
             columns_explicit,
             sort_spec,
-            pin_default_branch: true,
-            partition_by_owner: false,
+            pin_default_branch,
+            partition_by_owner,
             project_root,
             cwd,
         };
@@ -207,15 +210,10 @@ impl TuiState {
                     } else {
                         EntryKind::Worktree
                     };
-                    self.live.rows.push(WorktreeRow::idle(WorktreeInfo {
+                    self.live.push_row(WorktreeInfo {
                         kind,
                         ..WorktreeInfo::empty(branch_name)
-                    }));
-                    // Keep the per-row patch tracker in lockstep so
-                    // `LiveTable::is_cell_loading` cannot index out of bounds.
-                    self.live
-                        .received_patches
-                        .push(crate::core::worktree::info_field::FieldSet::EMPTY);
+                    });
                 }
                 if let Some(row) = self.find_row_mut(branch_name) {
                     // Save terminal status so PreconditionFailed can restore it.
@@ -532,6 +530,8 @@ mod tests {
             false,
             None,
             None,
+            true,
+            false,
         )
     }
 
@@ -559,6 +559,8 @@ mod tests {
             false,
             None,
             None,
+            true,
+            false,
         )
     }
 
@@ -1146,6 +1148,8 @@ mod tests {
             false,
             None,
             None,
+            true,
+            false,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1196,6 +1200,8 @@ mod tests {
             false,
             None,
             None,
+            true,
+            false,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1242,6 +1248,8 @@ mod tests {
             false,
             None,
             None,
+            true,
+            false,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1312,6 +1320,8 @@ mod tests {
             false,
             None,
             None,
+            true,
+            false,
         )
     }
 

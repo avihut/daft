@@ -173,6 +173,15 @@ impl LiveTable {
     pub fn is_cell_loading(&self, row_idx: usize, field: FieldSet) -> bool {
         !self.collection_complete && !self.received_patches[row_idx].contains(field)
     }
+
+    /// Append a new row, keeping `received_patches` in lockstep so
+    /// `is_cell_loading` cannot index out of bounds. Used when a
+    /// dynamically-discovered branch (e.g. a gone branch surfaced after
+    /// fetch) gets a row.
+    pub fn push_row(&mut self, info: WorktreeInfo) {
+        self.rows.push(WorktreeRow::idle(info));
+        self.received_patches.push(FieldSet::EMPTY);
+    }
 }
 
 fn patch_field_claim(patch: &crate::core::worktree::sync_dag::WorktreeInfoPatch) -> FieldSet {

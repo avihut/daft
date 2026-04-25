@@ -31,6 +31,17 @@ pub struct TableConfig {
     pub extra_rows: u16,
     /// Verbosity level.  `>= 1` enables hook sub-rows in the TUI.
     pub verbosity: u8,
+    /// Pin the default branch to the first row regardless of `--sort`.
+    /// Defaults to `true` (prune/sync behavior). `daft list` will set
+    /// `false` in Phase 2.
+    pub pin_default_branch: bool,
+    /// Split rows into "owned" and "unowned" sections by `info.owner`.
+    /// Defaults to `true` for daft list (Phase 2). PRUNE/SYNC set this to
+    /// `false` because they compute `unowned_start_index` externally using
+    /// a richer predicate (`is_branch_included` with include_filters); the
+    /// external value is injected into `live.unowned_start_index` after
+    /// `TuiState::new` returns, and we must not let LiveTable overwrite it.
+    pub partition_by_owner: bool,
 }
 
 /// Result returned after the TUI completes.
@@ -107,6 +118,8 @@ impl OperationTable {
             self.config.columns_explicit,
             self.unowned_start_index,
             self.config.sort_spec,
+            self.config.pin_default_branch,
+            self.config.partition_by_owner,
         );
 
         let renderer =
@@ -136,6 +149,8 @@ mod tests {
             sort_spec: None,
             extra_rows: 0,
             verbosity: 0,
+            pin_default_branch: true,
+            partition_by_owner: true,
         };
         assert_eq!(cfg_silent.verbosity, 0);
 
@@ -145,6 +160,8 @@ mod tests {
             sort_spec: None,
             extra_rows: 0,
             verbosity: 1,
+            pin_default_branch: true,
+            partition_by_owner: true,
         };
         assert!(cfg_verbose.verbosity >= 1);
     }

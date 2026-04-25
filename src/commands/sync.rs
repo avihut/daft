@@ -833,6 +833,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             sort_spec,
             extra_rows: 5 + hook_extra_rows,
             verbosity: args.verbose,
+            pin_default_branch: true,
+            partition_by_owner: false, // External unowned_start_index drives the partition.
         },
         unowned_start_index,
     );
