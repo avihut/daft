@@ -689,6 +689,10 @@ impl DaftSettings {
         }
 
         load_merge_settings(&git, &mut settings)?;
+        validate_merge_settings(
+            settings.merge_commit,
+            settings.merge_post_merge_also_remove_source_branch,
+        )?;
 
         Ok(settings)
     }
@@ -937,6 +941,25 @@ fn load_merge_settings(git: &GitCommand, settings: &mut DaftSettings) -> Result<
             parse_bool(&value, defaults::MERGE_POST_MERGE_ALSO_REMOVE_SOURCE_BRANCH);
     }
 
+    Ok(())
+}
+
+/// Validate that merge settings are internally consistent.
+///
+/// Returns an error if `daft.merge.commit = false` is combined with
+/// `daft.merge.postMerge.alsoRemoveSourceBranch = true` — cleanup after
+/// `--squash` requires a real commit to justify deleting the source branch.
+pub(crate) fn validate_merge_settings(
+    merge_commit: bool,
+    also_remove_source_branch: bool,
+) -> Result<()> {
+    if !merge_commit && also_remove_source_branch {
+        anyhow::bail!(
+            "daft.merge.commit = false is incompatible with \
+             daft.merge.postMerge.alsoRemoveSourceBranch = true: \
+             branch cleanup requires a committed merge to justify deletion"
+        );
+    }
     Ok(())
 }
 
@@ -1334,5 +1357,21 @@ mod tests {
         assert!(!s.merge_signoff);
         assert!(!s.merge_verify_signatures);
         assert!(!s.merge_allow_unrelated_histories);
+    }
+
+    #[test]
+    fn refuses_no_commit_with_also_remove_branch() {
+        let result = validate_merge_settings(false, true);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("daft.merge.commit"));
+        assert!(msg.contains("alsoRemoveSourceBranch"));
+    }
+
+    #[test]
+    fn allows_compatible_merge_settings() {
+        assert!(validate_merge_settings(true, true).is_ok());
+        assert!(validate_merge_settings(false, false).is_ok());
+        assert!(validate_merge_settings(true, false).is_ok());
     }
 }
