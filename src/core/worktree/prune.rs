@@ -703,7 +703,7 @@ fn remove_worktree(
     }
 
     // Cancel any running background jobs for this worktree (best-effort).
-    cancel_background_jobs_for_worktree(&ctx.project_root, wt_path, sink);
+    cancel_background_jobs_for_worktree(branch_name, sink);
 
     // Pre-remove hook
     run_removal_hook(HookType::PreRemove, ctx, wt_path, branch_name, sink);
@@ -821,15 +821,20 @@ fn delete_branch(git: &GitCommand, branch_name: &str, sink: &mut dyn ProgressSin
 
 // ── Background job cancellation ────────────────────────────────────────────
 
+/// Returns true when `job` belongs to the worktree identified by `branch_slug`.
+///
+/// `JobInfo.worktree` carries the branch slug (e.g. "feat/x") set from
+/// `ctx.branch_name` at job-launch time, NOT the filesystem path. Comparing
+/// against a path here would never match.
+fn worktree_matches_job(job: &crate::coordinator::JobInfo, branch_slug: &str) -> bool {
+    job.worktree == branch_slug
+}
+
 /// Cancel any running background jobs for a specific worktree.
 ///
 /// This is best-effort: if no coordinator is running, or if the coordinator
 /// cannot be reached, the error is silently ignored so removal proceeds.
-fn cancel_background_jobs_for_worktree(
-    _project_root: &Path,
-    worktree_path: &Path,
-    sink: &mut dyn ProgressSink,
-) {
+fn cancel_background_jobs_for_worktree(branch_slug: &str, sink: &mut dyn ProgressSink) {
     use crate::coordinator::client::CoordinatorClient;
     use crate::coordinator::log_store::JobStatus;
 
@@ -854,9 +859,8 @@ fn cancel_background_jobs_for_worktree(
         Err(_) => return,
     };
 
-    let wt_str = worktree_path.to_string_lossy();
     for job in jobs {
-        if matches!(job.status, JobStatus::Running) && job.worktree == wt_str.as_ref() {
+        if matches!(job.status, JobStatus::Running) && worktree_matches_job(&job, branch_slug) {
             sink.on_step(&format!("Stopping background job '{}'...", job.name));
             match client.cancel_job(&job.name) {
                 Ok(_) => sink.on_step(&format!("Stopped background job '{}'", job.name)),
@@ -968,5 +972,24 @@ fn cleanup_empty_parent_dirs(
             }
             Err(_) => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cancel_helper_matches_on_branch_slug_not_filesystem_path() {
+        use crate::coordinator::log_store::JobStatus;
+        use crate::coordinator::JobInfo;
+        let job = JobInfo {
+            name: "warm-build".into(),
+            hook_type: "worktree-post-create".into(),
+            worktree: "feat/x".into(),
+            status: JobStatus::Running,
+            elapsed_secs: Some(5),
+            exit_code: None,
+        };
+        assert!(super::worktree_matches_job(&job, "feat/x"));
+        assert!(!super::worktree_matches_job(&job, "/repo/feat/x"));
     }
 }
