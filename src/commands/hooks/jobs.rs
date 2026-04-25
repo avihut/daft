@@ -7,7 +7,7 @@ use std::path::Path;
 use crate::coordinator::client::CoordinatorClient;
 use crate::coordinator::log_store::{InvocationMeta, JobStatus, LogStore};
 use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
-use crate::output::format::shorthand_from_seconds;
+use crate::output::format::{pad_to_visible_width, shorthand_from_seconds, strip_ansi};
 use crate::output::Output;
 use crate::styles::{
     blue, bold, dim, dim_underline, green, orange, red, yellow, BOLD, CURRENT_WORKTREE_SYMBOL,
@@ -682,7 +682,94 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
 
     let now = chrono::Utc::now();
 
+    // ---- Pass 1: collect rows + measure global per-column widths ----
+    //
+    // Materialize every job row up-front so we can compute per-column max
+    // visible width across all invocations in this listing. Without this,
+    // adjacent invocations whose Job/Status/Duration values differ in length
+    // pick different `tabled` column widths and the rendering drifts.
+    struct JobRow {
+        job: String,
+        status: String,
+        started: String,
+        duration: String,
+        size: String,
+    }
+    struct Section<'a> {
+        inv: &'a InvocationMeta,
+        rows: Vec<JobRow>,
+    }
+    let mut sections_by_worktree: Vec<(String, Vec<Section>)> = Vec::new();
+
+    const HEADERS: [&str; 5] = ["Job", "Status", "Started", "Duration", "Size"];
+    let mut max_widths: [usize; 5] = HEADERS.map(|h| strip_ansi(h).chars().count());
+
     for (worktree, inv_list) in &groups {
+        let mut secs: Vec<Section> = Vec::with_capacity(inv_list.len());
+        for inv in inv_list {
+            let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
+            let mut rows: Vec<JobRow> = Vec::with_capacity(job_dirs.len());
+            for dir in &job_dirs {
+                let Ok(meta) = store.read_meta(dir) else {
+                    continue;
+                };
+                let icon = if meta.background {
+                    blue("\u{21aa}")
+                } else {
+                    orange("\u{2192}")
+                };
+                let job_label = format!("{icon} {}", meta.name);
+                let status = format_status_inline(&meta.status, coordinator_alive);
+                let started = {
+                    let local: chrono::DateTime<chrono::Local> = meta.started_at.into();
+                    local.format("%H:%M:%S").to_string()
+                };
+                let duration = match (&meta.status, meta.finished_at) {
+                    (_, Some(finished)) => {
+                        format_duration(finished.signed_duration_since(meta.started_at))
+                    }
+                    (JobStatus::Running, None) => format!(
+                        "{}...",
+                        format_duration(now.signed_duration_since(meta.started_at))
+                    ),
+                    _ => "\u{2014}".to_string(),
+                };
+                let size = LogStore::log_path(dir)
+                    .metadata()
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                let size_str = if size == 0 {
+                    dim("\u{2014}").to_string()
+                } else {
+                    format_bytes(size)
+                };
+
+                // Update per-column max visible widths.
+                for (i, cell) in [&job_label, &status, &started, &duration, &size_str]
+                    .iter()
+                    .enumerate()
+                {
+                    let v = strip_ansi(cell).chars().count();
+                    if v > max_widths[i] {
+                        max_widths[i] = v;
+                    }
+                }
+
+                rows.push(JobRow {
+                    job: job_label,
+                    status,
+                    started,
+                    duration,
+                    size: size_str,
+                });
+            }
+            secs.push(Section { inv, rows });
+        }
+        sections_by_worktree.push((worktree.clone(), secs));
+    }
+
+    // ---- Pass 2: render ----
+    for (worktree, secs) in &sections_by_worktree {
         let marker = if worktree == &current_worktree {
             CURRENT_WORKTREE_SYMBOL
         } else {
@@ -690,10 +777,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
         };
         output.info(&worktree_header(marker, worktree));
 
-        for (i, inv) in inv_list.iter().enumerate() {
-            // Separator before this node: blank line (no spine) between
-            // worktree header and the first node; dim spine line between
-            // adjacent nodes within the same worktree.
+        for (i, sec) in secs.iter().enumerate() {
             if i == 0 {
                 output.info("");
             } else {
@@ -701,69 +785,47 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
             }
 
             let ago =
-                shorthand_from_seconds(now.signed_duration_since(inv.created_at).num_seconds());
-            let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
-
-            output.info(&invocation_node_line(&ago, &inv.trigger_command, short_id));
-            // Spine breathes between the node and the table.
+                shorthand_from_seconds(now.signed_duration_since(sec.inv.created_at).num_seconds());
+            let short_id = &sec.inv.invocation_id[..4.min(sec.inv.invocation_id.len())];
+            output.info(&invocation_node_line(
+                &ago,
+                &sec.inv.trigger_command,
+                short_id,
+            ));
             output.info(&spine_blank());
 
-            let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
-            if job_dirs.is_empty() {
+            if sec.rows.is_empty() {
                 output.info(&empty_invocation_placeholder());
                 continue;
             }
 
             let mut builder = Builder::new();
-            builder.push_record(vec![
-                dim_underline("Job"),
-                dim_underline("Status"),
-                dim_underline("Started"),
-                dim_underline("Duration"),
-                dim_underline("Size"),
-            ]);
-
-            for dir in &job_dirs {
-                if let Ok(meta) = store.read_meta(dir) {
-                    let icon = if meta.background {
-                        blue("\u{21aa}")
-                    } else {
-                        orange("\u{2192}")
-                    };
-                    let job_label = format!("{icon} {}", meta.name);
-                    let status = format_status_inline(&meta.status, coordinator_alive);
-                    let started = {
-                        let local: chrono::DateTime<chrono::Local> = meta.started_at.into();
-                        local.format("%H:%M:%S").to_string()
-                    };
-                    let duration = match (&meta.status, meta.finished_at) {
-                        (_, Some(finished)) => {
-                            format_duration(finished.signed_duration_since(meta.started_at))
-                        }
-                        (JobStatus::Running, None) => format!(
-                            "{}...",
-                            format_duration(now.signed_duration_since(meta.started_at))
-                        ),
-                        _ => "\u{2014}".to_string(),
-                    };
-                    let size = LogStore::log_path(dir)
-                        .metadata()
-                        .map(|m| m.len())
-                        .unwrap_or(0);
-                    let size_str = if size == 0 {
-                        dim("\u{2014}").to_string()
-                    } else {
-                        format_bytes(size)
-                    };
-                    builder.push_record(vec![job_label, status, started, duration, size_str]);
-                }
+            builder.push_record(
+                HEADERS
+                    .iter()
+                    .enumerate()
+                    .map(|(c, h)| pad_to_visible_width(&dim_underline(h), max_widths[c]))
+                    .collect::<Vec<_>>(),
+            );
+            for row in &sec.rows {
+                let cells = [
+                    &row.job,
+                    &row.status,
+                    &row.started,
+                    &row.duration,
+                    &row.size,
+                ];
+                builder.push_record(
+                    cells
+                        .iter()
+                        .enumerate()
+                        .map(|(c, cell)| pad_to_visible_width(cell, max_widths[c]))
+                        .collect::<Vec<_>>(),
+                );
             }
 
             let mut table = builder.build();
             table.with(Style::blank());
-            // Note: the previous first-column left-padding override is dropped
-            // because the spine gutter (5 spaces) supplies the inset.
-
             for line in table.to_string().lines() {
                 output.info(&spine_prefixed(line));
             }
@@ -2004,5 +2066,25 @@ mod tests {
     #[test]
     fn spine_terminator_is_dim_corner_with_taper() {
         assert_eq!(spine_terminator(), dim("╰─╴"));
+    }
+
+    #[test]
+    fn padding_makes_two_rows_with_different_widths_render_to_equal_visible_width() {
+        use crate::output::format::{pad_to_visible_width, strip_ansi};
+
+        // Two cells that would naturally produce different column widths.
+        let short = "\x1b[31m\u{2717} failed\x1b[0m"; // visible: 8
+        let long = "\x1b[33m\u{27f3} running (stale)\x1b[0m"; // visible: 17
+
+        let target = strip_ansi(short)
+            .chars()
+            .count()
+            .max(strip_ansi(long).chars().count());
+
+        let padded_short = pad_to_visible_width(short, target);
+        let padded_long = pad_to_visible_width(long, target);
+
+        assert_eq!(strip_ansi(&padded_short).chars().count(), target);
+        assert_eq!(strip_ansi(&padded_long).chars().count(), target);
     }
 }
