@@ -326,8 +326,17 @@ impl LogStore {
     pub fn read_repo_policy(&self) -> crate::coordinator::clean_policy::RepoPolicy {
         let path = self.repo_policy_path();
         match fs::read_to_string(&path) {
-            Ok(json) => serde_json::from_str(&json)
-                .unwrap_or_else(|_| crate::coordinator::clean_policy::RepoPolicy::defaults()),
+            Ok(json) => match serde_json::from_str(&json) {
+                Ok(policy) => policy,
+                Err(err) => {
+                    eprintln!(
+                        "daft: warning: failed to parse repo policy at {}: {}; using defaults",
+                        path.display(),
+                        err
+                    );
+                    crate::coordinator::clean_policy::RepoPolicy::defaults()
+                }
+            },
             Err(_) => crate::coordinator::clean_policy::RepoPolicy::defaults(),
         }
     }

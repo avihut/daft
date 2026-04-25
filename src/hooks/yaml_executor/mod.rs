@@ -265,10 +265,12 @@ pub fn execute_yaml_hook_with_rc(
     }
 
     // Capture the repo-level cleanup policy as a sidecar so cleanup doesn't
-    // need to re-parse `daft.yml` later. Most-recent write wins. We write it
-    // even when all jobs end up skipped so cleanup picks up policy edits the
-    // moment they hit any hook fire. Best-effort: a failed write should not
-    // break the hook fire.
+    // need to re-parse `daft.yml` later. Written once per hook fire after
+    // spec building; most-recent write wins. Note: early returns above (no
+    // jobs defined, all jobs filtered by tags or changed-attribute tracking)
+    // skip this write, so the previous sidecar value remains in effect until
+    // the next non-fully-filtered fire. Best-effort: a failed write should
+    // not break the hook fire.
     let repo_policy = crate::coordinator::clean_policy::build_repo_policy(&specs);
     if let Err(e) = store.write_repo_policy(&repo_policy) {
         eprintln!("daft: failed to write repo policy for '{hook_name}': {e}");

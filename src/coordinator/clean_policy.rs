@@ -227,21 +227,44 @@ mod policy_tests {
     }
 
     #[test]
-    fn build_repo_policy_picks_up_first_log_config() {
-        let spec = JobSpec {
-            name: "j".into(),
+    fn build_repo_policy_first_log_config_wins() {
+        let s1 = JobSpec {
+            name: "a".into(),
             log_config: Some(LogConfig {
-                max_total_size: Some("1GB".into()),
-                keep_last: Some(7),
-                stale_running_after: Some("2h".into()),
+                keep_last: Some(5),
                 ..Default::default()
             }),
             ..Default::default()
         };
-        let policy = build_repo_policy(std::slice::from_ref(&spec));
-        assert_eq!(policy.max_total_size_bytes, Some(1024 * 1024 * 1024));
+        let s2 = JobSpec {
+            name: "b".into(),
+            log_config: Some(LogConfig {
+                keep_last: Some(99),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let policy = build_repo_policy(&[s1, s2]);
+        assert_eq!(policy.keep_last, Some(5));
+    }
+
+    #[test]
+    fn build_repo_policy_skips_jobs_without_log_config() {
+        let s1 = JobSpec {
+            name: "a".into(),
+            log_config: None,
+            ..Default::default()
+        };
+        let s2 = JobSpec {
+            name: "b".into(),
+            log_config: Some(LogConfig {
+                keep_last: Some(7),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let policy = build_repo_policy(&[s1, s2]);
         assert_eq!(policy.keep_last, Some(7));
-        assert_eq!(policy.stale_running_after_seconds, Some(2 * 3_600));
     }
 
     #[test]
