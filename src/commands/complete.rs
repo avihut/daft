@@ -828,6 +828,7 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
             let mut entries = Vec::new();
 
             // Job names from the latest invocation
+            let mut job_rows: Vec<(String, Vec<String>)> = Vec::new();
             if let Some(latest) = invocations.last() {
                 let job_dirs = store
                     .list_jobs_in_invocation(&latest.invocation_id)
@@ -835,38 +836,27 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                 for dir in &job_dirs {
                     if let Ok(meta) = store.read_meta(dir) {
                         if meta.name.starts_with(prefix) {
-                            let status_icon = match meta.status {
-                                crate::coordinator::log_store::JobStatus::Completed => {
-                                    "\u{2713} completed"
-                                }
-                                crate::coordinator::log_store::JobStatus::Failed => {
-                                    "\u{2717} failed"
-                                }
-                                crate::coordinator::log_store::JobStatus::Running => {
-                                    "\u{27f3} running"
-                                }
-                                crate::coordinator::log_store::JobStatus::Cancelled => {
-                                    "\u{2014} cancelled"
-                                }
-                                crate::coordinator::log_store::JobStatus::Skipped => {
-                                    "\u{2014} skipped"
-                                }
-                            };
                             let short_id =
                                 &latest.invocation_id[..4.min(latest.invocation_id.len())];
                             let ago = crate::output::format::shorthand_from_seconds(
                                 now.signed_duration_since(latest.created_at).num_seconds(),
                             );
-                            entries.push(format!(
-                                "{}\t{status_icon} -- {ago} ago [{short_id}]",
-                                meta.name
+                            job_rows.push((
+                                meta.name.clone(),
+                                vec![
+                                    job_status_icon(&meta.status).to_string(),
+                                    format!("-- {ago} ago"),
+                                    format!("[{short_id}]"),
+                                ],
                             ));
                         }
                     }
                 }
             }
+            entries.extend(format_section_rows(job_rows));
 
             // Invocation short IDs
+            let mut inv_rows: Vec<(String, Vec<String>)> = Vec::new();
             for inv in &invocations {
                 let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
                 if short_id.starts_with(prefix) {
@@ -877,13 +867,17 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                         .list_jobs_in_invocation(&inv.invocation_id)
                         .map(|d| d.len())
                         .unwrap_or(0);
-                    entries.push(format!(
-                        "{short_id}\t{} -- {ago} ago ({job_count} job{})",
-                        inv.trigger_command,
-                        if job_count == 1 { "" } else { "s" },
+                    inv_rows.push((
+                        short_id.to_string(),
+                        vec![
+                            inv.trigger_command.clone(),
+                            format!("-- {ago} ago"),
+                            format!("({job_count} job{})", if job_count == 1 { "" } else { "s" }),
+                        ],
                     ));
                 }
             }
+            entries.extend(format_section_rows(inv_rows));
 
             // Worktree-name drill-down candidates. The current worktree's
             // invocations are already shown above as bare short IDs, so
@@ -921,52 +915,38 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                 let job_dirs = store
                     .list_jobs_in_invocation(&inv.invocation_id)
                     .unwrap_or_default();
-                let mut entries = Vec::new();
+                let mut rows: Vec<(String, Vec<String>)> = Vec::new();
                 for dir in &job_dirs {
                     if let Ok(meta) = store.read_meta(dir) {
                         if meta.name.starts_with(after) {
-                            let status_icon = match meta.status {
-                                crate::coordinator::log_store::JobStatus::Completed => {
-                                    "\u{2713} completed"
-                                }
-                                crate::coordinator::log_store::JobStatus::Failed => {
-                                    "\u{2717} failed"
-                                }
-                                crate::coordinator::log_store::JobStatus::Running => {
-                                    "\u{27f3} running"
-                                }
-                                crate::coordinator::log_store::JobStatus::Cancelled => {
-                                    "\u{2014} cancelled"
-                                }
-                                crate::coordinator::log_store::JobStatus::Skipped => {
-                                    "\u{2014} skipped"
-                                }
-                            };
-                            entries.push(format!("{short_id}:{}\t{status_icon}", meta.name));
+                            rows.push((
+                                format!("{short_id}:{}", meta.name),
+                                vec![job_status_icon(&meta.status).to_string()],
+                            ));
                         }
                     }
                 }
-                return Ok(entries);
+                return Ok(format_section_rows(rows));
             }
 
             // Try as worktree: prefix
             let wt_invocations = store
                 .list_invocations_for_worktree(before)
                 .unwrap_or_default();
-            let mut entries = Vec::new();
+            let mut rows: Vec<(String, Vec<String>)> = Vec::new();
             for inv in &wt_invocations {
                 let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
                 if short_id.starts_with(after) {
                     let ago = crate::output::format::shorthand_from_seconds(
                         now.signed_duration_since(inv.created_at).num_seconds(),
                     );
-                    entries.push(format!(
-                        "{before}:{short_id}\t{} -- {ago} ago",
-                        inv.trigger_command
+                    rows.push((
+                        format!("{before}:{short_id}"),
+                        vec![inv.trigger_command.clone(), format!("-- {ago} ago")],
                     ));
                 }
             }
-            Ok(entries)
+            Ok(format_section_rows(rows))
         }
         2 => {
             // worktree:inv:job
@@ -986,26 +966,18 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
             let job_dirs = store
                 .list_jobs_in_invocation(&inv.invocation_id)
                 .unwrap_or_default();
-            let mut entries = Vec::new();
+            let mut rows: Vec<(String, Vec<String>)> = Vec::new();
             for dir in &job_dirs {
                 if let Ok(meta) = store.read_meta(dir) {
                     if meta.name.starts_with(job_prefix) {
-                        let status_icon = match meta.status {
-                            crate::coordinator::log_store::JobStatus::Completed => {
-                                "\u{2713} completed"
-                            }
-                            crate::coordinator::log_store::JobStatus::Failed => "\u{2717} failed",
-                            crate::coordinator::log_store::JobStatus::Running => "\u{27f3} running",
-                            crate::coordinator::log_store::JobStatus::Cancelled => {
-                                "\u{2014} cancelled"
-                            }
-                            crate::coordinator::log_store::JobStatus::Skipped => "\u{2014} skipped",
-                        };
-                        entries.push(format!("{wt}:{short_id}:{}\t{status_icon}", meta.name));
+                        rows.push((
+                            format!("{wt}:{short_id}:{}", meta.name),
+                            vec![job_status_icon(&meta.status).to_string()],
+                        ));
                     }
                 }
             }
-            Ok(entries)
+            Ok(format_section_rows(rows))
         }
         _ => Ok(vec![]),
     }
@@ -1026,7 +998,7 @@ fn worktree_drilldown_entries(
     prefix: &str,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Vec<String> {
-    let mut entries = Vec::new();
+    let mut rows: Vec<(String, Vec<String>)> = Vec::new();
     for wt in distinct_worktrees {
         if wt == current_worktree {
             continue;
@@ -1044,12 +1016,71 @@ fn worktree_drilldown_entries(
                 )
             })
             .unwrap_or_else(|| "unknown".to_string());
-        entries.push(format!(
-            "{wt}:\tworktree\t{inv_count} invocation{}, {ago} ago",
-            if inv_count == 1 { "" } else { "s" },
+        rows.push((
+            format!("{wt}:"),
+            vec![
+                "worktree".to_string(),
+                format!(
+                    "{inv_count} invocation{}, {ago} ago",
+                    if inv_count == 1 { "" } else { "s" },
+                ),
+            ],
         ));
     }
-    entries
+    format_section_rows(rows)
+}
+
+/// Map a `JobStatus` to its display icon + label as used in completion
+/// menu descriptions. The same mapping appears in three colon-count
+/// branches of `complete_job_addresses` plus `complete_retry_targets`,
+/// so it's centralized here.
+fn job_status_icon(status: &crate::coordinator::log_store::JobStatus) -> &'static str {
+    use crate::coordinator::log_store::JobStatus;
+    match status {
+        JobStatus::Completed => "\u{2713} completed",
+        JobStatus::Failed => "\u{2717} failed",
+        JobStatus::Running => "\u{27f3} running",
+        JobStatus::Cancelled => "\u{2014} cancelled",
+        JobStatus::Skipped => "\u{2014} skipped",
+    }
+}
+
+/// Within one completion section, pad each per-row cell to the max
+/// visible width across the section, then render the row as
+/// `<value>\t<cells joined by " ">`. The cross-section value-column
+/// padding is layered on top by `align_completion_columns` at the
+/// dispatch site.
+///
+/// `visible_width` is used so padding stays correct across multi-byte
+/// status icons (`✓`, `✗`, `⟳`) and any future ANSI in cell content.
+fn format_section_rows(rows: Vec<(String, Vec<String>)>) -> Vec<String> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let n_cells = rows.iter().map(|(_, c)| c.len()).max().unwrap_or(0);
+    let mut max_widths = vec![0usize; n_cells];
+    for (_, cells) in &rows {
+        for (i, cell) in cells.iter().enumerate() {
+            let w = crate::output::format::visible_width(cell);
+            if w > max_widths[i] {
+                max_widths[i] = w;
+            }
+        }
+    }
+    rows.into_iter()
+        .map(|(value, cells)| {
+            let padded: Vec<String> = cells
+                .iter()
+                .enumerate()
+                .map(|(i, cell)| {
+                    let w = crate::output::format::visible_width(cell);
+                    let pad = max_widths[i].saturating_sub(w);
+                    format!("{cell}{}", " ".repeat(pad))
+                })
+                .collect();
+            format!("{value}\t{}", padded.join(" "))
+        })
+        .collect()
 }
 
 /// Pad the value column of `<value>\t<description>`-shaped completion
@@ -2646,6 +2677,69 @@ mod tests {
         );
         assert!(entries.iter().any(|e| e.starts_with("feat-auth:\t")));
         assert!(entries.iter().any(|e| e.starts_with("fix-typo:\t")));
+    }
+
+    #[test]
+    fn format_section_rows_pads_each_cell_to_section_max() {
+        let rows = vec![
+            (
+                "4eef".to_string(),
+                vec![
+                    "hooks jobs retry".to_string(),
+                    "-- 4h ago".to_string(),
+                    "(3 jobs)".to_string(),
+                ],
+            ),
+            (
+                "907e".to_string(),
+                vec![
+                    "worktree-post-create".to_string(),
+                    "-- 13h ago".to_string(),
+                    "(5 jobs)".to_string(),
+                ],
+            ),
+        ];
+        let out = format_section_rows(rows);
+        assert_eq!(out.len(), 2);
+        // Cell 0 max = "worktree-post-create" (20). "hooks jobs retry" (16) → 4 trailing spaces.
+        // Cell 1 max = "-- 13h ago" (10). "-- 4h ago" (9) → 1 trailing space.
+        // Cell 2 max = both (8) → no padding.
+        assert_eq!(out[0], "4eef\thooks jobs retry     -- 4h ago  (3 jobs)");
+        assert_eq!(out[1], "907e\tworktree-post-create -- 13h ago (5 jobs)");
+    }
+
+    #[test]
+    fn format_section_rows_uses_visible_width_for_multibyte_icons() {
+        // `✗ failed` is multibyte but visually 8 columns; `✓ completed` is 11.
+        // Padding must use char/visible width, not byte length.
+        let rows = vec![
+            (
+                "a".to_string(),
+                vec!["\u{2717} failed".to_string(), "extra".to_string()],
+            ),
+            (
+                "b".to_string(),
+                vec!["\u{2713} completed".to_string(), "extra".to_string()],
+            ),
+        ];
+        let out = format_section_rows(rows);
+        // Cell 0 max visible width = 11. "✗ failed" (8 visible) → 3 trailing spaces;
+        // plus the 1-space cell joiner = 4 spaces total between "failed" and "extra".
+        assert!(
+            out[0].contains("\u{2717} failed    extra"),
+            "got: {:?}",
+            out[0]
+        );
+        assert!(
+            out[1].contains("\u{2713} completed extra"),
+            "got: {:?}",
+            out[1]
+        );
+    }
+
+    #[test]
+    fn format_section_rows_empty_input_returns_empty() {
+        assert!(format_section_rows(vec![]).is_empty());
     }
 
     #[test]
