@@ -1,0 +1,82 @@
+name: post-merge fires with RESULT=aborted on commit abort
+description:
+  "When git commit fails during the squash step (simulated via a failing
+  git-level pre-commit hook), post-merge fires with RESULT=aborted and
+  COMMIT_SHA empty, and changes remain staged on the target."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+          - path: main.py
+            content: "print('main')"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test-feature
+        from: main
+        files:
+          - path: feature.txt
+            content: "feature content"
+        commits:
+          - message: "Add feature branch"
+    daft_yml: |
+      hooks:
+        post-merge:
+          jobs:
+            - name: record-result
+              run: |
+                {
+                  echo "result=$DAFT_MERGE_RESULT"
+                  echo "sha=$DAFT_MERGE_COMMIT_SHA"
+                } > "$DAFT_WORKTREE_PATH/.post-merge.txt"
+
+steps:
+  - name: Clone with trust
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Materialize feature
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: Install failing git-level pre-commit hook via core.hooksPath
+    run: |
+      mkdir -p $WORK_DIR/test-hooks
+      printf '#!/bin/sh\nexit 1\n' > $WORK_DIR/test-hooks/pre-commit
+      chmod +x $WORK_DIR/test-hooks/pre-commit
+      git config core.hooksPath $WORK_DIR/test-hooks
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Squash --no-edit with failing pre-commit aborts the commit
+    run: git-worktree-merge feature/test-feature --squash --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains: ["Commit aborted"]
+
+  - name: Verify post-merge fired with RESULT=aborted and empty SHA
+    run: cat $WORK_DIR/test-repo/main/.post-merge.txt
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "result=aborted"
+        - "sha="
+      output_not_contains:
+        - "result=success"
+        - "result=conflict"
+
+  - name: Verify squash changes are still staged (not committed)
+    run:
+      git -C $WORK_DIR/test-repo/main diff --cached --quiet && echo "no_staged"
+      || echo "has_staged"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["has_staged"]

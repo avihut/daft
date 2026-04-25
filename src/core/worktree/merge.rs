@@ -506,6 +506,10 @@ pub enum PostOutcome {
         promoted_from_ephemeral: bool,
     },
     AlreadyUpToDate,
+    /// The squash-commit step was aborted (editor empty, pre-commit hook refused,
+    /// GPG-sign fail, etc.). Squash changes remain staged on the target.
+    /// `DAFT_MERGE_COMMIT_SHA` is empty for this variant.
+    Aborted,
 }
 
 impl MergeHookContext {
@@ -603,6 +607,7 @@ impl MergeHookContext {
                 String::new(),
                 "false".to_string(),
             ),
+            PostOutcome::Aborted => ("aborted", String::new(), String::new(), "false".to_string()),
         };
         self.env.insert("DAFT_MERGE_RESULT".into(), result.into());
         self.env.insert("DAFT_MERGE_COMMIT_SHA".into(), sha);
@@ -1335,11 +1340,7 @@ fn execute_start_in_worktree(
             // Commit aborted (editor empty, pre-commit hook refused, GPG fail,
             // etc.). Squash changes remain staged; cleanup must be skipped.
             // Intent marker remains for --continue to pick up.
-            // TODO(slice-6): fire post-merge with RESULT=aborted here.
-            // For now, fire as Success with empty SHA to preserve pre/post pairing.
-            let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
-                commit_sha: String::new(),
-            });
+            let post_ctx = pre_ctx.extend_for_post(PostOutcome::Aborted);
             if let Err(e) = hooks.fire_post_merge(&post_ctx) {
                 eprintln!("warning: post-merge hook failed: {e}");
             }
@@ -1691,10 +1692,7 @@ fn execute_ephemeral_merge(
 
             if !commit_status.success() {
                 // Commit aborted. Leave ephemeral worktree; caller will report.
-                // TODO(slice-6): fire post-merge with RESULT=aborted here.
-                let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
-                    commit_sha: String::new(),
-                });
+                let post_ctx = pre_ctx.extend_for_post(PostOutcome::Aborted);
                 if let Err(e) = hooks.fire_post_merge(&post_ctx) {
                     eprintln!("warning: post-merge hook failed: {e}");
                 }
@@ -2625,6 +2623,7 @@ pub fn execute_cleanup(
 
     for (item, src) in work_items.iter().zip(sources.iter()) {
         if let Some(ref wt_path) = item.worktree_path {
+            println!("Removing worktree at {}...", wt_path.display());
             git.worktree_remove(wt_path, false).with_context(|| {
                 let done = if completed.is_empty() {
                     "nothing removed yet".to_string()
@@ -2645,6 +2644,7 @@ pub fn execute_cleanup(
 
     for (item, src) in work_items.iter().zip(sources.iter()) {
         if let Some(ref branch) = item.branch {
+            println!("Deleting branch {}...", branch);
             git.branch_delete(branch, force_branch_delete)
                 .with_context(|| {
                     let done = if completed.is_empty() {
@@ -3754,6 +3754,34 @@ mod tests {
                 .get("DAFT_MERGE_CONFLICTED_FILES")
                 .map(String::as_str),
             Some("")
+        );
+    }
+
+    #[test]
+    fn extend_for_post_aborted_sets_result_aborted_and_empty_sha() {
+        let flags = EffectiveFlags::default();
+        let target = target_with_worktree("main", "/p/main");
+        let pre = MergeHookContext::for_pre(&["feat".into()], &target, &flags, false, false);
+        let post = pre.extend_for_post(PostOutcome::Aborted);
+        assert_eq!(
+            post.env.get("DAFT_MERGE_RESULT").map(String::as_str),
+            Some("aborted")
+        );
+        assert_eq!(
+            post.env.get("DAFT_MERGE_COMMIT_SHA").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            post.env
+                .get("DAFT_MERGE_CONFLICTED_FILES")
+                .map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            post.env
+                .get("DAFT_MERGE_PROMOTED_FROM_EPHEMERAL")
+                .map(String::as_str),
+            Some("false")
         );
     }
 
