@@ -9,7 +9,10 @@ use crate::coordinator::log_store::{InvocationMeta, JobStatus, LogStore};
 use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
 use crate::output::format::shorthand_from_seconds;
 use crate::output::Output;
-use crate::styles::{blue, bold, dim, dim_underline, green, red, yellow};
+use crate::styles::{
+    blue, bold, dim, dim_underline, green, orange, red, yellow, BOLD, CURRENT_WORKTREE_SYMBOL,
+    CYAN, RESET,
+};
 use tabled::{
     builder::Builder,
     settings::{object::Columns, Padding, Style},
@@ -601,12 +604,15 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
     let mut first_group = true;
 
     for (worktree, inv_list) in &groups {
-        if args.all || args.worktree.is_some() {
-            if !first_group {
-                output.info("");
-            }
-            output.info(&bold(worktree));
+        if !first_group {
+            output.info("");
         }
+        let marker = if worktree == &current_worktree {
+            CURRENT_WORKTREE_SYMBOL
+        } else {
+            " "
+        };
+        output.info(&format!("{BOLD}{CYAN}{marker} {worktree}{RESET}"));
         first_group = false;
 
         for inv in inv_list {
@@ -642,11 +648,12 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
 
             for dir in &job_dirs {
                 if let Ok(meta) = store.read_meta(dir) {
-                    let job_label = if meta.background {
-                        format!("{} {}", blue("\u{21bb}"), meta.name)
+                    let icon = if meta.background {
+                        blue("\u{21aa}")
                     } else {
-                        meta.name.clone()
+                        orange("\u{2192}")
                     };
+                    let job_label = format!("{icon} {}", meta.name);
 
                     let status = format_status_inline(&meta.status, coordinator_alive);
 
