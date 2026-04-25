@@ -427,6 +427,59 @@ test_daft_wrapper_intercepts_subcommand() {
     return 0
 }
 
+# Regression test for #380: the wrapper used to cache the daft binary path at
+# source time. Replacing the on-disk binary mid-shell would leave wrappers
+# running the stale build until the user re-sourced. This test sources the
+# wrapper, swaps the resolved-on-PATH binary, and asserts the wrapper picks up
+# the new build without re-sourcing.
+test_wrapper_resolves_binary_live() {
+    log "Testing: shell wrapper resolves daft binary on every invocation (#380)"
+
+    local sandbox="$PWD/wrapper-live"
+    rm -rf "$sandbox"
+    mkdir -p "$sandbox/bin"
+
+    # Capture the wrapper using the real built daft binary.
+    local wrapper_file="$sandbox/wrapper.bash"
+    daft shell-init bash > "$wrapper_file"
+
+    # Stage mock v1 binary. The wrapper exec's the resolved binary with
+    # argv[0] set to the wrapped command name (e.g. git-worktree-clone), so
+    # the mock just needs to print a recognizable marker regardless of args.
+    cat > "$sandbox/bin/daft" <<'EOF'
+#!/usr/bin/env bash
+echo "MOCK_v1"
+EOF
+    chmod +x "$sandbox/bin/daft"
+
+    # Source wrapper, then prepend the mock dir to PATH so command -v daft
+    # inside __daft_find_bin resolves to the mock. Run a wrapped invocation,
+    # swap the mock to v2 in place, run again — all in one shell process so
+    # the wrapper isn't re-sourced between calls.
+    local out
+    out=$(SANDBOX="$sandbox" WRAPPER="$wrapper_file" bash -c '
+        source "$WRAPPER"
+        export PATH="$SANDBOX/bin:$PATH"
+        first=$(git-worktree-clone 2>/dev/null)
+        cat > "$SANDBOX/bin/daft" <<__V2__
+#!/usr/bin/env bash
+echo "MOCK_v2"
+__V2__
+        chmod +x "$SANDBOX/bin/daft"
+        second=$(git-worktree-clone 2>/dev/null)
+        printf "first=%s second=%s\n" "$first" "$second"
+    ' 2>&1) || true
+
+    if [[ "$out" == *"first=MOCK_v1"* && "$out" == *"second=MOCK_v2"* ]]; then
+        log_success "Wrapper resolved daft binary live across binary swap"
+        return 0
+    else
+        log_error "Wrapper did not pick up new binary without re-sourcing"
+        echo "Output: $out"
+        return 1
+    fi
+}
+
 # --- Main Test Runner ---
 
 main() {
@@ -455,6 +508,7 @@ main() {
     run_test "daft_wrapper_function_exists" test_daft_wrapper_function_exists
     run_test "daft_wrapper_passthrough" test_daft_wrapper_passthrough
     run_test "daft_wrapper_intercepts_subcommand" test_daft_wrapper_intercepts_subcommand
+    run_test "wrapper_resolves_binary_live" test_wrapper_resolves_binary_live
 
     print_summary
 }

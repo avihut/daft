@@ -1,0 +1,39 @@
+name: Wrapper resolves daft binary live (regression for #380)
+description: >
+  The bash/zsh wrapper used to cache the daft binary path at source time, which
+  meant a rebuild (e.g. `mise run dev` regenerating target/release/daft) would
+  leave wrapped invocations running the stale build until the user re-sourced.
+  This scenario sources the wrapper, swaps the daft binary on PATH mid-shell,
+  and asserts the wrapper picks up the new build without re-sourcing.
+
+steps:
+  - name: Source wrapper, swap binary, verify wrapper sees the swap
+    run: |
+      set -e
+      sandbox=$(mktemp -d)
+      mkdir -p "$sandbox/bin"
+      daft shell-init bash > "$sandbox/wrapper.bash"
+      cat > "$sandbox/bin/daft" <<'V1'
+      #!/usr/bin/env bash
+      echo "MOCK_v1"
+      V1
+      chmod +x "$sandbox/bin/daft"
+      out=$(SANDBOX="$sandbox" bash -c '
+        source "$SANDBOX/wrapper.bash"
+        export PATH="$SANDBOX/bin:$PATH"
+        first=$(git-worktree-clone 2>/dev/null)
+        cat > "$SANDBOX/bin/daft" <<__V2__
+      #!/usr/bin/env bash
+      echo "MOCK_v2"
+      __V2__
+        chmod +x "$SANDBOX/bin/daft"
+        second=$(git-worktree-clone 2>/dev/null)
+        printf "first=%s second=%s\n" "$first" "$second"
+      ')
+      rm -rf "$sandbox"
+      echo "$out"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "first=MOCK_v1"
+        - "second=MOCK_v2"
