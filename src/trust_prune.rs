@@ -190,7 +190,7 @@ fn is_trust_prune_disabled() -> bool {
 }
 
 /// Returns `true` if we appear to be running in a CI environment.
-fn is_ci_environment() -> bool {
+pub(crate) fn is_ci_environment() -> bool {
     let ci_vars = [
         "CI",
         "GITHUB_ACTIONS",

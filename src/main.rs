@@ -76,6 +76,11 @@ fn main() -> Result<()> {
         daft::trust_prune::maybe_prune_trust();
     }
 
+    // Clean up hook job logs (background, once per 24h)
+    if !skip_background {
+        daft::log_clean::maybe_clean_logs();
+    }
+
     // Route to the appropriate command based on invocation name
     let result = match resolved {
         // Git worktree extension commands (via symlinks)
@@ -121,6 +126,10 @@ fn main() -> Result<()> {
                     }
                     "__prune-trust" => {
                         let _ = daft::trust_prune::run_prune_trust();
+                        return Ok(());
+                    }
+                    "__clean-logs" => {
+                        let _ = daft::log_clean::run_clean_logs();
                         return Ok(());
                     }
                     "config" => commands::config::run(),

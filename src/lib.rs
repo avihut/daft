@@ -187,6 +187,7 @@ pub mod git;
 pub mod hints;
 pub mod homebrew;
 pub mod hooks;
+pub mod log_clean;
 pub mod logging;
 pub mod output;
 pub mod prompt;
