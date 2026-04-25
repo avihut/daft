@@ -22,13 +22,14 @@ pub fn parse_size(input: &str) -> Result<u64> {
         .trim()
         .parse()
         .map_err(|_| anyhow!("invalid size: {input}"))?;
-    Ok(n * multiplier)
+    n.checked_mul(multiplier)
+        .ok_or_else(|| anyhow!("size overflow: {input}"))
 }
 
 /// Parse a duration string into seconds. Accepts: `30m`, `24h`, `7d`.
-pub fn parse_duration_str(input: &str) -> Result<i64> {
+pub fn parse_duration_str(input: &str) -> Result<u64> {
     let s = input.trim();
-    let (num_str, multiplier): (&str, i64) = if let Some(n) = s.strip_suffix('d') {
+    let (num_str, multiplier): (&str, u64) = if let Some(n) = s.strip_suffix('d') {
         (n, 86_400)
     } else if let Some(n) = s.strip_suffix('h') {
         (n, 3_600)
@@ -41,11 +42,12 @@ pub fn parse_duration_str(input: &str) -> Result<i64> {
             "invalid duration: {input} (expected suffix d/h/m/s)"
         ));
     };
-    let n: i64 = num_str
+    let n: u64 = num_str
         .trim()
         .parse()
         .map_err(|_| anyhow!("invalid duration: {input}"))?;
-    Ok(n * multiplier)
+    n.checked_mul(multiplier)
+        .ok_or_else(|| anyhow!("duration overflow: {input}"))
 }
 
 #[cfg(test)]
@@ -94,5 +96,26 @@ mod tests {
     fn parse_duration_rejects_garbage() {
         assert!(parse_duration_str("abc").is_err());
         assert!(parse_duration_str("5y").is_err());
+    }
+
+    #[test]
+    fn parse_size_rejects_overflow() {
+        assert!(parse_size("99999999999999GB").is_err());
+    }
+
+    #[test]
+    fn parse_size_handles_leading_whitespace() {
+        assert_eq!(parse_size("  10MB  ").unwrap(), 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_duration_rejects_negative() {
+        assert!(parse_duration_str("-5m").is_err());
+    }
+
+    #[test]
+    fn parse_duration_rejects_overflow() {
+        // u64::MAX is ~1.84e19; multiplying by 86_400 overflows for any value >= ~2.1e14.
+        assert!(parse_duration_str("999999999999999999d").is_err());
     }
 }
