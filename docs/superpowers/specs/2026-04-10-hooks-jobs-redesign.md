@@ -215,6 +215,18 @@ stream.
   `Style::blank()`. Each rendered row is then prefixed with the spine column
   (`"  │     "`) before being emitted, so the spine is composed line-by-line
   rather than embedded in `tabled`.
+- **Column alignment across invocations**: All inner job tables in a single
+  listing share column widths. Before rendering, the controller materializes
+  every job row across every invocation in the printout (including under
+  `--all`), measures each cell's visible width with ANSI codes stripped, and
+  computes a per-column maximum that also accounts for the header labels. Each
+  cell — header included — is then padded with trailing spaces to that maximum
+  before being pushed to `tabled::Builder`. Tabled's `ansi` feature already
+  measures visible width, so once cell visible widths agree across tables the
+  rendered column widths agree too. Rationale: without this pass, adjacent
+  invocations whose Job/Status/Duration values differ in length pick different
+  column widths, and the eye reads the misalignment as drift even though the
+  spine is aligned. Trailing pad on the rightmost column is invisible.
 - **Empty invocation**: When an invocation has no jobs, render
   `"│    (no jobs declared)"` (dim, 4-space gutter) in place of the table. The 4
   spaces match the visible gap of `tabled` rows so the placeholder aligns under
