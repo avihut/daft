@@ -456,13 +456,20 @@ impl LogStore {
         if !self.base_dir.exists() {
             return Ok(0);
         }
-        let mut total = 0u64;
-        for entry in walkdir::WalkDir::new(&self.base_dir) {
-            let entry = entry?;
-            if entry.file_type().is_file() {
-                total += entry.metadata().map(|m| m.len()).unwrap_or(0);
-            }
-        }
+        let total: u64 = walkdir::WalkDir::new(&self.base_dir)
+            .into_iter()
+            .filter_entry(|e| {
+                // Skip orphaned trash directories from crashed cleanup runs.
+                // They're never reaped here; T6 handles the reaping.
+                e.file_name()
+                    .to_str()
+                    .map(|n| !n.starts_with(".deleting-"))
+                    .unwrap_or(true)
+            })
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+            .sum();
         Ok(total)
     }
 
@@ -1591,5 +1598,33 @@ mod tests {
         let updated = store.read_meta(&dir).unwrap();
         assert!(updated.log_truncated);
         assert_eq!(updated.original_size_bytes, Some(4096));
+    }
+
+    #[test]
+    fn total_size_bytes_skips_deleting_orphans() {
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+
+        // Real invocation dir with a 1KB log
+        let dir = store.create_job_dir("0001", "build").unwrap();
+        let log = LogStore::log_path(&dir);
+        let mut f = std::fs::File::create(&log).unwrap();
+        f.write_all(&[b'.'; 1024]).unwrap();
+        drop(f);
+
+        // Orphan trash dir with 5KB of garbage
+        let trash = tmp.path().join(".deleting-orphan-001");
+        std::fs::create_dir(&trash).unwrap();
+        let mut f = std::fs::File::create(trash.join("output.log")).unwrap();
+        f.write_all(&[b'.'; 5 * 1024]).unwrap();
+        drop(f);
+
+        let total = store.total_size_bytes().unwrap();
+        // Should be ~1024 (the real log only); orphan must be excluded.
+        assert!(total <= 1100, "orphan inflated total: {total}");
+        assert!(total >= 1024, "real log undercounted: {total}");
     }
 }
