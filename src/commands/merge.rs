@@ -586,6 +586,60 @@ pub fn run() -> Result<()> {
         eprintln!("  daft merge --abort     # add <branch> if running from a different worktree");
         std::process::exit(1);
     } else {
+        // Squash-cleanup stability check (Slice 4).
+        //
+        // When a daft-driven squash + commit just landed AND cleanup is
+        // requested, re-resolve each source ref and compare to the SHA
+        // captured at merge start (stored in `outcome.source_shas`). If any
+        // source tip moved during the editor/commit session, refuse cleanup
+        // with a clear error — the squash commit stays on the target (the
+        // user has a reviewable commit to recover from), but cleanup is
+        // skipped to avoid force-deleting a branch that has new work.
+        //
+        // This check ONLY fires on the squash-committed + cleanup path.
+        // Regular merges use git's safe `branch -d` reachability check
+        // (already in execute_cleanup Phase 1 when squash_committed=false).
+        let squash_cleanup_stable = if outcome.squash_commit_sha.is_some() && effective_remove {
+            let mut moved_sources: Vec<String> = Vec::new();
+            for (src, captured_sha) in params.sources.iter().zip(outcome.source_shas.iter()) {
+                match git.rev_parse(src) {
+                    Ok(current_sha) => {
+                        if current_sha != *captured_sha {
+                            moved_sources.push(format!(
+                                "source '{}' moved during merge \
+                                 (was {}, now {})",
+                                src,
+                                &captured_sha[..12.min(captured_sha.len())],
+                                &current_sha[..12.min(current_sha.len())]
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        moved_sources
+                            .push(format!("source '{}' could not be re-resolved: {}", src, e));
+                    }
+                }
+            }
+            if !moved_sources.is_empty() {
+                // Print the squash commit success before the cleanup refusal —
+                // the commit did land; the user needs to know that.
+                let sources_display = sources_for_message.join(", ");
+                let target = &outcome.target_branch;
+                let sha = outcome.squash_commit_sha.as_deref().unwrap_or("");
+                let short = &sha[..12.min(sha.len())];
+                println!("Squash merged {sources_display} into {target} as {short}.");
+                anyhow::bail!(
+                    "cleanup refused: {}\n  \
+                     Re-run cleanup manually if you've reconciled \
+                     (e.g. `daft merge -rb` after resolving the branch).",
+                    moved_sources.join("; ")
+                );
+            }
+            true
+        } else {
+            false
+        };
+
         // Core may have already emitted a terminal status line (e.g.,
         // "Fast-forwarded X to Y (no worktree)" from the ref-only FF path).
         // Suppress the default status print in that case so a single
@@ -596,8 +650,11 @@ pub fn run() -> Result<()> {
                 // --squash --no-commit: staged but not committed.
                 let target = &outcome.target_branch;
                 println!("Squash staged on {target}. Commit when ready.");
+            } else if outcome.squash_commit_sha.is_some() && squash_cleanup_stable {
+                // Squash + commit + cleanup path: defer "and cleaned up" message
+                // until AFTER cleanup succeeds (printed below).
             } else if let Some(ref sha) = outcome.squash_commit_sha {
-                // --squash with commit: a real commit landed.
+                // --squash with commit, no cleanup (or non-squash path):
                 let sources_display = sources_for_message.join(", ");
                 let target = &outcome.target_branch;
                 let short = &sha[..12.min(sha.len())];
@@ -608,35 +665,54 @@ pub fn run() -> Result<()> {
             }
         }
 
-        // Post-merge cleanup (Slice 12). Only runs on successful,
-        // non-up-to-date merges — the `already_up_to_date` and `failed`
-        // arms above have already returned or exited.
+        // Post-merge cleanup. Only runs on successful, non-up-to-date merges
+        // — the `already_up_to_date` and `failed` arms above have already
+        // returned or exited.
         //
         // `effective_remove` and `effective_and_branch` were computed
         // pre-flight above (before `execute_start`) to allow the
         // no-commit + cleanup guard to fire early. Reuse them here.
         //
-        // When cleanup errors happen (e.g. `git branch -d` refusing an
-        // unmerged branch after `--squash`), the merge itself succeeded —
-        // the cleanup error is surfaced so the caller knows which
-        // post-merge step failed, but any earlier successful cleanup step
-        // (worktree removal) is not rolled back.
+        // `squash_cleanup_stable` is true when the squash-committed path
+        // passed the stability check — in that case we use `branch -D`
+        // (justified by content equivalence proof). Otherwise `squash_committed`
+        // stays false and execute_cleanup Phase 1 uses the standard
+        // reachability check.
         if effective_remove {
             let cleanup_opts = crate::core::worktree::merge::CleanupOptions {
                 remove_worktree: effective_remove,
                 also_branch: effective_and_branch,
-                // Slice 4 wires squash_committed=true for the daft-driven squash
-                // + commit path. For now all callers use false (existing semantics:
-                // validate branch reachability before deleting).
-                squash_committed: false,
+                squash_committed: squash_cleanup_stable,
             };
-            crate::core::worktree::merge::execute_cleanup(
+            let cleanup_result = crate::core::worktree::merge::execute_cleanup(
                 &params.sources,
                 &cleanup_opts,
                 &git,
                 &project_root,
                 &outcome.target_branch,
-            )?;
+            );
+            match cleanup_result {
+                Ok(()) => {
+                    // After successful squash + cleanup, emit the combined message.
+                    if squash_cleanup_stable && !outcome.emitted_terminal_message {
+                        let sources_display = sources_for_message.join(", ");
+                        println!("Squash merged and cleaned up {sources_display}.");
+                    }
+                }
+                Err(e) => {
+                    // Squash committed but cleanup failed (e.g. dirty source
+                    // worktree). Inform the user the squash landed before
+                    // surfacing the cleanup error.
+                    if squash_cleanup_stable && !outcome.emitted_terminal_message {
+                        let sources_display = sources_for_message.join(", ");
+                        let target = &outcome.target_branch;
+                        let sha = outcome.squash_commit_sha.as_deref().unwrap_or("");
+                        let short = &sha[..12.min(sha.len())];
+                        println!("Squash merged {sources_display} into {target} as {short}.");
+                    }
+                    return Err(e);
+                }
+            }
         }
         Ok(())
     }
