@@ -25,7 +25,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Squash merged feature/test-feature into main"
+        - "Squashed feature/test-feature into main (commit "
 
   - name: Verify commit subject matches -m argument
     run: git log -1 --format=%s HEAD

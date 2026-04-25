@@ -25,4 +25,4 @@ steps:
       output_contains:
         - "Updating "
         - "Fast-forward"
-        - "Merge complete."
+        - "Fast-forwarded main to "

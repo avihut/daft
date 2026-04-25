@@ -28,7 +28,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Merge complete."
+        - "Merged feature/test-feature into main (commit "
 
   - name: Verify main HEAD has two parents (merge commit, not FF)
     run: |

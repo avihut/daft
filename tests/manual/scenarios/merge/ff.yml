@@ -21,7 +21,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Merge complete."
+        - "Fast-forwarded main to "
 
   - name: Verify FF — HEAD has exactly one parent
     run: |

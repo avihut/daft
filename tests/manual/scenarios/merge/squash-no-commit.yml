@@ -24,7 +24,6 @@ steps:
       exit_code: 0
       output_contains:
         - "Squash staged on main"
-        - "Commit when ready"
 
   - name: Verify staged but not committed
     run: |

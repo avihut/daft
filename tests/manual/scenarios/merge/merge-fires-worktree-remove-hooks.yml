@@ -49,7 +49,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Merge complete."
+        - "Fast-forwarded main to "
         - "Deleted feature/test-feature (worktree)"
 
   - name: Verify pre-remove hook ran (sentinel written to project root)

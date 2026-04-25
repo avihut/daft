@@ -23,8 +23,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Merge complete."
+        - "Fast-forwarded main to "
       output_not_contains:
         - "Updating "
-        - "Fast-forward"
         - "Squash commit -- not updating HEAD"

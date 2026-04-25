@@ -23,7 +23,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Merge complete."
+        - "Fast-forwarded main to "
 
   - name: Verify main contains feature commits without being CWD
     run: git -C $WORK_DIR/test-repo/main log --oneline

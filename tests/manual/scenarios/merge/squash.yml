@@ -23,7 +23,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Squash merged feature/test-feature into main"
+        - "Squashed feature/test-feature into main (commit "
 
   - name: Verify a real commit landed (no MERGE_HEAD/MERGE_MSG, no staged)
     run: |

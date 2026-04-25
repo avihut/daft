@@ -44,7 +44,7 @@ steps:
       output_contains:
         - "auto-accepting"
         - "-y"
-        - "Merge complete."
+        - "Merged main into target-no-wt (commit "
       output_not_contains:
         # Prompt-only sentinel. With -y we should never prompt, even though
         # the coercion log does mention "-y" and "auto-accepting".

@@ -32,7 +32,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Merge complete."
+        - "Merged feat-theirs into main (commit "
 
   - name: Verify tree took source's version
     run: cat shared.txt

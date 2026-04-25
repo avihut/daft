@@ -21,7 +21,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Merge complete."
+        - "Fast-forwarded main to "
 
   - name: Second merge of the same branch is a no-op
     run: git-worktree-merge feature/test-feature 2>&1

@@ -50,7 +50,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Merge complete."
+        - "Fast-forwarded main to "
         - "worktree-pre-remove hook failed with exit code 1"
 
   - name: Verify feature content landed on target (merge succeeded)

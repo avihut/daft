@@ -23,7 +23,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Merge complete."
+        - "Fast-forwarded main to "
         - "Deleted feature/test-feature (worktree, local branch)"
 
   - name: Verify feature worktree was removed

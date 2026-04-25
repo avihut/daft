@@ -38,7 +38,7 @@ steps:
       output_contains:
         - "2 sources"
         - "octopus"
-        - "Merge complete."
+        - "Merged feat-a, feat-b into main (commit "
 
   - name: Verify both feat-a and feat-b commits are reachable from main
     run: git log --oneline main

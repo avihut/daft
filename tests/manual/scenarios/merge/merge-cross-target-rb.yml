@@ -65,7 +65,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Merge complete."
+        - "Fast-forwarded develop to "
         - "Deleted feature/cross-target (worktree, local branch)"
 
   - name: Verify feature worktree is gone

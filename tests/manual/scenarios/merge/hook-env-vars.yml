@@ -61,7 +61,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Merge complete."
+        - "Merged feature/test-feature into main (commit "
 
   - name: Verify pre-merge env-var sentinel
     run: cat "$WORK_DIR/test-repo/main/.pre-merge-env"

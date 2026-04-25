@@ -403,6 +403,11 @@ fn effective_flags_from_args_and_settings(
     }
 }
 
+/// Returns the first 7 characters of a SHA (or the full SHA if shorter).
+fn short_sha(sha: &str) -> &str {
+    &sha[..sha.len().min(7)]
+}
+
 pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-merge"));
     init_logging(args.verbose);
@@ -734,27 +739,51 @@ pub fn run() -> Result<()> {
 
         // Core may have already emitted a terminal status line (e.g.,
         // "Fast-forwarded X to Y (no worktree)" from the ref-only FF path).
-        // Suppress the default status print in that case so a single
-        // successful merge produces a single stdout line.
+        // Suppress the new step emission in that case to avoid double output.
         if !outcome.emitted_terminal_message {
-            // State-aware terminal messaging per the spec.
+            // State-aware step messages per the spec. Dispatched from
+            // StartOutcome flags; replaces git's suppressed stdout with a
+            // single styled line per merge.
+            //
+            // `target_display` falls back to the CLI --into arg when core
+            // omits target_branch (e.g. the ephemeral non-squash success path).
+            let target_display = if outcome.target_branch.is_empty() {
+                into_branch.as_deref().unwrap_or("").to_string()
+            } else {
+                outcome.target_branch.clone()
+            };
+            let sources_display = sources_for_message.join(", ");
             if outcome.squash_staged_only {
                 // --squash --no-commit: staged but not committed.
-                let target = &outcome.target_branch;
-                println!("Squash staged on {target}. Commit when ready.");
+                output.result(&format!("Squash staged on {target_display}"));
             } else if outcome.squash_commit_sha.is_some() && squash_cleanup_stable {
-                // Squash + commit + cleanup path: defer "and cleaned up" message
-                // until AFTER cleanup succeeds (printed below).
+                // Squash + commit + cleanup path: defer message until AFTER
+                // cleanup succeeds (emitted below in the cleanup Ok branch).
             } else if let Some(ref sha) = outcome.squash_commit_sha {
-                // --squash with commit, no cleanup (or non-squash path):
-                let sources_display = sources_for_message.join(", ");
-                let target = &outcome.target_branch;
-                let short = &sha[..12.min(sha.len())];
-                println!("Squash merged {sources_display} into {target} as {short}.");
-            } else {
-                // Regular (non-squash) merge commit.
-                println!("Merge complete.");
+                // --squash with commit, no cleanup requested:
+                output.result(&format!(
+                    "Squashed {} into {} (commit {})",
+                    sources_display,
+                    target_display,
+                    short_sha(sha)
+                ));
+            } else if outcome.was_fast_forward {
+                if let Some(ref sha) = outcome.merge_commit_sha {
+                    output.result(&format!(
+                        "Fast-forwarded {} to {}",
+                        target_display,
+                        short_sha(sha)
+                    ));
+                }
+            } else if let Some(ref sha) = outcome.merge_commit_sha {
+                output.result(&format!(
+                    "Merged {} into {} (commit {})",
+                    sources_display,
+                    target_display,
+                    short_sha(sha)
+                ));
             }
+            // else: unreachable in practice; let existing downstream lines render.
         }
 
         // Post-merge cleanup. Only runs on successful, non-up-to-date merges
