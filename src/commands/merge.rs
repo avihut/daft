@@ -156,7 +156,7 @@ pub struct Args {
     #[arg(long = "commit", conflicts_with = "no_commit")]
     pub commit: bool,
     /// Leave the merge staged without committing.
-    #[arg(long = "no-commit", conflicts_with = "commit")]
+    #[arg(long = "no-commit", conflicts_with_all = ["commit", "remove", "and_branch"])]
     pub no_commit: bool,
 
     // --- Signoff ---
