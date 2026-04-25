@@ -306,11 +306,12 @@ fn effective_flags_from_args_and_settings(
         None
     };
 
-    // edit: CLI wins; else settings provides `Option<bool>` directly (None
-    // = let git decide from TTY).
+    // edit: CLI wins; -y/--yes implies --no-edit for the squash commit step
+    // (avoids opening an editor in non-interactive contexts); settings
+    // provides `Option<bool>` directly (None = let git decide from TTY).
     let edit = if args.edit {
         Some(true)
-    } else if args.no_edit {
+    } else if args.no_edit || args.yes {
         Some(false)
     } else {
         settings.merge_edit
@@ -442,7 +443,9 @@ pub fn run() -> Result<()> {
         // are left at default/None since they aren't used in the commit step.
         let commit_flags = {
             use crate::core::worktree::merge::{EffectiveFlags, GpgSign};
-            let edit = if args.no_edit {
+            // -y/--yes implies --no-edit: non-interactive callers shouldn't
+            // be dropped into an editor when resuming a squash commit.
+            let edit = if args.no_edit || args.yes {
                 Some(false)
             } else if args.edit {
                 Some(true)

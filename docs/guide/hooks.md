@@ -16,15 +16,15 @@ and more. For simple cases, you can also use **executable shell scripts** in
 
 ## Hook Types
 
-| Hook                   | Trigger                                                | Runs From                            |
-| ---------------------- | ------------------------------------------------------ | ------------------------------------ |
-| `post-clone`           | After `daft clone` completes                           | New default branch worktree          |
-| `worktree-pre-create`  | Before new worktree is added                           | Source worktree (where command runs) |
-| `worktree-post-create` | After new worktree is created                          | New worktree                         |
-| `worktree-pre-remove`  | Before worktree is removed                             | Worktree being removed               |
-| `worktree-post-remove` | After worktree is removed                              | Current worktree (where prune runs)  |
-| `pre-merge`            | After pre-flight checks pass, before the merge runs    | Target worktree                      |
-| `post-merge`           | After the merge operation completes (success/conflict) | Target worktree                      |
+| Hook                   | Trigger                                                        | Runs From                            |
+| ---------------------- | -------------------------------------------------------------- | ------------------------------------ |
+| `post-clone`           | After `daft clone` completes                                   | New default branch worktree          |
+| `worktree-pre-create`  | Before new worktree is added                                   | Source worktree (where command runs) |
+| `worktree-post-create` | After new worktree is created                                  | New worktree                         |
+| `worktree-pre-remove`  | Before worktree is removed                                     | Worktree being removed               |
+| `worktree-post-remove` | After worktree is removed                                      | Current worktree (where prune runs)  |
+| `pre-merge`            | After pre-flight checks pass, before the merge runs            | Target worktree                      |
+| `post-merge`           | After the merge operation completes (success/conflict/aborted) | Target worktree                      |
 
 ### Execution Order During Clone
 

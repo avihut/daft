@@ -2342,17 +2342,14 @@ fn finish_squash_staged(
                             })
                             .unwrap_or_default();
                         if !current_sha.is_empty() && current_sha != *captured_sha {
-                            eprintln!(
-                                "warning: source '{}' moved during merge (was {}, now {}); \
-                                 skipping cleanup to avoid losing work. \
-                                 Re-run cleanup manually if you've reconciled.",
+                            anyhow::bail!(
+                                "cleanup refused: source '{}' moved during merge \
+                                 (was {}, now {}); skipping cleanup to avoid losing work. \
+                                 Re-run cleanup manually if you have reconciled.",
                                 source,
-                                &captured_sha[..8.min(captured_sha.len())],
-                                &current_sha[..8.min(current_sha.len())]
+                                &captured_sha[..12.min(captured_sha.len())],
+                                &current_sha[..12.min(current_sha.len())]
                             );
-                            // Still print the commit message; just skip cleanup.
-                            println!("Squash merged.");
-                            return Ok(());
                         }
                     }
 
@@ -2379,14 +2376,14 @@ fn finish_squash_staged(
                         "Squash merged {} into {} as {}.",
                         intent.sources.join(", "),
                         resolved_branch_or_unknown(path, git),
-                        &sha[..8.min(sha.len())]
+                        &sha[..12.min(sha.len())]
                     );
                 }
             } else {
                 // No intent marker (e.g. squash was done with --no-commit, or
                 // the marker was lost). Just confirm the commit succeeded.
                 let sha = git.rev_parse("HEAD").unwrap_or_default();
-                println!("Squash committed {}.", &sha[..8.min(sha.len())]);
+                println!("Squash committed {}.", &sha[..12.min(sha.len())]);
             }
         }
     }
