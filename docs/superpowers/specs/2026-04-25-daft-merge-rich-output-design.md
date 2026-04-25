@@ -101,18 +101,17 @@ is a behavioral inconsistency users will hit the moment they configure a
 
 When `daft merge -r` (or `-rb`) cleans up a source, daft invokes
 `branch_delete::execute` for that source instead of calling
-`git.worktree_remove`
+`git.worktree_remove` and `git.branch_delete` directly. The single delegation
+buys, in one stroke:
 
-- `git.branch_delete` directly. The single delegation buys, in one stroke:
-
-* `worktree-pre-remove` and `worktree-post-remove` hooks fire correctly, with
+- `worktree-pre-remove` and `worktree-post-remove` hooks fire correctly, with
   the same hook box, spinner, and summary rendering used by `daft remove`.
-* Step messages (`Removing worktree at ...`, `Deleting branch ...`) flow through
+- Step messages (`Removing worktree at ...`, `Deleting branch ...`) flow through
   `OutputSink::on_step`, integrating with the spinner and respecting the
   presenter's formatting rules.
-* The final `Deleted <source> (worktree, local branch)` line is produced by
+- The final `Deleted <source> (worktree, local branch)` line is produced by
   `branch_delete::execute`'s existing styled output path.
-* `--quiet`, `--verbose`, and any future global output flags work uniformly.
+- `--quiet`, `--verbose`, and any future global output flags work uniformly.
 
 `BranchDeleteParams` gains one new field — `keep_local_branch: bool` — that
 mirrors the existing `remote_only` knob. When `true`, validation skips the
