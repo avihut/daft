@@ -738,6 +738,7 @@ dependencies = [
  "url",
  "uuid",
  "version-migrate",
+ "walkdir",
  "which",
 ]
 

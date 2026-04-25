@@ -451,6 +451,87 @@ impl LogStore {
         Ok(truncated)
     }
 
+    /// Total bytes consumed under base_dir (recursive).
+    pub fn total_size_bytes(&self) -> Result<u64> {
+        if !self.base_dir.exists() {
+            return Ok(0);
+        }
+        let mut total = 0u64;
+        for entry in walkdir::WalkDir::new(&self.base_dir) {
+            let entry = entry?;
+            if entry.file_type().is_file() {
+                total += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            }
+        }
+        Ok(total)
+    }
+
+    /// Evict invocations oldest-first until total size is under budget.
+    /// Honors `keep_last` per-worktree: an invocation is never evicted if
+    /// doing so would drop its worktree below the sanity floor.
+    pub fn enforce_budget(
+        &self,
+        policy: &crate::coordinator::clean_policy::RepoPolicy,
+    ) -> Result<usize> {
+        let budget = policy.max_total_size_resolved();
+        let keep_last = policy.keep_last_resolved();
+
+        let mut total = self.total_size_bytes()?;
+        if total <= budget {
+            return Ok(0);
+        }
+
+        // List invocations with (worktree, inv_id, created_at, total_size).
+        let mut invs: Vec<(String, String, chrono::DateTime<chrono::Utc>, u64)> = Vec::new();
+        for inv in self.list_invocations()? {
+            let inv_dir = self.base_dir.join(&inv.invocation_id);
+            let size = walkdir::WalkDir::new(&inv_dir)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file())
+                .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+                .sum::<u64>();
+            invs.push((
+                inv.worktree.clone(),
+                inv.invocation_id.clone(),
+                inv.created_at,
+                size,
+            ));
+        }
+
+        // Group by worktree, count for sanity floor.
+        let mut per_wt_count: std::collections::BTreeMap<String, usize> = Default::default();
+        for (wt, _, _, _) in &invs {
+            *per_wt_count.entry(wt.clone()).or_default() += 1;
+        }
+
+        // Sort all invocations by created_at ascending (oldest first).
+        invs.sort_by_key(|(_, _, ts, _)| *ts);
+
+        let mut evicted = 0;
+        for (wt, inv_id, _, size) in invs {
+            if total <= budget {
+                break;
+            }
+            // Sanity floor: never evict if it would drop this worktree below keep_last.
+            if let Some(count) = per_wt_count.get_mut(&wt) {
+                if *count <= keep_last {
+                    continue;
+                }
+                *count -= 1;
+            }
+
+            let inv_dir = self.base_dir.join(&inv_id);
+            let trash = self.base_dir.join(format!(".deleting-{inv_id}"));
+            if fs::rename(&inv_dir, &trash).is_ok() {
+                let _ = fs::remove_dir_all(&trash);
+                total = total.saturating_sub(size);
+                evicted += 1;
+            }
+        }
+        Ok(evicted)
+    }
+
     /// Helper: derive repo_id from base_dir's last component (the repo UUID).
     fn repo_id_or_empty(&self) -> String {
         self.base_dir
@@ -1377,6 +1458,76 @@ mod tests {
             "short-ID prefixes collided: {:?}",
             prefixes
         );
+    }
+
+    #[test]
+    fn budget_evicts_oldest_first_respects_keep_last() {
+        use crate::coordinator::clean_policy::RepoPolicy;
+        use std::collections::HashMap;
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let now = chrono::Utc::now();
+
+        // 5 invocations, each 200KB. Budget 500KB (= 2.5 invocations worth).
+        // Keep_last = 1. Expected: oldest 3 evicted, newest 2 kept.
+        for i in 0..5 {
+            let id = format!("000{i}");
+            let inv_meta = InvocationMeta {
+                invocation_id: id.clone(),
+                trigger_command: "post-create".into(),
+                hook_type: "worktree-post-create".into(),
+                worktree: "main".into(),
+                created_at: now - chrono::Duration::hours(5 - i as i64),
+            };
+            store.write_invocation_meta(&id, &inv_meta).unwrap();
+            let dir = store.create_job_dir(&id, "build").unwrap();
+            let meta = JobMeta {
+                name: "build".into(),
+                hook_type: "worktree-post-create".into(),
+                worktree: "main".into(),
+                command: "echo".into(),
+                working_dir: "/tmp".into(),
+                env: HashMap::new(),
+                started_at: now - chrono::Duration::hours(5 - i as i64),
+                status: JobStatus::Completed,
+                exit_code: Some(0),
+                pid: None,
+                background: false,
+                finished_at: Some(now - chrono::Duration::hours(5 - i as i64)),
+                needs: vec![],
+                retention_seconds: None,
+                max_log_size_bytes: None,
+                log_truncated: false,
+                original_size_bytes: None,
+            };
+            store.write_meta(&dir, &meta).unwrap();
+            let mut f = std::fs::File::create(LogStore::log_path(&dir)).unwrap();
+            f.write_all(&vec![b'.'; 200 * 1024]).unwrap();
+        }
+
+        let policy = RepoPolicy {
+            version: 1,
+            max_total_size_bytes: Some(500 * 1024),
+            keep_last: Some(1),
+            stale_running_after_seconds: None,
+        };
+        let evicted = store.enforce_budget(&policy).unwrap();
+        assert!(evicted >= 3, "expected >=3 evicted, got {evicted}");
+
+        let remaining: Vec<String> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with("000"))
+            .collect();
+        // The most recent invocation (0004) must always survive.
+        assert!(remaining.contains(&"0004".to_string()));
+        // The oldest (0000) should be evicted.
+        assert!(!remaining.contains(&"0000".to_string()));
     }
 
     #[test]
