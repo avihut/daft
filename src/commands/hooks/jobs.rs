@@ -13,10 +13,7 @@ use crate::styles::{
     blue, bold, dim, dim_underline, green, orange, red, yellow, BOLD, CURRENT_WORKTREE_SYMBOL,
     CYAN, RESET,
 };
-use tabled::{
-    builder::Builder,
-    settings::{object::Columns, Padding, Style},
-};
+use tabled::{builder::Builder, settings::Style};
 
 /// Format a duration as a compact human-readable string with adaptive
 /// precision.
@@ -57,7 +54,6 @@ fn format_duration(d: chrono::Duration) -> String {
 /// One-line worktree header. The marker is `CURRENT_WORKTREE_SYMBOL` (`">"`)
 /// for the current worktree; non-current worktrees pass a single space so
 /// the worktree-name column lines up across both.
-#[allow(dead_code)] // Wired up in Task 2 of the timeline display plan.
 fn worktree_header(marker: &str, name: &str) -> String {
     format!("{BOLD}{CYAN}{marker} {name}{RESET}")
 }
@@ -65,7 +61,6 @@ fn worktree_header(marker: &str, name: &str) -> String {
 /// One-line invocation header pinned to the spine as a bullet node.
 /// `time_ago` is the bare relative duration (e.g. `"2h"`); the helper
 /// appends `" ago"` so the rendered text reads `"2h ago"`.
-#[allow(dead_code)] // Wired up in Task 2 of the timeline display plan.
 fn invocation_node_line(time_ago: &str, trigger: &str, short_id: &str) -> String {
     format!(
         "  {}  {} · {trigger} {}",
@@ -78,19 +73,16 @@ fn invocation_node_line(time_ago: &str, trigger: &str, short_id: &str) -> String
 /// Spine-only line: emits the `│` glyph in dim with no inner content.
 /// Used between adjacent invocation nodes within a worktree, and between
 /// an invocation node and the table that hangs from it.
-#[allow(dead_code)] // Wired up in Task 2 of the timeline display plan.
 fn spine_blank() -> String {
     format!("  {}", dim("│"))
 }
 
 /// Prefix one inner-table content line with the spine + a 5-space gutter.
-#[allow(dead_code)] // Wired up in Task 2 of the timeline display plan.
 fn spine_prefixed(content: &str) -> String {
     format!("  {}     {content}", dim("│"))
 }
 
 /// Placeholder rendered when an invocation has no jobs.
-#[allow(dead_code)] // Wired up in Task 2 of the timeline display plan.
 fn empty_invocation_placeholder() -> String {
     format!("  {}     {}", dim("│"), dim("(no jobs declared)"))
 }
@@ -688,33 +680,34 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
         } else {
             " "
         };
-        output.info(&format!("{BOLD}{CYAN}{marker} {worktree}{RESET}"));
+        output.info(&worktree_header(marker, worktree));
         first_group = false;
 
-        for inv in inv_list {
+        for (i, inv) in inv_list.iter().enumerate() {
+            // Separator before this node: blank line (no spine) between
+            // worktree header and the first node; dim spine line between
+            // adjacent nodes within the same worktree.
+            if i == 0 {
+                output.info("");
+            } else {
+                output.info(&spine_blank());
+            }
+
             let ago =
                 shorthand_from_seconds(now.signed_duration_since(inv.created_at).num_seconds());
             let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
 
-            output.info("");
-            output.info(&format!(
-                "{} -- {} {}",
-                dim(&ago),
-                inv.trigger_command,
-                dim(&format!("[{short_id}]")),
-            ));
+            output.info(&invocation_node_line(&ago, &inv.trigger_command, short_id));
+            // Spine breathes between the node and the table.
+            output.info(&spine_blank());
 
-            // Collect jobs for this invocation.
             let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
             if job_dirs.is_empty() {
-                output.info(&format!("  {}", dim("(no jobs declared)")));
-                output.info("");
+                output.info(&empty_invocation_placeholder());
                 continue;
             }
 
             let mut builder = Builder::new();
-
-            // Header row.
             builder.push_record(vec![
                 dim_underline("Job"),
                 dim_underline("Status"),
@@ -731,27 +724,21 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                         orange("\u{2192}")
                     };
                     let job_label = format!("{icon} {}", meta.name);
-
                     let status = format_status_inline(&meta.status, coordinator_alive);
-
                     let started = {
                         let local: chrono::DateTime<chrono::Local> = meta.started_at.into();
                         local.format("%H:%M:%S").to_string()
                     };
-
                     let duration = match (&meta.status, meta.finished_at) {
                         (_, Some(finished)) => {
                             format_duration(finished.signed_duration_since(meta.started_at))
                         }
-                        (JobStatus::Running, None) => {
-                            format!(
-                                "{}...",
-                                format_duration(now.signed_duration_since(meta.started_at))
-                            )
-                        }
+                        (JobStatus::Running, None) => format!(
+                            "{}...",
+                            format_duration(now.signed_duration_since(meta.started_at))
+                        ),
                         _ => "\u{2014}".to_string(),
                     };
-
                     let size = LogStore::log_path(dir)
                         .metadata()
                         .map(|m| m.len())
@@ -761,16 +748,18 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                     } else {
                         format_bytes(size)
                     };
-
                     builder.push_record(vec![job_label, status, started, duration, size_str]);
                 }
             }
 
             let mut table = builder.build();
             table.with(Style::blank());
-            table.modify(Columns::first(), Padding::new(2, 1, 0, 0));
+            // Note: the previous first-column left-padding override is dropped
+            // because the spine gutter (5 spaces) supplies the inset.
 
-            output.info(&table.to_string());
+            for line in table.to_string().lines() {
+                output.info(&spine_prefixed(line));
+            }
         }
     }
 
