@@ -385,7 +385,7 @@ fn parse_porcelain(output: &str) -> Vec<PorcelainEntry> {
 /// Runs `git rev-list --left-right --count base...branch` in the given
 /// worktree directory. Returns `(ahead, behind)` or `None` if the comparison
 /// is not possible (e.g. unrelated histories, missing refs).
-fn get_ahead_behind(
+pub(crate) fn get_ahead_behind(
     base_branch: &str,
     branch: &str,
     worktree_path: &Path,
@@ -414,7 +414,7 @@ fn get_ahead_behind(
 
 /// Dispatch commit metadata retrieval for a worktree HEAD, using gitoxide when
 /// enabled with a fallback to the git subprocess.
-fn get_commit_metadata(
+pub(crate) fn get_commit_metadata(
     worktree_path: &Path,
     git: &GitCommand,
 ) -> (Option<i64>, Option<String>, String) {
@@ -529,7 +529,7 @@ fn get_last_commit_info_for_ref(
 /// Primary: oldest reflog entry for the branch.
 /// Fallback: timestamp of the first commit on the branch.
 /// Returns `None` for detached HEAD or if both methods fail.
-fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) -> Option<i64> {
+pub(crate) fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) -> Option<i64> {
     // Primary: oldest reflog entry
     let reflog_output = Command::new("git")
         .args(["reflog", "show", branch, "--format=%ct"])
@@ -567,16 +567,16 @@ fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) -> Option<i
 }
 
 /// Result of counting changed files in a worktree.
-struct ChangedFiles {
-    staged: usize,
-    unstaged: usize,
-    untracked: usize,
+pub(crate) struct ChangedFiles {
+    pub(crate) staged: usize,
+    pub(crate) unstaged: usize,
+    pub(crate) untracked: usize,
     /// Relative paths of all changed/untracked files (for mtime computation).
-    paths: Vec<String>,
+    pub(crate) paths: Vec<String>,
 }
 
 /// Count staged, unstaged, and untracked files in a worktree.
-fn count_changed_files(worktree_path: &Path) -> ChangedFiles {
+pub(crate) fn count_changed_files(worktree_path: &Path) -> ChangedFiles {
     let output = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(worktree_path)
@@ -631,7 +631,10 @@ fn count_changed_files(worktree_path: &Path) -> ChangedFiles {
 }
 
 /// Get ahead/behind counts for a branch relative to its remote tracking branch.
-fn get_upstream_ahead_behind(branch: &str, worktree_path: &Path) -> Option<(usize, usize)> {
+pub(crate) fn get_upstream_ahead_behind(
+    branch: &str,
+    worktree_path: &Path,
+) -> Option<(usize, usize)> {
     let range = format!("{branch}@{{upstream}}...{branch}");
     let output = Command::new("git")
         .args(["rev-list", "--left-right", "--count", &range])
@@ -674,7 +677,7 @@ fn parse_numstat(output: &str) -> (usize, usize) {
 /// Count lines inserted/deleted for staged and unstaged changes in a worktree.
 ///
 /// Returns `((staged_ins, staged_del), (unstaged_ins, unstaged_del))`.
-fn count_changed_lines(worktree_path: &Path) -> ((usize, usize), (usize, usize)) {
+pub(crate) fn count_changed_lines(worktree_path: &Path) -> ((usize, usize), (usize, usize)) {
     let staged = Command::new("git")
         .args(["diff", "--cached", "--numstat"])
         .current_dir(worktree_path)
@@ -700,7 +703,7 @@ fn count_changed_lines(worktree_path: &Path) -> ((usize, usize), (usize, usize))
 ///
 /// Runs `git diff --numstat base...branch`.
 /// Returns `(insertions, deletions)` or `None` if not computable.
-fn get_base_line_counts(
+pub(crate) fn get_base_line_counts(
     base_branch: &str,
     branch: &str,
     worktree_path: &Path,
@@ -723,7 +726,7 @@ fn get_base_line_counts(
 ///
 /// Runs `git diff --numstat branch@{upstream}...branch`.
 /// Returns `(insertions, deletions)` or `None` if no upstream.
-fn get_remote_line_counts(branch: &str, worktree_path: &Path) -> Option<(usize, usize)> {
+pub(crate) fn get_remote_line_counts(branch: &str, worktree_path: &Path) -> Option<(usize, usize)> {
     let range = format!("{branch}@{{upstream}}...{branch}");
     let output = Command::new("git")
         .args(["diff", "--numstat", &range])
@@ -744,7 +747,7 @@ fn get_remote_line_counts(branch: &str, worktree_path: &Path) -> Option<(usize, 
 /// so a worktree with a few permission-denied entries still reports the sum of
 /// all readable files. Tracks seen inodes to count hard-linked files only once
 /// (matching `du` behavior). Does not follow symlinks.
-fn compute_directory_size(path: &Path) -> Option<u64> {
+pub(crate) fn compute_directory_size(path: &Path) -> Option<u64> {
     #[cfg(unix)]
     {
         use std::collections::HashSet;
@@ -807,7 +810,7 @@ fn compute_directory_size(path: &Path) -> Option<u64> {
 /// `worktree_path` is the root of the worktree; `relative_paths` are the
 /// paths reported by `git status --porcelain` (relative to the worktree root).
 /// Returns `None` if the list is empty or no file could be stat-ed.
-fn max_mtime_of_files(worktree_path: &Path, relative_paths: &[String]) -> Option<i64> {
+pub(crate) fn max_mtime_of_files(worktree_path: &Path, relative_paths: &[String]) -> Option<i64> {
     let mut max_mtime: Option<i64> = None;
     for rel in relative_paths {
         let full = worktree_path.join(rel);
