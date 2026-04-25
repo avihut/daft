@@ -130,6 +130,24 @@ pub struct WorktreeRow {
     pub failure_reason: Option<String>,
 }
 
+impl WorktreeRow {
+    pub(crate) fn idle(info: WorktreeInfo) -> Self {
+        Self {
+            info,
+            status: WorktreeStatus::Idle,
+            prev_terminal_status: None,
+            hook_warned: false,
+            hook_failed: false,
+            hook_sub_rows: Vec::new(),
+            failure_reason: None,
+        }
+    }
+
+    pub(crate) fn placeholder() -> Self {
+        Self::idle(WorktreeInfo::empty(""))
+    }
+}
+
 impl TuiState {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
