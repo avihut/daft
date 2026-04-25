@@ -26,7 +26,9 @@ Target worktree/branch. Defaults to the current worktree\*(Aqs branch
 Abort an in\-progress merge in the named worktree (defaults to CWD)
 .TP
 \fB\-\-continue\fR
-Continue an in\-progress merge in the named worktree (defaults to CWD)
+Continue an in\-progress merge in the named worktree (defaults to CWD).
+
+When continuing a squash\-staged state, the commit\-message flags (`\-\-no\-edit`, `\-m`, `\-F`, `\-\-signoff`, `\-\-gpg\-sign`, `\-\-cleanup`) may be supplied to control the commit step. They are forwarded to `git commit` and are *not* treated as start\-mode flags.
 .TP
 \fB\-\-quit\fR
 Quit an in\-progress merge without resetting the index (defaults to CWD)

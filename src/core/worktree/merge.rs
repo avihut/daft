@@ -834,10 +834,12 @@ pub fn detect_in_progress(worktree: &Path) -> Result<Option<InProgressOp>> {
         return Ok(Some(InProgressOp::Merge));
     }
 
-    // Squash-staged: `git merge --squash` sets MERGE_MSG but NOT MERGE_HEAD.
-    // Require staged changes to avoid false positives on a stale MERGE_MSG.
-    let merge_msg = git_dir.join("MERGE_MSG");
-    if merge_msg.exists() && has_staged_changes(worktree)? {
+    // Squash-staged: `git merge --squash` writes SQUASH_MSG but NOT MERGE_HEAD.
+    // Require staged changes to avoid false positives on a stale SQUASH_MSG
+    // (e.g. a previous squash that was committed successfully but whose
+    // SQUASH_MSG somehow remained).
+    let squash_msg = git_dir.join("SQUASH_MSG");
+    if squash_msg.exists() && has_staged_changes(worktree)? {
         return Ok(Some(InProgressOp::SquashStaged));
     }
 
@@ -1954,6 +1956,63 @@ pub fn advance_ref_via_plumbing(
     Ok(())
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Daft merge intent marker (Slice 5 Task 5.3)
+//
+// When `--squash` is committed as part of a cleanup flow (`-r`/`-rb`), daft
+// writes a small JSON marker file inside the worktree's git dir BEFORE running
+// `git commit`. The marker persists across the editor session so that if the
+// editor is aborted and the user later runs `--continue`, daft can resume the
+// cleanup step with the original intent (source names, captured SHAs,
+// cleanup flags).
+//
+// Path: `<git-dir>/daft-merge-intent.json`
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Cleanup intent persisted across the squash-commit editor session.
+///
+/// Serialized to `<git-dir>/daft-merge-intent.json` when a squash commit is
+/// about to run AND cleanup was requested. Read by `--continue` on the
+/// squash-staged state to resume cleanup after the editor session.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MergeIntent {
+    /// Source branch names (for `classify_source` / `execute_cleanup`).
+    pub sources: Vec<String>,
+    /// Source SHAs captured at merge start (for stability check before `-D`).
+    pub source_shas: Vec<String>,
+    /// Whether cleanup should remove the source worktree.
+    pub remove_worktree: bool,
+    /// Whether cleanup should also delete the source branch (requires
+    /// `remove_worktree`).
+    pub also_branch: bool,
+}
+
+/// Write the merge intent marker file to `git_dir/daft-merge-intent.json`.
+///
+/// Failures are best-effort: if the write fails, a warning is printed but the
+/// operation continues. A missing marker causes `--continue` to skip cleanup
+/// (safe degradation) rather than hard-failing.
+pub fn write_intent_marker(git_dir: &Path, intent: &MergeIntent) {
+    let path = git_dir.join("daft-merge-intent.json");
+    match serde_json::to_string(intent) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                eprintln!("warning: failed to write merge intent marker: {e}");
+            }
+        }
+        Err(e) => eprintln!("warning: failed to serialize merge intent: {e}"),
+    }
+}
+
+/// Read the merge intent marker file from `path`.
+///
+/// Returns `None` on any error (file absent, unreadable, malformed JSON) — the
+/// caller should degrade gracefully (skip cleanup) rather than hard-fail.
+pub fn read_intent_marker(path: &Path) -> Option<MergeIntent> {
+    let json = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&json).ok()
+}
+
 /// Which finish operation to execute.
 ///
 /// Each variant maps one-to-one to a git-merge subflag (`--abort`,
@@ -1972,25 +2031,34 @@ pub enum FinishMode {
 /// `worktree` mirrors [`StartParams::target`]: `None` means the current
 /// worktree, `Some(t)` is resolved via [`resolve_target`] (branch name, dir
 /// name, or relative path).
+///
+/// `commit_flags` carries the message-composing and signing flags supplied on
+/// the `--continue` invocation (e.g. `--no-edit`, `-m <msg>`, `-F <file>`,
+/// `--signoff`, `--gpg-sign`). Only consulted on the `--continue` + `SquashStaged`
+/// path; ignored for `Merge`-state continues (those go to `git merge --continue`
+/// which handles the message step itself).
 #[derive(Debug, Clone)]
 pub struct FinishParams {
     pub worktree: Option<String>,
     pub mode: FinishMode,
+    /// Commit-composing flags for `--continue` on squash-staged state.
+    /// Defaults to all-None/false (no flags forwarded) when not supplied.
+    pub commit_flags: EffectiveFlags,
 }
 
-/// Verify the given worktree has an in-progress merge.
+/// Verify the given worktree has an in-progress merge (regular or squash-staged).
 ///
-/// Returns `Ok(())` iff `.git/MERGE_HEAD` (or its linked-worktree equivalent)
-/// is present. Fails with "no in-progress merge in worktree '<path>'" for all
-/// other states (clean, mid-rebase, mid-cherry-pick, mid-bisect). Callers
-/// that want to surface candidate worktrees on failure should use
-/// [`execute_finish`]; this helper is the bare predicate, kept public for
-/// direct unit testing.
+/// Returns `Ok(())` iff `.git/MERGE_HEAD` is present (regular in-progress
+/// merge) **or** the worktree is in the squash-staged state (`MERGE_MSG`
+/// present without `MERGE_HEAD`, with staged changes). Fails with
+/// "no in-progress merge in worktree '<path>'" for all other states (clean,
+/// mid-rebase, mid-cherry-pick, mid-bisect). Callers that want to surface
+/// candidate worktrees on failure should use [`execute_finish`]; this helper
+/// is the bare predicate, kept public for direct unit testing.
 pub fn ensure_merge_in_progress(worktree: &Path) -> Result<()> {
-    if detect_in_progress(worktree)? == Some(InProgressOp::Merge) {
-        Ok(())
-    } else {
-        anyhow::bail!("no in-progress merge in worktree '{}'", worktree.display())
+    match detect_in_progress(worktree)? {
+        Some(InProgressOp::Merge) | Some(InProgressOp::SquashStaged) => Ok(()),
+        _ => anyhow::bail!("no in-progress merge in worktree '{}'", worktree.display()),
     }
 }
 
@@ -2012,8 +2080,11 @@ fn list_worktrees_with_in_progress_merges(git: &GitCommand) -> Result<Vec<PathBu
     }
     let mut matches = Vec::new();
     for path in paths {
-        if detect_in_progress(&path).ok().flatten() == Some(InProgressOp::Merge) {
-            matches.push(path);
+        match detect_in_progress(&path).ok().flatten() {
+            Some(InProgressOp::Merge) | Some(InProgressOp::SquashStaged) => {
+                matches.push(path);
+            }
+            _ => {}
         }
     }
     Ok(matches)
@@ -2026,10 +2097,17 @@ fn list_worktrees_with_in_progress_merges(git: &GitCommand) -> Result<Vec<PathBu
 /// it doesn't, enumerates sibling worktrees with in-progress merges so the
 /// error message points the user at where the state actually lives.
 ///
-/// On the happy path, dispatches `git merge --abort|--continue|--quit` with
-/// the target worktree as CWD so the correct worktree's index is touched.
-/// Stdio is inherited so `--continue`'s commit-message editor (when no `-m`
-/// was supplied on the original start) works interactively.
+/// On the happy path, dispatches the appropriate operation:
+/// * Regular `Merge` state → `git merge --abort|--continue|--quit`.
+/// * `SquashStaged` state:
+///   - `Abort` / `Quit` → `git reset --merge` to undo staged changes and
+///     remove `MERGE_MSG`; also removes the daft intent marker if present.
+///   - `Continue` → re-opens the editor on `MERGE_MSG` via `git commit`
+///     (honoring commit flags from `params.commit_flags`); on success, reads
+///     the intent marker to resume cleanup if originally requested.
+///
+/// Stdio is inherited so `--continue`'s commit-message editor works
+/// interactively.
 pub fn execute_finish(params: &FinishParams, git: &GitCommand, project_root: &Path) -> Result<()> {
     let resolved = resolve_target(params.worktree.as_deref(), git, project_root)?;
 
@@ -2044,70 +2122,234 @@ pub fn execute_finish(params: &FinishParams, git: &GitCommand, project_root: &Pa
         )
     })?;
 
-    // Route the "no merge in progress" check through the public predicate so
-    // behaviour stays in sync with direct callers of `ensure_merge_in_progress`.
-    // When the predicate fails, we swap its bare error for a richer message
-    // listing candidate worktrees and a concrete retry hint.
-    if ensure_merge_in_progress(&path).is_err() {
-        let candidates = list_worktrees_with_in_progress_merges(git).unwrap_or_default();
-        let mut msg = format!("no in-progress merge in worktree '{}'", path.display());
-        if !candidates.is_empty() {
-            msg.push_str("\n\nmerges in progress elsewhere:");
-            for c in &candidates {
-                // Best-effort branch resolution: if we can read the current
-                // branch at the candidate path, show it alongside the path so
-                // the user can paste it straight into the retry hint below.
-                match branch_at_path(git, c) {
-                    Ok(branch) => {
-                        msg.push_str(&format!("\n  {} (branch: {})", c.display(), branch))
-                    }
-                    Err(_) => msg.push_str(&format!("\n  {}", c.display())),
-                }
-            }
-            let flag = match params.mode {
-                FinishMode::Abort => "abort",
-                FinishMode::Continue => "continue",
-                FinishMode::Quit => "quit",
-            };
-            // Single candidate → concrete retry command; multiple candidates
-            // or a resolution failure → fall back to `<branch>` placeholder.
-            let retry_target = if candidates.len() == 1 {
-                branch_at_path(git, &candidates[0]).ok()
-            } else {
-                None
-            };
-            match retry_target {
-                Some(branch) => {
-                    msg.push_str(&format!("\n\nretry with: daft merge --{flag} {branch}"))
-                }
-                None => msg.push_str(&format!("\n\nretry with: daft merge --{flag} <branch>")),
-            }
+    // Detect the current in-progress state. Route the "no merge in progress"
+    // check through the public predicate so behaviour stays in sync with direct
+    // callers of `ensure_merge_in_progress`. When the predicate fails, we swap
+    // its bare error for a richer message listing candidate worktrees and a
+    // concrete retry hint.
+    let op = match detect_in_progress(&path)? {
+        Some(InProgressOp::Merge) | Some(InProgressOp::SquashStaged) => {
+            detect_in_progress(&path)?.unwrap()
         }
-        anyhow::bail!(msg);
-    }
-
-    let flag = match params.mode {
-        FinishMode::Abort => "--abort",
-        FinishMode::Continue => "--continue",
-        FinishMode::Quit => "--quit",
+        _ => {
+            let candidates = list_worktrees_with_in_progress_merges(git).unwrap_or_default();
+            let mut msg = format!("no in-progress merge in worktree '{}'", path.display());
+            if !candidates.is_empty() {
+                msg.push_str("\n\nmerges in progress elsewhere:");
+                for c in &candidates {
+                    // Best-effort branch resolution: if we can read the current
+                    // branch at the candidate path, show it alongside the path
+                    // so the user can paste it straight into the retry hint.
+                    match branch_at_path(git, c) {
+                        Ok(branch) => {
+                            msg.push_str(&format!("\n  {} (branch: {})", c.display(), branch))
+                        }
+                        Err(_) => msg.push_str(&format!("\n  {}", c.display())),
+                    }
+                }
+                let flag = match params.mode {
+                    FinishMode::Abort => "abort",
+                    FinishMode::Continue => "continue",
+                    FinishMode::Quit => "quit",
+                };
+                // Single candidate → concrete retry command; multiple
+                // candidates or resolution failure → placeholder.
+                let retry_target = if candidates.len() == 1 {
+                    branch_at_path(git, &candidates[0]).ok()
+                } else {
+                    None
+                };
+                match retry_target {
+                    Some(branch) => {
+                        msg.push_str(&format!("\n\nretry with: daft merge --{flag} {branch}"))
+                    }
+                    None => msg.push_str(&format!("\n\nretry with: daft merge --{flag} <branch>")),
+                }
+            }
+            anyhow::bail!(msg);
+        }
     };
 
-    let status = Command::new("git")
-        .args(["merge", flag])
-        .current_dir(&path)
-        .status()
-        .with_context(|| {
-            format!(
-                "failed to invoke git merge {} in '{}'",
-                flag,
-                path.display()
-            )
-        })?;
+    // Dispatch based on detected state.
+    let target_branch = resolved.branch.clone();
+    match op {
+        InProgressOp::SquashStaged => {
+            finish_squash_staged(params, git, project_root, &path, &target_branch)?;
+        }
+        InProgressOp::Merge => {
+            let flag = match params.mode {
+                FinishMode::Abort => "--abort",
+                FinishMode::Continue => "--continue",
+                FinishMode::Quit => "--quit",
+            };
 
-    if !status.success() {
-        anyhow::bail!("git merge {} failed in '{}'", flag, path.display());
+            let status = Command::new("git")
+                .args(["merge", flag])
+                .current_dir(&path)
+                .status()
+                .with_context(|| {
+                    format!(
+                        "failed to invoke git merge {} in '{}'",
+                        flag,
+                        path.display()
+                    )
+                })?;
+
+            if !status.success() {
+                anyhow::bail!("git merge {} failed in '{}'", flag, path.display());
+            }
+        }
+        // Other states (Rebase, CherryPick, Bisect) are filtered out above;
+        // this branch is unreachable but required for exhaustiveness.
+        _ => unreachable!("non-merge op passed detect filter"),
     }
     Ok(())
+}
+
+/// Handle a finish command (abort/continue/quit) for the squash-staged state.
+///
+/// This state arises when `git merge --squash` ran successfully but the
+/// commit step is pending: `MERGE_MSG` exists, `MERGE_HEAD` does not.
+///
+/// - Abort/Quit: `git reset --merge` resets the index back to HEAD and
+///   removes `MERGE_MSG`. The daft intent marker (if present) is also removed.
+/// - Continue: runs `git commit` with commit flags from `params.commit_flags`
+///   (e.g. `--no-edit`, `-m`). On success, reads the intent marker to resume
+///   cleanup if the original merge requested it.
+fn finish_squash_staged(
+    params: &FinishParams,
+    git: &GitCommand,
+    project_root: &Path,
+    path: &Path,
+    target_branch: &str,
+) -> Result<()> {
+    let git_dir = resolve_worktree_git_dir(path)?;
+    // `git merge --squash` writes SQUASH_MSG as the pre-populated commit
+    // message template; git does NOT write MERGE_MSG in the squash path.
+    let squash_msg_path = git_dir.join("SQUASH_MSG");
+    let intent_path = git_dir.join("daft-merge-intent.json");
+
+    match params.mode {
+        FinishMode::Abort | FinishMode::Quit => {
+            // `git reset --merge` resets staged changes back to HEAD.
+            let status = Command::new("git")
+                .args(["reset", "--merge"])
+                .current_dir(path)
+                .status()
+                .context("failed to invoke `git reset --merge`")?;
+            if !status.success() {
+                anyhow::bail!("`git reset --merge` failed in '{}'", path.display());
+            }
+            // Explicitly remove SQUASH_MSG (git reset --merge may or may not
+            // remove it depending on the git version; be explicit for test
+            // determinism).
+            let _ = std::fs::remove_file(&squash_msg_path);
+            // Remove the daft intent marker so a subsequent --abort doesn't
+            // find stale cleanup intent.
+            let _ = std::fs::remove_file(&intent_path);
+            println!("Aborted.");
+        }
+        FinishMode::Continue => {
+            // Run git commit; git will use SQUASH_MSG as the editor template
+            // if no explicit message is provided (-m / -F). --no-edit uses
+            // the SQUASH_MSG content verbatim without opening an editor.
+            let mut commit_argv: Vec<String> = vec!["commit".to_string()];
+            commit_argv.extend(render_commit_flags(&params.commit_flags));
+
+            let status = Command::new("git")
+                .args(&commit_argv)
+                .current_dir(path)
+                .status()
+                .context("failed to invoke `git commit` for squash-staged continue")?;
+
+            if !status.success() {
+                // Editor aborted or commit refused; leave staged state + marker
+                // intact so the user can retry with --continue or --abort.
+                anyhow::bail!(
+                    "commit aborted; squash changes are still staged on '{}'. \
+                     Use `daft merge --continue` to retry or `daft merge --abort` to discard.",
+                    path.display()
+                );
+            }
+
+            // Commit succeeded. Read the intent marker (if present) to decide
+            // whether to run post-merge cleanup.
+            let intent = read_intent_marker(&intent_path);
+
+            // Remove the marker now that we've consumed it.
+            let _ = std::fs::remove_file(&intent_path);
+
+            // Run cleanup if the original merge requested it and the marker
+            // was successfully read.
+            if let Some(intent) = intent {
+                if intent.remove_worktree {
+                    // Stability check: re-resolve each source SHA and compare
+                    // to the captured SHA before running cleanup.
+                    for (source, captured_sha) in
+                        intent.sources.iter().zip(intent.source_shas.iter())
+                    {
+                        let current_sha = git
+                            .rev_parse(source)
+                            .with_context(|| {
+                                format!("failed to resolve source ref '{source}' before cleanup")
+                            })
+                            .unwrap_or_default();
+                        if !current_sha.is_empty() && current_sha != *captured_sha {
+                            eprintln!(
+                                "warning: source '{}' moved during merge (was {}, now {}); \
+                                 skipping cleanup to avoid losing work. \
+                                 Re-run cleanup manually if you've reconciled.",
+                                source,
+                                &captured_sha[..8.min(captured_sha.len())],
+                                &current_sha[..8.min(current_sha.len())]
+                            );
+                            // Still print the commit message; just skip cleanup.
+                            println!("Squash merged.");
+                            return Ok(());
+                        }
+                    }
+
+                    let cleanup_opts = CleanupOptions {
+                        remove_worktree: intent.remove_worktree,
+                        also_branch: intent.also_branch,
+                        squash_committed: true,
+                    };
+                    execute_cleanup(
+                        &intent.sources,
+                        &cleanup_opts,
+                        git,
+                        project_root,
+                        target_branch,
+                    )?;
+                    println!(
+                        "Squash merged and cleaned up {}.",
+                        intent.sources.join(", ")
+                    );
+                } else {
+                    // Cleanup not requested — just confirm the commit.
+                    let sha = git.rev_parse("HEAD").unwrap_or_default();
+                    println!(
+                        "Squash merged {} into {} as {}.",
+                        intent.sources.join(", "),
+                        resolved_branch_or_unknown(path, git),
+                        &sha[..8.min(sha.len())]
+                    );
+                }
+            } else {
+                // No intent marker (e.g. squash was done with --no-commit, or
+                // the marker was lost). Just confirm the commit succeeded.
+                let sha = git.rev_parse("HEAD").unwrap_or_default();
+                println!("Squash committed {}.", &sha[..8.min(sha.len())]);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Best-effort: read the current branch of the worktree at `path`. Falls back
+/// to `"<unknown>"` if reading fails.
+fn resolved_branch_or_unknown(path: &Path, git: &GitCommand) -> String {
+    branch_at_path(git, path).unwrap_or_else(|_| "<unknown>".to_string())
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -2973,12 +3215,13 @@ mod tests {
 
     #[test]
     fn detect_in_progress_squash_staged() {
-        // MERGE_MSG present, MERGE_HEAD absent, staged changes → SquashStaged.
+        // SQUASH_MSG present (written by git merge --squash), MERGE_HEAD absent,
+        // staged changes → SquashStaged.
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         stage_file(tmp.path());
         std::fs::write(
-            tmp.path().join(".git/MERGE_MSG"),
+            tmp.path().join(".git/SQUASH_MSG"),
             "Squashed commit of ...\n",
         )
         .unwrap();
@@ -2991,12 +3234,12 @@ mod tests {
 
     #[test]
     fn detect_in_progress_no_squash_when_no_staged() {
-        // MERGE_MSG present but no staged changes → None (false-positive guard).
+        // SQUASH_MSG present but no staged changes → None (false-positive guard).
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         // Do NOT stage anything.
         std::fs::write(
-            tmp.path().join(".git/MERGE_MSG"),
+            tmp.path().join(".git/SQUASH_MSG"),
             "Squashed commit of ...\n",
         )
         .unwrap();
@@ -3005,14 +3248,14 @@ mod tests {
 
     #[test]
     fn detect_in_progress_merge_wins_over_squash_staged() {
-        // Both MERGE_HEAD and MERGE_MSG present (real in-progress merge) →
-        // Merge is detected first; SquashStaged is not returned.
+        // MERGE_HEAD present (real in-progress merge) → Merge is detected first
+        // even when SQUASH_MSG is also present; SquashStaged is not returned.
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         stage_file(tmp.path());
         std::fs::write(tmp.path().join(".git/MERGE_HEAD"), "deadbeef").unwrap();
         std::fs::write(
-            tmp.path().join(".git/MERGE_MSG"),
+            tmp.path().join(".git/SQUASH_MSG"),
             "Squashed commit of ...\n",
         )
         .unwrap();

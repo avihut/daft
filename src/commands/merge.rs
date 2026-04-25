@@ -75,17 +75,19 @@ pub struct Args {
     pub abort: bool,
 
     /// Continue an in-progress merge in the named worktree (defaults to CWD).
+    ///
+    /// When continuing a squash-staged state, the commit-message flags
+    /// (`--no-edit`, `-m`, `-F`, `--signoff`, `--gpg-sign`, `--cleanup`) may
+    /// be supplied to control the commit step. They are forwarded to
+    /// `git commit` and are *not* treated as start-mode flags.
     #[arg(
         long = "continue",
         conflicts_with_all = [
             "abort", "quit",
-            "message", "file", "edit", "no_edit", "cleanup",
             "ff", "no_ff", "ff_only",
             "squash", "no_squash",
             "commit", "no_commit",
-            "signoff", "no_signoff",
             "strategy", "strategy_options",
-            "gpg_sign", "no_gpg_sign",
             "verify_signatures", "no_verify_signatures",
             "allow_unrelated_histories",
             "stat", "no_stat",
@@ -433,9 +435,46 @@ pub fn run() -> Result<()> {
         } else {
             crate::core::worktree::merge::FinishMode::Quit
         };
+        // For --continue on squash-staged state, the commit-composing flags
+        // (`--no-edit`, `-m`, `-F`, `--signoff`, `--gpg-sign`, `--cleanup`)
+        // are forwarded to `git commit`. Build a minimal EffectiveFlags with
+        // just those fields; merge-only flags (ff, squash, strategy, etc.)
+        // are left at default/None since they aren't used in the commit step.
+        let commit_flags = {
+            use crate::core::worktree::merge::{EffectiveFlags, GpgSign};
+            let edit = if args.no_edit {
+                Some(false)
+            } else if args.edit {
+                Some(true)
+            } else {
+                None
+            };
+            let signoff = if args.signoff { Some(true) } else { None };
+            let gpg_sign = if args.no_gpg_sign {
+                Some(GpgSign::Disabled)
+            } else {
+                args.gpg_sign.as_deref().map(|k| {
+                    if k.is_empty() {
+                        GpgSign::Default
+                    } else {
+                        GpgSign::KeyId(k.to_string())
+                    }
+                })
+            };
+            EffectiveFlags {
+                message: args.message.clone(),
+                file: args.file.clone(),
+                edit,
+                cleanup: args.cleanup.clone(),
+                signoff,
+                gpg_sign,
+                ..EffectiveFlags::default()
+            }
+        };
         let params = crate::core::worktree::merge::FinishParams {
             worktree: worktree_arg,
             mode,
+            commit_flags,
         };
         return crate::core::worktree::merge::execute_finish(&params, &git, &project_root);
     }
