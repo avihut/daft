@@ -328,8 +328,11 @@ run_test() {
         FAILED_TESTS+=("$test_name")
     fi
     
-    # Clean up test directory
-    rm -rf "$test_work_dir"
+    # Tolerate failure: on macOS, a lingering daft subprocess handle inside
+    # the dir makes `rm -rf` exit non-zero, which `set -e` would otherwise
+    # turn into a silent mid-suite abort. Trap-based final cleanup catches
+    # whatever survives.
+    rm -rf "$test_work_dir" 2>/dev/null || true
 }
 
 # Create a test remote repository
