@@ -728,6 +728,11 @@ fn branch_at_path(git: &GitCommand, path: &Path) -> Result<String> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum InProgressOp {
     Merge,
+    /// `git merge --squash` succeeded but the commit step is still pending:
+    /// `MERGE_MSG` exists, `MERGE_HEAD` does NOT exist, and there are staged
+    /// changes.  `--abort` runs `git reset --merge` + removes `MERGE_MSG`;
+    /// `--continue` re-opens the editor (or honors `-m`/`--no-edit`/`-F`).
+    SquashStaged,
     Rebase,
     CherryPick,
     Bisect,
@@ -738,6 +743,7 @@ impl InProgressOp {
     pub fn description(&self) -> &'static str {
         match self {
             Self::Merge => "merge",
+            Self::SquashStaged => "squash staged",
             Self::Rebase => "rebase",
             Self::CherryPick => "cherry-pick",
             Self::Bisect => "bisect",
@@ -745,18 +751,17 @@ impl InProgressOp {
     }
 }
 
-/// Detect whether a worktree has an in-progress merge/rebase/cherry-pick/bisect.
+/// Resolve the real `.git` directory for `worktree`.
 ///
-/// Inspects the worktree's real git directory for the marker files git
-/// writes when an operation is paused. In a linked worktree, `.git` is a
-/// file with `gitdir: <path>` pointing at the actual per-worktree git dir
-/// (e.g. `.git/worktrees/<name>`); in the main worktree, `.git` is itself
-/// a directory. Both shapes are handled.
+/// In the main worktree `.git` is itself a directory. In a linked worktree,
+/// `.git` is a file whose first line is `gitdir: <path>` pointing at the
+/// per-worktree git dir (e.g. `.git/worktrees/<name>`). Returns an error if
+/// the `.git` file is malformed or the resolved directory does not exist.
 ///
-/// We intentionally check for directory/file *existence* rather than
-/// parsing contents — git populates these atomically and their presence
-/// alone is the signal git itself uses (see `git status` output).
-pub fn detect_in_progress(worktree: &Path) -> Result<Option<InProgressOp>> {
+/// This is the canonical resolution used by both [`detect_in_progress`] and the
+/// intent-marker read/write paths so the marker location is always consistent
+/// with the detection path.
+pub fn resolve_worktree_git_dir(worktree: &Path) -> Result<PathBuf> {
     let git_entry = worktree.join(".git");
     let git_dir = if git_entry.is_file() {
         let content = std::fs::read_to_string(&git_entry)
@@ -790,10 +795,52 @@ pub fn detect_in_progress(worktree: &Path) -> Result<Option<InProgressOp>> {
             worktree.display()
         );
     }
+    Ok(git_dir)
+}
+
+/// Check whether the index of `worktree` has staged (cached) changes.
+///
+/// Runs `git diff --cached --quiet`; exit code 0 means no staged changes,
+/// exit code 1 means there are staged changes. Used by [`detect_in_progress`]
+/// to discriminate a real squash-staged state from a stale `MERGE_MSG` left
+/// behind from an earlier operation where the user never committed.
+pub fn has_staged_changes(worktree: &Path) -> Result<bool> {
+    let status = Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .current_dir(worktree)
+        .status()
+        .context("failed to invoke `git diff --cached --quiet`")?;
+    // exit 0 → no staged changes; exit 1 → staged changes present.
+    // Any other exit code is unexpected; treat as "no staged changes" (safe
+    // default — false-negative is less dangerous than a false-positive).
+    Ok(status.code() == Some(1))
+}
+
+/// Detect whether a worktree has an in-progress merge/rebase/cherry-pick/bisect.
+///
+/// Inspects the worktree's real git directory for the marker files git
+/// writes when an operation is paused. In a linked worktree, `.git` is a
+/// file with `gitdir: <path>` pointing at the actual per-worktree git dir
+/// (e.g. `.git/worktrees/<name>`); in the main worktree, `.git` is itself
+/// a directory. Both shapes are handled.
+///
+/// We intentionally check for directory/file *existence* rather than
+/// parsing contents — git populates these atomically and their presence
+/// alone is the signal git itself uses (see `git status` output).
+pub fn detect_in_progress(worktree: &Path) -> Result<Option<InProgressOp>> {
+    let git_dir = resolve_worktree_git_dir(worktree)?;
 
     if git_dir.join("MERGE_HEAD").exists() {
         return Ok(Some(InProgressOp::Merge));
     }
+
+    // Squash-staged: `git merge --squash` sets MERGE_MSG but NOT MERGE_HEAD.
+    // Require staged changes to avoid false positives on a stale MERGE_MSG.
+    let merge_msg = git_dir.join("MERGE_MSG");
+    if merge_msg.exists() && has_staged_changes(worktree)? {
+        return Ok(Some(InProgressOp::SquashStaged));
+    }
+
     if git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir() {
         return Ok(Some(InProgressOp::Rebase));
     }
@@ -2911,6 +2958,71 @@ mod tests {
             Some(InProgressOp::Rebase)
         );
     }
+
+    // ── squash-staged detection tests (Task 5.1) ──────────────────────────
+
+    /// Helper: create a staged change in the given repo (needs at least one commit).
+    fn stage_file(path: &Path) {
+        std::fs::write(path.join("staged.txt"), "content\n").unwrap();
+        ShellCommand::new("git")
+            .args(["add", "staged.txt"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+    }
+
+    #[test]
+    fn detect_in_progress_squash_staged() {
+        // MERGE_MSG present, MERGE_HEAD absent, staged changes → SquashStaged.
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        stage_file(tmp.path());
+        std::fs::write(
+            tmp.path().join(".git/MERGE_MSG"),
+            "Squashed commit of ...\n",
+        )
+        .unwrap();
+        // Explicitly absent MERGE_HEAD (not written).
+        assert_eq!(
+            detect_in_progress(tmp.path()).unwrap(),
+            Some(InProgressOp::SquashStaged)
+        );
+    }
+
+    #[test]
+    fn detect_in_progress_no_squash_when_no_staged() {
+        // MERGE_MSG present but no staged changes → None (false-positive guard).
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        // Do NOT stage anything.
+        std::fs::write(
+            tmp.path().join(".git/MERGE_MSG"),
+            "Squashed commit of ...\n",
+        )
+        .unwrap();
+        assert_eq!(detect_in_progress(tmp.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn detect_in_progress_merge_wins_over_squash_staged() {
+        // Both MERGE_HEAD and MERGE_MSG present (real in-progress merge) →
+        // Merge is detected first; SquashStaged is not returned.
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        stage_file(tmp.path());
+        std::fs::write(tmp.path().join(".git/MERGE_HEAD"), "deadbeef").unwrap();
+        std::fs::write(
+            tmp.path().join(".git/MERGE_MSG"),
+            "Squashed commit of ...\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_in_progress(tmp.path()).unwrap(),
+            Some(InProgressOp::Merge)
+        );
+    }
+
+    // ── end squash-staged detection tests ──────────────────────────────────
 
     #[test]
     fn ff_eligible_for_single_ancestor_default_flags() {
