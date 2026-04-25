@@ -417,41 +417,20 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     };
     let compute_mtime = sort_spec.as_ref().is_some_and(|s| s.needs_mtime());
     let user_email: Option<String> = git.config_get("user.email").ok().flatten();
-    let needs_spinner = stat == Stat::Lines || has_size;
-    let worktree_infos = if needs_spinner {
-        let mut output = CliOutput::new(OutputConfig::new(false, false));
-        let msg = if stat == Stat::Lines {
-            "Computing line statistics..."
-        } else {
-            "Computing worktree sizes..."
-        };
-        output.start_spinner(msg);
-        let result = list::collect_worktree_info(
-            &git,
-            &base_branch,
-            current_path.as_deref(),
-            stat,
-            has_size,
-            compute_mtime,
-            settings.ownership_strategy,
-            user_email.as_deref(),
-            &settings.remote,
-        )?;
-        output.finish_spinner();
-        result
-    } else {
-        list::collect_worktree_info(
-            &git,
-            &base_branch,
-            current_path.as_deref(),
-            stat,
-            has_size,
-            compute_mtime,
-            settings.ownership_strategy,
-            user_email.as_deref(),
-            &settings.remote,
-        )?
-    };
+    // Synchronous seed: compute everything EXCEPT the heavy cells (size,
+    // mtime, line stats). Those will stream in via the collector below.
+    // shared_owner_lookup depends on this call's output.
+    let worktree_infos = list::collect_worktree_info(
+        &git,
+        &base_branch,
+        current_path.as_deref(),
+        Stat::Summary, // Force Summary for the seed; line stats stream below.
+        false,         // has_size = false: stream the size cluster instead
+        false,         // compute_mtime = false: stream the mtime cluster
+        settings.ownership_strategy,
+        user_email.as_deref(),
+        &settings.remote,
+    )?;
 
     // Get worktree list for DAG (branch name + path pairs)
     let all_worktrees = fetch::get_all_worktrees_with_branches(&git)?;
@@ -465,6 +444,20 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         if let Some(ref branch) = entry.branch {
             worktree_map.insert(branch.clone(), (entry.path.clone(), i == 0));
         }
+    }
+
+    // Heavy cells that the user requested but the seed deliberately skipped.
+    // These will arrive via the streaming collector in parallel with the
+    // orchestrator.
+    let mut streaming_fields = FieldSet::EMPTY;
+    if has_size {
+        streaming_fields |= FieldSet::SIZE;
+    }
+    if compute_mtime {
+        streaming_fields |= FieldSet::MTIME;
+    }
+    if stat == Stat::Lines {
+        streaming_fields |= FieldSet::BASE_LINES | FieldSet::CHANGES_LINES | FieldSet::REMOTE_LINES;
     }
 
     // ── Create TUI state with known phases and worktrees ───────────────
@@ -579,6 +572,9 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     // ── Create channel and spawn orchestrator ──────────────────────────
     let (tx, rx) = std::sync::mpsc::channel();
+    // Clone for the streaming collector below, since `tx` is moved into the
+    // orchestrator closure.
+    let tx_for_collector = tx.clone();
 
     // Shared context for workers
     let shared_settings = Arc::new(settings.clone());
@@ -815,6 +811,41 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         );
     });
 
+    // Spawn the streaming collector for heavy cells (concurrent with
+    // orchestrator). No-op if streaming_fields is empty.
+    let collector_handle = if !streaming_fields.is_empty() {
+        let targets: Vec<list_stream::CollectorTarget> = worktree_map
+            .iter()
+            .map(
+                |(branch_name, (path, _is_main))| list_stream::CollectorTarget {
+                    branch_name: branch_name.clone(),
+                    path: Some(path.clone()),
+                    kind: list::EntryKind::Worktree,
+                    is_detached: false,
+                },
+            )
+            .collect();
+        let ctx = Arc::new(list_stream::CollectorContext {
+            use_gitoxide: settings.use_gitoxide,
+            base_branch: base_branch.clone(),
+            remote_name: settings.remote.clone(),
+            ownership_strategy: settings.ownership_strategy,
+            user_email: user_email.clone(),
+        });
+        Some(list_stream::spawn(
+            list_stream::CollectorRequest {
+                targets,
+                fields: streaming_fields,
+                stat,
+                source: PatchSource::Collector,
+                ctx,
+            },
+            tx_for_collector,
+        ))
+    } else {
+        None
+    };
+
     // ── Run TUI via OperationTable on main thread ──────────────────────
     let table = OperationTable::new(
         phases,
@@ -835,6 +866,11 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         unowned_start_index,
     );
     let completed = table.run()?;
+
+    if let Some(handle) = collector_handle {
+        handle.cancel(); // Renderer is gone, don't keep workers running.
+        handle.join();
+    }
 
     // Wait for orchestrator thread to finish
     orchestrator_handle
