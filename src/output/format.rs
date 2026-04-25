@@ -109,6 +109,46 @@ pub fn format_remote_status(
     parts.join(" ")
 }
 
+/// Strip ANSI CSI escape sequences from a string.
+///
+/// Used for measuring the *visible* width of a styled string — width-based
+/// layout code must not count escape bytes.
+pub fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut in_escape = false;
+    for c in s.chars() {
+        if in_escape {
+            if c.is_ascii_alphabetic() {
+                in_escape = false;
+            }
+        } else if c == '\x1b' {
+            in_escape = true;
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Pad `s` with trailing spaces so its *visible* width reaches `target`.
+/// If `s` already meets or exceeds `target`, returns it unchanged.
+///
+/// "Visible width" is the char count after `strip_ansi`. ANSI escape bytes
+/// are not counted.
+pub fn pad_to_visible_width(s: &str, target: usize) -> String {
+    let visible = strip_ansi(s).chars().count();
+    if visible >= target {
+        s.to_string()
+    } else {
+        let mut out = String::with_capacity(s.len() + (target - visible));
+        out.push_str(s);
+        for _ in 0..(target - visible) {
+            out.push(' ');
+        }
+        out
+    }
+}
+
 /// Convert seconds elapsed into a compact shorthand string.
 ///
 /// Examples: `<1m`, `5m`, `3h`, `2d`, `3w`, `5mo`, `2y`.
@@ -423,5 +463,47 @@ mod tests {
         assert!(!is_old_seconds(7 * 86400));
         assert!(is_old_seconds(7 * 86400 + 1));
         assert!(is_old_seconds(30 * 86400));
+    }
+
+    #[test]
+    fn strip_ansi_removes_csi_sequences() {
+        assert_eq!(strip_ansi("\x1b[2mhello\x1b[0m"), "hello");
+        assert_eq!(strip_ansi("\x1b[38;5;208mwarn\x1b[0m"), "warn");
+        assert_eq!(strip_ansi("plain"), "plain");
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn strip_ansi_preserves_unicode_glyphs() {
+        // Box-drawing and arrows must survive — these are core to the timeline
+        // display.
+        assert_eq!(strip_ansi("\x1b[2m│\x1b[0m"), "│");
+        assert_eq!(
+            strip_ansi("\x1b[38;5;208m\u{2192}\x1b[0m install"),
+            "\u{2192} install",
+        );
+    }
+
+    #[test]
+    fn pad_to_visible_width_no_pad_when_already_at_or_above_target() {
+        assert_eq!(pad_to_visible_width("abc", 3), "abc");
+        assert_eq!(pad_to_visible_width("abcd", 3), "abcd");
+    }
+
+    #[test]
+    fn pad_to_visible_width_appends_trailing_spaces_to_reach_target() {
+        assert_eq!(pad_to_visible_width("ab", 5), "ab   ");
+    }
+
+    #[test]
+    fn pad_to_visible_width_counts_visible_chars_not_ansi_bytes() {
+        // Cell with red wrapping reports raw len 14 but visible len 7.
+        let cell = "\x1b[31mfailed!\x1b[0m";
+        let padded = pad_to_visible_width(cell, 10);
+        // Visible width must be exactly 10 after padding.
+        assert_eq!(strip_ansi(&padded).chars().count(), 10);
+        // ANSI bytes preserved at the start; trailing spaces appended after RESET.
+        assert!(padded.starts_with("\x1b[31mfailed!\x1b[0m"));
+        assert!(padded.ends_with("   "));
     }
 }
