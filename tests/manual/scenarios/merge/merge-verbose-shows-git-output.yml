@@ -1,0 +1,28 @@
+name: Merge --verbose shows captured git output
+description:
+  "With --verbose, the captured git stdout (Updating ..., Fast-forward, etc.) is
+  dumped to stderr before daft's own status line."
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Checkout feature
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: Merge with --verbose — raw git output must appear
+    run: git-worktree-merge feature/test-feature --no-edit --verbose 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Updating "
+        - "Fast-forward"
+        - "Merge complete."

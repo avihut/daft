@@ -579,7 +579,26 @@ pub fn run() -> Result<()> {
     let mut output = CliOutput::new(OutputConfig::new(false, args.verbose));
     // Run execute_start inside a nested block so `runner` (which borrows
     // `&mut output`) is dropped before the cleanup phase needs `output` again.
-    let outcome = {
+    // `squash_requested` was captured before `flags` was moved into `params`.
+    let target_label = into_branch
+        .as_deref()
+        .unwrap_or("current branch")
+        .to_string();
+    let spinner_label = if squash_requested {
+        format!(
+            "Squashing {} into {}...",
+            sources_for_message.join(", "),
+            target_label
+        )
+    } else {
+        format!(
+            "Merging {} into {}...",
+            sources_for_message.join(", "),
+            target_label
+        )
+    };
+    output.start_spinner(&spinner_label);
+    let outcome_result = {
         let mut runner = MergeHookRunner::new(
             &mut output,
             project_root.clone(),
@@ -587,8 +606,19 @@ pub fn run() -> Result<()> {
             settings.remote.clone(),
             source_worktree,
         )?;
-        crate::core::worktree::merge::execute_start(&params, &git, &project_root, &mut runner)?
+        crate::core::worktree::merge::execute_start(&params, &git, &project_root, &mut runner)
     };
+    output.finish_spinner();
+    // Dump captured git output to stderr after the spinner stops (avoids
+    // carriage-return mangling). On failure, always dump; on success, only
+    // dump when --verbose is set.
+    let outcome = outcome_result?;
+    if !outcome.captured_git_output.is_empty() {
+        let should_dump = outcome.failed || args.verbose;
+        if should_dump {
+            eprint!("{}", String::from_utf8_lossy(&outcome.captured_git_output));
+        }
+    }
 
     if outcome.already_up_to_date {
         // Core already printed "Already up to date." from the up-to-date

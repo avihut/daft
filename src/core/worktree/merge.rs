@@ -1025,6 +1025,25 @@ pub struct StartOutcome {
     /// detect if any source ref moved during the editor session. Empty on
     /// already-up-to-date and other short-circuit paths that don't capture.
     pub source_shas: Vec<String>,
+
+    /// Combined stdout+stderr captured from `git merge` /
+    /// `git merge --squash` / `git commit` invocations during the merge
+    /// phase. Empty on the no-merge-work paths (already-up-to-date, etc.).
+    /// Suppressed by the command layer on success; dumped to stderr on
+    /// failure (after the spinner stops) and on `--verbose` regardless.
+    pub captured_git_output: Vec<u8>,
+
+    /// True iff the regular (non-squash) merge fast-forwarded the target.
+    /// `false` for non-FF merge commits, squash, conflict, AUTD, and any
+    /// failure path. Used by the command layer to render
+    /// `Fast-forwarded <target> to <sha>` instead of
+    /// `Merged <source> into <target> (commit <sha>)`.
+    pub was_fast_forward: bool,
+
+    /// The SHA of the resulting commit on `target_branch` for non-squash
+    /// merges. `Some` on both FF and merge-commit success paths. `None`
+    /// for squash (use `squash_commit_sha`), AUTD, conflict, and failure.
+    pub merge_commit_sha: Option<String>,
 }
 
 /// Parse `git status --porcelain` output for conflict entries.
@@ -1255,13 +1274,16 @@ fn execute_start_in_worktree(
     argv.extend(render_flags(&params.flags));
     argv.extend(params.sources.iter().cloned());
 
-    let status = Command::new("git")
+    let merge_result = Command::new("git")
         .args(&argv)
         .current_dir(&path)
-        .status()
+        .output()
         .with_context(|| format!("failed to invoke `git merge` in '{}'", path.display()))?;
+    let mut captured: Vec<u8> = Vec::new();
+    captured.extend_from_slice(&merge_result.stdout);
+    captured.extend_from_slice(&merge_result.stderr);
 
-    let failed = !status.success();
+    let failed = !merge_result.status.success();
     // Only probe `git status` on failure — the success path already left the
     // worktree clean, and conflict state is only meaningful post-failure.
     // `conflicted_files` swallows IO errors into an empty list so a broken
@@ -1288,6 +1310,7 @@ fn execute_start_in_worktree(
             emitted_terminal_message: false,
             ephemeral_promoted: false,
             source_shas: source_shas.to_vec(),
+            captured_git_output: captured,
             ..StartOutcome::default()
         });
     }
@@ -1330,11 +1353,32 @@ fn execute_start_in_worktree(
         let mut commit_argv: Vec<String> = vec!["commit".to_string()];
         commit_argv.extend(render_commit_flags(&params.flags));
 
-        let commit_status = Command::new("git")
-            .args(&commit_argv)
-            .current_dir(&path)
-            .status()
-            .with_context(|| format!("failed to invoke `git commit` in '{}'", path.display()))?;
+        // Editor-opening commit: inherit stdio so $EDITOR gets the terminal.
+        // Slice 5 will bracket this with pause_spinner / resume_spinner.
+        // Non-editor commit (--no-edit, -m, or -F supplied): capture output.
+        let (commit_status, commit_captured) = if params.flags.squash_would_open_editor() {
+            let status = Command::new("git")
+                .args(&commit_argv)
+                .current_dir(&path)
+                .status()
+                .with_context(|| {
+                    format!("failed to invoke `git commit` in '{}'", path.display())
+                })?;
+            (status, Vec::new())
+        } else {
+            let result = Command::new("git")
+                .args(&commit_argv)
+                .current_dir(&path)
+                .output()
+                .with_context(|| {
+                    format!("failed to invoke `git commit` in '{}'", path.display())
+                })?;
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&result.stdout);
+            buf.extend_from_slice(&result.stderr);
+            (result.status, buf)
+        };
+        captured.extend_from_slice(&commit_captured);
 
         if !commit_status.success() {
             // Commit aborted (editor empty, pre-commit hook refused, GPG fail,
@@ -1356,6 +1400,8 @@ fn execute_start_in_worktree(
                 commit_aborted: true,
                 target_branch: resolved.branch.clone(),
                 source_shas: source_shas.to_vec(),
+                captured_git_output: captured,
+                ..StartOutcome::default()
             });
         }
 
@@ -1384,6 +1430,8 @@ fn execute_start_in_worktree(
             commit_aborted: false,
             target_branch: resolved.branch.clone(),
             source_shas: source_shas.to_vec(),
+            captured_git_output: captured,
+            ..StartOutcome::default()
         });
     }
 
@@ -1409,19 +1457,32 @@ fn execute_start_in_worktree(
             commit_aborted: false,
             target_branch: resolved.branch.clone(),
             source_shas: source_shas.to_vec(),
+            captured_git_output: captured,
+            ..StartOutcome::default()
         });
     }
 
     // Regular (non-squash) merge succeeded. Read the target worktree's HEAD to
     // report the new commit SHA; if that read fails, fall back to an empty SHA
     // (hook scripts can test for `""`).
-    let sha = read_head_sha(&path).unwrap_or_default();
-    let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success { commit_sha: sha });
+    let head_sha = read_head_sha(&path).unwrap_or_default();
+    let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
+        commit_sha: head_sha.clone(),
+    });
     // post-merge never rolls back the merge — surface errors as warnings at
     // the caller, not Err here.
     if let Err(e) = hooks.fire_post_merge(&post_ctx) {
         eprintln!("warning: post-merge hook failed: {e}");
     }
+
+    // Detect fast-forward by parent count: FF has 1 parent, merge commit has 2+.
+    // Best-effort: failure falls back to was_fast_forward=false (safe default).
+    let was_ff = count_head_parents(&path).map(|n| n == 1).unwrap_or(false);
+    let merge_sha = if head_sha.is_empty() {
+        None
+    } else {
+        Some(head_sha)
+    };
 
     Ok(StartOutcome {
         already_up_to_date: false,
@@ -1432,6 +1493,9 @@ fn execute_start_in_worktree(
         ephemeral_promoted: false,
         target_branch: resolved.branch.clone(),
         source_shas: source_shas.to_vec(),
+        captured_git_output: captured,
+        was_fast_forward: was_ff,
+        merge_commit_sha: merge_sha,
         ..StartOutcome::default()
     })
 }
@@ -1456,6 +1520,34 @@ fn read_head_sha(worktree: &Path) -> Option<String> {
     } else {
         Some(s)
     }
+}
+
+/// Count the number of parents of the current HEAD in the given worktree.
+///
+/// Used to distinguish fast-forward (1 parent) from merge commits (2+ parents).
+/// Best-effort: returns `None` on any error so the caller can safely fall back
+/// to `was_fast_forward = false`.
+fn count_head_parents(worktree: &Path) -> Option<usize> {
+    let output = Command::new("git")
+        .args([
+            "-C",
+            &worktree.display().to_string(),
+            "rev-list",
+            "--parents",
+            "-n",
+            "1",
+            "HEAD",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // Output is: "<sha> [<parent-sha>...]" — first token is HEAD, rest are parents.
+    let s = String::from_utf8_lossy(&output.stdout);
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    // tokens[0] is HEAD SHA; tokens[1..] are parent SHAs.
+    Some(tokens.len().saturating_sub(1))
 }
 
 /// Ref-only merge: the target branch has no worktree.
@@ -1658,18 +1750,21 @@ fn execute_ephemeral_merge(
     argv.extend(render_flags(&params.flags));
     argv.extend(params.sources.iter().cloned());
 
-    let status = Command::new("git")
+    let merge_result = Command::new("git")
         .args(&argv)
         .current_dir(&temp_path)
-        .status()
+        .output()
         .with_context(|| {
             format!(
                 "failed to invoke git merge in ephemeral worktree at '{}'",
                 temp_path.display()
             )
         })?;
+    let mut captured: Vec<u8> = Vec::new();
+    captured.extend_from_slice(&merge_result.stdout);
+    captured.extend_from_slice(&merge_result.stderr);
 
-    if status.success() {
+    if merge_result.status.success() {
         // `git merge --squash` succeeded: run commit step if needed.
         let is_squash = params.flags.squash == Some(true);
         let no_commit = params.flags.commit == Some(false);
@@ -1679,16 +1774,38 @@ fn execute_ephemeral_merge(
             let mut commit_argv: Vec<String> = vec!["commit".to_string()];
             commit_argv.extend(render_commit_flags(&params.flags));
 
-            let commit_status = Command::new("git")
-                .args(&commit_argv)
-                .current_dir(&temp_path)
-                .status()
-                .with_context(|| {
-                    format!(
-                        "failed to invoke `git commit` in ephemeral worktree at '{}'",
-                        temp_path.display()
-                    )
-                })?;
+            // Editor-opening commit: inherit stdio so $EDITOR gets the terminal.
+            // Slice 5 will bracket this with pause_spinner / resume_spinner.
+            // Non-editor commit (--no-edit, -m, or -F supplied): capture output.
+            let (commit_status, commit_captured) = if params.flags.squash_would_open_editor() {
+                let status = Command::new("git")
+                    .args(&commit_argv)
+                    .current_dir(&temp_path)
+                    .status()
+                    .with_context(|| {
+                        format!(
+                            "failed to invoke `git commit` in ephemeral worktree at '{}'",
+                            temp_path.display()
+                        )
+                    })?;
+                (status, Vec::new())
+            } else {
+                let result = Command::new("git")
+                    .args(&commit_argv)
+                    .current_dir(&temp_path)
+                    .output()
+                    .with_context(|| {
+                        format!(
+                            "failed to invoke `git commit` in ephemeral worktree at '{}'",
+                            temp_path.display()
+                        )
+                    })?;
+                let mut buf = Vec::new();
+                buf.extend_from_slice(&result.stdout);
+                buf.extend_from_slice(&result.stderr);
+                (result.status, buf)
+            };
+            captured.extend_from_slice(&commit_captured);
 
             if !commit_status.success() {
                 // Commit aborted. Leave ephemeral worktree; caller will report.
@@ -1708,6 +1825,8 @@ fn execute_ephemeral_merge(
                     commit_aborted: true,
                     target_branch: resolved.branch.clone(),
                     source_shas: source_shas.to_vec(),
+                    captured_git_output: captured,
+                    ..StartOutcome::default()
                 });
             }
 
@@ -1738,6 +1857,8 @@ fn execute_ephemeral_merge(
                 commit_aborted: false,
                 target_branch: resolved.branch.clone(),
                 source_shas: source_shas.to_vec(),
+                captured_git_output: captured,
+                ..StartOutcome::default()
             });
         }
 
@@ -1767,17 +1888,31 @@ fn execute_ephemeral_merge(
                 commit_aborted: false,
                 target_branch: resolved.branch.clone(),
                 source_shas: source_shas.to_vec(),
+                captured_git_output: captured,
+                ..StartOutcome::default()
             });
         }
 
         // Regular (non-squash) ephemeral merge succeeded.
         // Fire post-merge BEFORE tearing down the ephemeral worktree so
         // scripts still see DAFT_MERGE_TARGET_PATH pointing at a live dir.
-        let sha = read_head_sha(&temp_path).unwrap_or_default();
-        let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success { commit_sha: sha });
+        let head_sha = read_head_sha(&temp_path).unwrap_or_default();
+        let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
+            commit_sha: head_sha.clone(),
+        });
         if let Err(e) = hooks.fire_post_merge(&post_ctx) {
             eprintln!("warning: post-merge hook failed: {e}");
         }
+
+        // Detect fast-forward by parent count.
+        let was_ff = count_head_parents(&temp_path)
+            .map(|n| n == 1)
+            .unwrap_or(false);
+        let merge_sha = if head_sha.is_empty() {
+            None
+        } else {
+            Some(head_sha)
+        };
 
         // Ref advanced inside the temp worktree via the merge commit; the
         // worktree itself is no longer needed. `temp_worktree::remove` does
@@ -1797,6 +1932,9 @@ fn execute_ephemeral_merge(
             emitted_terminal_message: false,
             ephemeral_promoted: false,
             source_shas: source_shas.to_vec(),
+            captured_git_output: captured,
+            was_fast_forward: was_ff,
+            merge_commit_sha: merge_sha,
             ..StartOutcome::default()
         });
     }
@@ -1842,6 +1980,7 @@ fn execute_ephemeral_merge(
         emitted_terminal_message: false,
         ephemeral_promoted: true,
         source_shas: source_shas.to_vec(),
+        captured_git_output: captured,
         ..StartOutcome::default()
     })
 }
@@ -4471,5 +4610,58 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("cleanup pre-validation failed"));
         assert!(msg.contains("uncommitted changes"));
+    }
+
+    // ── Slice 3: captured_git_output / was_fast_forward / merge_commit_sha ────
+
+    #[test]
+    #[serial]
+    fn execute_start_populates_captured_git_output_on_success() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+        // Add a commit on feature so we have something to merge.
+        ShellCommand::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "feature work"])
+            .current_dir(&feat_wt)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let git = GitCommand::new(false);
+        let mut runner = NullHookRunner;
+        let params = StartParams {
+            sources: vec!["feature".to_string()],
+            target: None,
+            flags: EffectiveFlags::default(),
+            adopt: AdoptChoice::default(),
+            require_clean_target: false,
+            cleanup_intent: None,
+        };
+        let outcome =
+            execute_start(&params, &git, tmp.path(), &mut runner).expect("merge succeeds");
+
+        // Captured buffer should be non-empty (git produces "Updating ...",
+        // "Fast-forward", etc. even on success).
+        assert!(
+            !outcome.captured_git_output.is_empty(),
+            "captured_git_output must be populated on FF success path"
+        );
+        // Single-commit feature branch → FF.
+        assert!(
+            outcome.was_fast_forward,
+            "single-commit feature branch should fast-forward"
+        );
+        // Commit SHA recorded.
+        assert!(
+            outcome.merge_commit_sha.is_some(),
+            "merge_commit_sha must be Some after FF"
+        );
     }
 }
