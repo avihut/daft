@@ -485,7 +485,7 @@ existing rich-output pipeline.
 - Test: `src/core/worktree/branch_delete.rs` (unit tests for
   `keep_local_branch`)
 - Create: `tests/manual/scenarios/merge/merge-fires-worktree-remove-hooks.yml`
-- Create: `tests/manual/scenarios/merge/merge-pre-remove-hook-aborts.yml`
+- Create: `tests/manual/scenarios/merge/merge-pre-remove-hook-warns.yml`
 
 **Reference call site in `commands/branch_delete.rs:88-116`** — the existing
 pattern for invoking `branch_delete::execute` with a `CommandBridge`. Merge
@@ -939,7 +939,7 @@ scenarios:
 some scenarios use `daft sandbox` blocks. Match the pattern of
 `tests/manual/scenarios/merge/squash-rb.yml`.)
 
-- [ ] **Step 3.2: Author `merge-pre-remove-hook-aborts.yml`**
+- [ ] **Step 3.2: Author `merge-pre-remove-hook-warns.yml`**
 
 ```yaml
 name: merge pre-remove hook abort halts cleanup
@@ -990,7 +990,7 @@ scenarios:
 - [ ] **Step 3.3: Run the new scenarios**
 
 Run: `mise run test:manual -- --ci merge-fires-worktree-remove-hooks` Run:
-`mise run test:manual -- --ci merge-pre-remove-hook-aborts` Expected: Both PASS.
+`mise run test:manual -- --ci merge-pre-remove-hook-warns` Expected: Both PASS.
 
 ### Step 4: Decommission the now-unused `execute_cleanup` body
 
@@ -1014,7 +1014,7 @@ Run: `mise run test:unit` Expected: PASS.
 - [ ] **Step 5.1: Commit**
 
 ```bash
-git add src/commands/merge.rs src/core/worktree/merge.rs tests/manual/scenarios/merge/merge-fires-worktree-remove-hooks.yml tests/manual/scenarios/merge/merge-pre-remove-hook-aborts.yml
+git add src/commands/merge.rs src/core/worktree/merge.rs tests/manual/scenarios/merge/merge-fires-worktree-remove-hooks.yml tests/manual/scenarios/merge/merge-pre-remove-hook-warns.yml
 git commit -m "$(cat <<'EOF'
 fix(merge): delegate cleanup to branch_delete::execute
 

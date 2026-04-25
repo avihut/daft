@@ -123,21 +123,34 @@ user removes the source worktree but keeps the local branch.
 
 Flag matrix used by merge cleanup:
 
-| Merge cleanup case       | `force` | `keep_local_branch` | `delete_remote` |
-| ------------------------ | ------- | ------------------- | --------------- |
-| `-r` without `-b`        | `false` | `true`              | `false`         |
-| `-rb` (regular merge)    | `false` | `false`             | `false`         |
-| `-rb` (squash committed) | `true`  | `false`             | `false`         |
+| Merge cleanup case       | `force` | `keep_local_branch` | `delete_remote` | `command_label` |
+| ------------------------ | ------- | ------------------- | --------------- | --------------- |
+| `-r` without `-b`        | `true`  | `true`              | `false`         | `"merge"`       |
+| `-rb` (regular merge)    | `true`  | `false`             | `false`         | `"merge"`       |
+| `-rb` (squash committed) | `true`  | `false`             | `false`         | `"merge"`       |
+
+`force = true` is set uniformly for all merge cleanup paths because
+`plan_cleanup` has already validated reachability against the _actual_ merge
+target (`target_branch`, which may be a non-default branch like `develop`).
+`branch_delete::execute`'s own validation hardcodes the _default_ branch
+(`main`/`master`) for its merged-into-default check, which would be wrong for
+cross-target merges. Setting `force=true` bypasses that redundant + incorrect
+check; the planner's reachability check against the real target is the source of
+truth.
 
 The pre-validation safety chain established in the
 [squash + cleanup design](2026-04-25-daft-merge-squash-cleanup-design.md) is
 preserved: pre-validation runs in merge before `branch_delete::execute` is
 invoked, so the transactional "validate-then-mutate" guarantee continues to
 hold. The stability check (source SHA equality) also runs in merge, before
-delegation. `branch_delete::execute` is called with `force = true` only when
-daft's safety chain has independently established equivalence (squash committed
-plus stability check passed) — this is the same justified-`-D` path the squash
-spec already defends.
+delegation. The squash-committed path's justified-`-D` is preserved by the
+combination of `plan_cleanup`'s SHA-stability check and the
+`force=true`/`keep_local_branch=false` flag combination.
+
+`command_label = "merge"` (a new field on `BranchDeleteParams`) flows into the
+hook context as `DAFT_COMMAND`, so `worktree-pre-remove` /
+`worktree-post-remove` hook scripts can distinguish merge cleanup from
+standalone `daft remove` (which sets `command_label = "branch-delete"`).
 
 ### Cleanup execution moves from `core::worktree::merge` to `commands::merge::run`
 
@@ -158,7 +171,7 @@ handle. The flow becomes:
 2. `commands::merge::run` consumes the plan. If `Skipped`, it prints the
    appropriate state-aware line and exits. If `CleanupPlan(items)`, it iterates
    items and dispatches each through `branch_delete::execute` with
-   `force = items[i].force_delete`.
+   `force = true` (uniformly — see flag matrix and rationale above).
 3. After all items succeed, `commands::merge::run` prints the final state-aware
    success line via the existing `output.success(...)` path.
 
@@ -386,12 +399,19 @@ any hook fires beyond the `worktree-*-remove` fix.
 | `worktree-pre-remove` (per source removed)  | new: when `-r` / `-rb` cleans up source | hook box (always) |
 | `worktree-post-remove` (per source removed) | new: when `-r` / `-rb` cleans up source | hook box (always) |
 
-`worktree-pre-remove` failures abort cleanup for that source (matching
-`daft remove`). The merge commit on `<target>` stays in place — daft's "merge
-result is never rolled back" rule continues to hold. If multi-source cleanup is
-in progress and one source's pre-remove hook aborts, that source's cleanup is
-skipped; subsequent sources still proceed (matching `daft remove`'s multi-arg
-semantics).
+`worktree-pre-remove` failures emit a warning and cleanup continues — inheriting
+the existing behavior of `daft remove`, where `worktree-pre-remove` defaults to
+`FailMode::Warn` (`src/hooks/mod.rs`). Users who want abort semantics can set
+`fail_mode: abort` on the hook in `daft.yml`. The merge commit on `<target>`
+stays in place regardless — daft's "merge result is never rolled back" rule
+continues to hold.
+
+`worktree-post-remove` is invoked from `branch_delete::execute` after the
+worktree has been removed. There is a known pre-existing limitation in
+`daft remove`'s post-remove path where the now-deleted worktree is used as the
+cwd for the hook script invocation, causing the spawn to fail silently. This
+limitation is shared between `daft remove` and `daft merge -r` / `-rb` and is
+out of scope for this design.
 
 `post-merge` failures continue to log warnings without rolling back the merge or
 cancelling cleanup — same as before.
@@ -464,7 +484,7 @@ No scenarios currently assert on git's raw stdout (`Updating ...`,
 - `merge-fires-worktree-remove-hooks.yml` — `daft merge X -r` with a
   `worktree-pre-remove` hook configured: hook fires, hook output is captured,
   source worktree is gone after.
-- `merge-pre-remove-hook-aborts.yml` — `worktree-pre-remove` hook exits non-
+- `merge-pre-remove-hook-warns.yml` — `worktree-pre-remove` hook exits non-
   zero: source #1 cleanup is skipped with a clear error; merge commit stays;
   non-zero exit.
 - `merge-rich-output-on-success.yml` — `daft merge X` (regular, no cleanup):
