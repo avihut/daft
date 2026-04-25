@@ -422,14 +422,26 @@ impl LogStore {
                 f.read_exact(&mut head)?;
             }
 
+            // Atomic replacement: write head + footer to a sibling tmpfile, then rename.
+            // File is renamed before meta is updated; if meta.write fails, the on-disk
+            // file is correctly truncated but `log_truncated` stays false. The subsequent
+            // `log_size <= cap` short-circuit prevents re-truncation, at the cost of
+            // permanently losing `original_size_bytes`. Single-flight protection is
+            // added in T6 (currently best-effort under concurrent calls).
             let tmp_path = log_path.with_extension("log.truncating");
-            {
+            let result = (|| -> Result<()> {
                 use std::io::Write;
                 let mut tmp = fs::File::create(&tmp_path)?;
                 tmp.write_all(&head)?;
                 tmp.write_all(footer_bytes)?;
+                drop(tmp);
+                fs::rename(&tmp_path, &log_path)?;
+                Ok(())
+            })();
+            if result.is_err() {
+                let _ = fs::remove_file(&tmp_path); // best-effort cleanup
             }
-            fs::rename(&tmp_path, &log_path)?;
+            result?;
 
             meta.log_truncated = true;
             meta.original_size_bytes = Some(log_size);
