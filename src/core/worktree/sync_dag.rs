@@ -4,6 +4,7 @@
 //! the sync and prune TUI renderers.
 
 use super::list::WorktreeInfo;
+use crate::core::ownership::BranchOwner;
 use crate::hooks::HookType;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -364,6 +365,56 @@ impl SyncDag {
     }
 }
 
+/// A typed delta over `WorktreeInfo`. Each variant maps 1:1 to one
+/// underlying git/FS call cluster in the streaming collector.
+#[derive(Debug, Clone)]
+pub enum WorktreeInfoPatch {
+    BaseAheadBehind(Option<(usize, usize)>),
+    RemoteAheadBehind(Option<(usize, usize)>),
+    Changes {
+        staged: usize,
+        unstaged: usize,
+        untracked: usize,
+    },
+    LastCommit {
+        timestamp: Option<i64>,
+        hash: Option<String>,
+        subject: String,
+    },
+    BranchAge(Option<i64>),
+    Owner(Option<BranchOwner>),
+    BaseLines(Option<(usize, usize)>),
+    ChangesLines {
+        staged: (usize, usize),
+        unstaged: (usize, usize),
+    },
+    RemoteLines(Option<(usize, usize)>),
+    Size(Option<u64>),
+    Mtime(Option<i64>),
+}
+
+/// Why a patch was emitted. `LiveTable` uses this to suppress stale
+/// patches: a `Collector` patch arriving after a `PostFetch` patch covering
+/// the same field on the same branch is dropped. Priority order:
+/// `PostTask > PostFetch > Collector`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatchSource {
+    Collector,
+    PostFetch,
+    PostTask(OperationPhase),
+}
+
+impl PatchSource {
+    /// Higher = more authoritative. Used for staleness suppression.
+    pub fn priority(&self) -> u8 {
+        match self {
+            Self::Collector => 0,
+            Self::PostFetch => 1,
+            Self::PostTask(_) => 2,
+        }
+    }
+}
+
 /// Message sent from worker threads to the renderer.
 #[derive(Debug, Clone)]
 pub enum DagEvent {
@@ -652,6 +703,15 @@ impl DagExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn patch_source_priority_ordering() {
+        assert!(
+            PatchSource::PostTask(OperationPhase::Push).priority()
+                > PatchSource::PostFetch.priority()
+        );
+        assert!(PatchSource::PostFetch.priority() > PatchSource::Collector.priority());
+    }
 
     #[test]
     fn task_id_display() {
