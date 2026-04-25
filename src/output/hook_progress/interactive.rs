@@ -6,7 +6,9 @@ use crate::settings::HookOutputConfig;
 use crate::styles;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 struct JobState {
     spinner: ProgressBar,
@@ -14,8 +16,14 @@ struct JobState {
     tail_lines: Vec<ProgressBar>,
     trailer: Option<ProgressBar>,
     output_buffer: Vec<String>,
-    start_time: Instant,
     command_preview: Option<String>,
+    /// Set to true once the spinner template has been swapped to include
+    /// the elapsed-time suffix. Driven by a per-job background thread so
+    /// the swap fires on a wall-clock deadline regardless of whether the
+    /// job has emitted any output. Only consumed by tests; the production
+    /// path observes the swap via the spinner re-rendering.
+    #[cfg_attr(not(test), allow(dead_code))]
+    timer_promoted: Arc<AtomicBool>,
 }
 
 pub struct HookProgressRenderer {
@@ -130,8 +138,7 @@ impl HookProgressRenderer {
 
         let display_name = match command_preview {
             Some(cmd) if self.use_color => format!(
-                "{ORANGE}{name}{}  {arrow} {DARK_GREY}{cmd}{}",
-                styles::RESET,
+                "{ORANGE}{name}{}  {arrow} {cmd}",
                 styles::RESET,
                 arrow = self.arrow_str,
             ),
@@ -171,6 +178,23 @@ impl HookProgressRenderer {
         trailer.set_style(self.trailer_style.clone());
         trailer.set_message(String::new());
 
+        // Spawn a one-shot promoter that swaps the spinner template to include
+        // the elapsed-time suffix once the configured delay elapses. This must
+        // run on a wall-clock deadline rather than being gated on output
+        // arrival, because long-running silent jobs (e.g. `cargo build` stuck
+        // on `Compiling …` for tens of seconds) would otherwise never get a
+        // visible timer.
+        let timer_promoted = Arc::new(AtomicBool::new(false));
+        let delay = Duration::from_secs(u64::from(self.config.timer_delay_secs));
+        let promoted_for_thread = Arc::clone(&timer_promoted);
+        let spinner_for_thread = spinner.clone();
+        let timer_style = self.spinner_style_with_timer.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            spinner_for_thread.set_style(timer_style);
+            promoted_for_thread.store(true, Ordering::SeqCst);
+        });
+
         // Separator and tail bars are created lazily in update_job_output as output arrives.
         self.jobs.insert(
             name.to_string(),
@@ -180,31 +204,27 @@ impl HookProgressRenderer {
                 tail_lines: Vec::new(),
                 trailer: Some(trailer),
                 output_buffer: Vec::new(),
-                start_time: Instant::now(),
                 command_preview: command_preview.map(str::to_string),
+                timer_promoted,
             },
         );
     }
 
     pub fn update_job_output(&mut self, name: &str, line: &str) {
-        // Phase 1: buffer line, update timer, determine growth needs.
-        // Clone ProgressBar anchors before releasing the jobs borrow so
-        // Phase 2/3 can call self.mp without a conflicting borrow.
-        // ProgressBar is Arc-based; cloning is cheap.
+        // Phase 1: buffer line, determine growth needs. Clone ProgressBar
+        // anchors before releasing the jobs borrow so Phase 2/3 can call
+        // self.mp without a conflicting borrow. ProgressBar is Arc-based;
+        // cloning is cheap.
+        // The spinner-style swap to include `{elapsed_precise}` is handled
+        // by the per-job promoter thread spawned in
+        // `start_job_with_description` — driving it from this function would
+        // miss long-running silent jobs that produce no further output.
         let (needs_sep, needs_tail, spinner_clone, last_anchor_clone) = {
             let Some(state) = self.jobs.get_mut(name) else {
                 return;
             };
 
             state.output_buffer.push(line.to_string());
-
-            if state.start_time.elapsed()
-                >= Duration::from_secs(u64::from(self.config.timer_delay_secs))
-            {
-                state
-                    .spinner
-                    .set_style(self.spinner_style_with_timer.clone());
-            }
 
             // Nothing to display when quiet or tail_lines == 0.
             if self.config.quiet || self.config.tail_lines == 0 {
@@ -503,6 +523,14 @@ impl HookProgressRenderer {
         self.jobs
             .get(name)
             .map(|s| s.trailer.is_some())
+            .unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    pub fn timer_promoted(&self, name: &str) -> bool {
+        self.jobs
+            .get(name)
+            .map(|s| s.timer_promoted.load(Ordering::SeqCst))
             .unwrap_or(false)
     }
 

@@ -15,31 +15,36 @@ pub fn render_header<W: Sink>(
     target_count: usize,
     pipeline: &[CommandSpec],
 ) -> std::io::Result<()> {
+    writeln!(sink, "{}", format_header_line(target_count, pipeline.len()))
+}
+
+const HEADER_WIDTH: usize = 60;
+const HEADER_MIN_SIDE_DASHES: usize = 4;
+
+/// Format the scope-summary divider with the summary horizontally centered
+/// inside the divider. Width is fixed; padding on either side of the summary
+/// is balanced (right side absorbs the remainder when the gap is odd).
+pub(super) fn format_header_line(target_count: usize, command_count: usize) -> String {
     let wt_label = if target_count == 1 {
         "worktree"
     } else {
         "worktrees"
     };
-    let cmd_label = if pipeline.len() == 1 {
+    let cmd_label = if command_count == 1 {
         "command"
     } else {
         "commands"
     };
-    let summary = format!(
-        "{} {} · {} {}",
-        target_count,
-        wt_label,
-        pipeline.len(),
-        cmd_label,
-    );
-    const TOTAL_WIDTH: usize = 60;
-    const PREFIX_DASHES: usize = 8;
-    let summary_cols = summary.chars().count() + 2;
-    let suffix_dashes = TOTAL_WIDTH.saturating_sub(PREFIX_DASHES + summary_cols);
-    writeln!(
-        sink,
+    let summary = format!("{target_count} {wt_label} · {command_count} {cmd_label}");
+    let summary_cols = summary.chars().count() + 2; // include surrounding spaces
+    let total_dashes = HEADER_WIDTH
+        .saturating_sub(summary_cols)
+        .max(HEADER_MIN_SIDE_DASHES * 2);
+    let prefix_dashes = total_dashes / 2;
+    let suffix_dashes = total_dashes - prefix_dashes;
+    format!(
         "{} {summary} {}",
-        "─".repeat(PREFIX_DASHES),
+        "─".repeat(prefix_dashes),
         "─".repeat(suffix_dashes),
     )
 }
@@ -101,4 +106,50 @@ pub fn render_failed_output_dump<W: Sink>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn split_dashes(line: &str, summary: &str) -> (usize, usize) {
+        let needle = format!(" {summary} ");
+        let idx = line.find(&needle).expect("summary not found in header");
+        let prefix = line[..idx].chars().count();
+        let suffix = line[idx + needle.len()..].chars().count();
+        (prefix, suffix)
+    }
+
+    #[test]
+    fn header_summary_is_horizontally_centered() {
+        // Regression: previously the header used 8 fixed leading dashes,
+        // which left the summary visibly left-of-center. After the fix,
+        // prefix and suffix dash counts must differ by at most 1.
+        let line = format_header_line(4, 1);
+        let (prefix, suffix) = split_dashes(&line, "4 worktrees · 1 command");
+        assert!(
+            prefix.abs_diff(suffix) <= 1,
+            "expected centered divider, got prefix={prefix} suffix={suffix}: {line}"
+        );
+    }
+
+    #[test]
+    fn header_total_width_matches_constant() {
+        let line = format_header_line(2, 3);
+        assert_eq!(
+            line.chars().count(),
+            HEADER_WIDTH,
+            "header line must occupy {HEADER_WIDTH} columns"
+        );
+    }
+
+    #[test]
+    fn header_handles_summary_overflowing_total_width() {
+        // If the summary itself is wider than HEADER_WIDTH, fall back to
+        // the minimum side dashes rather than producing a malformed line.
+        let line = format_header_line(12345678, 87654321);
+        let (prefix, suffix) = split_dashes(&line, "12345678 worktrees · 87654321 commands");
+        assert!(prefix >= HEADER_MIN_SIDE_DASHES);
+        assert!(suffix >= HEADER_MIN_SIDE_DASHES);
+    }
 }

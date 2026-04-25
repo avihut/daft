@@ -571,6 +571,34 @@ mod tests {
     }
 
     #[test]
+    fn timer_promotes_on_wall_clock_even_without_output() {
+        // Regression for daft exec spinners that never showed an elapsed
+        // timer when the job was long-running but silent (e.g. cargo
+        // compiling a single crate for tens of seconds with no new stdout).
+        // The promotion must fire on a wall-clock deadline driven from
+        // `start_job`, not from `update_job_output`.
+        let config = HookOutputConfig {
+            timer_delay_secs: 0,
+            ..Default::default()
+        };
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job("silent-job", None);
+
+        // Promotion is performed by a detached thread; poll briefly rather
+        // than relying on a timing-fragile fixed sleep.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !renderer.timer_promoted("silent-job") && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            renderer.timer_promoted("silent-job"),
+            "spinner timer must be promoted on a wall-clock deadline even when the job emits no output"
+        );
+
+        renderer.finish_job_success("silent-job", Duration::from_secs(1));
+    }
+
+    #[test]
     fn plain_compact_finalization_cancelled_records_outcome() {
         let mut renderer = PlainHookRenderer::new();
         renderer.set_compact_finalization(true);
