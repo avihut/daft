@@ -1,0 +1,44 @@
+name: Squash merge flag passthrough (-m, --signoff)
+description:
+  "daft merge --squash -m <msg> --signoff produces a commit whose subject
+  matches the -m argument and whose body contains Signed-off-by."
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Materialize feature
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: Squash merge with explicit message and signoff
+    run: >-
+      git-worktree-merge feature/test-feature --squash -m "explicit squash
+      message" --signoff 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Squash merged feature/test-feature into main"
+
+  - name: Verify commit subject matches -m argument
+    run: git log -1 --format=%s HEAD
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "explicit squash message"
+
+  - name: Verify Signed-off-by trailer present in commit body
+    run: git log -1 --format=%B HEAD
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Signed-off-by:"
