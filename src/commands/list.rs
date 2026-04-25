@@ -1120,3 +1120,42 @@ mod tests {
         assert_eq!(total_row[size_bytes_idx], Cell::Int(1024));
     }
 }
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    fn make_args(structured: bool) -> Args {
+        // Construct an Args via clap's parser so the EmitArgs flatten resolves
+        // correctly without us having to know its internal field shape.
+        let mut argv = vec!["git-worktree-list"];
+        if structured {
+            argv.push("--format");
+            argv.push("json");
+        }
+        Args::parse_from(argv)
+    }
+
+    #[test]
+    fn should_use_live_returns_false_for_structured_output() {
+        let args = make_args(true);
+        // Even if other conditions are favorable, structured output forces
+        // blocking. Whatever the TTY/env give us, the result must be false.
+        assert!(!should_use_live(&args));
+    }
+
+    #[test]
+    fn should_use_live_respects_daft_no_live_env_var() {
+        // Note: setting env vars in tests is process-global; tests in the same
+        // binary may run in parallel. We save/restore to avoid leaking state to
+        // other tests that read DAFT_NO_LIVE.
+        let prev = std::env::var_os("DAFT_NO_LIVE");
+        std::env::set_var("DAFT_NO_LIVE", "1");
+        let args = make_args(false);
+        assert!(!should_use_live(&args));
+        match prev {
+            Some(v) => std::env::set_var("DAFT_NO_LIVE", v),
+            None => std::env::remove_var("DAFT_NO_LIVE"),
+        }
+    }
+}
