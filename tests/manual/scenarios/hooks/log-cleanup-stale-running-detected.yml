@@ -101,9 +101,9 @@ steps:
         - "ZOMBIE_OK"
 
   - name:
-      Run `daft hooks jobs clean --older-than 0s` — the stale-Running job must
+      Run `daft hooks jobs prune --older-than 0s` — the stale-Running job must
       be detected and removed even though its status is "running"
-    run: daft hooks jobs clean --older-than 0s 2>&1
+    run: daft hooks jobs prune --older-than 0s 2>&1
     cwd: "$WORK_DIR/test-log-cleanup-stale/feature/s"
     expect:
       exit_code: 0

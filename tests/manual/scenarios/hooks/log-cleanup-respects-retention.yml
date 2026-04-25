@@ -1,7 +1,7 @@
 name: Log cleanup honors per-job retention
 description:
   "Sets log.retention=1d on a worktree-post-create job, fires the hook, then
-  backdates the resulting meta.json to 2 days ago. `daft hooks jobs clean` must
+  backdates the resulting meta.json to 2 days ago. `daft hooks jobs prune` must
   remove the invocation directory because the job is older than its declared
   retention window."
 
@@ -91,8 +91,8 @@ steps:
       output_contains:
         - "PATCHED="
 
-  - name: Run `daft hooks jobs clean` — should remove the aged invocation
-    run: daft hooks jobs clean 2>&1
+  - name: Run `daft hooks jobs prune` — should remove the aged invocation
+    run: daft hooks jobs prune 2>&1
     cwd: "$WORK_DIR/test-log-cleanup-retention/feature/retain"
     expect:
       exit_code: 0

@@ -139,8 +139,8 @@ enum JobsCommand {
         #[arg(long)]
         cwd: Option<String>,
     },
-    /// Remove logs older than the retention period.
-    Clean {
+    /// Remove old job records (invocations, metadata, logs) past retention.
+    Prune {
         /// Override retention for this run (e.g., `30d`, `12h`).
         #[arg(long = "older-than")]
         older_than: Option<String>,
@@ -583,10 +583,10 @@ pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
             path,
             output,
         ),
-        Some(JobsCommand::Clean {
+        Some(JobsCommand::Prune {
             ref older_than,
             dry_run,
-        }) => clean_logs(&args, path, output, older_than.as_deref(), dry_run),
+        }) => prune_jobs(&args, path, output, older_than.as_deref(), dry_run),
     }
 }
 
@@ -1583,11 +1583,11 @@ fn retry_command(
     Ok(())
 }
 
-/// Remove logs older than the retention period.
+/// Remove old job records (invocations + metadata + logs) past retention.
 ///
 /// Supports `--older-than <duration>` to override per-job retention for this
 /// run only, and `--dry-run` to list candidates without removing anything.
-fn clean_logs(
+fn prune_jobs(
     args: &JobsArgs,
     _path: &Path,
     output: &mut dyn Output,
@@ -2373,7 +2373,7 @@ mod tests {
         // u64::MAX seconds overflows i64.
         let n = parse_duration_str("18446744073709551615s");
         // The parser itself rejects overflow at the multiplier step, so this
-        // would already error. The defensive layering in clean_logs catches
+        // would already error. The defensive layering in prune_jobs catches
         // any value that gets past the parser.
         assert!(n.is_err() || i64::try_from(n.unwrap()).is_err());
     }

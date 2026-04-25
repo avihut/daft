@@ -1,7 +1,7 @@
 name: Log cleanup never removes Running jobs
 description:
   "Constructs a synthetic invocation on disk with status=Running and a recent
-  started_at, then verifies that `daft hooks jobs clean` (with retention
+  started_at, then verifies that `daft hooks jobs prune` (with retention
   override 0s and keep_last=0) refuses to remove it. After flipping the status
   to Completed, the same clean call removes it."
 
@@ -96,9 +96,9 @@ steps:
         - "SYNTH_OK"
 
   - name:
-      Run `daft hooks jobs clean --older-than 0s` — must NOT remove the
+      Run `daft hooks jobs prune --older-than 0s` — must NOT remove the
       synthetic Running invocation (running jobs are skipped)
-    run: daft hooks jobs clean --older-than 0s 2>&1
+    run: daft hooks jobs prune --older-than 0s 2>&1
     cwd: "$WORK_DIR/test-log-cleanup-running/feature/r"
     expect:
       exit_code: 0
@@ -130,7 +130,7 @@ steps:
       m['finished_at'] = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ')
       with open(p, 'w') as f: json.dump(m, f)
       " "$META"
-      daft hooks jobs clean --older-than 0s 2>&1
+      daft hooks jobs prune --older-than 0s 2>&1
     cwd: "$WORK_DIR/test-log-cleanup-running/feature/r"
     expect:
       exit_code: 0

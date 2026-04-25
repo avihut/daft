@@ -413,7 +413,7 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
             fig_subcommand("logs", "Show logs for a job"),
             fig_subcommand("cancel", "Cancel a running job"),
             fig_subcommand("retry", "Re-run failed jobs from an invocation"),
-            fig_subcommand("clean", "Remove completed job records"),
+            fig_subcommand("prune", "Remove old job records past retention"),
         ]),
         args: None,
         options: Some({

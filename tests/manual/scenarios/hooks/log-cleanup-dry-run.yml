@@ -1,7 +1,7 @@
 name: Log cleanup --dry-run lists candidates without removing
 description:
   "With log.retention=1d set on the job and the meta.json backdated to 2 days
-  ago, `daft hooks jobs clean --dry-run` must report what would be removed but
+  ago, `daft hooks jobs prune --dry-run` must report what would be removed but
   leave the invocation dir untouched on disk."
 
 env:
@@ -84,9 +84,9 @@ steps:
         - "INV_COUNT_BEFORE="
 
   - name:
-      Run `daft hooks jobs clean --dry-run` — must list "Would remove" but leave
+      Run `daft hooks jobs prune --dry-run` — must list "Would remove" but leave
       the disk untouched
-    run: daft hooks jobs clean --dry-run 2>&1
+    run: daft hooks jobs prune --dry-run 2>&1
     cwd: "$WORK_DIR/test-log-cleanup-dryrun/feature/dry"
     expect:
       exit_code: 0

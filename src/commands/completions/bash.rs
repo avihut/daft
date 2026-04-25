@@ -324,7 +324,7 @@ _daft() {
                 ;;
             jobs)
                 if [[ $cword -eq 3 ]]; then
-                    COMPREPLY=( $(compgen -W "logs cancel retry clean" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "logs cancel retry prune" -- "$cur") )
                     return 0
                 fi
                 case "${words[3]}" in

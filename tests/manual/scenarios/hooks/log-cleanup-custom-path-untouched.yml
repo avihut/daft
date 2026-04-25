@@ -4,7 +4,7 @@ description:
   (`<state>/jobs/<repo-uuid>/`). Files created by user hooks at arbitrary paths
   — even those declared via log.path — must never be touched by cleanup. This
   scenario verifies that a file written by a hook to /tmp/daft-test-custom-log/
-  survives a `daft hooks jobs clean` run that reaps the daft-managed invocation
+  survives a `daft hooks jobs prune` run that reaps the daft-managed invocation
   dirs."
 
 env:
@@ -94,8 +94,8 @@ steps:
       output_contains:
         - "BACKDATE_OK"
 
-  - name: Run `daft hooks jobs clean` — daft-managed dirs are eligible
-    run: daft hooks jobs clean 2>&1
+  - name: Run `daft hooks jobs prune` — daft-managed dirs are eligible
+    run: daft hooks jobs prune 2>&1
     cwd: "$WORK_DIR/test-log-cleanup-custom-path/feature/cp"
     expect:
       exit_code: 0

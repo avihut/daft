@@ -507,7 +507,7 @@ _daft() {
                 ;;
             jobs)
                 if (( CURRENT == 4 )); then
-                    compadd logs cancel retry clean
+                    compadd logs cancel retry prune
                     return
                 fi
                 case "$words[4]" in

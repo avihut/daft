@@ -256,13 +256,13 @@ Manage background hook jobs.
 Hooks that declare `background: true` run asynchronously after the
 triggering command returns. This subcommand provides visibility and
 control over those jobs — listing, inspecting logs, cancelling,
-retrying, and cleaning up old records.
+retrying, and pruning old records.
 
 Subcommands:
   logs     View the output log for a background job
   cancel   Cancel a running background job
   retry    Re-run failed jobs from an invocation
-  clean    Remove logs older than the retention period
+  prune    Remove old job records (invocations, metadata, logs) past retention
 
 Without a subcommand, lists jobs grouped by worktree and invocation. Use --format for structured output.
 

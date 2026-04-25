@@ -7,7 +7,7 @@ description:
 
 env:
   # Suppress the background cleanup autospawn so the inv count remains stable
-  # until the scenario explicitly invokes `daft hooks jobs clean`.
+  # until the scenario explicitly invokes `daft hooks jobs prune`.
   DAFT_NO_LOG_CLEAN: "1"
 
 repos:
@@ -79,7 +79,7 @@ steps:
         - "NEWEST="
 
   - name: Run the foreground cleanup pipeline — budget pass should evict oldest
-    run: daft hooks jobs clean 2>&1
+    run: daft hooks jobs prune 2>&1
     cwd: "$WORK_DIR/test-log-cleanup-budget/feature/budget"
     expect:
       exit_code: 0

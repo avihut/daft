@@ -1,7 +1,7 @@
 name: Log cleanup honors keep_last sanity floor
 description:
   "Sets retention=1d and keep_last=3, fires the hook five times, backdates every
-  meta.json to 2 days ago, then runs `daft hooks jobs clean`. Even though every
+  meta.json to 2 days ago, then runs `daft hooks jobs prune`. Even though every
   invocation is past retention, the keep_last floor must preserve the three most
   recent ones."
 
@@ -112,8 +112,8 @@ steps:
         - "PATCHED="
 
   - name:
-      Run `daft hooks jobs clean` — keep_last=3 must protect three invocations
-    run: daft hooks jobs clean 2>&1
+      Run `daft hooks jobs prune` — keep_last=3 must protect three invocations
+    run: daft hooks jobs prune 2>&1
     cwd: "$WORK_DIR/test-log-cleanup-keep-last/feature/k"
     expect:
       exit_code: 0

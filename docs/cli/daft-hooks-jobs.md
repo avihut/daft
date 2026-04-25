@@ -9,7 +9,7 @@ Manage background hook jobs
 
 ## Description
 
-List, inspect, cancel, retry, and clean up background hook jobs.
+List, inspect, cancel, retry, and prune background hook jobs.
 
 When hooks include jobs with `background: true`, they run asynchronously
 via a coordinator process after the command returns. This command provides
@@ -32,7 +32,7 @@ daft hooks jobs [OPTIONS] [COMMAND]
 | `cancel <job>` | Cancel a running background job |
 | `cancel --all` | Cancel all running background jobs |
 | `retry <job>` | Re-run a failed background job |
-| `clean` | Remove logs older than the retention period |
+| `prune` | Remove old job records (invocations, metadata, logs) past retention |
 
 ## Options
 
@@ -46,7 +46,7 @@ daft hooks jobs [OPTIONS] [COMMAND]
 | `--status <status>` | Filter to invocations containing jobs with this status (`running`, `completed`, `failed`, `cancelled`, `skipped`) |  |
 | `--hook <type>` | Filter to invocations of this hook type |  |
 
-### `clean` options
+### `prune` options
 
 | Option | Description |
 |--------|-------------|
@@ -121,14 +121,14 @@ daft hooks jobs cancel --all
 # Re-run a failed job
 daft hooks jobs retry warm-build-cache
 
-# Clean up old logs
-daft hooks jobs clean
+# Prune old job records (invocations + metadata + logs) past retention
+daft hooks jobs prune
 
-# Preview what would be cleaned without removing anything
-daft hooks jobs clean --dry-run
+# Preview what would be removed without touching anything
+daft hooks jobs prune --dry-run
 
 # Override retention for a one-off run
-daft hooks jobs clean --older-than 30d
+daft hooks jobs prune --older-than 30d
 ```
 
 ## Automatic cleanup
@@ -146,8 +146,8 @@ acquires a single-flight file lock and runs three layered passes per repo:
 3. **Per-repo budget** — if total disk usage still exceeds `max_total_size`
    (default 500 MB), oldest invocations are evicted LRU-style.
 
-To disable automatic cleanup: `export DAFT_NO_LOG_CLEAN=1`. Manual cleanup
-is always available via `daft hooks jobs clean`.
+To disable automatic cleanup: `export DAFT_NO_LOG_CLEAN=1`. Manual pruning
+is always available via `daft hooks jobs prune`.
 
 Cleanup is auto-disabled in CI environments.
 

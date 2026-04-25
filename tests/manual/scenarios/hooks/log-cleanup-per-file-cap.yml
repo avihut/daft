@@ -56,9 +56,9 @@ steps:
         - "PRE_TRUNC_SIZE="
 
   - name:
-      Run the foreground cleanup pipeline (`daft hooks jobs clean`) — this runs
+      Run the foreground cleanup pipeline (`daft hooks jobs prune`) — this runs
       the per-file truncation pre-pass alongside retention and budget passes
-    run: daft hooks jobs clean 2>&1
+    run: daft hooks jobs prune 2>&1
     cwd: "$WORK_DIR/test-log-cleanup-truncate/feature/spam"
     expect:
       exit_code: 0

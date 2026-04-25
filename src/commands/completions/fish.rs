@@ -375,20 +375,20 @@ complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcomma
 # hooks migrate: flags
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from migrate' -l dry-run -d 'Preview renames without making changes'
 # hooks jobs: sub-subcommands and flags
-complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -f -a 'logs cancel retry clean'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry prune' -f -a 'logs cancel retry prune'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs' -l all -d 'Show jobs from all worktrees'
-complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -l format -x -a 'json ndjson tsv csv yaml toon markdown' -d 'Output format'
-complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -l template -r -d 'Tera template string'
-complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -l no-headers -d 'Omit header row (tsv/csv)'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry prune' -l format -x -a 'json ndjson tsv csv yaml toon markdown' -d 'Output format'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry prune' -l template -r -d 'Tera template string'
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry prune' -l no-headers -d 'Omit header row (tsv/csv)'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from logs cancel' -l inv -d 'Invocation ID prefix'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from retry' -l hook -d 'Force hook name interpretation'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from retry' -l inv -d 'Force invocation prefix interpretation'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from retry' -l job -d 'Force job name interpretation'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from retry' -l worktree -r -d 'Retry from specific worktree' -f -a "(daft __complete hooks-jobs-retry-worktree (commandline -ct) 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from retry' -l cwd -d 'Override working directory'
-complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -l worktree -r -d 'Filter by worktree' -f -a "(daft __complete hooks-jobs-worktree (commandline -ct) 2>/dev/null)"
-complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -l status -r -d 'Filter by job status' -f -a "failed completed running cancelled skipped"
-complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry clean' -l hook -r -d 'Filter by hook type' -f -a "(daft __complete hooks-jobs-hook-filter (commandline -ct) 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry prune' -l worktree -r -d 'Filter by worktree' -f -a "(daft __complete hooks-jobs-worktree (commandline -ct) 2>/dev/null)"
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry prune' -l status -r -d 'Filter by job status' -f -a "failed completed running cancelled skipped"
+complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and not __fish_seen_subcommand_from logs cancel retry prune' -l hook -r -d 'Filter by hook type' -f -a "(daft __complete hooks-jobs-hook-filter (commandline -ct) 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from logs cancel' -f -a "(daft __complete hooks-jobs-job (commandline -ct) 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from jobs; and __fish_seen_subcommand_from retry' -f -a "(daft __complete hooks-jobs-retry (commandline -ct) 2>/dev/null)"
 # shared: subcommands

@@ -484,7 +484,7 @@ state dir whose repo no longer fires hooks), built-in defaults apply.
 
 Custom `path` values can be absolute or relative to the worktree root. Template
 variables (`{branch}`, `{worktree_path}`) are available. Retention cleanup (both
-automatic and `daft hooks jobs clean`) only manages files in the XDG state
+automatic and `daft hooks jobs prune`) only manages files in the XDG state
 directory — custom paths are the user's responsibility.
 
 #### Automatic cleanup
@@ -503,7 +503,7 @@ daft hooks jobs logs <job>     # view a job's output log
 daft hooks jobs cancel <job>   # stop a running job
 daft hooks jobs cancel --all   # stop all running jobs
 daft hooks jobs retry <job>    # re-run a failed job
-daft hooks jobs clean          # remove logs older than retention period
+daft hooks jobs prune          # remove old job records past retention
 ```
 
 See [daft-hooks-jobs](../cli/daft-hooks-jobs.md) for the full CLI reference.
