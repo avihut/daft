@@ -1,0 +1,90 @@
+name: Merge -r fires worktree-pre/post-remove hooks
+description:
+  "daft merge -r delegates cleanup to branch_delete::execute, which fires
+  worktree-pre-remove and worktree-post-remove hooks before and after removing
+  the source worktree."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test-feature
+        from: main
+        files:
+          - path: feature.txt
+            content: "feature content"
+        commits:
+          - message: "Add feature branch"
+    daft_yml: |
+      hooks:
+        worktree-pre-remove:
+          jobs:
+            - name: mark-pre
+              run: touch "$DAFT_WORKTREE_PATH/.pre-remove-ran"
+        worktree-post-remove:
+          jobs:
+            - name: mark-post
+              run: touch "$DAFT_WORKTREE_PATH/.post-remove-ran"
+
+steps:
+  - name: Clone with trust
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Materialize feature branch as a sibling worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Merge with -r — hooks should fire during cleanup
+    run: git-worktree-merge feature/test-feature -r 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Merge complete."
+        - "Deleted feature/test-feature (worktree)"
+
+  - name:
+      Verify pre-remove hook ran (sentinel exists in what was the worktree dir)
+    run:
+      test -f "$WORK_DIR/test-repo/feature/test-feature/.pre-remove-ran" && echo
+      "pre_ran"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["pre_ran"]
+
+  - name: Verify post-remove hook ran
+    run:
+      test -f "$WORK_DIR/test-repo/feature/test-feature/.post-remove-ran" &&
+      echo "post_ran"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["post_ran"]
+
+  - name: Verify source worktree was removed (git has no worktree record)
+    run: |
+      git -C $WORK_DIR/test-repo/main worktree list --porcelain | grep "branch refs/heads/feature/test-feature" || echo "wt_removed"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["wt_removed"]
+
+  - name: Verify source branch still exists (-r without -b keeps the branch)
+    run: |
+      git -C $WORK_DIR/test-repo/main show-ref --verify --quiet \
+        refs/heads/feature/test-feature && echo "branch_exists"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["branch_exists"]

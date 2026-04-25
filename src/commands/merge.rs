@@ -7,7 +7,10 @@
 //! argument, default to CWD.
 
 use crate::{
-    core::worktree::merge::{HookRunner, MergeHookContext},
+    core::{
+        worktree::merge::{HookRunner, MergeHookContext},
+        CommandBridge,
+    },
     executor::cli_presenter::CliPresenter,
     get_current_worktree_path, get_git_common_dir, get_project_root,
     git::GitCommand,
@@ -574,15 +577,18 @@ pub fn run() -> Result<()> {
     let git_dir = get_git_common_dir()?;
     let source_worktree = get_current_worktree_path().unwrap_or_else(|_| project_root.clone());
     let mut output = CliOutput::new(OutputConfig::new(false, args.verbose));
-    let mut runner = MergeHookRunner::new(
-        &mut output,
-        project_root.clone(),
-        git_dir,
-        settings.remote.clone(),
-        source_worktree,
-    )?;
-    let outcome =
-        crate::core::worktree::merge::execute_start(&params, &git, &project_root, &mut runner)?;
+    // Run execute_start inside a nested block so `runner` (which borrows
+    // `&mut output`) is dropped before the cleanup phase needs `output` again.
+    let outcome = {
+        let mut runner = MergeHookRunner::new(
+            &mut output,
+            project_root.clone(),
+            git_dir,
+            settings.remote.clone(),
+            source_worktree,
+        )?;
+        crate::core::worktree::merge::execute_start(&params, &git, &project_root, &mut runner)?
+    };
 
     if outcome.already_up_to_date {
         // Core already printed "Already up to date." from the up-to-date
@@ -732,27 +738,91 @@ pub fn run() -> Result<()> {
         // `squash_cleanup_stable` is true when the squash-committed path
         // passed the stability check — in that case we use `branch -D`
         // (justified by content equivalence proof). Otherwise `squash_committed`
-        // stays false and execute_cleanup Phase 1 uses the standard
-        // reachability check.
+        // stays false and plan_cleanup uses the standard reachability check
+        // (delegated to branch_delete::execute's keep_local_branch=false path).
         if effective_remove {
             let cleanup_opts = crate::core::worktree::merge::CleanupOptions {
                 remove_worktree: effective_remove,
                 also_branch: effective_and_branch,
                 squash_committed: squash_cleanup_stable,
             };
-            let cleanup_result = crate::core::worktree::merge::execute_cleanup(
-                &params.sources,
-                &cleanup_opts,
-                &git,
-                &project_root,
-                &outcome.target_branch,
-            );
+            let cleanup_result: Result<()> = (|| {
+                let plan = crate::core::worktree::merge::plan_cleanup(
+                    &params.sources,
+                    &cleanup_opts,
+                    &git,
+                    &project_root,
+                    &outcome.target_branch,
+                )?;
+
+                for item in &plan {
+                    if item.worktree_path.is_none() && item.branch_name.is_none() {
+                        continue;
+                    }
+
+                    // keep_local_branch=true when -r was given without -b: the
+                    // worktree is removed but the local branch ref is preserved.
+                    let keep_local_branch = item.branch_name.is_none();
+                    let branch_for_delete = item
+                        .branch_name
+                        .clone()
+                        .or_else(|| {
+                            // For worktree-only items (keep_local_branch=true) we
+                            // still need a branch name so branch_delete::execute can
+                            // find the worktree via its worktree-map lookup. Use the
+                            // `source` field which equals the resolved branch name.
+                            Some(item.source.clone())
+                        })
+                        .unwrap_or_else(|| item.source.clone());
+
+                    let bd_params = crate::core::worktree::branch_delete::BranchDeleteParams {
+                        branches: vec![branch_for_delete],
+                        force: item.force_delete,
+                        use_gitoxide: settings.use_gitoxide,
+                        is_quiet: false,
+                        remote_name: settings.remote.clone(),
+                        delete_remote: false,
+                        remote_only: false,
+                        keep_local_branch,
+                        prune_cd_target: settings.prune_cd_target,
+                    };
+
+                    let executor = HookExecutor::new(HooksConfig::default())?;
+                    let bd_result = {
+                        let mut bridge = CommandBridge::new(&mut output, executor);
+                        crate::core::worktree::branch_delete::execute(&bd_params, &mut bridge)?
+                    };
+
+                    if !bd_result.validation_errors.is_empty() {
+                        for err in &bd_result.validation_errors {
+                            output.error(&format!(
+                                "cleanup of '{}' failed: {}",
+                                err.branch, err.message
+                            ));
+                        }
+                        anyhow::bail!(
+                            "cleanup pre-validation failed for {} source(s)",
+                            bd_result.validation_errors.len()
+                        );
+                    }
+
+                    // Emit styled "Deleted X (worktree, local branch)" summary lines.
+                    for deletion in &bd_result.deletions {
+                        let parts = deletion.deleted_parts();
+                        if !parts.is_empty() {
+                            output.result(&format!("Deleted {} ({})", deletion.branch, parts));
+                        }
+                    }
+                }
+                Ok(())
+            })();
+
             match cleanup_result {
                 Ok(()) => {
                     // After successful squash + cleanup, emit the combined message.
                     if squash_cleanup_stable && !outcome.emitted_terminal_message {
                         let sources_display = sources_for_message.join(", ");
-                        println!("Squash merged and cleaned up {sources_display}.");
+                        output.result(&format!("Squash merged and cleaned up {sources_display}."));
                     }
                 }
                 Err(e) => {

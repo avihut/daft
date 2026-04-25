@@ -30,8 +30,7 @@ steps:
       exit_code: 0
       output_contains:
         - "Squash merged and cleaned up feature/test-feature"
-        - "Removing worktree"
-        - "Deleting branch"
+        - "Deleted feature/test-feature (worktree, local branch)"
 
   - name: Verify worktree gone
     run: test ! -d $WORK_DIR/test-repo/feature/test-feature && echo "wt_gone"

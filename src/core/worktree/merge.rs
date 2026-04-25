@@ -2597,7 +2597,7 @@ pub fn plan_cleanup(
 /// `target_branch` is used for the branch-reachability check (resolves the
 /// target tip explicitly, not via process CWD, so cross-worktree merges work
 /// correctly).
-pub fn execute_cleanup(
+pub(crate) fn execute_cleanup(
     sources: &[String],
     options: &CleanupOptions,
     git: &GitCommand,

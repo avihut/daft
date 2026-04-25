@@ -1,0 +1,62 @@
+name: Merge -r pre-remove hook failure aborts cleanup
+description:
+  "When a worktree-pre-remove hook exits non-zero with the default Abort fail
+  mode, cleanup halts. The merge commit already exists on the target; only the
+  source worktree cleanup is aborted."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test-feature
+        from: main
+        files:
+          - path: feature.txt
+            content: "feature content"
+        commits:
+          - message: "Add feature branch"
+    daft_yml: |
+      hooks:
+        worktree-pre-remove:
+          jobs:
+            - name: always-fail
+              run: exit 1
+
+steps:
+  - name: Clone with trust
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Materialize feature branch as a sibling worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Merge with -r — pre-remove hook exits 1, command exits non-zero
+    run: git-worktree-merge feature/test-feature -r 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+
+  - name: Verify merge commit landed on target (merge succeeded before cleanup)
+    run: git -C $WORK_DIR/test-repo/main log --oneline -1 main
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Add feature branch"
+
+  - name: Verify source worktree still exists (cleanup was halted)
+    run: test -d $WORK_DIR/test-repo/feature/test-feature && echo "wt_present"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["wt_present"]

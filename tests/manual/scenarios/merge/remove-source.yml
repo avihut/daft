@@ -31,7 +31,7 @@ steps:
       exit_code: 0
       output_contains:
         - "Merge complete."
-        - "Removing worktree"
+        - "Deleted feature/test-feature (worktree)"
 
   - name: Verify feature worktree was removed
     run: test ! -d $WORK_DIR/test-repo/feature/test-feature && echo "wt_removed"
