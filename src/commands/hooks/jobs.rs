@@ -577,6 +577,73 @@ fn build_jobs_payload(
     Ok(EmitPayload::Tabular(table))
 }
 
+/// Pre-rendered cells for one job row in the list-jobs table.
+struct JobRow {
+    job: String,
+    status: String,
+    started: String,
+    duration: String,
+    size: String,
+}
+
+/// One invocation worth of data ready for outline rendering.
+struct InvocationSection<'a> {
+    inv: &'a InvocationMeta,
+    rows: Vec<JobRow>,
+}
+
+/// Column headers for the per-invocation jobs table.
+const LIST_JOBS_HEADERS: [&str; 5] = ["Job", "Status", "Started", "Duration", "Size"];
+
+/// Build the outline `Node` for a single invocation: bullet label + body.
+///
+/// Body is either a placeholder (`Body::Placeholder`) when the invocation
+/// declared no jobs, or a pre-rendered tabled string (`Body::Lines`) padded
+/// to the supplied per-column max widths so adjacent invocations line up.
+fn build_invocation_node(
+    sec: InvocationSection<'_>,
+    now: chrono::DateTime<chrono::Utc>,
+    max_widths: &[usize; 5],
+) -> Node {
+    let ago = shorthand_from_seconds(now.signed_duration_since(sec.inv.created_at).num_seconds());
+    let short_id = &sec.inv.invocation_id[..4.min(sec.inv.invocation_id.len())];
+    let label = invocation_node_label(&ago, &sec.inv.trigger_command, short_id);
+
+    let body = if sec.rows.is_empty() {
+        Body::Placeholder(dim("(no jobs declared)"))
+    } else {
+        let mut builder = Builder::new();
+        builder.push_record(
+            LIST_JOBS_HEADERS
+                .iter()
+                .enumerate()
+                .map(|(c, h)| pad_to_visible_width(&dim_underline(h), max_widths[c]))
+                .collect::<Vec<_>>(),
+        );
+        for row in &sec.rows {
+            let cells = [
+                &row.job,
+                &row.status,
+                &row.started,
+                &row.duration,
+                &row.size,
+            ];
+            builder.push_record(
+                cells
+                    .iter()
+                    .enumerate()
+                    .map(|(c, cell)| pad_to_visible_width(cell, max_widths[c]))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let mut table = builder.build();
+        table.with(Style::blank());
+        Body::Lines(table.to_string().lines().map(String::from).collect())
+    };
+
+    Node { label, body }
+}
+
 /// Default subcommand: list jobs grouped by worktree and invocation.
 fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<()> {
     let repo_hash = crate::core::repo_identity::compute_repo_id()?;
@@ -660,21 +727,9 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
     // visible width across all invocations in this listing. Without this,
     // adjacent invocations whose Job/Status/Duration values differ in length
     // pick different `tabled` column widths and the rendering drifts.
-    struct JobRow {
-        job: String,
-        status: String,
-        started: String,
-        duration: String,
-        size: String,
-    }
-    struct InvocationSection<'a> {
-        inv: &'a InvocationMeta,
-        rows: Vec<JobRow>,
-    }
     let mut sections_by_worktree: Vec<(String, Vec<InvocationSection>)> = Vec::new();
 
-    const HEADERS: [&str; 5] = ["Job", "Status", "Started", "Duration", "Size"];
-    let mut max_widths: [usize; 5] = HEADERS.map(visible_width);
+    let mut max_widths: [usize; 5] = LIST_JOBS_HEADERS.map(visible_width);
 
     for (worktree, inv_list) in &groups {
         let mut secs: Vec<InvocationSection> = Vec::with_capacity(inv_list.len());
@@ -759,53 +814,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                     header: worktree_header(marker, &worktree),
                     nodes: secs
                         .into_iter()
-                        .map(|sec| {
-                            let ago = shorthand_from_seconds(
-                                now.signed_duration_since(sec.inv.created_at).num_seconds(),
-                            );
-                            let short_id =
-                                &sec.inv.invocation_id[..4.min(sec.inv.invocation_id.len())];
-                            let label =
-                                invocation_node_label(&ago, &sec.inv.trigger_command, short_id);
-
-                            let body = if sec.rows.is_empty() {
-                                Body::Placeholder(dim("(no jobs declared)"))
-                            } else {
-                                let mut builder = Builder::new();
-                                builder.push_record(
-                                    HEADERS
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(c, h)| {
-                                            pad_to_visible_width(&dim_underline(h), max_widths[c])
-                                        })
-                                        .collect::<Vec<_>>(),
-                                );
-                                for row in &sec.rows {
-                                    let cells = [
-                                        &row.job,
-                                        &row.status,
-                                        &row.started,
-                                        &row.duration,
-                                        &row.size,
-                                    ];
-                                    builder.push_record(
-                                        cells
-                                            .iter()
-                                            .enumerate()
-                                            .map(|(c, cell)| {
-                                                pad_to_visible_width(cell, max_widths[c])
-                                            })
-                                            .collect::<Vec<_>>(),
-                                    );
-                                }
-                                let mut table = builder.build();
-                                table.with(Style::blank());
-                                Body::Lines(table.to_string().lines().map(String::from).collect())
-                            };
-
-                            Node { label, body }
-                        })
+                        .map(|sec| build_invocation_node(sec, now, &max_widths))
                         .collect(),
                 }
             })
