@@ -2701,7 +2701,34 @@ mod tests {
     //!   from `GitCommand::resolve_worktree_path`, which is exercised by
     //!   its own tests and by the `carry` scenarios.
     use super::*;
+    use serial_test::serial;
     use std::process::Command as ShellCommand;
+
+    /// RAII helper: saves the current working directory on construction and
+    /// restores it on drop. Tests that call `std::env::set_current_dir` use
+    /// this to avoid leaving cwd pointing at a deleted tempdir for the next
+    /// test (which would panic in `std::env::current_dir`).
+    struct CwdGuard {
+        original: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn new() -> Self {
+            Self {
+                original: std::env::current_dir().expect("cwd readable at test start"),
+            }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            // Best-effort: if the original cwd no longer exists, fall back to
+            // the system temp dir so subsequent tests can at least read cwd.
+            if std::env::set_current_dir(&self.original).is_err() {
+                let _ = std::env::set_current_dir(std::env::temp_dir());
+            }
+        }
+    }
 
     fn init_repo(path: &Path) {
         ShellCommand::new("git")
@@ -4052,7 +4079,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn capture_source_shas_returns_sha_for_known_branch() {
+        let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         create_branch(tmp.path(), "feat-a");
@@ -4068,7 +4097,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn capture_source_shas_errors_on_unknown_ref() {
+        let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
 
@@ -4119,7 +4150,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn execute_cleanup_refuses_dirty_source_worktree() {
+        let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         // Add a second commit on main so feature branch has a parent distinct from
@@ -4174,7 +4207,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn execute_cleanup_refuses_unmerged_branch_when_not_squash() {
+        let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
 
@@ -4223,7 +4258,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn execute_cleanup_succeeds_when_all_validates_pass() {
+        let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
 
