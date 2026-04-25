@@ -6,8 +6,8 @@ description:
   the most recent one always preserved."
 
 env:
-  # Suppress the background `daft __clean-logs` autospawn so the inv count
-  # remains stable until the scenario explicitly invokes cleanup.
+  # Suppress the background cleanup autospawn so the inv count remains stable
+  # until the scenario explicitly invokes `daft hooks jobs clean`.
   DAFT_NO_LOG_CLEAN: "1"
 
 repos:
@@ -78,8 +78,8 @@ steps:
         - "INV_COUNT_BEFORE="
         - "NEWEST="
 
-  - name: Run the background cleanup pass — budget pass should evict oldest
-    run: daft __clean-logs 2>&1
+  - name: Run the foreground cleanup pipeline — budget pass should evict oldest
+    run: daft hooks jobs clean 2>&1
     cwd: "$WORK_DIR/test-log-cleanup-budget/feature/budget"
     expect:
       exit_code: 0

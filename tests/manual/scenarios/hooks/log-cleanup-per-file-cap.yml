@@ -56,9 +56,9 @@ steps:
         - "PRE_TRUNC_SIZE="
 
   - name:
-      Run the background cleanup pass (`daft __clean-logs`) — this is where the
-      per-file truncation pre-pass happens
-    run: daft __clean-logs 2>&1
+      Run the foreground cleanup pipeline (`daft hooks jobs clean`) — this runs
+      the per-file truncation pre-pass alongside retention and budget passes
+    run: daft hooks jobs clean 2>&1
     cwd: "$WORK_DIR/test-log-cleanup-truncate/feature/spam"
     expect:
       exit_code: 0

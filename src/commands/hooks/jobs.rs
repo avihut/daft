@@ -1366,10 +1366,30 @@ fn clean_logs(
         let policy = CleanPolicy {
             retention_override,
             dry_run,
-            repo_policy,
+            repo_policy: repo_policy.clone(),
             ..CleanPolicy::default()
         };
-        store.clean(&policy)
+
+        // Pass 1: truncation pre-pass (skipped in dry-run since the spec
+        // describes truncation as side-effecting; dry-run mode shouldn't
+        // touch disk for any pass).
+        let truncated = if dry_run {
+            0
+        } else {
+            store.truncate_oversized_logs(None).unwrap_or(0)
+        };
+
+        // Pass 2: retention sweep.
+        let mut summary = store.clean(&policy)?;
+        summary.truncated_logs += truncated;
+
+        // Pass 3: budget post-pass (also skipped in dry-run).
+        if !dry_run {
+            let evicted = store.enforce_budget(&repo_policy).unwrap_or(0);
+            summary.removed_invocations += evicted;
+        }
+
+        Ok(summary)
     };
 
     if args.all {
@@ -1377,6 +1397,7 @@ fn clean_logs(
         let mut total_jobs = 0;
         let mut total_invs = 0;
         let mut total_bytes = 0u64;
+        let mut total_truncated = 0u64;
         let mut all_candidates: Vec<(String, String, String)> = Vec::new();
         for hash in &hashes {
             let store = LogStore::for_repo(hash)?;
@@ -1384,6 +1405,7 @@ fn clean_logs(
             total_jobs += s.removed_jobs;
             total_invs += s.removed_invocations;
             total_bytes += s.freed_bytes;
+            total_truncated += s.truncated_logs as u64;
             let short_repo = &hash[..8.min(hash.len())];
             for (wt, inv, name) in s.candidates {
                 all_candidates.push((format!("{short_repo}/{wt}"), inv, name));
@@ -1391,11 +1413,16 @@ fn clean_logs(
         }
         if dry_run {
             print_dry_run_summary(output, total_invs, total_jobs, total_bytes, &all_candidates);
-        } else if total_jobs > 0 {
-            output.success(&format!(
-                "Removed {total_jobs} job(s) across {total_invs} invocation(s), freed {} across all repos.",
+        } else if total_jobs > 0 || total_truncated > 0 {
+            let mut msg = format!(
+                "Removed {total_jobs} job(s) across {total_invs} invocation(s), freed {} across all repos",
                 format_bytes(total_bytes),
-            ));
+            );
+            if total_truncated > 0 {
+                msg.push_str(&format!(", truncated {total_truncated} log(s)"));
+            }
+            msg.push('.');
+            output.success(&msg);
         } else {
             output.info("No old logs to clean.");
         }
@@ -1411,12 +1438,17 @@ fn clean_logs(
                 s.freed_bytes,
                 &s.candidates,
             );
-        } else if s.removed_jobs > 0 {
-            output.success(&format!(
-                "Removed {} job(s) ({} freed).",
+        } else if s.removed_jobs > 0 || s.truncated_logs > 0 {
+            let mut msg = format!(
+                "Removed {} job(s) ({} freed)",
                 s.removed_jobs,
                 format_bytes(s.freed_bytes),
-            ));
+            );
+            if s.truncated_logs > 0 {
+                msg.push_str(&format!(", truncated {} log(s)", s.truncated_logs));
+            }
+            msg.push('.');
+            output.success(&msg);
         } else {
             output.info("No old logs to clean.");
         }
