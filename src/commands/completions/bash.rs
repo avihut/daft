@@ -324,7 +324,14 @@ _daft() {
                 ;;
             jobs)
                 if [[ $cword -eq 3 ]]; then
-                    COMPREPLY=( $(compgen -W "logs cancel retry prune" -- "$cur") )
+                    # Flag prefix → emit listing-form flags; otherwise the
+                    # subcommands. The cword > 3 branch below only runs once
+                    # a subcommand has been chosen.
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=( $(compgen -W "--all --format --template --no-headers --worktree --status --hook -h --help" -- "$cur") )
+                    else
+                        COMPREPLY=( $(compgen -W "logs cancel retry prune" -- "$cur") )
+                    fi
                     return 0
                 fi
                 case "${words[3]}" in

@@ -507,7 +507,15 @@ _daft() {
                 ;;
             jobs)
                 if (( CURRENT == 4 )); then
-                    compadd logs cancel retry prune
+                    # When the user is typing a flag (`--w<TAB>`), offer the
+                    # listing-form flags instead of subcommands — the existing
+                    # CURRENT > 4 fall-through (line ~575) only handles the
+                    # case where a subcommand has already been chosen.
+                    if [[ "$curword" == -* ]]; then
+                        compadd -- --all --format --template --no-headers --worktree --status --hook -h --help
+                    else
+                        compadd logs cancel retry prune
+                    fi
                     return
                 fi
                 case "$words[4]" in
