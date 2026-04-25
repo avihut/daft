@@ -468,6 +468,18 @@ pub enum DagEvent {
         duration: Duration,
         skip_reason: Option<String>,
     },
+
+    /// A patch landed for `branch_name` from `source`. Carries one cluster
+    /// of cells produced by a single underlying git/FS call.
+    WorktreeInfoUpdated {
+        branch_name: String,
+        patch: WorktreeInfoPatch,
+        source: PatchSource,
+    },
+
+    /// The initial `source=Collector` run completed. Subset re-runs
+    /// (`PostFetch`, `PostTask`) do not emit this — they end silently.
+    WorktreeInfoCollectionDone,
 }
 
 /// Terminal status for a job within a hook.
