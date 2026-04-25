@@ -879,6 +879,21 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                 }
             }
 
+            // Worktree-name drill-down candidates. The current worktree's
+            // invocations are already shown above as bare short IDs, so
+            // skip it here to avoid noise. The trailing `:` lets the user
+            // chain straight into the colon_count==1 branch (which handles
+            // `feature:1f2b` → invocation IDs under that worktree).
+            let all_invocations = store.list_invocations().unwrap_or_default();
+            let worktrees = store.list_distinct_worktrees().unwrap_or_default();
+            entries.extend(worktree_drilldown_entries(
+                &all_invocations,
+                &worktrees,
+                &current_worktree,
+                prefix,
+                now,
+            ));
+
             Ok(entries)
         }
         1 => {
@@ -988,6 +1003,47 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
         }
         _ => Ok(vec![]),
     }
+}
+
+/// Build worktree-drill-down entries for the colon_count==0 branch of
+/// `hooks-jobs-job` completion. Pure helper extracted for unit testing —
+/// `complete_job_addresses` itself depends on global repo state.
+///
+/// Emits one `<wt>:\tworktree\t<count>, <ago>` entry per distinct worktree
+/// that (a) is not the current worktree, (b) starts with `prefix`. The
+/// trailing colon lets the shell hand off to the colon_count==1 branch
+/// once the user accepts the candidate.
+fn worktree_drilldown_entries(
+    invocations: &[crate::coordinator::log_store::InvocationMeta],
+    distinct_worktrees: &[String],
+    current_worktree: &str,
+    prefix: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<String> {
+    let mut entries = Vec::new();
+    for wt in distinct_worktrees {
+        if wt == current_worktree {
+            continue;
+        }
+        if !wt.starts_with(prefix) {
+            continue;
+        }
+        let wt_invs: Vec<_> = invocations.iter().filter(|i| i.worktree == *wt).collect();
+        let inv_count = wt_invs.len();
+        let latest = wt_invs.iter().map(|i| i.created_at).max();
+        let ago = latest
+            .map(|t| {
+                crate::output::format::shorthand_from_seconds(
+                    now.signed_duration_since(t).num_seconds(),
+                )
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        entries.push(format!(
+            "{wt}:\tworktree\t{inv_count} invocation{}, {ago} ago",
+            if inv_count == 1 { "" } else { "s" },
+        ));
+    }
+    entries
 }
 
 /// Complete retry targets for `hooks jobs retry <TAB>`.
@@ -2483,6 +2539,95 @@ mod tests {
         assert_eq!(
             parts[1], "",
             "author should be empty when Author column disabled"
+        );
+    }
+
+    fn inv(
+        id: &str,
+        worktree: &str,
+        ago_secs: i64,
+    ) -> crate::coordinator::log_store::InvocationMeta {
+        let now = chrono::Utc::now();
+        crate::coordinator::log_store::InvocationMeta {
+            invocation_id: id.to_string(),
+            worktree: worktree.to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            trigger_command: "worktree-post-create".to_string(),
+            created_at: now - chrono::Duration::seconds(ago_secs),
+        }
+    }
+
+    #[test]
+    fn worktree_drilldown_skips_current_and_emits_trailing_colon() {
+        let now = chrono::Utc::now();
+        let invocations = vec![
+            inv("1f2b000000000000", "feature", 60),
+            inv("907e000000000000", "master", 120),
+        ];
+        let worktrees = vec!["feature".to_string(), "master".to_string()];
+
+        let entries = worktree_drilldown_entries(&invocations, &worktrees, "master", "", now);
+
+        // `master` is the current worktree → skipped. `feature` emitted with
+        // trailing `:` so the shell can chain into the colon_count==1 branch.
+        assert_eq!(entries.len(), 1, "got: {entries:?}");
+        assert!(
+            entries[0].starts_with("feature:\t"),
+            "expected `feature:\\t…`, got {:?}",
+            entries[0]
+        );
+        assert!(
+            entries[0].contains("worktree"),
+            "expected `worktree` annotation, got {:?}",
+            entries[0]
+        );
+        assert!(
+            entries[0].contains("1 invocation"),
+            "expected invocation count, got {:?}",
+            entries[0]
+        );
+    }
+
+    #[test]
+    fn worktree_drilldown_filters_by_prefix() {
+        let now = chrono::Utc::now();
+        let invocations = vec![
+            inv("aaaa000000000000", "feat-auth", 60),
+            inv("bbbb000000000000", "fix-typo", 60),
+            inv("cccc000000000000", "chore-deps", 60),
+        ];
+        let worktrees = vec![
+            "feat-auth".to_string(),
+            "fix-typo".to_string(),
+            "chore-deps".to_string(),
+        ];
+
+        let entries = worktree_drilldown_entries(&invocations, &worktrees, "master", "f", now);
+        assert_eq!(
+            entries.len(),
+            2,
+            "expected feat-auth + fix-typo, got {entries:?}"
+        );
+        assert!(entries.iter().any(|e| e.starts_with("feat-auth:\t")));
+        assert!(entries.iter().any(|e| e.starts_with("fix-typo:\t")));
+    }
+
+    #[test]
+    fn worktree_drilldown_pluralizes_invocation_count() {
+        let now = chrono::Utc::now();
+        let invocations = vec![
+            inv("1111000000000000", "feature", 30),
+            inv("2222000000000000", "feature", 60),
+            inv("3333000000000000", "feature", 90),
+        ];
+        let worktrees = vec!["feature".to_string()];
+
+        let entries = worktree_drilldown_entries(&invocations, &worktrees, "master", "", now);
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0].contains("3 invocations,"),
+            "expected `3 invocations,` (plural), got {:?}",
+            entries[0]
         );
     }
 }
