@@ -3,6 +3,7 @@ name: Release-plz
 on:
   push:
     branches: [master]
+  workflow_dispatch:
 
 jobs:
   # Create GitHub releases for new versions (runs when release PR is merged)
