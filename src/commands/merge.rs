@@ -729,7 +729,7 @@ pub fn run() -> Result<()> {
                 let sources_display = sources_for_message.join(", ");
                 let target = &outcome.target_branch;
                 let sha = outcome.squash_commit_sha.as_deref().unwrap_or("");
-                let short = &sha[..12.min(sha.len())];
+                let short = short_sha(sha);
                 println!("Squash merged {sources_display} into {target} as {short}.");
                 anyhow::bail!(
                     "cleanup refused: {}\n  \
@@ -922,7 +922,7 @@ pub fn run() -> Result<()> {
                         let sources_display = sources_for_message.join(", ");
                         let target = &outcome.target_branch;
                         let sha = outcome.squash_commit_sha.as_deref().unwrap_or("");
-                        let short = &sha[..12.min(sha.len())];
+                        let short = short_sha(sha);
                         println!("Squash merged {sources_display} into {target} as {short}.");
                     }
                     return Err(e);

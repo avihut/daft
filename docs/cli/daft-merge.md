@@ -253,6 +253,57 @@ the merge is a pure no-op.
 See the [hooks guide](../guide/hooks.md) for full env-var reference and
 configuration.
 
+## Output
+
+By default, `daft merge` suppresses git's raw stdout on the success path.
+Styled step lines render in its place:
+
+| Outcome                       | Step line                                               |
+| ----------------------------- | ------------------------------------------------------- |
+| Fast-forward                  | `Fast-forwarded X to abc1234`                           |
+| Regular merge commit          | `Merged X into Y (commit abc1234)`                      |
+| Squash commit                 | `Squashed X into Y (commit abc1234)`                    |
+| Squash staged, no commit yet  | `Squash staged on Y`                                    |
+| Already up to date            | `Already up to date.` (emitted directly, no styled box) |
+
+When cleanup runs (`-r`/`-rb`) and succeeds, a summary line follows:
+
+```
+Squash merged and cleaned up X.
+```
+
+### Verbose mode
+
+Pass `--verbose` (or set `DAFT_VERBOSE=1`) to dump git's full output to stderr
+alongside the styled step lines. Useful for diagnosing unexpected merge behavior.
+
+### Quiet mode
+
+Pass `--quiet` to suppress step messages and the final summary line. Git's raw
+stdout is still suppressed; only errors and warnings are printed.
+
+## Cleanup hooks
+
+When `-r` or `-rb` is passed and the merge succeeds, daft removes the source
+worktree (and optionally its branch) by delegating to the same cleanup path as
+`daft remove`. As part of that cleanup, `worktree-pre-remove` and
+`worktree-post-remove` hooks fire for each source worktree that is removed.
+
+The hooks receive the standard removal env vars (`DAFT_WORKTREE_PATH`,
+`DAFT_BRANCH_NAME`, `DAFT_REMOVAL_REASON=manual`) plus `DAFT_COMMAND=merge`.
+Scripts can branch on `DAFT_COMMAND` to distinguish merge cleanup from a
+standalone `daft remove` invocation.
+
+Example: revoke direnv trust only during standalone removes, not merge cleanup:
+
+```bash
+#!/bin/sh
+# .daft/hooks/worktree-pre-remove
+if [ "$DAFT_COMMAND" != "merge" ]; then
+    direnv revoke "$DAFT_WORKTREE_PATH"
+fi
+```
+
 ## See Also
 
 - [git worktree-merge](./git-worktree-merge.md) — exhaustive flag reference

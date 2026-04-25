@@ -357,6 +357,11 @@ Hooks automate worktree lifecycle events. The recommended approach is a
 | `pre-merge`            | After pre-flight checks, before the merge runs  | Target worktree             |
 | `post-merge`           | After the merge completes (success or conflict) | Target worktree             |
 
+`worktree-pre-remove` and `worktree-post-remove` also fire when `daft merge -r`
+or `daft merge -rb` cleans up a source worktree after a successful merge. In
+that context `DAFT_COMMAND=merge` (not `branch-delete`), so scripts can
+distinguish merge cleanup from a standalone `daft remove`.
+
 During `daft worktree-clone`, hooks fire in this order: `post-clone` first
 (one-time repo bootstrap), then `worktree-post-create` (per-worktree setup).
 This lets `post-clone` install foundational tools that `worktree-post-create`

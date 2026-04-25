@@ -1185,6 +1185,9 @@ pub fn execute_start(
         // "before any merge operation"; since none runs, neither does the
         // pre hook. `post-merge` stays paired with it — an up-to-date merge
         // is not an observable event that hook scripts need to react to.
+        // TODO(future): emit via Output for styling consistency — doing so
+        // requires threading `&mut dyn Output` into core, which is out of scope
+        // for this branch.
         println!("Already up to date.");
         return Ok(StartOutcome {
             already_up_to_date: true,

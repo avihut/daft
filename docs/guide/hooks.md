@@ -1016,6 +1016,13 @@ YAML jobs and shell script hooks.
 | --------------------- | ---------------------------------------------------------------------------- |
 | `DAFT_REMOVAL_REASON` | Why the worktree is being removed: `remote-deleted`, `manual`, or `ejecting` |
 
+`worktree-pre-remove` and `worktree-post-remove` also fire when `daft merge -r`
+or `daft merge -rb` cleans up the source worktree after a successful merge. In
+that context `DAFT_REMOVAL_REASON` is `manual` and `DAFT_COMMAND` is `merge`.
+Hook scripts can use `DAFT_COMMAND` to distinguish merge cleanup (`"merge"`)
+from a standalone `daft remove` / `daft worktree-branch -d` invocation
+(`"branch-delete"`).
+
 ### Move (move hooks only)
 
 These variables are set when hooks run as part of a worktree move (rename,
