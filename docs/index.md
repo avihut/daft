@@ -34,6 +34,10 @@ features:
     details:
       YAML-configured hooks automate setup for each new worktree — parallel
       jobs, dependencies, skip conditions, and more.
+  - title: Cross-Worktree Merging
+    details:
+      Merge any branch into any worktree from wherever you are — no checkout, no
+      cd. Octopus merges, ephemeral targets, and pre/post-merge hooks built in.
 ---
 
 # daft - Git Extensions Toolkit

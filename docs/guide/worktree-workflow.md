@@ -226,6 +226,31 @@ daft update --all
 daft update master:test
 ```
 
+### Cross-Worktree Merging
+
+Merge branches from anywhere — your shell stays put:
+
+```bash
+# Merge feature/api into main without leaving your current worktree
+daft merge feature/api --into main
+
+# Octopus merge of three branches into main, in one commit
+daft merge feature/a feature/b feature/c --into main
+
+# Merge and clean up the source worktree (and branch) on success
+daft merge feature/done --into main -rb
+```
+
+`daft merge` mirrors `git merge` on the target worktree, so all the standard
+flags (`--ff-only`, `--squash`, `-s`/`--strategy`, etc.) pass through. On
+conflict, daft reports the path of the worktree where the merge is in progress
+and exits non-zero — resolve there, then `daft merge --continue` from anywhere.
+
+`pre-merge` and `post-merge` [hooks](/guide/hooks#merge-hooks) fire around the
+operation with `DAFT_MERGE_*` env vars covering sources, target, mode, and
+result. See the [`daft merge` reference](/cli/daft-merge) for the full flag
+surface and configuration keys.
+
 ## How Commands Find the Project Root
 
 daft commands use `git rev-parse --git-common-dir` to locate the shared `.git`
