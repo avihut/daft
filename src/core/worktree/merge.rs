@@ -278,18 +278,31 @@ impl EffectiveFlags {
 /// strategy, gpg, verify, allow-unrelated, stat). Order isn't semantically
 /// meaningful for git — none of these flags interact positionally — but a
 /// stable order makes test assertions deterministic and diffs readable.
+///
+/// When `squash == Some(true)`, message-composing flags (`-m`, `-F`,
+/// `--edit`/`--no-edit`, `--signoff`, `-S`/`--no-gpg-sign`) are **omitted**
+/// from the merge argv. They are commit-time concerns and are forwarded to
+/// the subsequent `git commit` step via [`render_commit_flags`]. Passing them
+/// to `git merge --squash` would be silently accepted but have no effect.
+/// The non-squash path keeps emitting them so existing regular-merge behavior
+/// is unchanged.
 pub fn render_flags(flags: &EffectiveFlags) -> Vec<String> {
+    let is_squash = flags.squash == Some(true);
     let mut out: Vec<String> = Vec::new();
-    if let Some(m) = &flags.message {
-        out.extend(["-m".into(), m.clone()]);
-    }
-    if let Some(f) = &flags.file {
-        out.extend(["-F".into(), f.display().to_string()]);
-    }
-    match flags.edit {
-        Some(true) => out.push("--edit".into()),
-        Some(false) => out.push("--no-edit".into()),
-        None => {}
+    // Message-composing flags: emit only for non-squash paths. For squash
+    // merges these are forwarded to `git commit` via render_commit_flags.
+    if !is_squash {
+        if let Some(m) = &flags.message {
+            out.extend(["-m".into(), m.clone()]);
+        }
+        if let Some(f) = &flags.file {
+            out.extend(["-F".into(), f.display().to_string()]);
+        }
+        match flags.edit {
+            Some(true) => out.push("--edit".into()),
+            Some(false) => out.push("--no-edit".into()),
+            None => {}
+        }
     }
     if let Some(c) = &flags.cleanup {
         out.extend(["--cleanup".into(), c.clone()]);
@@ -310,10 +323,13 @@ pub fn render_flags(flags: &EffectiveFlags) -> Vec<String> {
         Some(false) => out.push("--no-commit".into()),
         None => {}
     }
-    match flags.signoff {
-        Some(true) => out.push("--signoff".into()),
-        Some(false) => out.push("--no-signoff".into()),
-        None => {}
+    // signoff: emit only for non-squash paths.
+    if !is_squash {
+        match flags.signoff {
+            Some(true) => out.push("--signoff".into()),
+            Some(false) => out.push("--no-signoff".into()),
+            None => {}
+        }
     }
     if let Some(s) = &flags.strategy {
         out.extend(["-s".into(), s.clone()]);
@@ -321,11 +337,14 @@ pub fn render_flags(flags: &EffectiveFlags) -> Vec<String> {
     for x in &flags.strategy_options {
         out.extend(["-X".into(), x.clone()]);
     }
-    match &flags.gpg_sign {
-        Some(GpgSign::Default) => out.push("-S".into()),
-        Some(GpgSign::KeyId(k)) => out.push(format!("-S{k}")),
-        Some(GpgSign::Disabled) => out.push("--no-gpg-sign".into()),
-        None => {}
+    // gpg-sign: emit only for non-squash paths.
+    if !is_squash {
+        match &flags.gpg_sign {
+            Some(GpgSign::Default) => out.push("-S".into()),
+            Some(GpgSign::KeyId(k)) => out.push(format!("-S{k}")),
+            Some(GpgSign::Disabled) => out.push("--no-gpg-sign".into()),
+            None => {}
+        }
     }
     match flags.verify_signatures {
         Some(true) => out.push("--verify-signatures".into()),
@@ -338,6 +357,45 @@ pub fn render_flags(flags: &EffectiveFlags) -> Vec<String> {
     match flags.stat {
         Some(true) => out.push("--stat".into()),
         Some(false) => out.push("--no-stat".into()),
+        None => {}
+    }
+    out
+}
+
+/// Serialize commit-time flags from [`EffectiveFlags`] into `git commit` argv.
+///
+/// These flags are message-composing or signing concerns that apply to the
+/// `git commit` step after `git merge --squash`, NOT to `git merge` itself.
+/// For non-squash merges these flags are passed to `git merge` via
+/// [`render_flags`]; this function should not be called in that path.
+///
+/// Flags emitted (when set):
+/// * `-m <msg>` from `flags.message`
+/// * `-F <path>` from `flags.file`
+/// * `--edit` / `--no-edit` from `flags.edit`
+/// * `--signoff` from `flags.signoff` (only `Some(true)` — `--no-signoff` is
+///   a no-op for commits and omitted)
+/// * `-S` / `-S<keyid>` / `--no-gpg-sign` from `flags.gpg_sign`
+pub fn render_commit_flags(flags: &EffectiveFlags) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(m) = &flags.message {
+        out.extend(["-m".into(), m.clone()]);
+    }
+    if let Some(f) = &flags.file {
+        out.extend(["-F".into(), f.display().to_string()]);
+    }
+    match flags.edit {
+        Some(true) => out.push("--edit".into()),
+        Some(false) => out.push("--no-edit".into()),
+        None => {}
+    }
+    if flags.signoff == Some(true) {
+        out.push("--signoff".into());
+    }
+    match &flags.gpg_sign {
+        Some(GpgSign::Default) => out.push("-S".into()),
+        Some(GpgSign::KeyId(k)) => out.push(format!("-S{k}")),
+        Some(GpgSign::Disabled) => out.push("--no-gpg-sign".into()),
         None => {}
     }
     out
@@ -2009,10 +2067,53 @@ mod tests {
     }
 
     #[test]
-    fn render_flags_combination_preserves_declared_order() {
-        // Interleave many flags to lock down the canonical emission order
-        // (message, edit, cleanup, ff, squash, commit, signoff, strategy,
-        // strategy-options, gpg, verify, allow-unrelated, stat).
+    fn render_flags_combination_preserves_declared_order_non_squash() {
+        // Non-squash: all flags emitted as before. Lock down the canonical
+        // emission order (message, edit, cleanup, ff, commit, signoff,
+        // strategy, strategy-options, gpg, verify, allow-unrelated, stat).
+        let flags = EffectiveFlags {
+            message: Some("m".into()),
+            edit: Some(false),
+            cleanup: Some("strip".into()),
+            ff: Some(FfMode::Never),
+            squash: None,
+            commit: None,
+            signoff: Some(true),
+            strategy: Some("recursive".into()),
+            strategy_options: vec!["theirs".into()],
+            gpg_sign: Some(GpgSign::Default),
+            verify_signatures: Some(true),
+            allow_unrelated_histories: true,
+            stat: Some(false),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(
+            render_flags(&flags),
+            vec![
+                "-m",
+                "m",
+                "--no-edit",
+                "--cleanup",
+                "strip",
+                "--no-ff",
+                "--signoff",
+                "-s",
+                "recursive",
+                "-X",
+                "theirs",
+                "-S",
+                "--verify-signatures",
+                "--allow-unrelated-histories",
+                "--no-stat",
+            ]
+        );
+    }
+
+    #[test]
+    fn render_flags_combination_squash_strips_message_flags() {
+        // Squash path: message-composing flags (-m, --no-edit, --signoff, -S)
+        // are stripped from the merge argv (moved to render_commit_flags).
+        // Only squash, no-commit, strategy, verify, allow-unrelated, stat remain.
         let flags = EffectiveFlags {
             message: Some("m".into()),
             edit: Some(false),
@@ -2032,20 +2133,15 @@ mod tests {
         assert_eq!(
             render_flags(&flags),
             vec![
-                "-m",
-                "m",
-                "--no-edit",
                 "--cleanup",
                 "strip",
                 "--no-ff",
                 "--squash",
                 "--no-commit",
-                "--signoff",
                 "-s",
                 "recursive",
                 "-X",
                 "theirs",
-                "-S",
                 "--verify-signatures",
                 "--allow-unrelated-histories",
                 "--no-stat",
@@ -2799,5 +2895,179 @@ mod tests {
             ..EffectiveFlags::default()
         };
         assert!(!flags.squash_would_open_editor());
+    }
+
+    // ── render_commit_flags ──────────────────────────────────────────────────
+
+    #[test]
+    fn render_commit_flags_empty_for_default_flags() {
+        let flags = EffectiveFlags::default();
+        assert!(render_commit_flags(&flags).is_empty());
+    }
+
+    #[test]
+    fn render_commit_flags_message() {
+        let flags = EffectiveFlags {
+            message: Some("the commit message".into()),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(
+            render_commit_flags(&flags),
+            vec!["-m", "the commit message"]
+        );
+    }
+
+    #[test]
+    fn render_commit_flags_file() {
+        let flags = EffectiveFlags {
+            file: Some(PathBuf::from("/tmp/commit-msg.txt")),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(
+            render_commit_flags(&flags),
+            vec!["-F", "/tmp/commit-msg.txt"]
+        );
+    }
+
+    #[test]
+    fn render_commit_flags_no_edit() {
+        let flags = EffectiveFlags {
+            edit: Some(false),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_commit_flags(&flags), vec!["--no-edit"]);
+    }
+
+    #[test]
+    fn render_commit_flags_edit() {
+        let flags = EffectiveFlags {
+            edit: Some(true),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_commit_flags(&flags), vec!["--edit"]);
+    }
+
+    #[test]
+    fn render_commit_flags_signoff() {
+        let flags = EffectiveFlags {
+            signoff: Some(true),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_commit_flags(&flags), vec!["--signoff"]);
+    }
+
+    #[test]
+    fn render_commit_flags_gpg_default() {
+        let flags = EffectiveFlags {
+            gpg_sign: Some(GpgSign::Default),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_commit_flags(&flags), vec!["-S"]);
+    }
+
+    #[test]
+    fn render_commit_flags_gpg_keyid() {
+        let flags = EffectiveFlags {
+            gpg_sign: Some(GpgSign::KeyId("DEADBEEF".into())),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_commit_flags(&flags), vec!["-SDEADBEEF"]);
+    }
+
+    #[test]
+    fn render_commit_flags_gpg_disabled() {
+        let flags = EffectiveFlags {
+            gpg_sign: Some(GpgSign::Disabled),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_commit_flags(&flags), vec!["--no-gpg-sign"]);
+    }
+
+    #[test]
+    fn render_commit_flags_combination() {
+        let flags = EffectiveFlags {
+            message: Some("squash msg".into()),
+            signoff: Some(true),
+            gpg_sign: Some(GpgSign::Default),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(
+            render_commit_flags(&flags),
+            vec!["-m", "squash msg", "--signoff", "-S"]
+        );
+    }
+
+    // ── render_flags squash-aware: message-flags stripped when squash=true ──
+
+    #[test]
+    fn render_flags_squash_excludes_message_flag() {
+        let flags = EffectiveFlags {
+            squash: Some(true),
+            message: Some("my msg".into()),
+            ..EffectiveFlags::default()
+        };
+        let rendered = render_flags(&flags);
+        // --squash present, -m NOT present (moved to render_commit_flags)
+        assert!(rendered.contains(&"--squash".to_string()));
+        assert!(!rendered.contains(&"-m".to_string()));
+    }
+
+    #[test]
+    fn render_flags_squash_excludes_file_flag() {
+        let flags = EffectiveFlags {
+            squash: Some(true),
+            file: Some(PathBuf::from("/tmp/f.txt")),
+            ..EffectiveFlags::default()
+        };
+        let rendered = render_flags(&flags);
+        assert!(rendered.contains(&"--squash".to_string()));
+        assert!(!rendered.contains(&"-F".to_string()));
+    }
+
+    #[test]
+    fn render_flags_squash_excludes_edit_flag() {
+        let flags = EffectiveFlags {
+            squash: Some(true),
+            edit: Some(false),
+            ..EffectiveFlags::default()
+        };
+        let rendered = render_flags(&flags);
+        assert!(rendered.contains(&"--squash".to_string()));
+        assert!(!rendered.contains(&"--no-edit".to_string()));
+    }
+
+    #[test]
+    fn render_flags_squash_excludes_signoff() {
+        let flags = EffectiveFlags {
+            squash: Some(true),
+            signoff: Some(true),
+            ..EffectiveFlags::default()
+        };
+        let rendered = render_flags(&flags);
+        assert!(rendered.contains(&"--squash".to_string()));
+        assert!(!rendered.contains(&"--signoff".to_string()));
+    }
+
+    #[test]
+    fn render_flags_squash_excludes_gpg_sign() {
+        let flags = EffectiveFlags {
+            squash: Some(true),
+            gpg_sign: Some(GpgSign::Default),
+            ..EffectiveFlags::default()
+        };
+        let rendered = render_flags(&flags);
+        assert!(rendered.contains(&"--squash".to_string()));
+        assert!(!rendered.contains(&"-S".to_string()));
+    }
+
+    #[test]
+    fn render_flags_non_squash_keeps_message_flag() {
+        let flags = EffectiveFlags {
+            message: Some("keep me".into()),
+            ..EffectiveFlags::default()
+        };
+        let rendered = render_flags(&flags);
+        assert!(rendered.contains(&"-m".to_string()));
+        assert!(rendered.contains(&"keep me".to_string()));
     }
 }
