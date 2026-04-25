@@ -433,6 +433,30 @@ impl SortSpec {
         }
         Ordering::Equal
     }
+
+    /// Returns the set of `WorktreeInfo` fields needed to evaluate this sort
+    /// spec. Used by `LiveTable` to skip re-sorts when a patch lands on a
+    /// cell unrelated to the current sort order.
+    pub fn required_fields(&self) -> crate::core::worktree::info_field::FieldSet {
+        use crate::core::worktree::info_field::FieldSet;
+        let mut acc = FieldSet::EMPTY;
+        for key in &self.keys {
+            acc |= match key.column {
+                SortColumn::Branch => FieldSet::EMPTY,
+                SortColumn::Path => FieldSet::EMPTY,
+                SortColumn::Size => FieldSet::SIZE,
+                SortColumn::Age => FieldSet::BRANCH_AGE,
+                SortColumn::Owner => FieldSet::OWNER,
+                SortColumn::Hash => FieldSet::LAST_COMMIT,
+                SortColumn::Activity => FieldSet::LAST_COMMIT | FieldSet::MTIME,
+                SortColumn::LastCommit => FieldSet::LAST_COMMIT,
+                SortColumn::Base => FieldSet::BASE_AHEAD_BEHIND,
+                SortColumn::Changes => FieldSet::CHANGES,
+                SortColumn::Remote => FieldSet::REMOTE_AHEAD_BEHIND,
+            };
+        }
+        acc
+    }
 }
 
 #[cfg(test)]
@@ -912,5 +936,66 @@ mod tests {
         assert_eq!(spec.compare(&a, &b), Ordering::Greater);
         assert_eq!(spec.compare(&b, &a), Ordering::Less);
         assert_eq!(spec.compare(&a, &a), Ordering::Equal);
+    }
+}
+
+#[cfg(test)]
+mod required_fields_tests {
+    use super::*;
+    use crate::core::worktree::info_field::FieldSet;
+
+    fn fields_for(input: &str) -> FieldSet {
+        SortSpec::parse(input).unwrap().required_fields()
+    }
+
+    #[test]
+    fn branch_path_hash_require_no_dynamic_fields() {
+        // These sort by data already present from porcelain.
+        assert_eq!(fields_for("branch"), FieldSet::EMPTY);
+        assert_eq!(fields_for("path"), FieldSet::EMPTY);
+        assert_eq!(fields_for("hash"), FieldSet::LAST_COMMIT);
+    }
+
+    #[test]
+    fn size_requires_size() {
+        assert_eq!(fields_for("size"), FieldSet::SIZE);
+    }
+
+    #[test]
+    fn age_requires_branch_age() {
+        assert_eq!(fields_for("age"), FieldSet::BRANCH_AGE);
+    }
+
+    #[test]
+    fn owner_requires_owner() {
+        assert_eq!(fields_for("owner"), FieldSet::OWNER);
+    }
+
+    #[test]
+    fn last_commit_requires_last_commit() {
+        assert_eq!(fields_for("commit"), FieldSet::LAST_COMMIT);
+    }
+
+    #[test]
+    fn activity_requires_last_commit_and_mtime() {
+        assert_eq!(
+            fields_for("activity"),
+            FieldSet::LAST_COMMIT | FieldSet::MTIME,
+        );
+    }
+
+    #[test]
+    fn base_changes_remote_each_require_their_cluster() {
+        assert_eq!(fields_for("base"), FieldSet::BASE_AHEAD_BEHIND);
+        assert_eq!(fields_for("changes"), FieldSet::CHANGES);
+        assert_eq!(fields_for("remote"), FieldSet::REMOTE_AHEAD_BEHIND);
+    }
+
+    #[test]
+    fn multi_key_unions_required_fields() {
+        // +owner,-size: requires both OWNER and SIZE.
+        let f = fields_for("+owner,-size");
+        assert!(f.contains(FieldSet::OWNER));
+        assert!(f.contains(FieldSet::SIZE));
     }
 }
