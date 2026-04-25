@@ -819,7 +819,11 @@ pub struct CollectorTarget {
 }
 
 pub struct CollectorContext {
-    pub git: GitCommand,
+    /// Whether to use gitoxide for read paths. Workers construct their own
+    /// `GitCommand` because `gix::ThreadSafeRepository` contains `Rc<…>`
+    /// internally and is `Send` but not `Sync` — wrapping `GitCommand` in
+    /// `Arc<CollectorContext>` would block the closure's `Send` bound.
+    pub use_gitoxide: bool,
     pub base_branch: String,
     pub remote_name: String,
     pub ownership_strategy: OwnershipStrategy,
@@ -1038,6 +1042,12 @@ fn run_worker(
         max_mtime_of_files,
     };
     use crate::core::worktree::sync_dag::WorktreeInfoPatch as P;
+    use crate::git::GitCommand;
+
+    // Workers construct their own GitCommand: gix::ThreadSafeRepository is
+    // !Sync, so wrapping GitCommand in Arc<CollectorContext> would block the
+    // closure's Send bound. ctx.use_gitoxide carries the choice through.
+    let git = GitCommand::new(true).with_gitoxide(ctx.use_gitoxide);
 
     macro_rules! emit {
         ($patch:expr) => {{
@@ -1045,7 +1055,7 @@ fn run_worker(
             let _ = tx.send(DagEvent::WorktreeInfoUpdated {
                 branch_name: target.branch_name.clone(),
                 patch: $patch,
-                source,
+                source: source.clone(),  // PatchSource is Clone, not Copy.
             });
         }};
     }
@@ -1073,7 +1083,7 @@ fn run_worker(
     // 3. LAST_COMMIT
     if fields.contains(FieldSet::LAST_COMMIT) {
         if let Some(p) = path {
-            let (timestamp, hash, subject) = get_commit_metadata(p, &ctx.git);
+            let (timestamp, hash, subject) = get_commit_metadata(p, &git);
             emit!(P::LastCommit { timestamp, hash, subject });
         }
     }
@@ -1187,10 +1197,10 @@ mod fixture_tests {
         let dir = init_temp_repo();
         let (tx, rx) = mpsc::channel();
         let ctx = Arc::new(CollectorContext {
-            git: GitCommand::new(false),
+            use_gitoxide: false,
             base_branch: "master".into(),
             remote_name: "origin".into(),
-            ownership_strategy: OwnershipStrategy::default(),
+            ownership_strategy: OwnershipStrategy::RecencyPlurality,
             user_email: Some("test@test.com".into()),
         });
         let target = CollectorTarget {
@@ -1856,7 +1866,7 @@ fn spawn_post_task_refresh(
         is_detached: false,
     };
     let ctx = Arc::new(list_stream::CollectorContext {
-        git: GitCommand::new(false).with_gitoxide(settings.use_gitoxide),
+        use_gitoxide: settings.use_gitoxide,
         base_branch: base_branch.to_string(),
         remote_name: settings.remote.clone(),
         ownership_strategy: settings.ownership_strategy,
