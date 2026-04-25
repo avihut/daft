@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.0](https://github.com/avihut/daft/compare/v1.7.2...v1.8.0) - 2026-04-25
+
+### Features
+
+- multi-format emit support (--format, --template) ([#377](https://github.com/avihut/daft/pull/377))
+- *(exec)* run commands across multiple worktrees ([#381](https://github.com/avihut/daft/pull/381))
+
+### Bug Fixes
+
+- *(tests)* tolerate per-test cleanup races in integration suite ([#401](https://github.com/avihut/daft/pull/401))
+- *(shell-init)* resolve daft binary live, drop eager path cache ([#403](https://github.com/avihut/daft/pull/403))
+- *(exec)* center header, fix stuck timer, brighten command preview ([#404](https://github.com/avihut/daft/pull/404))
+- *(ci)* skip cargo package verify in release-plz ([#405](https://github.com/avihut/daft/pull/405))
+
+### Miscellaneous
+
+- commit Cargo.lock and bump gix to 0.82 ([#382](https://github.com/avihut/daft/pull/382))
+
 ### BREAKING
 
 - The `--json` flag is removed from `daft list` and `daft release-notes`. Use
