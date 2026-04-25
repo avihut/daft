@@ -102,6 +102,10 @@ pub struct TuiState {
     pub tick: usize,
     pub hook_summaries: Vec<HookSummaryEntry>,
     pub show_hook_sub_rows: bool,
+    /// Wall-clock duration since the renderer started. Updated by `tick()`
+    /// from the driver's render-loop start instant. Used by the verbose
+    /// footer.
+    pub render_start_elapsed: std::time::Duration,
     /// Worktree-rows widget (rows, sort, partition, patch application).
     pub live: LiveTable,
 }
@@ -186,6 +190,7 @@ impl TuiState {
             tick: 0,
             hook_summaries: Vec::new(),
             show_hook_sub_rows: verbose >= 1,
+            render_start_elapsed: Duration::ZERO,
             live,
         }
     }

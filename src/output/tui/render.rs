@@ -83,6 +83,27 @@ fn render_sort_summary_spans(spec: &SortSpec) -> Vec<Span<'static>> {
     spans
 }
 
+/// Render a verbose-mode footer below the table showing inflight cell
+/// count and elapsed time. No-op when not in verbose mode.
+pub fn render_footer(state: &TuiState, frame: &mut Frame, area: Rect) {
+    if !state.show_hook_sub_rows {
+        return;
+    }
+    let inflight: usize = state
+        .live
+        .received_patches
+        .iter()
+        .filter(|fs| !fs.contains(crate::core::worktree::info_field::FieldSet::ALL))
+        .count();
+    let elapsed_secs = state.render_start_elapsed.as_secs_f32();
+    let text = format!(" inflight: {inflight} \u{00B7} elapsed: {elapsed_secs:.1}s");
+    let line = Line::from(Span::styled(
+        text,
+        Style::default().add_modifier(Modifier::DIM),
+    ));
+    frame.render_widget(Paragraph::new(line), area);
+}
+
 /// Render the worktree status table.
 pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     let now = chrono::Utc::now().timestamp();
@@ -927,6 +948,29 @@ fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::sort::SortSpec;
+    use crate::core::worktree::list::{Stat, WorktreeInfo};
+    use crate::core::worktree::sync_dag::OperationPhase;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::path::PathBuf;
+
+    fn make_test_state(verbose: u8) -> TuiState {
+        TuiState::new(
+            Vec::<OperationPhase>::new(),
+            vec![WorktreeInfo::empty("master")],
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test"),
+            Stat::Summary,
+            verbose,
+            None,
+            false,
+            None,
+            None::<SortSpec>,
+            true,
+            false,
+        )
+    }
 
     #[test]
     fn loading_glyph_cell_renders_dim_middle_dot() {
@@ -934,5 +978,43 @@ mod tests {
         // Cell is opaque; the test just confirms it constructs without panic.
         // Detailed visual verification belongs in the PTY scenario tests.
         let _ = cell;
+    }
+
+    #[test]
+    fn render_footer_no_op_when_not_verbose() {
+        let state = make_test_state(0);
+        assert!(!state.show_hook_sub_rows);
+        let backend = TestBackend::new(40, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_footer(&state, frame, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        // All cells should be empty (default).
+        for cell in buffer.content().iter() {
+            assert_eq!(cell.symbol(), " ");
+        }
+    }
+
+    #[test]
+    fn render_footer_shows_inflight_and_elapsed_when_verbose() {
+        let mut state = make_test_state(1);
+        state.render_start_elapsed = std::time::Duration::from_millis(1234);
+        let backend = TestBackend::new(60, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_footer(&state, frame, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(row.contains("inflight:"), "row was: {row:?}");
+        assert!(row.contains("elapsed:"), "row was: {row:?}");
+        assert!(row.contains("1.2s"), "row was: {row:?}");
     }
 }

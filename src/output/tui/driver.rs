@@ -85,6 +85,7 @@ impl TuiRenderer {
     /// Run the render loop until all tasks complete.
     /// Returns the final `TuiState` for post-render summary.
     pub fn run(mut self) -> anyhow::Result<TuiState> {
+        let render_start = Instant::now();
         // `+1` is the phase header label row when phases exist; zero phases =
         // no header at all (daft list).
         let header_height = if self.state.phases.is_empty() {
@@ -98,7 +99,8 @@ impl TuiRenderer {
             0
         };
         let table_height = self.state.live.rows.len() as u16 + 2 + self.extra_rows + divider_row;
-        let viewport_height = header_height + table_height;
+        let footer_height: u16 = if self.state.show_hook_sub_rows { 1 } else { 0 };
+        let viewport_height = header_height + table_height + footer_height;
 
         let backend = ratatui::backend::CrosstermBackend::new(std::io::stderr());
         let mut terminal = Terminal::with_options(
@@ -115,12 +117,16 @@ impl TuiRenderer {
             // Render current state.
             terminal.draw(|frame| {
                 let area = frame.area();
-                let chunks =
-                    Layout::vertical([Constraint::Length(header_height), Constraint::Fill(1)])
-                        .split(area);
+                let chunks = Layout::vertical([
+                    Constraint::Length(header_height),
+                    Constraint::Fill(1),
+                    Constraint::Length(footer_height),
+                ])
+                .split(area);
 
                 render::render_header(&self.state, frame, chunks[0]);
                 render::render_table(&self.state, frame, chunks[1]);
+                render::render_footer(&self.state, frame, chunks[2]);
             })?;
 
             // Process all pending events.
@@ -137,13 +143,16 @@ impl TuiRenderer {
                                 let chunks = Layout::vertical([
                                     Constraint::Length(header_height),
                                     Constraint::Fill(1),
+                                    Constraint::Length(footer_height),
                                 ])
                                 .split(area);
                                 render::render_header(&self.state, frame, chunks[0]);
                                 render::render_table(&self.state, frame, chunks[1]);
+                                render::render_footer(&self.state, frame, chunks[2]);
 
                                 // table header (1 row) + data rows (including hook sub-rows)
-                                let content_bottom = area.y + header_height + 1 + total_rows;
+                                let content_bottom =
+                                    area.y + header_height + 1 + total_rows + footer_height;
                                 frame.set_cursor_position(Position {
                                     x: 0,
                                     y: content_bottom,
@@ -162,13 +171,16 @@ impl TuiRenderer {
                             let chunks = Layout::vertical([
                                 Constraint::Length(header_height),
                                 Constraint::Fill(1),
+                                Constraint::Length(footer_height),
                             ])
                             .split(area);
                             render::render_header(&self.state, frame, chunks[0]);
                             render::render_table(&self.state, frame, chunks[1]);
+                            render::render_footer(&self.state, frame, chunks[2]);
 
                             // table header (1 row) + data rows (including hook sub-rows)
-                            let content_bottom = area.y + header_height + 1 + total_rows;
+                            let content_bottom =
+                                area.y + header_height + 1 + total_rows + footer_height;
                             frame.set_cursor_position(Position {
                                 x: 0,
                                 y: content_bottom,
@@ -182,6 +194,7 @@ impl TuiRenderer {
 
             // Tick spinner animation.
             if last_tick.elapsed() >= tick_rate {
+                self.state.render_start_elapsed = render_start.elapsed();
                 self.state.tick();
                 last_tick = Instant::now();
             }
