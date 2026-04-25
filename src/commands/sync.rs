@@ -636,6 +636,16 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             return;
         }
 
+        // ── Refresh remote-derived cells now that fetch updated remote refs ──
+        spawn_post_fetch_refresh(
+            &shared_worktree_map,
+            &orch_settings,
+            &orch_base_branch,
+            orch_user_email.as_deref(),
+            orch_stat,
+            &tx,
+        );
+
         // ── Phase 2: Identify gone branches + build DAG ────────────────
         let gone_branches = {
             let git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
@@ -977,7 +987,6 @@ fn spawn_post_task_refresh(
 /// arrive as `PatchSource::PostFetch` so `LiveTable` can suppress any
 /// stale `Collector` patches on the same fields. Blocks on join() so
 /// patches land before the orchestrator dispatches per-branch tasks.
-#[allow(dead_code)]
 fn spawn_post_fetch_refresh(
     worktree_map: &HashMap<String, (PathBuf, bool)>,
     settings: &Arc<DaftSettings>,
