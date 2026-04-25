@@ -1,0 +1,111 @@
+name: Merge multi-source -rb fires worktree-pre-remove hook once per source
+description: "When daft merge <feat-a> <feat-b> -rb is run, cleanup delegates to
+  branch_delete::execute for each source independently. The worktree-pre-remove
+  hook must fire once per source — once for feat-a and once for feat-b. Verified
+  by sentinel files keyed on DAFT_BRANCH_NAME.
+
+  NOTE: worktree-post-remove is intentionally not asserted here. The post-remove
+  hook runs after the worktree directory is deleted, so its working directory is
+  the now-gone path. This causes spawn to fail silently — a pre-existing
+  limitation of the remove pipeline shared by daft remove and daft merge -rb.
+  Asserting only on pre-remove is correct and sufficient for this regression."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-pre-remove:
+          jobs:
+            - name: mark-pre
+              # Write a sentinel keyed on the branch name being removed.
+              # feat-a → .pre-remove-feat-a, feat-b → .pre-remove-feat-b
+              run: touch "$DAFT_PROJECT_ROOT/.pre-remove-$DAFT_BRANCH_NAME"
+
+steps:
+  - name: Clone with trust so the worktree-pre-remove hook is allowed to run
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create two non-conflicting feature branches from main
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git checkout -b feat-a
+      echo "a" > file-a.txt
+      git add file-a.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "feat a"
+      git checkout main
+      git checkout -b feat-b
+      echo "b" > file-b.txt
+      git add file-b.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "feat b"
+      git checkout main
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Materialize feat-a as a worktree
+    run: git-worktree-checkout feat-a
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Materialize feat-b as a worktree
+    run: git-worktree-checkout feat-b
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Octopus merge with -rb — pre-remove hook fires once per source
+    run: git-worktree-merge feat-a feat-b -rb 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        # Merge summary line confirms both sources were integrated
+        - "Merged feat-a, feat-b into main (commit "
+        # Per-source cleanup summary lines — one per source
+        - "Deleted feat-a (worktree, local branch)"
+        - "Deleted feat-b (worktree, local branch)"
+
+  - name: Verify pre-remove sentinel for feat-a was written
+    run:
+      test -f "$WORK_DIR/test-repo/.pre-remove-feat-a" && echo "feat_a_pre_ran"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["feat_a_pre_ran"]
+
+  - name: Verify pre-remove sentinel for feat-b was written
+    run:
+      test -f "$WORK_DIR/test-repo/.pre-remove-feat-b" && echo "feat_b_pre_ran"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["feat_b_pre_ran"]
+
+  - name: Verify feat-a worktree was removed
+    run: |
+      git -C $WORK_DIR/test-repo/main worktree list --porcelain | grep "branch refs/heads/feat-a" || echo "wt_removed"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["wt_removed"]
+
+  - name: Verify feat-b worktree was removed
+    run: |
+      git -C $WORK_DIR/test-repo/main worktree list --porcelain | grep "branch refs/heads/feat-b" || echo "wt_removed"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["wt_removed"]

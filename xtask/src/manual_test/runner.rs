@@ -56,13 +56,16 @@ pub struct ScenarioResult {
 // ---------------------------------------------------------------------------
 
 /// Truncate content for display in failure messages.
-/// Escapes newlines and trims to `max_len` characters.
+/// Escapes newlines and trims to `max_len` characters (by char count, not bytes,
+/// to avoid panicking on multi-byte UTF-8 sequences such as box-drawing glyphs).
 fn truncate_content(s: &str, max_len: usize) -> String {
     let escaped = s.replace('\n', "\\n").replace('\r', "\\r");
-    if escaped.len() <= max_len {
+    let char_count = escaped.chars().count();
+    if char_count <= max_len {
         escaped
     } else {
-        format!("{}...", &escaped[..max_len])
+        let truncated: String = escaped.chars().take(max_len).collect();
+        format!("{truncated}...")
     }
 }
 
