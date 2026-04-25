@@ -1469,7 +1469,9 @@ impl LiveTable {
                         // (without mutating yet) so we can consult the
                         // source log first.
                         let claim = patch_field_claim(patch);
-                        if !self.source_log.try_admit(branch_name, claim, *source) {
+                        // PatchSource is Clone (not Copy) because it carries
+                        // OperationPhase which contains a String-bearing variant.
+                        if !self.source_log.try_admit(branch_name, claim, source.clone()) {
                             return;
                         }
                         let touched = self.rows[idx].info.apply_patch(patch);
