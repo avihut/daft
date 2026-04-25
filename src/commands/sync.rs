@@ -637,7 +637,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         }
 
         // ── Refresh remote-derived cells now that fetch updated remote refs ──
-        spawn_post_fetch_refresh(
+        sync_shared::spawn_post_fetch_refresh(
             &shared_worktree_map,
             &orch_settings,
             &orch_base_branch,
@@ -975,53 +975,6 @@ fn spawn_post_task_refresh(
             fields,
             stat,
             source: PatchSource::PostTask(phase),
-            ctx,
-        },
-        tx.clone(),
-    );
-    handle.join();
-}
-
-/// After the Fetch phase completes, re-run the streaming collector
-/// against `REMOTE_DERIVED` fields for every worktree branch. Patches
-/// arrive as `PatchSource::PostFetch` so `LiveTable` can suppress any
-/// stale `Collector` patches on the same fields. Blocks on join() so
-/// patches land before the orchestrator dispatches per-branch tasks.
-fn spawn_post_fetch_refresh(
-    worktree_map: &HashMap<String, (PathBuf, bool)>,
-    settings: &Arc<DaftSettings>,
-    base_branch: &str,
-    user_email: Option<&str>,
-    stat: Stat,
-    tx: &mpsc::Sender<sync_dag::DagEvent>,
-) {
-    let targets: Vec<list_stream::CollectorTarget> = worktree_map
-        .iter()
-        .map(
-            |(branch_name, (path, _is_main))| list_stream::CollectorTarget {
-                branch_name: branch_name.clone(),
-                path: Some(path.clone()),
-                kind: EntryKind::Worktree,
-                is_detached: false,
-            },
-        )
-        .collect();
-    if targets.is_empty() {
-        return;
-    }
-    let ctx = Arc::new(list_stream::CollectorContext {
-        use_gitoxide: settings.use_gitoxide,
-        base_branch: base_branch.to_string(),
-        remote_name: settings.remote.clone(),
-        ownership_strategy: settings.ownership_strategy,
-        user_email: user_email.map(|s| s.to_string()),
-    });
-    let handle = list_stream::spawn(
-        list_stream::CollectorRequest {
-            targets,
-            fields: FieldSet::REMOTE_DERIVED,
-            stat,
-            source: PatchSource::PostFetch,
             ctx,
         },
         tx.clone(),
