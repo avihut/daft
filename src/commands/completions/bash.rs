@@ -340,11 +340,15 @@ _daft() {
                             COMPREPLY=( $(compgen -W "--inv -h --help" -- "$cur") )
                             return 0
                         fi
+                        # Lines are `KIND\t<value>\t<display>`. Bash only
+                        # uses the bare value, so strip KIND then take the
+                        # first remaining tab-separated field.
                         local completions
                         completions=$(daft __complete hooks-jobs-job "$cur" 2>/dev/null)
                         if [[ -n "$completions" ]]; then
                             while IFS=$'\n' read -r line; do
-                                local val="${line%%	*}"
+                                local rest="${line#*	}"
+                                local val="${rest%%	*}"
                                 COMPREPLY+=( "$val" )
                             done <<< "$completions"
                         fi

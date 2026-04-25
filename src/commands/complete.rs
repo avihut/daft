@@ -164,9 +164,11 @@ fn complete(
         ("shared-worktrees", _) => complete_worktree_names(word),
 
         // hooks jobs: complete job addresses (names, invocation IDs, composite).
-        // The .map(align_completion_columns) below pads the value column so
-        // descriptions render in aligned columns under zsh's `compadd -l -d`.
-        ("hooks-jobs-job", 1) => complete_job_addresses(word).map(align_completion_columns),
+        // Entries are KIND-tagged and pre-padded by `format_section_rows`; the
+        // zsh wrapper splits by KIND and emits one `compadd -V` per group so
+        // categories cluster (job names, then invocations, then worktrees).
+        // No cross-section value alignment needed — each group has its own.
+        ("hooks-jobs-job", 1) => complete_job_addresses(word),
 
         // hooks jobs retry: complete retry targets (hook types, invocation IDs, job names with failures)
         ("hooks-jobs-retry", 1) => complete_retry_targets(word).map(align_completion_columns),
@@ -853,7 +855,7 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                     }
                 }
             }
-            entries.extend(format_section_rows(job_rows));
+            entries.extend(format_section_rows("JOB", job_rows));
 
             // Invocation short IDs
             let mut inv_rows: Vec<(String, Vec<String>)> = Vec::new();
@@ -877,7 +879,7 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                     ));
                 }
             }
-            entries.extend(format_section_rows(inv_rows));
+            entries.extend(format_section_rows("INV", inv_rows));
 
             // Worktree-name drill-down candidates. The current worktree's
             // invocations are already shown above as bare short IDs, so
@@ -926,7 +928,7 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                         }
                     }
                 }
-                return Ok(format_section_rows(rows));
+                return Ok(format_section_rows("JOB", rows));
             }
 
             // Try as worktree: prefix
@@ -946,7 +948,7 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                     ));
                 }
             }
-            Ok(format_section_rows(rows))
+            Ok(format_section_rows("INV", rows))
         }
         2 => {
             // worktree:inv:job
@@ -977,7 +979,7 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                     }
                 }
             }
-            Ok(format_section_rows(rows))
+            Ok(format_section_rows("JOB", rows))
         }
         _ => Ok(vec![]),
     }
@@ -1027,7 +1029,7 @@ fn worktree_drilldown_entries(
             ],
         ));
     }
-    format_section_rows(rows)
+    format_section_rows("WT", rows)
 }
 
 /// Map a `JobStatus` to its display icon + label as used in completion
@@ -1045,40 +1047,55 @@ fn job_status_icon(status: &crate::coordinator::log_store::JobStatus) -> &'stati
     }
 }
 
-/// Within one completion section, pad each per-row cell to the max
-/// visible width across the section, then render the row as
-/// `<value>\t<cells joined by " ">`. The cross-section value-column
-/// padding is layered on top by `align_completion_columns` at the
-/// dispatch site.
+/// Format a completion section as `KIND\t<value>\t<display>` lines.
 ///
-/// `visible_width` is used so padding stays correct across multi-byte
-/// status icons (`✓`, `✗`, `⟳`) and any future ANSI in cell content.
-fn format_section_rows(rows: Vec<(String, Vec<String>)>) -> Vec<String> {
+/// `kind` is a short tag (e.g. `JOB`, `INV`, `WT`) the zsh wrapper uses
+/// to bucket entries into separate `compadd -V <kind>` groups so they
+/// cluster instead of intermixing alphabetically. `<value>` is the bare
+/// token inserted on accept; `<display>` is the fully formatted line
+/// shown in the menu, with the value padded to the section-wide max
+/// width plus per-cell padding so columns align within the group.
+///
+/// Bash users see only `<value>` (its wrapper drops the KIND prefix);
+/// fish completions register flags declaratively and bypass this path.
+///
+/// `visible_width` is used so multi-byte status icons (`✓`, `✗`, `⟳`)
+/// and any future ANSI in cell content size correctly.
+fn format_section_rows(kind: &str, rows: Vec<(String, Vec<String>)>) -> Vec<String> {
     if rows.is_empty() {
         return Vec::new();
     }
+    let max_value_width = rows
+        .iter()
+        .map(|(v, _)| crate::output::format::visible_width(v))
+        .max()
+        .unwrap_or(0);
     let n_cells = rows.iter().map(|(_, c)| c.len()).max().unwrap_or(0);
-    let mut max_widths = vec![0usize; n_cells];
+    let mut max_cell_widths = vec![0usize; n_cells];
     for (_, cells) in &rows {
         for (i, cell) in cells.iter().enumerate() {
             let w = crate::output::format::visible_width(cell);
-            if w > max_widths[i] {
-                max_widths[i] = w;
+            if w > max_cell_widths[i] {
+                max_cell_widths[i] = w;
             }
         }
     }
     rows.into_iter()
         .map(|(value, cells)| {
-            let padded: Vec<String> = cells
+            let value_pad =
+                max_value_width.saturating_sub(crate::output::format::visible_width(&value));
+            let padded_value = format!("{value}{}", " ".repeat(value_pad));
+            let padded_cells: Vec<String> = cells
                 .iter()
                 .enumerate()
                 .map(|(i, cell)| {
                     let w = crate::output::format::visible_width(cell);
-                    let pad = max_widths[i].saturating_sub(w);
+                    let pad = max_cell_widths[i].saturating_sub(w);
                     format!("{cell}{}", " ".repeat(pad))
                 })
                 .collect();
-            format!("{value}\t{}", padded.join(" "))
+            let display = format!("{padded_value}  {}", padded_cells.join(" "));
+            format!("{kind}\t{value}\t{display}")
         })
         .collect()
 }
@@ -2637,10 +2654,11 @@ mod tests {
 
         // `master` is the current worktree → skipped. `feature` emitted with
         // trailing `:` so the shell can chain into the colon_count==1 branch.
+        // After kind tagging: `WT\tfeature:\t…`.
         assert_eq!(entries.len(), 1, "got: {entries:?}");
         assert!(
-            entries[0].starts_with("feature:\t"),
-            "expected `feature:\\t…`, got {:?}",
+            entries[0].starts_with("WT\tfeature:\t"),
+            "expected `WT\\tfeature:\\t…`, got {:?}",
             entries[0]
         );
         assert!(
@@ -2675,12 +2693,13 @@ mod tests {
             2,
             "expected feat-auth + fix-typo, got {entries:?}"
         );
-        assert!(entries.iter().any(|e| e.starts_with("feat-auth:\t")));
-        assert!(entries.iter().any(|e| e.starts_with("fix-typo:\t")));
+        // After kind tagging, entries start with `WT\t<value>\t…`.
+        assert!(entries.iter().any(|e| e.starts_with("WT\tfeat-auth:\t")));
+        assert!(entries.iter().any(|e| e.starts_with("WT\tfix-typo:\t")));
     }
 
     #[test]
-    fn format_section_rows_pads_each_cell_to_section_max() {
+    fn format_section_rows_emits_kind_value_display_with_padded_cells() {
         let rows = vec![
             (
                 "4eef".to_string(),
@@ -2699,19 +2718,26 @@ mod tests {
                 ],
             ),
         ];
-        let out = format_section_rows(rows);
+        let out = format_section_rows("INV", rows);
         assert_eq!(out.len(), 2);
-        // Cell 0 max = "worktree-post-create" (20). "hooks jobs retry" (16) → 4 trailing spaces.
-        // Cell 1 max = "-- 13h ago" (10). "-- 4h ago" (9) → 1 trailing space.
-        // Cell 2 max = both (8) → no padding.
-        assert_eq!(out[0], "4eef\thooks jobs retry     -- 4h ago  (3 jobs)");
-        assert_eq!(out[1], "907e\tworktree-post-create -- 13h ago (5 jobs)");
+        // Format: KIND\t<bare-value>\t<padded-display>
+        // Both values are 4 chars → max_value_width=4, no value padding.
+        // Cell 0 max = 20 → "hooks jobs retry" gets 4 trailing spaces.
+        // Cell 1 max = 10 → "-- 4h ago" gets 1 trailing space.
+        // Cell 2 max = 8 (both) → no padding.
+        // Display = "<padded_value>  <cells joined by ' '>" = "4eef  hooks jobs retry     -- 4h ago  (3 jobs)"
+        assert_eq!(
+            out[0],
+            "INV\t4eef\t4eef  hooks jobs retry     -- 4h ago  (3 jobs)"
+        );
+        assert_eq!(
+            out[1],
+            "INV\t907e\t907e  worktree-post-create -- 13h ago (5 jobs)"
+        );
     }
 
     #[test]
     fn format_section_rows_uses_visible_width_for_multibyte_icons() {
-        // `✗ failed` is multibyte but visually 8 columns; `✓ completed` is 11.
-        // Padding must use char/visible width, not byte length.
         let rows = vec![
             (
                 "a".to_string(),
@@ -2722,7 +2748,7 @@ mod tests {
                 vec!["\u{2713} completed".to_string(), "extra".to_string()],
             ),
         ];
-        let out = format_section_rows(rows);
+        let out = format_section_rows("JOB", rows);
         // Cell 0 max visible width = 11. "✗ failed" (8 visible) → 3 trailing spaces;
         // plus the 1-space cell joiner = 4 spaces total between "failed" and "extra".
         assert!(
@@ -2738,8 +2764,23 @@ mod tests {
     }
 
     #[test]
+    fn format_section_rows_pads_value_column_within_section() {
+        // Mixed value widths within section: helper pads the value column
+        // (in the display string) to the section-wide max — the bare value
+        // in column 1 stays unpadded so insertion remains clean.
+        let rows = vec![
+            ("a".to_string(), vec!["x".to_string()]),
+            ("longer".to_string(), vec!["x".to_string()]),
+        ];
+        let out = format_section_rows("JOB", rows);
+        // First column unpadded (raw value); display column has padded value.
+        assert_eq!(out[0], "JOB\ta\ta       x");
+        assert_eq!(out[1], "JOB\tlonger\tlonger  x");
+    }
+
+    #[test]
     fn format_section_rows_empty_input_returns_empty() {
-        assert!(format_section_rows(vec![]).is_empty());
+        assert!(format_section_rows("JOB", vec![]).is_empty());
     }
 
     #[test]

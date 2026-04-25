@@ -524,13 +524,29 @@ _daft() {
                             compadd -- --inv -h --help
                             return
                         fi
-                        local -a _vals _descs
-                        local _line
+                        # KIND-tagged input: each line is `KIND\t<value>\t<display>`.
+                        # Split into per-kind arrays so we can emit one
+                        # `compadd -V <kind>` per group (job names cluster
+                        # together, then invocations, then worktrees).
+                        local -a _job_v _job_d _inv_v _inv_d _wt_v _wt_d
+                        local _line _kind _rest _val _disp
                         while IFS='' read -r _line; do
-                            _vals+=("${_line%%$'\t'*}")
-                            _descs+=("${_line//$'\t'/  }")
+                            _kind="${_line%%$'\t'*}"
+                            _rest="${_line#*$'\t'}"
+                            _val="${_rest%%$'\t'*}"
+                            _disp="${_rest#*$'\t'}"
+                            case "$_kind" in
+                                JOB) _job_v+=("$_val"); _job_d+=("$_disp") ;;
+                                INV) _inv_v+=("$_val"); _inv_d+=("$_disp") ;;
+                                WT)  _wt_v+=("$_val");  _wt_d+=("$_disp") ;;
+                            esac
                         done < <(daft __complete hooks-jobs-job "$curword" 2>/dev/null)
-                        compadd -l -d _descs -a _vals
+                        # -V <name> creates an order-preserving group; the
+                        # menu shows job names first, then invocations,
+                        # then worktrees (matches user's most-likely target).
+                        (( ${#_job_v} )) && compadd -V job -l -d _job_d -a _job_v
+                        (( ${#_inv_v} )) && compadd -V inv -l -d _inv_d -a _inv_v
+                        (( ${#_wt_v}  )) && compadd -V wt  -l -d _wt_d  -a _wt_v
                         return
                         ;;
                     retry)
