@@ -4247,4 +4247,28 @@ mod tests {
             .success();
         assert!(!branch_exists, "branch should have been deleted");
     }
+
+    #[test]
+    fn merge_intent_marker_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let git_dir = tmp.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+
+        let intent = MergeIntent {
+            sources: vec!["feat/x".to_string()],
+            source_shas: vec!["abc123def456".to_string()],
+            remove_worktree: true,
+            also_branch: true,
+        };
+
+        write_intent_marker(&git_dir, &intent);
+
+        let marker_path = git_dir.join("daft-merge-intent.json");
+        let read = read_intent_marker(&marker_path).expect("marker should be readable after write");
+
+        assert_eq!(read.sources, intent.sources);
+        assert_eq!(read.source_shas, intent.source_shas);
+        assert_eq!(read.remove_worktree, intent.remove_worktree);
+        assert_eq!(read.also_branch, intent.also_branch);
+    }
 }
