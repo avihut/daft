@@ -239,4 +239,12 @@ mod tests {
         };
         assert!(is_cache_stale(&c));
     }
+
+    #[test]
+    fn test_maybe_clean_logs_does_not_panic() {
+        // The catch_unwind wrapper inside maybe_clean_logs() should absorb any
+        // panics. This test simply ensures the function completes (success or
+        // controlled return) without unwinding.
+        super::maybe_clean_logs();
+    }
 }
