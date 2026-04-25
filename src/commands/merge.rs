@@ -625,12 +625,17 @@ pub fn run() -> Result<()> {
             let cleanup_opts = crate::core::worktree::merge::CleanupOptions {
                 remove_worktree: effective_remove,
                 also_branch: effective_and_branch,
+                // Slice 4 wires squash_committed=true for the daft-driven squash
+                // + commit path. For now all callers use false (existing semantics:
+                // validate branch reachability before deleting).
+                squash_committed: false,
             };
             crate::core::worktree::merge::execute_cleanup(
                 &params.sources,
                 &cleanup_opts,
                 &git,
                 &project_root,
+                &outcome.target_branch,
             )?;
         }
         Ok(())

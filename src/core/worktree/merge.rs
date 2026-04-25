@@ -498,12 +498,18 @@ impl MergeHookContext {
     /// `"merge"`). `is_ephemeral` is set by the caller when the merge will
     /// be performed in an ephemeral worktree. `cross_worktree` is true when
     /// the target worktree is not the current worktree.
-    pub fn for_pre(
+    ///
+    /// `source_shas` carries the resolved SHAs for each source (same order as
+    /// `sources`), exposed as `DAFT_MERGE_SOURCE_SHAS` (newline-separated).
+    /// Pass an empty slice when SHAs were not captured (e.g. up-to-date
+    /// short-circuit that fires no hooks).
+    pub fn for_pre_with_shas(
         sources: &[String],
         target: &ResolvedTarget,
         flags: &EffectiveFlags,
         is_ephemeral: bool,
         cross_worktree: bool,
+        source_shas: &[String],
     ) -> Self {
         let mode = if sources.len() >= 2 {
             "octopus"
@@ -516,6 +522,7 @@ impl MergeHookContext {
         };
         let mut env = BTreeMap::new();
         env.insert("DAFT_MERGE_SOURCES".into(), sources.join(" "));
+        env.insert("DAFT_MERGE_SOURCE_SHAS".into(), source_shas.join("\n"));
         env.insert("DAFT_MERGE_TARGET_BRANCH".into(), target.branch.clone());
         env.insert(
             "DAFT_MERGE_TARGET_PATH".into(),
@@ -536,6 +543,21 @@ impl MergeHookContext {
             cross_worktree.to_string(),
         );
         Self { env }
+    }
+
+    /// Build the pre-merge env-var set without source SHAs.
+    ///
+    /// Delegates to [`for_pre_with_shas`] with an empty SHA slice. Callers
+    /// that have already captured SHAs should use `for_pre_with_shas` directly
+    /// so the `DAFT_MERGE_SOURCE_SHAS` env var is populated for hook scripts.
+    pub fn for_pre(
+        sources: &[String],
+        target: &ResolvedTarget,
+        flags: &EffectiveFlags,
+        is_ephemeral: bool,
+        cross_worktree: bool,
+    ) -> Self {
+        Self::for_pre_with_shas(sources, target, flags, is_ephemeral, cross_worktree, &[])
     }
 
     /// Extend a pre context with post-outcome fields, consuming `self`.
@@ -784,6 +806,24 @@ pub fn detect_in_progress(worktree: &Path) -> Result<Option<InProgressOp>> {
     Ok(None)
 }
 
+/// Resolve each source ref to its full commit SHA via `git rev-parse`.
+///
+/// Called early in [`execute_start`], after pre-flight checks pass but before
+/// the `pre-merge` hook fires. Fails fast with a clear error if any source
+/// cannot be resolved — this is stricter than the UTD check (which silently
+/// skips failed rev-parse), and that strictness is intentional: if a source
+/// ref can't be resolved here, it won't resolve in `git merge` either and we
+/// want the error to be legible before any state is touched.
+pub fn capture_source_shas(sources: &[String], git: &GitCommand) -> Result<Vec<String>> {
+    sources
+        .iter()
+        .map(|src| {
+            git.rev_parse(src)
+                .with_context(|| format!("failed to resolve source ref '{}' — does it exist?", src))
+        })
+        .collect()
+}
+
 /// Refuse a merge when the target worktree has uncommitted/untracked changes.
 ///
 /// Delegates to [`GitCommand::has_uncommitted_changes_in`] (`src/git/stash.rs`)
@@ -908,6 +948,11 @@ pub struct StartOutcome {
     /// "Squash merged <source> into <target> as <sha>"). Empty string on
     /// already-up-to-date and ref-only FF paths that emit their own line.
     pub target_branch: String,
+    /// The resolved SHAs of each source ref, in order, captured before any
+    /// merge work begins. Used by the cleanup stability check (Slice 4) to
+    /// detect if any source ref moved during the editor session. Empty on
+    /// already-up-to-date and other short-circuit paths that don't capture.
+    pub source_shas: Vec<String>,
 }
 
 /// Parse `git status --porcelain` output for conflict entries.
@@ -1053,6 +1098,15 @@ pub fn execute_start(
         });
     }
 
+    // Capture source SHAs before any merge work begins (and before the
+    // pre-merge hook fires, so DAFT_MERGE_SOURCE_SHAS is available to hook
+    // scripts). Fail fast with a clear error if any source can't be resolved.
+    // This is intentionally stricter than the UTD check above (which silently
+    // treats rev-parse failures as "not an ancestor") — by this point we know
+    // at least one source is not already merged, so a resolution failure here
+    // is a real problem the user needs to see.
+    let source_shas = capture_source_shas(&params.sources, git)?;
+
     // Announce octopus before invoking git so users see the strategy name even
     // if git's octopus refuses with a conflict. Single-source merges emit
     // nothing — `git merge <source>` is the plain case and needs no herald.
@@ -1073,13 +1127,15 @@ pub fn execute_start(
     };
 
     match resolved.path.clone() {
-        Some(path) => execute_start_in_worktree(params, &resolved, path, cross_worktree, hooks),
+        Some(path) => {
+            execute_start_in_worktree(params, &resolved, path, cross_worktree, &source_shas, hooks)
+        }
         None => execute_start_ref_only(
             params,
             git,
             project_root,
             &resolved,
-            target_sha,
+            &source_shas,
             cross_worktree,
             hooks,
         ),
@@ -1107,16 +1163,18 @@ fn execute_start_in_worktree(
     resolved: &ResolvedTarget,
     path: PathBuf,
     cross_worktree: bool,
+    source_shas: &[String],
     hooks: &mut dyn HookRunner,
 ) -> Result<StartOutcome> {
     // Build the pre-merge env-var context. This is the worktree-backed
     // path, so `is_ephemeral = false`.
-    let pre_ctx = MergeHookContext::for_pre(
+    let pre_ctx = MergeHookContext::for_pre_with_shas(
         &params.sources,
         resolved,
         &params.flags,
         false,
         cross_worktree,
+        source_shas,
     );
     // `fire_pre_merge` failure aborts the merge before any state is touched.
     hooks.fire_pre_merge(&pre_ctx)?;
@@ -1157,6 +1215,7 @@ fn execute_start_in_worktree(
             conflicted_files: files,
             emitted_terminal_message: false,
             ephemeral_promoted: false,
+            source_shas: source_shas.to_vec(),
             ..StartOutcome::default()
         });
     }
@@ -1201,6 +1260,7 @@ fn execute_start_in_worktree(
                 squash_commit_sha: None,
                 commit_aborted: true,
                 target_branch: resolved.branch.clone(),
+                source_shas: source_shas.to_vec(),
             });
         }
 
@@ -1223,6 +1283,7 @@ fn execute_start_in_worktree(
             squash_commit_sha: Some(sha),
             commit_aborted: false,
             target_branch: resolved.branch.clone(),
+            source_shas: source_shas.to_vec(),
         });
     }
 
@@ -1247,6 +1308,7 @@ fn execute_start_in_worktree(
             squash_commit_sha: None,
             commit_aborted: false,
             target_branch: resolved.branch.clone(),
+            source_shas: source_shas.to_vec(),
         });
     }
 
@@ -1269,6 +1331,7 @@ fn execute_start_in_worktree(
         emitted_terminal_message: false,
         ephemeral_promoted: false,
         target_branch: resolved.branch.clone(),
+        source_shas: source_shas.to_vec(),
         ..StartOutcome::default()
     })
 }
@@ -1313,7 +1376,7 @@ fn execute_start_ref_only(
     git: &GitCommand,
     project_root: &Path,
     resolved: &ResolvedTarget,
-    target_sha: String,
+    source_shas: &[String],
     cross_worktree: bool,
     hooks: &mut dyn HookRunner,
 ) -> Result<StartOutcome> {
@@ -1327,9 +1390,21 @@ fn execute_start_ref_only(
         );
     }
     let source = &params.sources[0];
-    let source_sha = git
-        .rev_parse(source)
-        .with_context(|| format!("failed to resolve source '{}'", source))?;
+    // Re-resolve the target SHA here rather than receiving it as an argument
+    // (avoids pushing the function over clippy's 7-arg limit). The UTD check
+    // in `execute_start` already resolved this; a second resolve is cheap and
+    // avoids holding stale data through the adopt-target prompt.
+    let target_sha = git
+        .rev_parse(&format!("refs/heads/{}", target_branch))
+        .with_context(|| format!("failed to resolve target branch '{}'", target_branch))?;
+    // Reuse the already-captured SHA from `source_shas[0]` rather than
+    // re-resolving — avoids drift if the ref moves between calls, and keeps
+    // capture strictly "before any merge work" as the spec requires.
+    let source_sha = source_shas.first().cloned().unwrap_or_else(|| {
+        // Fallback: should never happen because execute_start captured SHAs
+        // before dispatching here, but guard defensively.
+        git.rev_parse(source).unwrap_or_else(|_| String::new())
+    });
     // `merge_base_is_ancestor(target, source)` returns true when `target` is
     // an ancestor of `source` — i.e., the source has only new commits on top
     // of the target tip, so a pure fast-forward is possible.
@@ -1340,12 +1415,13 @@ fn execute_start_ref_only(
         // Fire pre-merge before the ref moves; post-merge after. The "path"
         // in the env stays empty so scripts can detect the ref-only FF case
         // via `[ -z "$DAFT_MERGE_TARGET_PATH" ]`.
-        let pre_ctx = MergeHookContext::for_pre(
+        let pre_ctx = MergeHookContext::for_pre_with_shas(
             &params.sources,
             resolved,
             &params.flags,
             false,
             cross_worktree,
+            source_shas,
         );
         hooks.fire_pre_merge(&pre_ctx)?;
 
@@ -1367,6 +1443,8 @@ fn execute_start_ref_only(
             conflicted_files: Vec::new(),
             emitted_terminal_message: true,
             ephemeral_promoted: false,
+            source_shas: source_shas.to_vec(),
+            target_branch: resolved.branch.clone(),
             ..StartOutcome::default()
         });
     }
@@ -1397,7 +1475,15 @@ fn execute_start_ref_only(
         );
     }
 
-    execute_ephemeral_merge(params, git, project_root, resolved, cross_worktree, hooks)
+    execute_ephemeral_merge(
+        params,
+        git,
+        project_root,
+        resolved,
+        source_shas,
+        cross_worktree,
+        hooks,
+    )
 }
 
 /// Materialize an ephemeral worktree for a ref-only target, run the merge
@@ -1425,6 +1511,7 @@ fn execute_ephemeral_merge(
     git: &GitCommand,
     project_root: &Path,
     resolved: &ResolvedTarget,
+    source_shas: &[String],
     cross_worktree: bool,
     hooks: &mut dyn HookRunner,
 ) -> Result<StartOutcome> {
@@ -1451,12 +1538,13 @@ fn execute_ephemeral_merge(
         branch: resolved.branch.clone(),
         path: Some(temp_path.clone()),
     };
-    let pre_ctx = MergeHookContext::for_pre(
+    let pre_ctx = MergeHookContext::for_pre_with_shas(
         &params.sources,
         &ephemeral_resolved,
         &params.flags,
         true,
         cross_worktree,
+        source_shas,
     );
     if let Err(e) = hooks.fire_pre_merge(&pre_ctx) {
         // pre-merge aborted the merge. Clean up the ephemeral worktree we
@@ -1522,6 +1610,7 @@ fn execute_ephemeral_merge(
                     squash_commit_sha: None,
                     commit_aborted: true,
                     target_branch: resolved.branch.clone(),
+                    source_shas: source_shas.to_vec(),
                 });
             }
 
@@ -1551,6 +1640,7 @@ fn execute_ephemeral_merge(
                 squash_commit_sha: Some(sha),
                 commit_aborted: false,
                 target_branch: resolved.branch.clone(),
+                source_shas: source_shas.to_vec(),
             });
         }
 
@@ -1579,6 +1669,7 @@ fn execute_ephemeral_merge(
                 squash_commit_sha: None,
                 commit_aborted: false,
                 target_branch: resolved.branch.clone(),
+                source_shas: source_shas.to_vec(),
             });
         }
 
@@ -1608,6 +1699,7 @@ fn execute_ephemeral_merge(
             conflicted_files: Vec::new(),
             emitted_terminal_message: false,
             ephemeral_promoted: false,
+            source_shas: source_shas.to_vec(),
             ..StartOutcome::default()
         });
     }
@@ -1652,6 +1744,7 @@ fn execute_ephemeral_merge(
         conflicted_files: files,
         emitted_terminal_message: false,
         ephemeral_promoted: true,
+        source_shas: source_shas.to_vec(),
         ..StartOutcome::default()
     })
 }
@@ -1987,6 +2080,13 @@ pub struct CleanupOptions {
     /// Also delete the source branch via `git branch -d`. Requires
     /// `remove_worktree`.
     pub also_branch: bool,
+    /// When true, the caller has direct first-party evidence that all content
+    /// on the source branch was captured in a daft-driven squash + commit
+    /// (Slice 4). Under this flag, branch deletion uses `-D` (force-delete)
+    /// instead of `-d` and the branch-deletion validation uses SHA stability
+    /// rather than reachability. For Slice 3, callers set this to `false`;
+    /// Slice 4 wires `true` for the squash-committed path.
+    pub squash_committed: bool,
 }
 
 /// Classification of a source reference for cleanup purposes.
@@ -2045,71 +2145,207 @@ pub fn classify_source(source: &str, git: &GitCommand, project_root: &Path) -> S
 /// Execute post-merge cleanup. Called only after a successful merge (not on
 /// conflict, not on already-up-to-date, not on failure).
 ///
-/// For each source, classify via [`classify_source`] and then:
-/// * `BranchWithWorktree` — if `remove_worktree`, invoke `git worktree
-///   remove` without `--force`. If that fails, record the error and skip
-///   branch deletion for this source (we don't delete the branch of a
-///   worktree we couldn't remove). If `also_branch`, invoke `git branch -d`
-///   on the resolved branch name.
-/// * `BranchNoWorktree` — nothing to remove; if `also_branch`, invoke
-///   `git branch -d` on the branch.
-/// * `CommitOrOther` — silently skip; there is no worktree or branch to
-///   touch.
+/// **Two-phase transactional execution:**
 ///
-/// Errors are accumulated across sources and surfaced as a single combined
-/// error at the end. Partial cleanup is the norm (e.g., worktree removal
-/// succeeds but `git branch -d` refuses an unmerged branch); already-completed
-/// work is not rolled back.
+/// Phase 1 — validate every step that would mutate state. For each source:
+/// * `BranchWithWorktree` with `remove_worktree`:
+///   - Check that the source worktree has no uncommitted changes. If dirty,
+///     abort with a pre-validation error before touching anything.
+///   - If `also_branch` and `squash_committed == false`: verify that the
+///     source branch tip is reachable from `target_branch` (i.e. `branch -d`
+///     would succeed). If not reachable, abort with a pre-validation error.
+/// * `BranchNoWorktree` with `also_branch` and `squash_committed == false`:
+///   - Apply the same reachability check.
+/// * `CommitOrOther` — silently skip; no cleanup is possible.
+///
+/// Phase 2 — mutate (only reached if Phase 1 passes completely):
+/// * Remove each worktree, then delete each branch, in source order.
+/// * If a Phase 2 step fails after Phase 1 passed (concurrent modification),
+///   bail with a transactional failure message that names any already-mutated
+///   state.
+///
+/// `target_branch` is used for the branch-reachability check (resolves the
+/// target tip explicitly, not via process CWD, so cross-worktree merges work
+/// correctly).
 pub fn execute_cleanup(
     sources: &[String],
     options: &CleanupOptions,
     git: &GitCommand,
     project_root: &Path,
+    target_branch: &str,
 ) -> Result<()> {
-    let mut errors: Vec<String> = Vec::new();
+    // ── Phase 1: classify and validate ───────────────────────────────────────
+    //
+    // Classify all sources first; collect all validation errors before
+    // mutating anything.
+    struct CleanupWork {
+        worktree_path: Option<PathBuf>,
+        branch: Option<String>,
+    }
+    let mut work_items: Vec<CleanupWork> = Vec::with_capacity(sources.len());
+    let mut validation_errors: Vec<String> = Vec::new();
 
     for src in sources {
-        match classify_source(src, git, project_root) {
+        let class = classify_source(src, git, project_root);
+        match &class {
             SourceClass::BranchWithWorktree {
                 worktree_path,
                 branch,
             } => {
                 if options.remove_worktree {
-                    if let Err(e) = git.worktree_remove(&worktree_path, false) {
-                        errors.push(format!(
-                            "failed to remove worktree '{}': {}",
-                            worktree_path.display(),
-                            e
-                        ));
-                        // Don't attempt branch deletion for a source whose
-                        // worktree we failed to remove; git will refuse with
-                        // "checked out at" and the secondary error adds noise.
-                        continue;
+                    // Check source worktree is clean (no uncommitted changes).
+                    match git.has_uncommitted_changes_in(worktree_path) {
+                        Ok(true) => {
+                            validation_errors.push(format!(
+                                "source worktree '{}' has uncommitted changes; \
+                                 commit or stash them before cleanup",
+                                worktree_path.display()
+                            ));
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            validation_errors.push(format!(
+                                "failed to check cleanliness of '{}': {}",
+                                worktree_path.display(),
+                                e
+                            ));
+                        }
                     }
                 }
-                if options.also_branch {
-                    if let Err(e) = git.branch_delete(&branch, false) {
-                        errors.push(format!("failed to delete branch '{}': {}", branch, e));
-                    }
+                if options.also_branch
+                    && !options.squash_committed
+                    && !is_branch_merged_into(git, branch, target_branch)
+                {
+                    // For a regular (non-squash) merge, branch -d would only
+                    // succeed if the source branch tip is reachable from the
+                    // target. Check this now rather than letting branch -d fail
+                    // after we've already removed the worktree.
+                    validation_errors.push(format!(
+                        "source branch '{}' is not fully merged into '{}'; \
+                         cleanup pre-validation refused branch deletion",
+                        branch, target_branch
+                    ));
                 }
+                work_items.push(CleanupWork {
+                    worktree_path: if options.remove_worktree {
+                        Some(worktree_path.clone())
+                    } else {
+                        None
+                    },
+                    branch: if options.also_branch {
+                        Some(branch.clone())
+                    } else {
+                        None
+                    },
+                });
             }
             SourceClass::BranchNoWorktree { branch } => {
-                if options.also_branch {
-                    if let Err(e) = git.branch_delete(&branch, false) {
-                        errors.push(format!("failed to delete branch '{}': {}", branch, e));
-                    }
+                if options.also_branch
+                    && !options.squash_committed
+                    && !is_branch_merged_into(git, branch, target_branch)
+                {
+                    validation_errors.push(format!(
+                        "source branch '{}' is not fully merged into '{}'; \
+                         cleanup pre-validation refused branch deletion",
+                        branch, target_branch
+                    ));
                 }
+                work_items.push(CleanupWork {
+                    worktree_path: None,
+                    branch: if options.also_branch {
+                        Some(branch.clone())
+                    } else {
+                        None
+                    },
+                });
             }
             SourceClass::CommitOrOther => {
                 // Nothing to clean up — the source is not a branch.
+                work_items.push(CleanupWork {
+                    worktree_path: None,
+                    branch: None,
+                });
             }
         }
     }
 
-    if !errors.is_empty() {
-        anyhow::bail!("cleanup errors:\n  {}", errors.join("\n  "));
+    if !validation_errors.is_empty() {
+        anyhow::bail!(
+            "cleanup pre-validation failed:\n  {}",
+            validation_errors.join("\n  ")
+        );
     }
+
+    // ── Phase 2: mutate ───────────────────────────────────────────────────────
+    //
+    // All validation passed. Perform mutations in order: remove worktrees
+    // first, then delete branches. Track completed steps for the error message
+    // if a Phase 2 step fails unexpectedly (race condition).
+    let mut completed: Vec<String> = Vec::new();
+    let force_branch_delete = options.squash_committed;
+
+    for (item, src) in work_items.iter().zip(sources.iter()) {
+        if let Some(ref wt_path) = item.worktree_path {
+            git.worktree_remove(wt_path, false).with_context(|| {
+                let done = if completed.is_empty() {
+                    "nothing removed yet".to_string()
+                } else {
+                    format!("already removed: {}", completed.join(", "))
+                };
+                format!(
+                    "cleanup partially failed: failed to remove worktree '{}' \
+                     (source '{}'); {}",
+                    wt_path.display(),
+                    src,
+                    done
+                )
+            })?;
+            completed.push(format!("worktree '{}'", wt_path.display()));
+        }
+    }
+
+    for (item, src) in work_items.iter().zip(sources.iter()) {
+        if let Some(ref branch) = item.branch {
+            git.branch_delete(branch, force_branch_delete)
+                .with_context(|| {
+                    let done = if completed.is_empty() {
+                        "nothing removed yet".to_string()
+                    } else {
+                        format!("already removed: {}", completed.join(", "))
+                    };
+                    format!(
+                        "cleanup partially failed: failed to delete branch '{}' \
+                         (source '{}'); {}",
+                        branch, src, done
+                    )
+                })?;
+            completed.push(format!("branch '{}'", branch));
+        }
+    }
+
     Ok(())
+}
+
+/// Return `true` if `branch` tip is reachable from `target_branch` (i.e.
+/// `git branch -d <branch>` would succeed from a safety perspective).
+///
+/// Uses `git merge-base --is-ancestor <branch> <target_branch>` — the
+/// same check `branch -d` performs internally. Returns `false` on any
+/// error (including unknown refs) so the caller surfaces a validation
+/// failure rather than silently skipping.
+fn is_branch_merged_into(git: &GitCommand, branch: &str, target_branch: &str) -> bool {
+    // Resolve branch tip to SHA to avoid ambiguity between branch names and
+    // commit-ishes in merge-base --is-ancestor.
+    let branch_sha = match git.rev_parse(&format!("refs/heads/{}", branch)) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let target_sha = match git.rev_parse(&format!("refs/heads/{}", target_branch)) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    git.merge_base_is_ancestor(&branch_sha, &target_sha)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -2891,16 +3127,20 @@ mod tests {
         let opts = CleanupOptions {
             remove_worktree: true,
             also_branch: false,
+            squash_committed: false,
         };
         assert!(opts.remove_worktree);
         assert!(!opts.also_branch);
+        assert!(!opts.squash_committed);
 
         let opts_rb = CleanupOptions {
             remove_worktree: true,
             also_branch: true,
+            squash_committed: false,
         };
         assert!(opts_rb.remove_worktree);
         assert!(opts_rb.also_branch);
+        assert!(!opts_rb.squash_committed);
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -3353,5 +3593,253 @@ mod tests {
         let rendered = render_flags(&flags);
         assert!(rendered.contains(&"-m".to_string()));
         assert!(rendered.contains(&"keep me".to_string()));
+    }
+
+    // ── Task 3.1: source SHA capture ─────────────────────────────────────────
+
+    /// Helper: create a branch at `path` starting from the initial commit.
+    fn create_branch(path: &Path, branch: &str) {
+        ShellCommand::new("git")
+            .args(["checkout", "-q", "-b", branch])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        // Add a commit so the branch tip is distinct from main.
+        ShellCommand::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", branch])
+            .current_dir(path)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+        // Return to main.
+        ShellCommand::new("git")
+            .args(["checkout", "-q", "main"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+    }
+
+    #[test]
+    fn capture_source_shas_returns_sha_for_known_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        create_branch(tmp.path(), "feat-a");
+
+        let git = GitCommand::new(false);
+        // Set cwd so GitCommand runs in the right repo.
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let sha = capture_source_shas(&["feat-a".to_string()], &git).unwrap();
+        assert_eq!(sha.len(), 1);
+        // SHA should be a 40-char hex string.
+        assert_eq!(sha[0].len(), 40, "expected a full SHA, got '{}'", sha[0]);
+    }
+
+    #[test]
+    fn capture_source_shas_errors_on_unknown_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+
+        let git = GitCommand::new(false);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let result = capture_source_shas(&["no-such-branch".to_string()], &git);
+        assert!(result.is_err(), "expected error for unknown ref");
+    }
+
+    #[test]
+    fn pre_context_includes_source_shas() {
+        let flags = EffectiveFlags::default();
+        let target = target_with_worktree("main", "/p/main");
+        let shas = vec!["abc123".to_string(), "def456".to_string()];
+        let ctx = MergeHookContext::for_pre_with_shas(
+            &["feat-a".into(), "feat-b".into()],
+            &target,
+            &flags,
+            false,
+            false,
+            &shas,
+        );
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_SOURCE_SHAS").map(String::as_str),
+            Some("abc123\ndef456")
+        );
+    }
+
+    // ── Task 3.2: transactional cleanup ──────────────────────────────────────
+
+    /// Set up a repo at `root` with a second commit on `main`, then add a
+    /// linked worktree at `wt_path` on a new branch `branch`. The worktree
+    /// starts clean (no uncommitted changes).
+    fn setup_worktree(root: &Path, branch: &str, wt_path: &Path) {
+        ShellCommand::new("git")
+            .args([
+                "worktree",
+                "add",
+                "-q",
+                &wt_path.display().to_string(),
+                "-b",
+                branch,
+            ])
+            .current_dir(root)
+            .status()
+            .unwrap();
+    }
+
+    #[test]
+    fn execute_cleanup_refuses_dirty_source_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        // Add a second commit on main so feature branch has a parent distinct from
+        // the initial commit (needed so cleanup can check merge-base properly).
+        ShellCommand::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "second"])
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature/test", &feat_wt);
+
+        // Make the source worktree dirty.
+        std::fs::write(feat_wt.join("dirty.txt"), b"dirty").unwrap();
+        ShellCommand::new("git")
+            .args(["add", "dirty.txt"])
+            .current_dir(&feat_wt)
+            .status()
+            .unwrap();
+
+        let git = GitCommand::new(false);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let opts = CleanupOptions {
+            remove_worktree: true,
+            also_branch: true,
+            squash_committed: false,
+        };
+        let result = execute_cleanup(
+            &["feature/test".to_string()],
+            &opts,
+            &git,
+            tmp.path(),
+            "main",
+        );
+        assert!(result.is_err(), "expected error for dirty source worktree");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("uncommitted changes"),
+            "expected dirty-worktree message, got: {msg}"
+        );
+        // Worktree must NOT have been removed.
+        assert!(
+            feat_wt.exists(),
+            "worktree should still exist after validation failure"
+        );
+    }
+
+    #[test]
+    fn execute_cleanup_refuses_unmerged_branch_when_not_squash() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature/test", &feat_wt);
+
+        // Add a commit on the feature branch so it's ahead of main (unmerged).
+        ShellCommand::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "feature work"])
+            .current_dir(&feat_wt)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+
+        let git = GitCommand::new(false);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let opts = CleanupOptions {
+            remove_worktree: true,
+            also_branch: true,
+            squash_committed: false,
+        };
+        let result = execute_cleanup(
+            &["feature/test".to_string()],
+            &opts,
+            &git,
+            tmp.path(),
+            "main",
+        );
+        assert!(result.is_err(), "expected error for unmerged branch");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not fully merged")
+                || msg.contains("unmerged")
+                || msg.contains("not reachable"),
+            "expected unmerged-branch message, got: {msg}"
+        );
+        // Worktree must NOT have been removed.
+        assert!(
+            feat_wt.exists(),
+            "worktree should still exist after validation failure"
+        );
+    }
+
+    #[test]
+    fn execute_cleanup_succeeds_when_all_validates_pass() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature/test", &feat_wt);
+
+        // Merge the feature branch into main so branch -d would succeed.
+        ShellCommand::new("git")
+            .args(["merge", "--no-ff", "--no-edit", "feature/test"])
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+
+        let git = GitCommand::new(false);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let opts = CleanupOptions {
+            remove_worktree: true,
+            also_branch: true,
+            squash_committed: false,
+        };
+        let result = execute_cleanup(
+            &["feature/test".to_string()],
+            &opts,
+            &git,
+            tmp.path(),
+            "main",
+        );
+        assert!(
+            result.is_ok(),
+            "expected cleanup to succeed, got: {result:?}"
+        );
+        // Worktree should be gone.
+        assert!(!feat_wt.exists(), "worktree should have been removed");
+        // Branch should be gone.
+        let branch_exists = ShellCommand::new("git")
+            .args(["show-ref", "--verify", "--quiet", "refs/heads/feature/test"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!branch_exists, "branch should have been deleted");
     }
 }
