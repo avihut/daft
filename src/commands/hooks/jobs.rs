@@ -7,7 +7,7 @@ use std::path::Path;
 use crate::coordinator::client::CoordinatorClient;
 use crate::coordinator::log_store::{InvocationMeta, JobStatus, LogStore};
 use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
-use crate::output::format::{pad_to_visible_width, shorthand_from_seconds, strip_ansi};
+use crate::output::format::{pad_to_visible_width, shorthand_from_seconds, visible_width};
 use crate::output::outline::{self, Body, Node, Outline, Section};
 use crate::output::Output;
 use crate::styles::{
@@ -674,7 +674,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
     let mut sections_by_worktree: Vec<(String, Vec<InvocationSection>)> = Vec::new();
 
     const HEADERS: [&str; 5] = ["Job", "Status", "Started", "Duration", "Size"];
-    let mut max_widths: [usize; 5] = HEADERS.map(|h| strip_ansi(h).chars().count());
+    let mut max_widths: [usize; 5] = HEADERS.map(visible_width);
 
     for (worktree, inv_list) in &groups {
         let mut secs: Vec<InvocationSection> = Vec::with_capacity(inv_list.len());
@@ -721,7 +721,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                     .iter()
                     .enumerate()
                 {
-                    let v = strip_ansi(cell).chars().count();
+                    let v = visible_width(cell);
                     if v > max_widths[i] {
                         max_widths[i] = v;
                     }

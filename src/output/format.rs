@@ -130,13 +130,34 @@ pub fn strip_ansi(s: &str) -> String {
     result
 }
 
+/// Count the *visible* width of a string in chars, ignoring ANSI CSI escapes.
+///
+/// Equivalent to `strip_ansi(s).chars().count()` but walks the string in a
+/// single pass without allocating.
+pub fn visible_width(s: &str) -> usize {
+    let mut count = 0usize;
+    let mut in_escape = false;
+    for c in s.chars() {
+        if in_escape {
+            if c.is_ascii_alphabetic() {
+                in_escape = false;
+            }
+        } else if c == '\x1b' {
+            in_escape = true;
+        } else {
+            count += 1;
+        }
+    }
+    count
+}
+
 /// Pad `s` with trailing spaces so its *visible* width reaches `target`.
 /// If `s` already meets or exceeds `target`, returns it unchanged.
 ///
 /// "Visible width" is the char count after `strip_ansi`. ANSI escape bytes
 /// are not counted.
 pub fn pad_to_visible_width(s: &str, target: usize) -> String {
-    let visible = strip_ansi(s).chars().count();
+    let visible = visible_width(s);
     if visible >= target {
         s.to_string()
     } else {
@@ -482,6 +503,42 @@ mod tests {
             strip_ansi("\x1b[38;5;208m\u{2192}\x1b[0m install"),
             "\u{2192} install",
         );
+    }
+
+    #[test]
+    fn visible_width_strips_csi_sequences() {
+        assert_eq!(visible_width("\x1b[2mhello\x1b[0m"), 5);
+        assert_eq!(visible_width("\x1b[38;5;208mwarn\x1b[0m"), 4);
+        assert_eq!(visible_width("plain"), 5);
+        assert_eq!(visible_width(""), 0);
+    }
+
+    #[test]
+    fn visible_width_preserves_unicode_glyphs() {
+        // Box-drawing and arrows must count as visible chars.
+        assert_eq!(visible_width("\x1b[2m│\x1b[0m"), 1);
+        assert_eq!(
+            visible_width("\x1b[38;5;208m\u{2192}\x1b[0m install"),
+            "\u{2192} install".chars().count(),
+        );
+    }
+
+    #[test]
+    fn visible_width_matches_strip_ansi_chars_count() {
+        let cases = [
+            "",
+            "plain",
+            "\x1b[31mfailed!\x1b[0m",
+            "\x1b[2m│\x1b[0m   row",
+            "\x1b[38;5;208m\u{27f3} running (stale)\x1b[0m",
+        ];
+        for c in cases {
+            assert_eq!(
+                visible_width(c),
+                strip_ansi(c).chars().count(),
+                "mismatch for input: {c:?}",
+            );
+        }
     }
 
     #[test]
