@@ -103,7 +103,14 @@ enum JobsCommand {
         cwd: Option<String>,
     },
     /// Remove logs older than the retention period.
-    Clean,
+    Clean {
+        /// Override retention for this run (e.g., `30d`, `12h`).
+        #[arg(long = "older-than")]
+        older_than: Option<String>,
+        /// List candidates without removing anything.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
 }
 
 /// Parsed composite job address: `[worktree:][invocation:]job_name`.
@@ -393,7 +400,10 @@ pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
             path,
             output,
         ),
-        Some(JobsCommand::Clean) => clean_logs(&args, path, output),
+        Some(JobsCommand::Clean {
+            ref older_than,
+            dry_run,
+        }) => clean_logs(&args, path, output, older_than.as_deref(), dry_run),
     }
 }
 
@@ -1290,43 +1300,116 @@ fn retry_command(
     Ok(())
 }
 
-/// Remove logs older than the default retention period (7 days).
-fn clean_logs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<()> {
+/// Remove logs older than the retention period.
+///
+/// Supports `--older-than <duration>` to override per-job retention for this
+/// run only, and `--dry-run` to list candidates without removing anything.
+fn clean_logs(
+    args: &JobsArgs,
+    _path: &Path,
+    output: &mut dyn Output,
+    older_than: Option<&str>,
+    dry_run: bool,
+) -> Result<()> {
+    use crate::coordinator::clean_policy::{parse_duration_str, CleanPolicy, CleanSummary};
+
+    let retention_override = older_than
+        .map(parse_duration_str)
+        .transpose()?
+        .and_then(|n| chrono::Duration::try_seconds(n as i64));
+
+    let process_one = |store: &LogStore| -> Result<CleanSummary> {
+        let repo_policy = store.read_repo_policy();
+        let policy = CleanPolicy {
+            retention_override,
+            dry_run,
+            repo_policy,
+            ..CleanPolicy::default()
+        };
+        store.clean(&policy)
+    };
+
     if args.all {
         let hashes = list_all_repo_hashes()?;
-        let mut total = 0;
+        let mut total_jobs = 0;
+        let mut total_invs = 0;
+        let mut total_bytes = 0u64;
+        let mut all_candidates: Vec<(String, String, String)> = Vec::new();
         for hash in &hashes {
             let store = LogStore::for_repo(hash)?;
-            let policy = crate::coordinator::clean_policy::CleanPolicy {
-                repo_policy: store.read_repo_policy(),
-                ..crate::coordinator::clean_policy::CleanPolicy::default()
-            };
-            let summary = store.clean(&policy)?;
-            total += summary.removed_jobs;
+            let s = process_one(&store)?;
+            total_jobs += s.removed_jobs;
+            total_invs += s.removed_invocations;
+            total_bytes += s.freed_bytes;
+            all_candidates.extend(s.candidates);
         }
-        if total > 0 {
-            output.success(&format!("Removed {total} old job log(s) across all repos."));
+        if dry_run {
+            print_dry_run_summary(output, total_invs, total_jobs, total_bytes, &all_candidates);
+        } else if total_jobs > 0 {
+            output.success(&format!(
+                "Removed {total_jobs} job(s) across {total_invs} invocation(s), freed {} across all repos.",
+                format_bytes(total_bytes),
+            ));
         } else {
             output.info("No old logs to clean.");
         }
     } else {
         let repo_hash = crate::core::repo_identity::compute_repo_id()?;
         let store = LogStore::for_repo(&repo_hash)?;
-        let policy = crate::coordinator::clean_policy::CleanPolicy {
-            repo_policy: store.read_repo_policy(),
-            ..crate::coordinator::clean_policy::CleanPolicy::default()
-        };
-        let summary = store.clean(&policy)?;
-        let removed = summary.removed_jobs;
-
-        if removed > 0 {
-            output.success(&format!("Removed {removed} old job log(s)."));
+        let s = process_one(&store)?;
+        if dry_run {
+            print_dry_run_summary(
+                output,
+                s.removed_invocations,
+                s.removed_jobs,
+                s.freed_bytes,
+                &s.candidates,
+            );
+        } else if s.removed_jobs > 0 {
+            output.success(&format!(
+                "Removed {} job(s) ({} freed).",
+                s.removed_jobs,
+                format_bytes(s.freed_bytes),
+            ));
         } else {
             output.info("No old logs to clean.");
         }
     }
 
     Ok(())
+}
+
+fn print_dry_run_summary(
+    output: &mut dyn Output,
+    invs: usize,
+    jobs: usize,
+    bytes: u64,
+    candidates: &[(String, String, String)],
+) {
+    if jobs == 0 {
+        output.info("No candidates for removal.");
+        return;
+    }
+    output.info(&format!(
+        "Would remove {jobs} job(s) across {invs} invocation(s) ({} would be freed):",
+        format_bytes(bytes),
+    ));
+    for (worktree, inv_id, name) in candidates {
+        let short = &inv_id[..4.min(inv_id.len())];
+        output.info(&format!("  {worktree}  [{short}]  {name}"));
+    }
+}
+
+fn format_bytes(n: u64) -> String {
+    if n >= 1024 * 1024 * 1024 {
+        format!("{:.1} GB", n as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if n >= 1024 * 1024 {
+        format!("{:.1} MB", n as f64 / (1024.0 * 1024.0))
+    } else if n >= 1024 {
+        format!("{:.1} KB", n as f64 / 1024.0)
+    } else {
+        format!("{n} B")
+    }
 }
 
 #[cfg(test)]
@@ -1670,5 +1753,13 @@ mod tests {
         assert_eq!(hashes, vec![uuid_name.to_string()]);
 
         std::env::remove_var("DAFT_STATE_DIR");
+    }
+
+    #[test]
+    fn format_bytes_handles_all_ranges() {
+        assert_eq!(format_bytes(500), "500 B");
+        assert_eq!(format_bytes(1500), "1.5 KB");
+        assert_eq!(format_bytes(1500 * 1024), "1.5 MB");
+        assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2.0 GB");
     }
 }
