@@ -69,7 +69,7 @@ The default human-readable listing shows the following columns per job:
 | `Job` | Job name |
 | `Status` | `running`, `completed`, `failed`, `cancelled`, or `skipped` |
 | `Started` | Relative time since the job started (e.g., `3m ago`) |
-| `Duration` | Elapsed wall-clock time |
+| `Duration` | Elapsed wall-clock time. Compact format: `36ms` / `12s` / `1m32s` / `1h5m` / `2d3h`. Running jobs append `...`. |
 | `Size` | Human-readable size of `output.log` (e.g., `4.2 KB`, `1.1 MB`). Renders as `—` for missing or zero-byte logs. |
 
 ## Structured Output

@@ -299,18 +299,18 @@ bytes formatted human-readable (`4.2 KB`, `1.1 MB`). Computed as
 
 <1m -- worktree-post-create [907e]
   Job              Status        Started    Duration   Size
-  → install         ✓ completed   10:49:15   0:11      4.2 KB
-  ↪ warm-build      ✗ failed      10:49:26   0:03      812 B
-  → direnv-allow    ✓ completed   10:49:15   0:00      0 B
-  ↪ db-seed         ✗ failed      10:49:26   0:00      214 B
-  ↪ db-migrate      ✗ failed      10:49:26   0:00      198 B
+  → install         ✓ completed   10:49:15   11s        4.2 KB
+  ↪ warm-build      ✗ failed      10:49:26   3s         812 B
+  → direnv-allow    ✓ completed   10:49:15   42ms       0 B
+  ↪ db-seed         ✗ failed      10:49:26   88ms       214 B
+  ↪ db-migrate      ✗ failed      10:49:26   36ms       198 B
 ```
 
 Trailing footer when `--all`:
 
 ```text
 Total: 124 invocations, 47.3 MB across 8 worktrees
-Last cleanup 4h ago: removed 23 jobs (4.2 MB)
+Last log cleanup 4h ago: removed 23 job log(s) (4.2 MB freed)
 ```
 
 Last-cleanup line reads from the `last_summary` field in `log-clean.json`.

@@ -149,7 +149,18 @@ feature/auth
   - `⟳ running (stale)` — yellow, when coordinator is gone but meta says Running
 - **Started column**: Local time `HH:MM:SS` from `meta.started_at`.
 - **Duration column**: `finished_at - started_at` for terminal jobs,
-  `now - started_at` for running jobs.
+  `now - started_at` for running jobs. Compact format with adaptive precision so
+  sub-second jobs remain distinguishable:
+
+  - `< 1s` → `Nms` (e.g. `36ms`)
+  - `< 1min` → `Ns` (e.g. `12s`)
+  - `< 1h` → `MmSs` (e.g. `1m32s`)
+  - `< 24h` → `HhMm` (e.g. `1h5m`)
+  - `>= 24h` → `DdHh` (e.g. `2d3h`)
+
+  Running jobs append `...` (e.g. `45s...`). Negative deltas (clock skew) clamp
+  to `0ms`.
+
 - **Table rendering**: `tabled::Builder` with `Style::blank()`, matching
   existing daft table patterns.
 - **No jobs**:

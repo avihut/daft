@@ -18,20 +18,40 @@ use tabled::{
     settings::{object::Columns, Padding, Style},
 };
 
-/// Format a duration in seconds as `M:SS` (e.g., `0:06`, `1:32`, `12:05`).
-/// For durations >= 1 hour, uses `H:MM:SS`.
-fn format_duration(secs: i64) -> String {
-    let secs = secs.max(0);
-    if secs >= 3600 {
-        let h = secs / 3600;
-        let m = (secs % 3600) / 60;
-        let s = secs % 60;
-        format!("{h}:{m:02}:{s:02}")
-    } else {
-        let m = secs / 60;
-        let s = secs % 60;
-        format!("{m}:{s:02}")
+/// Format a duration as a compact human-readable string with adaptive
+/// precision.
+///
+/// Negative durations clamp to zero.
+///
+/// | Range            | Format    | Example   |
+/// | ---------------- | --------- | --------- |
+/// | `< 1s`           | `Nms`     | `36ms`    |
+/// | `< 1min`         | `Ns`      | `12s`     |
+/// | `< 1h`           | `MmSs`    | `1m32s`   |
+/// | `< 24h`          | `HhMm`    | `1h5m`    |
+/// | `>= 24h`         | `DdHh`    | `2d3h`    |
+fn format_duration(d: chrono::Duration) -> String {
+    let total_ms = d.num_milliseconds().max(0);
+    if total_ms < 1000 {
+        return format!("{total_ms}ms");
     }
+    let total_secs = total_ms / 1000;
+    if total_secs < 60 {
+        return format!("{total_secs}s");
+    }
+    if total_secs < 3600 {
+        let m = total_secs / 60;
+        let s = total_secs % 60;
+        return format!("{m}m{s}s");
+    }
+    if total_secs < 86_400 {
+        let h = total_secs / 3600;
+        let m = (total_secs % 3600) / 60;
+        return format!("{h}h{m}m");
+    }
+    let days = total_secs / 86_400;
+    let h = (total_secs % 86_400) / 3600;
+    format!("{days}d{h}h")
 }
 
 #[derive(Parser, Debug)]
@@ -680,14 +700,13 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
 
                     let duration = match (&meta.status, meta.finished_at) {
                         (_, Some(finished)) => {
-                            let secs = finished
-                                .signed_duration_since(meta.started_at)
-                                .num_seconds();
-                            format_duration(secs)
+                            format_duration(finished.signed_duration_since(meta.started_at))
                         }
                         (JobStatus::Running, None) => {
-                            let secs = now.signed_duration_since(meta.started_at).num_seconds();
-                            format!("{}...", format_duration(secs))
+                            format!(
+                                "{}...",
+                                format_duration(now.signed_duration_since(meta.started_at))
+                            )
                         }
                         _ => "\u{2014}".to_string(),
                     };
@@ -844,11 +863,7 @@ fn render_single_job_log(
     )?;
 
     let duration_str = match meta.finished_at {
-        Some(finished) => format_duration(
-            finished
-                .signed_duration_since(meta.started_at)
-                .num_seconds(),
-        ),
+        Some(finished) => format_duration(finished.signed_duration_since(meta.started_at)),
         None => "\u{2014}".to_string(),
     };
     writeln!(buf, "duration:  {duration_str}")?;
@@ -924,11 +939,7 @@ fn render_invocation_logs(store: &LogStore, invocation_id: &str, buf: &mut Strin
         };
 
         let duration_str = match meta.finished_at {
-            Some(finished) => format_duration(
-                finished
-                    .signed_duration_since(meta.started_at)
-                    .num_seconds(),
-            ),
+            Some(finished) => format_duration(finished.signed_duration_since(meta.started_at)),
             None => "\u{2014}".to_string(),
         };
 
@@ -1493,6 +1504,50 @@ fn format_bytes(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_duration_sub_second_uses_milliseconds() {
+        assert_eq!(format_duration(chrono::Duration::milliseconds(0)), "0ms");
+        assert_eq!(format_duration(chrono::Duration::milliseconds(36)), "36ms");
+        assert_eq!(
+            format_duration(chrono::Duration::milliseconds(999)),
+            "999ms"
+        );
+    }
+
+    #[test]
+    fn format_duration_seconds_drop_milliseconds() {
+        assert_eq!(format_duration(chrono::Duration::milliseconds(1000)), "1s");
+        assert_eq!(format_duration(chrono::Duration::milliseconds(1999)), "1s");
+        assert_eq!(format_duration(chrono::Duration::seconds(12)), "12s");
+        assert_eq!(format_duration(chrono::Duration::seconds(59)), "59s");
+    }
+
+    #[test]
+    fn format_duration_minutes_include_seconds_remainder() {
+        assert_eq!(format_duration(chrono::Duration::seconds(60)), "1m0s");
+        assert_eq!(format_duration(chrono::Duration::seconds(92)), "1m32s");
+        assert_eq!(format_duration(chrono::Duration::seconds(3599)), "59m59s");
+    }
+
+    #[test]
+    fn format_duration_hours_include_minutes_remainder() {
+        assert_eq!(format_duration(chrono::Duration::seconds(3600)), "1h0m");
+        assert_eq!(format_duration(chrono::Duration::seconds(3900)), "1h5m");
+        assert_eq!(format_duration(chrono::Duration::seconds(86_399)), "23h59m");
+    }
+
+    #[test]
+    fn format_duration_days_include_hours_remainder() {
+        assert_eq!(format_duration(chrono::Duration::seconds(86_400)), "1d0h");
+        assert_eq!(format_duration(chrono::Duration::seconds(183_600)), "2d3h");
+    }
+
+    #[test]
+    fn format_duration_negative_clamps_to_zero() {
+        assert_eq!(format_duration(chrono::Duration::seconds(-5)), "0ms");
+        assert_eq!(format_duration(chrono::Duration::milliseconds(-1)), "0ms");
+    }
 
     #[test]
     fn test_parse_job_address_name_only() {
