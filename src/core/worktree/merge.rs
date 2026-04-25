@@ -280,12 +280,12 @@ impl EffectiveFlags {
 /// stable order makes test assertions deterministic and diffs readable.
 ///
 /// When `squash == Some(true)`, message-composing flags (`-m`, `-F`,
-/// `--edit`/`--no-edit`, `--signoff`, `-S`/`--no-gpg-sign`) are **omitted**
-/// from the merge argv. They are commit-time concerns and are forwarded to
-/// the subsequent `git commit` step via [`render_commit_flags`]. Passing them
-/// to `git merge --squash` would be silently accepted but have no effect.
-/// The non-squash path keeps emitting them so existing regular-merge behavior
-/// is unchanged.
+/// `--edit`/`--no-edit`, `--cleanup`, `--signoff`, `-S`/`--no-gpg-sign`) are
+/// **omitted** from the merge argv. They are commit-time concerns and are
+/// forwarded to the subsequent `git commit` step via [`render_commit_flags`].
+/// Passing them to `git merge --squash` would be silently accepted but have no
+/// effect. The non-squash path keeps emitting them so existing regular-merge
+/// behavior is unchanged.
 pub fn render_flags(flags: &EffectiveFlags) -> Vec<String> {
     let is_squash = flags.squash == Some(true);
     let mut out: Vec<String> = Vec::new();
@@ -304,8 +304,12 @@ pub fn render_flags(flags: &EffectiveFlags) -> Vec<String> {
             None => {}
         }
     }
-    if let Some(c) = &flags.cleanup {
-        out.extend(["--cleanup".into(), c.clone()]);
+    // cleanup: emit only for non-squash paths. For squash merges this is
+    // forwarded to `git commit` via render_commit_flags.
+    if !is_squash {
+        if let Some(c) = &flags.cleanup {
+            out.extend(["--cleanup".into(), c.clone()]);
+        }
     }
     match flags.ff {
         Some(FfMode::Auto) => out.push("--ff".into()),
@@ -373,6 +377,7 @@ pub fn render_flags(flags: &EffectiveFlags) -> Vec<String> {
 /// * `-m <msg>` from `flags.message`
 /// * `-F <path>` from `flags.file`
 /// * `--edit` / `--no-edit` from `flags.edit`
+/// * `--cleanup <mode>` from `flags.cleanup`
 /// * `--signoff` from `flags.signoff` (only `Some(true)` — `--no-signoff` is
 ///   a no-op for commits and omitted)
 /// * `-S` / `-S<keyid>` / `--no-gpg-sign` from `flags.gpg_sign`
@@ -388,6 +393,9 @@ pub fn render_commit_flags(flags: &EffectiveFlags) -> Vec<String> {
         Some(true) => out.push("--edit".into()),
         Some(false) => out.push("--no-edit".into()),
         None => {}
+    }
+    if let Some(c) = &flags.cleanup {
+        out.extend(["--cleanup".into(), c.clone()]);
     }
     if flags.signoff == Some(true) {
         out.push("--signoff".into());
@@ -2347,9 +2355,10 @@ mod tests {
 
     #[test]
     fn render_flags_combination_squash_strips_message_flags() {
-        // Squash path: message-composing flags (-m, --no-edit, --signoff, -S)
-        // are stripped from the merge argv (moved to render_commit_flags).
-        // Only squash, no-commit, strategy, verify, allow-unrelated, stat remain.
+        // Squash path: message-composing flags (-m, --no-edit, --cleanup,
+        // --signoff, -S) are stripped from the merge argv (moved to
+        // render_commit_flags). Only squash, no-commit, strategy, verify,
+        // allow-unrelated, stat remain.
         let flags = EffectiveFlags {
             message: Some("m".into()),
             edit: Some(false),
@@ -2369,8 +2378,6 @@ mod tests {
         assert_eq!(
             render_flags(&flags),
             vec![
-                "--cleanup",
-                "strip",
                 "--no-ff",
                 "--squash",
                 "--no-commit",
@@ -2383,6 +2390,32 @@ mod tests {
                 "--no-stat",
             ]
         );
+    }
+
+    #[test]
+    fn render_flags_squash_suppresses_cleanup() {
+        // --cleanup must NOT be emitted by render_flags when squash is true.
+        // git merge --squash ignores cleanup; it must go to render_commit_flags.
+        let flags = EffectiveFlags {
+            cleanup: Some("strip".into()),
+            squash: Some(true),
+            ..EffectiveFlags::default()
+        };
+        let result = render_flags(&flags);
+        assert!(
+            !result.contains(&"--cleanup".into()),
+            "--cleanup must not appear in merge argv under --squash, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn render_flags_non_squash_emits_cleanup() {
+        // --cleanup IS emitted by render_flags on the regular (non-squash) path.
+        let flags = EffectiveFlags {
+            cleanup: Some("strip".into()),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_flags(&flags), vec!["--cleanup", "strip"]);
     }
 
     #[test]
@@ -3223,16 +3256,28 @@ mod tests {
     }
 
     #[test]
+    fn render_commit_flags_cleanup() {
+        let flags = EffectiveFlags {
+            cleanup: Some("verbatim".into()),
+            ..EffectiveFlags::default()
+        };
+        assert_eq!(render_commit_flags(&flags), vec!["--cleanup", "verbatim"]);
+    }
+
+    #[test]
     fn render_commit_flags_combination() {
+        // --cleanup appears after --edit and before --signoff, mirroring the
+        // order in render_flags.
         let flags = EffectiveFlags {
             message: Some("squash msg".into()),
+            cleanup: Some("strip".into()),
             signoff: Some(true),
             gpg_sign: Some(GpgSign::Default),
             ..EffectiveFlags::default()
         };
         assert_eq!(
             render_commit_flags(&flags),
-            vec!["-m", "squash msg", "--signoff", "-S"]
+            vec!["-m", "squash msg", "--cleanup", "strip", "--signoff", "-S"]
         );
     }
 
