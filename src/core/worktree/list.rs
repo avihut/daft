@@ -230,6 +230,91 @@ impl WorktreeInfo {
             self.size_bytes = compute_directory_size(path);
         }
     }
+
+    /// Apply a typed patch in place. Returns the `FieldSet` of fields whose
+    /// value changed (the caller — typically `LiveTable` — uses this to
+    /// decide whether to re-sort).
+    pub fn apply_patch(
+        &mut self,
+        patch: &crate::core::worktree::sync_dag::WorktreeInfoPatch,
+    ) -> crate::core::worktree::info_field::FieldSet {
+        use crate::core::worktree::info_field::FieldSet;
+        use crate::core::worktree::sync_dag::WorktreeInfoPatch as P;
+
+        match patch {
+            P::BaseAheadBehind(v) => {
+                (self.ahead, self.behind) = match v {
+                    Some((a, b)) => (Some(*a), Some(*b)),
+                    None => (None, None),
+                };
+                FieldSet::BASE_AHEAD_BEHIND
+            }
+            P::RemoteAheadBehind(v) => {
+                (self.remote_ahead, self.remote_behind) = match v {
+                    Some((a, b)) => (Some(*a), Some(*b)),
+                    None => (None, None),
+                };
+                FieldSet::REMOTE_AHEAD_BEHIND
+            }
+            P::Changes {
+                staged,
+                unstaged,
+                untracked,
+            } => {
+                self.staged = *staged;
+                self.unstaged = *unstaged;
+                self.untracked = *untracked;
+                FieldSet::CHANGES
+            }
+            P::LastCommit {
+                timestamp,
+                hash,
+                subject,
+            } => {
+                self.last_commit_timestamp = *timestamp;
+                self.last_commit_hash = hash.clone();
+                self.last_commit_subject = subject.clone();
+                FieldSet::LAST_COMMIT
+            }
+            P::BranchAge(v) => {
+                self.branch_creation_timestamp = *v;
+                FieldSet::BRANCH_AGE
+            }
+            P::Owner(v) => {
+                self.owner = v.clone();
+                FieldSet::OWNER
+            }
+            P::BaseLines(v) => {
+                (self.base_lines_inserted, self.base_lines_deleted) = match v {
+                    Some((i, d)) => (Some(*i), Some(*d)),
+                    None => (None, None),
+                };
+                FieldSet::BASE_LINES
+            }
+            P::ChangesLines { staged, unstaged } => {
+                self.staged_lines_inserted = Some(staged.0);
+                self.staged_lines_deleted = Some(staged.1);
+                self.unstaged_lines_inserted = Some(unstaged.0);
+                self.unstaged_lines_deleted = Some(unstaged.1);
+                FieldSet::CHANGES_LINES
+            }
+            P::RemoteLines(v) => {
+                (self.remote_lines_inserted, self.remote_lines_deleted) = match v {
+                    Some((i, d)) => (Some(*i), Some(*d)),
+                    None => (None, None),
+                };
+                FieldSet::REMOTE_LINES
+            }
+            P::Size(v) => {
+                self.size_bytes = *v;
+                FieldSet::SIZE
+            }
+            P::Mtime(v) => {
+                self.working_tree_mtime = *v;
+                FieldSet::MTIME
+            }
+        }
+    }
 }
 
 /// Raw entry parsed from `git worktree list --porcelain`.
@@ -1251,5 +1336,84 @@ branch refs/heads/feature/cool
         assert!(entries[2].is_detached);
         assert!(!entries[3].is_bare);
         assert_eq!(entries[3].branch.as_deref(), Some("feature/cool"));
+    }
+}
+
+#[cfg(test)]
+mod apply_patch_tests {
+    use super::*;
+    use crate::core::worktree::info_field::FieldSet;
+    use crate::core::worktree::sync_dag::WorktreeInfoPatch;
+
+    fn empty_info() -> WorktreeInfo {
+        WorktreeInfo::empty("test")
+    }
+
+    #[test]
+    fn base_ahead_behind_some_fills_both_and_returns_the_field() {
+        let mut info = empty_info();
+        let touched = info.apply_patch(&WorktreeInfoPatch::BaseAheadBehind(Some((3, 1))));
+        assert_eq!(info.ahead, Some(3));
+        assert_eq!(info.behind, Some(1));
+        assert_eq!(touched, FieldSet::BASE_AHEAD_BEHIND);
+    }
+
+    #[test]
+    fn base_ahead_behind_none_clears_both() {
+        let mut info = empty_info();
+        info.ahead = Some(5);
+        info.behind = Some(2);
+        let touched = info.apply_patch(&WorktreeInfoPatch::BaseAheadBehind(None));
+        assert_eq!(info.ahead, None);
+        assert_eq!(info.behind, None);
+        assert_eq!(touched, FieldSet::BASE_AHEAD_BEHIND);
+    }
+
+    #[test]
+    fn changes_fills_three_fields() {
+        let mut info = empty_info();
+        let touched = info.apply_patch(&WorktreeInfoPatch::Changes {
+            staged: 2,
+            unstaged: 1,
+            untracked: 4,
+        });
+        assert_eq!((info.staged, info.unstaged, info.untracked), (2, 1, 4));
+        assert_eq!(touched, FieldSet::CHANGES);
+    }
+
+    #[test]
+    fn last_commit_fills_three_fields() {
+        let mut info = empty_info();
+        let touched = info.apply_patch(&WorktreeInfoPatch::LastCommit {
+            timestamp: Some(1700000000),
+            hash: Some("abc1234".into()),
+            subject: "fix bug".into(),
+        });
+        assert_eq!(info.last_commit_timestamp, Some(1700000000));
+        assert_eq!(info.last_commit_hash, Some("abc1234".into()));
+        assert_eq!(info.last_commit_subject, "fix bug");
+        assert_eq!(touched, FieldSet::LAST_COMMIT);
+    }
+
+    #[test]
+    fn size_fills_size_bytes() {
+        let mut info = empty_info();
+        let touched = info.apply_patch(&WorktreeInfoPatch::Size(Some(2048)));
+        assert_eq!(info.size_bytes, Some(2048));
+        assert_eq!(touched, FieldSet::SIZE);
+    }
+
+    #[test]
+    fn changes_lines_fills_four_fields() {
+        let mut info = empty_info();
+        let touched = info.apply_patch(&WorktreeInfoPatch::ChangesLines {
+            staged: (10, 2),
+            unstaged: (5, 1),
+        });
+        assert_eq!(info.staged_lines_inserted, Some(10));
+        assert_eq!(info.staged_lines_deleted, Some(2));
+        assert_eq!(info.unstaged_lines_inserted, Some(5));
+        assert_eq!(info.unstaged_lines_deleted, Some(1));
+        assert_eq!(touched, FieldSet::CHANGES_LINES);
     }
 }
