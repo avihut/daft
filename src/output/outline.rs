@@ -8,6 +8,12 @@
 
 use crate::styles::dim;
 
+pub(crate) const SPINE: &str = "\u{2502}"; // │
+pub(crate) const BULLET: &str = "\u{25cf}"; // ●
+pub(crate) const TERMINATOR: &str = "\u{2570}\u{2500}\u{2574}"; // ╰─╴
+pub(crate) const LINES_GUTTER: &str = "   "; // 3 spaces — body lines carry their own padding
+pub(crate) const PLACEHOLDER_GUTTER: &str = "    "; // 4 spaces — placeholder text aligns with table content
+
 /// A vertical-spine outline.
 pub struct Outline {
     pub sections: Vec<Section>,
@@ -41,12 +47,6 @@ pub enum Body {
 
 /// Render the outline, emitting one line at a time via `emit`.
 pub fn render(outline: &Outline, mut emit: impl FnMut(&str)) {
-    const SPINE: &str = "\u{2502}"; // │
-    const BULLET: &str = "\u{25cf}"; // ●
-    const TERMINATOR: &str = "\u{2570}\u{2500}\u{2574}"; // ╰─╴
-    const LINES_GUTTER: &str = "   "; // 3 spaces — body lines carry their own padding
-    const PLACEHOLDER_GUTTER: &str = "    "; // 4 spaces — placeholder text aligns with table content
-
     for section in &outline.sections {
         emit(&section.header);
 
