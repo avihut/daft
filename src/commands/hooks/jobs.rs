@@ -2026,7 +2026,7 @@ mod tests {
     }
 
     #[test]
-    fn padding_makes_two_rows_with_different_widths_render_to_equal_visible_width() {
+    fn pad_helper_equalizes_visible_width_for_two_status_cells() {
         use crate::output::format::{pad_to_visible_width, strip_ansi};
 
         // Two cells that would naturally produce different column widths.
