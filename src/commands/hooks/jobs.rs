@@ -77,14 +77,19 @@ fn spine_blank() -> String {
     dim("│")
 }
 
-/// Prefix one inner-table content line with the spine + a 5-space gutter.
+/// Prefix one inner-table content line with the spine + a 3-space gutter.
+/// `tabled` adds another 1 char of left-padding to the first column under
+/// `Style::blank()`, so the visible gap between spine and content is 4
+/// characters.
 fn spine_prefixed(content: &str) -> String {
-    format!("{}     {content}", dim("│"))
+    format!("{}   {content}", dim("│"))
 }
 
-/// Placeholder rendered when an invocation has no jobs.
+/// Placeholder rendered when an invocation has no jobs. Matches the inner
+/// gutter used by `spine_prefixed` so the placeholder lines up under the
+/// table column.
 fn empty_invocation_placeholder() -> String {
-    format!("{}     {}", dim("│"), dim("(no jobs declared)"))
+    format!("{}    {}", dim("│"), dim("(no jobs declared)"))
 }
 
 /// Terminator glyph rendered after the last job row of a worktree's
@@ -1977,18 +1982,22 @@ mod tests {
     }
 
     #[test]
-    fn spine_prefixed_inserts_pipe_and_five_space_gutter() {
+    fn spine_prefixed_inserts_pipe_and_three_space_gutter() {
         assert_eq!(
             spine_prefixed("Job   Status   Started"),
-            format!("{}     Job   Status   Started", dim("│")),
+            format!("{}   Job   Status   Started", dim("│")),
         );
     }
 
     #[test]
-    fn empty_invocation_placeholder_is_dimmed_under_spine() {
+    fn empty_invocation_placeholder_aligns_with_tabled_first_column() {
+        // `spine_prefixed` emits 3 spaces of gutter and tabled adds another
+        // 1 char of left-padding to its first column under `Style::blank()`,
+        // for 4 visible chars total. The placeholder is *not* rendered
+        // through tabled, so it carries the full 4 spaces inline.
         assert_eq!(
             empty_invocation_placeholder(),
-            format!("{}     {}", dim("│"), dim("(no jobs declared)")),
+            format!("{}    {}", dim("│"), dim("(no jobs declared)")),
         );
     }
 

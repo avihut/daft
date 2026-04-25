@@ -105,22 +105,22 @@ terminates naturally at the last job — no explicit terminator glyph.
 
 ● 2h ago · worktree-post-create [c9d4]
 │
-│     Job            Status         Started    Duration   Size
-│     ↪ db-migrate   ✓ completed    12:01:00   3s         1.2 KB
-│     ↪ db-seed      ✓ completed    12:01:03   2s         640 B
-│     ↪ warm-build   ✓ completed    12:01:00   40s        4.1 KB
+│    Job            Status         Started    Duration   Size
+│    ↪ db-migrate   ✓ completed    12:01:00   3s         1.2 KB
+│    ↪ db-seed      ✓ completed    12:01:03   2s         640 B
+│    ↪ warm-build   ✓ completed    12:01:00   40s        4.1 KB
 │
 ● 1h ago · hooks run worktree-post-create [e7f2]
 │
-│     Job            Status         Started    Duration   Size
-│     ↪ db-migrate   ✓ completed    13:05:12   3s         1.2 KB
-│     ↪ db-seed      ✓ completed    13:05:15   2s         640 B
-│     ↪ warm-build   ✗ failed       13:05:12   40s        2.8 KB
+│    Job            Status         Started    Duration   Size
+│    ↪ db-migrate   ✓ completed    13:05:12   3s         1.2 KB
+│    ↪ db-seed      ✓ completed    13:05:15   2s         640 B
+│    ↪ warm-build   ✗ failed       13:05:12   40s        2.8 KB
 │
 ● 3m ago · hooks jobs retry warm-build [a3f2]
 │
-│     Job            Status         Started    Duration   Size
-│     ↪ warm-build   ✗ failed       14:32:05   45s        2.9 KB
+│    Job            Status         Started    Duration   Size
+│    ↪ warm-build   ✗ failed       14:32:05   45s        2.9 KB
 ╰─╴
 
 ```
@@ -139,18 +139,18 @@ stream.
 
 ● 2h ago · worktree-post-create [c9d4]
 │
-│     Job            Status         Started    Duration   Size
-│     ↪ db-migrate   ✓ completed    12:01:00   3s         1.2 KB
-│     ↪ db-seed      ✓ completed    12:01:03   2s         640 B
-│     ↪ warm-build   ✓ completed    12:01:00   40s        4.1 KB
+│    Job            Status         Started    Duration   Size
+│    ↪ db-migrate   ✓ completed    12:01:00   3s         1.2 KB
+│    ↪ db-seed      ✓ completed    12:01:03   2s         640 B
+│    ↪ warm-build   ✓ completed    12:01:00   40s        4.1 KB
 ╰─╴
 
   feature/auth
 
 ● 20m ago · worktree-post-create [d8a3]
 │
-│     Job            Status         Started    Duration   Size
-│     ↪ db-migrate   ✓ completed    14:12:00   2s         960 B
+│    Job            Status         Started    Duration   Size
+│    ↪ db-migrate   ✓ completed    14:12:00   2s         960 B
 ╰─╴
 
 ```
@@ -168,8 +168,9 @@ stream.
     header and the first node, and after each worktree's terminator).
   - Invocation node: `"● {time_ago} ago · {trigger_command} [{short_id}]"` — one
     space between `●` and the relative time.
-  - Job rows (and the table header): `"│     {…}"` — five-space gutter between
-    the spine and the inner content.
+  - Job rows (and the table header): the spine helper emits a 3-space gutter;
+    `tabled`'s `Style::blank()` adds another 1 char of left padding to its first
+    column, so the visible gap between spine and content is 4 characters.
   - Spine `│`, node `●`, and terminator `╰─╴` are rendered with `dim()`. The
     spine is a grouping cue, not primary content, so it must read as background.
   - The spine runs continuously through every job line of every invocation in a
@@ -215,7 +216,9 @@ stream.
   (`"  │     "`) before being emitted, so the spine is composed line-by-line
   rather than embedded in `tabled`.
 - **Empty invocation**: When an invocation has no jobs, render
-  `"│     (no jobs declared)"` (dim) in place of the table.
+  `"│    (no jobs declared)"` (dim, 4-space gutter) in place of the table. The 4
+  spaces match the visible gap of `tabled` rows so the placeholder aligns under
+  the table column.
 - **No jobs**:
   `"No background job history for this worktree.\nUse --all to see jobs across all worktrees."`
 
