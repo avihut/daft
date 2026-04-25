@@ -240,6 +240,7 @@ fn run_single_background_job(
         &job.working_dir,
         job.timeout,
         Some(tx),
+        None,
     );
 
     // Remove from the child PID map now that the command has finished.

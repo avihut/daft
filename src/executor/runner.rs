@@ -366,6 +366,7 @@ fn execute_single_job(
             &job.working_dir,
             job.timeout,
             Some(tx),
+            None,
         );
 
         // Wait for the reader to drain all output before returning.
