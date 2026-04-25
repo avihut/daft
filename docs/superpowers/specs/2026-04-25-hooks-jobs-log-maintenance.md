@@ -152,9 +152,13 @@ invocations under a repo. They're also too small (3 values) to justify a
 database.
 
 Each hook fire writes the resolved repo-level policy to a sidecar at
-`<state>/jobs/<repo-uuid>/repo-policy.json`. Most-recent-write wins. Cleanup
-reads this file once per repo at the start of its run; if the file is missing
-(orphaned state dir whose repo no longer fires hooks), built-in defaults apply.
+`<state>/jobs/<repo-uuid>/repo-policy.json`. Per-field most-recent-write wins:
+explicitly-set fields override the on-disk value, but unset fields preserve the
+previous on-disk value. This means a hook fire whose jobs carry no `log:` block
+(producing an all-`None` policy) does not silently reset the user's persisted
+tuning back to defaults. Cleanup reads this file once per repo at the start of
+its run; if the file is missing (orphaned state dir whose repo no longer fires
+hooks), built-in defaults apply.
 
 The sidecar contains:
 
@@ -279,12 +283,11 @@ fs::remove_dir_all(&trash)?;
 Avoids a reader observing half-deleted state. Cheap, no observable behavior
 change in the happy path.
 
-**Custom-path safety.** The hook config supports `log.path` for custom log file
-locations. Cleanup must touch only paths under the canonical
-`<state>/jobs/<repo-uuid>/`. Add a defensive `path.starts_with(state_dir)?`
-check in `clean()` and explicit log warnings if any non-canonical path is
-referenced. Already documented as user-managed in `docs/guide/hooks.md:472`, but
-enforce it in code.
+**Canonical-path-only.** Cleanup operates exclusively on paths under
+`<state>/jobs/<repo-uuid>/`. The previously-documented `log.path` custom-path
+field has been removed (it was never actually wired into the writers); all job
+logs live at the canonical XDG location. No defensive `starts_with` check is
+needed because there is no other path to write to.
 
 ## Visibility
 
@@ -398,8 +401,6 @@ Manual YAML scenarios under `tests/manual/scenarios/hooks/`:
    and removes.
 7. **`log-cleanup-dry-run.yml`** — `clean --dry-run` lists what would be removed
    and removes nothing.
-8. **`log-cleanup-custom-path-untouched.yml`** — config has
-   `log.path: /tmp/custom`; cleanup never touches that path.
 
 Plus unit tests in `src/log_clean.rs` for size parsing, single-flight lock,
 retention resolution chain, and the candidate-set computation.
