@@ -752,8 +752,8 @@ fn branch_at_path(git: &GitCommand, path: &Path) -> Result<String> {
 pub enum InProgressOp {
     Merge,
     /// `git merge --squash` succeeded but the commit step is still pending:
-    /// `MERGE_MSG` exists, `MERGE_HEAD` does NOT exist, and there are staged
-    /// changes.  `--abort` runs `git reset --merge` + removes `MERGE_MSG`;
+    /// `SQUASH_MSG` exists, `MERGE_HEAD` does NOT exist, and there are staged
+    /// changes.  `--abort` runs `git reset --merge` + removes `SQUASH_MSG`;
     /// `--continue` re-opens the editor (or honors `-m`/`--no-edit`/`-F`).
     SquashStaged,
     Rebase,
@@ -825,7 +825,7 @@ pub fn resolve_worktree_git_dir(worktree: &Path) -> Result<PathBuf> {
 ///
 /// Runs `git diff --cached --quiet`; exit code 0 means no staged changes,
 /// exit code 1 means there are staged changes. Used by [`detect_in_progress`]
-/// to discriminate a real squash-staged state from a stale `MERGE_MSG` left
+/// to discriminate a real squash-staged state from a stale `SQUASH_MSG` left
 /// behind from an earlier operation where the user never committed.
 pub fn has_staged_changes(worktree: &Path) -> Result<bool> {
     let status = Command::new("git")
@@ -2097,7 +2097,7 @@ pub struct FinishParams {
 /// Verify the given worktree has an in-progress merge (regular or squash-staged).
 ///
 /// Returns `Ok(())` iff `.git/MERGE_HEAD` is present (regular in-progress
-/// merge) **or** the worktree is in the squash-staged state (`MERGE_MSG`
+/// merge) **or** the worktree is in the squash-staged state (`SQUASH_MSG`
 /// present without `MERGE_HEAD`, with staged changes). Fails with
 /// "no in-progress merge in worktree '<path>'" for all other states (clean,
 /// mid-rebase, mid-cherry-pick, mid-bisect). Callers that want to surface
@@ -2149,8 +2149,8 @@ fn list_worktrees_with_in_progress_merges(git: &GitCommand) -> Result<Vec<PathBu
 /// * Regular `Merge` state → `git merge --abort|--continue|--quit`.
 /// * `SquashStaged` state:
 ///   - `Abort` / `Quit` → `git reset --merge` to undo staged changes and
-///     remove `MERGE_MSG`; also removes the daft intent marker if present.
-///   - `Continue` → re-opens the editor on `MERGE_MSG` via `git commit`
+///     remove `SQUASH_MSG`; also removes the daft intent marker if present.
+///   - `Continue` → re-opens the editor on `SQUASH_MSG` via `git commit`
 ///     (honoring commit flags from `params.commit_flags`); on success, reads
 ///     the intent marker to resume cleanup if originally requested.
 ///

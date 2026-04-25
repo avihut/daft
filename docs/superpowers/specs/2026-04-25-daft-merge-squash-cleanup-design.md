@@ -57,14 +57,14 @@ configured default. The fix needs to:
 ### `--squash` always commits by default
 
 When `daft merge <source> --squash` runs, daft now invokes `git commit` after
-`git merge --squash` succeeds. Git auto-populates `.git/MERGE_MSG` from the
+`git merge --squash` succeeds. Git auto-populates `.git/SQUASH_MSG` from the
 squash, so the editor opens prepopulated with the canonical "Squashed commit of
 the following:" message — same UX as `git commit` after a manual
 `git merge --squash`.
 
 Flag pass-throughs that affect commit composition are honored on this commit
 step as well: `-m <msg>` / `-F <file>` skip the editor and use the supplied
-message; `--no-edit` uses `MERGE_MSG` verbatim; `--signoff` and `--gpg-sign`
+message; `--no-edit` uses `SQUASH_MSG` verbatim; `--signoff` and `--gpg-sign`
 flow through to the commit. `daft.merge.edit` already controls editor behavior
 for regular merges; its semantics extend to the squash commit.
 
@@ -104,7 +104,7 @@ daft.merge.postMerge.alsoRemoveSourceBranch = true
 ```
 
 For non-interactive / CI use, add `daft.merge.edit = false` so the auto-
-generated `MERGE_MSG` is used verbatim without opening an editor.
+generated `SQUASH_MSG` is used verbatim without opening an editor.
 
 ### Cleanup is transactional
 
@@ -151,14 +151,14 @@ daft has the equivalence proof that git's reachability heuristic lacks.
 ### `--abort` and `--continue` recognize squash-staged state
 
 A new in-progress state is possible: `git merge --squash` succeeded, the commit
-step is pending or was aborted from the editor. Detection: `MERGE_MSG` exists,
+step is pending or was aborted from the editor. Detection: `SQUASH_MSG` exists,
 `MERGE_HEAD` does **not** exist (regular merges set both; squash sets only
-`MERGE_MSG`), the index has staged changes.
+`SQUASH_MSG`), the index has staged changes.
 
 - **`daft merge --abort`** in this state runs `git reset --merge` (resets the
-  index to HEAD and discards `MERGE_MSG`). No `MERGE_HEAD` to clear.
+  index to HEAD and discards `SQUASH_MSG`). No `MERGE_HEAD` to clear.
 - **`daft merge --continue`** in this state re-opens the editor on the preserved
-  `MERGE_MSG` (effectively `git commit` with no `-m`/`--no-edit`). If the user
+  `SQUASH_MSG` (effectively `git commit` with no `-m`/`--no-edit`). If the user
   supplies `-m`/`--no-edit`/`-F` on this `--continue` invocation, those win. If
   cleanup was originally requested (`-r`/`-rb`), the continuation runs cleanup
   after the commit succeeds — the in-progress state needs to record the original
@@ -274,11 +274,11 @@ daft will refuse to start — the combination is contradictory.
 
 (High-level — exact mechanics belong in the implementation plan.)
 
-- The merge-state file (`MERGE_HEAD` / `MERGE_MSG` and any daft-specific marker)
-  needs to record the **original cleanup intent** so `--continue` can resume the
-  cleanup phase after a re-opened editor commit. Either daft writes its own
-  marker file alongside `MERGE_MSG`, or the in-progress state is rebuilt from
-  clap args on the resume invocation. Plan-time decision.
+- The merge-state file (`MERGE_HEAD` / `SQUASH_MSG` and any daft-specific
+  marker) needs to record the **original cleanup intent** so `--continue` can
+  resume the cleanup phase after a re-opened editor commit. Either daft writes
+  its own marker file alongside `SQUASH_MSG`, or the in-progress state is
+  rebuilt from clap args on the resume invocation. Plan-time decision.
 - Source SHA capture must happen before `pre-merge` hook fires — the SHA becomes
   part of the hook env (`DAFT_MERGE_SOURCE_SHA`?) and is preserved for the
   stability check. (Optional — the env var is a nice-to-have; the capture itself
@@ -296,7 +296,7 @@ daft will refuse to start — the combination is contradictory.
 | `--squash --commit`                                            | Redundant under new defaults; pass through; git accepts                                      |
 | Pre-commit hook fails during squash commit                     | Treat as editor-aborted: leave staged, skip cleanup, fire `post-merge` with `RESULT=aborted` |
 | GPG-sign fail during squash commit                             | Same as above                                                                                |
-| `MERGE_MSG` already present from earlier attempt               | `git merge --squash` overwrites it; non-issue                                                |
+| `SQUASH_MSG` already present from earlier attempt              | `git merge --squash` overwrites it; non-issue                                                |
 | Source branch tip moved during editor session                  | Refuse cleanup with stability-check error; commit stays on target                            |
 | `--abort` on squash-staged state                               | `git reset --merge`; clear in-progress marker                                                |
 | `--continue` on squash-staged state                            | Re-open editor (or honor `-m`/`--no-edit`/`-F` from `--continue`); on success run cleanup    |
