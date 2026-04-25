@@ -1297,7 +1297,12 @@ fn clean_logs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<
         let mut total = 0;
         for hash in &hashes {
             let store = LogStore::for_repo(hash)?;
-            total += store.clean(chrono::Duration::days(7))?;
+            let policy = crate::coordinator::clean_policy::CleanPolicy {
+                repo_policy: store.read_repo_policy(),
+                ..crate::coordinator::clean_policy::CleanPolicy::default()
+            };
+            let summary = store.clean(&policy)?;
+            total += summary.removed_jobs;
         }
         if total > 0 {
             output.success(&format!("Removed {total} old job log(s) across all repos."));
@@ -1307,7 +1312,12 @@ fn clean_logs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<
     } else {
         let repo_hash = crate::core::repo_identity::compute_repo_id()?;
         let store = LogStore::for_repo(&repo_hash)?;
-        let removed = store.clean(chrono::Duration::days(7))?;
+        let policy = crate::coordinator::clean_policy::CleanPolicy {
+            repo_policy: store.read_repo_policy(),
+            ..crate::coordinator::clean_policy::CleanPolicy::default()
+        };
+        let summary = store.clean(&policy)?;
+        let removed = summary.removed_jobs;
 
         if removed > 0 {
             output.success(&format!("Removed {removed} old job log(s)."));

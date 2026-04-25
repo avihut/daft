@@ -3,6 +3,46 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
+/// What the cleanup pass should do on this run.
+#[derive(Debug, Clone)]
+pub struct CleanPolicy {
+    /// Override retention for all jobs to this value. None = use per-job
+    /// `retention_seconds` from JobMeta.
+    pub retention_override: Option<chrono::Duration>,
+    /// If true, list candidates but do not remove anything.
+    pub dry_run: bool,
+    /// Default retention when JobMeta has no `retention_seconds`. Falls back
+    /// to 7 days.
+    pub default_retention: chrono::Duration,
+    /// Repo-level policy for sanity floor and stale-Running detection.
+    pub repo_policy: RepoPolicy,
+}
+
+impl Default for CleanPolicy {
+    fn default() -> Self {
+        Self {
+            retention_override: None,
+            dry_run: false,
+            default_retention: chrono::Duration::days(7),
+            repo_policy: RepoPolicy::defaults(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct CleanSummary {
+    pub removed_invocations: usize,
+    pub removed_jobs: usize,
+    pub freed_bytes: u64,
+    pub truncated_logs: usize,
+    pub stale_running_marked: usize,
+    /// One-line human reason: "retention", "budget", "stale-running", "mixed".
+    pub reason: String,
+    /// Set of (worktree, invocation_id, job_name) candidates considered for
+    /// removal — used by `--dry-run`.
+    pub candidates: Vec<(String, String, String)>,
+}
+
 /// Repo-level cleanup policy persisted to `<state>/jobs/<repo-uuid>/repo-policy.json`.
 /// Written on every hook fire (most-recent wins). Read by cleanup at run time.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

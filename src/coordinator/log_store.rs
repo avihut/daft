@@ -203,25 +203,178 @@ impl LogStore {
         Ok(dirs)
     }
 
-    pub fn clean(&self, max_age: chrono::Duration) -> Result<usize> {
-        let cutoff = chrono::Utc::now() - max_age;
-        let mut removed = 0;
+    /// Clean job dirs according to policy. Returns a summary of what was done.
+    pub fn clean(
+        &self,
+        policy: &crate::coordinator::clean_policy::CleanPolicy,
+    ) -> Result<crate::coordinator::clean_policy::CleanSummary> {
+        use crate::coordinator::clean_policy::CleanSummary;
+
+        let mut summary = CleanSummary {
+            reason: "retention".into(),
+            ..CleanSummary::default()
+        };
+
+        let now = chrono::Utc::now();
+        let stale_threshold =
+            chrono::Duration::seconds(policy.repo_policy.stale_running_after_resolved());
+
+        // Build the candidate set: group by worktree for sanity-floor evaluation.
+        // Each entry holds (inv_id, job_dir, meta).
+        let mut by_worktree: std::collections::BTreeMap<String, Vec<(String, PathBuf, JobMeta)>> =
+            Default::default();
+        // Track total job count per invocation across all worktrees so we know
+        // when an entire invocation has been removed.
+        let mut jobs_per_inv: std::collections::BTreeMap<String, usize> = Default::default();
 
         for job_dir in self.list_job_dirs()? {
-            if let Ok(meta) = self.read_meta(&job_dir) {
-                if meta.started_at < cutoff && !matches!(meta.status, JobStatus::Running) {
-                    fs::remove_dir_all(&job_dir)?;
-                    removed += 1;
+            let meta = match self.read_meta(&job_dir) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let inv_id = job_dir
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            *jobs_per_inv.entry(inv_id.clone()).or_default() += 1;
 
-                    // Clean up empty invocation dir
-                    if let Some(parent) = job_dir.parent() {
-                        let _ = fs::remove_dir(parent); // Only succeeds if empty
+            // Stale-Running: if Running for >threshold and no live socket, treat as terminal.
+            let effective_status = if matches!(meta.status, JobStatus::Running) {
+                let age = now.signed_duration_since(meta.started_at);
+                let socket =
+                    crate::coordinator::coordinator_socket_path(&self.repo_id_or_empty()).ok();
+                let socket_alive = socket.as_ref().map(|p| p.exists()).unwrap_or(false);
+                if age > stale_threshold && !socket_alive {
+                    summary.stale_running_marked += 1;
+                    JobStatus::Cancelled
+                } else {
+                    JobStatus::Running
+                }
+            } else {
+                meta.status.clone()
+            };
+            if matches!(effective_status, JobStatus::Running) {
+                continue; // never delete running jobs
+            }
+
+            by_worktree
+                .entry(meta.worktree.clone())
+                .or_default()
+                .push((inv_id, job_dir, meta));
+        }
+
+        // Determine which jobs are eligible for retention-based removal.
+        let keep_last = policy.repo_policy.keep_last_resolved();
+
+        // (job_dir, log_size, inv_id) for each candidate.
+        let mut candidates: Vec<(PathBuf, u64, String)> = Vec::new();
+
+        for (_worktree, entries) in by_worktree {
+            // Group by invocation. Sanity floor counts invocations, not jobs.
+            let mut by_inv: std::collections::BTreeMap<String, Vec<(PathBuf, JobMeta)>> =
+                Default::default();
+            for (inv_id, dir, meta) in entries {
+                by_inv.entry(inv_id).or_default().push((dir, meta));
+            }
+            // Re-sort invocations by recency (newest first).
+            let mut invs: Vec<(String, Vec<(PathBuf, JobMeta)>)> = by_inv.into_iter().collect();
+            invs.sort_by_key(|(_, jobs)| {
+                std::cmp::Reverse(
+                    jobs.iter()
+                        .map(|(_, m)| m.started_at)
+                        .max()
+                        .unwrap_or_else(chrono::Utc::now),
+                )
+            });
+
+            for (idx, (inv_id, jobs)) in invs.into_iter().enumerate() {
+                if idx < keep_last {
+                    continue; // sanity floor — keep most recent N
+                }
+                for (dir, meta) in jobs {
+                    let retention = policy.retention_override.unwrap_or_else(|| {
+                        meta.retention_seconds
+                            .map(chrono::Duration::seconds)
+                            .unwrap_or(policy.default_retention)
+                    });
+                    if now.signed_duration_since(meta.started_at) > retention {
+                        let size = log_file_size(&dir);
+                        candidates.push((dir.clone(), size, inv_id.clone()));
+                        summary.candidates.push((
+                            meta.worktree.clone(),
+                            inv_id.clone(),
+                            meta.name.clone(),
+                        ));
                     }
                 }
             }
         }
 
-        Ok(removed)
+        if policy.dry_run {
+            summary.freed_bytes = candidates.iter().map(|(_, s, _)| s).sum();
+            summary.removed_jobs = candidates.len();
+            return Ok(summary);
+        }
+
+        // Tally candidates per invocation so we can drop the entire invocation
+        // dir (including invocation.json) when every job in it was a candidate.
+        let mut candidates_per_inv: std::collections::BTreeMap<String, usize> = Default::default();
+        for (_, _, inv_id) in &candidates {
+            *candidates_per_inv.entry(inv_id.clone()).or_default() += 1;
+        }
+
+        // Atomic remove: rename to .deleting-, then remove.
+        let mut touched_invs: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        for (dir, size, inv_id) in candidates {
+            if let Some(parent) = dir.parent() {
+                let trash = parent.join(format!(
+                    ".deleting-{}",
+                    dir.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown"),
+                ));
+                if fs::rename(&dir, &trash).is_ok() {
+                    let _ = fs::remove_dir_all(&trash);
+                    summary.removed_jobs += 1;
+                    summary.freed_bytes += size;
+                    touched_invs.insert(inv_id.clone());
+                }
+            }
+        }
+
+        // For invocations where every job was removed, also drop the parent
+        // directory (including the invocation.json sidecar). For invocations
+        // with partial removal, try `remove_dir` (succeeds only if empty —
+        // back-compat with stores that have no sidecar).
+        for inv_id in touched_invs {
+            let inv_dir = self.base_dir.join(&inv_id);
+            let total = jobs_per_inv.get(&inv_id).copied().unwrap_or(0);
+            let removed = candidates_per_inv.get(&inv_id).copied().unwrap_or(0);
+            if removed >= total && total > 0 {
+                if fs::remove_dir_all(&inv_dir).is_ok() {
+                    summary.removed_invocations += 1;
+                }
+            } else {
+                let _ = fs::remove_dir(&inv_dir); // succeeds only if empty
+                if !inv_dir.exists() {
+                    summary.removed_invocations += 1;
+                }
+            }
+        }
+
+        Ok(summary)
+    }
+
+    /// Helper: derive repo_id from base_dir's last component (the repo UUID).
+    fn repo_id_or_empty(&self) -> String {
+        self.base_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string()
     }
 
     pub fn write_invocation_meta(&self, invocation_id: &str, meta: &InvocationMeta) -> Result<()> {
@@ -342,6 +495,13 @@ impl LogStore {
     }
 }
 
+fn log_file_size(job_dir: &Path) -> u64 {
+    LogStore::log_path(job_dir)
+        .metadata()
+        .map(|m| m.len())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,9 +583,144 @@ mod tests {
             original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
-        let removed = store.clean(chrono::Duration::days(7)).unwrap();
-        assert_eq!(removed, 1);
+        let policy = crate::coordinator::clean_policy::CleanPolicy {
+            retention_override: Some(chrono::Duration::days(7)),
+            repo_policy: crate::coordinator::clean_policy::RepoPolicy {
+                version: 1,
+                keep_last: Some(0),
+                ..crate::coordinator::clean_policy::RepoPolicy::defaults()
+            },
+            ..crate::coordinator::clean_policy::CleanPolicy::default()
+        };
+        let summary = store.clean(&policy).unwrap();
+        assert_eq!(summary.removed_jobs, 1);
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn clean_uses_per_job_retention_from_meta() {
+        use crate::coordinator::clean_policy::{CleanPolicy, RepoPolicy};
+
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let now = chrono::Utc::now();
+
+        // Two invocations, one with a 1-day retention (old), one with 30-day
+        // retention (also old, but should survive).
+        for (id, retention_secs) in &[("0001", 86_400i64), ("0002", 86_400 * 30)] {
+            let inv_meta = InvocationMeta {
+                invocation_id: id.to_string(),
+                trigger_command: "post-create".into(),
+                hook_type: "worktree-post-create".into(),
+                worktree: "main".into(),
+                created_at: now - chrono::Duration::days(10),
+            };
+            store.write_invocation_meta(id, &inv_meta).unwrap();
+
+            let dir = store.create_job_dir(id, "build").unwrap();
+            let meta = JobMeta {
+                name: "build".into(),
+                hook_type: "worktree-post-create".into(),
+                worktree: "main".into(),
+                command: "echo".into(),
+                working_dir: "/tmp".into(),
+                env: HashMap::new(),
+                started_at: now - chrono::Duration::days(10),
+                status: JobStatus::Completed,
+                exit_code: Some(0),
+                pid: None,
+                background: false,
+                finished_at: Some(now - chrono::Duration::days(10)),
+                needs: vec![],
+                retention_seconds: Some(*retention_secs),
+                max_log_size_bytes: None,
+                log_truncated: false,
+                original_size_bytes: None,
+            };
+            store.write_meta(&dir, &meta).unwrap();
+        }
+
+        let policy = CleanPolicy {
+            retention_override: None,
+            dry_run: false,
+            default_retention: chrono::Duration::days(7),
+            repo_policy: RepoPolicy {
+                version: 1,
+                keep_last: Some(0), // disable sanity floor for this test
+                ..RepoPolicy::defaults()
+            },
+        };
+        let summary = store.clean(&policy).unwrap();
+
+        // 0001 had 1d retention, started 10d ago → removed
+        // 0002 had 30d retention, started 10d ago → kept
+        assert_eq!(summary.removed_invocations, 1);
+        assert!(!tmp.path().join("0001").exists());
+        assert!(tmp.path().join("0002").exists());
+    }
+
+    #[test]
+    fn clean_keep_last_floor_overrides_retention() {
+        use crate::coordinator::clean_policy::{CleanPolicy, RepoPolicy};
+
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let now = chrono::Utc::now();
+
+        // 5 invocations all >30 days old, retention 7 days.
+        for i in 0..5 {
+            let id = format!("000{i}");
+            let inv_meta = InvocationMeta {
+                invocation_id: id.clone(),
+                trigger_command: "post-create".into(),
+                hook_type: "worktree-post-create".into(),
+                worktree: "main".into(),
+                created_at: now - chrono::Duration::days(30 + i),
+            };
+            store.write_invocation_meta(&id, &inv_meta).unwrap();
+            let dir = store.create_job_dir(&id, "build").unwrap();
+            let meta = JobMeta {
+                name: "build".into(),
+                hook_type: "worktree-post-create".into(),
+                worktree: "main".into(),
+                command: "echo".into(),
+                working_dir: "/tmp".into(),
+                env: HashMap::new(),
+                started_at: now - chrono::Duration::days(30 + i),
+                status: JobStatus::Completed,
+                exit_code: Some(0),
+                pid: None,
+                background: false,
+                finished_at: Some(now - chrono::Duration::days(30 + i)),
+                needs: vec![],
+                retention_seconds: Some(86_400 * 7),
+                max_log_size_bytes: None,
+                log_truncated: false,
+                original_size_bytes: None,
+            };
+            store.write_meta(&dir, &meta).unwrap();
+        }
+
+        let policy = CleanPolicy {
+            retention_override: None,
+            dry_run: false,
+            default_retention: chrono::Duration::days(7),
+            repo_policy: RepoPolicy {
+                version: 1,
+                keep_last: Some(3),
+                ..RepoPolicy::defaults()
+            },
+        };
+        store.clean(&policy).unwrap();
+
+        // 5 invocations — sanity floor of 3 keeps the most recent 3.
+        let remaining: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(remaining.len(), 3);
     }
 
     #[test]
