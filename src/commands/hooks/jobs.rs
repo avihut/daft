@@ -63,7 +63,7 @@ fn worktree_header(marker: &str, name: &str) -> String {
 /// appends `" ago"` so the rendered text reads `"2h ago"`.
 fn invocation_node_line(time_ago: &str, trigger: &str, short_id: &str) -> String {
     format!(
-        "  {}  {} · {trigger} {}",
+        "{} {} · {trigger} {}",
         dim("●"),
         dim(&format!("{time_ago} ago")),
         dim(&format!("[{short_id}]")),
@@ -74,17 +74,24 @@ fn invocation_node_line(time_ago: &str, trigger: &str, short_id: &str) -> String
 /// Used between adjacent invocation nodes within a worktree, and between
 /// an invocation node and the table that hangs from it.
 fn spine_blank() -> String {
-    format!("  {}", dim("│"))
+    dim("│")
 }
 
 /// Prefix one inner-table content line with the spine + a 5-space gutter.
 fn spine_prefixed(content: &str) -> String {
-    format!("  {}     {content}", dim("│"))
+    format!("{}     {content}", dim("│"))
 }
 
 /// Placeholder rendered when an invocation has no jobs.
 fn empty_invocation_placeholder() -> String {
-    format!("  {}     {}", dim("│"), dim("(no jobs declared)"))
+    format!("{}     {}", dim("│"), dim("(no jobs declared)"))
+}
+
+/// Terminator glyph rendered after the last job row of a worktree's
+/// timeline. The trailing `╴` is a half-stroke so the spine visibly
+/// tapers out instead of hanging open.
+fn spine_terminator() -> String {
+    dim("╰─╴")
 }
 
 #[derive(Parser, Debug)]
@@ -669,19 +676,14 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
     }
 
     let now = chrono::Utc::now();
-    let mut first_group = true;
 
     for (worktree, inv_list) in &groups {
-        if !first_group {
-            output.info("");
-        }
         let marker = if worktree == &current_worktree {
             CURRENT_WORKTREE_SYMBOL
         } else {
             " "
         };
         output.info(&worktree_header(marker, worktree));
-        first_group = false;
 
         for (i, inv) in inv_list.iter().enumerate() {
             // Separator before this node: blank line (no spine) between
@@ -761,6 +763,12 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                 output.info(&spine_prefixed(line));
             }
         }
+
+        // Each worktree's timeline closes with a tapering terminator and a
+        // trailing blank line. The blank doubles as the inter-worktree
+        // separator and the bottom spacer when no footer follows.
+        output.info(&spine_terminator());
+        output.info("");
     }
 
     if args.all {
@@ -771,12 +779,12 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                         let now = chrono::Utc::now().timestamp();
                         let age = now - cache.cleaned_at;
                         let ago = shorthand_from_seconds(age);
-                        output.info("");
                         output.info(&dim(&format!(
                             "Last log cleanup {ago} ago: removed {} job log(s) ({} freed)",
                             s.removed_jobs,
                             format_bytes(s.freed_bytes),
                         )));
+                        output.info("");
                     }
                 }
             }
@@ -1955,7 +1963,7 @@ mod tests {
         assert_eq!(
             invocation_node_line("2h", "worktree-post-create", "c9d4"),
             format!(
-                "  {}  {} · worktree-post-create {}",
+                "{} {} · worktree-post-create {}",
                 dim("●"),
                 dim("2h ago"),
                 dim("[c9d4]"),
@@ -1964,15 +1972,15 @@ mod tests {
     }
 
     #[test]
-    fn spine_blank_is_two_spaces_then_dim_pipe() {
-        assert_eq!(spine_blank(), format!("  {}", dim("│")));
+    fn spine_blank_is_dim_pipe_flush_left() {
+        assert_eq!(spine_blank(), dim("│"));
     }
 
     #[test]
     fn spine_prefixed_inserts_pipe_and_five_space_gutter() {
         assert_eq!(
             spine_prefixed("Job   Status   Started"),
-            format!("  {}     Job   Status   Started", dim("│")),
+            format!("{}     Job   Status   Started", dim("│")),
         );
     }
 
@@ -1980,7 +1988,12 @@ mod tests {
     fn empty_invocation_placeholder_is_dimmed_under_spine() {
         assert_eq!(
             empty_invocation_placeholder(),
-            format!("  {}     {}", dim("│"), dim("(no jobs declared)")),
+            format!("{}     {}", dim("│"), dim("(no jobs declared)")),
         );
+    }
+
+    #[test]
+    fn spine_terminator_is_dim_corner_with_taper() {
+        assert_eq!(spine_terminator(), dim("╰─╴"));
     }
 }
