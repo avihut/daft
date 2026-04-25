@@ -32,12 +32,35 @@ pub enum BackgroundOutput {
 }
 
 /// Log configuration for a job.
-#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct LogConfig {
     /// Log retention duration (e.g., "7d", "24h", "30m").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention: Option<String>,
     /// Override log file path. Absolute or relative to worktree root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+
+    /// Maximum size of a single output.log before it is truncated at cleanup
+    /// time. Accepts `10MB`, `2GB`, etc. Per-job overridable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_log_size: Option<String>,
+
+    /// Maximum total bytes consumed by all log dirs under
+    /// `<state>/jobs/<repo-uuid>/`. Accepts `500MB`, `2GB`. Repo-level only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_size: Option<String>,
+
+    /// Always retain at least this many invocations per worktree, regardless
+    /// of retention or budget. Repo-level only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_last: Option<usize>,
+
+    /// A `Running`-status job older than this with no live coordinator socket
+    /// is treated as cancelled for cleanup purposes. Accepts `24h`. Repo-level
+    /// only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_running_after: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────

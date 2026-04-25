@@ -1,3 +1,4 @@
+pub mod clean_policy;
 pub mod client;
 pub mod log_store;
 pub mod process;

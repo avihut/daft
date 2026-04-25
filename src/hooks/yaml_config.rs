@@ -1089,4 +1089,21 @@ hooks:
             Some("30d".to_string())
         );
     }
+
+    #[test]
+    fn log_config_parses_all_new_fields() {
+        let yaml = r#"
+retention: 14d
+max_log_size: 20MB
+max_total_size: 1GB
+keep_last: 5
+stale_running_after: 12h
+"#;
+        let cfg: LogConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.retention.as_deref(), Some("14d"));
+        assert_eq!(cfg.max_log_size.as_deref(), Some("20MB"));
+        assert_eq!(cfg.max_total_size.as_deref(), Some("1GB"));
+        assert_eq!(cfg.keep_last, Some(5));
+        assert_eq!(cfg.stale_running_after.as_deref(), Some("12h"));
+    }
 }

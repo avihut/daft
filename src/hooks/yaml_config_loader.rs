@@ -3,7 +3,7 @@
 //! This module handles finding the right config file, loading it, and
 //! merging multiple config sources (main, extends, per-hook, local).
 
-use super::yaml_config::{HookDef, JobDef, YamlConfig};
+use super::yaml_config::{HookDef, JobDef, LogConfig, YamlConfig};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -202,11 +202,8 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
 
     // Merge log config (field-level merge)
     merged.log = match (merged.log, overlay.log) {
-        (Some(b), Some(o)) => Some(crate::executor::LogConfig {
-            retention: o.retention.or(b.retention),
-            path: o.path.or(b.path),
-        }),
-        (base_log, overlay_log) => overlay_log.or(base_log),
+        (Some(b), Some(o)) => Some(merge_log_configs(o, b)),
+        (b, o) => o.or(b),
     };
 
     // Hooks: merge each hook definition
@@ -221,6 +218,21 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
     }
 
     merged
+}
+
+/// Merge two log configs, with `o` (overlay) taking precedence over `b` (base).
+///
+/// Field-level merge: each field uses the overlay value if set, otherwise the
+/// base value.
+pub fn merge_log_configs(o: LogConfig, b: LogConfig) -> LogConfig {
+    LogConfig {
+        retention: o.retention.or(b.retention),
+        path: o.path.or(b.path),
+        max_log_size: o.max_log_size.or(b.max_log_size),
+        max_total_size: o.max_total_size.or(b.max_total_size),
+        keep_last: o.keep_last.or(b.keep_last),
+        stale_running_after: o.stale_running_after.or(b.stale_running_after),
+    }
 }
 
 /// Merge two hook definitions, with `overlay` taking precedence.
@@ -854,14 +866,14 @@ hooks:
         let base = YamlConfig {
             log: Some(crate::executor::LogConfig {
                 retention: Some("7d".to_string()),
-                path: None,
+                ..Default::default()
             }),
             ..Default::default()
         };
         let overlay = YamlConfig {
             log: Some(crate::executor::LogConfig {
                 retention: Some("14d".to_string()),
-                path: None,
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -875,13 +887,14 @@ hooks:
             log: Some(crate::executor::LogConfig {
                 retention: Some("7d".to_string()),
                 path: Some("/base/path".to_string()),
+                ..Default::default()
             }),
             ..Default::default()
         };
         let overlay = YamlConfig {
             log: Some(crate::executor::LogConfig {
                 retention: Some("14d".to_string()),
-                path: None,
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -889,6 +902,32 @@ hooks:
         let log = merged.log.unwrap();
         assert_eq!(log.retention, Some("14d".to_string()));
         assert_eq!(log.path, Some("/base/path".to_string()));
+    }
+
+    #[test]
+    fn merge_prefers_override_for_new_fields() {
+        let base = LogConfig {
+            retention: Some("7d".into()),
+            path: None,
+            max_log_size: Some("10MB".into()),
+            max_total_size: Some("500MB".into()),
+            keep_last: Some(3),
+            stale_running_after: Some("24h".into()),
+        };
+        let override_cfg = LogConfig {
+            retention: Some("14d".into()),
+            path: None,
+            max_log_size: Some("20MB".into()),
+            max_total_size: None,      // base wins for this one
+            keep_last: None,           // base wins
+            stale_running_after: None, // base wins
+        };
+        let merged = merge_log_configs(override_cfg, base);
+        assert_eq!(merged.retention.as_deref(), Some("14d"));
+        assert_eq!(merged.max_log_size.as_deref(), Some("20MB"));
+        assert_eq!(merged.max_total_size.as_deref(), Some("500MB"));
+        assert_eq!(merged.keep_last, Some(3));
+        assert_eq!(merged.stale_running_after.as_deref(), Some("24h"));
     }
 
     // ── Tests for parse_yaml_config_str ──────────────────────────────
