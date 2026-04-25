@@ -168,9 +168,10 @@ stream.
     header and the first node, and after each worktree's terminator).
   - Invocation node: `"● {time_ago} ago · {trigger_command} [{short_id}]"` — one
     space between `●` and the relative time.
-  - Job rows (and the table header): the spine helper emits a 3-space gutter;
-    `tabled`'s `Style::blank()` adds another 1 char of left padding to its first
-    column, so the visible gap between spine and content is 4 characters.
+  - Job rows (and the table header): the outline renderer emits a 3-space
+    gutter; `tabled`'s `Style::blank()` adds another 1 char of left padding to
+    its first column, so the visible gap between spine and content is 4
+    characters.
   - Spine `│`, node `●`, and terminator `╰─╴` are rendered with `dim()`. The
     spine is a grouping cue, not primary content, so it must read as background.
   - The spine runs continuously through every job line of every invocation in a
