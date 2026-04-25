@@ -114,7 +114,8 @@ pub fn format_remote_status(
 /// Examples: `<1m`, `5m`, `3h`, `2d`, `3w`, `5mo`, `2y`.
 pub fn shorthand_from_seconds(secs: i64) -> String {
     if secs < 0 {
-        return "<1m".to_string();
+        // Negative inputs are clock skew; clamp to "just now".
+        return "0s".to_string();
     }
     let minutes = secs / 60;
     let hours = secs / 3600;
@@ -124,7 +125,7 @@ pub fn shorthand_from_seconds(secs: i64) -> String {
     let years = days / 365;
 
     if minutes < 1 {
-        "<1m".to_string()
+        format!("{secs}s")
     } else if hours < 1 {
         format!("{minutes}m")
     } else if days < 1 {
@@ -326,9 +327,10 @@ mod tests {
 
     #[test]
     fn test_shorthand_from_seconds_sub_minute() {
-        assert_eq!(shorthand_from_seconds(0), "<1m");
-        assert_eq!(shorthand_from_seconds(30), "<1m");
-        assert_eq!(shorthand_from_seconds(59), "<1m");
+        assert_eq!(shorthand_from_seconds(0), "0s");
+        assert_eq!(shorthand_from_seconds(1), "1s");
+        assert_eq!(shorthand_from_seconds(30), "30s");
+        assert_eq!(shorthand_from_seconds(59), "59s");
     }
 
     #[test]
@@ -374,8 +376,9 @@ mod tests {
     }
 
     #[test]
-    fn test_shorthand_from_seconds_negative() {
-        assert_eq!(shorthand_from_seconds(-100), "<1m");
+    fn test_shorthand_from_seconds_negative_clamps_to_zero() {
+        assert_eq!(shorthand_from_seconds(-1), "0s");
+        assert_eq!(shorthand_from_seconds(-100), "0s");
     }
 
     #[test]
