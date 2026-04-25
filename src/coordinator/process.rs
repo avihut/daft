@@ -282,17 +282,21 @@ fn run_single_background_job(
     // Remove from the child PID map now that the command has finished.
     child_pids.lock().unwrap().remove(&job.name);
 
-    // 7. Wait for the log writer thread to finish.
+    // Wait for the log writer thread to finish.
     log_writer_handle.join().ok();
 
     let duration = start.elapsed();
 
-    // 8. Determine final status, considering both global and per-job
+    // 7. Determine final status, considering both global and per-job
     //    cancellation. Either signal routes the job to Cancelled rather
     //    than Failed.
     let was_cancelled_globally = cancel_all.load(Ordering::Relaxed);
     let was_cancelled_per_job = cancelled_jobs.lock().unwrap().contains(&job.name);
     let was_cancelled = was_cancelled_globally || was_cancelled_per_job;
+
+    // Clear the per-job cancellation entry (if any) so a re-invocation of
+    // the same job name does not inherit a stale `Cancelled` flag.
+    cancelled_jobs.lock().unwrap().remove(&job.name);
 
     let (status, node_status, exit_code) = if was_cancelled {
         (JobStatus::Cancelled, NodeStatus::Skipped, None)
@@ -304,6 +308,7 @@ fn run_single_background_job(
         }
     };
 
+    // 8. Write updated meta with the final status, exit code, and finish time.
     meta.status = status;
     meta.exit_code = exit_code;
     meta.finished_at = Some(chrono::Utc::now());
@@ -311,7 +316,7 @@ fn run_single_background_job(
         eprintln!("daft: failed to update meta for '{}': {e}", job.name);
     }
 
-    // 8. On failure, print a one-line notification to stderr (best-effort,
+    // 9. On failure, print a one-line notification to stderr (best-effort,
     //    catches EPIPE).
     if node_status == NodeStatus::Failed {
         let msg = match &cmd_result {
@@ -328,7 +333,7 @@ fn run_single_background_job(
         let _ = writeln!(std::io::stderr(), "{msg}");
     }
 
-    // 9. Push the JobResult to the shared results vec.
+    // 10. Push the JobResult to the shared results vec.
     let (stdout, stderr) = match cmd_result {
         Ok(cr) => (cr.stdout, cr.stderr),
         Err(_) => (String::new(), String::new()),
@@ -1085,16 +1090,13 @@ mod tests {
         let killer = {
             let pids = Arc::clone(&child_pids);
             let cancelled = Arc::clone(&cancelled_jobs);
+            let store_for_killer = store.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(200));
-                cancelled.lock().unwrap().insert("long-job".to_string());
-                if let Some(&pid) = pids.lock().unwrap().get("long-job") {
-                    // SAFETY: Sending SIGTERM to a child process spawned by
-                    // run_single_background_job inside this test.
-                    unsafe {
-                        libc::kill(pid as libc::pid_t, libc::SIGTERM);
-                    }
-                }
+                // Route through the production cancellation path so that
+                // regressions (e.g. dropping the `cancelled_jobs` insert or
+                // skipping the SIGTERM) are caught here.
+                let _ = cancel_single_job("long-job", &pids, &cancelled, &store_for_killer);
             })
         };
 
