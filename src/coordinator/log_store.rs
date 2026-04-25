@@ -371,6 +371,74 @@ impl LogStore {
         Ok(summary)
     }
 
+    /// Truncate any terminal-status log file that exceeds its
+    /// `max_log_size_bytes`. Append a footer recording the original size.
+    /// Skips Running jobs (truncating a live writer invites corruption).
+    ///
+    /// `default_cap` is used when JobMeta.max_log_size_bytes is None.
+    /// Pass None to use the built-in 10 MB default.
+    pub fn truncate_oversized_logs(&self, default_cap: Option<u64>) -> Result<usize> {
+        const BUILTIN_DEFAULT_CAP: u64 = 10 * 1024 * 1024;
+        const MIN_CAP: u64 = 1024; // Floor: cap below this is treated as 1KB.
+
+        let mut truncated = 0;
+        for job_dir in self.list_job_dirs()? {
+            let mut meta = match self.read_meta(&job_dir) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if matches!(meta.status, JobStatus::Running) {
+                continue;
+            }
+            if meta.log_truncated {
+                continue; // already handled
+            }
+
+            let cap = meta
+                .max_log_size_bytes
+                .or(default_cap)
+                .unwrap_or(BUILTIN_DEFAULT_CAP)
+                .max(MIN_CAP);
+
+            let log_path = LogStore::log_path(&job_dir);
+            let log_size = match log_path.metadata() {
+                Ok(m) => m.len(),
+                Err(_) => continue,
+            };
+            if log_size <= cap {
+                continue;
+            }
+
+            // Build footer
+            let footer = format!("\n[output truncated at {log_size} bytes]\n");
+            let footer_bytes = footer.as_bytes();
+            let head_len = cap.saturating_sub(footer_bytes.len() as u64);
+
+            // Read [0..head_len), write [head][footer] atomically via tmpfile-and-rename.
+            let mut head = vec![0u8; head_len as usize];
+            {
+                use std::io::Read;
+                let mut f = fs::File::open(&log_path)?;
+                f.read_exact(&mut head)?;
+            }
+
+            let tmp_path = log_path.with_extension("log.truncating");
+            {
+                use std::io::Write;
+                let mut tmp = fs::File::create(&tmp_path)?;
+                tmp.write_all(&head)?;
+                tmp.write_all(footer_bytes)?;
+            }
+            fs::rename(&tmp_path, &log_path)?;
+
+            meta.log_truncated = true;
+            meta.original_size_bytes = Some(log_size);
+            self.write_meta(&job_dir, &meta)?;
+            truncated += 1;
+        }
+        Ok(truncated)
+    }
+
     /// Helper: derive repo_id from base_dir's last component (the repo UUID).
     fn repo_id_or_empty(&self) -> String {
         self.base_dir
@@ -1297,5 +1365,68 @@ mod tests {
             "short-ID prefixes collided: {:?}",
             prefixes
         );
+    }
+
+    #[test]
+    fn truncate_caps_oversized_log_with_footer() {
+        use std::collections::HashMap;
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let now = chrono::Utc::now();
+
+        let inv_id = "0001";
+        let inv_meta = InvocationMeta {
+            invocation_id: inv_id.into(),
+            trigger_command: "post-create".into(),
+            hook_type: "worktree-post-create".into(),
+            worktree: "main".into(),
+            created_at: now,
+        };
+        store.write_invocation_meta(inv_id, &inv_meta).unwrap();
+
+        let dir = store.create_job_dir(inv_id, "spam").unwrap();
+        let meta = JobMeta {
+            name: "spam".into(),
+            hook_type: "worktree-post-create".into(),
+            worktree: "main".into(),
+            command: "yes".into(),
+            working_dir: "/tmp".into(),
+            env: HashMap::new(),
+            started_at: now,
+            status: JobStatus::Completed,
+            exit_code: Some(0),
+            pid: None,
+            background: false,
+            finished_at: Some(now),
+            needs: vec![],
+            retention_seconds: None,
+            max_log_size_bytes: Some(1024),
+            log_truncated: false,
+            original_size_bytes: None,
+        };
+        store.write_meta(&dir, &meta).unwrap();
+
+        // Write a 4KB log file
+        let log_path = LogStore::log_path(&dir);
+        let mut f = std::fs::File::create(&log_path).unwrap();
+        f.write_all(&vec![b'x'; 4096]).unwrap();
+
+        // Truncate with 1KB cap (from meta.max_log_size_bytes)
+        let truncated = store.truncate_oversized_logs(None).unwrap();
+        assert_eq!(truncated, 1);
+
+        // File should be approximately 1KB (cap), with footer
+        let len = log_path.metadata().unwrap().len();
+        assert!(len <= 1024, "expected <=1024, got {len}");
+        let contents = std::fs::read_to_string(&log_path).unwrap();
+        assert!(contents.ends_with("[output truncated at 4096 bytes]\n"));
+
+        // Meta should be updated
+        let updated = store.read_meta(&dir).unwrap();
+        assert!(updated.log_truncated);
+        assert_eq!(updated.original_size_bytes, Some(4096));
     }
 }
