@@ -246,6 +246,28 @@ pub struct EffectiveFlags {
     pub stat: Option<bool>,
 }
 
+impl EffectiveFlags {
+    /// Returns `true` when a `--squash` merge would need to open an editor
+    /// to compose a commit message.
+    ///
+    /// This is the case when:
+    /// - `--squash` is enabled (`squash == Some(true)`)
+    /// - `--no-commit` / `commit == false` is NOT set (i.e. we will commit)
+    /// - no commit message is supplied via `-m` / `--message`
+    /// - no message file is supplied via `-F` / `--file`
+    /// - `--no-edit` is NOT set (`edit != Some(false)`)
+    ///
+    /// The pre-flight TTY guard calls this to refuse before any merge work
+    /// runs when stdin is not a terminal.
+    pub fn squash_would_open_editor(&self) -> bool {
+        matches!(self.squash, Some(true))
+            && !matches!(self.commit, Some(false))
+            && self.message.is_none()
+            && self.file.is_none()
+            && !matches!(self.edit, Some(false))
+    }
+}
+
 /// Serialize [`EffectiveFlags`] into `git merge` argv fragments.
 ///
 /// The caller splices the returned vector between the `merge` keyword and the
@@ -2720,5 +2742,62 @@ mod tests {
                 .map(String::as_str),
             Some("")
         );
+    }
+
+    // ── squash_would_open_editor ──────────────────────────────────────────
+
+    #[test]
+    fn squash_would_open_editor_true_when_no_message_flags() {
+        let flags = EffectiveFlags {
+            squash: Some(true),
+            ..EffectiveFlags::default()
+        };
+        assert!(flags.squash_would_open_editor());
+    }
+
+    #[test]
+    fn squash_would_open_editor_false_when_no_squash() {
+        let flags = EffectiveFlags::default(); // squash is None
+        assert!(!flags.squash_would_open_editor());
+    }
+
+    #[test]
+    fn squash_would_open_editor_false_when_no_commit() {
+        let flags = EffectiveFlags {
+            squash: Some(true),
+            commit: Some(false), // --no-commit
+            ..EffectiveFlags::default()
+        };
+        assert!(!flags.squash_would_open_editor());
+    }
+
+    #[test]
+    fn squash_would_open_editor_false_when_message_set() {
+        let flags = EffectiveFlags {
+            squash: Some(true),
+            message: Some("my message".into()),
+            ..EffectiveFlags::default()
+        };
+        assert!(!flags.squash_would_open_editor());
+    }
+
+    #[test]
+    fn squash_would_open_editor_false_when_no_edit() {
+        let flags = EffectiveFlags {
+            squash: Some(true),
+            edit: Some(false), // --no-edit
+            ..EffectiveFlags::default()
+        };
+        assert!(!flags.squash_would_open_editor());
+    }
+
+    #[test]
+    fn squash_would_open_editor_false_when_file_set() {
+        let flags = EffectiveFlags {
+            squash: Some(true),
+            file: Some(std::path::PathBuf::from("/tmp/msg.txt")),
+            ..EffectiveFlags::default()
+        };
+        assert!(!flags.squash_would_open_editor());
     }
 }

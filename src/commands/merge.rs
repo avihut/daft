@@ -446,6 +446,21 @@ pub fn run() -> Result<()> {
     }
 
     let flags = effective_flags_from_args_and_settings(&args, &settings);
+
+    // Pre-flight TTY guard: refuse a --squash that would open an editor when
+    // stdin is not a terminal. The editor would either hang waiting for input
+    // or receive EOF and abort, leaving the worktree in a half-merged state.
+    // Callers in non-TTY contexts (CI, piped scripts) should supply
+    // --no-edit, -m <msg>, or -F <file> instead.
+    use std::io::IsTerminal;
+    if flags.squash_would_open_editor() && !std::io::stdin().is_terminal() {
+        anyhow::bail!(
+            "No TTY available for the commit-message editor.\n\
+             Pass --no-edit to use the auto-generated message, \
+             -m <msg> for an explicit message, or -F <file> to read from a file."
+        );
+    }
+
     // Pass the adopt-related CLI flags through verbatim; clap enforces
     // `--adopt-target` vs `--no-adopt-target` mutual exclusion upstream, and
     // `-y`'s coercion to `--adopt-target` (and its announcement) happens in
