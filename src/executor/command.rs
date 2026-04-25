@@ -41,6 +41,10 @@ pub struct CommandResult {
 /// is provided, every line read from stdout **and** stderr is forwarded
 /// through it (useful for live progress display).
 ///
+/// If `pid_sender` is provided, the spawned child's PID is sent through
+/// it once, immediately after spawn (used by the coordinator to register
+/// background-job PIDs for cancellation).
+///
 /// The caller is responsible for building the complete set of environment
 /// variables (hook env + extra env) and passing them in `env`.
 pub fn run_command(
@@ -370,15 +374,13 @@ mod tests {
 
     #[test]
     fn run_command_sends_child_pid_on_pid_sender() {
-        use std::sync::mpsc;
-        use std::time::Duration;
-
         let (pid_tx, pid_rx) = mpsc::channel::<u32>();
-        let env = std::collections::HashMap::new();
-        let _ = run_command(
+        let env = HashMap::new();
+        let dir = std::env::temp_dir();
+        run_command(
             "true",
             &env,
-            std::path::Path::new("."),
+            &dir,
             Duration::from_secs(5),
             None,
             Some(pid_tx),
