@@ -1173,6 +1173,13 @@ fn retry_command(
         }
     }
 
+    // NOTE: We deliberately do NOT call `write_repo_policy` here. The retry
+    // path reconstructs JobSpecs from stored JobMeta via `build_retry_set`,
+    // which has no access to `log_config` (it isn't persisted). Writing here
+    // would build a defaults-only `RepoPolicy` and clobber the policy the
+    // originating hook fire already captured. The originating hook fire's
+    // sidecar is the source of truth for cleanup; retries reuse it.
+
     // Split into foreground and background sets.
     let (mut fg_specs, mut bg_specs): (Vec<_>, Vec<_>) =
         specs.into_iter().partition(|s| !s.background);
@@ -1399,6 +1406,10 @@ mod tests {
                 background: true,
                 finished_at: Some(now - chrono::Duration::seconds(offset - 3)),
                 needs: vec![],
+                retention_seconds: None,
+                max_log_size_bytes: None,
+                log_truncated: false,
+                original_size_bytes: None,
             };
             store.write_meta(&dir, &meta).unwrap();
         }
@@ -1445,6 +1456,10 @@ mod tests {
             background: true,
             finished_at: Some(now),
             needs: vec![],
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
 
@@ -1546,6 +1561,10 @@ mod tests {
             background: false,
             finished_at: None,
             needs,
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
         }
     }
 

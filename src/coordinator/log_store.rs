@@ -30,6 +30,18 @@ pub struct JobMeta {
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default)]
     pub needs: Vec<String>,
+    /// Retention captured at hook-fire time. None = use repo default.
+    #[serde(default)]
+    pub retention_seconds: Option<i64>,
+    /// Per-log size cap captured at hook-fire time. None = use repo default.
+    #[serde(default)]
+    pub max_log_size_bytes: Option<u64>,
+    /// True if `output.log` has been truncated by a cleanup pass.
+    #[serde(default)]
+    pub log_truncated: bool,
+    /// Original size in bytes before truncation, if `log_truncated == true`.
+    #[serde(default)]
+    pub original_size_bytes: Option<u64>,
 }
 
 impl JobMeta {
@@ -55,6 +67,10 @@ impl JobMeta {
             background,
             finished_at: None,
             needs,
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
         }
     }
 }
@@ -285,6 +301,36 @@ impl LogStore {
         }
         Ok(seen.into_iter().collect())
     }
+
+    /// Path to the repo-level cleanup policy sidecar.
+    pub fn repo_policy_path(&self) -> PathBuf {
+        self.base_dir.join("repo-policy.json")
+    }
+
+    /// Persist the repo-level cleanup policy. Most-recent-write wins.
+    pub fn write_repo_policy(
+        &self,
+        policy: &crate::coordinator::clean_policy::RepoPolicy,
+    ) -> Result<()> {
+        fs::create_dir_all(&self.base_dir)
+            .with_context(|| format!("Failed to create base dir: {}", self.base_dir.display()))?;
+        let json = serde_json::to_string_pretty(policy)?;
+        let path = self.repo_policy_path();
+        fs::write(&path, json)
+            .with_context(|| format!("Failed to write repo policy: {}", path.display()))?;
+        Ok(())
+    }
+
+    /// Read the repo-level cleanup policy, falling back to defaults if the
+    /// sidecar is missing or unreadable.
+    pub fn read_repo_policy(&self) -> crate::coordinator::clean_policy::RepoPolicy {
+        let path = self.repo_policy_path();
+        match fs::read_to_string(&path) {
+            Ok(json) => serde_json::from_str(&json)
+                .unwrap_or_else(|_| crate::coordinator::clean_policy::RepoPolicy::defaults()),
+            Err(_) => crate::coordinator::clean_policy::RepoPolicy::defaults(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -321,6 +367,10 @@ mod tests {
             background: false,
             finished_at: None,
             needs: vec![],
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
         let loaded = store.read_meta(&dir).unwrap();
@@ -358,6 +408,10 @@ mod tests {
             background: false,
             finished_at: None,
             needs: vec![],
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
         let removed = store.clean(chrono::Duration::days(7)).unwrap();
@@ -474,6 +528,10 @@ mod tests {
             background: true,
             finished_at: Some(finished),
             needs: vec![],
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
         let loaded = store.read_meta(&dir).unwrap();
@@ -509,6 +567,10 @@ mod tests {
             background: false,
             finished_at: None,
             needs: vec![],
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
         };
         store.write_meta(&job_dir, &meta).unwrap();
 
@@ -557,6 +619,10 @@ mod tests {
             background: false,
             finished_at: Some(chrono::Utc::now()),
             needs: vec![],
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
         };
 
         let job_dir = store
@@ -589,6 +655,10 @@ mod tests {
             background: false,
             finished_at: None,
             needs: vec!["migrator".to_string()],
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
         let loaded = store.read_meta(&dir).unwrap();
@@ -738,6 +808,75 @@ mod tests {
         let b = invocation_id_from_seed(ns_b, 42);
         assert_ne!(a, b);
         assert_ne!(&a[..4], &b[..4]);
+    }
+
+    #[test]
+    fn job_meta_round_trips_with_new_policy_fields() {
+        let meta = JobMeta {
+            name: "build".into(),
+            hook_type: "worktree-post-create".into(),
+            worktree: "feat/x".into(),
+            command: "echo hi".into(),
+            working_dir: "/tmp".into(),
+            env: HashMap::new(),
+            started_at: chrono::Utc::now(),
+            status: JobStatus::Completed,
+            exit_code: Some(0),
+            pid: None,
+            background: false,
+            finished_at: None,
+            needs: vec![],
+            retention_seconds: Some(86_400 * 14),
+            max_log_size_bytes: Some(20 * 1024 * 1024),
+            log_truncated: false,
+            original_size_bytes: None,
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let back: JobMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.retention_seconds, Some(86_400 * 14));
+        assert_eq!(back.max_log_size_bytes, Some(20 * 1024 * 1024));
+        assert!(!back.log_truncated);
+    }
+
+    #[test]
+    fn job_meta_back_compat_missing_new_fields() {
+        let json = r#"{
+            "name":"x","hook_type":"worktree-post-create","worktree":"main",
+            "command":"echo","working_dir":"/tmp","env":{},
+            "started_at":"2025-01-01T00:00:00Z","status":"completed",
+            "exit_code":0,"pid":null,"background":false,"finished_at":null,
+            "needs":[]
+        }"#;
+        let meta: JobMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.retention_seconds, None);
+        assert_eq!(meta.max_log_size_bytes, None);
+        assert!(!meta.log_truncated);
+    }
+
+    #[test]
+    fn repo_policy_round_trip_via_log_store() {
+        use crate::coordinator::clean_policy::RepoPolicy;
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+
+        let policy = RepoPolicy {
+            version: 1,
+            max_total_size_bytes: Some(100 * 1024 * 1024),
+            keep_last: Some(7),
+            stale_running_after_seconds: Some(120),
+        };
+        store.write_repo_policy(&policy).unwrap();
+        let back = store.read_repo_policy();
+        assert_eq!(back, policy);
+    }
+
+    #[test]
+    fn repo_policy_missing_returns_defaults() {
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let p = store.read_repo_policy();
+        assert_eq!(p.max_total_size_resolved(), 500 * 1024 * 1024);
+        assert_eq!(p.keep_last_resolved(), 3);
     }
 
     #[test]

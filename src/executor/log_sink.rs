@@ -108,6 +108,18 @@ impl LogSink for BufferingLogSink {
         };
         let Some(buf) = buf else { return };
 
+        let retention_seconds = spec
+            .log_config
+            .as_ref()
+            .and_then(|lc| lc.retention.as_deref())
+            .and_then(|s| crate::coordinator::clean_policy::parse_duration_str(s).ok())
+            .map(|n| n as i64);
+        let max_log_size_bytes = spec
+            .log_config
+            .as_ref()
+            .and_then(|lc| lc.max_log_size.as_deref())
+            .and_then(|s| crate::coordinator::clean_policy::parse_size(s).ok());
+
         let meta = JobMeta {
             name: spec.name.clone(),
             hook_type: self.hook_type.clone(),
@@ -122,6 +134,10 @@ impl LogSink for BufferingLogSink {
             background: false,
             finished_at: Some(chrono::Utc::now()),
             needs: spec.needs.clone(),
+            retention_seconds,
+            max_log_size_bytes,
+            log_truncated: false,
+            original_size_bytes: None,
         };
 
         if let Err(e) = self

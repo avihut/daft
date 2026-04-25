@@ -176,6 +176,18 @@ fn run_single_background_job(
     };
 
     // 2. Write initial meta with Running status.
+    let retention_seconds = job
+        .log_config
+        .as_ref()
+        .and_then(|lc| lc.retention.as_deref())
+        .and_then(|s| crate::coordinator::clean_policy::parse_duration_str(s).ok())
+        .map(|n| n as i64);
+    let max_log_size_bytes = job
+        .log_config
+        .as_ref()
+        .and_then(|lc| lc.max_log_size.as_deref())
+        .and_then(|s| crate::coordinator::clean_policy::parse_size(s).ok());
+
     let mut meta = JobMeta {
         name: job.name.clone(),
         hook_type: ctx.hook_type.to_string(),
@@ -190,6 +202,10 @@ fn run_single_background_job(
         background: true,
         finished_at: None,
         needs: job.needs.clone(),
+        retention_seconds,
+        max_log_size_bytes,
+        log_truncated: false,
+        original_size_bytes: None,
     };
     if let Err(e) = store.write_meta(&job_dir, &meta) {
         eprintln!("daft: failed to write meta for '{}': {e}", job.name);
@@ -685,6 +701,10 @@ mod tests {
             background: false,
             finished_at: None,
             needs: vec![],
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
 
@@ -718,6 +738,10 @@ mod tests {
             background: false,
             finished_at: None,
             needs: vec![],
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
 
@@ -814,6 +838,10 @@ mod tests {
             background: false,
             finished_at: None,
             needs: vec![],
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
 

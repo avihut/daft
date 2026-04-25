@@ -1,6 +1,86 @@
 //! Cleanup policy types and string parsers shared by hook-fire and cleanup paths.
 
 use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
+
+/// Repo-level cleanup policy persisted to `<state>/jobs/<repo-uuid>/repo-policy.json`.
+/// Written on every hook fire (most-recent wins). Read by cleanup at run time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RepoPolicy {
+    pub version: u32,
+    #[serde(default)]
+    pub max_total_size_bytes: Option<u64>,
+    #[serde(default)]
+    pub keep_last: Option<usize>,
+    #[serde(default)]
+    pub stale_running_after_seconds: Option<i64>,
+}
+
+impl RepoPolicy {
+    pub const VERSION: u32 = 1;
+    pub const DEFAULT_MAX_TOTAL_SIZE: u64 = 500 * 1024 * 1024;
+    pub const DEFAULT_KEEP_LAST: usize = 3;
+    pub const DEFAULT_STALE_RUNNING_AFTER_SECONDS: i64 = 86_400;
+
+    pub fn defaults() -> Self {
+        Self {
+            version: Self::VERSION,
+            max_total_size_bytes: None,
+            keep_last: None,
+            stale_running_after_seconds: None,
+        }
+    }
+
+    pub fn max_total_size_resolved(&self) -> u64 {
+        self.max_total_size_bytes
+            .unwrap_or(Self::DEFAULT_MAX_TOTAL_SIZE)
+    }
+
+    pub fn keep_last_resolved(&self) -> usize {
+        self.keep_last.unwrap_or(Self::DEFAULT_KEEP_LAST)
+    }
+
+    pub fn stale_running_after_resolved(&self) -> i64 {
+        self.stale_running_after_seconds
+            .unwrap_or(Self::DEFAULT_STALE_RUNNING_AFTER_SECONDS)
+    }
+}
+
+/// Build a `RepoPolicy` by inspecting the merged `LogConfig` of any job in the
+/// hook fire. The repo-level fields (`max_total_size`, `keep_last`,
+/// `stale_running_after`) should already be merged identically across jobs by
+/// `merge_log_configs`, so first-non-None wins.
+pub fn build_repo_policy(specs: &[crate::executor::JobSpec]) -> RepoPolicy {
+    let mut policy = RepoPolicy::defaults();
+
+    for spec in specs {
+        let Some(lc) = spec.log_config.as_ref() else {
+            continue;
+        };
+
+        if policy.max_total_size_bytes.is_none() {
+            if let Some(s) = lc.max_total_size.as_deref() {
+                if let Ok(n) = parse_size(s) {
+                    policy.max_total_size_bytes = Some(n);
+                }
+            }
+        }
+        if policy.keep_last.is_none() {
+            if let Some(n) = lc.keep_last {
+                policy.keep_last = Some(n);
+            }
+        }
+        if policy.stale_running_after_seconds.is_none() {
+            if let Some(s) = lc.stale_running_after.as_deref() {
+                if let Ok(n) = parse_duration_str(s) {
+                    policy.stale_running_after_seconds = Some(n as i64);
+                }
+            }
+        }
+    }
+
+    policy
+}
 
 /// Parse a size string into bytes. Accepts: `1024`, `1KB`, `10MB`, `2GB`.
 /// Case-insensitive, no spaces. Plain integer = bytes.
@@ -117,5 +197,72 @@ mod tests {
     fn parse_duration_rejects_overflow() {
         // u64::MAX is ~1.84e19; multiplying by 86_400 overflows for any value >= ~2.1e14.
         assert!(parse_duration_str("999999999999999999d").is_err());
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use crate::executor::{JobSpec, LogConfig};
+
+    #[test]
+    fn repo_policy_defaults_resolve() {
+        let p = RepoPolicy::defaults();
+        assert_eq!(p.max_total_size_resolved(), 500 * 1024 * 1024);
+        assert_eq!(p.keep_last_resolved(), 3);
+        assert_eq!(p.stale_running_after_resolved(), 86_400);
+    }
+
+    #[test]
+    fn repo_policy_round_trips() {
+        let p = RepoPolicy {
+            version: 1,
+            max_total_size_bytes: Some(1024 * 1024 * 1024),
+            keep_last: Some(5),
+            stale_running_after_seconds: Some(3_600),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: RepoPolicy = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn build_repo_policy_picks_up_first_log_config() {
+        let spec = JobSpec {
+            name: "j".into(),
+            log_config: Some(LogConfig {
+                max_total_size: Some("1GB".into()),
+                keep_last: Some(7),
+                stale_running_after: Some("2h".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let policy = build_repo_policy(std::slice::from_ref(&spec));
+        assert_eq!(policy.max_total_size_bytes, Some(1024 * 1024 * 1024));
+        assert_eq!(policy.keep_last, Some(7));
+        assert_eq!(policy.stale_running_after_seconds, Some(2 * 3_600));
+    }
+
+    #[test]
+    fn build_repo_policy_empty_specs_returns_defaults() {
+        let policy = build_repo_policy(&[]);
+        assert_eq!(policy, RepoPolicy::defaults());
+    }
+
+    #[test]
+    fn build_repo_policy_ignores_garbage_values() {
+        let spec = JobSpec {
+            name: "j".into(),
+            log_config: Some(LogConfig {
+                max_total_size: Some("not-a-size".into()),
+                stale_running_after: Some("nope".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let policy = build_repo_policy(std::slice::from_ref(&spec));
+        assert_eq!(policy.max_total_size_bytes, None);
+        assert_eq!(policy.stale_running_after_seconds, None);
     }
 }

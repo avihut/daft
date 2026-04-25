@@ -264,6 +264,16 @@ pub fn execute_yaml_hook_with_rc(
         }
     }
 
+    // Capture the repo-level cleanup policy as a sidecar so cleanup doesn't
+    // need to re-parse `daft.yml` later. Most-recent write wins. We write it
+    // even when all jobs end up skipped so cleanup picks up policy edits the
+    // moment they hit any hook fire. Best-effort: a failed write should not
+    // break the hook fire.
+    let repo_policy = crate::coordinator::clean_policy::build_repo_policy(&specs);
+    if let Err(e) = store.write_repo_policy(&repo_policy) {
+        eprintln!("daft: failed to write repo policy for '{hook_name}': {e}");
+    }
+
     if specs.is_empty() {
         return Ok(HookResult::skipped("All jobs skipped"));
     }
