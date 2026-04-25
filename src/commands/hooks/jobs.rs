@@ -150,7 +150,19 @@ enum JobsCommand {
     },
 }
 
+/// True for tokens that match the invocation-short-id shape (2–8 ASCII hex
+/// digits). Mirrors the heuristic the `retry` resolver uses (see
+/// `retry_target_from_arg`) so that bare-token resolution is consistent
+/// across `logs`, `cancel`, and `retry`.
+fn looks_like_inv_prefix(s: &str) -> bool {
+    s.len() >= 2 && s.len() <= 8 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// Parsed composite job address: `[worktree:][invocation:]job_name`.
+///
+/// `job_name` is empty when the user supplied only an invocation prefix
+/// (e.g. `daft hooks jobs logs 1f2b`); `resolve_job_address` then auto-picks
+/// when the invocation has a single job and prints a candidate list otherwise.
 #[derive(Debug, Clone)]
 pub struct JobAddress {
     pub worktree: Option<String>,
@@ -164,11 +176,25 @@ impl JobAddress {
         // stays intact as a single piece.
         let parts: Vec<&str> = input.rsplitn(3, ':').collect();
         match parts.len() {
-            1 => Self {
-                worktree: None,
-                invocation_prefix: None,
-                job_name: parts[0].to_string(),
-            },
+            1 => {
+                // Bare hex tokens (`1f2b`) are invocation prefixes, not job
+                // names — same boundary as the `retry` resolver. A 9+ char
+                // hex string or anything containing non-hex chars stays a
+                // job name.
+                if looks_like_inv_prefix(parts[0]) {
+                    Self {
+                        worktree: None,
+                        invocation_prefix: Some(parts[0].to_string()),
+                        job_name: String::new(),
+                    }
+                } else {
+                    Self {
+                        worktree: None,
+                        invocation_prefix: None,
+                        job_name: parts[0].to_string(),
+                    }
+                }
+            }
             2 => {
                 let left = parts[1];
                 if left.contains('/') {
@@ -214,6 +240,18 @@ fn resolve_job_address(
     store: &LogStore,
     current_worktree: &str,
 ) -> Result<ResolvedAddress> {
+    // Bare invocation prefix with no explicit worktree (`logs 1f2b`) — search
+    // every worktree, since the matching invocation may live on a deleted
+    // one. The current-worktree default only kicks in when no invocation
+    // prefix is supplied (`logs db-migrate`).
+    if addr.worktree.is_none() && addr.invocation_prefix.is_some() {
+        return resolve_invocation_prefix_anywhere(
+            addr.invocation_prefix.as_deref().unwrap(),
+            &addr.job_name,
+            store,
+        );
+    }
+
     let worktree = addr.worktree.as_deref().unwrap_or(current_worktree);
     let invocations = store.list_invocations_for_worktree(worktree)?;
 
@@ -292,6 +330,96 @@ fn resolve_job_address(
                 addr.job_name,
                 worktree,
                 all_job_names.join(", ")
+            );
+        }
+    }
+}
+
+/// Resolve an invocation prefix that wasn't scoped to a worktree. Searches
+/// every worktree in the log store (so invocations on removed worktrees
+/// remain reachable) and either auto-picks the single job under the
+/// invocation, or errors with a `<wt>:<inv>:<job>` candidate list.
+fn resolve_invocation_prefix_anywhere(
+    prefix: &str,
+    job_name: &str,
+    store: &LogStore,
+) -> Result<ResolvedAddress> {
+    let all = store.list_invocations()?;
+    let matches: Vec<&InvocationMeta> = all
+        .iter()
+        .filter(|inv| inv.invocation_id.starts_with(prefix))
+        .collect();
+
+    match matches.len() {
+        0 => anyhow::bail!("No invocation matching prefix '{prefix}'."),
+        1 => {
+            let inv = matches[0];
+            let short = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+            let job_names = list_job_names_in_invocation(store, &inv.invocation_id)?;
+
+            if !job_name.is_empty() {
+                let job_dir = store.base_dir.join(&inv.invocation_id).join(job_name);
+                if !job_dir.exists() {
+                    anyhow::bail!(
+                        "No job named '{job_name}' found in invocation '{short}' (worktree '{}').\nAvailable jobs: {}",
+                        inv.worktree,
+                        job_names.join(", "),
+                    );
+                }
+                return Ok(ResolvedAddress {
+                    invocation_id: inv.invocation_id.clone(),
+                    job_name: job_name.to_string(),
+                    job_dir,
+                });
+            }
+
+            // Bare invocation prefix: auto-pick when there's exactly one job.
+            match job_names.len() {
+                0 => anyhow::bail!(
+                    "Invocation '{short}' (worktree '{}') has no jobs.",
+                    inv.worktree,
+                ),
+                1 => {
+                    let only = &job_names[0];
+                    let job_dir = store.base_dir.join(&inv.invocation_id).join(only);
+                    Ok(ResolvedAddress {
+                        invocation_id: inv.invocation_id.clone(),
+                        job_name: only.clone(),
+                        job_dir,
+                    })
+                }
+                _ => {
+                    let candidates: Vec<String> = job_names
+                        .iter()
+                        .map(|n| format!("  {}:{short}:{n}", inv.worktree))
+                        .collect();
+                    anyhow::bail!(
+                        "Invocation '{short}' (worktree '{}') has {} jobs. Pick one:\n{}",
+                        inv.worktree,
+                        job_names.len(),
+                        candidates.join("\n"),
+                    );
+                }
+            }
+        }
+        _ => {
+            let now = chrono::Utc::now();
+            let lines: Vec<String> = matches
+                .iter()
+                .map(|inv| {
+                    let ago = shorthand_from_seconds(
+                        now.signed_duration_since(inv.created_at).num_seconds(),
+                    );
+                    let short = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+                    format!(
+                        "  {}:{short}  {} -- {ago} ago",
+                        inv.worktree, inv.trigger_command,
+                    )
+                })
+                .collect();
+            anyhow::bail!(
+                "Ambiguous invocation prefix '{prefix}' -- matches across worktrees:\n{}\nUse `<worktree>:<inv>:<job>` to disambiguate.",
+                lines.join("\n"),
             );
         }
     }
@@ -1677,6 +1805,154 @@ mod tests {
         assert_eq!(addr.worktree.as_deref(), Some("feature/auth"));
         assert!(addr.invocation_prefix.is_none());
         assert_eq!(addr.job_name, "db-migrate");
+    }
+
+    #[test]
+    fn test_parse_bare_hex_token_is_invocation_prefix() {
+        // 4-char hex (the most common short-id length) — invocation prefix.
+        let addr = JobAddress::parse("1f2b");
+        assert!(addr.worktree.is_none());
+        assert_eq!(addr.invocation_prefix.as_deref(), Some("1f2b"));
+        assert_eq!(addr.job_name, "");
+    }
+
+    #[test]
+    fn test_parse_bare_2char_and_8char_hex_are_invocation_prefix() {
+        // Both ends of the [2,8] hex range route to invocation prefix —
+        // matches the boundary used by `retry` (`test_retry_target_8char_hex_is_invocation`).
+        for token in &["ab", "abcdef12"] {
+            let addr = JobAddress::parse(token);
+            assert_eq!(
+                addr.invocation_prefix.as_deref(),
+                Some(*token),
+                "expected `{token}` to parse as invocation prefix"
+            );
+            assert_eq!(addr.job_name, "");
+        }
+    }
+
+    #[test]
+    fn test_parse_bare_9char_hex_is_still_job_name() {
+        // 9+ chars escapes the invocation-prefix heuristic — locks the
+        // boundary against future drift (mirrors `test_retry_target_9char_hex_is_job`).
+        let addr = JobAddress::parse("abcdef123");
+        assert!(addr.invocation_prefix.is_none());
+        assert_eq!(addr.job_name, "abcdef123");
+    }
+
+    #[test]
+    fn test_parse_bare_non_hex_short_token_is_job_name() {
+        // A 2-char token containing non-hex characters stays a job name.
+        let addr = JobAddress::parse("go");
+        assert!(addr.invocation_prefix.is_none());
+        assert_eq!(addr.job_name, "go");
+    }
+
+    #[test]
+    fn test_resolve_bare_invocation_prefix_finds_in_other_worktree() {
+        use crate::coordinator::log_store::{InvocationMeta, JobMeta, JobStatus, LogStore};
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let now = chrono::Utc::now();
+
+        // The invocation lives on `feature` (deleted worktree); current
+        // worktree is `master`. Bare prefix `1f2b` must reach across.
+        let inv_id = "1f2b000000000000";
+        let inv_meta = InvocationMeta {
+            invocation_id: inv_id.to_string(),
+            trigger_command: "worktree-post-create".to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            worktree: "feature".to_string(),
+            created_at: now,
+        };
+        store.write_invocation_meta(inv_id, &inv_meta).unwrap();
+
+        let dir = store.create_job_dir(inv_id, "warm-build").unwrap();
+        let meta = JobMeta {
+            name: "warm-build".to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            worktree: "feature".to_string(),
+            command: "echo".to_string(),
+            working_dir: "/tmp".to_string(),
+            env: HashMap::new(),
+            started_at: now,
+            status: JobStatus::Failed,
+            exit_code: Some(1),
+            pid: None,
+            background: true,
+            finished_at: Some(now),
+            needs: vec![],
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
+        };
+        store.write_meta(&dir, &meta).unwrap();
+
+        let addr = JobAddress::parse("1f2b");
+        let resolved = resolve_job_address(&addr, &store, "master").unwrap();
+        assert_eq!(resolved.invocation_id, inv_id);
+        assert_eq!(resolved.job_name, "warm-build");
+    }
+
+    #[test]
+    fn test_resolve_bare_invocation_prefix_with_multiple_jobs_errors_with_candidates() {
+        use crate::coordinator::log_store::{InvocationMeta, JobMeta, JobStatus, LogStore};
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let now = chrono::Utc::now();
+
+        let inv_id = "1f2b000000000000";
+        let inv_meta = InvocationMeta {
+            invocation_id: inv_id.to_string(),
+            trigger_command: "worktree-post-create".to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            worktree: "feature".to_string(),
+            created_at: now,
+        };
+        store.write_invocation_meta(inv_id, &inv_meta).unwrap();
+
+        for job in &["warm-build", "db-seed"] {
+            let dir = store.create_job_dir(inv_id, job).unwrap();
+            let meta = JobMeta {
+                name: (*job).to_string(),
+                hook_type: "worktree-post-create".to_string(),
+                worktree: "feature".to_string(),
+                command: "echo".to_string(),
+                working_dir: "/tmp".to_string(),
+                env: HashMap::new(),
+                started_at: now,
+                status: JobStatus::Failed,
+                exit_code: Some(1),
+                pid: None,
+                background: true,
+                finished_at: Some(now),
+                needs: vec![],
+                retention_seconds: None,
+                max_log_size_bytes: None,
+                log_truncated: false,
+                original_size_bytes: None,
+            };
+            store.write_meta(&dir, &meta).unwrap();
+        }
+
+        let addr = JobAddress::parse("1f2b");
+        let err = resolve_job_address(&addr, &store, "master").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("feature:1f2b:warm-build") && msg.contains("feature:1f2b:db-seed"),
+            "expected `<wt>:<inv>:<job>` candidates in error, got: {msg}"
+        );
+        assert!(
+            msg.contains("Pick one"),
+            "expected `Pick one` prompt: {msg}"
+        );
     }
 
     #[test]
