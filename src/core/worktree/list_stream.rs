@@ -70,6 +70,13 @@ impl CollectorHandle {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
+    /// Returns a clone of the cancel flag so external code (e.g. the
+    /// renderer's Ctrl-C handler) can flip it. The collector workers
+    /// observe the flag between cluster calls.
+    pub fn cancel_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel)
+    }
+
     /// Wait for all workers to finish. Emits
     /// `DagEvent::WorktreeInfoCollectionDone` if and only if the spawning
     /// run was `source=Collector`.

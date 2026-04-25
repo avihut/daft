@@ -231,7 +231,10 @@ pub fn run_live(args: Args, settings: DaftSettings) -> Result<()> {
         false, // partition_by_owner
     );
 
-    let renderer = TuiRenderer::new(state, rx);
+    // Single source of truth for cancellation: the renderer's Ctrl-C handler
+    // flips the same flag the collector workers observe between cluster calls.
+    let cancel = collector_handle.cancel_flag();
+    let renderer = TuiRenderer::new(state, rx).with_cancel_signal(cancel);
     let _final_state = renderer.run()?;
 
     collector_handle.join();
