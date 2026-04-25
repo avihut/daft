@@ -83,26 +83,29 @@ fn render_sort_summary_spans(spec: &SortSpec) -> Vec<Span<'static>> {
 pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     let now = chrono::Utc::now().timestamp();
     let ctx = ColumnContext {
-        project_root: &state.project_root,
-        cwd: &state.cwd,
+        project_root: &state.live.cfg.project_root,
+        cwd: &state.live.cfg.cwd,
         now,
-        stat: state.stat,
+        stat: state.live.cfg.stat,
     };
 
     // Pre-compute all column values for sizing and reuse.
     let row_vals: Vec<ColumnValues> = state
-        .worktrees
+        .live
+        .rows
         .iter()
         .map(|wt| format::compute_column_values(&wt.info, &ctx))
         .collect();
 
     // Select columns and compute dynamic constraints from content widths.
-    let sort_ref = state.sort_spec.as_ref();
+    let sort_ref = state.live.cfg.sort_spec.as_ref();
 
     // Render "Sorted by" summary line if column headers can't convey the sort.
     let table_area = if let Some(spec) = sort_ref {
         // Collect displayed ListColumns (excluding Status which is TUI-only).
         let displayed: Vec<crate::core::columns::ListColumn> = state
+            .live
+            .cfg
             .columns
             .as_deref()
             .map(|cols| cols.iter().filter_map(|c| c.to_list_column()).collect())
@@ -129,7 +132,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     } else {
         area
     };
-    let columns = match (&state.columns, state.columns_explicit) {
+    let columns = match (&state.live.cfg.columns, state.live.cfg.columns_explicit) {
         // Replace mode: user explicitly chose columns, don't responsively drop.
         (Some(user_cols), true) => user_cols.clone(),
         // Modifier mode: user tweaked defaults, responsive dropping still applies.
@@ -137,7 +140,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         // added are always included — they bypass responsive dropping.
         (Some(user_cols), false) => {
             let responsive =
-                select_columns(table_area.width, &state.worktrees, &row_vals, sort_ref);
+                select_columns(table_area.width, &state.live.rows, &row_vals, sort_ref);
             let mut cols: Vec<Column> = responsive
                 .into_iter()
                 .filter(|c| matches!(c, Column::Status) || user_cols.contains(c))
@@ -150,7 +153,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
             cols
         }
         // No column selection: fully responsive.
-        (None, _) => select_columns(table_area.width, &state.worktrees, &row_vals, sort_ref),
+        (None, _) => select_columns(table_area.width, &state.live.rows, &row_vals, sort_ref),
     };
     // Status is always prepended for TUI commands.
     let columns = if !columns.contains(&Column::Status) {
@@ -169,7 +172,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
             } else {
                 Constraint::Length(column_content_width(
                     *col,
-                    &state.worktrees,
+                    &state.live.rows,
                     &row_vals,
                     sort_ref,
                 ))
@@ -197,6 +200,8 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::UNDERLINED);
             let indicator = col.to_list_column().and_then(|lc| {
                 state
+                    .live
+                    .cfg
                     .sort_spec
                     .as_ref()
                     .and_then(|s| s.direction_indicator(lc))
@@ -229,10 +234,10 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     let mut row_count: u16 = 0;
     let num_columns = columns.len();
 
-    for (wt_idx, (wt, vals)) in state.worktrees.iter().zip(row_vals.iter()).enumerate() {
+    for (wt_idx, (wt, vals)) in state.live.rows.iter().zip(row_vals.iter()).enumerate() {
         // Insert a placeholder row for the section divider between owned and
         // unowned worktrees.  The actual divider content is overlaid later.
-        if state.unowned_start_index == Some(wt_idx) {
+        if state.live.unowned_start_index == Some(wt_idx) {
             let empty_cells: Vec<Cell> = (0..num_columns).map(|_| Cell::from("")).collect();
             all_rows.push(Row::new(empty_cells));
             divider_row_offset = Some(row_count);
@@ -248,7 +253,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                 .iter()
                 .map(|col| {
                     if matches!(col, Column::Status | Column::Annotation) {
-                        render_cell(col, wt, vals, state.tick, state.stat)
+                        render_cell(col, wt, vals, state.tick, state.live.cfg.stat)
                     } else {
                         Cell::from("")
                     }
@@ -257,7 +262,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         } else {
             columns
                 .iter()
-                .map(|col| render_cell(col, wt, vals, state.tick, state.stat))
+                .map(|col| render_cell(col, wt, vals, state.tick, state.live.cfg.stat))
                 .collect()
         };
         all_rows.push(Row::new(main_cells));
@@ -306,7 +311,8 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
 
         // Summary row with total size (excludes pruned worktrees)
         let total_bytes: u64 = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .filter(|wt| wt.info.kind == EntryKind::Worktree)
             .filter(|wt| !matches!(wt.status, WorktreeStatus::Done(FinalStatus::Pruned)))

@@ -115,7 +115,7 @@ impl OperationTable {
         let final_state = renderer.run()?;
 
         Ok(CompletedTable {
-            rows: final_state.worktrees,
+            rows: final_state.live.rows,
             hook_summaries: final_state.hook_summaries,
         })
     }
