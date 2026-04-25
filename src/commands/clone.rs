@@ -827,7 +827,6 @@ fn create_satellite_worktrees_tui(
             branch_name: String::new(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::Ok("cloned".into()),
-            updated_info: None,
         });
 
         // Mark the base worktree as started, run post-create hook, then complete.
@@ -883,25 +882,11 @@ fn create_satellite_worktrees_tui(
                 }
             }
 
-            // Populate commit metadata for the base worktree
-            let base_updated = shared_base_path.as_ref().map(|bp| {
-                let mut info = WorktreeInfo::empty(base);
-                info.path = Some(bp.clone());
-                if let Ok((ts, hash, subj)) = crate::git::oxide::get_commit_metadata_for_head(bp) {
-                    info.last_commit_timestamp = Some(ts);
-                    info.last_commit_hash = Some(hash);
-                    info.last_commit_subject = subj;
-                }
-                info.branch_creation_timestamp = info.last_commit_timestamp;
-                Box::new(info)
-            });
-
             let _ = tx.send(DagEvent::TaskCompleted {
                 phase: OperationPhase::Setup,
                 branch_name: base.clone(),
                 status: TaskStatus::Succeeded,
                 message: TaskMessage::BaseCreated,
-                updated_info: base_updated,
             });
         }
 
@@ -932,7 +917,6 @@ fn create_satellite_worktrees_tui(
                             message: TaskMessage::Failed(format!(
                                 "failed to initialize hook executor: {e}"
                             )),
-                            updated_info: None,
                         });
                         continue;
                     }
@@ -978,7 +962,6 @@ fn create_satellite_worktrees_tui(
                     branch_name: branch.clone(),
                     status: TaskStatus::Failed,
                     message: TaskMessage::Failed("pre-create hook failed".into()),
-                    updated_info: None,
                 });
                 continue;
             }
@@ -1009,7 +992,6 @@ fn create_satellite_worktrees_tui(
                                     message: TaskMessage::Failed(format!(
                                         "failed to initialize hook executor for post-create: {e}"
                                     )),
-                                    updated_info: None,
                                 });
                             }
                             Ok(mut executor) => {
@@ -1053,24 +1035,11 @@ fn create_satellite_worktrees_tui(
                         }
                     }
 
-                    // Populate commit metadata for the newly created worktree
-                    let mut updated = WorktreeInfo::empty(branch);
-                    updated.path = Some(worktree_path.clone());
-                    if let Ok((ts, hash, subj)) =
-                        crate::git::oxide::get_commit_metadata_for_head(worktree_path)
-                    {
-                        updated.last_commit_timestamp = Some(ts);
-                        updated.last_commit_hash = Some(hash);
-                        updated.last_commit_subject = subj;
-                    }
-                    updated.branch_creation_timestamp = updated.last_commit_timestamp;
-
                     let _ = tx.send(DagEvent::TaskCompleted {
                         phase: OperationPhase::Setup,
                         branch_name: branch.clone(),
                         status: TaskStatus::Succeeded,
                         message: TaskMessage::Created,
-                        updated_info: Some(Box::new(updated)),
                     });
                 }
                 Err(e) => {
@@ -1079,7 +1048,6 @@ fn create_satellite_worktrees_tui(
                         branch_name: branch.clone(),
                         status: TaskStatus::Failed,
                         message: TaskMessage::Failed(format!("{e}")),
-                        updated_info: None,
                     });
                 }
             }

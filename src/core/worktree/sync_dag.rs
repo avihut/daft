@@ -3,7 +3,6 @@
 //! Defines task types, status tracking, and operation phases used by
 //! the sync and prune TUI renderers.
 
-use super::list::WorktreeInfo;
 use crate::core::ownership::BranchOwner;
 use crate::core::worktree::info_field::FieldSet;
 use crate::hooks::HookType;
@@ -431,8 +430,6 @@ pub enum DagEvent {
         status: TaskStatus,
         /// Typed result message.
         message: TaskMessage,
-        /// Refreshed worktree info after the operation (if applicable).
-        updated_info: Option<Box<WorktreeInfo>>,
     },
     /// All tasks are done.
     AllDone,
@@ -519,23 +516,19 @@ impl DagExecutor {
     /// Tasks are executed in parallel (respecting dependencies) using a thread pool.
     /// The closure receives a reference to the `SyncTask` and the current set of
     /// outcome tags for that branch, and must return a
-    /// `(TaskStatus, TaskMessage, HashSet<TaskOutcome>, Option<Box<WorktreeInfo>>)`
-    /// tuple indicating the result status, a typed message, updated outcome tags,
-    /// and optionally refreshed worktree info.
+    /// `(TaskStatus, TaskMessage, HashSet<TaskOutcome>)` tuple indicating the
+    /// result status, a typed message, and updated outcome tags.
+    ///
+    /// Refreshed worktree info is now propagated out-of-band as
+    /// `WorktreeInfoUpdated` patches with `PatchSource::PostTask(phase)`.
+    /// Callers wire this up via `list_stream::spawn` in their task closures.
     ///
     /// Consumes `self` so that the sender is dropped after `AllDone` is sent,
     /// allowing the receiver to detect channel closure.
     pub fn run<F>(self, task_fn: F)
     where
-        F: Fn(
-                &SyncTask,
-                &HashSet<TaskOutcome>,
-            ) -> (
-                TaskStatus,
-                TaskMessage,
-                HashSet<TaskOutcome>,
-                Option<Box<WorktreeInfo>>,
-            ) + Send
+        F: Fn(&SyncTask, &HashSet<TaskOutcome>) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>)
+            + Send
             + Sync,
     {
         let n = self.dag.tasks.len();
@@ -623,7 +616,7 @@ impl DagExecutor {
 
                         // Execute the task outside the lock.
                         let task = &dag.tasks[task_idx];
-                        let (result_status, message, returned_outcomes, updated_info) =
+                        let (result_status, message, returned_outcomes) =
                             task_fn(task, &branch_outcomes);
 
                         // Update DAG state.
@@ -672,7 +665,6 @@ impl DagExecutor {
                                 branch_name: dag.tasks[task_idx].branch_name.clone(),
                                 status: result_status,
                                 message: message.clone(),
-                                updated_info,
                             });
 
                             // Also send TaskCompleted for any dep-failed dependents.
@@ -692,7 +684,6 @@ impl DagExecutor {
                                                     "dependency {:?} failed",
                                                     dag.tasks[task_idx].id
                                                 )),
-                                                updated_info: None,
                                             });
                                             stack.push(dep_idx);
                                         }
@@ -842,7 +833,6 @@ mod tests {
                 TaskStatus::Succeeded,
                 TaskMessage::Ok("ok".into()),
                 outcomes.clone(),
-                None,
             )
         });
 
@@ -883,7 +873,6 @@ mod tests {
                 TaskStatus::Succeeded,
                 TaskMessage::Ok("ok".into()),
                 outcomes.clone(),
-                None,
             )
         });
 
@@ -1013,13 +1002,11 @@ mod tests {
                 TaskStatus::Failed,
                 TaskMessage::Failed("pull failed".into()),
                 outcomes.clone(),
-                None,
             ),
             _ => (
                 TaskStatus::Succeeded,
                 TaskMessage::Ok("ok".into()),
                 outcomes.clone(),
-                None,
             ),
         });
 
@@ -1066,7 +1053,7 @@ mod tests {
                 TaskId::Rebase(name) if name == "feat/a" => {
                     let mut out = outcomes.clone();
                     out.insert(TaskOutcome::Conflict);
-                    (TaskStatus::Succeeded, TaskMessage::Conflict, out, None)
+                    (TaskStatus::Succeeded, TaskMessage::Conflict, out)
                 }
                 TaskId::Push(name) if name == "feat/a" => {
                     if outcomes.contains(&TaskOutcome::Conflict) {
@@ -1074,22 +1061,15 @@ mod tests {
                             TaskStatus::PreconditionFailed,
                             TaskMessage::Failed("rebase conflict".into()),
                             outcomes.clone(),
-                            None,
                         )
                     } else {
-                        (
-                            TaskStatus::Succeeded,
-                            TaskMessage::Pushed,
-                            outcomes.clone(),
-                            None,
-                        )
+                        (TaskStatus::Succeeded, TaskMessage::Pushed, outcomes.clone())
                     }
                 }
                 _ => (
                     TaskStatus::Succeeded,
                     TaskMessage::Ok("ok".into()),
                     outcomes.clone(),
-                    None,
                 ),
             }
         });
@@ -1134,19 +1114,17 @@ mod tests {
                 TaskId::Rebase(name) if name == "feat/a" => {
                     let mut out = outcomes.clone();
                     out.insert(TaskOutcome::Conflict);
-                    (TaskStatus::Succeeded, TaskMessage::Conflict, out, None)
+                    (TaskStatus::Succeeded, TaskMessage::Conflict, out)
                 }
                 TaskId::Rebase(name) if name == "feat/b" => (
                     TaskStatus::Succeeded,
                     TaskMessage::Ok("rebased".into()),
                     outcomes.clone(),
-                    None,
                 ),
                 _ => (
                     TaskStatus::Succeeded,
                     TaskMessage::Ok("ok".into()),
                     outcomes.clone(),
-                    None,
                 ),
             }
         });

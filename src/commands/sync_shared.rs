@@ -227,7 +227,6 @@ pub fn run_fetch_phase(
             branch_name: String::new(),
             status: TaskStatus::Failed,
             message: TaskMessage::Failed(format!("fetch failed: {e}")),
-            updated_info: None,
         });
         let _ = tx.send(DagEvent::AllDone);
         return false;
@@ -238,7 +237,6 @@ pub fn run_fetch_phase(
         branch_name: String::new(),
         status: TaskStatus::Succeeded,
         message: TaskMessage::Ok("fetched".into()),
-        updated_info: None,
     });
 
     true

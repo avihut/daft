@@ -228,7 +228,6 @@ impl TuiState {
                 branch_name,
                 status,
                 message,
-                updated_info,
             } => {
                 if *status == TaskStatus::PreconditionFailed {
                     // Restore the previous terminal status (saved by TaskStarted).
@@ -255,9 +254,9 @@ impl TuiState {
                         if failure_reason.is_some() {
                             row.failure_reason = failure_reason;
                         }
-                        if let Some(new_info) = updated_info {
-                            row.info = *new_info.clone();
-                        }
+                        // Refreshed WorktreeInfo cells now flow as
+                        // `WorktreeInfoUpdated` patches with
+                        // `PatchSource::PostTask(phase)` — see `LiveTable`.
                     }
                     self.check_phase_completion(phase);
                 }
@@ -602,7 +601,6 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::UpToDate,
-            updated_info: None,
         });
 
         let row = state
@@ -642,7 +640,6 @@ mod tests {
             branch_name: "feat/old".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::Removed,
-            updated_info: None,
         });
 
         let row = state
@@ -667,7 +664,6 @@ mod tests {
             branch_name: "feat/old".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::SkippedDirty,
-            updated_info: None,
         });
 
         let row = state
@@ -692,7 +688,6 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::Failed,
             message: TaskMessage::Failed("pull failed".into()),
-            updated_info: None,
         });
 
         let row = state
@@ -713,7 +708,6 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::DepFailed,
             message: TaskMessage::Failed("dependency failed".into()),
-            updated_info: None,
         });
 
         let row = state
@@ -750,7 +744,6 @@ mod tests {
             branch_name: String::new(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::Ok("fetched".into()),
-            updated_info: None,
         });
         // Fetch phase should now be completed (fetch task has empty branch_name,
         // so no row was Active for it -- but the phase was Active and now no
@@ -789,7 +782,6 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::Ok("Fast-forward".into()),
-            updated_info: None,
         });
 
         let row = state
@@ -836,7 +828,6 @@ mod tests {
             branch_name: "feat/old".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::Removed,
-            updated_info: None,
         });
 
         state.apply_event(&DagEvent::AllDone);
@@ -868,39 +859,11 @@ mod tests {
         assert_eq!(feat_a.status, WorktreeStatus::Done(FinalStatus::UpToDate));
     }
 
-    #[test]
-    fn task_completed_with_updated_info_merges_into_row() {
-        let mut state = make_test_state();
-        state.apply_event(&DagEvent::TaskStarted {
-            phase: OperationPhase::Update,
-            branch_name: "master".into(),
-        });
-
-        let mut new_info = WorktreeInfo::empty("master");
-        new_info.remote_ahead = Some(0);
-        new_info.remote_behind = Some(0);
-        new_info.ahead = Some(0);
-        new_info.behind = Some(0);
-
-        state.apply_event(&DagEvent::TaskCompleted {
-            phase: OperationPhase::Update,
-            branch_name: "master".into(),
-            status: TaskStatus::Succeeded,
-            message: TaskMessage::Ok("Fast-forward".into()),
-            updated_info: Some(Box::new(new_info)),
-        });
-
-        let row = state
-            .live
-            .rows
-            .iter()
-            .find(|w| w.info.name == "master")
-            .unwrap();
-        assert_eq!(row.info.remote_ahead, Some(0));
-        assert_eq!(row.info.remote_behind, Some(0));
-        assert_eq!(row.info.ahead, Some(0));
-        assert_eq!(row.info.behind, Some(0));
-    }
+    // The previous `task_completed_with_updated_info_merges_into_row` test
+    // was deleted: refreshed `WorktreeInfo` cells now flow as
+    // `WorktreeInfoUpdated` patches with `PatchSource::PostTask(phase)` rather
+    // than as a `Box<WorktreeInfo>` riding on `TaskCompleted`. The patch
+    // pipeline is covered by the streaming collector's own tests.
 
     #[test]
     fn hook_started_updates_status_label() {
@@ -1169,7 +1132,6 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::Pushed,
-            updated_info: None,
         });
         let row = state
             .live
@@ -1213,7 +1175,6 @@ mod tests {
             branch_name: "feat/a".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::NoPushUpstream,
-            updated_info: None,
         });
 
         let row = state
@@ -1261,7 +1222,6 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::UpToDate,
-            updated_info: None,
         });
 
         let row = state
@@ -1339,7 +1299,6 @@ mod tests {
             branch_name: "feat/old".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::Conflict,
-            updated_info: None,
         });
 
         // Verify row shows conflict
@@ -1363,7 +1322,6 @@ mod tests {
             branch_name: "feat/old".into(),
             status: TaskStatus::PreconditionFailed,
             message: TaskMessage::Failed("rebase conflict".into()),
-            updated_info: None,
         });
 
         // Row should show conflict again (restored from prev_terminal_status)

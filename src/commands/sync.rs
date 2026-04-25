@@ -12,11 +12,14 @@ use crate::{
     core::{
         sort::SortSpec,
         worktree::{
-            fetch, list,
-            list::Stat,
-            prune, push, rebase,
+            fetch,
+            info_field::FieldSet,
+            list,
+            list::{EntryKind, Stat},
+            list_stream, prune, push, rebase,
             sync_dag::{
-                self, DagExecutor, SyncDag, SyncTask, TaskId, TaskMessage, TaskOutcome, TaskStatus,
+                self, DagExecutor, OperationPhase, PatchSource, SyncDag, SyncTask, TaskId,
+                TaskMessage, TaskOutcome, TaskStatus,
             },
             temp_worktree,
         },
@@ -39,7 +42,7 @@ use anyhow::Result;
 use clap::Parser;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 
 /// Parsed `--include` value.
 enum IncludeFilter {
@@ -541,13 +544,6 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     };
 
     // ── Build shared maps from worktree_infos before they move into OperationTable ──
-    // Shared worktree info map for live refresh after tasks complete
-    let shared_info_map: Arc<HashMap<String, list::WorktreeInfo>> = Arc::new(
-        worktree_infos
-            .iter()
-            .map(|info| (info.name.clone(), info.clone()))
-            .collect(),
-    );
     // Build worktree list including local-only branches (with None paths).
     let worktree_branch_set: HashSet<String> =
         all_worktrees.iter().map(|(_, b)| b.clone()).collect();
@@ -626,11 +622,14 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     let shared_base_branch = Arc::new(base_branch.clone());
 
-    // Clone values needed by orchestrator
+    // Clone values needed by orchestrator. Whole-WorktreeInfo snapshots are no
+    // longer threaded through TaskCompleted — instead, each task spawns a
+    // streaming-collector run with `PatchSource::PostTask(phase)` to refresh
+    // just the fields it touched.
     let orch_settings = Arc::clone(&shared_settings);
-    let orch_info_map = Arc::clone(&shared_info_map);
     let orch_base_branch = Arc::clone(&shared_base_branch);
     let orch_stat = stat;
+    let orch_user_email: Arc<Option<String>> = Arc::new(user_email.clone());
 
     // Ownership filtering for the orchestrator
     let shared_include: Arc<Vec<String>> = Arc::new(args.include.clone());
@@ -697,7 +696,6 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                 TaskStatus,
                 TaskMessage,
                 std::collections::HashSet<crate::core::worktree::sync_dag::TaskOutcome>,
-                Option<Box<list::WorktreeInfo>>,
             ) {
                 match &task.id {
                     TaskId::Fetch => {
@@ -706,7 +704,6 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             TaskStatus::Succeeded,
                             TaskMessage::Ok("fetched".into()),
                             outcomes.clone(),
-                            None,
                         )
                     }
                     TaskId::Prune(branch_name) => {
@@ -728,7 +725,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         if matches!(message, TaskMessage::Deferred) {
                             *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
                         }
-                        (status, message, outcomes.clone(), None)
+                        // Prune removes the row entirely; no patch to emit.
+                        (status, message, outcomes.clone())
                     }
                     TaskId::Update(branch_name) => {
                         let (status, message) = execute_update_task(
@@ -739,22 +737,22 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             &shared_pull_args,
                             shared_force,
                         );
-                        let updated = if status == TaskStatus::Succeeded {
-                            orch_info_map.get(branch_name.as_str()).map(|info| {
-                                let mut refreshed = info.clone();
-                                let git = GitCommand::new(false)
-                                    .with_gitoxide(orch_settings.use_gitoxide);
-                                refreshed.refresh_dynamic_fields(
-                                    &orch_base_branch,
-                                    orch_stat,
-                                    &git,
-                                );
-                                Box::new(refreshed)
-                            })
-                        } else {
-                            None
-                        };
-                        (status, message, outcomes.clone(), updated)
+                        if status == TaskStatus::Succeeded {
+                            spawn_post_task_refresh(
+                                branch_name,
+                                OperationPhase::Update,
+                                FieldSet::BASE_AHEAD_BEHIND
+                                    | FieldSet::LAST_COMMIT
+                                    | FieldSet::CHANGES,
+                                &shared_worktree_map,
+                                &orch_settings,
+                                &orch_base_branch,
+                                orch_user_email.as_deref(),
+                                orch_stat,
+                                &tx_for_tasks,
+                            );
+                        }
+                        (status, message, outcomes.clone())
                     }
                     TaskId::Rebase(branch_name) => {
                         let base = shared_rebase_branch.as_deref().unwrap_or("master");
@@ -768,24 +766,24 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             shared_autostash,
                             outcomes,
                         );
-                        let updated = if status == TaskStatus::Succeeded
+                        if status == TaskStatus::Succeeded
                             && !matches!(message, TaskMessage::Conflict)
                         {
-                            orch_info_map.get(branch_name.as_str()).map(|info| {
-                                let mut refreshed = info.clone();
-                                let git = GitCommand::new(false)
-                                    .with_gitoxide(orch_settings.use_gitoxide);
-                                refreshed.refresh_dynamic_fields(
-                                    &orch_base_branch,
-                                    orch_stat,
-                                    &git,
-                                );
-                                Box::new(refreshed)
-                            })
-                        } else {
-                            None
-                        };
-                        (status, message, new_outcomes, updated)
+                            spawn_post_task_refresh(
+                                branch_name,
+                                OperationPhase::Rebase(base.to_string()),
+                                FieldSet::BASE_AHEAD_BEHIND
+                                    | FieldSet::LAST_COMMIT
+                                    | FieldSet::REMOTE_AHEAD_BEHIND,
+                                &shared_worktree_map,
+                                &orch_settings,
+                                &orch_base_branch,
+                                orch_user_email.as_deref(),
+                                orch_stat,
+                                &tx_for_tasks,
+                            );
+                        }
+                        (status, message, new_outcomes)
                     }
                     TaskId::Push(branch_name) => {
                         let (status, message, new_outcomes) = execute_push_task(
@@ -796,22 +794,20 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             shared_force_with_lease,
                             outcomes,
                         );
-                        let updated = if status == TaskStatus::Succeeded {
-                            orch_info_map.get(branch_name.as_str()).map(|info| {
-                                let mut refreshed = info.clone();
-                                let git = GitCommand::new(false)
-                                    .with_gitoxide(orch_settings.use_gitoxide);
-                                refreshed.refresh_dynamic_fields(
-                                    &orch_base_branch,
-                                    orch_stat,
-                                    &git,
-                                );
-                                Box::new(refreshed)
-                            })
-                        } else {
-                            None
-                        };
-                        (status, message, new_outcomes, updated)
+                        if status == TaskStatus::Succeeded {
+                            spawn_post_task_refresh(
+                                branch_name,
+                                OperationPhase::Push,
+                                FieldSet::REMOTE_AHEAD_BEHIND,
+                                &shared_worktree_map,
+                                &orch_settings,
+                                &orch_base_branch,
+                                orch_user_email.as_deref(),
+                                orch_stat,
+                                &tx_for_tasks,
+                            );
+                        }
+                        (status, message, new_outcomes)
                     }
                     TaskId::Setup(_) => unreachable!("Setup is only used by clone"),
                 }
@@ -893,6 +889,52 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 }
 
 // ── DAG task execution functions ───────────────────────────────────────────
+
+/// Spawn a streaming-collector run that re-emits the given `fields` for
+/// `branch_name` as `PatchSource::PostTask(phase)` patches. Blocks until the
+/// workers finish so that patches land before the next dependent task starts;
+/// otherwise the renderer can briefly show stale values during a Push that
+/// follows a Rebase, etc.
+#[allow(clippy::too_many_arguments)]
+fn spawn_post_task_refresh(
+    branch_name: &str,
+    phase: OperationPhase,
+    fields: FieldSet,
+    worktree_map: &HashMap<String, (PathBuf, bool)>,
+    settings: &Arc<DaftSettings>,
+    base_branch: &str,
+    user_email: Option<&str>,
+    stat: Stat,
+    tx: &mpsc::Sender<sync_dag::DagEvent>,
+) {
+    let Some((path, _is_main)) = worktree_map.get(branch_name) else {
+        return;
+    };
+    let target = list_stream::CollectorTarget {
+        branch_name: branch_name.to_string(),
+        path: Some(path.clone()),
+        kind: EntryKind::Worktree,
+        is_detached: false,
+    };
+    let ctx = Arc::new(list_stream::CollectorContext {
+        use_gitoxide: settings.use_gitoxide,
+        base_branch: base_branch.to_string(),
+        remote_name: settings.remote.clone(),
+        ownership_strategy: settings.ownership_strategy,
+        user_email: user_email.map(|s| s.to_string()),
+    });
+    let handle = list_stream::spawn(
+        list_stream::CollectorRequest {
+            targets: vec![target],
+            fields,
+            stat,
+            source: PatchSource::PostTask(phase),
+            ctx,
+        },
+        tx.clone(),
+    );
+    handle.join();
+}
 
 /// Execute a single update task for a DAG worker.
 fn execute_update_task(

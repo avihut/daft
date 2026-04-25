@@ -392,14 +392,12 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                 TaskStatus,
                 TaskMessage,
                 std::collections::HashSet<crate::core::worktree::sync_dag::TaskOutcome>,
-                Option<Box<list::WorktreeInfo>>,
             ) {
                 match &task.id {
                     TaskId::Fetch => (
                         TaskStatus::Succeeded,
                         TaskMessage::Ok("fetched".into()),
                         outcomes.clone(),
-                        None,
                     ),
                     TaskId::Prune(branch_name) => {
                         let (status, message) = sync_shared::execute_prune_task(
@@ -420,13 +418,12 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         if matches!(message, TaskMessage::Deferred) {
                             *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
                         }
-                        (status, message, outcomes.clone(), None)
+                        (status, message, outcomes.clone())
                     }
                     TaskId::Update(_) | TaskId::Rebase(_) | TaskId::Push(_) => (
                         TaskStatus::Skipped,
                         TaskMessage::Ok("not applicable".into()),
                         outcomes.clone(),
-                        None,
                     ),
                     TaskId::Setup(_) => unreachable!("Setup is only used by clone"),
                 }
