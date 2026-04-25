@@ -476,6 +476,7 @@ fn build_jobs_payload(
         "duration_secs",
         "exit_code",
         "command",
+        "size_bytes",
     ]);
 
     for inv in invocations {
@@ -509,6 +510,9 @@ fn build_jobs_payload(
                 _ => None,
             };
 
+            let size = LogStore::log_path(dir).metadata().map(|m| m.len()).ok();
+            let size_cell = size.map(|s| Cell::int(s as i64)).unwrap_or(Cell::Null);
+
             table = table.row([
                 Cell::str(&inv.invocation_id),
                 Cell::str(&short_id),
@@ -528,6 +532,7 @@ fn build_jobs_payload(
                     .map(|c| Cell::int(c as i64))
                     .unwrap_or(Cell::Null),
                 Cell::str(&meta.command),
+                size_cell,
             ]);
         }
     }
@@ -654,6 +659,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                 dim_underline("Status"),
                 dim_underline("Started"),
                 dim_underline("Duration"),
+                dim_underline("Size"),
             ]);
 
             for dir in &job_dirs {
@@ -686,7 +692,17 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                         _ => "\u{2014}".to_string(),
                     };
 
-                    builder.push_record(vec![job_label, status, started, duration]);
+                    let size = LogStore::log_path(dir)
+                        .metadata()
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    let size_str = if size == 0 {
+                        dim("\u{2014}").to_string()
+                    } else {
+                        format_bytes(size)
+                    };
+
+                    builder.push_record(vec![job_label, status, started, duration, size_str]);
                 }
             }
 
@@ -695,6 +711,26 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
             table.modify(Columns::first(), Padding::new(2, 1, 0, 0));
 
             output.info(&table.to_string());
+        }
+    }
+
+    if args.all {
+        if let Ok(cache_path) = crate::daft_config_dir().map(|p| p.join("log-clean.json")) {
+            if let Ok(text) = std::fs::read_to_string(&cache_path) {
+                if let Ok(cache) = serde_json::from_str::<crate::log_clean::LogCleanCache>(&text) {
+                    if let Some(s) = &cache.last_summary {
+                        let now = chrono::Utc::now().timestamp();
+                        let age = now - cache.cleaned_at;
+                        let ago = shorthand_from_seconds(age);
+                        output.info("");
+                        output.info(&dim(&format!(
+                            "Last cleanup {ago} ago: removed {} job(s) ({} freed)",
+                            s.removed_jobs,
+                            format_bytes(s.freed_bytes),
+                        )));
+                    }
+                }
+            }
         }
     }
 
