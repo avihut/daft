@@ -409,11 +409,8 @@ impl TuiState {
                     }
                 }
             }
-            DagEvent::WorktreeInfoUpdated { .. } => {
-                // Forwarded to LiveTable in Task 9 — ignore for now.
-            }
-            DagEvent::WorktreeInfoCollectionDone => {
-                // Handled in Task 9.
+            DagEvent::WorktreeInfoUpdated { .. } | DagEvent::WorktreeInfoCollectionDone => {
+                self.live.apply_event(event);
             }
         }
     }
