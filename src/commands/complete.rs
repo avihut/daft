@@ -163,15 +163,21 @@ fn complete(
         // shared-worktrees: complete worktree directory names
         ("shared-worktrees", _) => complete_worktree_names(word),
 
-        // hooks jobs: complete job addresses (names, invocation IDs, composite)
-        ("hooks-jobs-job", 1) => complete_job_addresses(word),
+        // hooks jobs: complete job addresses (names, invocation IDs, composite).
+        // The .map(align_completion_columns) below pads the value column so
+        // descriptions render in aligned columns under zsh's `compadd -l -d`.
+        ("hooks-jobs-job", 1) => complete_job_addresses(word).map(align_completion_columns),
 
         // hooks jobs retry: complete retry targets (hook types, invocation IDs, job names with failures)
-        ("hooks-jobs-retry", 1) => complete_retry_targets(word),
+        ("hooks-jobs-retry", 1) => complete_retry_targets(word).map(align_completion_columns),
 
-        ("hooks-jobs-retry-worktree", 1) => complete_retry_worktrees(word),
-        ("hooks-jobs-worktree", 1) => complete_listing_worktrees(word),
-        ("hooks-jobs-hook-filter", 1) => complete_hook_types(word),
+        ("hooks-jobs-retry-worktree", 1) => {
+            complete_retry_worktrees(word).map(align_completion_columns)
+        }
+        ("hooks-jobs-worktree", 1) => {
+            complete_listing_worktrees(word).map(align_completion_columns)
+        }
+        ("hooks-jobs-hook-filter", 1) => complete_hook_types(word).map(align_completion_columns),
 
         // Default: no completions
         _ => Ok(vec![]),
@@ -1044,6 +1050,36 @@ fn worktree_drilldown_entries(
         ));
     }
     entries
+}
+
+/// Pad the value column of `<value>\t<description>`-shaped completion
+/// entries so the description column starts at the same x position
+/// regardless of value width. The zsh wrapper replaces `\t` with two
+/// spaces and emits the descriptions verbatim, so without this the menu
+/// shows ragged columns. Bash users see the value-only candidates and
+/// are unaffected; entries that don't carry a `\t` pass through.
+fn align_completion_columns(entries: Vec<String>) -> Vec<String> {
+    let max_value_width = entries
+        .iter()
+        .filter_map(|e| {
+            e.split_once('\t')
+                .map(|(v, _)| crate::output::format::visible_width(v))
+        })
+        .max()
+        .unwrap_or(0);
+
+    entries
+        .into_iter()
+        .map(|e| match e.split_once('\t') {
+            Some((value, rest)) => {
+                let pad =
+                    max_value_width.saturating_sub(crate::output::format::visible_width(value));
+                let padding = " ".repeat(pad);
+                format!("{value}\t{padding}{rest}")
+            }
+            None => e,
+        })
+        .collect()
 }
 
 /// Complete retry targets for `hooks jobs retry <TAB>`.
@@ -2610,6 +2646,37 @@ mod tests {
         );
         assert!(entries.iter().any(|e| e.starts_with("feat-auth:\t")));
         assert!(entries.iter().any(|e| e.starts_with("fix-typo:\t")));
+    }
+
+    #[test]
+    fn align_completion_columns_pads_value_to_max_width() {
+        let entries = vec![
+            "4eef\thooks jobs retry".to_string(),
+            "warm-build\t✗ failed".to_string(),
+            "feature:\tworktree".to_string(),
+        ];
+        // Longest value is "warm-build" (10). Padding for "4eef" is 6, for
+        // "feature:" is 2, for "warm-build" is 0.
+        let aligned = align_completion_columns(entries);
+        assert_eq!(aligned[0], "4eef\t      hooks jobs retry");
+        assert_eq!(aligned[1], "warm-build\t✗ failed");
+        assert_eq!(aligned[2], "feature:\t  worktree");
+    }
+
+    #[test]
+    fn align_completion_columns_passes_through_entries_without_tab() {
+        // Bash users get only the value-side; entries without tabs (rare,
+        // but possible if a completer emits raw values) shouldn't crash.
+        let entries = vec!["bare-value".to_string(), "with\tdesc".to_string()];
+        let aligned = align_completion_columns(entries);
+        assert_eq!(aligned[0], "bare-value");
+        assert_eq!(aligned[1], "with\tdesc");
+    }
+
+    #[test]
+    fn align_completion_columns_handles_empty_input() {
+        let aligned = align_completion_columns(vec![]);
+        assert!(aligned.is_empty());
     }
 
     #[test]
