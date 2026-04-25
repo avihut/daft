@@ -274,13 +274,8 @@ Squash merged and cleaned up X.
 
 ### Verbose mode
 
-Pass `--verbose` (or set `DAFT_VERBOSE=1`) to dump git's full output to stderr
-alongside the styled step lines. Useful for diagnosing unexpected merge behavior.
-
-### Quiet mode
-
-Pass `--quiet` to suppress step messages and the final summary line. Git's raw
-stdout is still suppressed; only errors and warnings are printed.
+Pass `--verbose` to dump git's full output to stderr alongside the styled step
+lines. Useful for diagnosing unexpected merge behavior.
 
 ## Cleanup hooks
 
@@ -303,6 +298,12 @@ if [ "$DAFT_COMMAND" != "merge" ]; then
     direnv revoke "$DAFT_WORKTREE_PATH"
 fi
 ```
+
+**Limitation:** When cleanup is resumed via `daft merge --continue` after a
+squash-staged abort, `worktree-pre-remove` and `worktree-post-remove` hooks are
+NOT fired and the output reverts to plain text. This affects only the
+`--continue` resume path; cleanup triggered directly by `-r`/`-rb` fires hooks
+as normal. This limitation will be addressed in a future release.
 
 ## See Also
 

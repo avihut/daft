@@ -119,6 +119,20 @@ hooks:
           fi
 ```
 
+### Cleanup hooks during merge (`-r` / `-rb`)
+
+When `-r` or `-rb` is passed and the merge succeeds, daft removes the source
+worktree (and optionally its branch). As part of that removal,
+`worktree-pre-remove` and `worktree-post-remove` hooks fire for each source
+worktree that is removed, with `DAFT_COMMAND=merge` set so scripts can
+distinguish merge cleanup from a standalone `daft remove`.
+
+**Limitation:** When cleanup is resumed via `daft merge --continue` after a
+squash-staged abort, `worktree-pre-remove` and `worktree-post-remove` hooks are
+NOT fired and the output reverts to plain text. This affects only the
+`--continue` resume path; cleanup triggered directly by `-r`/`-rb` fires hooks
+as normal. This limitation will be addressed in a future release.
+
 ## Trust Model
 
 For security, hooks from untrusted repositories don't run automatically. Trust
