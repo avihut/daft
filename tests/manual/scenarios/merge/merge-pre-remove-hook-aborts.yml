@@ -1,8 +1,11 @@
 name: Merge -r pre-remove hook failure emits warning and continues
-description:
-  "When a worktree-pre-remove hook exits non-zero, daft emits a warning but
-  continues cleanup. The merge commit lands on the target, the worktree is
-  removed, and the command exits 0."
+description: "When a worktree-pre-remove hook exits non-zero, daft emits a
+  warning but continues cleanup. The merge commit lands on the target, the
+  worktree is removed, and the command exits 0.
+
+  The daft.yml must live on the feature branch so it is present in the feature
+  worktree at pre-remove time (hooks are discovered from the worktree being
+  removed)."
 
 repos:
   - name: test-repo
@@ -12,6 +15,13 @@ repos:
         files:
           - path: README.md
             content: "# test-repo"
+          - path: daft.yml
+            content: |
+              hooks:
+                worktree-pre-remove:
+                  jobs:
+                    - name: always-fail
+                      run: exit 1
         commits:
           - message: "Initial commit"
       - name: feature/test-feature
@@ -21,12 +31,6 @@ repos:
             content: "feature content"
         commits:
           - message: "Add feature branch"
-    daft_yml: |
-      hooks:
-        worktree-pre-remove:
-          jobs:
-            - name: always-fail
-              run: exit 1
 
 steps:
   - name: Clone with trust
@@ -47,15 +51,15 @@ steps:
       exit_code: 0
       output_contains:
         - "Merge complete."
-        - "warning:"
+        - "worktree-pre-remove hook failed with exit code 1"
 
-  - name: Verify merge commit landed on target (merge succeeded)
-    run: git -C $WORK_DIR/test-repo/main log --oneline -1 main
+  - name: Verify feature content landed on target (merge succeeded)
+    run: test -f "$WORK_DIR/test-repo/main/feature.txt" && echo "feature_merged"
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       output_contains:
-        - "feature/test-feature"
+        - "feature_merged"
 
   - name: Verify source worktree was removed despite hook failure
     run: |

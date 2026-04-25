@@ -1,0 +1,89 @@
+name: Merge --into non-default branch with -rb removes worktree and branch
+description:
+  "daft merge feature --into develop -rb where feature is merged into develop
+  but NOT into main. Without the fix, branch_delete's redundant default-branch
+  reachability check would reject the deletion because feature is not reachable
+  from main. The planner has already validated reachability against develop;
+  force=true bypasses the stale default-branch check."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+        files:
+          - path: develop.txt
+            content: "develop setup"
+        commits:
+          - message: "Setup develop branch"
+      - name: feature/cross-target
+        from: develop
+        files:
+          - path: feature.txt
+            content: "cross-target feature"
+        commits:
+          - message: "Add cross-target feature"
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Materialize develop worktree
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: Materialize feature worktree
+    run: git-worktree-checkout feature/cross-target
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: Verify feature is NOT reachable from main (pre-condition)
+    run: |
+      if git -C $WORK_DIR/test-repo/main merge-base --is-ancestor \
+        feature/cross-target main 2>/dev/null; then
+        echo "ancestor_of_main"
+      else
+        echo "not_ancestor_of_main"
+      fi
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["not_ancestor_of_main"]
+
+  - name: Merge feature --into develop -rb
+    run: git-worktree-merge feature/cross-target --into develop -rb 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Merge complete."
+        - "Deleted feature/cross-target (worktree, local branch)"
+
+  - name: Verify feature worktree is gone
+    run: test ! -d $WORK_DIR/test-repo/feature/cross-target && echo "wt_gone"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0, output_contains: ["wt_gone"] }
+
+  - name: Verify feature branch is deleted
+    run: |
+      if git -C $WORK_DIR/test-repo/main show-ref --verify --quiet \
+        refs/heads/feature/cross-target; then echo "still_exists"; else echo "deleted"; fi
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0, output_contains: ["deleted"] }
+
+  - name: Verify feature commit landed on develop
+    run: git -C $WORK_DIR/test-repo/develop log --oneline develop
+    cwd: "$WORK_DIR/test-repo/develop"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "cross-target feature"

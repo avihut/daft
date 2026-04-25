@@ -463,6 +463,7 @@ fn run_branch_delete(
         remote_only,
         keep_local_branch: false,
         prune_cd_target: settings.prune_cd_target,
+        command_label: "branch-delete".to_string(),
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;

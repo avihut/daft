@@ -36,6 +36,11 @@ pub struct BranchDeleteParams {
     pub keep_local_branch: bool,
     /// Where to cd after deleting the current worktree.
     pub prune_cd_target: PruneCdTarget,
+    /// Label exposed to hook scripts as `DAFT_COMMAND`. Defaults to
+    /// `"branch-delete"` for the standalone `daft remove` /
+    /// `daft branch-delete` flow; the merge cleanup loop sets this to
+    /// `"merge"` so hook scripts can distinguish the invocation source.
+    pub command_label: String,
 }
 
 /// Result of a branch-delete operation.
@@ -723,6 +728,7 @@ fn execute_deletions(
             params.delete_remote,
             params.remote_only,
             params.keep_local_branch,
+            &params.command_label,
             sink,
         );
         deletions.push(result);
@@ -765,6 +771,7 @@ fn execute_deletions(
                 params.delete_remote,
                 params.remote_only,
                 params.keep_local_branch,
+                &params.command_label,
                 sink,
             );
 
@@ -782,6 +789,7 @@ fn execute_deletions(
                 params.delete_remote,
                 params.remote_only,
                 params.keep_local_branch,
+                &params.command_label,
                 sink,
             );
             deletions.push(result);
@@ -796,6 +804,7 @@ fn execute_deletions(
 /// Deletion order is deliberate — remote branches are hardest to recreate, so
 /// they are deleted first. If a later step fails, the user still has local state
 /// to recover from.
+#[allow(clippy::too_many_arguments)]
 fn delete_single_branch(
     ctx: &BranchDeleteContext,
     branch: &ValidatedBranch,
@@ -803,6 +812,7 @@ fn delete_single_branch(
     delete_remote: bool,
     remote_only: bool,
     keep_local_branch: bool,
+    command_label: &str,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> DeletionResult {
     let mut result = DeletionResult {
@@ -822,7 +832,14 @@ fn delete_single_branch(
     // jobs that are about to be torn down anyway.
     if let Some(ref wt_path) = branch.worktree_path {
         super::prune::cancel_background_jobs_for_worktree(&branch.name, sink);
-        run_removal_hook(HookType::PreRemove, ctx, wt_path, &branch.name, sink);
+        run_removal_hook(
+            HookType::PreRemove,
+            ctx,
+            wt_path,
+            &branch.name,
+            command_label,
+            sink,
+        );
     }
 
     // Step 2: Delete remote branch (hardest to recreate, do first)
@@ -937,7 +954,14 @@ fn delete_single_branch(
     // Step 5: Run post-remove hook (only if worktree existed)
     if has_worktree {
         if let Some(ref wt_path) = branch.worktree_path {
-            run_removal_hook(HookType::PostRemove, ctx, wt_path, &branch.name, sink);
+            run_removal_hook(
+                HookType::PostRemove,
+                ctx,
+                wt_path,
+                &branch.name,
+                command_label,
+                sink,
+            );
         }
     }
 
@@ -952,11 +976,12 @@ fn run_removal_hook(
     ctx: &BranchDeleteContext,
     worktree_path: &Path,
     branch_name: &str,
+    command_label: &str,
     sink: &mut (impl ProgressSink + HookRunner),
 ) {
     let hook_ctx = HookContext::new(
         hook_type,
-        "branch-delete",
+        command_label,
         &ctx.project_root,
         &ctx.git_dir,
         &ctx.remote_name,
@@ -1342,6 +1367,7 @@ mod tests {
             remote_only: false,
             keep_local_branch: true,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
         };
         let mut output = TestOutput::new();
         let executor = HookExecutor::new(HooksConfig::default()).unwrap();
@@ -1403,6 +1429,7 @@ mod tests {
             remote_only: false,
             keep_local_branch: true,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
         };
         let mut output = TestOutput::new();
         let executor = HookExecutor::new(HooksConfig::default()).unwrap();
@@ -1416,5 +1443,83 @@ mod tests {
         assert_eq!(result.deletions.len(), 1);
         assert!(result.deletions[0].worktree_removed);
         assert!(!result.deletions[0].branch_deleted);
+    }
+
+    #[test]
+    #[serial]
+    fn run_removal_hook_uses_command_label_from_params() {
+        use crate::core::CommandBridge;
+        use crate::hooks::{HookExecutor, HooksConfig};
+        use crate::output::TestOutput;
+
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+
+        // For PreRemove, hooks are discovered from the worktree being removed
+        // (via daft.yml in that worktree). Use an absolute sentinel path (not
+        // $DAFT_PROJECT_ROOT) so the test is immune to path-canonicalization
+        // differences on macOS (/var → /private/var symlinks).
+        let canonical_root = tmp.path().canonicalize().unwrap();
+        let feat_wt_canonical = feat_wt.canonicalize().unwrap();
+        let sentinel_path = canonical_root.join("captured-command");
+
+        // Install a daft.yml hook in the feature worktree that records DAFT_COMMAND.
+        // YAML hooks are discovered from the worktree being removed, and run via the
+        // YAML executor which handles env var injection correctly in tests.
+        std::fs::write(
+            feat_wt_canonical.join("daft.yml"),
+            format!(
+                "hooks:\n  worktree-pre-remove:\n    jobs:\n      - name: capture-command\n        run: echo \"$DAFT_COMMAND\" > {}\n",
+                sentinel_path.display()
+            ),
+        )
+        .unwrap();
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let params = BranchDeleteParams {
+            branches: vec!["feature".to_string()],
+            // force=true bypasses uncommitted-changes / merged / sync checks
+            // so writing daft.yml into the worktree after add doesn't abort.
+            force: true,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: true,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "merge".to_string(),
+        };
+
+        let mut output = TestOutput::new();
+        // Use with_trust_db so the hook runs with explicit Allow trust.
+        // Set trust for the canonical git_dir path (what get_git_common_dir() returns).
+        let canonical_git_dir = tmp.path().join(".git").canonicalize().unwrap();
+        let mut trust_db = crate::hooks::TrustDatabase::default();
+        trust_db.set_trust_level(&canonical_git_dir, crate::hooks::TrustLevel::Allow);
+        let executor = HookExecutor::with_trust_db(HooksConfig::default(), trust_db);
+        let mut bridge = CommandBridge::new(&mut output, executor);
+        let bd_result = execute(&params, &mut bridge).unwrap();
+        assert!(
+            bd_result.validation_errors.is_empty(),
+            "unexpected validation errors: {:?}",
+            bd_result
+                .validation_errors
+                .iter()
+                .map(|e| format!("{}: {}", e.branch, e.message))
+                .collect::<Vec<_>>()
+        );
+
+        let captured = std::fs::read_to_string(&sentinel_path)
+            .unwrap_or_else(|_| format!("<sentinel not found at {}>", sentinel_path.display()));
+        assert_eq!(
+            captured.trim(),
+            "merge",
+            "DAFT_COMMAND must reflect command_label='merge', not the hardcoded 'branch-delete'"
+        );
     }
 }

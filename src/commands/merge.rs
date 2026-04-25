@@ -755,6 +755,18 @@ pub fn run() -> Result<()> {
                     &outcome.target_branch,
                 )?;
 
+                // Hoist HooksConfig construction above the loop so config is
+                // resolved once, not N times for N sources. HookExecutor is
+                // constructed per-item because CommandBridge takes ownership
+                // and HookExecutor is not Clone.
+                let hooks_config = HooksConfig::default();
+
+                output.start_spinner(if plan.len() == 1 {
+                    "Cleaning up source..."
+                } else {
+                    "Cleaning up sources..."
+                });
+
                 for item in &plan {
                     if item.worktree_path.is_none() && item.branch_name.is_none() {
                         continue;
@@ -763,21 +775,27 @@ pub fn run() -> Result<()> {
                     // keep_local_branch=true when -r was given without -b: the
                     // worktree is removed but the local branch ref is preserved.
                     let keep_local_branch = item.branch_name.is_none();
+                    // For worktree-only items (keep_local_branch=true) we still
+                    // need a branch name so branch_delete::execute can find the
+                    // worktree via its worktree-map lookup. Use the `source` field
+                    // which equals the resolved branch name.
                     let branch_for_delete = item
                         .branch_name
                         .clone()
-                        .or_else(|| {
-                            // For worktree-only items (keep_local_branch=true) we
-                            // still need a branch name so branch_delete::execute can
-                            // find the worktree via its worktree-map lookup. Use the
-                            // `source` field which equals the resolved branch name.
-                            Some(item.source.clone())
-                        })
                         .unwrap_or_else(|| item.source.clone());
 
                     let bd_params = crate::core::worktree::branch_delete::BranchDeleteParams {
                         branches: vec![branch_for_delete],
-                        force: item.force_delete,
+                        // The planner has already validated reachability against
+                        // the actual merge target (which may differ from the
+                        // default branch). Setting force=true here bypasses
+                        // branch_delete's redundant default-branch reachability
+                        // check, which would incorrectly reject cross-target
+                        // merges (e.g. `--into develop -rb` when feature is not
+                        // yet reachable from main). For squash-committed items,
+                        // item.force_delete is already true, so this is a no-op
+                        // for that path.
+                        force: true,
                         use_gitoxide: settings.use_gitoxide,
                         is_quiet: false,
                         remote_name: settings.remote.clone(),
@@ -785,15 +803,19 @@ pub fn run() -> Result<()> {
                         remote_only: false,
                         keep_local_branch,
                         prune_cd_target: settings.prune_cd_target,
+                        // Expose DAFT_COMMAND=merge so hook scripts can
+                        // distinguish merge cleanup from standalone daft remove.
+                        command_label: "merge".to_string(),
                     };
 
-                    let executor = HookExecutor::new(HooksConfig::default())?;
                     let bd_result = {
+                        let executor = HookExecutor::new(hooks_config.clone())?;
                         let mut bridge = CommandBridge::new(&mut output, executor);
                         crate::core::worktree::branch_delete::execute(&bd_params, &mut bridge)?
                     };
 
                     if !bd_result.validation_errors.is_empty() {
+                        output.finish_spinner();
                         for err in &bd_result.validation_errors {
                             output.error(&format!(
                                 "cleanup of '{}' failed: {}",
@@ -814,6 +836,8 @@ pub fn run() -> Result<()> {
                         }
                     }
                 }
+
+                output.finish_spinner();
                 Ok(())
             })();
 
