@@ -1,5 +1,12 @@
 # daft merge
 
+> **Note:** The `--squash` and cleanup (`-r` / `-rb`) sections of this spec have
+> been refined by the
+> [2026-04-25 squash + cleanup design](2026-04-25-daft-merge-squash-cleanup-design.md).
+> That refinement makes `--squash` always-commit by default with editor
+> prepopulation, makes cleanup transactional, and justifies `branch -D` in the
+> squash-cleanup path. The rest of this spec stands as authored.
+
 ## Problem
 
 daft wraps git worktree workflows but has no first-class merge operation. Users
