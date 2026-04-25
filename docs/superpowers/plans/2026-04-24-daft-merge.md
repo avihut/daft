@@ -3151,11 +3151,11 @@ git commit -m "feat: daft list --merging filter for in-progress merges"
 
 ---
 
-## Slice 15 — Merge hooks (`merge-pre` / `merge-post`)
+## Slice 15 — Merge hooks (`pre-merge` / `post-merge`)
 
-Goal: Register two new daft hook types. `merge-pre` fires after pre-flight
+Goal: Register two new daft hook types. `pre-merge` fires after pre-flight
 checks pass and before any git operation runs; its failure aborts the merge.
-`merge-post` fires after the merge operation completes (success or conflict);
+`post-merge` fires after the merge operation completes (success or conflict);
 its failure is logged but does not roll back. Both carry daft-layer context
 (cross-worktree, octopus, ephemeral) via env vars that git's native hooks cannot
 see.
@@ -3175,15 +3175,15 @@ Expected: a constant or enum listing the currently accepted hook names.
 
 - [ ] **Step 2: Write failing test**
 
-Add a test (or extend an existing one) asserting that `merge-pre` and
-`merge-post` are accepted as valid hook names and unknown hook names like
+Add a test (or extend an existing one) asserting that `pre-merge` and
+`post-merge` are accepted as valid hook names and unknown hook names like
 `merge-never` are rejected.
 
 ```rust
 #[test]
 fn merge_hooks_are_recognized() {
-    assert!(is_known_hook("merge-pre"));
-    assert!(is_known_hook("merge-post"));
+    assert!(is_known_hook("pre-merge"));
+    assert!(is_known_hook("post-merge"));
 }
 
 #[test]
@@ -3194,7 +3194,7 @@ fn unknown_merge_hook_rejected() {
 
 - [ ] **Step 3: Add the names to the registry**
 
-Add `"merge-pre"` and `"merge-post"` to the known-hook list/enum/match arms. If
+Add `"pre-merge"` and `"post-merge"` to the known-hook list/enum/match arms. If
 hooks are represented as an enum, add two variants and wire them through parsers
 and serializers.
 
@@ -3206,7 +3206,7 @@ Run: `cargo test --lib --package daft -- hooks::` Expected: all pass.
 
 ```bash
 git add src/hooks/
-git commit -m "feat: register merge-pre and merge-post hook types"
+git commit -m "feat: register pre-merge and post-merge hook types"
 ```
 
 ### Task 15.2: Build the env-var context struct
@@ -3343,7 +3343,7 @@ git add src/core/worktree/merge.rs
 git commit -m "feat: merge hook context env-var construction"
 ```
 
-### Task 15.3: Fire `merge-pre` and `merge-post` from `execute_start`
+### Task 15.3: Fire `pre-merge` and `post-merge` from `execute_start`
 
 **Files:**
 
@@ -3358,7 +3358,7 @@ daft's hooks system exposes an API for running a named hook inside a project
 with a set of env vars. Existing call sites for comparison:
 `grep -rn "run_hook\|HookExecutor::" src/commands/ | head`.
 
-- [ ] **Step 2: Wire merge-pre invocation**
+- [ ] **Step 2: Wire pre-merge invocation**
 
 After pre-flight checks pass and before any merge operation runs:
 
@@ -3369,11 +3369,11 @@ let pre_ctx = MergeHookContext::for_pre(
     /* cross_worktree */ cwd_branch.as_deref() != Some(&target.branch),
 );
 let hook_result = crate::hooks::executor::run_hook(
-    project_root, "merge-pre", &pre_ctx.env,
+    project_root, "pre-merge", &pre_ctx.env,
 )?;
 if !hook_result.success() {
     anyhow::bail!(
-        "merge-pre hook failed (exit {}); merge aborted",
+        "pre-merge hook failed (exit {}); merge aborted",
         hook_result.exit_code()
     );
 }
@@ -3381,22 +3381,22 @@ if !hook_result.success() {
 
 (Adapt to the actual hook executor signature.)
 
-- [ ] **Step 3: Wire merge-post invocation**
+- [ ] **Step 3: Wire post-merge invocation**
 
 After the merge op completes (success, conflict, or already-up-to-date), extend
-the pre context with post fields and fire merge-post. Log a warning if it fails
+the pre context with post fields and fire post-merge. Log a warning if it fails
 but do not return an error:
 
 ```rust
 let post_ctx = pre_ctx.extend_for_post(outcome_to_post_outcome(&outcome));
-if let Err(e) = crate::hooks::executor::run_hook(project_root, "merge-post", &post_ctx.env) {
-    log::warn!("merge-post hook failed: {e}");
+if let Err(e) = crate::hooks::executor::run_hook(project_root, "post-merge", &post_ctx.env) {
+    log::warn!("post-merge hook failed: {e}");
 }
 ```
 
 - [ ] **Step 4: Wire across all merge paths**
 
-Fire `merge-pre` and `merge-post` for:
+Fire `pre-merge` and `post-merge` for:
 
 - worktree-delegated merge (the main path)
 - pure-FF plumbing advancement (Slice 9)
@@ -3409,7 +3409,7 @@ In the ephemeral + conflict promote-path, set
 
 ```bash
 git add src/core/worktree/merge.rs
-git commit -m "feat: fire merge-pre and merge-post hooks around merge execution"
+git commit -m "feat: fire pre-merge and post-merge hooks around merge execution"
 ```
 
 ### Task 15.4: YAML scenarios for merge hooks
@@ -3424,20 +3424,20 @@ git commit -m "feat: fire merge-pre and merge-post hooks around merge execution"
 Template for `hook-pre-aborts.yml`:
 
 ```yaml
-name: merge-pre hook abort
-description: "A failing merge-pre hook aborts the merge"
+name: pre-merge hook abort
+description: "A failing pre-merge hook aborts the merge"
 
 repos:
   - name: test-repo
     use_fixture: standard-remote
 
 steps:
-  - name: Clone and configure merge-pre hook that exits 1
+  - name: Clone and configure pre-merge hook that exits 1
     run: |
       git-worktree-clone --layout contained $REMOTE_TEST_REPO
       cat >> $WORK_DIR/test-repo/daft.yml <<'EOF'
       hooks:
-        merge-pre:
+        pre-merge:
           jobs:
             - name: always-abort
               run: exit 1
@@ -3451,7 +3451,7 @@ steps:
     expect:
       exit_code: 1
       output_contains:
-        - "merge-pre hook failed"
+        - "pre-merge hook failed"
         - "merge aborted"
 ```
 
@@ -3467,7 +3467,7 @@ Run:
 
 ```bash
 git add tests/manual/scenarios/merge/hook-*.yml
-git commit -m "test: merge-pre and merge-post hook scenarios"
+git commit -m "test: pre-merge and post-merge hook scenarios"
 ```
 
 ### Task 15.5: Document merge hooks in the hooks guide
@@ -3477,13 +3477,13 @@ git commit -m "test: merge-pre and merge-post hook scenarios"
 - Modify: `docs/guide/hooks.md` (or wherever hook docs live — grep first)
 - Modify: `SKILL.md`
 
-- [ ] **Step 1: Add `merge-pre` and `merge-post` sections**
+- [ ] **Step 1: Add `pre-merge` and `post-merge` sections**
 
 Document:
 
 - When each hook fires.
 - What env vars are provided (copy from the spec's Hooks section).
-- Failure semantics (merge-pre aborts; merge-post warns only).
+- Failure semantics (pre-merge aborts; post-merge warns only).
 - A short example showing how to branch on `DAFT_MERGE_RESULT` to react to
   conflicts.
 
@@ -3491,7 +3491,7 @@ Document:
 
 ```bash
 git add docs/guide/hooks.md SKILL.md
-git commit -m "docs: merge-pre and merge-post hook reference"
+git commit -m "docs: pre-merge and post-merge hook reference"
 ```
 
 ---
@@ -3794,7 +3794,7 @@ assignee: `avihut`.
 From the spec's "Deferred / future work" section — these are explicitly out of
 scope:
 
-- `merge-pre` / `merge-post` daft-level hooks.
+- `pre-merge` / `post-merge` daft-level hooks.
 - `--finish` composite flag.
 - Auto-fetch / auto-push.
 - `DAFT_MERGE_TARGET` session hint env var.

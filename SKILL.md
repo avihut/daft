@@ -293,7 +293,7 @@ daft merge feature/hotfix --into release/1.2 -y
   refuses. Configure the default with `daft.merge.adoptTargetOnDemand` =
   `prompt` | `yes` | `no`.
 
-`merge-pre` and `merge-post` hooks (see the Hooks section below) fire around the
+`pre-merge` and `post-merge` hooks (see the Hooks section below) fire around the
 merge with `DAFT_MERGE_*` env vars describing sources, target, mode, strategy,
 and result.
 
@@ -332,19 +332,19 @@ Hooks automate worktree lifecycle events. The recommended approach is a
 | `worktree-post-create` | After new worktree is created                   | New worktree                |
 | `worktree-pre-remove`  | Before worktree is removed                      | Worktree being removed      |
 | `worktree-post-remove` | After worktree is removed                       | Current worktree            |
-| `merge-pre`            | After pre-flight checks, before the merge runs  | Target worktree             |
-| `merge-post`           | After the merge completes (success or conflict) | Target worktree             |
+| `pre-merge`            | After pre-flight checks, before the merge runs  | Target worktree             |
+| `post-merge`           | After the merge completes (success or conflict) | Target worktree             |
 
 During `daft worktree-clone`, hooks fire in this order: `post-clone` first
 (one-time repo bootstrap), then `worktree-post-create` (per-worktree setup).
 This lets `post-clone` install foundational tools that `worktree-post-create`
 may depend on.
 
-`merge-pre` aborts the merge on failure (default fail mode: `abort`);
-`merge-post` logs warnings on failure but never rolls back the merge (default:
+`pre-merge` aborts the merge on failure (default fail mode: `abort`);
+`post-merge` logs warnings on failure but never rolls back the merge (default:
 `warn`). Both expose `DAFT_MERGE_*` env vars: `SOURCES`, `TARGET_BRANCH`,
 `TARGET_PATH`, `MODE` (`merge`/`ff`/`squash`/`octopus`), `STRATEGY`,
-`EPHEMERAL`, `CROSS_WORKTREE`. `merge-post` additionally gets `RESULT`
+`EPHEMERAL`, `CROSS_WORKTREE`. `post-merge` additionally gets `RESULT`
 (`success`/`conflict`/`already-up-to-date`), `COMMIT_SHA`, `CONFLICTED_FILES`
 (newline-separated), and `PROMOTED_FROM_EPHEMERAL`. Neither fires when the merge
 is a no-op (already up to date).

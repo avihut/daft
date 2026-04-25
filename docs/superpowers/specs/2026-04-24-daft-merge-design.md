@@ -41,7 +41,7 @@ merge needs to be aborted from elsewhere).
   remove source branch).
 - Reuse existing daft infrastructure: worktree hooks, temp-worktree module,
   layout resolver, error formatting, completion generation, man-page pipeline.
-- Expose `merge-pre` and `merge-post` hook types that carry daft-layer context
+- Expose `pre-merge` and `post-merge` hook types that carry daft-layer context
   (cross-worktree invocation, octopus count, ephemeral-worktree state) —
   information that git's native merge hooks cannot see.
 - Provide a `-y` / `--yes` flag to suppress interactive prompts for scripted /
@@ -61,7 +61,7 @@ merge needs to be aborted from elsewhere).
   git's "not fully merged" error verbatim. daft does not attempt to verify "this
   branch is squash-merged into target" via `git cherry` or similar.
 - **No `merge-conflict` dedicated hook.** Users branch on `DAFT_MERGE_RESULT`
-  inside `merge-post` to detect conflicts. Adding a third event-specific hook
+  inside `post-merge` to detect conflicts. Adding a third event-specific hook
   would break daft's existing paired pre/post-only pattern.
 - **No auto-cd on conflict.** When a merge conflicts, daft reports the target
   worktree path and exits non-zero. It does not use the `DAFT_CD_FILE` mechanism
@@ -347,7 +347,7 @@ lowerCamelCase to match existing daft convention (`daft.checkout.push`,
 
 Two new daft hook types, plus reuse of existing ones.
 
-### New: `merge-pre`
+### New: `pre-merge`
 
 Fires after all pre-flight checks pass and the target is resolved, but before
 any merge operation runs (whether plumbing FF, worktree-delegated merge, or
@@ -366,13 +366,13 @@ Environment variables:
 | `DAFT_MERGE_EPHEMERAL`      | `true` if this merge will use an ephemeral worktree, else `false` |
 | `DAFT_MERGE_CROSS_WORKTREE` | `true` if invocation was from a worktree other than the target    |
 
-### New: `merge-post`
+### New: `post-merge`
 
 Fires after the merge operation completes, regardless of success or conflict.
 Hook failure is logged as a warning but does not roll back the merge — the
 commit (or conflicted state) has already landed.
 
-Additional environment variables (on top of the `merge-pre` set):
+Additional environment variables (on top of the `pre-merge` set):
 
 | Var                                  | Value                                                            |
 | ------------------------------------ | ---------------------------------------------------------------- |
@@ -511,6 +511,6 @@ Captured for later consideration; explicitly out of scope for this spec.
 - Squash-reachability detection (`git cherry`-based) to enable cleanup after
   squash merges.
 - `merge-conflict` dedicated hook (users branch on `DAFT_MERGE_RESULT` inside
-  `merge-post` instead).
+  `post-merge` instead).
 - A dedicated `daft merge status` / `daft merge list` command, if the
   `daft list --merging` extension proves cramped.

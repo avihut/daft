@@ -76,8 +76,8 @@ that are unique to daft merge or that shape the cross-worktree workflow.
 daft merge feature/api
 ```
 
-Equivalent to `git merge feature/api`, but hooks fire (`merge-pre`,
-`merge-post`) and progress uses daft's output style.
+Equivalent to `git merge feature/api`, but hooks fire (`pre-merge`,
+`post-merge`) and progress uses daft's output style.
 
 ### Cross-worktree merge
 
@@ -183,15 +183,15 @@ flag arguments always override config defaults. See the
 `daft merge` fires two lifecycle hooks, letting `daft.yml` gate merges on
 custom preconditions and react to outcomes without wrapping the command:
 
-- **`merge-pre`** — runs after pre-flight safety checks, before the merge
+- **`pre-merge`** — runs after pre-flight safety checks, before the merge
   executes. Non-zero exit aborts the merge (default fail mode: `abort`).
-- **`merge-post`** — runs after the merge completes, regardless of success,
+- **`post-merge`** — runs after the merge completes, regardless of success,
   conflict, or "already up to date". Non-zero exit is logged as a warning
   (default fail mode: `warn`); it never rolls the merge back.
 
 Both hooks receive `DAFT_MERGE_*` environment variables describing the
 sources, target, mode (`merge` / `ff` / `squash` / `octopus`), strategy, and
-cross-worktree flag. `merge-post` additionally gets `RESULT`, `COMMIT_SHA`,
+cross-worktree flag. `post-merge` additionally gets `RESULT`, `COMMIT_SHA`,
 `CONFLICTED_FILES`, and `PROMOTED_FROM_EPHEMERAL`. Neither hook fires when
 the merge is a pure no-op.
 

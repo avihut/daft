@@ -140,7 +140,7 @@ pub(crate) fn get_hook_source_worktree(ctx: &HookContext) -> PathBuf {
         // Merge hooks read from the target worktree — that's where the
         // merge is (or was) taking place, and also where `daft.yml` is
         // most naturally located (the branch being merged into).
-        HookType::MergePre | HookType::MergePost => ctx.worktree_path.clone(),
+        HookType::PreMerge | HookType::PostMerge => ctx.worktree_path.clone(),
     }
 }
 

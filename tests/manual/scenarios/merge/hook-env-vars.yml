@@ -1,6 +1,6 @@
 name: Merge hooks observe DAFT_MERGE_* env vars
 description:
-  "merge-pre and merge-post see the full set of DAFT_MERGE_* env vars. Exercised
+  "pre-merge and post-merge see the full set of DAFT_MERGE_* env vars. Exercised
   over a cross-worktree merge so DAFT_MERGE_CROSS_WORKTREE=true is verified
   end-to-end."
 
@@ -23,7 +23,7 @@ repos:
           - message: "Add feature branch"
     daft_yml: |
       hooks:
-        merge-pre:
+        pre-merge:
           jobs:
             - name: record-pre
               run: |
@@ -33,15 +33,15 @@ repos:
                   echo "mode=$DAFT_MERGE_MODE"
                   echo "cross=$DAFT_MERGE_CROSS_WORKTREE"
                   echo "ephemeral=$DAFT_MERGE_EPHEMERAL"
-                } > "$DAFT_MERGE_TARGET_PATH/.merge-pre-env"
-        merge-post:
+                } > "$DAFT_MERGE_TARGET_PATH/.pre-merge-env"
+        post-merge:
           jobs:
             - name: record-post
               run: |
                 {
                   echo "result=$DAFT_MERGE_RESULT"
                   echo "promoted=$DAFT_MERGE_PROMOTED_FROM_EPHEMERAL"
-                } > "$DAFT_MERGE_TARGET_PATH/.merge-post-env"
+                } > "$DAFT_MERGE_TARGET_PATH/.post-merge-env"
 
 steps:
   - name: Clone with trust
@@ -63,8 +63,8 @@ steps:
       output_contains:
         - "Merge complete."
 
-  - name: Verify merge-pre env-var sentinel
-    run: cat "$WORK_DIR/test-repo/main/.merge-pre-env"
+  - name: Verify pre-merge env-var sentinel
+    run: cat "$WORK_DIR/test-repo/main/.pre-merge-env"
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
@@ -75,8 +75,8 @@ steps:
         - "cross=true"
         - "ephemeral=false"
 
-  - name: Verify merge-post env-var sentinel
-    run: cat "$WORK_DIR/test-repo/main/.merge-post-env"
+  - name: Verify post-merge env-var sentinel
+    run: cat "$WORK_DIR/test-repo/main/.post-merge-env"
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

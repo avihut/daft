@@ -23,8 +23,8 @@ and more. For simple cases, you can also use **executable shell scripts** in
 | `worktree-post-create` | After new worktree is created                          | New worktree                         |
 | `worktree-pre-remove`  | Before worktree is removed                             | Worktree being removed               |
 | `worktree-post-remove` | After worktree is removed                              | Current worktree (where prune runs)  |
-| `merge-pre`            | After pre-flight checks pass, before the merge runs    | Target worktree                      |
-| `merge-post`           | After the merge operation completes (success/conflict) | Target worktree                      |
+| `pre-merge`            | After pre-flight checks pass, before the merge runs    | Target worktree                      |
+| `post-merge`           | After the merge operation completes (success/conflict) | Target worktree                      |
 
 ### Execution Order During Clone
 
@@ -41,17 +41,17 @@ This lets `post-clone` install foundational tools (pnpm, bun, uv, etc.) that
 ### Merge Hooks
 
 `daft merge` fires two lifecycle hooks around the merge operation, giving
-scripts a chance to gate merges on custom preconditions (merge-pre) or react to
-the outcome (merge-post) without forking the merge command.
+scripts a chance to gate merges on custom preconditions (pre-merge) or react to
+the outcome (post-merge) without forking the merge command.
 
 **When they fire:**
 
-- `merge-pre` runs after all pre-flight safety rails (distinct-source check,
+- `pre-merge` runs after all pre-flight safety rails (distinct-source check,
   clean-target check, in-progress-merge detection, already-up-to-date
   short-circuit) pass, but before any merge operation touches state. It fires
   uniformly for all three merge paths: worktree-backed merges, ref-only
   fast-forward via `git update-ref`, and ephemeral worktree merges.
-- `merge-post` runs after the merge operation completes, whether it succeeded,
+- `post-merge` runs after the merge operation completes, whether it succeeded,
   hit a conflict, or ended via `--ff-only` refusal. Both hooks read their config
   from the target worktree (the branch being merged into).
 
@@ -60,10 +60,10 @@ date.
 
 **Failure semantics:**
 
-- A `merge-pre` hook that exits non-zero **aborts the merge** with that exit
+- A `pre-merge` hook that exits non-zero **aborts the merge** with that exit
   code. No merge operation runs; no state is touched. The default fail mode is
   `abort` (same as `worktree-pre-create`).
-- A `merge-post` hook that exits non-zero is **logged as a warning** but does
+- A `post-merge` hook that exits non-zero is **logged as a warning** but does
   not roll back the merge. The default fail mode is `warn`. Override via
   `fail_mode: abort` in `daft.yml` if you want post-merge failures to bubble up
   as errors.
@@ -80,7 +80,7 @@ date.
 | `DAFT_MERGE_EPHEMERAL`      | `true` if the merge runs in an ephemeral worktree; otherwise `false` |
 | `DAFT_MERGE_CROSS_WORKTREE` | `true` if the target worktree is not the current worktree            |
 
-**Additional env vars for `merge-post`:**
+**Additional env vars for `post-merge`:**
 
 | Variable                             | Value                                                                  |
 | ------------------------------------ | ---------------------------------------------------------------------- |
@@ -92,12 +92,12 @@ date.
 All the universal `DAFT_*` variables (`DAFT_PROJECT_ROOT`, `DAFT_GIT_DIR`,
 `DAFT_WORKTREE_PATH`, `DAFT_BRANCH_NAME`, etc.) are also set.
 
-**Example:** branch on `DAFT_MERGE_RESULT` in `merge-post` to notify only on
+**Example:** branch on `DAFT_MERGE_RESULT` in `post-merge` to notify only on
 conflicts:
 
 ```yaml
 hooks:
-  merge-post:
+  post-merge:
     jobs:
       - name: notify-on-conflict
         run: |

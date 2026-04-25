@@ -468,7 +468,7 @@ pub fn run() -> Result<()> {
         adopt,
         require_clean_target: settings.merge_require_clean_target,
     };
-    // Build the MergeHookRunner used to fire merge-pre / merge-post hooks
+    // Build the MergeHookRunner used to fire pre-merge / post-merge hooks
     // from inside `execute_start`. Holding the executor + output here (in
     // the command layer) keeps core free of presenter/output dependencies.
     let git_dir = get_git_common_dir()?;
@@ -621,7 +621,7 @@ fn fire_worktree_post_create_hook(
 /// [`HookRunner`] backed by a [`HookExecutor`] and a CLI output sink.
 ///
 /// Built in `run()` before calling `execute_start` so the core merge logic
-/// can fire `merge-pre` / `merge-post` without pulling `HookExecutor`,
+/// can fire `pre-merge` / `post-merge` without pulling `HookExecutor`,
 /// `Output`, or `JobPresenter` into the core crate. The static context
 /// (project_root, git_dir, remote, source worktree) is captured at
 /// construction; target path + branch come from the `MergeHookContext`'s
@@ -690,7 +690,7 @@ impl<'a> MergeHookRunner<'a> {
         let ctx = self.build_ctx(hook_type, merge_ctx);
         let presenter = CliPresenter::auto(&HookOutputConfig::default());
         // `execute` returns Err when a hook fails AND its fail mode is
-        // Abort. merge-pre defaults to Abort, merge-post to Warn, so the
+        // Abort. pre-merge defaults to Abort, post-merge to Warn, so the
         // trait method's "Err aborts" contract is honored by the
         // executor's own fail-mode plumbing.
         self.executor.execute(&ctx, self.output, presenter)?;
@@ -699,15 +699,15 @@ impl<'a> MergeHookRunner<'a> {
 }
 
 impl<'a> HookRunner for MergeHookRunner<'a> {
-    fn fire_merge_pre(&mut self, ctx: &MergeHookContext) -> Result<()> {
-        self.fire(HookType::MergePre, ctx)
+    fn fire_pre_merge(&mut self, ctx: &MergeHookContext) -> Result<()> {
+        self.fire(HookType::PreMerge, ctx)
     }
 
-    fn fire_merge_post(&mut self, ctx: &MergeHookContext) -> Result<()> {
-        // merge-post's fail mode is Warn by default, so executor.execute()
+    fn fire_post_merge(&mut self, ctx: &MergeHookContext) -> Result<()> {
+        // post-merge's fail mode is Warn by default, so executor.execute()
         // won't return Err. If the user has configured it to Abort, we
         // still surface the error here — the core layer will log it and
         // not roll back the merge.
-        self.fire(HookType::MergePost, ctx)
+        self.fire(HookType::PostMerge, ctx)
     }
 }

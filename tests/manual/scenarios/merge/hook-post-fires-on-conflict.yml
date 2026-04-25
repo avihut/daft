@@ -1,6 +1,6 @@
-name: Merge merge-post hook fires on conflict
+name: Merge post-merge hook fires on conflict
 description:
-  "merge-post runs even when the merge conflicts — the sentinel captures
+  "post-merge runs even when the merge conflicts — the sentinel captures
   DAFT_MERGE_RESULT=conflict and the list of conflicted files."
 
 repos:
@@ -15,14 +15,14 @@ repos:
           - message: "Initial commit"
     daft_yml: |
       hooks:
-        merge-post:
+        post-merge:
           jobs:
             - name: record-conflict
               run: |
                 {
                   echo "result=$DAFT_MERGE_RESULT"
                   echo "files=$DAFT_MERGE_CONFLICTED_FILES"
-                } > "$DAFT_WORKTREE_PATH/.merge-post-ran"
+                } > "$DAFT_WORKTREE_PATH/.post-merge-ran"
 
 steps:
   - name: Clone with trust
@@ -52,7 +52,7 @@ steps:
     expect:
       exit_code: 0
 
-  - name: Merge conflict-src into main — conflicts but merge-post still fires
+  - name: Merge conflict-src into main — conflicts but post-merge still fires
     run: git-worktree-merge conflict-src --into main 2>&1
     cwd: "$WORK_DIR/test-repo/conflict-src"
     expect:
@@ -61,8 +61,8 @@ steps:
         - "merge conflicted in"
         - "c.txt"
 
-  - name: Verify merge-post ran with conflict outcome and captured c.txt
-    run: cat "$WORK_DIR/test-repo/main/.merge-post-ran"
+  - name: Verify post-merge ran with conflict outcome and captured c.txt
+    run: cat "$WORK_DIR/test-repo/main/.post-merge-ran"
     cwd: "$WORK_DIR/test-repo/conflict-src"
     expect:
       exit_code: 0

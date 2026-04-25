@@ -336,7 +336,7 @@ pub struct ResolvedTarget {
     pub path: Option<PathBuf>,
 }
 
-/// Fires merge-pre / merge-post hooks.
+/// Fires pre-merge / post-merge hooks.
 ///
 /// Implemented by the command layer (wrapping [`HookExecutor`]) and by a
 /// no-op [`NullHookRunner`] for unit tests that exercise `execute_start`
@@ -344,30 +344,30 @@ pub struct ResolvedTarget {
 /// worktree path so callers don't have to thread it through the trait.
 ///
 /// Failure semantics are the runner's responsibility:
-/// * `fire_merge_pre` returning `Err` aborts the merge (caller propagates).
-/// * `fire_merge_post` returning `Err` is surfaced by the caller as a
+/// * `fire_pre_merge` returning `Err` aborts the merge (caller propagates).
+/// * `fire_post_merge` returning `Err` is surfaced by the caller as a
 ///   warning; the merge result is never rolled back.
 pub trait HookRunner {
-    /// Fire the `merge-pre` hook. Returning `Err` aborts the merge.
-    fn fire_merge_pre(&mut self, ctx: &MergeHookContext) -> Result<()>;
-    /// Fire the `merge-post` hook. Returning `Err` does NOT roll back the
+    /// Fire the `pre-merge` hook. Returning `Err` aborts the merge.
+    fn fire_pre_merge(&mut self, ctx: &MergeHookContext) -> Result<()>;
+    /// Fire the `post-merge` hook. Returning `Err` does NOT roll back the
     /// merge; the command layer surfaces it as a warning.
-    fn fire_merge_post(&mut self, ctx: &MergeHookContext) -> Result<()>;
+    fn fire_post_merge(&mut self, ctx: &MergeHookContext) -> Result<()>;
 }
 
 /// No-op [`HookRunner`] for unit tests and callers that don't wire hooks.
 pub struct NullHookRunner;
 
 impl HookRunner for NullHookRunner {
-    fn fire_merge_pre(&mut self, _: &MergeHookContext) -> Result<()> {
+    fn fire_pre_merge(&mut self, _: &MergeHookContext) -> Result<()> {
         Ok(())
     }
-    fn fire_merge_post(&mut self, _: &MergeHookContext) -> Result<()> {
+    fn fire_post_merge(&mut self, _: &MergeHookContext) -> Result<()> {
         Ok(())
     }
 }
 
-/// Env-var context carried to merge-pre / merge-post hooks.
+/// Env-var context carried to pre-merge / post-merge hooks.
 ///
 /// Constructed once per merge (after target resolution and pre-flight) and
 /// injected into the hook environment via
@@ -383,12 +383,12 @@ pub struct MergeHookContext {
     pub env: BTreeMap<String, String>,
 }
 
-/// Outcome of a merge operation as carried to `merge-post`.
+/// Outcome of a merge operation as carried to `post-merge`.
 ///
 /// Captures just enough to populate `DAFT_MERGE_RESULT`, `DAFT_MERGE_COMMIT_SHA`,
 /// `DAFT_MERGE_CONFLICTED_FILES`, and `DAFT_MERGE_PROMOTED_FROM_EPHEMERAL`.
 /// `AlreadyUpToDate` is included for completeness even though the current
-/// merge flow short-circuits on that check before firing merge-pre — a future
+/// merge flow short-circuits on that check before firing pre-merge — a future
 /// slice that moves hooks earlier will want this variant.
 #[derive(Debug, Clone)]
 pub enum PostOutcome {
@@ -403,7 +403,7 @@ pub enum PostOutcome {
 }
 
 impl MergeHookContext {
-    /// Build the merge-pre env-var set from the resolved merge plan.
+    /// Build the pre-merge env-var set from the resolved merge plan.
     ///
     /// `mode` derives from the flag combination (octopus wins over squash
     /// wins over ff-only; single-source merges without those flags are
@@ -927,9 +927,9 @@ pub fn execute_start(
         // "Already up to date." outcome. Short-circuit without invoking
         // `git merge`, preserving the interactive editor path for real merges.
         //
-        // Hooks deliberately do NOT fire on this path. `merge-pre` fires
+        // Hooks deliberately do NOT fire on this path. `pre-merge` fires
         // "before any merge operation"; since none runs, neither does the
-        // pre hook. `merge-post` stays paired with it — an up-to-date merge
+        // pre hook. `post-merge` stays paired with it — an up-to-date merge
         // is not an observable event that hook scripts need to react to.
         println!("Already up to date.");
         return Ok(StartOutcome {
@@ -952,7 +952,7 @@ pub fn execute_start(
     }
 
     // Cross-worktree detection: target worktree is not the current worktree.
-    // Computed once here, surfaced to merge-pre / merge-post via
+    // Computed once here, surfaced to pre-merge / post-merge via
     // DAFT_MERGE_CROSS_WORKTREE. If the CWD lookup fails (e.g. detached HEAD
     // during test harness setup) default to false — the observable wrongness
     // is cosmetic and the merge itself is unaffected.
@@ -981,7 +981,7 @@ pub fn execute_start(
 /// failure, probe the worktree's `git status --porcelain` for conflicted files
 /// so the caller can render a conflict report.
 ///
-/// Fires `merge-pre` before `git merge` (failure aborts) and `merge-post`
+/// Fires `pre-merge` before `git merge` (failure aborts) and `post-merge`
 /// after (failure is only surfaced as a warning to the caller).
 fn execute_start_in_worktree(
     params: &StartParams,
@@ -990,7 +990,7 @@ fn execute_start_in_worktree(
     cross_worktree: bool,
     hooks: &mut dyn HookRunner,
 ) -> Result<StartOutcome> {
-    // Build the merge-pre env-var context. This is the worktree-backed
+    // Build the pre-merge env-var context. This is the worktree-backed
     // path, so `is_ephemeral = false`.
     let pre_ctx = MergeHookContext::for_pre(
         &params.sources,
@@ -999,8 +999,8 @@ fn execute_start_in_worktree(
         false,
         cross_worktree,
     );
-    // `fire_merge_pre` failure aborts the merge before any state is touched.
-    hooks.fire_merge_pre(&pre_ctx)?;
+    // `fire_pre_merge` failure aborts the merge before any state is touched.
+    hooks.fire_pre_merge(&pre_ctx)?;
 
     let mut argv: Vec<String> = vec!["merge".to_string()];
     argv.extend(render_flags(&params.flags));
@@ -1023,7 +1023,7 @@ fn execute_start_in_worktree(
         Vec::new()
     };
 
-    // Build the merge-post outcome. On success, read the target worktree's
+    // Build the post-merge outcome. On success, read the target worktree's
     // HEAD to report the new commit SHA; if that read fails, fall back to an
     // empty SHA (hook scripts can test for `""`). On failure, record the
     // conflicted files — same list the caller will print.
@@ -1037,10 +1037,10 @@ fn execute_start_in_worktree(
         PostOutcome::Success { commit_sha: sha }
     };
     let post_ctx = pre_ctx.extend_for_post(outcome);
-    // merge-post never rolls back the merge — surface errors as warnings at
+    // post-merge never rolls back the merge — surface errors as warnings at
     // the caller, not Err here.
-    if let Err(e) = hooks.fire_merge_post(&post_ctx) {
-        eprintln!("warning: merge-post hook failed: {e}");
+    if let Err(e) = hooks.fire_post_merge(&post_ctx) {
+        eprintln!("warning: post-merge hook failed: {e}");
     }
 
     Ok(StartOutcome {
@@ -1055,7 +1055,7 @@ fn execute_start_in_worktree(
 
 /// Read a worktree's HEAD SHA via `git rev-parse HEAD`.
 ///
-/// Used to populate `DAFT_MERGE_COMMIT_SHA` in the `merge-post` env after a
+/// Used to populate `DAFT_MERGE_COMMIT_SHA` in the `post-merge` env after a
 /// successful merge. Best-effort: a failed read returns `None` and the
 /// caller stamps an empty string so hook scripts can still pattern-match on
 /// `DAFT_MERGE_RESULT=success` without relying on the SHA.
@@ -1117,7 +1117,7 @@ fn execute_start_ref_only(
 
     if is_pure_ff_eligible(params.sources.len(), &params.flags, Some(is_ancestor)) {
         // Pure FF via plumbing — no worktree involvement, no conflicts.
-        // Fire merge-pre before the ref moves; merge-post after. The "path"
+        // Fire pre-merge before the ref moves; post-merge after. The "path"
         // in the env stays empty so scripts can detect the ref-only FF case
         // via `[ -z "$DAFT_MERGE_TARGET_PATH" ]`.
         let pre_ctx = MergeHookContext::for_pre(
@@ -1127,7 +1127,7 @@ fn execute_start_ref_only(
             false,
             cross_worktree,
         );
-        hooks.fire_merge_pre(&pre_ctx)?;
+        hooks.fire_pre_merge(&pre_ctx)?;
 
         advance_ref_via_plumbing(git, target_branch, &source_sha)?;
         let short = &source_sha[..12.min(source_sha.len())];
@@ -1136,8 +1136,8 @@ fn execute_start_ref_only(
         let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
             commit_sha: source_sha.clone(),
         });
-        if let Err(e) = hooks.fire_merge_post(&post_ctx) {
-            eprintln!("warning: merge-post hook failed: {e}");
+        if let Err(e) = hooks.fire_post_merge(&post_ctx) {
+            eprintln!("warning: post-merge hook failed: {e}");
         }
 
         return Ok(StartOutcome {
@@ -1218,7 +1218,7 @@ fn execute_ephemeral_merge(
             )
         })?;
 
-    // Fire merge-pre after the ephemeral worktree exists (so
+    // Fire pre-merge after the ephemeral worktree exists (so
     // DAFT_MERGE_TARGET_PATH / the hook's cwd can point at it) but before
     // the merge runs. `is_ephemeral = true` so scripts can branch on it.
     //
@@ -1237,8 +1237,8 @@ fn execute_ephemeral_merge(
         true,
         cross_worktree,
     );
-    if let Err(e) = hooks.fire_merge_pre(&pre_ctx) {
-        // merge-pre aborted the merge. Clean up the ephemeral worktree we
+    if let Err(e) = hooks.fire_pre_merge(&pre_ctx) {
+        // pre-merge aborted the merge. Clean up the ephemeral worktree we
         // just created so a failed hook doesn't leave state behind.
         // Best-effort: surface the hook error regardless of cleanup result.
         let _ = crate::core::worktree::temp_worktree::remove(&temp_path);
@@ -1261,12 +1261,12 @@ fn execute_ephemeral_merge(
         })?;
 
     if status.success() {
-        // Fire merge-post BEFORE tearing down the ephemeral worktree so
+        // Fire post-merge BEFORE tearing down the ephemeral worktree so
         // scripts still see DAFT_MERGE_TARGET_PATH pointing at a live dir.
         let sha = read_head_sha(&temp_path).unwrap_or_default();
         let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success { commit_sha: sha });
-        if let Err(e) = hooks.fire_merge_post(&post_ctx) {
-            eprintln!("warning: merge-post hook failed: {e}");
+        if let Err(e) = hooks.fire_post_merge(&post_ctx) {
+            eprintln!("warning: post-merge hook failed: {e}");
         }
 
         // Ref advanced inside the temp worktree via the merge commit; the
@@ -1311,15 +1311,15 @@ fn execute_ephemeral_merge(
     // Probe conflicts at the PROMOTED path — the temp path no longer exists.
     let files = conflicted_files(&layout_path).unwrap_or_default();
 
-    // Fire merge-post after promotion so DAFT_MERGE_TARGET_PATH points at
+    // Fire post-merge after promotion so DAFT_MERGE_TARGET_PATH points at
     // the canonical sibling location, and `promoted_from_ephemeral=true`
     // lets scripts react to the promotion (e.g., notify the user).
     let post_ctx = pre_ctx.extend_for_post(PostOutcome::Conflict {
         files: files.clone(),
         promoted_from_ephemeral: true,
     });
-    if let Err(e) = hooks.fire_merge_post(&post_ctx) {
-        eprintln!("warning: merge-post hook failed: {e}");
+    if let Err(e) = hooks.fire_post_merge(&post_ctx) {
+        eprintln!("warning: post-merge hook failed: {e}");
     }
 
     Ok(StartOutcome {
@@ -2514,7 +2514,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // MergeHookContext — env-var construction for merge-pre / merge-post.
+    // MergeHookContext — env-var construction for pre-merge / post-merge.
     // These tests lock the exact string values hook scripts will observe.
     // ─────────────────────────────────────────────────────────────────
 

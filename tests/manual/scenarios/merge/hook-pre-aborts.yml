@@ -1,6 +1,6 @@
-name: Merge merge-pre hook aborts
+name: Merge pre-merge hook aborts
 description:
-  "A failing merge-pre hook aborts the merge before any git merge runs."
+  "A failing pre-merge hook aborts the merge before any git merge runs."
 
 repos:
   - name: test-repo
@@ -21,15 +21,15 @@ repos:
           - message: "Add feature branch"
     daft_yml: |
       hooks:
-        merge-pre:
+        pre-merge:
           jobs:
             - name: always-abort
               run: |
-                touch "$DAFT_MERGE_TARGET_PATH/.merge-pre-ran"
+                touch "$DAFT_MERGE_TARGET_PATH/.pre-merge-ran"
                 exit 1
 
 steps:
-  - name: Clone with trust so the merge-pre hook is allowed to run
+  - name: Clone with trust so the pre-merge hook is allowed to run
     run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
     expect:
       exit_code: 0
@@ -40,21 +40,21 @@ steps:
     expect:
       exit_code: 0
 
-  - name: Attempt the merge — merge-pre exit 1 aborts the merge
+  - name: Attempt the merge — pre-merge exit 1 aborts the merge
     run: git-worktree-merge feature/test-feature 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       # Non-zero exit propagated from the aborted merge.
       exit_code: 1
       output_contains:
-        # merge-pre's Abort fail mode prints this translation line.
-        - "merge-pre hook failed"
+        # pre-merge's Abort fail mode prints this translation line.
+        - "pre-merge hook failed"
       output_not_contains:
         # Aborted: no "Merge complete." was emitted.
         - "Merge complete."
 
-  - name: Verify merge-pre ran (sentinel from the failing hook exists)
-    run: test -f "$WORK_DIR/test-repo/main/.merge-pre-ran"
+  - name: Verify pre-merge ran (sentinel from the failing hook exists)
+    run: test -f "$WORK_DIR/test-repo/main/.pre-merge-ran"
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
