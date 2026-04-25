@@ -2475,6 +2475,103 @@ pub fn classify_source(source: &str, git: &GitCommand, project_root: &Path) -> S
     SourceClass::CommitOrOther
 }
 
+/// One unit of cleanup work, produced by [`plan_cleanup`] after
+/// pre-validation. Items where both `worktree_path` and `branch_name`
+/// would be `None` are dropped during planning.
+#[derive(Debug, Clone)]
+pub struct CleanupItem {
+    pub source: String,
+    pub worktree_path: Option<PathBuf>,
+    pub branch_name: Option<String>,
+    pub force_delete: bool,
+}
+
+/// Pre-validate cleanup for `sources` and return the items to mutate.
+/// Pure: never touches the filesystem or git refs beyond reads.
+pub fn plan_cleanup(
+    sources: &[String],
+    options: &CleanupOptions,
+    git: &GitCommand,
+    project_root: &Path,
+    target_branch: &str,
+) -> Result<Vec<CleanupItem>> {
+    let mut items: Vec<CleanupItem> = Vec::with_capacity(sources.len());
+    let mut validation_errors: Vec<String> = Vec::new();
+
+    for src in sources {
+        let class = classify_source(src, git, project_root);
+        match &class {
+            SourceClass::BranchWithWorktree {
+                worktree_path,
+                branch,
+            } => {
+                if options.remove_worktree {
+                    match git.has_uncommitted_changes_in(worktree_path) {
+                        Ok(true) => validation_errors.push(format!(
+                            "source worktree '{}' has uncommitted changes; \
+                             commit or stash them before cleanup",
+                            worktree_path.display()
+                        )),
+                        Ok(false) => {}
+                        Err(e) => validation_errors.push(format!(
+                            "failed to check cleanliness of '{}': {}",
+                            worktree_path.display(),
+                            e
+                        )),
+                    }
+                }
+                if options.also_branch
+                    && !options.squash_committed
+                    && !is_branch_merged_into(git, branch, target_branch)
+                {
+                    validation_errors.push(format!(
+                        "source branch '{}' is not fully merged into '{}'; \
+                         cleanup pre-validation refused branch deletion",
+                        branch, target_branch
+                    ));
+                }
+                items.push(CleanupItem {
+                    source: src.clone(),
+                    worktree_path: options.remove_worktree.then(|| worktree_path.clone()),
+                    branch_name: options.also_branch.then(|| branch.clone()),
+                    force_delete: options.squash_committed,
+                });
+            }
+            SourceClass::BranchNoWorktree { branch } => {
+                if options.also_branch
+                    && !options.squash_committed
+                    && !is_branch_merged_into(git, branch, target_branch)
+                {
+                    validation_errors.push(format!(
+                        "source branch '{}' is not fully merged into '{}'; \
+                         cleanup pre-validation refused branch deletion",
+                        branch, target_branch
+                    ));
+                }
+                if options.also_branch {
+                    items.push(CleanupItem {
+                        source: src.clone(),
+                        worktree_path: None,
+                        branch_name: Some(branch.clone()),
+                        force_delete: options.squash_committed,
+                    });
+                }
+            }
+            SourceClass::CommitOrOther => {
+                // Nothing to clean up.
+            }
+        }
+    }
+
+    if !validation_errors.is_empty() {
+        anyhow::bail!(
+            "cleanup pre-validation failed:\n  {}",
+            validation_errors.join("\n  ")
+        );
+    }
+    Ok(items)
+}
+
 /// Execute post-merge cleanup. Called only after a successful merge (not on
 /// conflict, not on already-up-to-date, not on failure).
 ///
@@ -2507,107 +2604,7 @@ pub fn execute_cleanup(
     project_root: &Path,
     target_branch: &str,
 ) -> Result<()> {
-    // ── Phase 1: classify and validate ───────────────────────────────────────
-    //
-    // Classify all sources first; collect all validation errors before
-    // mutating anything.
-    struct CleanupWork {
-        worktree_path: Option<PathBuf>,
-        branch: Option<String>,
-    }
-    let mut work_items: Vec<CleanupWork> = Vec::with_capacity(sources.len());
-    let mut validation_errors: Vec<String> = Vec::new();
-
-    for src in sources {
-        let class = classify_source(src, git, project_root);
-        match &class {
-            SourceClass::BranchWithWorktree {
-                worktree_path,
-                branch,
-            } => {
-                if options.remove_worktree {
-                    // Check source worktree is clean (no uncommitted changes).
-                    match git.has_uncommitted_changes_in(worktree_path) {
-                        Ok(true) => {
-                            validation_errors.push(format!(
-                                "source worktree '{}' has uncommitted changes; \
-                                 commit or stash them before cleanup",
-                                worktree_path.display()
-                            ));
-                        }
-                        Ok(false) => {}
-                        Err(e) => {
-                            validation_errors.push(format!(
-                                "failed to check cleanliness of '{}': {}",
-                                worktree_path.display(),
-                                e
-                            ));
-                        }
-                    }
-                }
-                if options.also_branch
-                    && !options.squash_committed
-                    && !is_branch_merged_into(git, branch, target_branch)
-                {
-                    // For a regular (non-squash) merge, branch -d would only
-                    // succeed if the source branch tip is reachable from the
-                    // target. Check this now rather than letting branch -d fail
-                    // after we've already removed the worktree.
-                    validation_errors.push(format!(
-                        "source branch '{}' is not fully merged into '{}'; \
-                         cleanup pre-validation refused branch deletion",
-                        branch, target_branch
-                    ));
-                }
-                work_items.push(CleanupWork {
-                    worktree_path: if options.remove_worktree {
-                        Some(worktree_path.clone())
-                    } else {
-                        None
-                    },
-                    branch: if options.also_branch {
-                        Some(branch.clone())
-                    } else {
-                        None
-                    },
-                });
-            }
-            SourceClass::BranchNoWorktree { branch } => {
-                if options.also_branch
-                    && !options.squash_committed
-                    && !is_branch_merged_into(git, branch, target_branch)
-                {
-                    validation_errors.push(format!(
-                        "source branch '{}' is not fully merged into '{}'; \
-                         cleanup pre-validation refused branch deletion",
-                        branch, target_branch
-                    ));
-                }
-                work_items.push(CleanupWork {
-                    worktree_path: None,
-                    branch: if options.also_branch {
-                        Some(branch.clone())
-                    } else {
-                        None
-                    },
-                });
-            }
-            SourceClass::CommitOrOther => {
-                // Nothing to clean up — the source is not a branch.
-                work_items.push(CleanupWork {
-                    worktree_path: None,
-                    branch: None,
-                });
-            }
-        }
-    }
-
-    if !validation_errors.is_empty() {
-        anyhow::bail!(
-            "cleanup pre-validation failed:\n  {}",
-            validation_errors.join("\n  ")
-        );
-    }
+    let plan = plan_cleanup(sources, options, git, project_root, target_branch)?;
 
     // ── Phase 2: mutate ───────────────────────────────────────────────────────
     //
@@ -2615,9 +2612,8 @@ pub fn execute_cleanup(
     // first, then delete branches. Track completed steps for the error message
     // if a Phase 2 step fails unexpectedly (race condition).
     let mut completed: Vec<String> = Vec::new();
-    let force_branch_delete = options.squash_committed;
 
-    for (item, src) in work_items.iter().zip(sources.iter()) {
+    for item in &plan {
         if let Some(ref wt_path) = item.worktree_path {
             println!("Removing worktree at {}...", wt_path.display());
             git.worktree_remove(wt_path, false).with_context(|| {
@@ -2630,7 +2626,7 @@ pub fn execute_cleanup(
                     "cleanup partially failed: failed to remove worktree '{}' \
                      (source '{}'); {}",
                     wt_path.display(),
-                    src,
+                    item.source,
                     done
                 )
             })?;
@@ -2638,10 +2634,10 @@ pub fn execute_cleanup(
         }
     }
 
-    for (item, src) in work_items.iter().zip(sources.iter()) {
-        if let Some(ref branch) = item.branch {
+    for item in &plan {
+        if let Some(ref branch) = item.branch_name {
             println!("Deleting branch {}...", branch);
-            git.branch_delete(branch, force_branch_delete)
+            git.branch_delete(branch, item.force_delete)
                 .with_context(|| {
                     let done = if completed.is_empty() {
                         "nothing removed yet".to_string()
@@ -2651,7 +2647,7 @@ pub fn execute_cleanup(
                     format!(
                         "cleanup partially failed: failed to delete branch '{}' \
                          (source '{}'); {}",
-                        branch, src, done
+                        branch, item.source, done
                     )
                 })?;
             completed.push(format!("branch '{}'", branch));
@@ -4331,5 +4327,149 @@ mod tests {
         assert_eq!(read.source_shas, intent.source_shas);
         assert_eq!(read.remove_worktree, intent.remove_worktree);
         assert_eq!(read.also_branch, intent.also_branch);
+    }
+
+    // ── plan_cleanup tests ────────────────────────────────────────────────────
+
+    #[test]
+    #[serial]
+    fn plan_cleanup_returns_item_for_branch_with_worktree() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature/test", &feat_wt);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let git = GitCommand::new(false);
+        let opts = CleanupOptions {
+            remove_worktree: true,
+            also_branch: true,
+            squash_committed: false,
+        };
+        let plan = plan_cleanup(
+            &["feature/test".to_string()],
+            &opts,
+            &git,
+            tmp.path(),
+            "main",
+        )
+        .expect("plan_cleanup should succeed when branch is mergeable");
+        assert_eq!(plan.len(), 1);
+        let item = &plan[0];
+        assert_eq!(item.source, "feature/test");
+        assert!(item.worktree_path.is_some());
+        assert_eq!(item.branch_name.as_deref(), Some("feature/test"));
+        assert!(!item.force_delete);
+    }
+
+    #[test]
+    #[serial]
+    fn plan_cleanup_drops_commit_or_other_silently() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature/test", &feat_wt);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let git = GitCommand::new(false);
+        let opts = CleanupOptions {
+            remove_worktree: true,
+            also_branch: true,
+            squash_committed: false,
+        };
+        // A commit SHA / non-branch arg → no items planned.
+        let plan = plan_cleanup(&["HEAD~0".to_string()], &opts, &git, tmp.path(), "main")
+            .expect("plan_cleanup should succeed for non-branch source");
+        assert!(plan.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn plan_cleanup_force_delete_set_when_squash_committed() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature/test", &feat_wt);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let git = GitCommand::new(false);
+        let opts = CleanupOptions {
+            remove_worktree: true,
+            also_branch: true,
+            squash_committed: true,
+        };
+        let plan = plan_cleanup(
+            &["feature/test".to_string()],
+            &opts,
+            &git,
+            tmp.path(),
+            "main",
+        )
+        .expect("squash-committed plan should bypass reachability check");
+        assert_eq!(plan.len(), 1);
+        assert!(plan[0].force_delete);
+    }
+
+    #[test]
+    #[serial]
+    fn plan_cleanup_remove_only_no_branch() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature/test", &feat_wt);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let git = GitCommand::new(false);
+        let opts = CleanupOptions {
+            remove_worktree: true,
+            also_branch: false,
+            squash_committed: false,
+        };
+        let plan = plan_cleanup(
+            &["feature/test".to_string()],
+            &opts,
+            &git,
+            tmp.path(),
+            "main",
+        )
+        .expect("remove-only plan should succeed regardless of merge state");
+        assert_eq!(plan.len(), 1);
+        assert!(plan[0].worktree_path.is_some());
+        assert!(plan[0].branch_name.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn plan_cleanup_validation_errors_short_circuit() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature/test", &feat_wt);
+        // Make the feature worktree dirty.
+        std::fs::write(feat_wt.join("uncommitted.txt"), "dirty\n").unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let git = GitCommand::new(false);
+        let opts = CleanupOptions {
+            remove_worktree: true,
+            also_branch: true,
+            squash_committed: false,
+        };
+        let err = plan_cleanup(
+            &["feature/test".to_string()],
+            &opts,
+            &git,
+            tmp.path(),
+            "main",
+        )
+        .expect_err("dirty source must fail pre-validation");
+        let msg = err.to_string();
+        assert!(msg.contains("cleanup pre-validation failed"));
+        assert!(msg.contains("uncommitted changes"));
     }
 }
