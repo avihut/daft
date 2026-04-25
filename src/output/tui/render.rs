@@ -1,6 +1,7 @@
 use super::columns::{column_content_width, select_columns, Column, ALL_COLUMNS};
 use super::state::{FinalStatus, PhaseStatus, TuiState, WorktreeStatus};
 use crate::core::sort::SortSpec;
+use crate::core::worktree::info_field::FieldSet;
 use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
 use crate::output::format::{self, format_human_size, ColumnContext, ColumnValues};
 use crate::styles;
@@ -248,6 +249,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         }
 
         let is_pruned = matches!(wt.status, WorktreeStatus::Done(FinalStatus::Pruned));
+        let row_idx = wt_idx;
         let main_cells: Vec<Cell> = if is_pruned {
             // Status and Annotation keep their normal cells; other columns are
             // left empty because their content is overlaid with a single
@@ -256,7 +258,9 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                 .iter()
                 .map(|col| {
                     if matches!(col, Column::Status | Column::Annotation) {
-                        render_cell(col, wt, vals, state.tick, state.live.cfg.stat)
+                        render_cell(col, wt, vals, state.tick, state.live.cfg.stat, |fs| {
+                            state.live.is_cell_loading(row_idx, fs)
+                        })
                     } else {
                         Cell::from("")
                     }
@@ -265,7 +269,11 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         } else {
             columns
                 .iter()
-                .map(|col| render_cell(col, wt, vals, state.tick, state.live.cfg.stat))
+                .map(|col| {
+                    render_cell(col, wt, vals, state.tick, state.live.cfg.stat, |fs| {
+                        state.live.is_cell_loading(row_idx, fs)
+                    })
+                })
                 .collect()
         };
         all_rows.push(Row::new(main_cells));
@@ -505,6 +513,14 @@ fn render_remote_cell(info: &WorktreeInfo, stat: Stat) -> Cell<'static> {
     }
 }
 
+/// Render a dim middle-dot for an unfilled cell while the table is still streaming.
+fn loading_glyph_cell() -> Cell<'static> {
+    Cell::from(Span::styled(
+        "\u{00B7}",
+        Style::default().add_modifier(Modifier::DIM),
+    ))
+}
+
 /// Render a single cell for the given column and worktree row.
 fn render_cell(
     col: &Column,
@@ -512,28 +528,82 @@ fn render_cell(
     vals: &ColumnValues,
     tick: usize,
     stat: Stat,
+    is_cell_loading: impl Fn(FieldSet) -> bool,
 ) -> Cell<'static> {
     match col {
         Column::Status => render_status_cell(wt, tick),
         Column::Annotation => render_annotation_cell(&wt.info),
         Column::Branch => Cell::from(vals.branch.clone()),
         Column::Path => Cell::from(vals.path.clone()),
-        Column::Size => Cell::from(vals.size.clone()),
-        Column::Base => render_base_cell(&wt.info, stat),
-        Column::Changes => render_changes_cell(&wt.info, stat),
-        Column::Remote => render_remote_cell(&wt.info, stat),
-        Column::Age => {
-            let cell = Cell::from(vals.branch_age.clone());
-            if vals.is_old_branch {
-                cell.style(Style::default().add_modifier(Modifier::DIM))
+        Column::Size => {
+            if vals.size.is_empty() && is_cell_loading(FieldSet::SIZE) {
+                loading_glyph_cell()
             } else {
-                cell
+                Cell::from(vals.size.clone())
             }
         }
-        Column::Owner => Cell::from(vals.owner.clone()),
-        Column::Hash => Cell::from(vals.hash.clone()),
+        Column::Base => {
+            if wt.info.ahead.is_none()
+                && wt.info.behind.is_none()
+                && is_cell_loading(FieldSet::BASE_AHEAD_BEHIND)
+            {
+                loading_glyph_cell()
+            } else {
+                render_base_cell(&wt.info, stat)
+            }
+        }
+        Column::Changes => {
+            if is_cell_loading(FieldSet::CHANGES)
+                && wt.info.staged + wt.info.unstaged + wt.info.untracked == 0
+            {
+                loading_glyph_cell()
+            } else {
+                render_changes_cell(&wt.info, stat)
+            }
+        }
+        Column::Remote => {
+            if wt.info.remote_ahead.is_none()
+                && wt.info.remote_behind.is_none()
+                && is_cell_loading(FieldSet::REMOTE_AHEAD_BEHIND)
+            {
+                loading_glyph_cell()
+            } else {
+                render_remote_cell(&wt.info, stat)
+            }
+        }
+        Column::Age => {
+            if vals.branch_age.is_empty() && is_cell_loading(FieldSet::BRANCH_AGE) {
+                loading_glyph_cell()
+            } else {
+                let cell = Cell::from(vals.branch_age.clone());
+                if vals.is_old_branch {
+                    cell.style(Style::default().add_modifier(Modifier::DIM))
+                } else {
+                    cell
+                }
+            }
+        }
+        Column::Owner => {
+            if vals.owner.is_empty() && is_cell_loading(FieldSet::OWNER) {
+                loading_glyph_cell()
+            } else {
+                Cell::from(vals.owner.clone())
+            }
+        }
+        Column::Hash => {
+            if vals.hash.is_empty() && is_cell_loading(FieldSet::LAST_COMMIT) {
+                loading_glyph_cell()
+            } else {
+                Cell::from(vals.hash.clone())
+            }
+        }
         Column::LastCommit => {
-            if vals.last_commit_age.is_empty() {
+            if vals.last_commit_age.is_empty()
+                && vals.last_commit_subject.is_empty()
+                && is_cell_loading(FieldSet::LAST_COMMIT)
+            {
+                loading_glyph_cell()
+            } else if vals.last_commit_age.is_empty() {
                 Cell::from(vals.last_commit_subject.clone())
             } else if vals.last_commit_subject.is_empty() {
                 let cell = Cell::from(vals.last_commit_age.clone());
@@ -852,4 +922,17 @@ fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
     }
 
     Cell::from(Line::from(spans))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loading_glyph_cell_renders_dim_middle_dot() {
+        let cell = loading_glyph_cell();
+        // Cell is opaque; the test just confirms it constructs without panic.
+        // Detailed visual verification belongs in the PTY scenario tests.
+        let _ = cell;
+    }
 }
