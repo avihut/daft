@@ -1,0 +1,70 @@
+name: --squash -rb refuses cleanup when source ref moved
+description:
+  "Source branch tip moved between merge start and cleanup; cleanup refuses to
+  avoid losing work; commit stays on target."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+          - path: main.py
+            content: "print('main')"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test-feature
+        from: main
+        files:
+          - path: feature.txt
+            content: "feature content"
+        commits:
+          - message: "Add feature branch"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: advance-feature
+              run: |
+                git -C "$DAFT_MERGE_TARGET_PATH/../feature/test-feature" \
+                  commit --allow-empty -m "concurrent advance" \
+                  --author="t <t@t>"
+
+steps:
+  - name: Clone with trust so pre-merge hook can run
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Materialize feature
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: --squash --no-edit -rb should refuse cleanup but keep commit
+    run: git-worktree-merge feature/test-feature --squash --no-edit -rb 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "moved during merge"
+
+  - name: Verify squash commit landed on main (commit not rolled back)
+    run: git -C $WORK_DIR/test-repo/main log --oneline -1 main
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["Squashed commit"]
+
+  - name: Verify source worktree NOT removed (cleanup didn't run)
+    run: test -d $WORK_DIR/test-repo/feature/test-feature && echo "wt_present"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0, output_contains: ["wt_present"] }
+
+  - name: Verify source branch NOT deleted
+    run: |
+      git -C $WORK_DIR/test-repo/main show-ref --verify --quiet \
+        refs/heads/feature/test-feature && echo "branch_present"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0, output_contains: ["branch_present"] }
