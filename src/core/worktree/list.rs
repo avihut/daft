@@ -231,9 +231,11 @@ impl WorktreeInfo {
         }
     }
 
-    /// Apply a typed patch in place. Returns the `FieldSet` of fields whose
-    /// value changed (the caller — typically `LiveTable` — uses this to
-    /// decide whether to re-sort).
+    /// Apply a typed patch in place. Returns the `FieldSet` of fields the
+    /// patch addressed (the caller — typically `LiveTable` — uses this to
+    /// decide whether to re-sort). The returned set reflects which cluster
+    /// the patch belongs to, not whether values actually differ from prior
+    /// state; idempotent re-sort is acceptable per spec.
     pub fn apply_patch(
         &mut self,
         patch: &crate::core::worktree::sync_dag::WorktreeInfoPatch,
