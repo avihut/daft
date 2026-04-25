@@ -216,8 +216,11 @@ impl LogStore {
         };
 
         let now = chrono::Utc::now();
+        // try_seconds avoids the i64::MIN panic in Duration::seconds. T1's parser
+        // rejects negatives, but a corrupted on-disk value could still reach here.
         let stale_threshold =
-            chrono::Duration::seconds(policy.repo_policy.stale_running_after_resolved());
+            chrono::Duration::try_seconds(policy.repo_policy.stale_running_after_resolved())
+                .unwrap_or_else(|| chrono::Duration::seconds(86_400));
 
         // Build the candidate set: group by worktree for sanity-floor evaluation.
         // Each entry holds (inv_id, job_dir, meta).
@@ -296,7 +299,7 @@ impl LogStore {
                 for (dir, meta) in jobs {
                     let retention = policy.retention_override.unwrap_or_else(|| {
                         meta.retention_seconds
-                            .map(chrono::Duration::seconds)
+                            .and_then(chrono::Duration::try_seconds)
                             .unwrap_or(policy.default_retention)
                     });
                     if now.signed_duration_since(meta.started_at) > retention {
@@ -733,6 +736,89 @@ mod tests {
             remaining.contains(&"0002".to_string()),
             "expected 0002 to survive, got: {remaining:?}"
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn clean_detects_stale_running_when_socket_missing() {
+        use crate::coordinator::clean_policy::{CleanPolicy, RepoPolicy};
+
+        let tmp = TempDir::new().unwrap();
+        // Point DAFT_STATE_DIR at our tempdir so coordinator_socket_path resolves
+        // to a path that's guaranteed not to exist (no coordinator running here).
+        // DAFT_STATE_DIR is process-global; #[serial] prevents cross-test interference.
+        let prev_state_dir = std::env::var("DAFT_STATE_DIR").ok();
+        std::env::set_var("DAFT_STATE_DIR", tmp.path());
+
+        // Use a UUID-shaped base_dir component so coordinator_socket_path
+        // produces a real-looking path (which won't exist on the test FS).
+        let repo_dir = tmp.path().join("01900000-0000-7000-8000-000000000000");
+        std::fs::create_dir(&repo_dir).unwrap();
+        let store = LogStore::new(repo_dir.clone());
+        let now = chrono::Utc::now();
+
+        // One Running invocation, started 48h ago. stale_running_after = 24h.
+        let inv_id = "0001";
+        let inv_meta = InvocationMeta {
+            invocation_id: inv_id.into(),
+            trigger_command: "post-create".into(),
+            hook_type: "worktree-post-create".into(),
+            worktree: "main".into(),
+            created_at: now - chrono::Duration::hours(48),
+        };
+        store.write_invocation_meta(inv_id, &inv_meta).unwrap();
+
+        let dir = store.create_job_dir(inv_id, "long-running").unwrap();
+        let meta = JobMeta {
+            name: "long-running".into(),
+            hook_type: "worktree-post-create".into(),
+            worktree: "main".into(),
+            command: "sleep 86400".into(),
+            working_dir: "/tmp".into(),
+            env: HashMap::new(),
+            started_at: now - chrono::Duration::hours(48),
+            status: JobStatus::Running,
+            exit_code: None,
+            pid: Some(99999),
+            background: true,
+            finished_at: None,
+            needs: vec![],
+            retention_seconds: Some(60), // 1 minute, well exceeded
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
+        };
+        store.write_meta(&dir, &meta).unwrap();
+
+        // No socket file is created — coordinator considered dead.
+        let policy = CleanPolicy {
+            retention_override: None,
+            dry_run: false,
+            default_retention: chrono::Duration::days(7),
+            repo_policy: RepoPolicy {
+                version: 1,
+                keep_last: Some(0),
+                stale_running_after_seconds: Some(86_400), // 24h
+                ..RepoPolicy::defaults()
+            },
+        };
+        let summary = store.clean(&policy).unwrap();
+
+        assert_eq!(
+            summary.stale_running_marked, 1,
+            "expected exactly one stale-Running job to be detected"
+        );
+        // The job dir should be gone after reclassification + retention sweep.
+        assert!(
+            !dir.exists(),
+            "stale-Running job dir should have been removed"
+        );
+
+        // Restore env.
+        match prev_state_dir {
+            Some(v) => std::env::set_var("DAFT_STATE_DIR", v),
+            None => std::env::remove_var("DAFT_STATE_DIR"),
+        }
     }
 
     #[test]
