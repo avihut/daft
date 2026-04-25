@@ -5,6 +5,7 @@
 
 use super::list::WorktreeInfo;
 use crate::core::ownership::BranchOwner;
+use crate::core::worktree::info_field::FieldSet;
 use crate::hooks::HookType;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -1167,5 +1168,69 @@ mod tests {
             !push_b.1.contains(&TaskOutcome::Conflict),
             "feat/b's push should not see feat/a's Conflict outcome"
         );
+    }
+}
+
+/// Tracks which `PatchSource` last wrote each (branch, field) pair.
+/// Used by `LiveTable` to suppress patches arriving from a lower-priority
+/// source after a higher-priority source has already filled a field.
+#[derive(Debug, Default)]
+pub struct PatchSourceLog {
+    last_writer: HashMap<String, Vec<(FieldSet, PatchSource)>>,
+}
+
+impl PatchSourceLog {
+    /// Returns `true` if `source` is allowed to write `fields` for `branch`.
+    /// Updates internal state to record the new write.
+    pub fn try_admit(&mut self, branch: &str, fields: FieldSet, source: PatchSource) -> bool {
+        let entries = self.last_writer.entry(branch.to_string()).or_default();
+        // If any existing entry overlaps with `fields` and has a strictly
+        // higher priority, reject.
+        for (existing_fields, existing_source) in entries.iter() {
+            if existing_fields.intersects(fields) && existing_source.priority() > source.priority()
+            {
+                return false;
+            }
+        }
+        // Admit. Record (fields, source); we don't bother garbage-collecting
+        // overlapping entries — `intersects` checks above are O(entries) and
+        // the entry count per branch is bounded by the number of patch
+        // clusters (~11).
+        entries.push((fields, source));
+        true
+    }
+}
+
+#[cfg(test)]
+mod patch_source_log_tests {
+    use super::*;
+
+    #[test]
+    fn collector_then_post_fetch_admits_post_fetch() {
+        let mut log = PatchSourceLog::default();
+        assert!(log.try_admit("a", FieldSet::REMOTE_AHEAD_BEHIND, PatchSource::Collector));
+        assert!(log.try_admit("a", FieldSet::REMOTE_AHEAD_BEHIND, PatchSource::PostFetch));
+    }
+
+    #[test]
+    fn post_fetch_then_collector_rejects_collector() {
+        let mut log = PatchSourceLog::default();
+        assert!(log.try_admit("a", FieldSet::REMOTE_AHEAD_BEHIND, PatchSource::PostFetch));
+        assert!(!log.try_admit("a", FieldSet::REMOTE_AHEAD_BEHIND, PatchSource::Collector));
+    }
+
+    #[test]
+    fn disjoint_field_sets_do_not_block_each_other() {
+        let mut log = PatchSourceLog::default();
+        assert!(log.try_admit("a", FieldSet::SIZE, PatchSource::PostFetch));
+        // Different field — Collector still allowed.
+        assert!(log.try_admit("a", FieldSet::CHANGES, PatchSource::Collector));
+    }
+
+    #[test]
+    fn different_branches_are_independent() {
+        let mut log = PatchSourceLog::default();
+        assert!(log.try_admit("a", FieldSet::SIZE, PatchSource::PostFetch));
+        assert!(log.try_admit("b", FieldSet::SIZE, PatchSource::Collector));
     }
 }
