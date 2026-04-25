@@ -1,8 +1,8 @@
-name: Merge -r pre-remove hook failure aborts cleanup
+name: Merge -r pre-remove hook failure emits warning and continues
 description:
-  "When a worktree-pre-remove hook exits non-zero with the default Abort fail
-  mode, cleanup halts. The merge commit already exists on the target; only the
-  source worktree cleanup is aborted."
+  "When a worktree-pre-remove hook exits non-zero, daft emits a warning but
+  continues cleanup. The merge commit lands on the target, the worktree is
+  removed, and the command exits 0."
 
 repos:
   - name: test-repo
@@ -40,23 +40,27 @@ steps:
     expect:
       exit_code: 0
 
-  - name: Merge with -r — pre-remove hook exits 1, command exits non-zero
+  - name: Merge with -r — pre-remove hook exits 1, command still exits 0
     run: git-worktree-merge feature/test-feature -r 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
-      exit_code: 1
+      exit_code: 0
+      output_contains:
+        - "Merge complete."
+        - "warning:"
 
-  - name: Verify merge commit landed on target (merge succeeded before cleanup)
+  - name: Verify merge commit landed on target (merge succeeded)
     run: git -C $WORK_DIR/test-repo/main log --oneline -1 main
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       output_contains:
-        - "Add feature branch"
+        - "feature/test-feature"
 
-  - name: Verify source worktree still exists (cleanup was halted)
-    run: test -d $WORK_DIR/test-repo/feature/test-feature && echo "wt_present"
+  - name: Verify source worktree was removed despite hook failure
+    run: |
+      git -C $WORK_DIR/test-repo/main worktree list --porcelain | grep "branch refs/heads/feature/test-feature" || echo "wt_removed"
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
-      output_contains: ["wt_present"]
+      output_contains: ["wt_removed"]
