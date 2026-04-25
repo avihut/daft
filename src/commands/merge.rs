@@ -1062,4 +1062,12 @@ impl<'a> HookRunner for MergeHookRunner<'a> {
         // not roll back the merge.
         self.fire(HookType::PostMerge, ctx)
     }
+
+    fn pause_spinner(&mut self) {
+        self.output.pause_spinner();
+    }
+
+    fn resume_spinner(&mut self) {
+        self.output.resume_spinner();
+    }
 }

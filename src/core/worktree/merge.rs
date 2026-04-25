@@ -459,6 +459,14 @@ pub trait HookRunner {
     /// Fire the `post-merge` hook. Returning `Err` does NOT roll back the
     /// merge; the command layer surfaces it as a warning.
     fn fire_post_merge(&mut self, ctx: &MergeHookContext) -> Result<()>;
+    /// Pause any active progress indicator (spinner) so an interactive
+    /// subprocess (typically `$EDITOR` for the squash commit) can attach
+    /// to the terminal cleanly. Resumed by [`HookRunner::resume_spinner`].
+    /// Default no-op for runners that don't drive a spinner (e.g. tests).
+    fn pause_spinner(&mut self) {}
+    /// Resume the spinner paused by [`HookRunner::pause_spinner`]. No-op
+    /// if no spinner is active.
+    fn resume_spinner(&mut self) {}
 }
 
 /// No-op [`HookRunner`] for unit tests and callers that don't wire hooks.
@@ -1354,16 +1362,18 @@ fn execute_start_in_worktree(
         commit_argv.extend(render_commit_flags(&params.flags));
 
         // Editor-opening commit: inherit stdio so $EDITOR gets the terminal.
-        // Slice 5 will bracket this with pause_spinner / resume_spinner.
+        // Pause the spinner so the editor attaches to a clean terminal.
         // Non-editor commit (--no-edit, -m, or -F supplied): capture output.
         let (commit_status, commit_captured) = if params.flags.squash_would_open_editor() {
-            let status = Command::new("git")
+            hooks.pause_spinner();
+            let status_result = Command::new("git")
                 .args(&commit_argv)
                 .current_dir(&path)
-                .status()
-                .with_context(|| {
-                    format!("failed to invoke `git commit` in '{}'", path.display())
-                })?;
+                .status();
+            hooks.resume_spinner();
+            let status = status_result.with_context(|| {
+                format!("failed to invoke `git commit` in '{}'", path.display())
+            })?;
             (status, Vec::new())
         } else {
             let result = Command::new("git")
@@ -1775,19 +1785,21 @@ fn execute_ephemeral_merge(
             commit_argv.extend(render_commit_flags(&params.flags));
 
             // Editor-opening commit: inherit stdio so $EDITOR gets the terminal.
-            // Slice 5 will bracket this with pause_spinner / resume_spinner.
+            // Pause the spinner so the editor attaches to a clean terminal.
             // Non-editor commit (--no-edit, -m, or -F supplied): capture output.
             let (commit_status, commit_captured) = if params.flags.squash_would_open_editor() {
-                let status = Command::new("git")
+                hooks.pause_spinner();
+                let status_result = Command::new("git")
                     .args(&commit_argv)
                     .current_dir(&temp_path)
-                    .status()
-                    .with_context(|| {
-                        format!(
-                            "failed to invoke `git commit` in ephemeral worktree at '{}'",
-                            temp_path.display()
-                        )
-                    })?;
+                    .status();
+                hooks.resume_spinner();
+                let status = status_result.with_context(|| {
+                    format!(
+                        "failed to invoke `git commit` in ephemeral worktree at '{}'",
+                        temp_path.display()
+                    )
+                })?;
                 (status, Vec::new())
             } else {
                 let result = Command::new("git")
@@ -4662,6 +4674,81 @@ mod tests {
         assert!(
             outcome.merge_commit_sha.is_some(),
             "merge_commit_sha must be Some after FF"
+        );
+    }
+
+    // ── Slice 5: spinner pause/resume around editor-opening squash commit ────
+
+    #[derive(Default)]
+    struct PauseTrackingRunner {
+        pause_count: usize,
+        resume_count: usize,
+    }
+
+    impl HookRunner for PauseTrackingRunner {
+        fn fire_pre_merge(&mut self, _: &MergeHookContext) -> Result<()> {
+            Ok(())
+        }
+        fn fire_post_merge(&mut self, _: &MergeHookContext) -> Result<()> {
+            Ok(())
+        }
+        fn pause_spinner(&mut self) {
+            self.pause_count += 1;
+        }
+        fn resume_spinner(&mut self) {
+            self.resume_count += 1;
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn squash_commit_with_editor_brackets_runner_pause_resume() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+        // Add a commit on feature so there is something to squash-merge.
+        ShellCommand::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "feature work"])
+            .current_dir(&feat_wt)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        // Stub editor: exits 0 without modifying the file. Git pre-populates
+        // COMMIT_EDITMSG so the commit proceeds with the auto-generated message.
+        std::env::set_var("GIT_EDITOR", "/usr/bin/true");
+        std::env::set_var("VISUAL", "/usr/bin/true");
+        std::env::set_var("EDITOR", "/usr/bin/true");
+
+        let git = GitCommand::new(false);
+        let mut runner = PauseTrackingRunner::default();
+        // squash=Some(true) with no message flags → squash_would_open_editor() == true
+        let flags = EffectiveFlags {
+            squash: Some(true),
+            ..EffectiveFlags::default()
+        };
+        let params = StartParams {
+            sources: vec!["feature".to_string()],
+            target: None,
+            flags,
+            adopt: AdoptChoice::default(),
+            require_clean_target: false,
+            cleanup_intent: None,
+        };
+        let _ = execute_start(&params, &git, tmp.path(), &mut runner);
+
+        assert_eq!(
+            runner.pause_count, 1,
+            "pause_spinner must fire exactly once around the editor-opening git commit"
+        );
+        assert_eq!(
+            runner.resume_count, 1,
+            "resume_spinner must fire exactly once around the editor-opening git commit"
         );
     }
 }
