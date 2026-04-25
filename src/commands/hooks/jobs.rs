@@ -54,6 +54,47 @@ fn format_duration(d: chrono::Duration) -> String {
     format!("{days}d{h}h")
 }
 
+/// One-line worktree header. The marker is `CURRENT_WORKTREE_SYMBOL` (`">"`)
+/// for the current worktree; non-current worktrees pass a single space so
+/// the worktree-name column lines up across both.
+#[allow(dead_code)] // Wired up in Task 2 of the timeline display plan.
+fn worktree_header(marker: &str, name: &str) -> String {
+    format!("{BOLD}{CYAN}{marker} {name}{RESET}")
+}
+
+/// One-line invocation header pinned to the spine as a bullet node.
+/// `time_ago` is the bare relative duration (e.g. `"2h"`); the helper
+/// appends `" ago"` so the rendered text reads `"2h ago"`.
+#[allow(dead_code)] // Wired up in Task 2 of the timeline display plan.
+fn invocation_node_line(time_ago: &str, trigger: &str, short_id: &str) -> String {
+    format!(
+        "  {}  {} · {trigger} {}",
+        dim("●"),
+        dim(&format!("{time_ago} ago")),
+        dim(&format!("[{short_id}]")),
+    )
+}
+
+/// Spine-only line: emits the `│` glyph in dim with no inner content.
+/// Used between adjacent invocation nodes within a worktree, and between
+/// an invocation node and the table that hangs from it.
+#[allow(dead_code)] // Wired up in Task 2 of the timeline display plan.
+fn spine_blank() -> String {
+    format!("  {}", dim("│"))
+}
+
+/// Prefix one inner-table content line with the spine + a 5-space gutter.
+#[allow(dead_code)] // Wired up in Task 2 of the timeline display plan.
+fn spine_prefixed(content: &str) -> String {
+    format!("  {}     {content}", dim("│"))
+}
+
+/// Placeholder rendered when an invocation has no jobs.
+#[allow(dead_code)] // Wired up in Task 2 of the timeline display plan.
+fn empty_invocation_placeholder() -> String {
+    format!("  {}     {}", dim("│"), dim("(no jobs declared)"))
+}
+
 #[derive(Parser, Debug)]
 #[command(about = "Manage background hook jobs")]
 pub struct JobsArgs {
@@ -1905,5 +1946,52 @@ mod tests {
         // would already error. The defensive layering in clean_logs catches
         // any value that gets past the parser.
         assert!(n.is_err() || i64::try_from(n.unwrap()).is_err());
+    }
+
+    #[test]
+    fn worktree_header_renders_marker_then_space_then_name() {
+        assert_eq!(
+            worktree_header(">", "feature/tax-calc"),
+            format!("{BOLD}{CYAN}> feature/tax-calc{RESET}"),
+        );
+        // Non-current worktrees pass " " as the marker → two leading spaces.
+        assert_eq!(
+            worktree_header(" ", "main"),
+            format!("{BOLD}{CYAN}  main{RESET}"),
+        );
+    }
+
+    #[test]
+    fn invocation_node_line_appends_ago_and_dims_node_and_bracket() {
+        assert_eq!(
+            invocation_node_line("2h", "worktree-post-create", "c9d4"),
+            format!(
+                "  {}  {} · worktree-post-create {}",
+                dim("●"),
+                dim("2h ago"),
+                dim("[c9d4]"),
+            ),
+        );
+    }
+
+    #[test]
+    fn spine_blank_is_two_spaces_then_dim_pipe() {
+        assert_eq!(spine_blank(), format!("  {}", dim("│")));
+    }
+
+    #[test]
+    fn spine_prefixed_inserts_pipe_and_five_space_gutter() {
+        assert_eq!(
+            spine_prefixed("Job   Status   Started"),
+            format!("  {}     Job   Status   Started", dim("│")),
+        );
+    }
+
+    #[test]
+    fn empty_invocation_placeholder_is_dimmed_under_spine() {
+        assert_eq!(
+            empty_invocation_placeholder(),
+            format!("  {}     {}", dim("│"), dim("(no jobs declared)")),
+        );
     }
 }
