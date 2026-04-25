@@ -23,6 +23,9 @@ const DASH: &str = "\u{2014}";
 
 /// Render the operation header showing phase progress.
 pub fn render_header(state: &TuiState, frame: &mut Frame, area: Rect) {
+    if state.phases.is_empty() {
+        return;
+    }
     let lines: Vec<Line> = state
         .phases
         .iter()

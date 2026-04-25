@@ -85,7 +85,13 @@ impl TuiRenderer {
     /// Run the render loop until all tasks complete.
     /// Returns the final `TuiState` for post-render summary.
     pub fn run(mut self) -> anyhow::Result<TuiState> {
-        let header_height = self.state.phases.len() as u16 + 1;
+        // `+1` is the phase header label row when phases exist; zero phases =
+        // no header at all (daft list).
+        let header_height = if self.state.phases.is_empty() {
+            0
+        } else {
+            self.state.phases.len() as u16 + 1
+        };
         let divider_row = if self.state.live.unowned_start_index.is_some() {
             1
         } else {
@@ -121,9 +127,8 @@ impl TuiRenderer {
             loop {
                 match self.receiver.try_recv() {
                     Ok(event) => {
-                        let is_done = matches!(event, DagEvent::AllDone);
                         self.state.apply_event(&event);
-                        if is_done {
+                        if self.state.is_complete() {
                             // Final render — position cursor past all content so
                             // the shell prompt won't overwrite the table.
                             let total_rows = self.total_rendered_rows();
