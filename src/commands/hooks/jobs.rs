@@ -8,6 +8,7 @@ use crate::coordinator::client::CoordinatorClient;
 use crate::coordinator::log_store::{InvocationMeta, JobStatus, LogStore};
 use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
 use crate::output::format::{pad_to_visible_width, shorthand_from_seconds, strip_ansi};
+use crate::output::outline::{self, Body, Node, Outline, Section};
 use crate::output::Output;
 use crate::styles::{
     blue, bold, dim, dim_underline, green, orange, red, yellow, BOLD, CURRENT_WORKTREE_SYMBOL,
@@ -58,45 +59,16 @@ fn worktree_header(marker: &str, name: &str) -> String {
     format!("{BOLD}{CYAN}{marker} {name}{RESET}")
 }
 
-/// One-line invocation header pinned to the spine as a bullet node.
-/// `time_ago` is the bare relative duration (e.g. `"2h"`); the helper
-/// appends `" ago"` so the rendered text reads `"2h ago"`.
-fn invocation_node_line(time_ago: &str, trigger: &str, short_id: &str) -> String {
+/// Label for an invocation node hanging off the spine. The bullet (`●`) is
+/// the outline renderer's responsibility; this helper produces only the
+/// label text. `time_ago` is the bare relative duration (e.g. `"2h"`); the
+/// helper appends `" ago"` so the rendered text reads `"2h ago"`.
+fn invocation_node_label(time_ago: &str, trigger: &str, short_id: &str) -> String {
     format!(
-        "{} {} · {trigger} {}",
-        dim("●"),
+        "{} · {trigger} {}",
         dim(&format!("{time_ago} ago")),
         dim(&format!("[{short_id}]")),
     )
-}
-
-/// Spine-only line: emits the `│` glyph in dim with no inner content.
-/// Used between adjacent invocation nodes within a worktree, and between
-/// an invocation node and the table that hangs from it.
-fn spine_blank() -> String {
-    dim("│")
-}
-
-/// Prefix one inner-table content line with the spine + a 3-space gutter.
-/// `tabled` adds another 1 char of left-padding to the first column under
-/// `Style::blank()`, so the visible gap between spine and content is 4
-/// characters.
-fn spine_prefixed(content: &str) -> String {
-    format!("{}   {content}", dim("│"))
-}
-
-/// Placeholder rendered when an invocation has no jobs. Matches the inner
-/// gutter used by `spine_prefixed` so the placeholder lines up under the
-/// table column.
-fn empty_invocation_placeholder() -> String {
-    format!("{}    {}", dim("│"), dim("(no jobs declared)"))
-}
-
-/// Terminator glyph rendered after the last job row of a worktree's
-/// timeline. The trailing `╴` is a half-stroke so the spine visibly
-/// tapers out instead of hanging open.
-fn spine_terminator() -> String {
-    dim("╰─╴")
 }
 
 #[derive(Parser, Debug)]
@@ -695,17 +667,17 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
         duration: String,
         size: String,
     }
-    struct Section<'a> {
+    struct InvocationSection<'a> {
         inv: &'a InvocationMeta,
         rows: Vec<JobRow>,
     }
-    let mut sections_by_worktree: Vec<(String, Vec<Section>)> = Vec::new();
+    let mut sections_by_worktree: Vec<(String, Vec<InvocationSection>)> = Vec::new();
 
     const HEADERS: [&str; 5] = ["Job", "Status", "Started", "Duration", "Size"];
     let mut max_widths: [usize; 5] = HEADERS.map(|h| strip_ansi(h).chars().count());
 
     for (worktree, inv_list) in &groups {
-        let mut secs: Vec<Section> = Vec::with_capacity(inv_list.len());
+        let mut secs: Vec<InvocationSection> = Vec::with_capacity(inv_list.len());
         for inv in inv_list {
             let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
             let mut rows: Vec<JobRow> = Vec::with_capacity(job_dirs.len());
@@ -763,80 +735,84 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                     size: size_str,
                 });
             }
-            secs.push(Section { inv, rows });
+            secs.push(InvocationSection { inv, rows });
         }
         sections_by_worktree.push((worktree.clone(), secs));
     }
 
-    // ---- Pass 2: render ----
-    for (worktree, secs) in &sections_by_worktree {
-        let marker = if worktree == &current_worktree {
-            CURRENT_WORKTREE_SYMBOL
-        } else {
-            " "
-        };
-        output.info(&worktree_header(marker, worktree));
+    // ---- Pass 2: build outline + render ----
+    //
+    // The spine timeline (column-0 │, ● per node, ╰─╴ terminator, gutter
+    // widths) lives in `crate::output::outline`. Here we just describe the
+    // structure: one section per worktree, one node per invocation, body
+    // either pre-rendered table lines or a placeholder string.
+    let outline = Outline {
+        sections: sections_by_worktree
+            .into_iter()
+            .map(|(worktree, secs)| {
+                let marker = if worktree == current_worktree {
+                    CURRENT_WORKTREE_SYMBOL
+                } else {
+                    " "
+                };
+                Section {
+                    header: worktree_header(marker, &worktree),
+                    nodes: secs
+                        .into_iter()
+                        .map(|sec| {
+                            let ago = shorthand_from_seconds(
+                                now.signed_duration_since(sec.inv.created_at).num_seconds(),
+                            );
+                            let short_id =
+                                &sec.inv.invocation_id[..4.min(sec.inv.invocation_id.len())];
+                            let label =
+                                invocation_node_label(&ago, &sec.inv.trigger_command, short_id);
 
-        for (i, sec) in secs.iter().enumerate() {
-            if i == 0 {
-                output.info("");
-            } else {
-                output.info(&spine_blank());
-            }
+                            let body = if sec.rows.is_empty() {
+                                Body::Placeholder(dim("(no jobs declared)"))
+                            } else {
+                                let mut builder = Builder::new();
+                                builder.push_record(
+                                    HEADERS
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(c, h)| {
+                                            pad_to_visible_width(&dim_underline(h), max_widths[c])
+                                        })
+                                        .collect::<Vec<_>>(),
+                                );
+                                for row in &sec.rows {
+                                    let cells = [
+                                        &row.job,
+                                        &row.status,
+                                        &row.started,
+                                        &row.duration,
+                                        &row.size,
+                                    ];
+                                    builder.push_record(
+                                        cells
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(c, cell)| {
+                                                pad_to_visible_width(cell, max_widths[c])
+                                            })
+                                            .collect::<Vec<_>>(),
+                                    );
+                                }
+                                let mut table = builder.build();
+                                table.with(Style::blank());
+                                Body::Lines(table.to_string().lines().map(String::from).collect())
+                            };
 
-            let ago =
-                shorthand_from_seconds(now.signed_duration_since(sec.inv.created_at).num_seconds());
-            let short_id = &sec.inv.invocation_id[..4.min(sec.inv.invocation_id.len())];
-            output.info(&invocation_node_line(
-                &ago,
-                &sec.inv.trigger_command,
-                short_id,
-            ));
-            output.info(&spine_blank());
+                            Node { label, body }
+                        })
+                        .collect(),
+                }
+            })
+            .collect(),
+    };
 
-            if sec.rows.is_empty() {
-                output.info(&empty_invocation_placeholder());
-                continue;
-            }
-
-            let mut builder = Builder::new();
-            builder.push_record(
-                HEADERS
-                    .iter()
-                    .enumerate()
-                    .map(|(c, h)| pad_to_visible_width(&dim_underline(h), max_widths[c]))
-                    .collect::<Vec<_>>(),
-            );
-            for row in &sec.rows {
-                let cells = [
-                    &row.job,
-                    &row.status,
-                    &row.started,
-                    &row.duration,
-                    &row.size,
-                ];
-                builder.push_record(
-                    cells
-                        .iter()
-                        .enumerate()
-                        .map(|(c, cell)| pad_to_visible_width(cell, max_widths[c]))
-                        .collect::<Vec<_>>(),
-                );
-            }
-
-            let mut table = builder.build();
-            table.with(Style::blank());
-            for line in table.to_string().lines() {
-                output.info(&spine_prefixed(line));
-            }
-        }
-
-        // Each worktree's timeline closes with a tapering terminator and a
-        // trailing blank line. The blank doubles as the inter-worktree
-        // separator and the bottom spacer when no footer follows.
-        output.info(&spine_terminator());
-        output.info("");
-    }
+    outline::render(&outline, |line| output.info(line));
 
     if args.all {
         if let Ok(cache_path) = crate::daft_config_dir().map(|p| p.join("log-clean.json")) {
@@ -2026,46 +2002,18 @@ mod tests {
     }
 
     #[test]
-    fn invocation_node_line_appends_ago_and_dims_node_and_bracket() {
-        assert_eq!(
-            invocation_node_line("2h", "worktree-post-create", "c9d4"),
-            format!(
-                "{} {} · worktree-post-create {}",
-                dim("●"),
-                dim("2h ago"),
-                dim("[c9d4]"),
-            ),
+    fn invocation_node_label_omits_bullet_and_dims_time_and_id() {
+        let rendered = invocation_node_label("2h", "worktree-post-create", "c9d4");
+        // The bullet is now the outline renderer's responsibility — the
+        // label must not contain it.
+        assert!(
+            !rendered.contains('\u{25cf}'),
+            "label should not contain bullet: {rendered:?}"
         );
-    }
-
-    #[test]
-    fn spine_blank_is_dim_pipe_flush_left() {
-        assert_eq!(spine_blank(), dim("│"));
-    }
-
-    #[test]
-    fn spine_prefixed_inserts_pipe_and_three_space_gutter() {
         assert_eq!(
-            spine_prefixed("Job   Status   Started"),
-            format!("{}   Job   Status   Started", dim("│")),
+            rendered,
+            format!("{} · worktree-post-create {}", dim("2h ago"), dim("[c9d4]"),),
         );
-    }
-
-    #[test]
-    fn empty_invocation_placeholder_aligns_with_tabled_first_column() {
-        // `spine_prefixed` emits 3 spaces of gutter and tabled adds another
-        // 1 char of left-padding to its first column under `Style::blank()`,
-        // for 4 visible chars total. The placeholder is *not* rendered
-        // through tabled, so it carries the full 4 spaces inline.
-        assert_eq!(
-            empty_invocation_placeholder(),
-            format!("{}    {}", dim("│"), dim("(no jobs declared)")),
-        );
-    }
-
-    #[test]
-    fn spine_terminator_is_dim_corner_with_taper() {
-        assert_eq!(spine_terminator(), dim("╰─╴"));
     }
 
     #[test]
