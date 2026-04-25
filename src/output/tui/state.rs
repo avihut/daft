@@ -190,6 +190,15 @@ impl TuiState {
         }
     }
 
+    /// True when the table has reached a terminal state and the renderer
+    /// should exit. For commands with phases (prune/sync/clone), this means
+    /// `done` was set by `DagEvent::AllDone`. For phase-less commands
+    /// (`daft list`), it also returns true once
+    /// `live.collection_complete` is set by `WorktreeInfoCollectionDone`.
+    pub fn is_complete(&self) -> bool {
+        self.done || (self.phases.is_empty() && self.live.collection_complete)
+    }
+
     pub fn apply_event(&mut self, event: &DagEvent) {
         match event {
             DagEvent::TaskStarted { phase, branch_name } => {
@@ -561,6 +570,55 @@ mod tests {
             true,
             false,
         )
+    }
+
+    /// Build a TuiState with a caller-specified phase list. Thin wrapper
+    /// over `TuiState::new` that supplies sensible defaults for the rest of
+    /// the args (no worktrees, Stat::Summary, default columns/sort, etc.).
+    fn make_test_state_with_phases(phases: Vec<OperationPhase>) -> TuiState {
+        TuiState::new(
+            phases,
+            Vec::new(),
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test"),
+            Stat::Summary,
+            0,
+            None,
+            false,
+            None,
+            None,
+            true,
+            false,
+        )
+    }
+
+    #[test]
+    fn is_complete_false_initially() {
+        let state = make_test_state_with_phases(vec![OperationPhase::Fetch]);
+        assert!(!state.is_complete());
+    }
+
+    #[test]
+    fn is_complete_true_after_all_done_event() {
+        let mut state = make_test_state_with_phases(vec![OperationPhase::Fetch]);
+        state.apply_event(&DagEvent::AllDone);
+        assert!(state.is_complete());
+    }
+
+    #[test]
+    fn is_complete_true_after_collection_done_when_no_phases() {
+        let mut state = make_test_state_with_phases(vec![]);
+        state.apply_event(&DagEvent::WorktreeInfoCollectionDone);
+        assert!(state.is_complete());
+    }
+
+    #[test]
+    fn is_complete_false_after_collection_done_when_phases_present() {
+        // When phases exist, completion still requires AllDone — collection
+        // finishing is just one input among many.
+        let mut state = make_test_state_with_phases(vec![OperationPhase::Fetch]);
+        state.apply_event(&DagEvent::WorktreeInfoCollectionDone);
+        assert!(!state.is_complete());
     }
 
     #[test]
