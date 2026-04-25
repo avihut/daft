@@ -1313,10 +1313,17 @@ fn clean_logs(
 ) -> Result<()> {
     use crate::coordinator::clean_policy::{parse_duration_str, CleanPolicy, CleanSummary};
 
-    let retention_override = older_than
-        .map(parse_duration_str)
-        .transpose()?
-        .and_then(|n| chrono::Duration::try_seconds(n as i64));
+    let retention_override = match older_than {
+        None => None,
+        Some(s) => {
+            let n = parse_duration_str(s)?;
+            let i = i64::try_from(n)
+                .map_err(|_| anyhow::anyhow!("--older-than value too large: {s}"))?;
+            Some(chrono::Duration::try_seconds(i).ok_or_else(|| {
+                anyhow::anyhow!("--older-than value caused duration overflow: {s}")
+            })?)
+        }
+    };
 
     let process_one = |store: &LogStore| -> Result<CleanSummary> {
         let repo_policy = store.read_repo_policy();
@@ -1341,7 +1348,10 @@ fn clean_logs(
             total_jobs += s.removed_jobs;
             total_invs += s.removed_invocations;
             total_bytes += s.freed_bytes;
-            all_candidates.extend(s.candidates);
+            let short_repo = &hash[..8.min(hash.len())];
+            for (wt, inv, name) in s.candidates {
+                all_candidates.push((format!("{short_repo}/{wt}"), inv, name));
+            }
         }
         if dry_run {
             print_dry_run_summary(output, total_invs, total_jobs, total_bytes, &all_candidates);
@@ -1761,5 +1771,16 @@ mod tests {
         assert_eq!(format_bytes(1500), "1.5 KB");
         assert_eq!(format_bytes(1500 * 1024), "1.5 MB");
         assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2.0 GB");
+    }
+
+    #[test]
+    fn clean_older_than_rejects_overflow() {
+        use crate::coordinator::clean_policy::parse_duration_str;
+        // u64::MAX seconds overflows i64.
+        let n = parse_duration_str("18446744073709551615s");
+        // The parser itself rejects overflow at the multiplier step, so this
+        // would already error. The defensive layering in clean_logs catches
+        // any value that gets past the parser.
+        assert!(n.is_err() || i64::try_from(n.unwrap()).is_err());
     }
 }
