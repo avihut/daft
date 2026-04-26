@@ -213,7 +213,7 @@ Each job in the `jobs` list supports:
 | `group`             | object               | Nested group of jobs (see [Groups](#groups))                                              |
 | `background`        | bool                 | Run this job in the background (see [Background Jobs](#background-jobs))                  |
 | `background_output` | `log` / `silent`     | Output behavior for background jobs (default: `log`)                                      |
-| `log`               | object               | Log configuration (`retention`, `path`) for this job                                      |
+| `log`               | object               | Log configuration (`retention`, `max_log_size`) for this job                              |
 
 A job must have exactly one of `run`, `script`, or `group`.
 
