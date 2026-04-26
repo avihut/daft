@@ -114,7 +114,7 @@ pub fn run(
             steps: raw.steps,
         };
 
-        let mut test_env = env::TestEnv::create(&scenario, &project_root)?;
+        let mut test_env = env::TestEnv::create(&scenario, &project_root, keep || setup_only)?;
 
         // Register for cleanup on Ctrl+C.
         if let Ok(mut guard) = cleanup_path.lock() {
