@@ -8,7 +8,11 @@ description:
   the named job. The checkout step redirects stdio to /dev/null so the forked
   coordinator (which inherits stdout/stderr) doesn't keep the test framework's
   capture pipe open for the full 30 s sleep — letting the next step run while
-  the bg job is still alive."
+  the bg job is still alive. No `env -u DAFT_TESTING` is needed: the
+  load-bearing assertions hit JSON status and `daft hooks jobs cancel`'s own
+  `result()` line, both of which are emitted regardless of the test-mode flag
+  (matches the sibling `background-jobs.yml` template, which also runs checkout
+  with bg jobs without unsetting DAFT_TESTING)."
 
 repos:
   - name: test-bg-cancel-by-name
@@ -78,10 +82,24 @@ steps:
 
   - name:
       Wait for SIGTERM to propagate and the coordinator to rewrite meta.json
-      with status=cancelled.
-    run: sleep 2
+      with status=cancelled (poll up to 10s — replaces a flaky fixed-duration
+      sleep).
+    run: |
+      for i in $(seq 1 20); do
+        if daft hooks jobs --format json 2>/dev/null | grep -q '"status": "cancelled"'; then
+          echo "STATUS_FLIPPED"
+          exit 0
+        fi
+        sleep 0.5
+      done
+      echo "STATUS_NOT_FLIPPED_AFTER_10S"
+      daft hooks jobs --format json 2>&1
+      exit 1
+    cwd: "$WORK_DIR/test-bg-cancel-by-name/feature/cancel-target"
     expect:
       exit_code: 0
+      output_contains:
+        - "STATUS_FLIPPED"
 
   - name:
       JSON listing reports the cancelled status for the long-sleep job

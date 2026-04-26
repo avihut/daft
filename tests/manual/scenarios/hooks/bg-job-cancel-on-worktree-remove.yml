@@ -9,7 +9,13 @@ description:
   match against the removed worktree fires before teardown. The checkout step
   redirects stdio to /dev/null so the forked coordinator (which inherits
   stdout/stderr) doesn't keep the test framework's capture pipe open for the
-  full 30 s sleep."
+  full 30 s sleep. No `env -u DAFT_TESTING` is needed: the load-bearing
+  assertions hit JSON status and git's `Deleted ...` line emitted via
+  `output.result()`, both of which are produced regardless of the test-mode flag
+  (matches the sibling `background-jobs.yml` template, which runs checkout with
+  bg jobs without unsetting DAFT_TESTING). Earlier asymmetry with this scenario
+  was incidental — only `remove-hook-visibility.yml` truly needs the unset
+  because it asserts on hook job stdout, which IS suppressed by DAFT_TESTING."
 
 repos:
   - name: test-bg-cancel-on-remove
@@ -50,7 +56,7 @@ steps:
       is redirected so the test framework doesn't block on the forked
       coordinator's inherited pipes
     run: |
-      env -u DAFT_TESTING git-worktree-checkout feature/auto-cancel </dev/null >/dev/null 2>&1
+      git-worktree-checkout feature/auto-cancel </dev/null >/dev/null 2>&1
       echo "checkout-exit=$?"
     cwd: "$WORK_DIR/test-bg-cancel-on-remove/main"
     expect:
@@ -72,7 +78,7 @@ steps:
       running bg job by branch-slug match. The "Stopping background job ..."
       step line is emitted via `on_step` (verbose-only); the load-bearing
       assertion is the JSON status flip below.
-    run: env -u DAFT_TESTING git-worktree-branch -D feature/auto-cancel 2>&1
+    run: git-worktree-branch -D feature/auto-cancel 2>&1
     cwd: "$WORK_DIR/test-bg-cancel-on-remove/main"
     expect:
       exit_code: 0
@@ -85,10 +91,25 @@ steps:
 
   - name:
       Wait for SIGTERM to propagate and the coordinator to rewrite meta.json
-      with status=cancelled.
-    run: sleep 2
+      with status=cancelled (poll up to 10s — replaces a flaky fixed-duration
+      sleep). Uses `--all` because the feature worktree is gone and we're
+      polling from main.
+    run: |
+      for i in $(seq 1 20); do
+        if daft hooks jobs --all --format json 2>/dev/null | grep -q '"status": "cancelled"'; then
+          echo "STATUS_FLIPPED"
+          exit 0
+        fi
+        sleep 0.5
+      done
+      echo "STATUS_NOT_FLIPPED_AFTER_10S"
+      daft hooks jobs --all --format json 2>&1
+      exit 1
+    cwd: "$WORK_DIR/test-bg-cancel-on-remove/main"
     expect:
       exit_code: 0
+      output_contains:
+        - "STATUS_FLIPPED"
 
   - name:
       JSON listing across all worktrees reports the cancelled status for the
