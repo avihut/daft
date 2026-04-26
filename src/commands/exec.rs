@@ -150,21 +150,7 @@ pub fn run() -> Result<()> {
     if targets.len() == 1 {
         let target = &targets[0];
         for spec in &pipeline {
-            let mut cmd = match spec {
-                core::CommandSpec::Argv(parts) => {
-                    let mut c = std::process::Command::new(&parts[0]);
-                    if parts.len() > 1 {
-                        c.args(&parts[1..]);
-                    }
-                    c
-                }
-                core::CommandSpec::Shell(s) => {
-                    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-                    let mut c = std::process::Command::new(shell);
-                    c.arg("-c").arg(s);
-                    c
-                }
-            };
+            let mut cmd = core::build_command(spec);
             cmd.current_dir(&target.worktree_path)
                 .env("DAFT_WORKTREE_PATH", &target.worktree_path)
                 .env("DAFT_BRANCH_NAME", &target.branch_name)

@@ -1,0 +1,59 @@
+name: "Exec resolves user shell aliases"
+description: |
+  Regression: aliases / shell functions defined in the user's rc file
+  must resolve through `daft exec` for both `-x CMD` and `-- CMD` forms.
+  Mirrors the same behavior shipped for `-x` on `daft go` / `daft start`
+  in #242.
+
+repos:
+  - name: exec-aliases
+    use_fixture: standard-remote
+
+steps:
+  - name: "Set up fake HOME with .bashrc that defines a test alias"
+    run: |
+      mkdir -p "$WORK_DIR/fakehome" && \
+        printf '%s\n' 'alias daft_test_alias="echo aliased > alias_marker.txt"' \
+          > "$WORK_DIR/fakehome/.bashrc"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/fakehome/.bashrc"
+
+  - name: "Clone the repository"
+    run: "git-worktree-clone --layout contained $REMOTE_EXEC_ALIASES"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-aliases/main"
+
+  - name: "Resolve alias passed via -x (shell form)"
+    run: |
+      HOME="$WORK_DIR/fakehome" SHELL=/bin/bash \
+        git-worktree-exec main -x 'daft_test_alias' 2>/dev/null
+    cwd: "$WORK_DIR/exec-aliases/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-aliases/main/alias_marker.txt"
+      file_contains:
+        - path: "$WORK_DIR/exec-aliases/main/alias_marker.txt"
+          content: "aliased"
+
+  - name: "Clear marker between tests"
+    run: "rm -f $WORK_DIR/exec-aliases/main/alias_marker.txt"
+    expect:
+      exit_code: 0
+
+  - name: "Resolve alias passed after -- (argv form)"
+    run: |
+      HOME="$WORK_DIR/fakehome" SHELL=/bin/bash \
+        git-worktree-exec main -- daft_test_alias 2>/dev/null
+    cwd: "$WORK_DIR/exec-aliases/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-aliases/main/alias_marker.txt"
+      file_contains:
+        - path: "$WORK_DIR/exec-aliases/main/alias_marker.txt"
+          content: "aliased"

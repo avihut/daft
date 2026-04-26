@@ -81,11 +81,15 @@ pub struct ResolvedTarget {
 /// One command in a per-worktree pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandSpec {
-    /// Direct argv exec, e.g. from `-- CMD ARGS…`. First element is the
-    /// program; remaining are its arguments. Never touches a shell.
+    /// Argv form, e.g. from `-- CMD ARGS…`. First element is the program;
+    /// remaining are its arguments. Routed through `$SHELL -i -c` after
+    /// shell-quoting so that user-defined aliases and functions resolve
+    /// the same as they would in an interactive shell.
     Argv(Vec<String>),
-    /// Shell-parsed string, e.g. from `-x 'CMD'`. Run via `$SHELL -c`,
-    /// falling back to `sh -c` if `$SHELL` is unset.
+    /// Shell-parsed string, e.g. from `-x 'CMD'`. Run via `$SHELL -i -c`,
+    /// falling back to `sh -i -c` if `$SHELL` is unset. Interactive mode
+    /// is required so the user's rc files load and their aliases / shell
+    /// functions resolve.
     Shell(String),
 }
 
@@ -684,22 +688,37 @@ where
     })
 }
 
-fn build_command(spec: &CommandSpec) -> Command {
-    match spec {
-        CommandSpec::Argv(parts) => {
-            let mut c = Command::new(&parts[0]);
-            if parts.len() > 1 {
-                c.args(&parts[1..]);
-            }
-            c
-        }
-        CommandSpec::Shell(s) => {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-            let mut c = Command::new(shell);
-            c.arg("-c").arg(s);
-            c
-        }
-    }
+/// Build the `Command` that runs a `CommandSpec` for one worktree.
+///
+/// Both forms route through `$SHELL -i -c` so that user-defined aliases
+/// and shell functions resolve the same way they do in an interactive
+/// shell. This matches the behavior of `-x` on `daft go` / `daft start`
+/// (see #242). For `Argv`, parts are shell-quoted and joined before being
+/// handed to `-c`.
+pub(crate) fn build_command(spec: &CommandSpec) -> Command {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+    let cmd_string = match spec {
+        CommandSpec::Argv(parts) => quote_argv(parts),
+        CommandSpec::Shell(s) => s.clone(),
+    };
+    let mut c = Command::new(shell);
+    c.arg("-i").arg("-c").arg(cmd_string);
+    c
+}
+
+/// Shell-quote each argv element (POSIX) and join with spaces so the
+/// result can be handed to `$SHELL -c` while preserving the original
+/// argument boundaries.
+fn quote_argv(parts: &[String]) -> String {
+    parts
+        .iter()
+        .map(|p| {
+            shlex::try_quote(p)
+                .map(|c| c.into_owned())
+                .unwrap_or_else(|_| p.clone())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Run the pipeline across all targets in the requested mode. Returns the
@@ -985,16 +1004,31 @@ mod tests {
         );
     }
 
+    /// Captured output from `run_pipeline` may include benign stderr noise
+    /// from the user's interactive shell (rc-file output, bash's
+    /// "no job control in this shell" warning). Tests that look for a
+    /// specific line should grep — not exact-match — the captured output.
+    fn captured_lines(outcome: &WorktreeOutcome) -> Vec<String> {
+        String::from_utf8_lossy(&outcome.captured_output)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect()
+    }
+
     #[test]
     fn cwd_is_worktree_path() {
         let dir = TempDir::new().unwrap();
         let target = dummy_target(&dir, "master");
         let spec = CommandSpec::Argv(vec!["pwd".into()]);
         let outcome = run_pipeline(&target, &[spec], &CancelFlag::new()).unwrap();
-        let out = String::from_utf8_lossy(&outcome.captured_output);
         let expected = dir.path().canonicalize().unwrap();
-        let got = std::path::PathBuf::from(out.trim()).canonicalize().unwrap();
-        assert_eq!(got, expected);
+        let lines = captured_lines(&outcome);
+        let found = lines
+            .iter()
+            .filter_map(|l| std::path::PathBuf::from(l).canonicalize().ok())
+            .any(|p| p == expected);
+        assert!(found, "expected pwd output {:?} in: {lines:?}", expected);
     }
 
     #[test]
@@ -1004,12 +1038,13 @@ mod tests {
         let spec = CommandSpec::Argv(vec![
             "sh".into(),
             "-c".into(),
-            "printf %s \"$DAFT_BRANCH_NAME\"".into(),
+            "printf '%s\\n' \"$DAFT_BRANCH_NAME\"".into(),
         ]);
         let outcome = run_pipeline(&target, &[spec], &CancelFlag::new()).unwrap();
-        assert_eq!(
-            String::from_utf8_lossy(&outcome.captured_output).trim(),
-            "feat/abc"
+        let lines = captured_lines(&outcome);
+        assert!(
+            lines.iter().any(|l| l == "feat/abc"),
+            "expected branch name line in: {lines:?}"
         );
     }
 
@@ -1021,9 +1056,10 @@ mod tests {
         let spec = CommandSpec::Shell("echo $((1+2))".into());
         let outcome = run_pipeline(&target, &[spec], &CancelFlag::new()).unwrap();
         assert_eq!(outcome.exit_code, 0);
-        assert_eq!(
-            String::from_utf8_lossy(&outcome.captured_output).trim(),
-            "3"
+        let lines = captured_lines(&outcome);
+        assert!(
+            lines.iter().any(|l| l == "3"),
+            "expected arithmetic result in: {lines:?}"
         );
     }
 
@@ -1071,21 +1107,31 @@ mod tests {
     }
 
     #[test]
-    fn shell_form_does_not_use_interactive_flag() {
-        // Regression guard: the legacy src/exec.rs passes -i which loads
-        // rcfiles. `daft exec -x` must NOT do that — the test passes an
-        // env var with a value that an rcfile would likely clobber, and
-        // asserts we see the outer env.
-        std::env::set_var("DAFT_EXEC_TEST_MARKER", "outer-value");
-        let dir = TempDir::new().unwrap();
-        let target = dummy_target(&dir, "master");
-        let spec = CommandSpec::Shell("echo $DAFT_EXEC_TEST_MARKER".into());
-        let outcome = run_pipeline(&target, &[spec], &CancelFlag::new()).unwrap();
-        std::env::remove_var("DAFT_EXEC_TEST_MARKER");
-        assert_eq!(
-            String::from_utf8_lossy(&outcome.captured_output).trim(),
-            "outer-value"
-        );
+    fn build_command_uses_interactive_shell_for_alias_resolution() {
+        // Regression: aliases / shell functions defined in the user's rc
+        // files must resolve through `daft exec`, matching the precedent
+        // set for `-x` on `daft go` / `daft start` in #242. Both Shell and
+        // Argv forms route through `$SHELL -i -c`.
+        let shell_cmd = build_command(&CommandSpec::Shell("gss".into()));
+        let args: Vec<&std::ffi::OsStr> = shell_cmd.get_args().collect();
+        assert_eq!(args, vec!["-i", "-c", "gss"]);
+
+        let argv_cmd = build_command(&CommandSpec::Argv(vec![
+            "git".into(),
+            "status".into(),
+            "-s".into(),
+        ]));
+        let args: Vec<&std::ffi::OsStr> = argv_cmd.get_args().collect();
+        assert_eq!(args, vec!["-i", "-c", "git status -s"]);
+
+        // Argv with whitespace / quotes must be shell-quoted so the inner
+        // shell sees the same argument boundaries.
+        let argv_cmd = build_command(&CommandSpec::Argv(vec![
+            "echo".into(),
+            "hello world".into(),
+        ]));
+        let args: Vec<&std::ffi::OsStr> = argv_cmd.get_args().collect();
+        assert_eq!(args, vec!["-i", "-c", "echo 'hello world'"]);
     }
 
     #[test]
