@@ -38,6 +38,11 @@ pub struct LiveTable {
     pub cfg: LiveTableConfig,
     pub pending_resort: bool,
     pub collection_complete: bool,
+    /// Set when the user cancels (Ctrl-C). Cells that haven't received their
+    /// patch should render a "data didn't load" marker rather than the
+    /// loading shimmer. `mark_cancelled` also sets `collection_complete = true`
+    /// so `is_cell_loading` naturally returns false post-cancel.
+    pub cancelled: bool,
     pub source_log: PatchSourceLog,
     /// Per-row bitmask of "patches received".
     pub received_patches: Vec<FieldSet>,
@@ -55,6 +60,7 @@ impl LiveTable {
             cfg,
             pending_resort: true,
             collection_complete: false,
+            cancelled: false,
             source_log: PatchSourceLog::default(),
             received_patches,
             unowned_start_index: None,
@@ -102,6 +108,17 @@ impl LiveTable {
             }
             _ => { /* phase/hook events handled by wrapper */ }
         }
+    }
+
+    /// Mark the live table as cancelled by user (Ctrl-C). Sets
+    /// `collection_complete = true` so the loading shimmer stops and
+    /// `pending_resort = true` so the next tick re-runs the sort/partition.
+    /// Cells that haven't received their patch will render via
+    /// `is_cell_unloaded` rather than the loading shimmer.
+    pub fn mark_cancelled(&mut self) {
+        self.cancelled = true;
+        self.collection_complete = true;
+        self.pending_resort = true;
     }
 
     pub fn tick(&mut self) {
@@ -270,5 +287,16 @@ mod tests {
         });
         assert_eq!(t.rows[0].info.remote_ahead, Some(5));
         assert_eq!(t.rows[0].info.remote_behind, Some(0));
+    }
+
+    #[test]
+    fn mark_cancelled_sets_cancelled_and_collection_complete() {
+        let mut t = LiveTable::new(vec![info("a")], cfg());
+        assert!(!t.cancelled);
+        assert!(!t.collection_complete);
+        t.mark_cancelled();
+        assert!(t.cancelled);
+        assert!(t.collection_complete);
+        assert!(t.pending_resort);
     }
 }
