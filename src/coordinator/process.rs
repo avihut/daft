@@ -159,6 +159,11 @@ fn run_single_background_job(
 ) {
     let start = Instant::now();
 
+    let is_silent = matches!(
+        job.background_output,
+        Some(crate::executor::BackgroundOutput::Silent)
+    );
+
     // Check if cancellation has been requested before even starting.
     if cancel_all.load(Ordering::Relaxed) {
         results.lock().unwrap().push(JobResult {
@@ -230,7 +235,8 @@ fn run_single_background_job(
 
     // 4. Spawn a log writer thread that reads from the channel and writes
     //    to output.log.
-    let log_path_for_writer = LogStore::log_path(&job_dir);
+    let log_path = LogStore::log_path(&job_dir);
+    let log_path_for_writer = log_path.clone();
     let log_writer_handle = std::thread::spawn(move || {
         let file = OpenOptions::new()
             .create(true)
@@ -285,6 +291,11 @@ fn run_single_background_job(
     // Wait for the log writer thread to finish.
     log_writer_handle.join().ok();
 
+    // Silent mode: only retain the log file if the job failed.
+    if is_silent && matches!(&cmd_result, Ok(cr) if cr.success) {
+        let _ = std::fs::remove_file(&log_path);
+    }
+
     let duration = start.elapsed();
 
     // 7. Determine final status, considering both global and per-job
@@ -317,8 +328,8 @@ fn run_single_background_job(
     }
 
     // 9. On failure, print a one-line notification to stderr (best-effort,
-    //    catches EPIPE).
-    if node_status == NodeStatus::Failed {
+    //    catches EPIPE). Suppressed for silent background_output.
+    if node_status == NodeStatus::Failed && !is_silent {
         let msg = match &cmd_result {
             Ok(cr) => format!(
                 "daft: background job '{}' failed (exit code: {})",
@@ -1118,5 +1129,102 @@ mod tests {
             "expected Cancelled, got {:?}",
             meta.status
         );
+    }
+
+    #[test]
+    fn silent_bg_output_deletes_log_on_success() {
+        use crate::executor::BackgroundOutput;
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, results) = make_test_state();
+        let job = JobSpec {
+            name: "silent-ok".to_string(),
+            command: "echo hello".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            background_output: Some(BackgroundOutput::Silent),
+            ..Default::default()
+        };
+        let inv_id = "00000000-0000-0000-0000-000000000003".to_string();
+        let ctx = make_ctx(&inv_id);
+
+        run_single_background_job(
+            &job,
+            &ctx,
+            &store,
+            &results,
+            &child_pids,
+            &cancel_all,
+            &cancelled_jobs,
+        );
+
+        let job_dir = store.base_dir.join(&inv_id).join("silent-ok");
+        let log_path = LogStore::log_path(&job_dir);
+        assert!(
+            !log_path.exists(),
+            "silent + success should leave no log file"
+        );
+    }
+
+    #[test]
+    fn silent_bg_output_keeps_log_on_failure() {
+        use crate::executor::BackgroundOutput;
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, results) = make_test_state();
+        let job = JobSpec {
+            name: "silent-fail".to_string(),
+            command: "echo whoops; exit 1".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            background_output: Some(BackgroundOutput::Silent),
+            ..Default::default()
+        };
+        let inv_id = "00000000-0000-0000-0000-000000000004".to_string();
+        let ctx = make_ctx(&inv_id);
+
+        run_single_background_job(
+            &job,
+            &ctx,
+            &store,
+            &results,
+            &child_pids,
+            &cancel_all,
+            &cancelled_jobs,
+        );
+
+        let job_dir = store.base_dir.join(&inv_id).join("silent-fail");
+        let log_path = LogStore::log_path(&job_dir);
+        assert!(
+            log_path.exists(),
+            "silent + failure should preserve log file"
+        );
+        let contents = std::fs::read_to_string(&log_path).unwrap();
+        assert!(contents.contains("whoops"));
+    }
+
+    #[test]
+    fn non_silent_bg_output_always_writes_log() {
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, results) = make_test_state();
+        let job = JobSpec {
+            name: "loud-ok".to_string(),
+            command: "echo loud".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            background_output: None,
+            ..Default::default()
+        };
+        let inv_id = "00000000-0000-0000-0000-000000000005".to_string();
+        let ctx = make_ctx(&inv_id);
+
+        run_single_background_job(
+            &job,
+            &ctx,
+            &store,
+            &results,
+            &child_pids,
+            &cancel_all,
+            &cancelled_jobs,
+        );
+
+        let job_dir = store.base_dir.join(&inv_id).join("loud-ok");
+        let log_path = LogStore::log_path(&job_dir);
+        assert!(log_path.exists(), "non-silent should always retain log");
     }
 }
