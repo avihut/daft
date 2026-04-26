@@ -1,0 +1,119 @@
+name: prune budget eviction reports the full accounting (jobs + bytes)
+description:
+  "Regression for Task 9 / Bug 4 part 1: when the per-repo size budget evicts
+  invocations, `daft hooks jobs prune` must include those evictions in the
+  user-facing summary — `Removed N job(s) (X freed)` with N > 0 and X > 0. The
+  pre-fix bug ran the budget pass for its side effect but discarded the outcome,
+  so the summary printed `No old logs to clean.` even when several MB were just
+  deleted. Sets up several invocations whose total log bytes exceed a 1KB
+  max_total_size budget, then asserts the summary line."
+
+env:
+  # Suppress the autospawn so the budget eviction only runs when we invoke
+  # `daft hooks jobs prune` explicitly.
+  DAFT_NO_LOG_CLEAN: "1"
+
+repos:
+  - name: test-prune-budget-accounting
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Prune budget accounting"
+        commits:
+          - message: "Initial commit"
+      - name: feature/budget
+        from: main
+    daft_yml: |
+      log:
+        max_total_size: 1KB
+        keep_last: 1
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: spam
+              run: |
+                python3 -c "import sys; sys.stdout.write('x' * 4096); sys.stdout.flush()"
+
+steps:
+  - name: Clone the repository with --trust-hooks
+    run:
+      env -u DAFT_TESTING git-worktree-clone --trust-hooks --layout contained
+      $REMOTE_TEST_PRUNE_BUDGET_ACCOUNTING 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature/budget — first feature-side invocation
+    run: env -u DAFT_TESTING git-worktree-checkout feature/budget 2>&1
+    cwd: "$WORK_DIR/test-prune-budget-accounting/main"
+    expect:
+      exit_code: 0
+
+  - name: Fire the spam hook four more times via `daft hooks run`
+    run: |
+      for i in 1 2 3 4; do
+        daft hooks run worktree-post-create 2>&1 || exit 1
+        sleep 0.1
+      done
+      echo MANUAL_RUNS_DONE
+    cwd: "$WORK_DIR/test-prune-budget-accounting/feature/budget"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "MANUAL_RUNS_DONE"
+
+  - name:
+      Sanity check — at least 5 invocation dirs on disk and the policy reflects
+      the 1KB budget so the post-pass has something to evict.
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-prune-budget-accounting/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+      echo "INV_COUNT_BEFORE=$INV_COUNT"
+      [ "$INV_COUNT" -ge 5 ] || { echo "expected >=5 invs, got $INV_COUNT"; exit 1; }
+      cat "$JOBS_DIR/repo-policy.json"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INV_COUNT_BEFORE="
+        - '"max_total_size_bytes": 1024'
+        - '"keep_last": 1'
+
+  - name:
+      Run `daft hooks jobs prune` — budget pass must evict oldest invocations
+      and the summary must report a non-zero job count AND a non-zero freed
+      amount (Bug 4 / Task 9 regression — pre-fix would print "No old logs to
+      clean."). Capture, then assert `Removed [1-9]` and a freed-bytes tail.
+    run: |
+      OUT=$(daft hooks jobs prune 2>&1)
+      echo "----- prune output -----"
+      echo "$OUT"
+      echo "------------------------"
+      echo "$OUT" | grep -Eq 'Removed [1-9][0-9]* job\(s\) \([0-9]' \
+        || { echo "ASSERTION_FAILED: summary missing non-zero job/freed accounting"; exit 1; }
+      echo "REMOVED_NONZERO_OK"
+    cwd: "$WORK_DIR/test-prune-budget-accounting/feature/budget"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "REMOVED_NONZERO_OK"
+      output_not_contains:
+        - "No old logs to clean."
+        - "Removed 0 job(s)"
+
+  - name:
+      Final invocation count must be at most keep_last=1 + a couple of siblings
+      on the other worktree — concretely, well below the original 5+ we started
+      with. Confirms the budget actually deleted invocation dirs from disk (not
+      just printed numbers).
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-prune-budget-accounting/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+      echo "INV_COUNT_AFTER=$INV_COUNT"
+      [ "$INV_COUNT" -le 3 ] || { echo "expected <=3 after eviction, got $INV_COUNT"; exit 1; }
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INV_COUNT_AFTER="

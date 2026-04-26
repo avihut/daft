@@ -1,0 +1,138 @@
+name: background_output silent — log handling and stderr suppression
+description:
+  "Regression for Task 7 / Bug 2: a background job declared with
+  `background_output: silent` must: (1) on success, have its log file deleted
+  from disk, (2) on failure, KEEP its log file on disk (so the user can debug),
+  (3) on failure, NOT print the `daft: background job '...' failed (...)` line
+  to stderr. The hook here declares two short bg jobs — one succeeds, one fails
+  — both with `background_output: silent`. We deliberately don't redirect stdio
+  for the checkout step (the bg jobs are fast enough that the coordinator's
+  inherited pipes stay open only briefly), and the test framework captures
+  combined stdout+stderr of the step. We then assert: the success job's log file
+  is gone, the failure job's log file remains and contains its expected stdout,
+  and the failure-notification line is absent from the checkout's captured
+  output."
+
+repos:
+  - name: test-bg-output-silent
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# bg output silent test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/silent
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: silent-ok-job
+              background: true
+              background_output: silent
+              run: echo done
+            - name: silent-fail-job
+              background: true
+              background_output: silent
+              run: |
+                echo whoops
+                exit 1
+
+steps:
+  - name: Clone the repository with --trust-hooks
+    run:
+      git-worktree-clone --trust-hooks --layout contained
+      $REMOTE_TEST_BG_OUTPUT_SILENT 2>&1
+    expect:
+      exit_code: 0
+
+  - name:
+      Checkout feature/silent — fires post-create with both bg jobs. We capture
+      combined stdout+stderr so we can later assert that the silent
+      failure-notification line is ABSENT.
+    run: git-worktree-checkout feature/silent 2>&1
+    cwd: "$WORK_DIR/test-bg-output-silent/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-bg-output-silent/feature/silent"
+      output_not_contains:
+        # Load-bearing assertion for the deferred Task 7 unit-test gap:
+        # silent-mode must NOT emit the `daft: background job '...' failed`
+        # one-liner to stderr even when the job exits non-zero.
+        - "daft: background job 'silent-fail-job' failed"
+
+  - name:
+      Wait for both bg jobs to finish — poll meta.json until neither is
+      `running`. Bounded at 10 s (replaces a flaky fixed sleep).
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-bg-output-silent/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      for i in $(seq 1 20); do
+        REMAINING=$(grep -l '"status": "running"' "$JOBS_DIR"/*/silent-*-job/meta.json 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$REMAINING" = "0" ]; then
+          # Make sure both jobs actually have meta.json files (not still
+          # being created on first poll).
+          OK=$(ls "$JOBS_DIR"/*/silent-ok-job/meta.json 2>/dev/null | wc -l | tr -d ' ')
+          FAIL=$(ls "$JOBS_DIR"/*/silent-fail-job/meta.json 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$OK" -ge 1 ] && [ "$FAIL" -ge 1 ]; then
+            echo "BG_JOBS_SETTLED"
+            exit 0
+          fi
+        fi
+        sleep 0.5
+      done
+      echo "BG_JOBS_DID_NOT_SETTLE_IN_10S"
+      ls -la "$JOBS_DIR"/*/silent-*/ 2>/dev/null
+      exit 1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "BG_JOBS_SETTLED"
+
+  - name:
+      silent-ok-job succeeded → its output.log must be DELETED from disk (silent
+      + success = best-effort log removal).
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-bg-output-silent/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      LOGS=$(find "$JOBS_DIR" -path '*silent-ok-job*' -name 'output.log' 2>/dev/null)
+      echo "ok_logs_found:"
+      printf '%s\n' "$LOGS"
+      [ -z "$LOGS" ] || { echo "ASSERTION_FAILED: silent-ok-job log was not deleted: $LOGS"; exit 1; }
+      echo "OK_LOG_DELETED"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "OK_LOG_DELETED"
+
+  - name:
+      silent-fail-job failed → its output.log must REMAIN on disk and contain
+      its `whoops` stdout (silent + failure = preserve log so the user can
+      debug).
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-bg-output-silent/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      LOG=$(find "$JOBS_DIR" -path '*silent-fail-job*' -name 'output.log' 2>/dev/null | head -1)
+      echo "fail_log: $LOG"
+      [ -n "$LOG" ] && [ -f "$LOG" ] || { echo "ASSERTION_FAILED: silent-fail-job log missing"; exit 1; }
+      grep -q "whoops" "$LOG" || { echo "ASSERTION_FAILED: silent-fail-job log missing 'whoops'"; cat "$LOG"; exit 1; }
+      echo "FAIL_LOG_PRESERVED"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "FAIL_LOG_PRESERVED"
+
+  - name:
+      Sanity check via `daft hooks jobs --format json` — the failed silent job
+      is recorded with status=failed, so the user can still discover it via the
+      listing even though stderr stayed quiet.
+    run: daft hooks jobs --format json 2>&1
+    cwd: "$WORK_DIR/test-bg-output-silent/feature/silent"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"name": "silent-fail-job"'
+        - '"status": "failed"'
