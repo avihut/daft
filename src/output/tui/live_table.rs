@@ -191,6 +191,14 @@ impl LiveTable {
         !self.collection_complete && !self.received_patches[row_idx].contains(field)
     }
 
+    /// True when the cell for `field` on `row_idx` should render the
+    /// "data didn't load" marker because the user cancelled before the
+    /// patch arrived. Mutually exclusive with `is_cell_loading` after
+    /// `mark_cancelled()` runs (which sets `collection_complete = true`).
+    pub fn is_cell_unloaded(&self, row_idx: usize, field: FieldSet) -> bool {
+        self.cancelled && !self.received_patches[row_idx].contains(field)
+    }
+
     /// Append a new row, keeping `received_patches` in lockstep so
     /// `is_cell_loading` cannot index out of bounds. Used when a
     /// dynamically-discovered branch (e.g. a gone branch surfaced after
@@ -298,5 +306,42 @@ mod tests {
         assert!(t.cancelled);
         assert!(t.collection_complete);
         assert!(t.pending_resort);
+    }
+
+    #[test]
+    fn is_cell_unloaded_false_before_cancel() {
+        let t = LiveTable::new(vec![info("a")], cfg());
+        assert!(!t.is_cell_unloaded(0, FieldSet::SIZE));
+    }
+
+    #[test]
+    fn is_cell_unloaded_true_when_cancelled_and_not_received() {
+        let mut t = LiveTable::new(vec![info("a")], cfg());
+        t.mark_cancelled();
+        assert!(t.is_cell_unloaded(0, FieldSet::SIZE));
+    }
+
+    #[test]
+    fn is_cell_unloaded_false_when_received_even_after_cancel() {
+        let mut t = LiveTable::new(vec![info("a")], cfg());
+        t.apply_event(&DagEvent::WorktreeInfoUpdated {
+            branch_name: "a".into(),
+            patch: WorktreeInfoPatch::Size(Some(123)),
+            source: PatchSource::Collector,
+        });
+        t.mark_cancelled();
+        assert!(!t.is_cell_unloaded(0, FieldSet::SIZE));
+    }
+
+    #[test]
+    fn is_cell_loading_returns_false_after_mark_cancelled() {
+        // Regression guard: mark_cancelled sets collection_complete = true,
+        // which makes is_cell_loading naturally return false. We rely on this
+        // so the render path doesn't need a second "and not cancelled" check
+        // in the loading branch.
+        let mut t = LiveTable::new(vec![info("a")], cfg());
+        assert!(t.is_cell_loading(0, FieldSet::SIZE));
+        t.mark_cancelled();
+        assert!(!t.is_cell_loading(0, FieldSet::SIZE));
     }
 }
