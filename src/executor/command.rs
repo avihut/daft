@@ -66,6 +66,22 @@ pub fn run_command(
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
+    // Move the child into its own session/process-group so cancelling can
+    // signal every descendant. Without this, on shells that fork+wait (e.g.
+    // dash with certain command shapes) signalling the bare PID kills only
+    // the wrapping `sh` and orphans the actual workload (e.g. `sleep 30`).
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        let setsid_hook = || -> std::io::Result<()> {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        };
+        command.pre_exec(setsid_hook);
+    }
+
     let mut child = command
         .spawn()
         .with_context(|| format!("Failed to spawn: {cmd}"))?;
