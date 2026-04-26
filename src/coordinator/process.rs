@@ -291,11 +291,6 @@ fn run_single_background_job(
     // Wait for the log writer thread to finish.
     log_writer_handle.join().ok();
 
-    // Silent mode: only retain the log file if the job failed.
-    if is_silent && matches!(&cmd_result, Ok(cr) if cr.success) {
-        let _ = std::fs::remove_file(&log_path);
-    }
-
     let duration = start.elapsed();
 
     // 7. Determine final status, considering both global and per-job
@@ -318,6 +313,12 @@ fn run_single_background_job(
             Err(_) => (JobStatus::Failed, NodeStatus::Failed, None),
         }
     };
+
+    // Silent mode: only retain the log file if the job did not succeed
+    // (failed or cancelled). On success, the log is best-effort deleted.
+    if is_silent && node_status == NodeStatus::Succeeded {
+        let _ = std::fs::remove_file(&log_path);
+    }
 
     // 8. Write updated meta with the final status, exit code, and finish time.
     meta.status = status;
@@ -1226,5 +1227,54 @@ mod tests {
         let job_dir = store.base_dir.join(&inv_id).join("loud-ok");
         let log_path = LogStore::log_path(&job_dir);
         assert!(log_path.exists(), "non-silent should always retain log");
+    }
+
+    #[test]
+    fn silent_bg_output_keeps_log_when_status_is_cancelled() {
+        use crate::executor::BackgroundOutput;
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, results) = make_test_state();
+
+        // Pre-insert into cancelled_jobs BEFORE running. The cmd will succeed
+        // (exit 0), but the classifier will see was_cancelled_per_job and route
+        // status to Cancelled. The log must survive.
+        cancelled_jobs
+            .lock()
+            .unwrap()
+            .insert("pre-cancelled".to_string());
+
+        let job = JobSpec {
+            name: "pre-cancelled".to_string(),
+            command: "echo would-have-succeeded".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            background_output: Some(BackgroundOutput::Silent),
+            ..Default::default()
+        };
+        let inv_id = "00000000-0000-0000-0000-000000000006".to_string();
+        let ctx = make_ctx(&inv_id);
+
+        run_single_background_job(
+            &job,
+            &ctx,
+            &store,
+            &results,
+            &child_pids,
+            &cancel_all,
+            &cancelled_jobs,
+        );
+
+        let job_dir = store.base_dir.join(&inv_id).join("pre-cancelled");
+        let log_path = LogStore::log_path(&job_dir);
+        assert!(
+            log_path.exists(),
+            "silent + cancelled (even when cmd succeeded) should preserve log"
+        );
+
+        let meta = store.read_meta(&job_dir).expect("meta should exist");
+        assert!(
+            matches!(meta.status, JobStatus::Cancelled),
+            "expected Cancelled, got {:?}",
+            meta.status
+        );
     }
 }
