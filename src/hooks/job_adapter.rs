@@ -669,7 +669,6 @@ mod tests {
             background_output: Some(BackgroundOutput::Silent),
             log: Some(LogConfig {
                 retention: Some("14d".to_string()),
-                path: Some("./logs/bg.log".to_string()),
                 ..Default::default()
             }),
             ..Default::default()

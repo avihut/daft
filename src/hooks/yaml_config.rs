@@ -1046,7 +1046,6 @@ hooks:
         background: false
         log:
           retention: "14d"
-          path: "./build-logs/install.log"
       - name: silent job
         run: echo hello
         background_output: silent
@@ -1063,10 +1062,6 @@ hooks:
         assert_eq!(
             jobs[1].log.as_ref().unwrap().retention,
             Some("14d".to_string())
-        );
-        assert_eq!(
-            jobs[1].log.as_ref().unwrap().path,
-            Some("./build-logs/install.log".to_string())
         );
         // Job 2: background_output
         assert_eq!(jobs[2].background_output, Some(BackgroundOutput::Silent));

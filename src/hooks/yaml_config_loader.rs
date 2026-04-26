@@ -227,7 +227,6 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
 pub fn merge_log_configs(o: LogConfig, b: LogConfig) -> LogConfig {
     LogConfig {
         retention: o.retention.or(b.retention),
-        path: o.path.or(b.path),
         max_log_size: o.max_log_size.or(b.max_log_size),
         max_total_size: o.max_total_size.or(b.max_total_size),
         keep_last: o.keep_last.or(b.keep_last),
@@ -882,33 +881,9 @@ hooks:
     }
 
     #[test]
-    fn test_merge_log_config_overlay_partial() {
-        let base = YamlConfig {
-            log: Some(crate::executor::LogConfig {
-                retention: Some("7d".to_string()),
-                path: Some("/base/path".to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let overlay = YamlConfig {
-            log: Some(crate::executor::LogConfig {
-                retention: Some("14d".to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let merged = merge_configs(base, overlay);
-        let log = merged.log.unwrap();
-        assert_eq!(log.retention, Some("14d".to_string()));
-        assert_eq!(log.path, Some("/base/path".to_string()));
-    }
-
-    #[test]
     fn merge_prefers_override_for_new_fields() {
         let base = LogConfig {
             retention: Some("7d".into()),
-            path: None,
             max_log_size: Some("10MB".into()),
             max_total_size: Some("500MB".into()),
             keep_last: Some(3),
@@ -916,7 +891,6 @@ hooks:
         };
         let override_cfg = LogConfig {
             retention: Some("14d".into()),
-            path: None,
             max_log_size: Some("20MB".into()),
             max_total_size: None,      // base wins for this one
             keep_last: None,           // base wins

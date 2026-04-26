@@ -37,9 +37,6 @@ pub struct LogConfig {
     /// Log retention duration (e.g., "7d", "24h", "30m").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention: Option<String>,
-    /// Override log file path. Absolute or relative to worktree root.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
 
     /// Maximum size of a single output.log before it is truncated at cleanup
     /// time. Accepts `10MB`, `2GB`, etc. Per-job overridable.
