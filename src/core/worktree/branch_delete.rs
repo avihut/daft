@@ -803,8 +803,13 @@ fn delete_single_branch(
 
     let has_worktree = branch.worktree_path.is_some();
 
-    // Step 1: Run pre-remove hook (only if worktree exists)
+    // Step 1: Cancel any running background jobs for this worktree, then
+    // run the pre-remove hook (only if worktree exists). The cancel is
+    // best-effort and runs first so the pre-remove hook sees a settled
+    // coordinator state and can audit the worktree without racing against
+    // jobs that are about to be torn down anyway.
     if let Some(ref wt_path) = branch.worktree_path {
+        super::prune::cancel_background_jobs_for_worktree(&branch.name, sink);
         run_removal_hook(HookType::PreRemove, ctx, wt_path, &branch.name, sink);
     }
 
