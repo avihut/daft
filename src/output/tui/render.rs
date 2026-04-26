@@ -157,36 +157,50 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     } else {
         area
     };
-    let columns = match (&state.live.cfg.columns, state.live.cfg.columns_explicit) {
-        // Replace mode: user explicitly chose columns, don't responsively drop.
-        (Some(user_cols), true) => user_cols.clone(),
-        // Modifier mode: user tweaked defaults, responsive dropping still applies.
-        // Opt-in columns (not in ALL_COLUMNS, e.g. Size) that the user explicitly
-        // added are always included — they bypass responsive dropping.
-        (Some(user_cols), false) => {
-            let responsive =
-                select_columns(table_area.width, &state.live.rows, &row_vals, sort_ref);
-            let mut cols: Vec<Column> = responsive
-                .into_iter()
-                .filter(|c| matches!(c, Column::Status) || user_cols.contains(c))
-                .collect();
-            for col in user_cols {
-                if !ALL_COLUMNS.contains(col) && !cols.contains(col) {
-                    cols.push(*col);
-                }
-            }
-            cols
-        }
-        // No column selection: fully responsive.
-        (None, _) => select_columns(table_area.width, &state.live.rows, &row_vals, sort_ref),
-    };
-    // Status is always prepended for TUI commands.
-    let columns = if !columns.contains(&Column::Status) {
-        let mut with_status = vec![Column::Status];
-        with_status.extend(columns);
-        with_status
+    let columns = if state.phases.is_empty() {
+        // Phase-less = daft list. Use user-selected columns as-is in canonical
+        // order (matching the blocking print_table behavior). No Status column
+        // (no operations to track), no responsive dropping (let the table wrap
+        // or truncate via Branch/Path widths instead of dropping data columns).
+        state.live.cfg.columns.clone().unwrap_or_else(|| {
+            // Fallback to defaults converted from ListColumn::list_defaults.
+            crate::core::columns::ListColumn::list_defaults()
+                .iter()
+                .map(|lc| Column::from_list_column(*lc))
+                .collect()
+        })
     } else {
-        columns
+        let columns = match (&state.live.cfg.columns, state.live.cfg.columns_explicit) {
+            // Replace mode: user explicitly chose columns, don't responsively drop.
+            (Some(user_cols), true) => user_cols.clone(),
+            // Modifier mode: user tweaked defaults, responsive dropping still applies.
+            // Opt-in columns (not in ALL_COLUMNS, e.g. Size) that the user explicitly
+            // added are always included — they bypass responsive dropping.
+            (Some(user_cols), false) => {
+                let responsive =
+                    select_columns(table_area.width, &state.live.rows, &row_vals, sort_ref);
+                let mut cols: Vec<Column> = responsive
+                    .into_iter()
+                    .filter(|c| matches!(c, Column::Status) || user_cols.contains(c))
+                    .collect();
+                for col in user_cols {
+                    if !ALL_COLUMNS.contains(col) && !cols.contains(col) {
+                        cols.push(*col);
+                    }
+                }
+                cols
+            }
+            // No column selection: fully responsive.
+            (None, _) => select_columns(table_area.width, &state.live.rows, &row_vals, sort_ref),
+        };
+        // Status is always prepended for TUI commands with phases.
+        if !columns.contains(&Column::Status) {
+            let mut with_status = vec![Column::Status];
+            with_status.extend(columns);
+            with_status
+        } else {
+            columns
+        }
     };
 
     let constraints: Vec<Constraint> = columns

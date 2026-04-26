@@ -234,9 +234,19 @@ pub fn run_live(args: Args, settings: DaftSettings) -> Result<()> {
     // Single source of truth for cancellation: the renderer's Ctrl-C handler
     // flips the same flag the collector workers observe between cluster calls.
     let cancel = collector_handle.cancel_flag();
+
+    // The renderer waits for `WorktreeInfoCollectionDone`, which the collector
+    // handle emits on `join()`. Joining must happen on a separate thread so the
+    // sentinel fires while the renderer is still listening on the channel.
+    let join_thread = std::thread::spawn(move || {
+        collector_handle.join();
+    });
+
     let renderer = TuiRenderer::new(state, rx).with_cancel_signal(cancel);
     let _final_state = renderer.run()?;
 
-    collector_handle.join();
+    // Workers have finished by the time the sentinel arrived; this should
+    // return promptly. Cancel first in case Ctrl-C broke us out early.
+    let _ = join_thread.join();
     Ok(())
 }
