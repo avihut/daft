@@ -349,6 +349,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                             state.live.cfg.stat,
                             assigned_widths[i],
                             |fs| state.live.is_cell_loading(row_idx, fs),
+                            |fs| state.live.is_cell_unloaded(row_idx, fs),
                         )
                     } else {
                         Cell::from("")
@@ -368,6 +369,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                         state.live.cfg.stat,
                         assigned_widths[i],
                         |fs| state.live.is_cell_loading(row_idx, fs),
+                        |fs| state.live.is_cell_unloaded(row_idx, fs),
                     )
                 })
                 .collect()
@@ -662,7 +664,6 @@ fn skeleton_pulse_color(tick: usize) -> u8 {
 /// received before the user cancelled (Ctrl-C). Single em-dash (U+2014),
 /// dim + DarkGray. Distinct from the loading shimmer (which is a full-width
 /// bar of U+25AC) and from a legitimately-empty cell (a blank).
-#[allow(dead_code)]
 fn not_loaded_cell() -> Cell<'static> {
     Cell::from(Span::styled(
         "\u{2014}",
@@ -676,6 +677,9 @@ fn not_loaded_cell() -> Cell<'static> {
 ///
 /// `width` is the column's assigned width — used to size shimmer bars when
 /// the cell is in a loading state.
+/// `is_cell_unloaded` returns true when the user cancelled before the cell's
+/// patch arrived; takes precedence over `is_cell_loading`.
+#[allow(clippy::too_many_arguments)]
 fn render_cell(
     col: &Column,
     wt: &super::state::WorktreeRow,
@@ -684,6 +688,7 @@ fn render_cell(
     stat: Stat,
     width: u16,
     is_cell_loading: impl Fn(FieldSet) -> bool,
+    is_cell_unloaded: impl Fn(FieldSet) -> bool,
 ) -> Cell<'static> {
     match col {
         Column::Status => render_status_cell(wt, tick),
@@ -691,44 +696,57 @@ fn render_cell(
         Column::Branch => Cell::from(vals.branch.clone()),
         Column::Path => Cell::from(vals.path.clone()),
         Column::Size => {
-            if vals.size.is_empty() && is_cell_loading(FieldSet::SIZE) {
-                loading_shimmer_cell(width, tick)
+            if vals.size.is_empty() {
+                if is_cell_unloaded(FieldSet::SIZE) {
+                    not_loaded_cell()
+                } else if is_cell_loading(FieldSet::SIZE) {
+                    loading_shimmer_cell(width, tick)
+                } else {
+                    Cell::from(vals.size.clone())
+                }
             } else {
                 Cell::from(vals.size.clone())
             }
         }
         Column::Base => {
-            if wt.info.ahead.is_none()
-                && wt.info.behind.is_none()
-                && is_cell_loading(FieldSet::BASE_AHEAD_BEHIND)
-            {
+            let unfilled = wt.info.ahead.is_none() && wt.info.behind.is_none();
+            if unfilled && is_cell_unloaded(FieldSet::BASE_AHEAD_BEHIND) {
+                not_loaded_cell()
+            } else if unfilled && is_cell_loading(FieldSet::BASE_AHEAD_BEHIND) {
                 loading_shimmer_cell(width, tick)
             } else {
                 render_base_cell(&wt.info, stat)
             }
         }
         Column::Changes => {
-            if is_cell_loading(FieldSet::CHANGES)
-                && wt.info.staged + wt.info.unstaged + wt.info.untracked == 0
-            {
+            let unfilled = wt.info.staged + wt.info.unstaged + wt.info.untracked == 0;
+            if unfilled && is_cell_unloaded(FieldSet::CHANGES) {
+                not_loaded_cell()
+            } else if unfilled && is_cell_loading(FieldSet::CHANGES) {
                 loading_shimmer_cell(width, tick)
             } else {
                 render_changes_cell(&wt.info, stat)
             }
         }
         Column::Remote => {
-            if wt.info.remote_ahead.is_none()
-                && wt.info.remote_behind.is_none()
-                && is_cell_loading(FieldSet::REMOTE_AHEAD_BEHIND)
-            {
+            let unfilled = wt.info.remote_ahead.is_none() && wt.info.remote_behind.is_none();
+            if unfilled && is_cell_unloaded(FieldSet::REMOTE_AHEAD_BEHIND) {
+                not_loaded_cell()
+            } else if unfilled && is_cell_loading(FieldSet::REMOTE_AHEAD_BEHIND) {
                 loading_shimmer_cell(width, tick)
             } else {
                 render_remote_cell(&wt.info, stat)
             }
         }
         Column::Age => {
-            if vals.branch_age.is_empty() && is_cell_loading(FieldSet::BRANCH_AGE) {
-                loading_shimmer_cell(width, tick)
+            if vals.branch_age.is_empty() {
+                if is_cell_unloaded(FieldSet::BRANCH_AGE) {
+                    not_loaded_cell()
+                } else if is_cell_loading(FieldSet::BRANCH_AGE) {
+                    loading_shimmer_cell(width, tick)
+                } else {
+                    Cell::from(vals.branch_age.clone())
+                }
             } else {
                 let cell = Cell::from(vals.branch_age.clone());
                 if vals.is_old_branch {
@@ -739,25 +757,40 @@ fn render_cell(
             }
         }
         Column::Owner => {
-            if vals.owner.is_empty() && is_cell_loading(FieldSet::OWNER) {
-                loading_shimmer_cell(width, tick)
+            if vals.owner.is_empty() {
+                if is_cell_unloaded(FieldSet::OWNER) {
+                    not_loaded_cell()
+                } else if is_cell_loading(FieldSet::OWNER) {
+                    loading_shimmer_cell(width, tick)
+                } else {
+                    Cell::from(vals.owner.clone())
+                }
             } else {
                 Cell::from(vals.owner.clone())
             }
         }
         Column::Hash => {
-            if vals.hash.is_empty() && is_cell_loading(FieldSet::LAST_COMMIT) {
-                loading_shimmer_cell(width, tick)
+            if vals.hash.is_empty() {
+                if is_cell_unloaded(FieldSet::LAST_COMMIT) {
+                    not_loaded_cell()
+                } else if is_cell_loading(FieldSet::LAST_COMMIT) {
+                    loading_shimmer_cell(width, tick)
+                } else {
+                    Cell::from(vals.hash.clone())
+                }
             } else {
                 Cell::from(vals.hash.clone())
             }
         }
         Column::LastCommit => {
-            if vals.last_commit_age.is_empty()
-                && vals.last_commit_subject.is_empty()
-                && is_cell_loading(FieldSet::LAST_COMMIT)
-            {
-                loading_shimmer_cell(width, tick)
+            if vals.last_commit_age.is_empty() && vals.last_commit_subject.is_empty() {
+                if is_cell_unloaded(FieldSet::LAST_COMMIT) {
+                    not_loaded_cell()
+                } else if is_cell_loading(FieldSet::LAST_COMMIT) {
+                    loading_shimmer_cell(width, tick)
+                } else {
+                    Cell::from("")
+                }
             } else if vals.last_commit_age.is_empty() {
                 Cell::from(vals.last_commit_subject.clone())
             } else if vals.last_commit_subject.is_empty() {
@@ -1265,6 +1298,117 @@ mod tests {
                 .modifier
                 .contains(ratatui::style::Modifier::DIM),
             "not_loaded_cell should be DIM"
+        );
+    }
+
+    #[test]
+    fn render_cell_uses_not_loaded_when_cancelled_and_unfilled() {
+        // For each loadable column, with is_cell_unloaded returning true,
+        // the cell should render the dim em-dash, not the shimmer bar and
+        // not an empty cell.
+        use crate::core::worktree::info_field::FieldSet;
+        use crate::output::format::{compute_column_values, ColumnContext};
+        use crate::output::tui::state::WorktreeRow;
+
+        let info = WorktreeInfo::empty("a");
+        let wt = WorktreeRow::idle(info.clone());
+        let ctx = ColumnContext {
+            project_root: &PathBuf::from("/tmp"),
+            cwd: &PathBuf::from("/tmp"),
+            now: 0,
+            stat: Stat::Lines,
+        };
+        let vals = compute_column_values(&info, &ctx);
+
+        let columns = [
+            (Column::Size, FieldSet::SIZE),
+            (Column::Base, FieldSet::BASE_AHEAD_BEHIND),
+            (Column::Changes, FieldSet::CHANGES),
+            (Column::Remote, FieldSet::REMOTE_AHEAD_BEHIND),
+            (Column::Age, FieldSet::BRANCH_AGE),
+            (Column::Owner, FieldSet::OWNER),
+            (Column::Hash, FieldSet::LAST_COMMIT),
+            (Column::LastCommit, FieldSet::LAST_COMMIT),
+        ];
+
+        for (col, _field) in columns {
+            let backend = TestBackend::new(10, 1);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    let cell = render_cell(
+                        &col,
+                        &wt,
+                        &vals,
+                        0,
+                        Stat::Lines,
+                        10,
+                        |_fs| false, // not loading (cancelled implies collection_complete)
+                        |_fs| true,  // is_cell_unloaded → true
+                    );
+                    let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
+                    frame.render_widget(table, frame.area());
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            assert_eq!(
+                buffer[(0, 0)].symbol(),
+                "\u{2014}",
+                "column {col:?} should render em-dash when cancelled and unfilled"
+            );
+        }
+    }
+
+    #[test]
+    fn render_cell_uses_value_when_received_even_if_cancelled() {
+        // If the cell value is non-empty (received), is_cell_unloaded should
+        // be false and the value should render. Guards against rendering
+        // "—" over real data.
+        use crate::output::format::{compute_column_values, ColumnContext};
+        use crate::output::tui::state::WorktreeRow;
+
+        let mut info = WorktreeInfo::empty("a");
+        info.size_bytes = Some(1024);
+        let wt = WorktreeRow::idle(info.clone());
+        let ctx = ColumnContext {
+            project_root: &PathBuf::from("/tmp"),
+            cwd: &PathBuf::from("/tmp"),
+            now: 0,
+            stat: Stat::Lines,
+        };
+        let vals = compute_column_values(&info, &ctx);
+
+        let backend = TestBackend::new(10, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let cell = render_cell(
+                    &Column::Size,
+                    &wt,
+                    &vals,
+                    0,
+                    Stat::Lines,
+                    10,
+                    |_fs| false, // not loading
+                    |_fs| false, // not unloaded — received
+                );
+                let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
+                frame.render_widget(table, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..10)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            !row.contains("\u{2014}"),
+            "received cell should render value, not em-dash; got {row:?}"
+        );
+        assert!(
+            row.trim_end()
+                .chars()
+                .any(|c| c.is_ascii_digit() || c == 'B' || c == 'K'),
+            "received Size cell should render numeric/unit value; got {row:?}"
         );
     }
 }
