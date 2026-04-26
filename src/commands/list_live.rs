@@ -255,11 +255,39 @@ pub fn run_live(args: Args, settings: DaftSettings) -> Result<()> {
         collector_handle.join();
     });
 
-    let renderer = TuiRenderer::new(state, rx).with_cancel_signal(cancel);
-    let _final_state = renderer.run()?;
+    // Enable raw mode so crossterm's event loop receives Ctrl-C as a key event
+    // (ISIG off) and the terminal driver doesn't echo `^C` mid-render. The
+    // SIGINT handler above stays installed as a fallback in case raw mode fails
+    // to enable. RAII guard restores cooked mode on every exit path.
+    let _raw_guard = enable_raw_mode_guard();
 
-    // Workers have finished by the time the sentinel arrived; this should
-    // return promptly. Cancel first in case Ctrl-C broke us out early.
-    let _ = join_thread.join();
+    let renderer = TuiRenderer::new(state, rx).with_cancel_signal(cancel);
+    let final_state = renderer.run()?;
+
+    // On normal completion, workers have already finished and `join()` returns
+    // immediately. On cancellation, workers may still be mid-`git` invocation
+    // (the cancel flag is checked between clusters, not mid-command). Skip the
+    // join so the user gets an instant prompt back; the OS reaps any in-flight
+    // git children when the process exits — they're read-only and safe to abort.
+    if !final_state.live.cancelled {
+        let _ = join_thread.join();
+    }
     Ok(())
+}
+
+/// RAII guard that enables crossterm raw mode now and restores cooked mode on
+/// drop. Best-effort: if `enable_raw_mode` fails (e.g. stdin isn't a terminal),
+/// the guard is still returned so its `Drop` is safe to run. Disabling raw
+/// mode on a terminal that wasn't in raw mode is a no-op.
+fn enable_raw_mode_guard() -> RawModeGuard {
+    let _ = crossterm::terminal::enable_raw_mode();
+    RawModeGuard
+}
+
+struct RawModeGuard;
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
 }

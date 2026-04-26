@@ -664,16 +664,17 @@ fn skeleton_pulse_color(tick: usize) -> u8 {
 }
 
 /// Render a "data didn't load" placeholder for a cell whose patch was not
-/// received before the user cancelled (Ctrl-C). Single em-dash (U+2014),
-/// dim + DarkGray. Distinct from the loading shimmer (which is a full-width
-/// bar of U+25AC) and from a legitimately-empty cell (a blank).
-fn not_loaded_cell() -> Cell<'static> {
-    Cell::from(Span::styled(
-        "\u{2014}",
-        Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::DIM),
-    ))
+/// received before the user cancelled (Ctrl-C). Single em-dash (U+2014) in
+/// `Color::Gray`, centered within the column's assigned `width` via leading
+/// spaces. Distinct from the loading shimmer (full-width bar of U+25AC) and
+/// from a legitimately-empty cell (a blank).
+fn not_loaded_cell(width: u16) -> Cell<'static> {
+    if width == 0 {
+        return Cell::from("");
+    }
+    let left_pad = (width as usize).saturating_sub(1) / 2;
+    let padded: String = " ".repeat(left_pad) + "\u{2014}";
+    Cell::from(Span::styled(padded, Style::default().fg(Color::Gray)))
 }
 
 /// Render a single cell for the given column and worktree row.
@@ -701,7 +702,7 @@ fn render_cell(
         Column::Size => {
             if vals.size.is_empty() {
                 if is_cell_unloaded(FieldSet::SIZE) {
-                    not_loaded_cell()
+                    not_loaded_cell(width)
                 } else if is_cell_loading(FieldSet::SIZE) {
                     loading_shimmer_cell(width, tick)
                 } else {
@@ -714,7 +715,7 @@ fn render_cell(
         Column::Base => {
             let unfilled = wt.info.ahead.is_none() && wt.info.behind.is_none();
             if unfilled && is_cell_unloaded(FieldSet::BASE_AHEAD_BEHIND) {
-                not_loaded_cell()
+                not_loaded_cell(width)
             } else if unfilled && is_cell_loading(FieldSet::BASE_AHEAD_BEHIND) {
                 loading_shimmer_cell(width, tick)
             } else {
@@ -724,7 +725,7 @@ fn render_cell(
         Column::Changes => {
             let unfilled = wt.info.staged + wt.info.unstaged + wt.info.untracked == 0;
             if unfilled && is_cell_unloaded(FieldSet::CHANGES) {
-                not_loaded_cell()
+                not_loaded_cell(width)
             } else if unfilled && is_cell_loading(FieldSet::CHANGES) {
                 loading_shimmer_cell(width, tick)
             } else {
@@ -734,7 +735,7 @@ fn render_cell(
         Column::Remote => {
             let unfilled = wt.info.remote_ahead.is_none() && wt.info.remote_behind.is_none();
             if unfilled && is_cell_unloaded(FieldSet::REMOTE_AHEAD_BEHIND) {
-                not_loaded_cell()
+                not_loaded_cell(width)
             } else if unfilled && is_cell_loading(FieldSet::REMOTE_AHEAD_BEHIND) {
                 loading_shimmer_cell(width, tick)
             } else {
@@ -744,7 +745,7 @@ fn render_cell(
         Column::Age => {
             if vals.branch_age.is_empty() {
                 if is_cell_unloaded(FieldSet::BRANCH_AGE) {
-                    not_loaded_cell()
+                    not_loaded_cell(width)
                 } else if is_cell_loading(FieldSet::BRANCH_AGE) {
                     loading_shimmer_cell(width, tick)
                 } else {
@@ -762,7 +763,7 @@ fn render_cell(
         Column::Owner => {
             if vals.owner.is_empty() {
                 if is_cell_unloaded(FieldSet::OWNER) {
-                    not_loaded_cell()
+                    not_loaded_cell(width)
                 } else if is_cell_loading(FieldSet::OWNER) {
                     loading_shimmer_cell(width, tick)
                 } else {
@@ -775,7 +776,7 @@ fn render_cell(
         Column::Hash => {
             if vals.hash.is_empty() {
                 if is_cell_unloaded(FieldSet::LAST_COMMIT) {
-                    not_loaded_cell()
+                    not_loaded_cell(width)
                 } else if is_cell_loading(FieldSet::LAST_COMMIT) {
                     loading_shimmer_cell(width, tick)
                 } else {
@@ -788,7 +789,7 @@ fn render_cell(
         Column::LastCommit => {
             if vals.last_commit_age.is_empty() && vals.last_commit_subject.is_empty() {
                 if is_cell_unloaded(FieldSet::LAST_COMMIT) {
-                    not_loaded_cell()
+                    not_loaded_cell(width)
                 } else if is_cell_loading(FieldSet::LAST_COMMIT) {
                     loading_shimmer_cell(width, tick)
                 } else {
@@ -1280,28 +1281,55 @@ mod tests {
     }
 
     #[test]
-    fn not_loaded_cell_renders_dim_em_dash() {
-        // The "didn't load" cell should be a single em-dash (U+2014) styled
-        // dim + DarkGray, distinct from the breathing skeleton bar (which
-        // fills the column with U+25AC).
+    fn not_loaded_cell_renders_centered_em_dash_in_gray() {
+        // The "didn't load" cell should be a single em-dash (U+2014) in
+        // Color::Gray, centered within the column's assigned width via
+        // leading spaces. Distinct from the breathing skeleton bar (full
+        // width of U+25AC).
         let backend = TestBackend::new(5, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                let cell = not_loaded_cell();
+                let cell = not_loaded_cell(5);
                 let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(5)]);
                 frame.render_widget(table, frame.area());
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, 0)].symbol(), "\u{2014}");
-        assert_eq!(buffer[(0, 0)].fg, ratatui::style::Color::DarkGray);
+        let row: String = (0..5)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
         assert!(
-            buffer[(0, 0)]
-                .modifier
-                .contains(ratatui::style::Modifier::DIM),
-            "not_loaded_cell should be DIM"
+            row.contains("\u{2014}"),
+            "expected em-dash in row; got {row:?}"
         );
+        // Em-dash should sit at index 2 (center of 5: left_pad = (5-1)/2 = 2).
+        assert_eq!(
+            buffer[(2, 0)].symbol(),
+            "\u{2014}",
+            "em-dash should be centered at index 2 for width 5; row was {row:?}"
+        );
+        assert_eq!(
+            buffer[(2, 0)].fg,
+            ratatui::style::Color::Gray,
+            "em-dash should be Color::Gray for visibility"
+        );
+    }
+
+    #[test]
+    fn not_loaded_cell_zero_width_returns_empty() {
+        // Width 0 must not panic and should render nothing.
+        let backend = TestBackend::new(1, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let cell = not_loaded_cell(0);
+                let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(0)]);
+                frame.render_widget(table, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), " ");
     }
 
     #[test]
@@ -1354,10 +1382,12 @@ mod tests {
                 })
                 .unwrap();
             let buffer = terminal.backend().buffer();
-            assert_eq!(
-                buffer[(0, 0)].symbol(),
-                "\u{2014}",
-                "column {col:?} should render em-dash when cancelled and unfilled"
+            let row: String = (0..10)
+                .map(|x| buffer[(x, 0)].symbol().to_string())
+                .collect();
+            assert!(
+                row.contains("\u{2014}"),
+                "column {col:?} should render em-dash when cancelled and unfilled; row was {row:?}"
             );
         }
     }
