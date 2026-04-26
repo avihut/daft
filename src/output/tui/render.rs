@@ -99,7 +99,10 @@ pub fn render_footer(state: &TuiState, frame: &mut Frame, area: Rect) {
         .filter(|fs| !fs.contains(crate::core::worktree::info_field::FieldSet::ALL))
         .count();
     let elapsed_secs = state.render_start_elapsed.as_secs_f32();
-    let text = format!(" inflight: {inflight} \u{00B7} elapsed: {elapsed_secs:.1}s");
+    let mut text = format!(" inflight: {inflight} \u{00B7} elapsed: {elapsed_secs:.1}s");
+    if state.live.cancelled {
+        text.push_str(" \u{00B7} cancelled");
+    }
     let line = Line::from(Span::styled(
         text,
         Style::default().add_modifier(Modifier::DIM),
@@ -1410,5 +1413,44 @@ mod tests {
                 .any(|c| c.is_ascii_digit() || c == 'B' || c == 'K'),
             "received Size cell should render numeric/unit value; got {row:?}"
         );
+    }
+
+    #[test]
+    fn render_footer_appends_cancelled_when_live_cancelled() {
+        let mut state = make_test_state(1);
+        state.render_start_elapsed = std::time::Duration::from_millis(1234);
+        state.live.mark_cancelled();
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_footer(&state, frame, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(row.contains("cancelled"), "row was: {row:?}");
+        assert!(row.contains("inflight:"), "row was: {row:?}");
+    }
+
+    #[test]
+    fn render_footer_no_cancelled_suffix_when_not_cancelled() {
+        let mut state = make_test_state(1);
+        state.render_start_elapsed = std::time::Duration::from_millis(1234);
+        // NOT calling mark_cancelled.
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_footer(&state, frame, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(!row.contains("cancelled"), "row was: {row:?}");
     }
 }
