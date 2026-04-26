@@ -4,8 +4,11 @@
 //! `ExecReport` data type that the command layer renders. No IO to stdout
 //! lives here; renderers are separate.
 
+pub mod alias_cache;
 pub mod list_renderer;
 pub mod progress_renderer;
+
+pub use alias_cache::AliasCache;
 
 use crate::executor::presenter::{JobPresenter, NullPresenter};
 use std::io::{BufRead, BufReader};
@@ -81,11 +84,12 @@ pub struct ResolvedTarget {
 /// One command in a per-worktree pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandSpec {
-    /// Direct argv exec, e.g. from `-- CMD ARGS…`. First element is the
-    /// program; remaining are its arguments. Never touches a shell.
+    /// Argv form, e.g. from `-- CMD ARGS…`. First element is the program;
+    /// remaining are its arguments. Routed through `$SHELL` after
+    /// shell-quoting so that user-defined aliases resolve.
     Argv(Vec<String>),
-    /// Shell-parsed string, e.g. from `-x 'CMD'`. Run via `$SHELL -c`,
-    /// falling back to `sh -c` if `$SHELL` is unset.
+    /// Shell-parsed string, e.g. from `-x 'CMD'`. Run via `$SHELL`, with
+    /// alias expansion enabled.
     Shell(String),
 }
 
@@ -511,7 +515,7 @@ pub fn run_pipeline(
     cancel: &CancelFlag,
 ) -> anyhow::Result<WorktreeOutcome> {
     let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
-    run_pipeline_streaming(target, pipeline, "", &presenter, cancel)
+    run_pipeline_streaming(target, pipeline, "", &presenter, cancel, None)
 }
 
 /// Run the full pipeline against one worktree, streaming output through the
@@ -522,12 +526,16 @@ pub fn run_pipeline(
 /// otherwise the target's branch name. Step identity within a multi-command
 /// pipeline is conveyed via the `command_preview` argument on `on_job_start`
 /// — not via the job name itself.
+///
+/// `alias_cache`, when supplied, replaces the slow `$SHELL -i -c` rc-file
+/// load with an inlined alias table for the spawned shell.
 pub fn run_pipeline_streaming(
     target: &ResolvedTarget,
     pipeline: &[CommandSpec],
     name_prefix: &str,
     presenter: &Arc<dyn JobPresenter>,
     cancel: &CancelFlag,
+    alias_cache: Option<&AliasCache>,
 ) -> anyhow::Result<WorktreeOutcome> {
     let start = Instant::now();
     let tail = Arc::new(Mutex::new(TailBuffer::new(OUTPUT_CAP_BYTES)));
@@ -561,7 +569,7 @@ pub fn run_pipeline_streaming(
         let cmd_start = Instant::now();
         presenter.on_job_start(&job_name, None, Some(&preview));
 
-        let mut cmd = build_command(spec);
+        let mut cmd = build_command(spec, alias_cache);
         cmd.current_dir(&target.worktree_path)
             .env("DAFT_WORKTREE_PATH", &target.worktree_path)
             .env("DAFT_BRANCH_NAME", &target.branch_name)
@@ -684,22 +692,70 @@ where
     })
 }
 
-fn build_command(spec: &CommandSpec) -> Command {
-    match spec {
-        CommandSpec::Argv(parts) => {
-            let mut c = Command::new(&parts[0]);
-            if parts.len() > 1 {
-                c.args(&parts[1..]);
+/// Build the `Command` that runs a `CommandSpec` for one worktree.
+///
+/// User-defined aliases (e.g. `gss`, `gcvm`) resolve the same way they
+/// would in an interactive shell. The fast path inlines a cached alias
+/// table and runs `$SHELL -c '<aliases>; eval "$1"' -- <cmd>`, skipping
+/// the rc-file load (`-i`) entirely. The slow path falls back to
+/// `$SHELL -i -c <cmd>` so aliases still resolve when no cache is
+/// available (unsupported shell, capture failure, first run before
+/// caching). For `Argv`, parts are POSIX-quoted and joined first so the
+/// inner shell sees the same argument boundaries.
+pub(crate) fn build_command(spec: &CommandSpec, alias_cache: Option<&AliasCache>) -> Command {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+    let cmd_string = match spec {
+        CommandSpec::Argv(parts) => quote_argv(parts),
+        CommandSpec::Shell(s) => s.clone(),
+    };
+
+    let mut c = Command::new(&shell);
+    match alias_cache {
+        Some(cache) => {
+            // Fast path: aliases (and functions) pre-cached. Source the
+            // functions file (if any), inline the alias definitions,
+            // then `eval` the user command so alias expansion (a
+            // parse-time step) sees the definitions before the user
+            // command is parsed.
+            let mut body = String::new();
+            body.push_str(cache.shell.alias_expansion_prefix());
+            if let Some(p) = cache.functions_path.as_ref().and_then(|p| p.to_str()) {
+                // Errors from the sourced file (e.g. a plugin helper
+                // that doesn't apply in our minimal env) are best-effort
+                // suppressed — the user's command itself will still
+                // surface its own errors visibly.
+                let quoted = shlex::try_quote(p)
+                    .map(|c| c.into_owned())
+                    .unwrap_or_else(|_| p.to_string());
+                body.push_str(&format!("source {quoted} 2>/dev/null\n"));
             }
-            c
+            body.push_str(&cache.alias_lines);
+            body.push_str("\neval \"$1\"");
+            c.arg("-c").arg(body).arg("--").arg(cmd_string);
         }
-        CommandSpec::Shell(s) => {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-            let mut c = Command::new(shell);
-            c.arg("-c").arg(s);
-            c
+        None => {
+            // Slow path: load the user's rc files via `-i` so any aliases
+            // (and shell functions) resolve. Used when no cache is
+            // available — e.g. unsupported shell or capture failure.
+            c.arg("-i").arg("-c").arg(cmd_string);
         }
     }
+    c
+}
+
+/// Shell-quote each argv element (POSIX) and join with spaces so the
+/// result can be handed to `$SHELL -c` while preserving the original
+/// argument boundaries.
+fn quote_argv(parts: &[String]) -> String {
+    parts
+        .iter()
+        .map(|p| {
+            shlex::try_quote(p)
+                .map(|c| c.into_owned())
+                .unwrap_or_else(|_| p.clone())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Run the pipeline across all targets in the requested mode. Returns the
@@ -985,16 +1041,31 @@ mod tests {
         );
     }
 
+    /// Captured output from `run_pipeline` may include benign stderr noise
+    /// from the user's interactive shell (rc-file output, bash's
+    /// "no job control in this shell" warning). Tests that look for a
+    /// specific line should grep — not exact-match — the captured output.
+    fn captured_lines(outcome: &WorktreeOutcome) -> Vec<String> {
+        String::from_utf8_lossy(&outcome.captured_output)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect()
+    }
+
     #[test]
     fn cwd_is_worktree_path() {
         let dir = TempDir::new().unwrap();
         let target = dummy_target(&dir, "master");
         let spec = CommandSpec::Argv(vec!["pwd".into()]);
         let outcome = run_pipeline(&target, &[spec], &CancelFlag::new()).unwrap();
-        let out = String::from_utf8_lossy(&outcome.captured_output);
         let expected = dir.path().canonicalize().unwrap();
-        let got = std::path::PathBuf::from(out.trim()).canonicalize().unwrap();
-        assert_eq!(got, expected);
+        let lines = captured_lines(&outcome);
+        let found = lines
+            .iter()
+            .filter_map(|l| std::path::PathBuf::from(l).canonicalize().ok())
+            .any(|p| p == expected);
+        assert!(found, "expected pwd output {:?} in: {lines:?}", expected);
     }
 
     #[test]
@@ -1004,12 +1075,13 @@ mod tests {
         let spec = CommandSpec::Argv(vec![
             "sh".into(),
             "-c".into(),
-            "printf %s \"$DAFT_BRANCH_NAME\"".into(),
+            "printf '%s\\n' \"$DAFT_BRANCH_NAME\"".into(),
         ]);
         let outcome = run_pipeline(&target, &[spec], &CancelFlag::new()).unwrap();
-        assert_eq!(
-            String::from_utf8_lossy(&outcome.captured_output).trim(),
-            "feat/abc"
+        let lines = captured_lines(&outcome);
+        assert!(
+            lines.iter().any(|l| l == "feat/abc"),
+            "expected branch name line in: {lines:?}"
         );
     }
 
@@ -1021,9 +1093,10 @@ mod tests {
         let spec = CommandSpec::Shell("echo $((1+2))".into());
         let outcome = run_pipeline(&target, &[spec], &CancelFlag::new()).unwrap();
         assert_eq!(outcome.exit_code, 0);
-        assert_eq!(
-            String::from_utf8_lossy(&outcome.captured_output).trim(),
-            "3"
+        let lines = captured_lines(&outcome);
+        assert!(
+            lines.iter().any(|l| l == "3"),
+            "expected arithmetic result in: {lines:?}"
         );
     }
 
@@ -1071,20 +1144,95 @@ mod tests {
     }
 
     #[test]
-    fn shell_form_does_not_use_interactive_flag() {
-        // Regression guard: the legacy src/exec.rs passes -i which loads
-        // rcfiles. `daft exec -x` must NOT do that — the test passes an
-        // env var with a value that an rcfile would likely clobber, and
-        // asserts we see the outer env.
-        std::env::set_var("DAFT_EXEC_TEST_MARKER", "outer-value");
-        let dir = TempDir::new().unwrap();
-        let target = dummy_target(&dir, "master");
-        let spec = CommandSpec::Shell("echo $DAFT_EXEC_TEST_MARKER".into());
-        let outcome = run_pipeline(&target, &[spec], &CancelFlag::new()).unwrap();
-        std::env::remove_var("DAFT_EXEC_TEST_MARKER");
-        assert_eq!(
-            String::from_utf8_lossy(&outcome.captured_output).trim(),
-            "outer-value"
+    fn build_command_falls_back_to_interactive_shell_when_no_cache() {
+        // Slow path: when no alias cache is available (unsupported shell
+        // or capture failure), fall back to `$SHELL -i -c` so aliases
+        // still resolve via the user's rc files. Matches the behavior
+        // shipped for `-x` on `daft go` / `daft start` in #242.
+        let shell_cmd = build_command(&CommandSpec::Shell("gss".into()), None);
+        let args: Vec<&std::ffi::OsStr> = shell_cmd.get_args().collect();
+        assert_eq!(args, vec!["-i", "-c", "gss"]);
+
+        // Argv parts are POSIX-quoted and joined so the inner shell sees
+        // the same argument boundaries as the original argv.
+        let argv_cmd = build_command(
+            &CommandSpec::Argv(vec!["echo".into(), "hello world".into()]),
+            None,
+        );
+        let args: Vec<&std::ffi::OsStr> = argv_cmd.get_args().collect();
+        assert_eq!(args, vec!["-i", "-c", "echo 'hello world'"]);
+    }
+
+    #[test]
+    fn build_command_uses_cached_aliases_without_interactive_shell() {
+        // Fast path: a populated alias cache lets us skip the rc-file
+        // load (`-i`). Cached `alias …` lines are inlined and the user
+        // command is `eval`-ed so alias expansion sees them at parse
+        // time.
+        use super::alias_cache::{AliasCache, ShellKind};
+        let cache = AliasCache {
+            shell: ShellKind::Zsh,
+            alias_lines: "alias gss='git status -s'".into(),
+            functions_path: None,
+            captured_at: std::time::SystemTime::now(),
+        };
+
+        let cmd = build_command(&CommandSpec::Shell("gss --short".into()), Some(&cache));
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        // No `-i`, and the body splits cleanly into:
+        //   -c, "<aliases>; eval $1", --, <user cmd>
+        assert_eq!(args[0], "-c");
+        let body = args[1].to_string_lossy();
+        assert!(
+            body.contains("alias gss='git status -s'"),
+            "missing alias inline: {body}"
+        );
+        assert!(body.contains("eval \"$1\""), "missing eval: {body}");
+        assert_eq!(args[2], "--");
+        assert_eq!(args[3], "gss --short");
+        assert_eq!(args.len(), 4);
+    }
+
+    #[test]
+    fn build_command_with_bash_cache_includes_expand_aliases_shopt() {
+        // bash needs `shopt -s expand_aliases` before alias expansion in
+        // non-interactive mode. zsh expands by default and gets no prefix.
+        use super::alias_cache::{AliasCache, ShellKind};
+        let cache = AliasCache {
+            shell: ShellKind::Bash,
+            alias_lines: "alias gss='git status -s'".into(),
+            functions_path: None,
+            captured_at: std::time::SystemTime::now(),
+        };
+        let cmd = build_command(&CommandSpec::Shell("gss".into()), Some(&cache));
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        let body = args[1].to_string_lossy();
+        assert!(
+            body.contains("shopt -s expand_aliases"),
+            "bash body must opt into alias expansion: {body}"
+        );
+    }
+
+    #[test]
+    fn build_command_sources_functions_file_when_cached() {
+        // When a functions snapshot exists on disk, the fast path sources
+        // it before defining aliases so user shell functions resolve too.
+        use super::alias_cache::{AliasCache, ShellKind};
+        use std::path::PathBuf;
+        let funcs_path = PathBuf::from("/tmp/daft test/functions-zsh.sh");
+        let cache = AliasCache {
+            shell: ShellKind::Zsh,
+            alias_lines: "alias g='git'".into(),
+            functions_path: Some(funcs_path),
+            captured_at: std::time::SystemTime::now(),
+        };
+        let cmd = build_command(&CommandSpec::Shell("mygitfunc".into()), Some(&cache));
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        let body = args[1].to_string_lossy();
+        // Path with whitespace must be shell-quoted to source correctly.
+        assert!(
+            body.contains("source '/tmp/daft test/functions-zsh.sh'"),
+            "must source functions file (quoted): {body}"
         );
     }
 
@@ -1299,7 +1447,8 @@ mod streaming_skip_emission_tests {
             Arc::clone(&recorder) as Arc<dyn crate::executor::presenter::JobPresenter>;
 
         let outcome =
-            run_pipeline_streaming(&target, &pipeline, "", &presenter, &CancelFlag::new()).unwrap();
+            run_pipeline_streaming(&target, &pipeline, "", &presenter, &CancelFlag::new(), None)
+                .unwrap();
 
         assert!(!outcome.succeeded(), "first step should fail");
         let events = recorder.take();
@@ -1334,7 +1483,8 @@ mod streaming_skip_emission_tests {
         let cancel = CancelFlag::new();
         cancel.escalate();
 
-        let outcome = run_pipeline_streaming(&target, &pipeline, "", &presenter, &cancel).unwrap();
+        let outcome =
+            run_pipeline_streaming(&target, &pipeline, "", &presenter, &cancel, None).unwrap();
 
         assert!(outcome.cancelled, "expected cancelled outcome");
         let events = recorder.take();
@@ -1384,7 +1534,7 @@ mod streaming_skip_emission_tests {
                 std::thread::sleep(std::time::Duration::from_millis(200));
                 cancel.escalate();
             });
-            run_pipeline_streaming(&target, &pipeline, "", &presenter, &cancel)
+            run_pipeline_streaming(&target, &pipeline, "", &presenter, &cancel, None)
         })
         .unwrap();
 

@@ -1,0 +1,85 @@
+name: "Exec resolves user shell aliases and functions"
+description: |
+  Regression: aliases AND shell functions defined in the user's rc file
+  must resolve through `daft exec` for both `-x CMD` and `-- CMD` forms.
+  Mirrors the same behavior shipped for `-x` on `daft go` / `daft start`
+  in #242, plus the alias/function cache that keeps subsequent runs fast.
+
+repos:
+  - name: exec-aliases
+    use_fixture: standard-remote
+
+steps:
+  - name: "Set up fake HOME with .bashrc defining a test alias and function"
+    run: |
+      mkdir -p "$WORK_DIR/fakehome" && \
+        printf '%s\n%s\n' \
+          'alias daft_test_alias="echo aliased > alias_marker.txt"' \
+          'daft_test_function() { echo "from-function" > function_marker.txt; }' \
+          > "$WORK_DIR/fakehome/.bashrc"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/fakehome/.bashrc"
+
+  - name: "Clone the repository"
+    run: "git-worktree-clone --layout contained $REMOTE_EXEC_ALIASES"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-aliases/main"
+
+  - name: "Resolve alias passed via -x (shell form)"
+    run: |
+      HOME="$WORK_DIR/fakehome" SHELL=/bin/bash \
+        git-worktree-exec main -x 'daft_test_alias' 2>/dev/null
+    cwd: "$WORK_DIR/exec-aliases/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-aliases/main/alias_marker.txt"
+      file_contains:
+        - path: "$WORK_DIR/exec-aliases/main/alias_marker.txt"
+          content: "aliased"
+
+  - name: "Clear marker between tests"
+    run: "rm -f $WORK_DIR/exec-aliases/main/alias_marker.txt"
+    expect:
+      exit_code: 0
+
+  - name: "Resolve alias passed after -- (argv form)"
+    run: |
+      HOME="$WORK_DIR/fakehome" SHELL=/bin/bash \
+        git-worktree-exec main -- daft_test_alias 2>/dev/null
+    cwd: "$WORK_DIR/exec-aliases/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-aliases/main/alias_marker.txt"
+      file_contains:
+        - path: "$WORK_DIR/exec-aliases/main/alias_marker.txt"
+          content: "aliased"
+
+  - name: "Resolve user-defined shell function (cached fast path)"
+    run: |
+      HOME="$WORK_DIR/fakehome" SHELL=/bin/bash \
+        git-worktree-exec main -- daft_test_function 2>/dev/null
+    cwd: "$WORK_DIR/exec-aliases/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-aliases/main/function_marker.txt"
+      file_contains:
+        - path: "$WORK_DIR/exec-aliases/main/function_marker.txt"
+          content: "from-function"
+
+  - name: "--refresh-aliases re-captures aliases and functions"
+    run: |
+      rm -f $WORK_DIR/exec-aliases/main/function_marker.txt && \
+      HOME="$WORK_DIR/fakehome" SHELL=/bin/bash \
+        git-worktree-exec main --refresh-aliases -- daft_test_function 2>/dev/null
+    cwd: "$WORK_DIR/exec-aliases/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-aliases/main/function_marker.txt"

@@ -78,6 +78,12 @@ pub struct Args {
     )]
     pub keep_going: bool,
 
+    #[arg(
+        long = "refresh-aliases",
+        help = "Re-capture user shell aliases instead of using the cached snapshot"
+    )]
+    pub refresh_aliases: bool,
+
     /// Trailing command vector after `--`. Mutually exclusive with `-x`.
     #[arg(last = true, value_name = "CMD")]
     pub trailing: Vec<String>,
@@ -144,27 +150,19 @@ pub fn run() -> Result<()> {
             .collect()
     };
 
+    // Resolve once and reuse across all targets / commands. The first
+    // capture costs a single rc-file load; subsequent invocations within
+    // the TTL window read from disk and run at native speed.
+    let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+    let alias_cache = core::AliasCache::ensure(&shell_path, args.refresh_aliases);
+
     // Mode A: single-target pass-through. Inherit stdio; propagate exit
     // code verbatim; never render a UI. Handles `daft exec <single> -- claude`
     // and similar interactive cases without any flag ceremony.
     if targets.len() == 1 {
         let target = &targets[0];
         for spec in &pipeline {
-            let mut cmd = match spec {
-                core::CommandSpec::Argv(parts) => {
-                    let mut c = std::process::Command::new(&parts[0]);
-                    if parts.len() > 1 {
-                        c.args(&parts[1..]);
-                    }
-                    c
-                }
-                core::CommandSpec::Shell(s) => {
-                    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-                    let mut c = std::process::Command::new(shell);
-                    c.arg("-c").arg(s);
-                    c
-                }
-            };
+            let mut cmd = core::build_command(spec, alias_cache.as_ref());
             cmd.current_dir(&target.worktree_path)
                 .env("DAFT_WORKTREE_PATH", &target.worktree_path)
                 .env("DAFT_BRANCH_NAME", &target.branch_name)
@@ -200,7 +198,13 @@ pub fn run() -> Result<()> {
         handler_flag.escalate();
     });
 
-    let report = core::progress_renderer::run_with_progress(&targets, &pipeline, mode, &cancel)?;
+    let report = core::progress_renderer::run_with_progress(
+        &targets,
+        &pipeline,
+        mode,
+        &cancel,
+        alias_cache.as_ref(),
+    )?;
 
     let stdout = std::io::stdout();
     let mut sink = stdout.lock();
