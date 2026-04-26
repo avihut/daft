@@ -658,6 +658,20 @@ fn skeleton_pulse_color(tick: usize) -> u8 {
     SKELETON_GRAY_DARKEST + offset as u8
 }
 
+/// Render a "data didn't load" placeholder for a cell whose patch was not
+/// received before the user cancelled (Ctrl-C). Single em-dash (U+2014),
+/// dim + DarkGray. Distinct from the loading shimmer (which is a full-width
+/// bar of U+25AC) and from a legitimately-empty cell (a blank).
+#[allow(dead_code)]
+fn not_loaded_cell() -> Cell<'static> {
+    Cell::from(Span::styled(
+        "\u{2014}",
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM),
+    ))
+}
+
 /// Render a single cell for the given column and worktree row.
 ///
 /// `width` is the column's assigned width — used to size shimmer bars when
@@ -1227,5 +1241,30 @@ mod tests {
         assert!(row.contains("inflight:"), "row was: {row:?}");
         assert!(row.contains("elapsed:"), "row was: {row:?}");
         assert!(row.contains("1.2s"), "row was: {row:?}");
+    }
+
+    #[test]
+    fn not_loaded_cell_renders_dim_em_dash() {
+        // The "didn't load" cell should be a single em-dash (U+2014) styled
+        // dim + DarkGray, distinct from the breathing skeleton bar (which
+        // fills the column with U+25AC).
+        let backend = TestBackend::new(5, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let cell = not_loaded_cell();
+                let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(5)]);
+                frame.render_widget(table, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), "\u{2014}");
+        assert_eq!(buffer[(0, 0)].fg, ratatui::style::Color::DarkGray);
+        assert!(
+            buffer[(0, 0)]
+                .modifier
+                .contains(ratatui::style::Modifier::DIM),
+            "not_loaded_cell should be DIM"
+        );
     }
 }
