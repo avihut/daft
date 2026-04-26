@@ -247,7 +247,8 @@ impl TuiRenderer {
 
             // Poll for keyboard events (Ctrl-C). Non-blocking. If a Ctrl-C
             // is observed, flip the optional cancel signal so the producer
-            // exits cooperatively, mark state done, and emit a final draw.
+            // exits cooperatively, mark state done and live as cancelled,
+            // and emit a final draw.
             if event::poll(Duration::from_millis(0)).unwrap_or(false) {
                 if let Ok(Event::Key(key)) = event::read() {
                     if key.code == KeyCode::Char('c')
@@ -256,6 +257,7 @@ impl TuiRenderer {
                         if let Some(sig) = &self.cancel_signal {
                             sig.store(true, Ordering::Relaxed);
                         }
+                        self.state.live.mark_cancelled();
                         self.state.done = true;
                         final_draw_and_return!();
                     }
@@ -334,5 +336,38 @@ mod tests {
         let (_tx, rx) = mpsc::channel();
         let renderer = TuiRenderer::new(state, rx);
         assert!(renderer.cancel_signal.is_none());
+    }
+
+    #[test]
+    fn mark_cancelled_via_state_flips_live_cancelled() {
+        // Direct unit test for the post-Ctrl-C state mutation that the
+        // driver's Ctrl-C arm performs. We can't easily synthesize a
+        // crossterm Event in a unit test, so we exercise the same
+        // mutation path the arm performs.
+        let phases = Vec::<crate::core::worktree::sync_dag::OperationPhase>::new();
+        let infos = vec![crate::core::worktree::list::WorktreeInfo::empty("a")];
+        let mut state = TuiState::new(
+            phases,
+            infos,
+            std::path::PathBuf::from("/tmp"),
+            std::path::PathBuf::from("/tmp"),
+            crate::core::worktree::list::Stat::Summary,
+            0,
+            None,
+            false,
+            None,
+            None,
+            true,
+            false,
+        );
+        assert!(!state.live.cancelled);
+        assert!(!state.live.collection_complete);
+
+        state.live.mark_cancelled();
+        state.done = true;
+
+        assert!(state.live.cancelled);
+        assert!(state.live.collection_complete);
+        assert!(state.done);
     }
 }
