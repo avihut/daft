@@ -156,6 +156,27 @@ where
     computed
 }
 
+/// Cached wrapper for upstream line counts. Cache key: `(head_sha, upstream_sha)`.
+pub(crate) fn cached_remote_lines<F>(
+    git_common_dir: &Path,
+    head_sha: &str,
+    upstream_sha: &str,
+    compute: F,
+) -> (Option<usize>, Option<usize>)
+where
+    F: FnOnce() -> (Option<usize>, Option<usize>),
+{
+    let path = pair_key_path(git_common_dir, "remote-lines", head_sha, upstream_sha);
+    if let Some(v) = cache::read_json::<(Option<usize>, Option<usize>)>(&path) {
+        return v;
+    }
+    let computed = compute();
+    if computed.0.is_some() || computed.1.is_some() {
+        cache::write_json(&path, &computed);
+    }
+    computed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +312,24 @@ mod tests {
         assert!(path.exists());
 
         let out2 = cached_base_lines(common_dir, "base", "head", || panic!("hit"));
+        assert_eq!(out2, computed);
+    }
+
+    #[test]
+    fn cached_remote_lines_writes_and_reads_back() {
+        use tempfile::TempDir;
+
+        let common = TempDir::new().unwrap();
+        let common_dir = common.path();
+
+        let computed = (Some(7_usize), Some(2_usize));
+        let out = cached_remote_lines(common_dir, "head", "upstream", || computed);
+        assert_eq!(out, computed);
+
+        let path = pair_key_path(common_dir, "remote-lines", "head", "upstream");
+        assert!(path.exists());
+
+        let out2 = cached_remote_lines(common_dir, "head", "upstream", || panic!("hit"));
         assert_eq!(out2, computed);
     }
 }
