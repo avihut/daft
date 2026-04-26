@@ -622,14 +622,20 @@ fn loading_glyph_cell() -> Cell<'static> {
 /// Width below which the skeleton bar collapses to a single dim glyph.
 const SKELETON_MIN_WIDTH: u16 = 3;
 
-/// Frames each phase of the breathing pulse holds. With the driver's 80ms
-/// tick rate, 10 frames ≈ 800ms per phase → ~3.2s full cycle through the
-/// four phases (dim → mid → bright → mid).
-const SKELETON_PULSE_PHASE_FRAMES: usize = 10;
+/// Frames in one full breath (dim → bright → dim). At the driver's 80ms tick
+/// rate, 16 frames = ~1.3s full cycle. Halve for a snappier pulse, double
+/// for a slower one.
+const SKELETON_BREATH_FRAMES: usize = 16;
 
-/// Render a "skeleton bar" placeholder for an unfilled cell — a row of dim
-/// `▒` block characters sized to the column's assigned width, breathing
-/// uniformly through DarkGray → Gray → White → Gray on the renderer tick.
+/// xterm 256-color grayscale ramp endpoints. Indices 232 (near-black) through
+/// 255 (white) form a 24-step ramp — supported by every terminal that does
+/// 256 colors (effectively all modern terminals).
+const SKELETON_GRAY_DARKEST: u8 = 234;
+const SKELETON_GRAY_BRIGHTEST: u8 = 253;
+
+/// Render a "skeleton bar" placeholder for an unfilled cell — a row of solid
+/// `█` block characters sized to the column's assigned width, breathing
+/// uniformly along the xterm 256-color grayscale ramp via a triangle wave.
 /// When the column is too narrow for the bar to read (< 3 chars), falls back
 /// to the dim middle-dot.
 fn loading_shimmer_cell(width: u16, tick: usize) -> Cell<'static> {
@@ -640,15 +646,27 @@ fn loading_shimmer_cell(width: u16, tick: usize) -> Cell<'static> {
         return loading_glyph_cell();
     }
     const BAR_CHAR: &str = "\u{2588}"; // █
-    let phase = (tick / SKELETON_PULSE_PHASE_FRAMES) % 4;
-    let color = match phase {
-        0 => Color::DarkGray,
-        1 => Color::Gray,
-        2 => Color::White,
-        _ => Color::Gray,
-    };
     let bar: String = BAR_CHAR.repeat(width as usize);
-    Cell::from(Span::styled(bar, Style::default().fg(color)))
+    Cell::from(Span::styled(
+        bar,
+        Style::default().fg(Color::Indexed(skeleton_pulse_color(tick))),
+    ))
+}
+
+/// Triangle-wave brightness selector. Returns a 256-color palette index that
+/// ramps from `SKELETON_GRAY_DARKEST` up to `SKELETON_GRAY_BRIGHTEST` and
+/// back, completing one full breath every `SKELETON_BREATH_FRAMES` ticks.
+fn skeleton_pulse_color(tick: usize) -> u8 {
+    let half = SKELETON_BREATH_FRAMES / 2;
+    let phase = tick % SKELETON_BREATH_FRAMES;
+    let t = if phase < half {
+        phase
+    } else {
+        SKELETON_BREATH_FRAMES - phase
+    };
+    let span = (SKELETON_GRAY_BRIGHTEST - SKELETON_GRAY_DARKEST) as usize;
+    let offset = (t * span) / half;
+    SKELETON_GRAY_DARKEST + offset as u8
 }
 
 /// Render a single cell for the given column and worktree row.
@@ -1152,13 +1170,36 @@ mod tests {
             first_fg
         };
 
-        // Phase 0 (DarkGray) vs phase 2 (White) — different ticks, different
-        // colors.
-        let phase0 = render_at(0);
-        let phase2 = render_at(SKELETON_PULSE_PHASE_FRAMES * 2);
+        // Tick 0 (darkest) vs tick at the bright peak — different colors.
+        let dark = render_at(0);
+        let bright = render_at(SKELETON_BREATH_FRAMES / 2);
         assert_ne!(
-            phase0, phase2,
-            "skeleton bar should pulse across phases (phase0={phase0:?}, phase2={phase2:?})"
+            dark, bright,
+            "skeleton bar should pulse across the breath (dark={dark:?}, bright={bright:?})"
+        );
+    }
+
+    #[test]
+    fn skeleton_pulse_color_traces_a_triangle_wave() {
+        // At tick 0 we're at the darkest stop.
+        assert_eq!(skeleton_pulse_color(0), SKELETON_GRAY_DARKEST);
+        // At the half-cycle we're at the brightest stop.
+        assert_eq!(
+            skeleton_pulse_color(SKELETON_BREATH_FRAMES / 2),
+            SKELETON_GRAY_BRIGHTEST
+        );
+        // At the end of the cycle we're back at darkest (modular).
+        assert_eq!(
+            skeleton_pulse_color(SKELETON_BREATH_FRAMES),
+            SKELETON_GRAY_DARKEST
+        );
+        // Symmetry: ascending and descending halves visit the same brightness.
+        let quarter = SKELETON_BREATH_FRAMES / 4;
+        let three_quarter = SKELETON_BREATH_FRAMES * 3 / 4;
+        assert_eq!(
+            skeleton_pulse_color(quarter),
+            skeleton_pulse_color(three_quarter),
+            "triangle wave should be symmetric around the peak"
         );
     }
 
