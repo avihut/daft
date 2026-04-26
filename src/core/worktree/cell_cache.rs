@@ -57,6 +57,30 @@ pub(super) fn single_key_path(git_common_dir: &Path, kind: &str, sha: &str) -> P
     cache::cache_dir_for(git_common_dir, kind).join(format!("{sha}.json"))
 }
 
+/// Cached wrapper for `(base..head)` ahead/behind counts.
+///
+/// Cache key: `(base_sha, head_sha)`. The result is a pure function of these
+/// two SHAs, so a hit is provably correct — no TTL or invalidation needed.
+/// `None` results are NOT cached (the underlying git command may have failed
+/// transiently; we want the next run to retry).
+pub(crate) fn cached_base_ahead_behind<F>(
+    git_common_dir: &Path,
+    base_sha: &str,
+    head_sha: &str,
+    compute: F,
+) -> Option<(usize, usize)>
+where
+    F: FnOnce() -> Option<(usize, usize)>,
+{
+    let path = pair_key_path(git_common_dir, "base-ahead-behind", base_sha, head_sha);
+    if let Some(v) = cache::read_json::<(usize, usize)>(&path) {
+        return Some(v);
+    }
+    let computed = compute()?;
+    cache::write_json(&path, &computed);
+    Some(computed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +105,42 @@ mod tests {
             sha.is_none(),
             "non-repo dir should return None, got {sha:?}"
         );
+    }
+
+    #[test]
+    fn cached_base_ahead_behind_writes_and_reads_back() {
+        use tempfile::TempDir;
+
+        let common = TempDir::new().unwrap();
+        let common_dir = common.path();
+
+        let out = cached_base_ahead_behind(common_dir, "abc1234", "def5678", || Some((3, 1)));
+        assert_eq!(out, Some((3, 1)));
+
+        let path = pair_key_path(common_dir, "base-ahead-behind", "abc1234", "def5678");
+        assert!(
+            path.exists(),
+            "cache file at {} not written",
+            path.display()
+        );
+
+        let out2 = cached_base_ahead_behind(common_dir, "abc1234", "def5678", || {
+            panic!("compute called on cache hit")
+        });
+        assert_eq!(out2, Some((3, 1)));
+    }
+
+    #[test]
+    fn cached_base_ahead_behind_does_not_cache_none() {
+        use tempfile::TempDir;
+
+        let common = TempDir::new().unwrap();
+        let common_dir = common.path();
+
+        let out = cached_base_ahead_behind(common_dir, "abc1234", "def5678", || None);
+        assert_eq!(out, None);
+
+        let path = pair_key_path(common_dir, "base-ahead-behind", "abc1234", "def5678");
+        assert!(!path.exists(), "None should not be cached");
     }
 }
