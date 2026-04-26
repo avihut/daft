@@ -50,6 +50,7 @@ git worktree-exec [OPTIONS] [TARGETS] [CMD]
 | `-x, --exec <CMD>` | Shell command to run (repeatable); runs via $SHELL -c |  |
 | `--sequential` | Run worktrees one at a time and stop on first failure |  |
 | `--keep-going` | Run worktrees one at a time and continue through failures |  |
+| `--refresh-aliases` | Re-capture user shell aliases instead of using the cached snapshot |  |
 
 ## Global Options
 

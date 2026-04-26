@@ -9,7 +9,8 @@
 //! [`super::run_pipeline_streaming`](crate::core::worktree::exec::run_pipeline_streaming).
 
 use super::{
-    run_pipeline_streaming, CancelFlag, CommandSpec, ExecMode, ExecReport, ResolvedTarget,
+    alias_cache::AliasCache, run_pipeline_streaming, CancelFlag, CommandSpec, ExecMode, ExecReport,
+    ResolvedTarget,
 };
 use crate::executor::cli_presenter::CliPresenter;
 use crate::executor::presenter::JobPresenter;
@@ -92,6 +93,7 @@ pub fn run_with_progress(
     pipeline: &[CommandSpec],
     mode: ExecMode,
     cancel: &CancelFlag,
+    alias_cache: Option<&AliasCache>,
 ) -> anyhow::Result<ExecReport> {
     // Suppress the TTY's `^C` echo for the duration of the live render so
     // Ctrl-C cancellation doesn't corrupt indicatif's terminal tracking.
@@ -123,9 +125,13 @@ pub fn run_with_progress(
     // header. The list-mode header above replaces it.
 
     let outcomes = match mode {
-        ExecMode::Parallel => run_parallel(targets, pipeline, &presenter, cancel)?,
-        ExecMode::Sequential => run_sequential(targets, pipeline, false, &presenter, cancel)?,
-        ExecMode::KeepGoing => run_sequential(targets, pipeline, true, &presenter, cancel)?,
+        ExecMode::Parallel => run_parallel(targets, pipeline, &presenter, cancel, alias_cache)?,
+        ExecMode::Sequential => {
+            run_sequential(targets, pipeline, false, &presenter, cancel, alias_cache)?
+        }
+        ExecMode::KeepGoing => {
+            run_sequential(targets, pipeline, true, &presenter, cancel, alias_cache)?
+        }
     };
 
     // Deliberately skip presenter.on_phase_complete — it prints the hook
@@ -164,6 +170,7 @@ fn run_parallel(
     pipeline: &[CommandSpec],
     presenter: &Arc<dyn JobPresenter>,
     cancel: &CancelFlag,
+    alias_cache: Option<&AliasCache>,
 ) -> anyhow::Result<Vec<super::WorktreeOutcome>> {
     // `thread::scope` lets worker threads borrow `cancel`, `pipeline`, and
     // `presenter` for their entire lifetime without `'static`, which keeps
@@ -173,7 +180,9 @@ fn run_parallel(
             .iter()
             .map(|t| {
                 let pres = Arc::clone(presenter);
-                scope.spawn(move || run_pipeline_streaming(t, pipeline, "", &pres, cancel))
+                scope.spawn(move || {
+                    run_pipeline_streaming(t, pipeline, "", &pres, cancel, alias_cache)
+                })
             })
             .collect();
 
@@ -202,13 +211,14 @@ fn run_sequential(
     keep_going: bool,
     presenter: &Arc<dyn JobPresenter>,
     cancel: &CancelFlag,
+    alias_cache: Option<&AliasCache>,
 ) -> anyhow::Result<Vec<super::WorktreeOutcome>> {
     let mut outcomes = Vec::with_capacity(targets.len());
     for t in targets {
         if cancel.is_cancelled() {
             break;
         }
-        let outcome = run_pipeline_streaming(t, pipeline, "", presenter, cancel)?;
+        let outcome = run_pipeline_streaming(t, pipeline, "", presenter, cancel, alias_cache)?;
         let succeeded = outcome.succeeded();
         outcomes.push(outcome);
         if !succeeded && !keep_going {
@@ -231,8 +241,14 @@ mod tests {
             branch_name: "master".into(),
         }];
         let pipeline = vec![CommandSpec::Argv(vec!["echo".into(), "hi".into()])];
-        let report =
-            run_with_progress(&targets, &pipeline, ExecMode::Parallel, &CancelFlag::new()).unwrap();
+        let report = run_with_progress(
+            &targets,
+            &pipeline,
+            ExecMode::Parallel,
+            &CancelFlag::new(),
+            None,
+        )
+        .unwrap();
         assert_eq!(report.outcomes.len(), 1);
         assert_eq!(report.aggregate_exit_code(), 0);
         assert!(report.outcomes[0].succeeded());
@@ -266,7 +282,8 @@ mod tests {
         let cancel = CancelFlag::new();
         cancel.escalate();
 
-        let report = run_with_progress(&targets, &pipeline, ExecMode::Sequential, &cancel).unwrap();
+        let report =
+            run_with_progress(&targets, &pipeline, ExecMode::Sequential, &cancel, None).unwrap();
 
         assert!(
             report.outcomes.is_empty(),
