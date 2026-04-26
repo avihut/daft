@@ -233,6 +233,98 @@ pub fn select_columns(
     cols
 }
 
+/// Minimum widths for shrinkable columns. Below these the column would lose
+/// most of its meaning, so we stop shrinking and accept overflow instead.
+const BRANCH_MIN_WIDTH: u16 = 12;
+const PATH_MIN_WIDTH: u16 = 8;
+
+/// Reserved width for `LastCommit` when it's present, so Branch/Path can't
+/// squeeze it to zero via `Constraint::Fill(1)`.
+const LAST_COMMIT_RESERVED: u16 = 24;
+
+/// Inter-column spacing in the TUI table (must match `Table::column_spacing`).
+const COLUMN_SPACING: u16 = 2;
+
+/// Adjust per-column natural widths so the table fits in `available` width.
+///
+/// Shrinks `Branch` and `Path` (in that order, widest first) down to their
+/// minimum widths. Reserves a baseline width for `LastCommit` because it's
+/// rendered with `Constraint::Fill(1)` and would otherwise be starved by
+/// over-eager Length constraints. Returns the natural widths unchanged when
+/// they already fit.
+pub(super) fn fit_widths_to_available(
+    columns: &[Column],
+    natural_widths: &[u16],
+    available: u16,
+) -> Vec<u16> {
+    let mut widths = natural_widths.to_vec();
+    if columns.is_empty() {
+        return widths;
+    }
+
+    let spacing = (columns.len().saturating_sub(1)) as u16 * COLUMN_SPACING;
+    let lastcommit_idx = columns.iter().position(|c| matches!(c, Column::LastCommit));
+
+    // If LastCommit is present, treat it as occupying at least
+    // LAST_COMMIT_RESERVED chars during fit calculations, even though the real
+    // constraint is Fill(1). This forces Branch/Path to share the remaining
+    // budget with the commit column rather than starving it.
+    let lastcommit_reserved = lastcommit_idx
+        .map(|i| LAST_COMMIT_RESERVED.max(widths[i]).min(available / 3))
+        .unwrap_or(0);
+
+    let total_natural: u32 = widths.iter().map(|w| *w as u32).sum::<u32>() + spacing as u32
+        - lastcommit_idx.map(|i| widths[i] as u32).unwrap_or(0)
+        + lastcommit_reserved as u32;
+    if total_natural <= available as u32 {
+        return widths;
+    }
+
+    let shrink_min = |c: Column| -> Option<u16> {
+        match c {
+            Column::Branch => Some(BRANCH_MIN_WIDTH),
+            Column::Path => Some(PATH_MIN_WIDTH),
+            _ => None,
+        }
+    };
+
+    let mut current = total_natural;
+    while current > available as u32 {
+        let candidate = columns
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                let min = shrink_min(*c)?;
+                (widths[i] > min).then_some((i, widths[i]))
+            })
+            .max_by_key(|(_, w)| *w);
+        match candidate {
+            Some((i, _)) => {
+                widths[i] -= 1;
+                current -= 1;
+            }
+            None => break,
+        }
+    }
+
+    widths
+}
+
+/// Truncate `s` to fit `width` columns, appending an ellipsis when shortened.
+/// Falls back to a hard cut for very small widths where an ellipsis wouldn't
+/// leave room for any content.
+pub(super) fn truncate_with_ellipsis(s: &str, width: u16) -> String {
+    let w = width as usize;
+    if s.chars().count() <= w {
+        return s.to_string();
+    }
+    if w < 4 {
+        return s.chars().take(w).collect();
+    }
+    let prefix: String = s.chars().take(w - 3).collect();
+    format!("{prefix}...")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +357,81 @@ mod tests {
             !cols.iter().any(|c| matches!(c, Column::Size)),
             "Size should not appear in responsive defaults even on a wide terminal"
         );
+    }
+
+    #[test]
+    fn fit_widths_passthrough_when_total_fits() {
+        let cols = vec![Column::Branch, Column::Path, Column::Age];
+        let natural = vec![20, 30, 4];
+        let out = fit_widths_to_available(&cols, &natural, 200);
+        assert_eq!(out, natural);
+    }
+
+    #[test]
+    fn fit_widths_shrinks_widest_first() {
+        // Branch=80, Path=60, total+spacing = 142. Available = 100.
+        // Path is wider, should be shrunk first; Branch shrinks once Path
+        // catches it.
+        let cols = vec![Column::Branch, Column::Path];
+        let natural = vec![80, 60];
+        let out = fit_widths_to_available(&cols, &natural, 100);
+        let total: u16 = out.iter().sum::<u16>() + 2;
+        assert!(total <= 100, "fit widths exceed available: {out:?}");
+        assert!(out[0] >= BRANCH_MIN_WIDTH);
+        assert!(out[1] >= PATH_MIN_WIDTH);
+    }
+
+    #[test]
+    fn fit_widths_reserves_space_for_lastcommit() {
+        // Branch=200, Path=200, LastCommit=10. Without reserving for
+        // LastCommit, Branch+Path would consume nearly all available width.
+        let cols = vec![Column::Branch, Column::Path, Column::LastCommit];
+        let natural = vec![200, 200, 10];
+        let out = fit_widths_to_available(&cols, &natural, 120);
+        // Branch + Path + spacing should leave at least LAST_COMMIT_RESERVED
+        // (or close to it; we cap reserve at available/3 to avoid pathological
+        // narrow terminals).
+        let nonlast: u16 = out[0] + out[1] + 4; // 2 gaps = 4
+        let lastcommit_room = 120u16.saturating_sub(nonlast);
+        assert!(
+            lastcommit_room >= 10,
+            "LastCommit should have headroom: branch={}, path={}, lastcommit_room={}",
+            out[0],
+            out[1],
+            lastcommit_room
+        );
+    }
+
+    #[test]
+    fn fit_widths_stops_at_minimums() {
+        // Even an absurdly narrow terminal shouldn't shrink Branch/Path below
+        // their minimum widths.
+        let cols = vec![Column::Branch, Column::Path];
+        let natural = vec![100, 100];
+        let out = fit_widths_to_available(&cols, &natural, 10);
+        assert_eq!(out[0], BRANCH_MIN_WIDTH);
+        assert_eq!(out[1], PATH_MIN_WIDTH);
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_shorter_than_width() {
+        assert_eq!(truncate_with_ellipsis("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_appends_dots() {
+        assert_eq!(truncate_with_ellipsis("hello world", 8), "hello...");
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_hard_cut_when_no_room_for_dots() {
+        assert_eq!(truncate_with_ellipsis("hello", 3), "hel");
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_handles_unicode() {
+        // Each emoji is 1 char (not 1 byte), so truncating to 5 keeps 5 emoji.
+        let s = "🦀🦀🦀🦀🦀🦀🦀";
+        assert_eq!(truncate_with_ellipsis(s, 5).chars().count(), 5);
     }
 }

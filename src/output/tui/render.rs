@@ -1,4 +1,7 @@
-use super::columns::{column_content_width, select_columns, Column, ALL_COLUMNS};
+use super::columns::{
+    column_content_width, fit_widths_to_available, select_columns, truncate_with_ellipsis, Column,
+    ALL_COLUMNS,
+};
 use super::state::{FinalStatus, PhaseStatus, TuiState, WorktreeStatus};
 use crate::core::sort::SortSpec;
 use crate::core::worktree::info_field::FieldSet;
@@ -115,7 +118,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     };
 
     // Pre-compute all column values for sizing and reuse.
-    let row_vals: Vec<ColumnValues> = state
+    let mut row_vals: Vec<ColumnValues> = state
         .live
         .rows
         .iter()
@@ -203,18 +206,46 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         }
     };
 
+    // Compute natural column widths, then shrink Branch/Path so the table fits
+    // in the available area. Without this step a single long path or branch
+    // name in `live.rows` (often off-screen) blows out those columns and
+    // squeezes `LastCommit` (Fill(1)) down to nearly zero width.
+    let natural_widths: Vec<u16> = columns
+        .iter()
+        .map(|col| column_content_width(*col, &state.live.rows, &row_vals, sort_ref))
+        .collect();
+    let assigned_widths = fit_widths_to_available(&columns, &natural_widths, table_area.width);
+
+    // When Branch or Path was shrunk below its natural width, pre-truncate the
+    // displayed text so the renderer shows "..." rather than ratatui's silent
+    // hard cut. Other columns are short by construction and don't need this.
+    for (i, col) in columns.iter().enumerate() {
+        if assigned_widths[i] >= natural_widths[i] {
+            continue;
+        }
+        match col {
+            Column::Branch => {
+                for vals in &mut row_vals {
+                    vals.branch = truncate_with_ellipsis(&vals.branch, assigned_widths[i]);
+                }
+            }
+            Column::Path => {
+                for vals in &mut row_vals {
+                    vals.path = truncate_with_ellipsis(&vals.path, assigned_widths[i]);
+                }
+            }
+            _ => {}
+        }
+    }
+
     let constraints: Vec<Constraint> = columns
         .iter()
-        .map(|col| {
+        .enumerate()
+        .map(|(i, col)| {
             if matches!(col, Column::LastCommit) {
                 Constraint::Fill(1)
             } else {
-                Constraint::Length(column_content_width(
-                    *col,
-                    &state.live.rows,
-                    &row_vals,
-                    sort_ref,
-                ))
+                Constraint::Length(assigned_widths[i])
             }
         })
         .collect();
