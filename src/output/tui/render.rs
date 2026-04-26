@@ -609,19 +609,6 @@ fn render_remote_cell(info: &WorktreeInfo, stat: Stat) -> Cell<'static> {
     }
 }
 
-/// Render a dim middle-dot for an unfilled cell while the table is still
-/// streaming. Used as a fallback when the column is too narrow for a shimmer
-/// bar to read clearly.
-fn loading_glyph_cell() -> Cell<'static> {
-    Cell::from(Span::styled(
-        "\u{00B7}",
-        Style::default().add_modifier(Modifier::DIM),
-    ))
-}
-
-/// Width below which the skeleton bar collapses to a single dim glyph.
-const SKELETON_MIN_WIDTH: u16 = 3;
-
 /// Frames in one full breath (dim → bright → dim). At the driver's 80ms tick
 /// rate, 16 frames = ~1.3s full cycle. Halve for a snappier pulse, double
 /// for a slower one.
@@ -633,19 +620,17 @@ const SKELETON_BREATH_FRAMES: usize = 16;
 const SKELETON_GRAY_DARKEST: u8 = 234;
 const SKELETON_GRAY_BRIGHTEST: u8 = 253;
 
-/// Render a "skeleton bar" placeholder for an unfilled cell — a row of solid
-/// `█` block characters sized to the column's assigned width, breathing
-/// uniformly along the xterm 256-color grayscale ramp via a triangle wave.
-/// When the column is too narrow for the bar to read (< 3 chars), falls back
-/// to the dim middle-dot.
+/// Render a skeleton placeholder for an unfilled cell — a row of `▬`
+/// (BLACK RECTANGLE U+25AC) characters sized to the column's assigned
+/// width, breathing uniformly along the xterm 256-color grayscale ramp
+/// via a triangle wave. The rectangle char is centered vertically in the
+/// cell and shorter than `█`, giving the bar a soft low-profile feel
+/// without any height-mismatch caps.
 fn loading_shimmer_cell(width: u16, tick: usize) -> Cell<'static> {
     if width == 0 {
         return Cell::from("");
     }
-    if width < SKELETON_MIN_WIDTH {
-        return loading_glyph_cell();
-    }
-    const BAR_CHAR: &str = "\u{2588}"; // █
+    const BAR_CHAR: &str = "\u{25AC}"; // ▬
     let bar: String = BAR_CHAR.repeat(width as usize);
     Cell::from(Span::styled(
         bar,
@@ -1104,26 +1089,25 @@ mod tests {
     }
 
     #[test]
-    fn loading_glyph_cell_renders_dim_middle_dot() {
-        let cell = loading_glyph_cell();
-        // Cell is opaque; the test just confirms it constructs without panic.
-        // Detailed visual verification belongs in the PTY scenario tests.
-        let _ = cell;
+    fn loading_shimmer_cell_zero_width_returns_empty() {
+        // Width-0 columns shouldn't paint anything.
+        let backend = TestBackend::new(1, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let cell = loading_shimmer_cell(0, 0);
+                let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(0)]);
+                frame.render_widget(table, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), " ");
     }
 
     #[test]
-    fn loading_shimmer_cell_collapses_to_glyph_when_too_narrow() {
-        // Width below SHIMMER_MIN_WIDTH (3) should fall back to the dim dot —
-        // a single ▒ wouldn't read as "loading" without movement.
-        let _ = loading_shimmer_cell(0, 0);
-        let _ = loading_shimmer_cell(1, 0);
-        let _ = loading_shimmer_cell(2, 0);
-    }
-
-    #[test]
-    fn loading_shimmer_cell_fills_column_with_block_chars() {
-        // Render a shimmer cell into a 1-row buffer and confirm the bar
-        // characters appear across the assigned width.
+    fn loading_shimmer_cell_fills_column_with_rectangle_chars() {
+        // Render a skeleton cell and confirm every cell in the bar is the
+        // BLACK RECTANGLE U+25AC glyph across the full assigned width.
         let backend = TestBackend::new(10, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
@@ -1138,8 +1122,8 @@ mod tests {
             .map(|x| buffer[(x, 0)].symbol().to_string())
             .collect();
         assert!(
-            row.chars().all(|c| c == '\u{2588}'),
-            "skeleton bar should be all █, got {row:?}"
+            row.chars().all(|c| c == '\u{25AC}'),
+            "skeleton bar should be all ▬, got {row:?}"
         );
     }
 
