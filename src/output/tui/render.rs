@@ -338,11 +338,18 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
             // continuous strikethrough line.
             columns
                 .iter()
-                .map(|col| {
+                .enumerate()
+                .map(|(i, col)| {
                     if matches!(col, Column::Status | Column::Annotation) {
-                        render_cell(col, wt, vals, state.tick, state.live.cfg.stat, |fs| {
-                            state.live.is_cell_loading(row_idx, fs)
-                        })
+                        render_cell(
+                            col,
+                            wt,
+                            vals,
+                            state.tick,
+                            state.live.cfg.stat,
+                            assigned_widths[i],
+                            |fs| state.live.is_cell_loading(row_idx, fs),
+                        )
                     } else {
                         Cell::from("")
                     }
@@ -351,10 +358,17 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         } else {
             columns
                 .iter()
-                .map(|col| {
-                    render_cell(col, wt, vals, state.tick, state.live.cfg.stat, |fs| {
-                        state.live.is_cell_loading(row_idx, fs)
-                    })
+                .enumerate()
+                .map(|(i, col)| {
+                    render_cell(
+                        col,
+                        wt,
+                        vals,
+                        state.tick,
+                        state.live.cfg.stat,
+                        assigned_widths[i],
+                        |fs| state.live.is_cell_loading(row_idx, fs),
+                    )
                 })
                 .collect()
         };
@@ -595,7 +609,9 @@ fn render_remote_cell(info: &WorktreeInfo, stat: Stat) -> Cell<'static> {
     }
 }
 
-/// Render a dim middle-dot for an unfilled cell while the table is still streaming.
+/// Render a dim middle-dot for an unfilled cell while the table is still
+/// streaming. Used as a fallback when the column is too narrow for a shimmer
+/// bar to read clearly.
 fn loading_glyph_cell() -> Cell<'static> {
     Cell::from(Span::styled(
         "\u{00B7}",
@@ -603,13 +619,48 @@ fn loading_glyph_cell() -> Cell<'static> {
     ))
 }
 
+/// Width below which the shimmer bar collapses to a single dim glyph.
+const SHIMMER_MIN_WIDTH: u16 = 3;
+
+/// Width of the bright "highlight" band that sweeps across the shimmer bar.
+const SHIMMER_HIGHLIGHT_WIDTH: u16 = 3;
+
+/// Render a sweeping shimmer placeholder for an unfilled cell. The bar fills
+/// the column's assigned width with a dim block character; a brighter band
+/// sweeps left-to-right driven by the renderer tick. When the column is too
+/// narrow for the sweep to read (< 3 chars), falls back to the dim middle-dot.
+fn loading_shimmer_cell(width: u16, tick: usize) -> Cell<'static> {
+    if width == 0 {
+        return Cell::from("");
+    }
+    if width < SHIMMER_MIN_WIDTH {
+        return loading_glyph_cell();
+    }
+    const BAR_CHAR: &str = "\u{2592}"; // ▒
+    let cycle = width + SHIMMER_HIGHLIGHT_WIDTH;
+    let pos = (tick as u16) % cycle;
+    let dim = Style::default().fg(Color::DarkGray);
+    let bright = Style::default().fg(Color::Gray);
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(width as usize);
+    for i in 0..width {
+        let in_highlight = pos >= i && pos - i < SHIMMER_HIGHLIGHT_WIDTH;
+        let style = if in_highlight { bright } else { dim };
+        spans.push(Span::styled(BAR_CHAR, style));
+    }
+    Cell::from(Line::from(spans))
+}
+
 /// Render a single cell for the given column and worktree row.
+///
+/// `width` is the column's assigned width — used to size shimmer bars when
+/// the cell is in a loading state.
 fn render_cell(
     col: &Column,
     wt: &super::state::WorktreeRow,
     vals: &ColumnValues,
     tick: usize,
     stat: Stat,
+    width: u16,
     is_cell_loading: impl Fn(FieldSet) -> bool,
 ) -> Cell<'static> {
     match col {
@@ -619,7 +670,7 @@ fn render_cell(
         Column::Path => Cell::from(vals.path.clone()),
         Column::Size => {
             if vals.size.is_empty() && is_cell_loading(FieldSet::SIZE) {
-                loading_glyph_cell()
+                loading_shimmer_cell(width, tick)
             } else {
                 Cell::from(vals.size.clone())
             }
@@ -629,7 +680,7 @@ fn render_cell(
                 && wt.info.behind.is_none()
                 && is_cell_loading(FieldSet::BASE_AHEAD_BEHIND)
             {
-                loading_glyph_cell()
+                loading_shimmer_cell(width, tick)
             } else {
                 render_base_cell(&wt.info, stat)
             }
@@ -638,7 +689,7 @@ fn render_cell(
             if is_cell_loading(FieldSet::CHANGES)
                 && wt.info.staged + wt.info.unstaged + wt.info.untracked == 0
             {
-                loading_glyph_cell()
+                loading_shimmer_cell(width, tick)
             } else {
                 render_changes_cell(&wt.info, stat)
             }
@@ -648,14 +699,14 @@ fn render_cell(
                 && wt.info.remote_behind.is_none()
                 && is_cell_loading(FieldSet::REMOTE_AHEAD_BEHIND)
             {
-                loading_glyph_cell()
+                loading_shimmer_cell(width, tick)
             } else {
                 render_remote_cell(&wt.info, stat)
             }
         }
         Column::Age => {
             if vals.branch_age.is_empty() && is_cell_loading(FieldSet::BRANCH_AGE) {
-                loading_glyph_cell()
+                loading_shimmer_cell(width, tick)
             } else {
                 let cell = Cell::from(vals.branch_age.clone());
                 if vals.is_old_branch {
@@ -667,14 +718,14 @@ fn render_cell(
         }
         Column::Owner => {
             if vals.owner.is_empty() && is_cell_loading(FieldSet::OWNER) {
-                loading_glyph_cell()
+                loading_shimmer_cell(width, tick)
             } else {
                 Cell::from(vals.owner.clone())
             }
         }
         Column::Hash => {
             if vals.hash.is_empty() && is_cell_loading(FieldSet::LAST_COMMIT) {
-                loading_glyph_cell()
+                loading_shimmer_cell(width, tick)
             } else {
                 Cell::from(vals.hash.clone())
             }
@@ -684,7 +735,7 @@ fn render_cell(
                 && vals.last_commit_subject.is_empty()
                 && is_cell_loading(FieldSet::LAST_COMMIT)
             {
-                loading_glyph_cell()
+                loading_shimmer_cell(width, tick)
             } else if vals.last_commit_age.is_empty() {
                 Cell::from(vals.last_commit_subject.clone())
             } else if vals.last_commit_subject.is_empty() {
@@ -1039,6 +1090,76 @@ mod tests {
         // Cell is opaque; the test just confirms it constructs without panic.
         // Detailed visual verification belongs in the PTY scenario tests.
         let _ = cell;
+    }
+
+    #[test]
+    fn loading_shimmer_cell_collapses_to_glyph_when_too_narrow() {
+        // Width below SHIMMER_MIN_WIDTH (3) should fall back to the dim dot —
+        // a single ▒ wouldn't read as "loading" without movement.
+        let _ = loading_shimmer_cell(0, 0);
+        let _ = loading_shimmer_cell(1, 0);
+        let _ = loading_shimmer_cell(2, 0);
+    }
+
+    #[test]
+    fn loading_shimmer_cell_fills_column_with_block_chars() {
+        // Render a shimmer cell into a 1-row buffer and confirm the bar
+        // characters appear across the assigned width.
+        let backend = TestBackend::new(10, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let cell = loading_shimmer_cell(10, 0);
+                let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
+                frame.render_widget(table, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..10)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            row.chars().all(|c| c == '\u{2592}'),
+            "shimmer row should be all ▒, got {row:?}"
+        );
+    }
+
+    #[test]
+    fn loading_shimmer_cell_highlight_position_advances_with_tick() {
+        // Render two snapshots at different ticks and confirm the bright
+        // highlight is at different positions. We can't easily inspect the fg
+        // color of cells directly, but we can confirm the renders differ when
+        // the highlight band moves enough to land on different cells.
+        let backend1 = TestBackend::new(20, 1);
+        let mut t1 = Terminal::new(backend1).unwrap();
+        t1.draw(|frame| {
+            let cell = loading_shimmer_cell(20, 0);
+            let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(20)]);
+            frame.render_widget(table, frame.area());
+        })
+        .unwrap();
+        let buf1 = t1.backend().buffer().clone();
+
+        let backend2 = TestBackend::new(20, 1);
+        let mut t2 = Terminal::new(backend2).unwrap();
+        t2.draw(|frame| {
+            let cell = loading_shimmer_cell(20, 10);
+            let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(20)]);
+            frame.render_widget(table, frame.area());
+        })
+        .unwrap();
+        let buf2 = t2.backend().buffer().clone();
+
+        // Compare foreground colors at each x — they should differ for at
+        // least one cell because the highlight has moved.
+        let mut differs = false;
+        for x in 0..20 {
+            if buf1[(x, 0)].fg != buf2[(x, 0)].fg {
+                differs = true;
+                break;
+            }
+        }
+        assert!(differs, "highlight should move between tick 0 and tick 10");
     }
 
     #[test]
