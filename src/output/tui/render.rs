@@ -619,35 +619,36 @@ fn loading_glyph_cell() -> Cell<'static> {
     ))
 }
 
-/// Width below which the shimmer bar collapses to a single dim glyph.
-const SHIMMER_MIN_WIDTH: u16 = 3;
+/// Width below which the skeleton bar collapses to a single dim glyph.
+const SKELETON_MIN_WIDTH: u16 = 3;
 
-/// Width of the bright "highlight" band that sweeps across the shimmer bar.
-const SHIMMER_HIGHLIGHT_WIDTH: u16 = 3;
+/// Frames each phase of the breathing pulse holds. With the driver's 80ms
+/// tick rate, 10 frames ≈ 800ms per phase → ~3.2s full cycle through the
+/// four phases (dim → mid → bright → mid).
+const SKELETON_PULSE_PHASE_FRAMES: usize = 10;
 
-/// Render a sweeping shimmer placeholder for an unfilled cell. The bar fills
-/// the column's assigned width with a dim block character; a brighter band
-/// sweeps left-to-right driven by the renderer tick. When the column is too
-/// narrow for the sweep to read (< 3 chars), falls back to the dim middle-dot.
+/// Render a "skeleton bar" placeholder for an unfilled cell — a row of dim
+/// `▒` block characters sized to the column's assigned width, breathing
+/// uniformly through DarkGray → Gray → White → Gray on the renderer tick.
+/// When the column is too narrow for the bar to read (< 3 chars), falls back
+/// to the dim middle-dot.
 fn loading_shimmer_cell(width: u16, tick: usize) -> Cell<'static> {
     if width == 0 {
         return Cell::from("");
     }
-    if width < SHIMMER_MIN_WIDTH {
+    if width < SKELETON_MIN_WIDTH {
         return loading_glyph_cell();
     }
     const BAR_CHAR: &str = "\u{2592}"; // ▒
-    let cycle = width + SHIMMER_HIGHLIGHT_WIDTH;
-    let pos = (tick as u16) % cycle;
-    let dim = Style::default().fg(Color::DarkGray);
-    let bright = Style::default().fg(Color::Gray);
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(width as usize);
-    for i in 0..width {
-        let in_highlight = pos >= i && pos - i < SHIMMER_HIGHLIGHT_WIDTH;
-        let style = if in_highlight { bright } else { dim };
-        spans.push(Span::styled(BAR_CHAR, style));
-    }
-    Cell::from(Line::from(spans))
+    let phase = (tick / SKELETON_PULSE_PHASE_FRAMES) % 4;
+    let color = match phase {
+        0 => Color::DarkGray,
+        1 => Color::Gray,
+        2 => Color::White,
+        _ => Color::Gray,
+    };
+    let bar: String = BAR_CHAR.repeat(width as usize);
+    Cell::from(Span::styled(bar, Style::default().fg(color)))
 }
 
 /// Render a single cell for the given column and worktree row.
@@ -1125,41 +1126,40 @@ mod tests {
     }
 
     #[test]
-    fn loading_shimmer_cell_highlight_position_advances_with_tick() {
-        // Render two snapshots at different ticks and confirm the bright
-        // highlight is at different positions. We can't easily inspect the fg
-        // color of cells directly, but we can confirm the renders differ when
-        // the highlight band moves enough to land on different cells.
-        let backend1 = TestBackend::new(20, 1);
-        let mut t1 = Terminal::new(backend1).unwrap();
-        t1.draw(|frame| {
-            let cell = loading_shimmer_cell(20, 0);
-            let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(20)]);
-            frame.render_widget(table, frame.area());
-        })
-        .unwrap();
-        let buf1 = t1.backend().buffer().clone();
-
-        let backend2 = TestBackend::new(20, 1);
-        let mut t2 = Terminal::new(backend2).unwrap();
-        t2.draw(|frame| {
-            let cell = loading_shimmer_cell(20, 10);
-            let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(20)]);
-            frame.render_widget(table, frame.area());
-        })
-        .unwrap();
-        let buf2 = t2.backend().buffer().clone();
-
-        // Compare foreground colors at each x — they should differ for at
-        // least one cell because the highlight has moved.
-        let mut differs = false;
-        for x in 0..20 {
-            if buf1[(x, 0)].fg != buf2[(x, 0)].fg {
-                differs = true;
-                break;
+    fn loading_shimmer_cell_pulses_uniformly_across_phases() {
+        // The whole bar should share one foreground color at any given tick,
+        // and that color should differ across pulse phases.
+        let render_at = |tick: usize| -> ratatui::style::Color {
+            let backend = TestBackend::new(20, 1);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    let cell = loading_shimmer_cell(20, tick);
+                    let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(20)]);
+                    frame.render_widget(table, frame.area());
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            // Confirm uniform fg across the bar.
+            let first_fg = buffer[(0, 0)].fg;
+            for x in 1..20 {
+                assert_eq!(
+                    buffer[(x, 0)].fg,
+                    first_fg,
+                    "skeleton bar should be uniform in color at x={x} (tick={tick})"
+                );
             }
-        }
-        assert!(differs, "highlight should move between tick 0 and tick 10");
+            first_fg
+        };
+
+        // Phase 0 (DarkGray) vs phase 2 (White) — different ticks, different
+        // colors.
+        let phase0 = render_at(0);
+        let phase2 = render_at(SKELETON_PULSE_PHASE_FRAMES * 2);
+        assert_ne!(
+            phase0, phase2,
+            "skeleton bar should pulse across phases (phase0={phase0:?}, phase2={phase2:?})"
+        );
     }
 
     #[test]
