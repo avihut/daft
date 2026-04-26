@@ -236,6 +236,18 @@ pub fn run_live(args: Args, settings: DaftSettings) -> Result<()> {
     // flips the same flag the collector workers observe between cluster calls.
     let cancel = collector_handle.cancel_flag();
 
+    // The inline viewport doesn't enable raw mode, so crossterm's keyboard
+    // event loop never receives Ctrl-C — the OS sends SIGINT first and the
+    // process terminates before our handler can run. Install a SIGINT handler
+    // that flips the same cancel flag, so the renderer's cancel-signal poll
+    // path picks it up and runs the graceful exit.
+    // `ctrlc::set_handler` is process-global and can only be installed once;
+    // swallow the error so nested invocations and tests don't panic.
+    let signal_cancel = std::sync::Arc::clone(&cancel);
+    let _ = ctrlc::set_handler(move || {
+        signal_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
     // The renderer waits for `WorktreeInfoCollectionDone`, which the collector
     // handle emits on `join()`. Joining must happen on a separate thread so the
     // sentinel fires while the renderer is still listening on the channel.

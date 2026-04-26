@@ -214,9 +214,11 @@ impl TuiRenderer {
 
         loop {
             // Honor an externally-set cancel signal (e.g. flipped by a sibling
-            // thread) before we draw, so we exit promptly.
+            // thread or a SIGINT handler) before we draw, so we exit promptly
+            // and the final draw renders the cancelled-state UI.
             if let Some(sig) = &self.cancel_signal {
                 if sig.load(Ordering::Relaxed) {
+                    self.state.live.mark_cancelled();
                     self.state.done = true;
                     final_draw_and_return!();
                 }
