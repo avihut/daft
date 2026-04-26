@@ -871,3 +871,17 @@ Unsupported combinations print a clear error listing the supported set.
 
 Use `--template '<tera-template>'` for custom output. Tera syntax: `{{ var }}`,
 `{% for x in items %}...{% endfor %}`, `{% if %}...{% endif %}`.
+
+## Cache files
+
+`daft list` writes content-addressed JSON caches under
+`<git-common-dir>/.daft/cache/<kind>/` so warm-cache runs avoid re-forking slow
+git commands. Each entry's filename embeds the SHAs that fully define its inputs
+(e.g. `<base_sha>-<head_sha>.json` for ahead/behind counts), so a cache hit is
+provably correct — there is no TTL or manual invalidation. The cache is safe to
+delete at any time; daft will re-populate it on the next run.
+
+Cached cells: base/remote ahead-behind, base/remote line stats, last-commit
+metadata. Working-tree-dependent cells (`Changes`, `Size`) are NOT cached
+because their inputs cannot be captured as a SHA — they always recompute and
+show the `·` skeleton glyph until the result arrives.
