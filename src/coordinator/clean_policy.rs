@@ -86,6 +86,14 @@ impl RepoPolicy {
     }
 }
 
+/// Outcome of a single budget-enforcement pass.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BudgetOutcome {
+    pub evicted_invocations: usize,
+    pub freed_bytes: u64,
+    pub freed_jobs: usize,
+}
+
 /// Build a `RepoPolicy` by inspecting the merged `LogConfig` of any job in the
 /// hook fire. The repo-level fields (`max_total_size`, `keep_last`,
 /// `stale_running_after`) should already be merged identically across jobs by

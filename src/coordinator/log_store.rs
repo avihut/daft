@@ -479,44 +479,52 @@ impl LogStore {
     pub fn enforce_budget(
         &self,
         policy: &crate::coordinator::clean_policy::RepoPolicy,
-    ) -> Result<usize> {
+    ) -> Result<crate::coordinator::clean_policy::BudgetOutcome> {
+        use crate::coordinator::clean_policy::BudgetOutcome;
         let budget = policy.max_total_size_resolved();
         let keep_last = policy.keep_last_resolved();
 
         let mut total = self.total_size_bytes()?;
         if total <= budget {
-            return Ok(0);
+            return Ok(BudgetOutcome::default());
         }
 
-        // List invocations with (worktree, inv_id, created_at, total_size).
-        let mut invs: Vec<(String, String, chrono::DateTime<chrono::Utc>, u64)> = Vec::new();
+        // List invocations with (worktree, inv_id, created_at, total_size, job_count).
+        let mut invs: Vec<(String, String, chrono::DateTime<chrono::Utc>, u64, usize)> = Vec::new();
         for inv in self.list_invocations()? {
             let inv_dir = self.base_dir.join(&inv.invocation_id);
-            let size = walkdir::WalkDir::new(&inv_dir)
+            let mut size: u64 = 0;
+            let mut job_count: usize = 0;
+            for entry in walkdir::WalkDir::new(&inv_dir)
                 .into_iter()
                 .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().is_file())
-                .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
-                .sum::<u64>();
+            {
+                if entry.file_type().is_file() {
+                    size += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                } else if entry.file_type().is_dir() && entry.depth() == 1 {
+                    job_count += 1;
+                }
+            }
             invs.push((
                 inv.worktree.clone(),
                 inv.invocation_id.clone(),
                 inv.created_at,
                 size,
+                job_count,
             ));
         }
 
         // Group by worktree, count for sanity floor.
         let mut per_wt_count: std::collections::BTreeMap<String, usize> = Default::default();
-        for (wt, _, _, _) in &invs {
+        for (wt, _, _, _, _) in &invs {
             *per_wt_count.entry(wt.clone()).or_default() += 1;
         }
 
         // Sort all invocations by created_at ascending (oldest first).
-        invs.sort_by_key(|(_, _, ts, _)| *ts);
+        invs.sort_by_key(|(_, _, ts, _, _)| *ts);
 
-        let mut evicted = 0;
-        for (wt, inv_id, _, size) in invs {
+        let mut outcome = BudgetOutcome::default();
+        for (wt, inv_id, _, size, jobs) in invs {
             if total <= budget {
                 break;
             }
@@ -533,10 +541,12 @@ impl LogStore {
             if fs::rename(&inv_dir, &trash).is_ok() {
                 let _ = fs::remove_dir_all(&trash);
                 total = total.saturating_sub(size);
-                evicted += 1;
+                outcome.evicted_invocations += 1;
+                outcome.freed_bytes += size;
+                outcome.freed_jobs += jobs;
             }
         }
-        Ok(evicted)
+        Ok(outcome)
     }
 
     /// Helper: derive repo_id from base_dir's last component (the repo UUID).
@@ -1481,6 +1491,86 @@ mod tests {
         );
     }
 
+    fn seed_inv_with_jobs(
+        store: &LogStore,
+        inv_id: &str,
+        worktree: &str,
+        started_at: chrono::DateTime<chrono::Utc>,
+        n_jobs: usize,
+        log_bytes: usize,
+    ) {
+        // Write the invocation sidecar.
+        let inv_dir = store.base_dir.join(inv_id);
+        std::fs::create_dir_all(&inv_dir).unwrap();
+        let inv_meta = InvocationMeta {
+            invocation_id: inv_id.to_string(),
+            trigger_command: "test".to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            worktree: worktree.to_string(),
+            created_at: started_at,
+        };
+        store.write_invocation_meta(inv_id, &inv_meta).unwrap();
+
+        // Write each job's meta + a synthetic log file of `log_bytes` bytes.
+        for i in 0..n_jobs {
+            let name = format!("job-{i}");
+            let job_dir = store.create_job_dir(inv_id, &name).unwrap();
+            let meta = JobMeta {
+                name: name.clone(),
+                hook_type: "worktree-post-create".to_string(),
+                worktree: worktree.to_string(),
+                command: "echo x".to_string(),
+                working_dir: "/tmp".to_string(),
+                env: HashMap::new(),
+                started_at,
+                status: JobStatus::Completed,
+                exit_code: Some(0),
+                pid: None,
+                background: true,
+                finished_at: Some(started_at),
+                needs: Vec::new(),
+                retention_seconds: None,
+                max_log_size_bytes: None,
+                log_truncated: false,
+                original_size_bytes: None,
+            };
+            store.write_meta(&job_dir, &meta).unwrap();
+            let log_path = LogStore::log_path(&job_dir);
+            std::fs::write(&log_path, vec![b'x'; log_bytes]).unwrap();
+        }
+    }
+
+    #[test]
+    fn enforce_budget_returns_freed_bytes_and_jobs() {
+        use crate::coordinator::clean_policy::{BudgetOutcome, RepoPolicy};
+
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().join("jobs").join("test-repo"));
+
+        let now = chrono::Utc::now();
+        seed_inv_with_jobs(
+            &store,
+            "inv-old",
+            "feat/x",
+            now - chrono::Duration::days(2),
+            2,
+            1_048_576,
+        );
+        seed_inv_with_jobs(&store, "inv-new", "feat/x", now, 2, 1_048_576);
+
+        let policy = RepoPolicy {
+            version: RepoPolicy::VERSION,
+            max_total_size_bytes: Some(1_500_000), // forces eviction of inv-old
+            keep_last: Some(1),
+            stale_running_after_seconds: None,
+        };
+
+        let outcome: BudgetOutcome = store.enforce_budget(&policy).unwrap();
+        assert_eq!(outcome.evicted_invocations, 1);
+        assert_eq!(outcome.freed_jobs, 2);
+        assert!(outcome.freed_bytes >= 2 * 1_048_576);
+    }
+
     #[test]
     fn budget_evicts_oldest_first_respects_keep_last() {
         use crate::coordinator::clean_policy::RepoPolicy;
@@ -1535,8 +1625,12 @@ mod tests {
             keep_last: Some(1),
             stale_running_after_seconds: None,
         };
-        let evicted = store.enforce_budget(&policy).unwrap();
-        assert!(evicted >= 3, "expected >=3 evicted, got {evicted}");
+        let outcome = store.enforce_budget(&policy).unwrap();
+        assert!(
+            outcome.evicted_invocations >= 3,
+            "expected >=3 evicted, got {}",
+            outcome.evicted_invocations
+        );
 
         let remaining: Vec<String> = std::fs::read_dir(tmp.path())
             .unwrap()

@@ -122,8 +122,10 @@ pub fn run_clean_logs() -> Result<()> {
         total_summary.stale_running_marked += s.stale_running_marked;
 
         // 3. Budget post-pass.
-        let evicted = store.enforce_budget(&repo_policy).unwrap_or(0);
-        total_summary.removed_invocations += evicted;
+        let bo = store.enforce_budget(&repo_policy).unwrap_or_default();
+        total_summary.removed_invocations += bo.evicted_invocations;
+        total_summary.removed_jobs += bo.freed_jobs;
+        total_summary.freed_bytes += bo.freed_bytes;
     }
 
     let last_summary = LastSummary {

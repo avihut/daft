@@ -1632,8 +1632,10 @@ fn prune_jobs(
 
         // Pass 3: budget post-pass (also skipped in dry-run).
         if !dry_run {
-            let evicted = store.enforce_budget(&repo_policy).unwrap_or(0);
-            summary.removed_invocations += evicted;
+            let bo = store.enforce_budget(&repo_policy).unwrap_or_default();
+            summary.removed_invocations += bo.evicted_invocations;
+            summary.removed_jobs += bo.freed_jobs;
+            summary.freed_bytes += bo.freed_bytes;
         }
 
         Ok(summary)
