@@ -133,8 +133,8 @@ pub(super) const ALL_COLUMNS: &[Column] = &[
 /// Used to prevent layout jumps as statuses change during the TUI loop.
 pub(super) const STATUS_MAX_WIDTH: u16 = 13;
 
-/// Minimum width reserved for the LastCommit column before it switches to Fill.
-pub(super) const LAST_COMMIT_MIN: u16 = 10;
+/// Minimum width LastCommit can be shrunk to before we accept overflow.
+pub(super) const LAST_COMMIT_MIN: u16 = 16;
 
 /// Compute the visible display width of a status cell.
 pub(super) fn status_display_width(status: &WorktreeStatus) -> u16 {
@@ -194,7 +194,20 @@ pub(super) fn column_content_width(
             Column::Age => v.branch_age.len() as u16,
             Column::Owner => v.owner.len() as u16,
             Column::Hash => 7,
-            Column::LastCommit => LAST_COMMIT_MIN,
+            // Use the actual rendered width — "<age> <subject>" — so the
+            // fit-to-width algorithm has a real natural width to shrink from.
+            // Falls back to LAST_COMMIT_MIN when both are empty so the column
+            // doesn't disappear during early streaming.
+            Column::LastCommit => {
+                let age_len = v.last_commit_age.chars().count() as u16;
+                let subj_len = v.last_commit_subject.chars().count() as u16;
+                let combined = if age_len == 0 || subj_len == 0 {
+                    age_len + subj_len
+                } else {
+                    age_len + 1 + subj_len // " " between age and subject
+                };
+                combined.max(LAST_COMMIT_MIN)
+            }
         })
         .max()
         .unwrap_or(0);
@@ -238,20 +251,15 @@ pub fn select_columns(
 const BRANCH_MIN_WIDTH: u16 = 12;
 const PATH_MIN_WIDTH: u16 = 8;
 
-/// Reserved width for `LastCommit` when it's present, so Branch/Path can't
-/// squeeze it to zero via `Constraint::Fill(1)`.
-const LAST_COMMIT_RESERVED: u16 = 24;
-
 /// Inter-column spacing in the TUI table (must match `Table::column_spacing`).
 const COLUMN_SPACING: u16 = 2;
 
 /// Adjust per-column natural widths so the table fits in `available` width.
 ///
-/// Shrinks `Branch` and `Path` (in that order, widest first) down to their
-/// minimum widths. Reserves a baseline width for `LastCommit` because it's
-/// rendered with `Constraint::Fill(1)` and would otherwise be starved by
-/// over-eager Length constraints. Returns the natural widths unchanged when
-/// they already fit.
+/// Shrinks the widest of {Branch, Path, LastCommit} down to per-column
+/// minimums until the table fits, mirroring `tabled::Width::truncate(...)
+/// .priority(Priority::max(true))` from the blocking renderer. Returns the
+/// natural widths unchanged when they already fit.
 pub(super) fn fit_widths_to_available(
     columns: &[Column],
     natural_widths: &[u16],
@@ -263,19 +271,7 @@ pub(super) fn fit_widths_to_available(
     }
 
     let spacing = (columns.len().saturating_sub(1)) as u16 * COLUMN_SPACING;
-    let lastcommit_idx = columns.iter().position(|c| matches!(c, Column::LastCommit));
-
-    // If LastCommit is present, treat it as occupying at least
-    // LAST_COMMIT_RESERVED chars during fit calculations, even though the real
-    // constraint is Fill(1). This forces Branch/Path to share the remaining
-    // budget with the commit column rather than starving it.
-    let lastcommit_reserved = lastcommit_idx
-        .map(|i| LAST_COMMIT_RESERVED.max(widths[i]).min(available / 3))
-        .unwrap_or(0);
-
-    let total_natural: u32 = widths.iter().map(|w| *w as u32).sum::<u32>() + spacing as u32
-        - lastcommit_idx.map(|i| widths[i] as u32).unwrap_or(0)
-        + lastcommit_reserved as u32;
+    let total_natural: u32 = widths.iter().map(|w| *w as u32).sum::<u32>() + spacing as u32;
     if total_natural <= available as u32 {
         return widths;
     }
@@ -284,6 +280,7 @@ pub(super) fn fit_widths_to_available(
         match c {
             Column::Branch => Some(BRANCH_MIN_WIDTH),
             Column::Path => Some(PATH_MIN_WIDTH),
+            Column::LastCommit => Some(LAST_COMMIT_MIN),
             _ => None,
         }
     };
@@ -382,23 +379,36 @@ mod tests {
     }
 
     #[test]
-    fn fit_widths_reserves_space_for_lastcommit() {
-        // Branch=200, Path=200, LastCommit=10. Without reserving for
-        // LastCommit, Branch+Path would consume nearly all available width.
+    fn fit_widths_shrinks_lastcommit_too() {
+        // LastCommit is the widest, so it should be shrunk first when the
+        // table doesn't fit.
         let cols = vec![Column::Branch, Column::Path, Column::LastCommit];
-        let natural = vec![200, 200, 10];
-        let out = fit_widths_to_available(&cols, &natural, 120);
-        // Branch + Path + spacing should leave at least LAST_COMMIT_RESERVED
-        // (or close to it; we cap reserve at available/3 to avoid pathological
-        // narrow terminals).
-        let nonlast: u16 = out[0] + out[1] + 4; // 2 gaps = 4
-        let lastcommit_room = 120u16.saturating_sub(nonlast);
+        let natural = vec![20, 20, 200];
+        let out = fit_widths_to_available(&cols, &natural, 100);
+        let total: u16 = out.iter().sum::<u16>() + 4; // 2 gaps = 4
+        assert!(total <= 100, "fit widths exceed available: {out:?}");
+        // Branch and Path should still be at natural since LastCommit had room
+        // to spare on its own.
+        assert_eq!(out[0], 20);
+        assert_eq!(out[1], 20);
+        assert!(out[2] >= LAST_COMMIT_MIN);
+    }
+
+    #[test]
+    fn fit_widths_lastcommit_keeps_room_when_branch_path_huge() {
+        // Branch=200, Path=200, LastCommit=80. Total way over. The widest-first
+        // policy should shrink Branch and Path before touching LastCommit.
+        let cols = vec![Column::Branch, Column::Path, Column::LastCommit];
+        let natural = vec![200, 200, 80];
+        let out = fit_widths_to_available(&cols, &natural, 160);
+        let total: u16 = out.iter().sum::<u16>() + 4;
+        assert!(total <= 160, "fit widths exceed available: {out:?}");
         assert!(
-            lastcommit_room >= 10,
-            "LastCommit should have headroom: branch={}, path={}, lastcommit_room={}",
+            out[2] >= 40,
+            "LastCommit kept most of its width: branch={}, path={}, lc={}",
             out[0],
             out[1],
-            lastcommit_room
+            out[2]
         );
     }
 

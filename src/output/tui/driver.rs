@@ -51,10 +51,31 @@ impl TuiRenderer {
         self
     }
 
-    /// Compute total rendered worktree rows including hook sub-rows and divider.
-    ///
-    /// When `show_hook_sub_rows` is true (verbose >= 1), each hook sub-row and
-    /// its nested job sub-rows add extra rendered rows beneath the parent worktree row.
+    /// Whether `render_table` will emit a "Sorted by …" summary line above the
+    /// table (true sort spec set AND its keys aren't all already shown as
+    /// column-header arrows). Always 2 rows when present: summary + spacer.
+    fn sort_summary_rows(&self) -> u16 {
+        let Some(spec) = self.state.live.cfg.sort_spec.as_ref() else {
+            return 0;
+        };
+        let displayed: Vec<crate::core::columns::ListColumn> = self
+            .state
+            .live
+            .cfg
+            .columns
+            .as_ref()
+            .map(|cols| cols.iter().filter_map(|c| c.to_list_column()).collect())
+            .unwrap_or_else(|| crate::core::columns::ListColumn::list_defaults().to_vec());
+        if spec.needs_summary_line(&displayed) {
+            2
+        } else {
+            0
+        }
+    }
+
+    /// Total rendered rows beneath the table header — data rows, divider,
+    /// optional Size summary footer, and any hook/job sub-rows expanded in
+    /// verbose mode. Used for cursor positioning after the final draw.
     fn total_rendered_rows(&self) -> u16 {
         let base = self.state.live.rows.len() as u16;
         let divider = if self.state.live.unowned_start_index.is_some() {
@@ -114,7 +135,29 @@ impl TuiRenderer {
         } else {
             0
         };
-        let table_height = self.state.live.rows.len() as u16 + 2 + self.extra_rows + divider_row;
+        // Size summary footer: 2 rows (blank separator + total) when present.
+        let size_summary_rows: u16 = if self
+            .state
+            .live
+            .cfg
+            .columns
+            .as_ref()
+            .is_some_and(|cols| cols.contains(&Column::Size))
+        {
+            2
+        } else {
+            0
+        };
+        // table_height = sort summary (rendered inside chunks[1] when present)
+        // + table header row + 1 trailing row for cursor parking + data rows
+        // + extra room for late-arriving rows + divider + size summary footer.
+        let sort_rows = self.sort_summary_rows();
+        let table_height = sort_rows
+            + self.state.live.rows.len() as u16
+            + 2
+            + self.extra_rows
+            + divider_row
+            + size_summary_rows;
         let footer_height: u16 = if self.state.show_hook_sub_rows { 1 } else { 0 };
         let viewport_height = header_height + table_height + footer_height;
 
@@ -147,8 +190,10 @@ impl TuiRenderer {
                     render::render_table(&self.state, frame, chunks[1]);
                     render::render_footer(&self.state, frame, chunks[2]);
 
-                    // table header (1 row) + data rows (including hook sub-rows)
-                    let content_bottom = area.y + header_height + 1 + total_rows + footer_height;
+                    // sort summary rows (when present) + table header (1 row)
+                    // + data rows (including hook sub-rows / size summary).
+                    let content_bottom =
+                        area.y + header_height + sort_rows + 1 + total_rows + footer_height;
                     frame.set_cursor_position(Position {
                         x: 0,
                         y: content_bottom,

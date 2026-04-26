@@ -216,9 +216,10 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         .collect();
     let assigned_widths = fit_widths_to_available(&columns, &natural_widths, table_area.width);
 
-    // When Branch or Path was shrunk below its natural width, pre-truncate the
-    // displayed text so the renderer shows "..." rather than ratatui's silent
-    // hard cut. Other columns are short by construction and don't need this.
+    // When Branch / Path / LastCommit were shrunk below natural, pre-truncate
+    // the displayed text so the renderer shows "..." rather than ratatui's
+    // silent hard cut. For LastCommit the user-visible string is
+    // "<age> <subject>"; truncate the subject so the combined length fits.
     for (i, col) in columns.iter().enumerate() {
         if assigned_widths[i] >= natural_widths[i] {
             continue;
@@ -234,20 +235,35 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                     vals.path = truncate_with_ellipsis(&vals.path, assigned_widths[i]);
                 }
             }
+            Column::LastCommit => {
+                let width = assigned_widths[i];
+                for vals in &mut row_vals {
+                    if vals.last_commit_subject.is_empty() {
+                        // Only age is shown — that's already short, but fall
+                        // back to direct truncation in pathological cases.
+                        if !vals.last_commit_age.is_empty() {
+                            vals.last_commit_age =
+                                truncate_with_ellipsis(&vals.last_commit_age, width);
+                        }
+                        continue;
+                    }
+                    let prefix = if vals.last_commit_age.is_empty() {
+                        0
+                    } else {
+                        vals.last_commit_age.chars().count() as u16 + 1 // " "
+                    };
+                    let subject_room = width.saturating_sub(prefix);
+                    vals.last_commit_subject =
+                        truncate_with_ellipsis(&vals.last_commit_subject, subject_room);
+                }
+            }
             _ => {}
         }
     }
 
-    let constraints: Vec<Constraint> = columns
+    let constraints: Vec<Constraint> = assigned_widths
         .iter()
-        .enumerate()
-        .map(|(i, col)| {
-            if matches!(col, Column::LastCommit) {
-                Constraint::Fill(1)
-            } else {
-                Constraint::Length(assigned_widths[i])
-            }
-        })
+        .map(|w| Constraint::Length(*w))
         .collect();
 
     // X offset where the first data column (Branch) starts — used for
