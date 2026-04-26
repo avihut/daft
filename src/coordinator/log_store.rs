@@ -315,17 +315,27 @@ impl LogStore {
             }
         }
 
-        if policy.dry_run {
-            summary.freed_bytes = candidates.iter().map(|(_, s, _)| s).sum();
-            summary.removed_jobs = candidates.len();
-            return Ok(summary);
-        }
-
         // Tally candidates per invocation so we can drop the entire invocation
         // dir (including invocation.json) when every job in it was a candidate.
+        // Hoisted above the dry-run early-return so dry-run can report the same
+        // would-be-removed invocation count as the live path.
         let mut candidates_per_inv: std::collections::BTreeMap<String, usize> = Default::default();
         for (_, _, inv_id) in &candidates {
             *candidates_per_inv.entry(inv_id.clone()).or_default() += 1;
+        }
+
+        if policy.dry_run {
+            summary.freed_bytes = candidates.iter().map(|(_, s, _)| s).sum();
+            summary.removed_jobs = candidates.len();
+            // Mirror the live path's invocation tally: an invocation is
+            // counted as removed when every job in it was a candidate.
+            for (inv_id, count) in &candidates_per_inv {
+                let total = jobs_per_inv.get(inv_id).copied().unwrap_or(0);
+                if *count >= total && total > 0 {
+                    summary.removed_invocations += 1;
+                }
+            }
+            return Ok(summary);
         }
 
         // Atomic remove: rename to .deleting-, then remove.
@@ -1790,5 +1800,49 @@ mod tests {
             "explicit set wins"
         );
         assert_eq!(read.keep_last, Some(5), "unset preserves on-disk");
+    }
+
+    #[test]
+    fn dry_run_tallies_removed_invocations() {
+        use crate::coordinator::clean_policy::{CleanPolicy, RepoPolicy};
+
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().join("jobs").join("test-repo"));
+
+        let now = chrono::Utc::now();
+        // 1 invocation with 2 jobs, both far older than retention (override below).
+        seed_inv_with_jobs(
+            &store,
+            "inv-old",
+            "feat/x",
+            now - chrono::Duration::days(30),
+            2,
+            100,
+        );
+
+        // keep_last=0 disables the sanity floor so the older invocation is
+        // actually a candidate for removal.
+        let policy = CleanPolicy {
+            repo_policy: RepoPolicy {
+                version: RepoPolicy::VERSION,
+                max_total_size_bytes: None,
+                keep_last: Some(0),
+                stale_running_after_seconds: None,
+            },
+            dry_run: true,
+            retention_override: Some(chrono::Duration::seconds(1)),
+            default_retention: chrono::Duration::days(7),
+        };
+        let summary = store.clean(&policy).unwrap();
+        assert_eq!(summary.removed_jobs, 2);
+        assert_eq!(
+            summary.removed_invocations, 1,
+            "dry-run should tally would-be-removed invocations"
+        );
+        // Dry-run must not actually remove anything from disk.
+        assert!(
+            store.base_dir.join("inv-old").exists(),
+            "dry-run must not remove invocation dir"
+        );
     }
 }
