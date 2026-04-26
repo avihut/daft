@@ -834,7 +834,7 @@ fn worktree_matches_job(job: &crate::coordinator::JobInfo, branch_slug: &str) ->
 ///
 /// This is best-effort: if no coordinator is running, or if the coordinator
 /// cannot be reached, the error is silently ignored so removal proceeds.
-fn cancel_background_jobs_for_worktree(branch_slug: &str, sink: &mut dyn ProgressSink) {
+pub(crate) fn cancel_background_jobs_for_worktree(branch_slug: &str, sink: &mut dyn ProgressSink) {
     use crate::coordinator::client::CoordinatorClient;
     use crate::coordinator::log_store::JobStatus;
 
@@ -844,25 +844,35 @@ fn cancel_background_jobs_for_worktree(branch_slug: &str, sink: &mut dyn Progres
         Err(_) => return, // Unable to compute repo ID — nothing to cancel.
     };
 
-    let client_opt = match CoordinatorClient::connect(&repo_hash) {
-        Ok(opt) => opt,
-        Err(_) => return, // No coordinator — nothing to cancel.
+    // The coordinator's `handle_client_connection` services exactly one
+    // request per stream, so we open a fresh client for `list_jobs` and for
+    // each `cancel_job` call. Reusing a single client across multiple sends
+    // yields a Broken-pipe error on the second send.
+    let mut list_client = match CoordinatorClient::connect(&repo_hash) {
+        Ok(Some(c)) => c,
+        _ => return, // No coordinator running or unreachable — nothing to cancel.
     };
 
-    let mut client = match client_opt {
-        Some(c) => c,
-        None => return, // No coordinator running.
-    };
-
-    let jobs = match client.list_jobs() {
+    let jobs = match list_client.list_jobs() {
         Ok(j) => j,
         Err(_) => return,
     };
+    drop(list_client);
 
     for job in jobs {
         if matches!(job.status, JobStatus::Running) && worktree_matches_job(&job, branch_slug) {
             sink.on_step(&format!("Stopping background job '{}'...", job.name));
-            match client.cancel_job(&job.name) {
+            let mut cancel_client = match CoordinatorClient::connect(&repo_hash) {
+                Ok(Some(c)) => c,
+                _ => {
+                    sink.on_warning(&format!(
+                        "Failed to cancel background job '{}': coordinator no longer reachable",
+                        job.name
+                    ));
+                    continue;
+                }
+            };
+            match cancel_client.cancel_job(&job.name) {
                 Ok(_) => sink.on_step(&format!("Stopped background job '{}'", job.name)),
                 Err(e) => sink.on_warning(&format!(
                     "Failed to cancel background job '{}': {e}",
