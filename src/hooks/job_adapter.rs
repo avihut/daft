@@ -6,7 +6,8 @@
 //! RC-file sourcing, template substitution) happens here so that the
 //! executor never needs to know about hook configuration details.
 
-use crate::executor::JobSpec;
+use super::yaml_config_loader::merge_log_configs;
+use crate::executor::{JobSpec, LogConfig};
 use crate::hooks::environment::{HookContext, HookEnvironment};
 use crate::hooks::yaml_config::JobDef;
 use std::collections::HashMap;
@@ -48,7 +49,7 @@ pub fn yaml_jobs_to_specs(
     working_dir: &Path,
     rc: Option<&str>,
     hook_background: Option<bool>,
-    repo_log: Option<&crate::executor::LogConfig>,
+    repo_log: Option<&LogConfig>,
 ) -> (Vec<JobSpec>, Vec<SkippedJob>) {
     let mut kept: Vec<JobSpec> = Vec::new();
     let mut skipped: Vec<SkippedJob> = Vec::new();
@@ -182,18 +183,12 @@ pub fn scripts_to_specs(
 /// Used by [`yaml_jobs_to_specs`] so top-level `log:` defaults in `daft.yml`
 /// (e.g. `max_total_size`, `keep_last`, `stale_running_after`) flow into
 /// each job's `log_config` and reach `build_repo_policy`.
-fn merge_job_log(
-    per_job: Option<crate::executor::LogConfig>,
-    repo: Option<&crate::executor::LogConfig>,
-) -> Option<crate::executor::LogConfig> {
+fn merge_job_log(per_job: Option<LogConfig>, repo: Option<&LogConfig>) -> Option<LogConfig> {
     match (per_job, repo) {
         (None, None) => None,
         (Some(j), None) => Some(j),
         (None, Some(r)) => Some(r.clone()),
-        (Some(j), Some(r)) => Some(crate::hooks::yaml_config_loader::merge_log_configs(
-            j,
-            r.clone(),
-        )),
+        (Some(j), Some(r)) => Some(merge_log_configs(j, r.clone())),
     }
 }
 

@@ -15,6 +15,7 @@ use super::template;
 use super::yaml_config::{GroupDef, HookDef, JobDef};
 use super::yaml_config_loader::get_effective_jobs;
 use crate::executor::presenter::JobPresenter;
+use crate::executor::LogConfig;
 use crate::hooks::tracking::{effective_tracks, TrackedAttribute};
 use crate::output::Output;
 use crate::settings::HookOutputConfig;
@@ -114,7 +115,7 @@ pub fn execute_yaml_hook_with_rc(
     _output_config: &HookOutputConfig,
     filter: &JobFilter,
     presenter: &Arc<dyn JobPresenter>,
-    repo_log: Option<&crate::executor::LogConfig>,
+    repo_log: Option<&LogConfig>,
 ) -> Result<HookResult> {
     // Check hook-level skip/only conditions
     if let Some(ref skip) = hook_def.skip {
