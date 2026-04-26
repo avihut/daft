@@ -32,6 +32,17 @@ pub struct TestEnv {
     pub daft_data_dir: PathBuf,
     /// Variable store for `$VAR` expansion in step commands and paths.
     vars: HashMap<String, String>,
+    /// When true, `Drop` removes `base_dir` — guarantees cleanup on early
+    /// returns and panics. Set to false for `--keep` and `--setup-only`.
+    cleanup_on_drop: bool,
+}
+
+impl Drop for TestEnv {
+    fn drop(&mut self) {
+        if self.cleanup_on_drop && self.base_dir.exists() {
+            let _ = std::fs::remove_dir_all(&self.base_dir);
+        }
+    }
 }
 
 impl TestEnv {
@@ -40,7 +51,7 @@ impl TestEnv {
     /// This creates the sandbox directory tree and initialises built-in
     /// variables (`WORK_DIR`, `BASE_DIR`, `BINARY_DIR`) plus any extra vars
     /// from `scenario.env`.
-    pub fn create(scenario: &Scenario, project_root: &Path) -> Result<Self> {
+    pub fn create(scenario: &Scenario, project_root: &Path, keep: bool) -> Result<Self> {
         let base_dir = if let Ok(base) = std::env::var("DAFT_MANUAL_TEST_BASE") {
             // Deterministic path under a managed directory (e.g., sandbox/test/).
             let slug = scenario.name.to_lowercase().replace(' ', "-");
@@ -97,6 +108,7 @@ impl TestEnv {
             daft_config_dir,
             daft_data_dir,
             vars,
+            cleanup_on_drop: !keep,
         })
     }
 
@@ -116,6 +128,7 @@ impl TestEnv {
             daft_config_dir: PathBuf::from("/tmp/test-dummy/daft-config"),
             daft_data_dir: PathBuf::from("/tmp/test-dummy/daft-data"),
             vars,
+            cleanup_on_drop: false,
         }
     }
 
