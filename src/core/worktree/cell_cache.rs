@@ -81,6 +81,33 @@ where
     Some(computed)
 }
 
+/// Cached wrapper for upstream ahead/behind counts.
+///
+/// Cache key: `(head_sha, upstream_sha)`. Pure function — hit is provably
+/// correct. `None` results are not cached.
+pub(crate) fn cached_remote_ahead_behind<F>(
+    git_common_dir: &Path,
+    head_sha: &str,
+    upstream_sha: &str,
+    compute: F,
+) -> Option<(usize, usize)>
+where
+    F: FnOnce() -> Option<(usize, usize)>,
+{
+    let path = pair_key_path(
+        git_common_dir,
+        "remote-ahead-behind",
+        head_sha,
+        upstream_sha,
+    );
+    if let Some(v) = cache::read_json::<(usize, usize)>(&path) {
+        return Some(v);
+    }
+    let computed = compute()?;
+    cache::write_json(&path, &computed);
+    Some(computed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +169,24 @@ mod tests {
 
         let path = pair_key_path(common_dir, "base-ahead-behind", "abc1234", "def5678");
         assert!(!path.exists(), "None should not be cached");
+    }
+
+    #[test]
+    fn cached_remote_ahead_behind_writes_and_reads_back() {
+        use tempfile::TempDir;
+
+        let common = TempDir::new().unwrap();
+        let common_dir = common.path();
+
+        let out = cached_remote_ahead_behind(common_dir, "head1234", "upst5678", || Some((2, 4)));
+        assert_eq!(out, Some((2, 4)));
+
+        let path = pair_key_path(common_dir, "remote-ahead-behind", "head1234", "upst5678");
+        assert!(path.exists());
+
+        let out2 = cached_remote_ahead_behind(common_dir, "head1234", "upst5678", || {
+            panic!("compute called on cache hit")
+        });
+        assert_eq!(out2, Some((2, 4)));
     }
 }
