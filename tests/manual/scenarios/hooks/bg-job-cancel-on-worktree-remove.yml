@@ -1,0 +1,105 @@
+name: Removing a worktree auto-cancels its running background jobs
+description:
+  "Regression for the worktree-pre-remove auto-cancel path: a worktree spawns a
+  long-running background job (`sleep 30`). Removing the worktree via
+  `git-worktree-branch -D` must detect the running bg job, SIGTERM the child,
+  and the coordinator must mark the job's meta.json with status=cancelled.
+  Verifies that `daft hooks jobs --all --format json` (run from the surviving
+  main worktree) reports the cancelled status — proving the auto-cancel slug
+  match against the removed worktree fires before teardown. The checkout step
+  redirects stdio to /dev/null so the forked coordinator (which inherits
+  stdout/stderr) doesn't keep the test framework's capture pipe open for the
+  full 30 s sleep."
+
+repos:
+  - name: test-bg-cancel-on-remove
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Cancel on remove test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/auto-cancel
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: long-sleep
+              background: true
+              run: sleep 30
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_BG_CANCEL_ON_REMOVE
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-bg-cancel-on-remove/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-bg-cancel-on-remove/main"
+    expect:
+      exit_code: 0
+
+  - name:
+      Checkout feature branch (fires worktree-post-create with bg job) — stdio
+      is redirected so the test framework doesn't block on the forked
+      coordinator's inherited pipes
+    run: |
+      env -u DAFT_TESTING git-worktree-checkout feature/auto-cancel </dev/null >/dev/null 2>&1
+      echo "checkout-exit=$?"
+    cwd: "$WORK_DIR/test-bg-cancel-on-remove/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "checkout-exit=0"
+      dirs_exist:
+        - "$WORK_DIR/test-bg-cancel-on-remove/feature/auto-cancel"
+
+  - name:
+      Wait briefly so the coordinator has spawned the child and registered its
+      PID before removal.
+    run: sleep 2
+    expect:
+      exit_code: 0
+
+  - name:
+      Remove the worktree — fires worktree-pre-remove and must auto-cancel the
+      running bg job by branch-slug match. The "Stopping background job ..."
+      step line is emitted via `on_step` (verbose-only); the load-bearing
+      assertion is the JSON status flip below.
+    run: env -u DAFT_TESTING git-worktree-branch -D feature/auto-cancel 2>&1
+    cwd: "$WORK_DIR/test-bg-cancel-on-remove/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Deleted feature/auto-cancel"
+      output_not_contains:
+        - "Failed to cancel background job"
+      files_not_exist:
+        - "$WORK_DIR/test-bg-cancel-on-remove/feature/auto-cancel"
+
+  - name:
+      Wait for SIGTERM to propagate and the coordinator to rewrite meta.json
+      with status=cancelled.
+    run: sleep 2
+    expect:
+      exit_code: 0
+
+  - name:
+      JSON listing across all worktrees reports the cancelled status for the
+      long-sleep job — invoked from the surviving main worktree because the
+      feature dir is gone
+    run: daft hooks jobs --all --format json 2>&1
+    cwd: "$WORK_DIR/test-bg-cancel-on-remove/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"name": "long-sleep"'
+        - '"status": "cancelled"'
+      output_not_contains:
+        - '"status": "failed"'

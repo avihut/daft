@@ -1,0 +1,98 @@
+name: Cancelling a running background job by name records 'cancelled'
+description:
+  "Regression for the per-job cancel path: a worktree-post-create hook spawns a
+  long-running background job (`sleep 30`). Once the coordinator has registered
+  the child PID, `daft hooks jobs cancel long-sleep` SIGTERMs it and the
+  coordinator must mark the meta.json with status=cancelled (not failed).
+  Verifies that `daft hooks jobs --format json` reports the cancelled status for
+  the named job. The checkout step redirects stdio to /dev/null so the forked
+  coordinator (which inherits stdout/stderr) doesn't keep the test framework's
+  capture pipe open for the full 30 s sleep — letting the next step run while
+  the bg job is still alive."
+
+repos:
+  - name: test-bg-cancel-by-name
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Cancel by name test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/cancel-target
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: long-sleep
+              background: true
+              run: sleep 30
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_BG_CANCEL_BY_NAME
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-bg-cancel-by-name/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-bg-cancel-by-name/main"
+    expect:
+      exit_code: 0
+
+  - name:
+      Checkout feature branch (fires worktree-post-create with bg job) — stdio
+      is redirected so the test framework doesn't block on the forked
+      coordinator's inherited pipes
+    run: |
+      git-worktree-checkout feature/cancel-target </dev/null >/dev/null 2>&1
+      echo "checkout-exit=$?"
+    cwd: "$WORK_DIR/test-bg-cancel-by-name/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "checkout-exit=0"
+      dirs_exist:
+        - "$WORK_DIR/test-bg-cancel-by-name/feature/cancel-target"
+
+  - name:
+      Wait briefly so the coordinator has spawned the child and registered its
+      PID before we cancel.
+    run: sleep 2
+    expect:
+      exit_code: 0
+
+  - name:
+      Cancel the running background job by name (run from the feature worktree
+      so the address resolver finds the invocation)
+    run: daft hooks jobs cancel long-sleep 2>&1
+    cwd: "$WORK_DIR/test-bg-cancel-by-name/feature/cancel-target"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Cancelled job: long-sleep"
+
+  - name:
+      Wait for SIGTERM to propagate and the coordinator to rewrite meta.json
+      with status=cancelled.
+    run: sleep 2
+    expect:
+      exit_code: 0
+
+  - name:
+      JSON listing reports the cancelled status for the long-sleep job
+      (substring match — serde key order isn't load-bearing, only that both
+      substrings appear in the output)
+    run: daft hooks jobs --format json 2>&1
+    cwd: "$WORK_DIR/test-bg-cancel-by-name/feature/cancel-target"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"name": "long-sleep"'
+        - '"status": "cancelled"'
+      output_not_contains:
+        - '"status": "failed"'
