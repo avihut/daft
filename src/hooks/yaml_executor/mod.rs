@@ -97,6 +97,7 @@ pub fn execute_yaml_hook(
         output_config,
         &JobFilter::default(),
         &presenter,
+        None,
     )
 }
 
@@ -113,6 +114,7 @@ pub fn execute_yaml_hook_with_rc(
     _output_config: &HookOutputConfig,
     filter: &JobFilter,
     presenter: &Arc<dyn JobPresenter>,
+    repo_log: Option<&crate::executor::LogConfig>,
 ) -> Result<HookResult> {
     // Check hook-level skip/only conditions
     if let Some(ref skip) = hook_def.skip {
@@ -240,6 +242,7 @@ pub fn execute_yaml_hook_with_rc(
         working_dir,
         rc,
         hook_def.background,
+        repo_log,
     );
 
     // Write sparse records for jobs that were filtered out before execution.

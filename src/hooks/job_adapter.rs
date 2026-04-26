@@ -39,6 +39,7 @@ pub struct SkippedJob {
 /// **Note:** Group jobs (`job.group.is_some()`) are skipped in this
 /// initial implementation. They will be handled when the yaml_executor
 /// is fully migrated to the generic executor.
+#[allow(clippy::too_many_arguments)]
 pub fn yaml_jobs_to_specs(
     jobs: &[JobDef],
     ctx: &HookContext,
@@ -47,6 +48,7 @@ pub fn yaml_jobs_to_specs(
     working_dir: &Path,
     rc: Option<&str>,
     hook_background: Option<bool>,
+    repo_log: Option<&crate::executor::LogConfig>,
 ) -> (Vec<JobSpec>, Vec<SkippedJob>) {
     let mut kept: Vec<JobSpec> = Vec::new();
     let mut skipped: Vec<SkippedJob> = Vec::new();
@@ -129,7 +131,7 @@ pub fn yaml_jobs_to_specs(
             timeout: JobSpec::DEFAULT_TIMEOUT,
             background: declared_background,
             background_output: job.background_output.clone(),
-            log_config: job.log.clone(),
+            log_config: merge_job_log(job.log.clone(), repo_log),
         });
     }
 
@@ -171,6 +173,28 @@ pub fn scripts_to_specs(
             }
         })
         .collect()
+}
+
+/// Merge a per-job [`LogConfig`] with the repo-level default, with per-job
+/// fields taking precedence. Either or both may be `None`; the result is
+/// `None` only when both are.
+///
+/// Used by [`yaml_jobs_to_specs`] so top-level `log:` defaults in `daft.yml`
+/// (e.g. `max_total_size`, `keep_last`, `stale_running_after`) flow into
+/// each job's `log_config` and reach `build_repo_policy`.
+fn merge_job_log(
+    per_job: Option<crate::executor::LogConfig>,
+    repo: Option<&crate::executor::LogConfig>,
+) -> Option<crate::executor::LogConfig> {
+    match (per_job, repo) {
+        (None, None) => None,
+        (Some(j), None) => Some(j),
+        (None, Some(r)) => Some(r.clone()),
+        (Some(j), Some(r)) => Some(crate::hooks::yaml_config_loader::merge_log_configs(
+            j,
+            r.clone(),
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -220,6 +244,7 @@ mod tests {
             &hook_env,
             ".daft",
             Path::new("/project"),
+            None,
             None,
             None,
         );
@@ -273,6 +298,7 @@ mod tests {
             Path::new("/tmp"),
             None,
             None,
+            None,
         );
         assert!(
             kept.is_empty(),
@@ -300,6 +326,7 @@ mod tests {
             Path::new("/project"),
             Some("~/.bashrc"),
             None,
+            None,
         );
 
         assert_eq!(specs.len(), 1);
@@ -322,6 +349,7 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/project"),
+            None,
             None,
             None,
         );
@@ -359,6 +387,7 @@ mod tests {
             Path::new("/project"),
             None,
             None,
+            None,
         );
 
         assert_eq!(specs.len(), 1);
@@ -393,6 +422,7 @@ mod tests {
             Path::new("/tmp"),
             None,
             None,
+            None,
         );
 
         assert_eq!(specs.len(), 2);
@@ -414,6 +444,7 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
+            None,
             None,
             None,
         );
@@ -454,6 +485,7 @@ mod tests {
             Path::new("/tmp"),
             None,
             None,
+            None,
         );
 
         assert_eq!(kept.len(), 1, "group job should be excluded");
@@ -490,6 +522,7 @@ mod tests {
             std::path::Path::new("/work"),
             None,
             None,
+            None,
         );
 
         assert!(kept.is_empty());
@@ -514,6 +547,7 @@ mod tests {
             &env,
             "/src",
             std::path::Path::new("/work"),
+            None,
             None,
             None,
         );
@@ -546,6 +580,7 @@ mod tests {
             std::path::Path::new("/work"),
             None,
             None,
+            None,
         );
 
         assert!(kept.is_empty());
@@ -574,6 +609,7 @@ mod tests {
             &env,
             "/src",
             std::path::Path::new("/work"),
+            None,
             None,
             None,
         );
@@ -614,6 +650,7 @@ mod tests {
             std::path::Path::new("/work"),
             None,
             None,
+            None,
         );
 
         assert_eq!(kept.len(), 1);
@@ -649,6 +686,7 @@ mod tests {
             std::path::Path::new("/work"),
             None,
             None,
+            None,
         );
 
         assert!(kept.is_empty());
@@ -681,6 +719,7 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
+            None,
             None,
             None,
         );
@@ -765,5 +804,160 @@ mod tests {
         assert!(s.fail_text.is_none());
         assert!(s.description.is_none());
         assert_eq!(s.timeout, JobSpec::DEFAULT_TIMEOUT);
+    }
+
+    // ── repo-level log merge ─────────────────────────────────────────────
+    //
+    // Top-level `log:` defaults in `daft.yml` (max_total_size, keep_last,
+    // stale_running_after, plus retention/max_log_size) must propagate into
+    // each job's `log_config`, with per-job blocks taking precedence.
+
+    #[test]
+    fn merges_repo_log_into_jobs_without_per_job_log() {
+        use crate::executor::LogConfig;
+
+        let jobs = vec![JobDef {
+            name: Some("build".to_string()),
+            run: Some(RunCommand::Simple("cargo build".to_string())),
+            log: None,
+            ..Default::default()
+        }];
+
+        let repo_log = LogConfig {
+            max_total_size: Some("1GB".to_string()),
+            keep_last: Some(5),
+            stale_running_after: Some("48h".to_string()),
+            ..Default::default()
+        };
+
+        let ctx = make_ctx();
+        let (kept, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            None,
+            None,
+            Some(&repo_log),
+        );
+
+        assert_eq!(kept.len(), 1);
+        let lc = kept[0]
+            .log_config
+            .as_ref()
+            .expect("log_config should be Some when repo-level log is provided");
+        assert_eq!(lc.max_total_size.as_deref(), Some("1GB"));
+        assert_eq!(lc.keep_last, Some(5));
+        assert_eq!(lc.stale_running_after.as_deref(), Some("48h"));
+    }
+
+    #[test]
+    fn per_job_log_overrides_repo_log() {
+        use crate::executor::LogConfig;
+
+        let jobs = vec![JobDef {
+            name: Some("build".to_string()),
+            run: Some(RunCommand::Simple("cargo build".to_string())),
+            log: Some(LogConfig {
+                retention: Some("1d".to_string()),
+                max_log_size: Some("1MB".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let repo_log = LogConfig {
+            retention: Some("30d".to_string()),
+            max_total_size: Some("1GB".to_string()),
+            keep_last: Some(3),
+            ..Default::default()
+        };
+
+        let ctx = make_ctx();
+        let (kept, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            None,
+            None,
+            Some(&repo_log),
+        );
+
+        assert_eq!(kept.len(), 1);
+        let lc = kept[0].log_config.as_ref().unwrap();
+        // Per-job overrides win
+        assert_eq!(
+            lc.retention.as_deref(),
+            Some("1d"),
+            "per-job retention should override repo-level"
+        );
+        assert_eq!(lc.max_log_size.as_deref(), Some("1MB"));
+        // Repo-level fills in unset per-job fields
+        assert_eq!(
+            lc.max_total_size.as_deref(),
+            Some("1GB"),
+            "repo-level max_total_size should fill in"
+        );
+        assert_eq!(lc.keep_last, Some(3), "repo-level keep_last should fill in");
+    }
+
+    #[test]
+    fn no_repo_log_keeps_per_job_log_unchanged() {
+        use crate::executor::LogConfig;
+
+        let jobs = vec![JobDef {
+            name: Some("build".to_string()),
+            run: Some(RunCommand::Simple("cargo build".to_string())),
+            log: Some(LogConfig {
+                retention: Some("7d".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let (kept, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(kept.len(), 1);
+        let lc = kept[0].log_config.as_ref().unwrap();
+        assert_eq!(lc.retention.as_deref(), Some("7d"));
+        assert!(lc.max_total_size.is_none());
+    }
+
+    #[test]
+    fn no_log_at_either_level_yields_none() {
+        let jobs = vec![JobDef {
+            name: Some("build".to_string()),
+            run: Some(RunCommand::Simple("cargo build".to_string())),
+            log: None,
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let (kept, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].log_config.is_none());
     }
 }

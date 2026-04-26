@@ -328,6 +328,7 @@ impl HookExecutor {
             &self.config.output,
             &self.job_filter,
             presenter,
+            yaml_config.log.as_ref(),
         )?;
 
         if !result.success && !result.skipped {
