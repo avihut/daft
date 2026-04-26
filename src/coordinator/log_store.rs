@@ -631,14 +631,28 @@ impl LogStore {
         self.base_dir.join("repo-policy.json")
     }
 
-    /// Persist the repo-level cleanup policy. Most-recent-write wins.
+    /// Persist the repo-level cleanup policy. Field-merges with the on-disk
+    /// values: explicit `Some(_)` in the new policy wins; `None` preserves the
+    /// on-disk value. This prevents hooks without a `log:` block (which
+    /// produce an all-`None` policy) from silently wiping persisted tuning.
     pub fn write_repo_policy(
         &self,
         policy: &crate::coordinator::clean_policy::RepoPolicy,
     ) -> Result<()> {
         fs::create_dir_all(&self.base_dir)
             .with_context(|| format!("Failed to create base dir: {}", self.base_dir.display()))?;
-        let json = serde_json::to_string_pretty(policy)?;
+
+        let on_disk = self.read_repo_policy();
+        let merged = crate::coordinator::clean_policy::RepoPolicy {
+            version: policy.version,
+            max_total_size_bytes: policy.max_total_size_bytes.or(on_disk.max_total_size_bytes),
+            keep_last: policy.keep_last.or(on_disk.keep_last),
+            stale_running_after_seconds: policy
+                .stale_running_after_seconds
+                .or(on_disk.stale_running_after_seconds),
+        };
+
+        let json = serde_json::to_string_pretty(&merged)?;
         let path = self.repo_policy_path();
         fs::write(&path, json)
             .with_context(|| format!("Failed to write repo policy: {}", path.display()))?;
@@ -1626,5 +1640,61 @@ mod tests {
         // Should be ~1024 (the real log only); orphan must be excluded.
         assert!(total <= 1100, "orphan inflated total: {total}");
         assert!(total >= 1024, "real log undercounted: {total}");
+    }
+
+    #[test]
+    fn write_repo_policy_preserves_unset_fields_from_on_disk() {
+        use crate::coordinator::clean_policy::RepoPolicy;
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().join("store"));
+
+        // First write: user sets max_total_size + keep_last.
+        let first = RepoPolicy {
+            version: RepoPolicy::VERSION,
+            max_total_size_bytes: Some(100 * 1024 * 1024),
+            keep_last: Some(5),
+            stale_running_after_seconds: None,
+        };
+        store.write_repo_policy(&first).unwrap();
+
+        // Second write: a hook with no log block submits all-None.
+        let second = RepoPolicy::defaults();
+        store.write_repo_policy(&second).unwrap();
+
+        // The on-disk policy should still have the user's values.
+        let read = store.read_repo_policy();
+        assert_eq!(read.max_total_size_bytes, Some(100 * 1024 * 1024));
+        assert_eq!(read.keep_last, Some(5));
+    }
+
+    #[test]
+    fn write_repo_policy_overrides_explicitly_set_fields() {
+        use crate::coordinator::clean_policy::RepoPolicy;
+        let tmp = TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().join("store"));
+
+        let first = RepoPolicy {
+            version: RepoPolicy::VERSION,
+            max_total_size_bytes: Some(100 * 1024 * 1024),
+            keep_last: Some(5),
+            stale_running_after_seconds: None,
+        };
+        store.write_repo_policy(&first).unwrap();
+
+        let second = RepoPolicy {
+            version: RepoPolicy::VERSION,
+            max_total_size_bytes: Some(200 * 1024 * 1024),
+            keep_last: None,
+            stale_running_after_seconds: None,
+        };
+        store.write_repo_policy(&second).unwrap();
+
+        let read = store.read_repo_policy();
+        assert_eq!(
+            read.max_total_size_bytes,
+            Some(200 * 1024 * 1024),
+            "explicit set wins"
+        );
+        assert_eq!(read.keep_last, Some(5), "unset preserves on-disk");
     }
 }
