@@ -256,6 +256,7 @@ pub fn spawn_post_fetch_refresh(
     base_branch: &str,
     user_email: Option<&str>,
     stat: Stat,
+    git_common_dir: &std::path::Path,
     tx: &mpsc::Sender<DagEvent>,
 ) {
     let targets: Vec<list_stream::CollectorTarget> = worktree_map
@@ -278,6 +279,7 @@ pub fn spawn_post_fetch_refresh(
         remote_name: settings.remote.clone(),
         ownership_strategy: settings.ownership_strategy,
         user_email: user_email.map(|s| s.to_string()),
+        git_common_dir: git_common_dir.to_path_buf(),
     });
     let handle = list_stream::spawn(
         list_stream::CollectorRequest {

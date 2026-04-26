@@ -45,6 +45,9 @@ pub struct CollectorContext {
     pub remote_name: String,
     pub ownership_strategy: OwnershipStrategy,
     pub user_email: Option<String>,
+    /// Resolved `git --git-common-dir`. Used as the root for the on-disk
+    /// SHA-keyed cache that backs the slow `cached_*` cluster wrappers.
+    pub git_common_dir: PathBuf,
 }
 
 pub struct CollectorRequest {
@@ -161,10 +164,22 @@ fn run_worker(
 
     let path = target.path.as_deref();
 
-    // 1. BASE_AHEAD_BEHIND (skip detached)
+    // 1. BASE_AHEAD_BEHIND (skip detached) — content-addressed cache by
+    //    (base_sha, head_sha). Falls through to compute on key-resolution
+    //    failure; the wrapper itself skips writing on a None compute result.
     if fields.contains(FieldSet::BASE_AHEAD_BEHIND) && !target.is_detached {
         if let Some(p) = path {
-            let v = get_ahead_behind(&ctx.base_branch, &target.branch_name, p);
+            let base_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, &ctx.base_branch);
+            let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
+            let v = match (base_sha, head_sha) {
+                (Some(b), Some(h)) => crate::core::worktree::cell_cache::cached_base_ahead_behind(
+                    &ctx.git_common_dir,
+                    &b,
+                    &h,
+                    || get_ahead_behind(&ctx.base_branch, &target.branch_name, p),
+                ),
+                _ => get_ahead_behind(&ctx.base_branch, &target.branch_name, p),
+            };
             emit!(P::BaseAheadBehind(v));
         }
     }
@@ -181,10 +196,18 @@ fn run_worker(
         }
     }
 
-    // 3. LAST_COMMIT
+    // 3. LAST_COMMIT — content-addressed cache by HEAD sha.
     if fields.contains(FieldSet::LAST_COMMIT) {
         if let Some(p) = path {
-            let (timestamp, hash, subject) = get_commit_metadata(p, &git);
+            let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
+            let (timestamp, hash, subject) = match head_sha {
+                Some(h) => crate::core::worktree::cell_cache::cached_last_commit(
+                    &ctx.git_common_dir,
+                    &h,
+                    || get_commit_metadata(p, &git),
+                ),
+                None => get_commit_metadata(p, &git),
+            };
             emit!(P::LastCommit {
                 timestamp,
                 hash,
@@ -216,19 +239,48 @@ fn run_worker(
         }
     }
 
-    // 6. REMOTE_AHEAD_BEHIND (skip detached)
+    // 6. REMOTE_AHEAD_BEHIND (skip detached) — content-addressed cache by
+    //    (head_sha, upstream_sha). The upstream refspec uses the
+    //    `<branch>@{upstream}` form so git resolves the configured upstream.
     if fields.contains(FieldSet::REMOTE_AHEAD_BEHIND) && !target.is_detached {
         if let Some(p) = path {
-            let v = get_upstream_ahead_behind(&target.branch_name, p);
+            let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
+            let upstream_sha = crate::core::worktree::cell_cache::resolve_ref_sha(
+                p,
+                &format!("{}@{{upstream}}", target.branch_name),
+            );
+            let v = match (head_sha, upstream_sha) {
+                (Some(h), Some(u)) => {
+                    crate::core::worktree::cell_cache::cached_remote_ahead_behind(
+                        &ctx.git_common_dir,
+                        &h,
+                        &u,
+                        || get_upstream_ahead_behind(&target.branch_name, p),
+                    )
+                }
+                _ => get_upstream_ahead_behind(&target.branch_name, p),
+            };
             emit!(P::RemoteAheadBehind(v));
         }
     }
 
     // 7. Stat::Lines clusters
     if matches!(stat, Stat::Lines) {
+        // BASE_LINES — content-addressed cache by (base_sha, head_sha).
         if fields.contains(FieldSet::BASE_LINES) && !target.is_detached {
             if let Some(p) = path {
-                let v = get_base_line_counts(&ctx.base_branch, &target.branch_name, p);
+                let base_sha =
+                    crate::core::worktree::cell_cache::resolve_ref_sha(p, &ctx.base_branch);
+                let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
+                let v = match (base_sha, head_sha) {
+                    (Some(b), Some(h)) => crate::core::worktree::cell_cache::cached_base_lines(
+                        &ctx.git_common_dir,
+                        &b,
+                        &h,
+                        || get_base_line_counts(&ctx.base_branch, &target.branch_name, p),
+                    ),
+                    _ => get_base_line_counts(&ctx.base_branch, &target.branch_name, p),
+                };
                 emit!(P::BaseLines(v));
             }
         }
@@ -241,9 +293,23 @@ fn run_worker(
                 });
             }
         }
+        // REMOTE_LINES — content-addressed cache by (head_sha, upstream_sha).
         if fields.contains(FieldSet::REMOTE_LINES) && !target.is_detached {
             if let Some(p) = path {
-                let v = get_remote_line_counts(&target.branch_name, p);
+                let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
+                let upstream_sha = crate::core::worktree::cell_cache::resolve_ref_sha(
+                    p,
+                    &format!("{}@{{upstream}}", target.branch_name),
+                );
+                let v = match (head_sha, upstream_sha) {
+                    (Some(h), Some(u)) => crate::core::worktree::cell_cache::cached_remote_lines(
+                        &ctx.git_common_dir,
+                        &h,
+                        &u,
+                        || get_remote_line_counts(&target.branch_name, p),
+                    ),
+                    _ => get_remote_line_counts(&target.branch_name, p),
+                };
                 emit!(P::RemoteLines(v));
             }
         }
@@ -283,6 +349,7 @@ mod tests {
             remote_name: "origin".into(),
             ownership_strategy: OwnershipStrategy::RecencyPlurality,
             user_email: None,
+            git_common_dir: PathBuf::new(),
         });
         let handle = spawn(
             CollectorRequest {
@@ -310,6 +377,7 @@ mod tests {
             remote_name: "origin".into(),
             ownership_strategy: OwnershipStrategy::RecencyPlurality,
             user_email: None,
+            git_common_dir: PathBuf::new(),
         });
         let handle = spawn(
             CollectorRequest {
@@ -383,6 +451,7 @@ mod fixture_tests {
             remote_name: "origin".into(),
             ownership_strategy: OwnershipStrategy::RecencyPlurality,
             user_email: Some("test@test.com".into()),
+            git_common_dir: dir.path().join(".git"),
         });
         let target = CollectorTarget {
             branch_name: "master".into(),
@@ -429,5 +498,20 @@ mod fixture_tests {
             events.last(),
             Some(DagEvent::WorktreeInfoCollectionDone)
         ));
+
+        // The LAST_COMMIT cluster runs through the cached_last_commit
+        // wrapper, which should have written one entry under the cache
+        // root we passed (`<git_common_dir>/.daft/cache/last-commit/`).
+        let cache_dir = dir.path().join(".git").join(".daft").join("cache");
+        let last_commit_dir = cache_dir.join("last-commit");
+        let entries: Vec<_> = std::fs::read_dir(&last_commit_dir)
+            .unwrap_or_else(|e| panic!("cache dir {} should exist: {e}", last_commit_dir.display()))
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(
+            !entries.is_empty(),
+            "expected cached last-commit entry under {}",
+            last_commit_dir.display()
+        );
     }
 }

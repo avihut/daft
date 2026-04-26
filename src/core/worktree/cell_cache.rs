@@ -19,10 +19,6 @@
 //!   - Size (filesystem walk)
 //!   - Branch age, owner (cheap enough already)
 
-// Helpers below are scaffolding for the `cached_*` wrappers added in
-// subsequent batches. Suppress dead_code until then.
-#![allow(dead_code)]
-
 use crate::core::cache;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -134,47 +130,45 @@ where
 
 /// Cached wrapper for `(inserted, deleted)` line counts in `base..head`.
 ///
-/// Cache key: `(base_sha, head_sha)`. Only writes the cache when at least
-/// one of the two values is `Some` (treats fully-`None` as failure).
+/// Cache key: `(base_sha, head_sha)`. The result is a pure function of the
+/// two SHAs. `None` results are not cached (treated as transient compute
+/// failures — next run retries).
 pub(crate) fn cached_base_lines<F>(
     git_common_dir: &Path,
     base_sha: &str,
     head_sha: &str,
     compute: F,
-) -> (Option<usize>, Option<usize>)
+) -> Option<(usize, usize)>
 where
-    F: FnOnce() -> (Option<usize>, Option<usize>),
+    F: FnOnce() -> Option<(usize, usize)>,
 {
     let path = pair_key_path(git_common_dir, "base-lines", base_sha, head_sha);
-    if let Some(v) = cache::read_json::<(Option<usize>, Option<usize>)>(&path) {
-        return v;
+    if let Some(v) = cache::read_json::<(usize, usize)>(&path) {
+        return Some(v);
     }
-    let computed = compute();
-    if computed.0.is_some() || computed.1.is_some() {
-        cache::write_json(&path, &computed);
-    }
-    computed
+    let computed = compute()?;
+    cache::write_json(&path, &computed);
+    Some(computed)
 }
 
 /// Cached wrapper for upstream line counts. Cache key: `(head_sha, upstream_sha)`.
+/// `None` results are not cached.
 pub(crate) fn cached_remote_lines<F>(
     git_common_dir: &Path,
     head_sha: &str,
     upstream_sha: &str,
     compute: F,
-) -> (Option<usize>, Option<usize>)
+) -> Option<(usize, usize)>
 where
-    F: FnOnce() -> (Option<usize>, Option<usize>),
+    F: FnOnce() -> Option<(usize, usize)>,
 {
     let path = pair_key_path(git_common_dir, "remote-lines", head_sha, upstream_sha);
-    if let Some(v) = cache::read_json::<(Option<usize>, Option<usize>)>(&path) {
-        return v;
+    if let Some(v) = cache::read_json::<(usize, usize)>(&path) {
+        return Some(v);
     }
-    let computed = compute();
-    if computed.0.is_some() || computed.1.is_some() {
-        cache::write_json(&path, &computed);
-    }
-    computed
+    let computed = compute()?;
+    cache::write_json(&path, &computed);
+    Some(computed)
 }
 
 #[cfg(test)]
@@ -304,7 +298,7 @@ mod tests {
         let common = TempDir::new().unwrap();
         let common_dir = common.path();
 
-        let computed = (Some(120_usize), Some(45_usize));
+        let computed = Some((120_usize, 45_usize));
         let out = cached_base_lines(common_dir, "base", "head", || computed);
         assert_eq!(out, computed);
 
@@ -316,13 +310,27 @@ mod tests {
     }
 
     #[test]
+    fn cached_base_lines_does_not_cache_none() {
+        use tempfile::TempDir;
+
+        let common = TempDir::new().unwrap();
+        let common_dir = common.path();
+
+        let out = cached_base_lines(common_dir, "base", "head", || None);
+        assert_eq!(out, None);
+
+        let path = pair_key_path(common_dir, "base-lines", "base", "head");
+        assert!(!path.exists(), "None should not be cached");
+    }
+
+    #[test]
     fn cached_remote_lines_writes_and_reads_back() {
         use tempfile::TempDir;
 
         let common = TempDir::new().unwrap();
         let common_dir = common.path();
 
-        let computed = (Some(7_usize), Some(2_usize));
+        let computed = Some((7_usize, 2_usize));
         let out = cached_remote_lines(common_dir, "head", "upstream", || computed);
         assert_eq!(out, computed);
 

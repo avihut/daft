@@ -898,6 +898,7 @@ fn create_satellite_worktrees_tui(
                     &shared_remote_name,
                     shared_ownership_strategy,
                     None,
+                    &shared_git_dir,
                     &tx,
                 );
             }
@@ -1065,6 +1066,7 @@ fn create_satellite_worktrees_tui(
                         &shared_remote_name,
                         shared_ownership_strategy,
                         None,
+                        &shared_git_dir,
                         &tx,
                     );
 
@@ -1362,6 +1364,7 @@ fn spawn_post_clone_refresh(
     remote_name: &str,
     ownership_strategy: OwnershipStrategy,
     user_email: Option<&str>,
+    git_common_dir: &std::path::Path,
     tx: &std::sync::mpsc::Sender<DagEvent>,
 ) {
     let target = list_stream::CollectorTarget {
@@ -1376,6 +1379,7 @@ fn spawn_post_clone_refresh(
         remote_name: remote_name.to_string(),
         ownership_strategy,
         user_email: user_email.map(|s| s.to_string()),
+        git_common_dir: git_common_dir.to_path_buf(),
     });
     let handle = list_stream::spawn(
         list_stream::CollectorRequest {

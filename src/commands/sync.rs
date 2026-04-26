@@ -643,6 +643,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             &orch_base_branch,
             orch_user_email.as_deref(),
             orch_stat,
+            &shared_git_dir,
             &tx,
         );
 
@@ -755,6 +756,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                                 &orch_base_branch,
                                 orch_user_email.as_deref(),
                                 orch_stat,
+                                &shared_git_dir,
                                 &tx_for_tasks,
                             );
                         }
@@ -786,6 +788,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                                 &orch_base_branch,
                                 orch_user_email.as_deref(),
                                 orch_stat,
+                                &shared_git_dir,
                                 &tx_for_tasks,
                             );
                         }
@@ -810,6 +813,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                                 &orch_base_branch,
                                 orch_user_email.as_deref(),
                                 orch_stat,
+                                &shared_git_dir,
                                 &tx_for_tasks,
                             );
                         }
@@ -841,6 +845,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             remote_name: settings.remote.clone(),
             ownership_strategy: settings.ownership_strategy,
             user_email: user_email.clone(),
+            git_common_dir: git_dir.clone(),
         });
         Some(list_stream::spawn(
             list_stream::CollectorRequest {
@@ -951,6 +956,7 @@ fn spawn_post_task_refresh(
     base_branch: &str,
     user_email: Option<&str>,
     stat: Stat,
+    git_common_dir: &std::path::Path,
     tx: &mpsc::Sender<sync_dag::DagEvent>,
 ) {
     let Some((path, _is_main)) = worktree_map.get(branch_name) else {
@@ -968,6 +974,7 @@ fn spawn_post_task_refresh(
         remote_name: settings.remote.clone(),
         ownership_strategy: settings.ownership_strategy,
         user_email: user_email.map(|s| s.to_string()),
+        git_common_dir: git_common_dir.to_path_buf(),
     });
     let handle = list_stream::spawn(
         list_stream::CollectorRequest {

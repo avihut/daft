@@ -368,6 +368,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             &orch_base_branch,
             orch_user_email.as_deref(),
             orch_stat,
+            &shared_git_dir,
             &tx,
         );
 
@@ -463,6 +464,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             remote_name: settings.remote.clone(),
             ownership_strategy: settings.ownership_strategy,
             user_email: user_email.clone(),
+            git_common_dir: git_dir.clone(),
         });
         Some(list_stream::spawn(
             list_stream::CollectorRequest {

@@ -204,6 +204,7 @@ pub fn run_live(args: Args, settings: DaftSettings) -> Result<()> {
         remote_name: settings.remote.clone(),
         ownership_strategy: settings.ownership_strategy,
         user_email: user_email.clone(),
+        git_common_dir: git_common_dir.clone(),
     });
     let collector_handle = list_stream::spawn(
         list_stream::CollectorRequest {
