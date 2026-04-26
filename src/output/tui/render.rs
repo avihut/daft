@@ -372,7 +372,11 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                 })
                 .collect()
         };
-        all_rows.push(Row::new(main_cells));
+        let mut row = Row::new(main_cells);
+        if wt.info.is_current {
+            row = row.style(Style::default().bg(Color::Indexed(235)));
+        }
+        all_rows.push(row);
         if is_pruned {
             pruned_overlays.push((
                 row_count,
