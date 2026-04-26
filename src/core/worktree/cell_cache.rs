@@ -108,6 +108,30 @@ where
     Some(computed)
 }
 
+/// Cached wrapper for `(timestamp, hash, subject)` of the commit at `head_sha`.
+///
+/// Cache key: `head_sha`. The cached `hash` field always equals the key, but
+/// we store it for shape-compatibility with `get_commit_metadata`'s return
+/// type. Empty / `None` timestamp results are not cached (treated as failures).
+pub(crate) fn cached_last_commit<F>(
+    git_common_dir: &Path,
+    head_sha: &str,
+    compute: F,
+) -> (Option<i64>, Option<String>, String)
+where
+    F: FnOnce() -> (Option<i64>, Option<String>, String),
+{
+    let path = single_key_path(git_common_dir, "last-commit", head_sha);
+    if let Some(v) = cache::read_json::<(Option<i64>, Option<String>, String)>(&path) {
+        return v;
+    }
+    let computed = compute();
+    if computed.0.is_some() {
+        cache::write_json(&path, &computed);
+    }
+    computed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +212,43 @@ mod tests {
             panic!("compute called on cache hit")
         });
         assert_eq!(out2, Some((2, 4)));
+    }
+
+    #[test]
+    fn cached_last_commit_writes_and_reads_back() {
+        use tempfile::TempDir;
+
+        let common = TempDir::new().unwrap();
+        let common_dir = common.path();
+
+        let computed = (
+            Some(1700000000_i64),
+            Some("abc1234".to_string()),
+            "first commit".to_string(),
+        );
+
+        let out = cached_last_commit(common_dir, "abc1234", || computed.clone());
+        assert_eq!(out, computed);
+
+        let path = single_key_path(common_dir, "last-commit", "abc1234");
+        assert!(path.exists());
+
+        let out2 = cached_last_commit(common_dir, "abc1234", || panic!("hit"));
+        assert_eq!(out2, computed);
+    }
+
+    #[test]
+    fn cached_last_commit_does_not_cache_when_timestamp_missing() {
+        use tempfile::TempDir;
+
+        let common = TempDir::new().unwrap();
+        let common_dir = common.path();
+        let bad = (None, None, String::new());
+
+        let out = cached_last_commit(common_dir, "abc1234", || bad.clone());
+        assert_eq!(out, bad);
+
+        let path = single_key_path(common_dir, "last-commit", "abc1234");
+        assert!(!path.exists());
     }
 }
