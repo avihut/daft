@@ -7,6 +7,7 @@ use ratatui::{
     layout::{Constraint, Layout, Position},
     Terminal, TerminalOptions, Viewport,
 };
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -200,6 +201,13 @@ impl TuiRenderer {
                     });
                 })?;
                 drop(terminal);
+                if self.state.live.cancelled {
+                    // After a cancelled run the cursor can land inside the
+                    // last table row (terminal-height clamping of the inline
+                    // viewport). Emit a newline so the shell prompt starts on
+                    // a fresh line. Best-effort.
+                    let _ = std::io::stderr().write_all(b"\n");
+                }
                 return Ok(self.state);
             }};
         }
