@@ -132,6 +132,30 @@ where
     computed
 }
 
+/// Cached wrapper for `(inserted, deleted)` line counts in `base..head`.
+///
+/// Cache key: `(base_sha, head_sha)`. Only writes the cache when at least
+/// one of the two values is `Some` (treats fully-`None` as failure).
+pub(crate) fn cached_base_lines<F>(
+    git_common_dir: &Path,
+    base_sha: &str,
+    head_sha: &str,
+    compute: F,
+) -> (Option<usize>, Option<usize>)
+where
+    F: FnOnce() -> (Option<usize>, Option<usize>),
+{
+    let path = pair_key_path(git_common_dir, "base-lines", base_sha, head_sha);
+    if let Some(v) = cache::read_json::<(Option<usize>, Option<usize>)>(&path) {
+        return v;
+    }
+    let computed = compute();
+    if computed.0.is_some() || computed.1.is_some() {
+        cache::write_json(&path, &computed);
+    }
+    computed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +274,23 @@ mod tests {
 
         let path = single_key_path(common_dir, "last-commit", "abc1234");
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn cached_base_lines_writes_and_reads_back() {
+        use tempfile::TempDir;
+
+        let common = TempDir::new().unwrap();
+        let common_dir = common.path();
+
+        let computed = (Some(120_usize), Some(45_usize));
+        let out = cached_base_lines(common_dir, "base", "head", || computed);
+        assert_eq!(out, computed);
+
+        let path = pair_key_path(common_dir, "base-lines", "base", "head");
+        assert!(path.exists());
+
+        let out2 = cached_base_lines(common_dir, "base", "head", || panic!("hit"));
+        assert_eq!(out2, computed);
     }
 }
