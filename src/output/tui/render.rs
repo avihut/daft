@@ -639,7 +639,7 @@ fn loading_shimmer_cell(width: u16, tick: usize) -> Cell<'static> {
     if width < SKELETON_MIN_WIDTH {
         return loading_glyph_cell();
     }
-    const BAR_CHAR: &str = "\u{2592}"; // ▒
+    const BAR_CHAR: &str = "\u{2588}"; // █
     let phase = (tick / SKELETON_PULSE_PHASE_FRAMES) % 4;
     let color = match phase {
         0 => Color::DarkGray,
@@ -1120,8 +1120,8 @@ mod tests {
             .map(|x| buffer[(x, 0)].symbol().to_string())
             .collect();
         assert!(
-            row.chars().all(|c| c == '\u{2592}'),
-            "shimmer row should be all ▒, got {row:?}"
+            row.chars().all(|c| c == '\u{2588}'),
+            "skeleton bar should be all █, got {row:?}"
         );
     }
 
