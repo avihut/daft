@@ -29,9 +29,15 @@ fn main() -> Result<()> {
         }
     }
 
-    // Detect background task invocations (__check-update, __prune-trust, etc.)
-    // to skip spawning further background processes — otherwise each background
-    // task recursively spawns more, creating an exponential fork bomb.
+    // Skip startup-time background work for invocations that must stay lean:
+    // - `__*` background tasks (__check-update, __prune-trust, etc.) — spawning
+    //   further background processes from them would recursively fan out into a
+    //   fork bomb.
+    // - `shell-init` — sourced from the user's shell rc files on every
+    //   interactive shell startup; any subprocess call, file IO, network
+    //   request, or background spawn here adds latency to every new shell, and
+    //   stderr output (e.g., the update banner) leaks past `eval`'s stdout
+    //   capture into the user's terminal.
     //
     // If a fork bomb occurs (hundreds of daft processes consuming all CPU):
     //   pkill -9 -f "daft.*__check-update"
@@ -39,13 +45,14 @@ fn main() -> Result<()> {
     // Or more broadly:
     //   pkill -9 -f "<worktree-path>/target/release"
     // Repeat until `ps aux | grep __check-update | wc -l` returns 0.
-    let is_background_task = std::env::args().nth(1).is_some_and(|a| a.starts_with("__"));
+    let argv: Vec<String> = std::env::args().collect();
+    let skip_startup_tasks = daft::skip_startup_tasks_for(&argv);
 
     // Warn if config directory is overridden (security measure against trust DB hijacking).
     // Only in dev builds — release builds ignore DAFT_CONFIG_DIR entirely.
     if cfg!(daft_dev_build) {
         if let Ok(dir) = std::env::var(daft::CONFIG_DIR_ENV) {
-            if !dir.is_empty() && !is_background_task {
+            if !dir.is_empty() && !skip_startup_tasks {
                 eprintln!("warning: config directory overridden via DAFT_CONFIG_DIR");
                 eprintln!("  -> {dir}");
             }
@@ -53,14 +60,14 @@ fn main() -> Result<()> {
     }
 
     // Check for updates (reads cache, spawns background check if stale)
-    let update_notification = if !is_background_task {
+    let update_notification = if !skip_startup_tasks {
         daft::update_check::maybe_check_for_update()
     } else {
         None
     };
 
     // Prune stale trust entries (background, once per 24h)
-    if !is_background_task {
+    if !skip_startup_tasks {
         daft::trust_prune::maybe_prune_trust();
     }
 
