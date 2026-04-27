@@ -113,6 +113,24 @@ pub fn get_clap_args(expected_cmd: &str) -> Vec<String> {
     args
 }
 
+/// Returns `true` if the given argv corresponds to an invocation that should
+/// skip startup-time background work (update checks, trust pruning, etc.).
+///
+/// `shell-init` is sourced from the user's shell rc files on every interactive
+/// shell startup, so its codepath must stay free of subprocess calls, file IO,
+/// network requests, and background-process spawns. `__*` subcommands are
+/// background tasks (e.g., `__check-update`, `__prune-trust`) and skipping
+/// further background work for them prevents recursive fork bombs.
+///
+/// New commands with similar constraints should be added here rather than
+/// introducing a parallel gate at the call sites.
+pub fn skip_startup_tasks_for(args: &[String]) -> bool {
+    let Some(sub) = args.get(1).map(String::as_str) else {
+        return false;
+    };
+    sub.starts_with("__") || sub == "shell-init"
+}
+
 pub mod commands;
 pub mod completion_spinner;
 pub mod core;
@@ -249,5 +267,70 @@ mod tests {
             .to_string()
             .contains("must be an absolute path"));
         env::remove_var(DATA_DIR_ENV);
+    }
+
+    fn args(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_skip_startup_tasks_empty_args() {
+        assert!(!skip_startup_tasks_for(&[]));
+    }
+
+    #[test]
+    fn test_skip_startup_tasks_no_subcommand() {
+        assert!(!skip_startup_tasks_for(&args(&["daft"])));
+    }
+
+    #[test]
+    fn test_skip_startup_tasks_shell_init_via_daft() {
+        assert!(skip_startup_tasks_for(&args(&[
+            "daft",
+            "shell-init",
+            "bash"
+        ])));
+    }
+
+    #[test]
+    fn test_skip_startup_tasks_shell_init_via_git_daft() {
+        assert!(skip_startup_tasks_for(&args(&[
+            "git-daft",
+            "shell-init",
+            "zsh"
+        ])));
+    }
+
+    #[test]
+    fn test_skip_startup_tasks_check_update() {
+        assert!(skip_startup_tasks_for(&args(&["daft", "__check-update"])));
+    }
+
+    #[test]
+    fn test_skip_startup_tasks_prune_trust() {
+        assert!(skip_startup_tasks_for(&args(&["daft", "__prune-trust"])));
+    }
+
+    #[test]
+    fn test_skip_startup_tasks_regular_command_clone() {
+        assert!(!skip_startup_tasks_for(&args(&[
+            "daft",
+            "clone",
+            "https://example.invalid/repo.git"
+        ])));
+    }
+
+    #[test]
+    fn test_skip_startup_tasks_regular_command_list() {
+        assert!(!skip_startup_tasks_for(&args(&["daft", "list"])));
+    }
+
+    #[test]
+    fn test_skip_startup_tasks_does_not_match_substring() {
+        // A subcommand that merely contains "shell-init" should not match.
+        assert!(!skip_startup_tasks_for(&args(&[
+            "daft",
+            "shell-init-something"
+        ])));
     }
 }

@@ -74,6 +74,17 @@ temp file and pass its path via `DAFT_CD_FILE`. When set, commands write the cd
 target to that file, and the wrapper reads it after the command finishes to `cd`
 into new worktrees. Stdout flows directly to the terminal.
 
+**Shell-init is on the hot path**: `daft shell-init` is sourced from the user's
+shell rc files (`~/.bashrc`, `~/.zshrc`, etc.) via `eval "$(daft shell-init …)"`
+on every interactive shell startup, so its codepath must remain extremely lean.
+No extra subprocess calls, file IO, network requests, or background-process
+spawns. Stderr output is also problematic — `eval` only captures stdout, so any
+stderr (e.g., the update banner) leaks straight into the user's terminal. Any
+startup-time background work in `src/main.rs` (currently the update check and
+trust prune) must be gated through `daft::skip_startup_tasks_for` so it skips
+`shell-init` and `__*` background tasks. Add new commands with similar
+constraints to that helper rather than introducing a parallel gate.
+
 **Hooks system**: Lifecycle hooks in `.daft/hooks/` with trust-based security.
 Hook types: `post-clone`, `worktree-pre-create`, `worktree-post-create`,
 `worktree-pre-remove`, `worktree-post-remove`. Old names without `worktree-`
