@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.0](https://github.com/avihut/daft/compare/v1.8.0...v1.9.0) - 2026-04-27
+
+### Bug Fixes
+
+- *(exec)* resolve user shell aliases and functions ([#414](https://github.com/avihut/daft/pull/414))
+
+### Features
+
+- shared infrastructure for live list population ([#402](https://github.com/avihut/daft/pull/402)) ([#410](https://github.com/avihut/daft/pull/410))
+
 ## [1.8.0](https://github.com/avihut/daft/compare/v1.7.2...v1.8.0) - 2026-04-25
 
 ### Features
