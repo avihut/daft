@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.1](https://github.com/avihut/daft/compare/v1.9.0...v1.9.1) - 2026-04-27
+
+### Bug Fixes
+
+- *(exec)* isolate alias capture from rc-file stdout ([#418](https://github.com/avihut/daft/pull/418))
+- *(shell-init,completions)* skip update check and trust prune for shell-eval'd commands ([#416](https://github.com/avihut/daft/pull/416))
+
 ## [1.9.0](https://github.com/avihut/daft/compare/v1.8.0...v1.9.0) - 2026-04-27
 
 ### Bug Fixes
