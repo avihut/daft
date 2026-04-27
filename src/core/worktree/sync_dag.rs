@@ -3,7 +3,8 @@
 //! Defines task types, status tracking, and operation phases used by
 //! the sync and prune TUI renderers.
 
-use super::list::WorktreeInfo;
+use crate::core::ownership::BranchOwner;
+use crate::core::worktree::info_field::FieldSet;
 use crate::hooks::HookType;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -364,6 +365,56 @@ impl SyncDag {
     }
 }
 
+/// A typed delta over `WorktreeInfo`. Each variant maps 1:1 to one
+/// underlying git/FS call cluster in the streaming collector.
+#[derive(Debug, Clone)]
+pub enum WorktreeInfoPatch {
+    BaseAheadBehind(Option<(usize, usize)>),
+    RemoteAheadBehind(Option<(usize, usize)>),
+    Changes {
+        staged: usize,
+        unstaged: usize,
+        untracked: usize,
+    },
+    LastCommit {
+        timestamp: Option<i64>,
+        hash: Option<String>,
+        subject: String,
+    },
+    BranchAge(Option<i64>),
+    Owner(Option<BranchOwner>),
+    BaseLines(Option<(usize, usize)>),
+    ChangesLines {
+        staged: (usize, usize),
+        unstaged: (usize, usize),
+    },
+    RemoteLines(Option<(usize, usize)>),
+    Size(Option<u64>),
+    Mtime(Option<i64>),
+}
+
+/// Why a patch was emitted. `LiveTable` uses this to suppress stale
+/// patches: a `Collector` patch arriving after a `PostFetch` patch covering
+/// the same field on the same branch is dropped. Priority order:
+/// `PostTask > PostFetch > Collector`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatchSource {
+    Collector,
+    PostFetch,
+    PostTask(OperationPhase),
+}
+
+impl PatchSource {
+    /// Higher = more authoritative. Used for staleness suppression.
+    pub fn priority(&self) -> u8 {
+        match self {
+            Self::Collector => 0,
+            Self::PostFetch => 1,
+            Self::PostTask(_) => 2,
+        }
+    }
+}
+
 /// Message sent from worker threads to the renderer.
 #[derive(Debug, Clone)]
 pub enum DagEvent {
@@ -379,8 +430,6 @@ pub enum DagEvent {
         status: TaskStatus,
         /// Typed result message.
         message: TaskMessage,
-        /// Refreshed worktree info after the operation (if applicable).
-        updated_info: Option<Box<WorktreeInfo>>,
     },
     /// All tasks are done.
     AllDone,
@@ -417,6 +466,18 @@ pub enum DagEvent {
         duration: Duration,
         skip_reason: Option<String>,
     },
+
+    /// A patch landed for `branch_name` from `source`. Carries one cluster
+    /// of cells produced by a single underlying git/FS call.
+    WorktreeInfoUpdated {
+        branch_name: String,
+        patch: WorktreeInfoPatch,
+        source: PatchSource,
+    },
+
+    /// The initial `source=Collector` run completed. Subset re-runs
+    /// (`PostFetch`, `PostTask`) do not emit this — they end silently.
+    WorktreeInfoCollectionDone,
 }
 
 /// Terminal status for a job within a hook.
@@ -455,23 +516,19 @@ impl DagExecutor {
     /// Tasks are executed in parallel (respecting dependencies) using a thread pool.
     /// The closure receives a reference to the `SyncTask` and the current set of
     /// outcome tags for that branch, and must return a
-    /// `(TaskStatus, TaskMessage, HashSet<TaskOutcome>, Option<Box<WorktreeInfo>>)`
-    /// tuple indicating the result status, a typed message, updated outcome tags,
-    /// and optionally refreshed worktree info.
+    /// `(TaskStatus, TaskMessage, HashSet<TaskOutcome>)` tuple indicating the
+    /// result status, a typed message, and updated outcome tags.
+    ///
+    /// Refreshed worktree info is now propagated out-of-band as
+    /// `WorktreeInfoUpdated` patches with `PatchSource::PostTask(phase)`.
+    /// Callers wire this up via `list_stream::spawn` in their task closures.
     ///
     /// Consumes `self` so that the sender is dropped after `AllDone` is sent,
     /// allowing the receiver to detect channel closure.
     pub fn run<F>(self, task_fn: F)
     where
-        F: Fn(
-                &SyncTask,
-                &HashSet<TaskOutcome>,
-            ) -> (
-                TaskStatus,
-                TaskMessage,
-                HashSet<TaskOutcome>,
-                Option<Box<WorktreeInfo>>,
-            ) + Send
+        F: Fn(&SyncTask, &HashSet<TaskOutcome>) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>)
+            + Send
             + Sync,
     {
         let n = self.dag.tasks.len();
@@ -559,7 +616,7 @@ impl DagExecutor {
 
                         // Execute the task outside the lock.
                         let task = &dag.tasks[task_idx];
-                        let (result_status, message, returned_outcomes, updated_info) =
+                        let (result_status, message, returned_outcomes) =
                             task_fn(task, &branch_outcomes);
 
                         // Update DAG state.
@@ -608,7 +665,6 @@ impl DagExecutor {
                                 branch_name: dag.tasks[task_idx].branch_name.clone(),
                                 status: result_status,
                                 message: message.clone(),
-                                updated_info,
                             });
 
                             // Also send TaskCompleted for any dep-failed dependents.
@@ -628,7 +684,6 @@ impl DagExecutor {
                                                     "dependency {:?} failed",
                                                     dag.tasks[task_idx].id
                                                 )),
-                                                updated_info: None,
                                             });
                                             stack.push(dep_idx);
                                         }
@@ -652,6 +707,15 @@ impl DagExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn patch_source_priority_ordering() {
+        assert!(
+            PatchSource::PostTask(OperationPhase::Push).priority()
+                > PatchSource::PostFetch.priority()
+        );
+        assert!(PatchSource::PostFetch.priority() > PatchSource::Collector.priority());
+    }
 
     #[test]
     fn task_id_display() {
@@ -769,7 +833,6 @@ mod tests {
                 TaskStatus::Succeeded,
                 TaskMessage::Ok("ok".into()),
                 outcomes.clone(),
-                None,
             )
         });
 
@@ -810,7 +873,6 @@ mod tests {
                 TaskStatus::Succeeded,
                 TaskMessage::Ok("ok".into()),
                 outcomes.clone(),
-                None,
             )
         });
 
@@ -940,13 +1002,11 @@ mod tests {
                 TaskStatus::Failed,
                 TaskMessage::Failed("pull failed".into()),
                 outcomes.clone(),
-                None,
             ),
             _ => (
                 TaskStatus::Succeeded,
                 TaskMessage::Ok("ok".into()),
                 outcomes.clone(),
-                None,
             ),
         });
 
@@ -993,7 +1053,7 @@ mod tests {
                 TaskId::Rebase(name) if name == "feat/a" => {
                     let mut out = outcomes.clone();
                     out.insert(TaskOutcome::Conflict);
-                    (TaskStatus::Succeeded, TaskMessage::Conflict, out, None)
+                    (TaskStatus::Succeeded, TaskMessage::Conflict, out)
                 }
                 TaskId::Push(name) if name == "feat/a" => {
                     if outcomes.contains(&TaskOutcome::Conflict) {
@@ -1001,22 +1061,15 @@ mod tests {
                             TaskStatus::PreconditionFailed,
                             TaskMessage::Failed("rebase conflict".into()),
                             outcomes.clone(),
-                            None,
                         )
                     } else {
-                        (
-                            TaskStatus::Succeeded,
-                            TaskMessage::Pushed,
-                            outcomes.clone(),
-                            None,
-                        )
+                        (TaskStatus::Succeeded, TaskMessage::Pushed, outcomes.clone())
                     }
                 }
                 _ => (
                     TaskStatus::Succeeded,
                     TaskMessage::Ok("ok".into()),
                     outcomes.clone(),
-                    None,
                 ),
             }
         });
@@ -1061,19 +1114,17 @@ mod tests {
                 TaskId::Rebase(name) if name == "feat/a" => {
                     let mut out = outcomes.clone();
                     out.insert(TaskOutcome::Conflict);
-                    (TaskStatus::Succeeded, TaskMessage::Conflict, out, None)
+                    (TaskStatus::Succeeded, TaskMessage::Conflict, out)
                 }
                 TaskId::Rebase(name) if name == "feat/b" => (
                     TaskStatus::Succeeded,
                     TaskMessage::Ok("rebased".into()),
                     outcomes.clone(),
-                    None,
                 ),
                 _ => (
                     TaskStatus::Succeeded,
                     TaskMessage::Ok("ok".into()),
                     outcomes.clone(),
-                    None,
                 ),
             }
         });
@@ -1095,5 +1146,69 @@ mod tests {
             !push_b.1.contains(&TaskOutcome::Conflict),
             "feat/b's push should not see feat/a's Conflict outcome"
         );
+    }
+}
+
+/// Tracks which `PatchSource` last wrote each (branch, field) pair.
+/// Used by `LiveTable` to suppress patches arriving from a lower-priority
+/// source after a higher-priority source has already filled a field.
+#[derive(Debug, Default)]
+pub struct PatchSourceLog {
+    last_writer: HashMap<String, Vec<(FieldSet, PatchSource)>>,
+}
+
+impl PatchSourceLog {
+    /// Returns `true` if `source` is allowed to write `fields` for `branch`.
+    /// Updates internal state to record the new write.
+    pub fn try_admit(&mut self, branch: &str, fields: FieldSet, source: PatchSource) -> bool {
+        let entries = self.last_writer.entry(branch.to_string()).or_default();
+        // If any existing entry overlaps with `fields` and has a strictly
+        // higher priority, reject.
+        for (existing_fields, existing_source) in entries.iter() {
+            if existing_fields.intersects(fields) && existing_source.priority() > source.priority()
+            {
+                return false;
+            }
+        }
+        // Admit. Record (fields, source); we don't bother garbage-collecting
+        // overlapping entries — `intersects` checks above are O(entries) and
+        // the entry count per branch is bounded by the number of patch
+        // clusters (~11).
+        entries.push((fields, source));
+        true
+    }
+}
+
+#[cfg(test)]
+mod patch_source_log_tests {
+    use super::*;
+
+    #[test]
+    fn collector_then_post_fetch_admits_post_fetch() {
+        let mut log = PatchSourceLog::default();
+        assert!(log.try_admit("a", FieldSet::REMOTE_AHEAD_BEHIND, PatchSource::Collector));
+        assert!(log.try_admit("a", FieldSet::REMOTE_AHEAD_BEHIND, PatchSource::PostFetch));
+    }
+
+    #[test]
+    fn post_fetch_then_collector_rejects_collector() {
+        let mut log = PatchSourceLog::default();
+        assert!(log.try_admit("a", FieldSet::REMOTE_AHEAD_BEHIND, PatchSource::PostFetch));
+        assert!(!log.try_admit("a", FieldSet::REMOTE_AHEAD_BEHIND, PatchSource::Collector));
+    }
+
+    #[test]
+    fn disjoint_field_sets_do_not_block_each_other() {
+        let mut log = PatchSourceLog::default();
+        assert!(log.try_admit("a", FieldSet::SIZE, PatchSource::PostFetch));
+        // Different field — Collector still allowed.
+        assert!(log.try_admit("a", FieldSet::CHANGES, PatchSource::Collector));
+    }
+
+    #[test]
+    fn different_branches_are_independent() {
+        let mut log = PatchSourceLog::default();
+        assert!(log.try_admit("a", FieldSet::SIZE, PatchSource::PostFetch));
+        assert!(log.try_admit("b", FieldSet::SIZE, PatchSource::Collector));
     }
 }

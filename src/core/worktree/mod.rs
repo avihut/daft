@@ -12,6 +12,7 @@
 pub mod branch_delete;
 pub mod branch_source;
 pub mod carry;
+pub(crate) mod cell_cache;
 pub mod checkout;
 pub mod checkout_branch;
 pub mod clone;
@@ -19,8 +20,10 @@ pub mod exec;
 pub mod fetch;
 pub mod flow_adopt;
 pub mod flow_eject;
+pub mod info_field;
 pub mod init;
 pub mod list;
+pub mod list_stream;
 pub mod previous;
 pub mod prune;
 pub mod push;

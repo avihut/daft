@@ -19,6 +19,7 @@ pub mod hooks;
 pub mod init;
 pub mod layout;
 pub mod list;
+pub mod list_live;
 pub mod multi_remote;
 pub mod prune;
 pub mod release_notes;

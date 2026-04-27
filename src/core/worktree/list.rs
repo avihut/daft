@@ -230,6 +230,93 @@ impl WorktreeInfo {
             self.size_bytes = compute_directory_size(path);
         }
     }
+
+    /// Apply a typed patch in place. Returns the `FieldSet` of fields the
+    /// patch addressed (the caller — typically `LiveTable` — uses this to
+    /// decide whether to re-sort). The returned set reflects which cluster
+    /// the patch belongs to, not whether values actually differ from prior
+    /// state; idempotent re-sort is acceptable per spec.
+    pub fn apply_patch(
+        &mut self,
+        patch: &crate::core::worktree::sync_dag::WorktreeInfoPatch,
+    ) -> crate::core::worktree::info_field::FieldSet {
+        use crate::core::worktree::info_field::FieldSet;
+        use crate::core::worktree::sync_dag::WorktreeInfoPatch as P;
+
+        match patch {
+            P::BaseAheadBehind(v) => {
+                (self.ahead, self.behind) = match v {
+                    Some((a, b)) => (Some(*a), Some(*b)),
+                    None => (None, None),
+                };
+                FieldSet::BASE_AHEAD_BEHIND
+            }
+            P::RemoteAheadBehind(v) => {
+                (self.remote_ahead, self.remote_behind) = match v {
+                    Some((a, b)) => (Some(*a), Some(*b)),
+                    None => (None, None),
+                };
+                FieldSet::REMOTE_AHEAD_BEHIND
+            }
+            P::Changes {
+                staged,
+                unstaged,
+                untracked,
+            } => {
+                self.staged = *staged;
+                self.unstaged = *unstaged;
+                self.untracked = *untracked;
+                FieldSet::CHANGES
+            }
+            P::LastCommit {
+                timestamp,
+                hash,
+                subject,
+            } => {
+                self.last_commit_timestamp = *timestamp;
+                self.last_commit_hash = hash.clone();
+                self.last_commit_subject = subject.clone();
+                FieldSet::LAST_COMMIT
+            }
+            P::BranchAge(v) => {
+                self.branch_creation_timestamp = *v;
+                FieldSet::BRANCH_AGE
+            }
+            P::Owner(v) => {
+                self.owner = v.clone();
+                FieldSet::OWNER
+            }
+            P::BaseLines(v) => {
+                (self.base_lines_inserted, self.base_lines_deleted) = match v {
+                    Some((i, d)) => (Some(*i), Some(*d)),
+                    None => (None, None),
+                };
+                FieldSet::BASE_LINES
+            }
+            P::ChangesLines { staged, unstaged } => {
+                self.staged_lines_inserted = Some(staged.0);
+                self.staged_lines_deleted = Some(staged.1);
+                self.unstaged_lines_inserted = Some(unstaged.0);
+                self.unstaged_lines_deleted = Some(unstaged.1);
+                FieldSet::CHANGES_LINES
+            }
+            P::RemoteLines(v) => {
+                (self.remote_lines_inserted, self.remote_lines_deleted) = match v {
+                    Some((i, d)) => (Some(*i), Some(*d)),
+                    None => (None, None),
+                };
+                FieldSet::REMOTE_LINES
+            }
+            P::Size(v) => {
+                self.size_bytes = *v;
+                FieldSet::SIZE
+            }
+            P::Mtime(v) => {
+                self.working_tree_mtime = *v;
+                FieldSet::MTIME
+            }
+        }
+    }
 }
 
 /// Raw entry parsed from `git worktree list --porcelain`.
@@ -298,7 +385,7 @@ fn parse_porcelain(output: &str) -> Vec<PorcelainEntry> {
 /// Runs `git rev-list --left-right --count base...branch` in the given
 /// worktree directory. Returns `(ahead, behind)` or `None` if the comparison
 /// is not possible (e.g. unrelated histories, missing refs).
-fn get_ahead_behind(
+pub(crate) fn get_ahead_behind(
     base_branch: &str,
     branch: &str,
     worktree_path: &Path,
@@ -327,7 +414,7 @@ fn get_ahead_behind(
 
 /// Dispatch commit metadata retrieval for a worktree HEAD, using gitoxide when
 /// enabled with a fallback to the git subprocess.
-fn get_commit_metadata(
+pub(crate) fn get_commit_metadata(
     worktree_path: &Path,
     git: &GitCommand,
 ) -> (Option<i64>, Option<String>, String) {
@@ -442,7 +529,7 @@ fn get_last_commit_info_for_ref(
 /// Primary: oldest reflog entry for the branch.
 /// Fallback: timestamp of the first commit on the branch.
 /// Returns `None` for detached HEAD or if both methods fail.
-fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) -> Option<i64> {
+pub(crate) fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) -> Option<i64> {
     // Primary: oldest reflog entry
     let reflog_output = Command::new("git")
         .args(["reflog", "show", branch, "--format=%ct"])
@@ -480,16 +567,16 @@ fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) -> Option<i
 }
 
 /// Result of counting changed files in a worktree.
-struct ChangedFiles {
-    staged: usize,
-    unstaged: usize,
-    untracked: usize,
+pub(crate) struct ChangedFiles {
+    pub(crate) staged: usize,
+    pub(crate) unstaged: usize,
+    pub(crate) untracked: usize,
     /// Relative paths of all changed/untracked files (for mtime computation).
-    paths: Vec<String>,
+    pub(crate) paths: Vec<String>,
 }
 
 /// Count staged, unstaged, and untracked files in a worktree.
-fn count_changed_files(worktree_path: &Path) -> ChangedFiles {
+pub(crate) fn count_changed_files(worktree_path: &Path) -> ChangedFiles {
     let output = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(worktree_path)
@@ -544,7 +631,10 @@ fn count_changed_files(worktree_path: &Path) -> ChangedFiles {
 }
 
 /// Get ahead/behind counts for a branch relative to its remote tracking branch.
-fn get_upstream_ahead_behind(branch: &str, worktree_path: &Path) -> Option<(usize, usize)> {
+pub(crate) fn get_upstream_ahead_behind(
+    branch: &str,
+    worktree_path: &Path,
+) -> Option<(usize, usize)> {
     let range = format!("{branch}@{{upstream}}...{branch}");
     let output = Command::new("git")
         .args(["rev-list", "--left-right", "--count", &range])
@@ -587,7 +677,7 @@ fn parse_numstat(output: &str) -> (usize, usize) {
 /// Count lines inserted/deleted for staged and unstaged changes in a worktree.
 ///
 /// Returns `((staged_ins, staged_del), (unstaged_ins, unstaged_del))`.
-fn count_changed_lines(worktree_path: &Path) -> ((usize, usize), (usize, usize)) {
+pub(crate) fn count_changed_lines(worktree_path: &Path) -> ((usize, usize), (usize, usize)) {
     let staged = Command::new("git")
         .args(["diff", "--cached", "--numstat"])
         .current_dir(worktree_path)
@@ -613,7 +703,7 @@ fn count_changed_lines(worktree_path: &Path) -> ((usize, usize), (usize, usize))
 ///
 /// Runs `git diff --numstat base...branch`.
 /// Returns `(insertions, deletions)` or `None` if not computable.
-fn get_base_line_counts(
+pub(crate) fn get_base_line_counts(
     base_branch: &str,
     branch: &str,
     worktree_path: &Path,
@@ -636,7 +726,7 @@ fn get_base_line_counts(
 ///
 /// Runs `git diff --numstat branch@{upstream}...branch`.
 /// Returns `(insertions, deletions)` or `None` if no upstream.
-fn get_remote_line_counts(branch: &str, worktree_path: &Path) -> Option<(usize, usize)> {
+pub(crate) fn get_remote_line_counts(branch: &str, worktree_path: &Path) -> Option<(usize, usize)> {
     let range = format!("{branch}@{{upstream}}...{branch}");
     let output = Command::new("git")
         .args(["diff", "--numstat", &range])
@@ -657,7 +747,7 @@ fn get_remote_line_counts(branch: &str, worktree_path: &Path) -> Option<(usize, 
 /// so a worktree with a few permission-denied entries still reports the sum of
 /// all readable files. Tracks seen inodes to count hard-linked files only once
 /// (matching `du` behavior). Does not follow symlinks.
-fn compute_directory_size(path: &Path) -> Option<u64> {
+pub(crate) fn compute_directory_size(path: &Path) -> Option<u64> {
     #[cfg(unix)]
     {
         use std::collections::HashSet;
@@ -720,7 +810,7 @@ fn compute_directory_size(path: &Path) -> Option<u64> {
 /// `worktree_path` is the root of the worktree; `relative_paths` are the
 /// paths reported by `git status --porcelain` (relative to the worktree root).
 /// Returns `None` if the list is empty or no file could be stat-ed.
-fn max_mtime_of_files(worktree_path: &Path, relative_paths: &[String]) -> Option<i64> {
+pub(crate) fn max_mtime_of_files(worktree_path: &Path, relative_paths: &[String]) -> Option<i64> {
     let mut max_mtime: Option<i64> = None;
     for rel in relative_paths {
         let full = worktree_path.join(rel);
@@ -1251,5 +1341,84 @@ branch refs/heads/feature/cool
         assert!(entries[2].is_detached);
         assert!(!entries[3].is_bare);
         assert_eq!(entries[3].branch.as_deref(), Some("feature/cool"));
+    }
+}
+
+#[cfg(test)]
+mod apply_patch_tests {
+    use super::*;
+    use crate::core::worktree::info_field::FieldSet;
+    use crate::core::worktree::sync_dag::WorktreeInfoPatch;
+
+    fn empty_info() -> WorktreeInfo {
+        WorktreeInfo::empty("test")
+    }
+
+    #[test]
+    fn base_ahead_behind_some_fills_both_and_returns_the_field() {
+        let mut info = empty_info();
+        let touched = info.apply_patch(&WorktreeInfoPatch::BaseAheadBehind(Some((3, 1))));
+        assert_eq!(info.ahead, Some(3));
+        assert_eq!(info.behind, Some(1));
+        assert_eq!(touched, FieldSet::BASE_AHEAD_BEHIND);
+    }
+
+    #[test]
+    fn base_ahead_behind_none_clears_both() {
+        let mut info = empty_info();
+        info.ahead = Some(5);
+        info.behind = Some(2);
+        let touched = info.apply_patch(&WorktreeInfoPatch::BaseAheadBehind(None));
+        assert_eq!(info.ahead, None);
+        assert_eq!(info.behind, None);
+        assert_eq!(touched, FieldSet::BASE_AHEAD_BEHIND);
+    }
+
+    #[test]
+    fn changes_fills_three_fields() {
+        let mut info = empty_info();
+        let touched = info.apply_patch(&WorktreeInfoPatch::Changes {
+            staged: 2,
+            unstaged: 1,
+            untracked: 4,
+        });
+        assert_eq!((info.staged, info.unstaged, info.untracked), (2, 1, 4));
+        assert_eq!(touched, FieldSet::CHANGES);
+    }
+
+    #[test]
+    fn last_commit_fills_three_fields() {
+        let mut info = empty_info();
+        let touched = info.apply_patch(&WorktreeInfoPatch::LastCommit {
+            timestamp: Some(1700000000),
+            hash: Some("abc1234".into()),
+            subject: "fix bug".into(),
+        });
+        assert_eq!(info.last_commit_timestamp, Some(1700000000));
+        assert_eq!(info.last_commit_hash, Some("abc1234".into()));
+        assert_eq!(info.last_commit_subject, "fix bug");
+        assert_eq!(touched, FieldSet::LAST_COMMIT);
+    }
+
+    #[test]
+    fn size_fills_size_bytes() {
+        let mut info = empty_info();
+        let touched = info.apply_patch(&WorktreeInfoPatch::Size(Some(2048)));
+        assert_eq!(info.size_bytes, Some(2048));
+        assert_eq!(touched, FieldSet::SIZE);
+    }
+
+    #[test]
+    fn changes_lines_fills_four_fields() {
+        let mut info = empty_info();
+        let touched = info.apply_patch(&WorktreeInfoPatch::ChangesLines {
+            staged: (10, 2),
+            unstaged: (5, 1),
+        });
+        assert_eq!(info.staged_lines_inserted, Some(10));
+        assert_eq!(info.staged_lines_deleted, Some(2));
+        assert_eq!(info.unstaged_lines_inserted, Some(5));
+        assert_eq!(info.unstaged_lines_deleted, Some(1));
+        assert_eq!(touched, FieldSet::CHANGES_LINES);
     }
 }

@@ -91,50 +91,50 @@ with daft.list.sort.
 "#)]
 pub struct Args {
     #[command(flatten)]
-    emit: EmitArgs,
+    pub(crate) emit: EmitArgs,
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
-    verbose: bool,
+    pub(crate) verbose: bool,
 
     #[arg(
         short = 'b',
         long = "branches",
         help = "Also show local branches without a worktree"
     )]
-    branches: bool,
+    pub(crate) branches: bool,
 
     #[arg(
         short = 'r',
         long = "remotes",
         help = "Also show remote tracking branches"
     )]
-    remotes: bool,
+    pub(crate) remotes: bool,
 
     #[arg(
         short = 'a',
         long = "all",
         help = "Show all branches (equivalent to -b -r)"
     )]
-    all: bool,
+    pub(crate) all: bool,
 
     #[arg(
         long,
         value_enum,
         help = "Statistics mode: summary or lines (default: from git config daft.list.stat, or summary)"
     )]
-    stat: Option<Stat>,
+    pub(crate) stat: Option<Stat>,
 
     #[arg(
         long,
         help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit"
     )]
-    columns: Option<String>,
+    pub(crate) columns: Option<String>,
 
     #[arg(
         long,
         help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit"
     )]
-    sort: Option<String>,
+    pub(crate) sort: Option<String>,
 }
 
 /// A row in the worktree list table.
@@ -173,6 +173,22 @@ pub fn run() -> Result<()> {
     }
 
     let settings = DaftSettings::load()?;
+
+    if should_use_live(&args) {
+        crate::commands::list_live::run_live(args, settings)
+    } else {
+        run_blocking(args, settings)
+    }
+}
+
+fn should_use_live(args: &Args) -> bool {
+    use std::io::IsTerminal;
+    !args.emit.is_structured()
+        && std::env::var_os("DAFT_NO_LIVE").is_none()
+        && std::io::stdout().is_terminal()
+}
+
+fn run_blocking(args: Args, settings: DaftSettings) -> Result<()> {
     let stat = args.stat.unwrap_or(settings.list_stat);
     let columns_input = args.columns.or(settings.list_columns);
     let resolved = match columns_input {
@@ -1102,5 +1118,44 @@ mod tests {
             .position(|h| h == "size_bytes")
             .unwrap();
         assert_eq!(total_row[size_bytes_idx], Cell::Int(1024));
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    fn make_args(structured: bool) -> Args {
+        // Construct an Args via clap's parser so the EmitArgs flatten resolves
+        // correctly without us having to know its internal field shape.
+        let mut argv = vec!["git-worktree-list"];
+        if structured {
+            argv.push("--format");
+            argv.push("json");
+        }
+        Args::parse_from(argv)
+    }
+
+    #[test]
+    fn should_use_live_returns_false_for_structured_output() {
+        let args = make_args(true);
+        // Even if other conditions are favorable, structured output forces
+        // blocking. Whatever the TTY/env give us, the result must be false.
+        assert!(!should_use_live(&args));
+    }
+
+    #[test]
+    fn should_use_live_respects_daft_no_live_env_var() {
+        // Note: setting env vars in tests is process-global; tests in the same
+        // binary may run in parallel. We save/restore to avoid leaking state to
+        // other tests that read DAFT_NO_LIVE.
+        let prev = std::env::var_os("DAFT_NO_LIVE");
+        std::env::set_var("DAFT_NO_LIVE", "1");
+        let args = make_args(false);
+        assert!(!should_use_live(&args));
+        match prev {
+            Some(v) => std::env::set_var("DAFT_NO_LIVE", v),
+            None => std::env::remove_var("DAFT_NO_LIVE"),
+        }
     }
 }

@@ -1,6 +1,10 @@
-use super::columns::{column_content_width, select_columns, Column, ALL_COLUMNS};
+use super::columns::{
+    column_content_width, fit_widths_to_available, select_columns, truncate_with_ellipsis, Column,
+    ALL_COLUMNS,
+};
 use super::state::{FinalStatus, PhaseStatus, TuiState, WorktreeStatus};
 use crate::core::sort::SortSpec;
+use crate::core::worktree::info_field::FieldSet;
 use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
 use crate::output::format::{self, format_human_size, ColumnContext, ColumnValues};
 use crate::styles;
@@ -23,6 +27,9 @@ const DASH: &str = "\u{2014}";
 
 /// Render the operation header showing phase progress.
 pub fn render_header(state: &TuiState, frame: &mut Frame, area: Rect) {
+    if state.phases.is_empty() {
+        return;
+    }
     let lines: Vec<Line> = state
         .phases
         .iter()
@@ -79,30 +86,57 @@ fn render_sort_summary_spans(spec: &SortSpec) -> Vec<Span<'static>> {
     spans
 }
 
+/// Render a verbose-mode footer below the table showing inflight cell
+/// count and elapsed time. No-op when not in verbose mode.
+pub fn render_footer(state: &TuiState, frame: &mut Frame, area: Rect) {
+    if !state.show_hook_sub_rows {
+        return;
+    }
+    let inflight: usize = state
+        .live
+        .received_patches
+        .iter()
+        .filter(|fs| !fs.contains(crate::core::worktree::info_field::FieldSet::ALL))
+        .count();
+    let elapsed_secs = state.render_start_elapsed.as_secs_f32();
+    let mut text = format!(" inflight: {inflight} \u{00B7} elapsed: {elapsed_secs:.1}s");
+    if state.live.cancelled {
+        text.push_str(" \u{00B7} cancelled");
+    }
+    let line = Line::from(Span::styled(
+        text,
+        Style::default().add_modifier(Modifier::DIM),
+    ));
+    frame.render_widget(Paragraph::new(line), area);
+}
+
 /// Render the worktree status table.
 pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     let now = chrono::Utc::now().timestamp();
     let ctx = ColumnContext {
-        project_root: &state.project_root,
-        cwd: &state.cwd,
+        project_root: &state.live.cfg.project_root,
+        cwd: &state.live.cfg.cwd,
         now,
-        stat: state.stat,
+        stat: state.live.cfg.stat,
     };
 
     // Pre-compute all column values for sizing and reuse.
-    let row_vals: Vec<ColumnValues> = state
-        .worktrees
+    let mut row_vals: Vec<ColumnValues> = state
+        .live
+        .rows
         .iter()
         .map(|wt| format::compute_column_values(&wt.info, &ctx))
         .collect();
 
     // Select columns and compute dynamic constraints from content widths.
-    let sort_ref = state.sort_spec.as_ref();
+    let sort_ref = state.live.cfg.sort_spec.as_ref();
 
     // Render "Sorted by" summary line if column headers can't convey the sort.
     let table_area = if let Some(spec) = sort_ref {
         // Collect displayed ListColumns (excluding Status which is TUI-only).
         let displayed: Vec<crate::core::columns::ListColumn> = state
+            .live
+            .cfg
             .columns
             .as_deref()
             .map(|cols| cols.iter().filter_map(|c| c.to_list_column()).collect())
@@ -129,52 +163,110 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     } else {
         area
     };
-    let columns = match (&state.columns, state.columns_explicit) {
-        // Replace mode: user explicitly chose columns, don't responsively drop.
-        (Some(user_cols), true) => user_cols.clone(),
-        // Modifier mode: user tweaked defaults, responsive dropping still applies.
-        // Opt-in columns (not in ALL_COLUMNS, e.g. Size) that the user explicitly
-        // added are always included — they bypass responsive dropping.
-        (Some(user_cols), false) => {
-            let responsive =
-                select_columns(table_area.width, &state.worktrees, &row_vals, sort_ref);
-            let mut cols: Vec<Column> = responsive
-                .into_iter()
-                .filter(|c| matches!(c, Column::Status) || user_cols.contains(c))
-                .collect();
-            for col in user_cols {
-                if !ALL_COLUMNS.contains(col) && !cols.contains(col) {
-                    cols.push(*col);
-                }
-            }
-            cols
-        }
-        // No column selection: fully responsive.
-        (None, _) => select_columns(table_area.width, &state.worktrees, &row_vals, sort_ref),
-    };
-    // Status is always prepended for TUI commands.
-    let columns = if !columns.contains(&Column::Status) {
-        let mut with_status = vec![Column::Status];
-        with_status.extend(columns);
-        with_status
+    let columns = if state.phases.is_empty() {
+        // Phase-less = daft list. Use user-selected columns as-is in canonical
+        // order (matching the blocking print_table behavior). No Status column
+        // (no operations to track), no responsive dropping (let the table wrap
+        // or truncate via Branch/Path widths instead of dropping data columns).
+        state.live.cfg.columns.clone().unwrap_or_else(|| {
+            // Fallback to defaults converted from ListColumn::list_defaults.
+            crate::core::columns::ListColumn::list_defaults()
+                .iter()
+                .map(|lc| Column::from_list_column(*lc))
+                .collect()
+        })
     } else {
-        columns
+        let columns = match (&state.live.cfg.columns, state.live.cfg.columns_explicit) {
+            // Replace mode: user explicitly chose columns, don't responsively drop.
+            (Some(user_cols), true) => user_cols.clone(),
+            // Modifier mode: user tweaked defaults, responsive dropping still applies.
+            // Opt-in columns (not in ALL_COLUMNS, e.g. Size) that the user explicitly
+            // added are always included — they bypass responsive dropping.
+            (Some(user_cols), false) => {
+                let responsive =
+                    select_columns(table_area.width, &state.live.rows, &row_vals, sort_ref);
+                let mut cols: Vec<Column> = responsive
+                    .into_iter()
+                    .filter(|c| matches!(c, Column::Status) || user_cols.contains(c))
+                    .collect();
+                for col in user_cols {
+                    if !ALL_COLUMNS.contains(col) && !cols.contains(col) {
+                        cols.push(*col);
+                    }
+                }
+                cols
+            }
+            // No column selection: fully responsive.
+            (None, _) => select_columns(table_area.width, &state.live.rows, &row_vals, sort_ref),
+        };
+        // Status is always prepended for TUI commands with phases.
+        if !columns.contains(&Column::Status) {
+            let mut with_status = vec![Column::Status];
+            with_status.extend(columns);
+            with_status
+        } else {
+            columns
+        }
     };
 
-    let constraints: Vec<Constraint> = columns
+    // Compute natural column widths, then shrink Branch/Path so the table fits
+    // in the available area. Without this step a single long path or branch
+    // name in `live.rows` (often off-screen) blows out those columns and
+    // squeezes `LastCommit` (Fill(1)) down to nearly zero width.
+    let natural_widths: Vec<u16> = columns
         .iter()
-        .map(|col| {
-            if matches!(col, Column::LastCommit) {
-                Constraint::Fill(1)
-            } else {
-                Constraint::Length(column_content_width(
-                    *col,
-                    &state.worktrees,
-                    &row_vals,
-                    sort_ref,
-                ))
+        .map(|col| column_content_width(*col, &state.live.rows, &row_vals, sort_ref))
+        .collect();
+    let assigned_widths = fit_widths_to_available(&columns, &natural_widths, table_area.width);
+
+    // When Branch / Path / LastCommit were shrunk below natural, pre-truncate
+    // the displayed text so the renderer shows "..." rather than ratatui's
+    // silent hard cut. For LastCommit the user-visible string is
+    // "<age> <subject>"; truncate the subject so the combined length fits.
+    for (i, col) in columns.iter().enumerate() {
+        if assigned_widths[i] >= natural_widths[i] {
+            continue;
+        }
+        match col {
+            Column::Branch => {
+                for vals in &mut row_vals {
+                    vals.branch = truncate_with_ellipsis(&vals.branch, assigned_widths[i]);
+                }
             }
-        })
+            Column::Path => {
+                for vals in &mut row_vals {
+                    vals.path = truncate_with_ellipsis(&vals.path, assigned_widths[i]);
+                }
+            }
+            Column::LastCommit => {
+                let width = assigned_widths[i];
+                for vals in &mut row_vals {
+                    if vals.last_commit_subject.is_empty() {
+                        // Only age is shown — that's already short, but fall
+                        // back to direct truncation in pathological cases.
+                        if !vals.last_commit_age.is_empty() {
+                            vals.last_commit_age =
+                                truncate_with_ellipsis(&vals.last_commit_age, width);
+                        }
+                        continue;
+                    }
+                    let prefix = if vals.last_commit_age.is_empty() {
+                        0
+                    } else {
+                        vals.last_commit_age.chars().count() as u16 + 1 // " "
+                    };
+                    let subject_room = width.saturating_sub(prefix);
+                    vals.last_commit_subject =
+                        truncate_with_ellipsis(&vals.last_commit_subject, subject_room);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let constraints: Vec<Constraint> = assigned_widths
+        .iter()
+        .map(|w| Constraint::Length(*w))
         .collect();
 
     // X offset where the first data column (Branch) starts — used for
@@ -197,6 +289,8 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::UNDERLINED);
             let indicator = col.to_list_column().and_then(|lc| {
                 state
+                    .live
+                    .cfg
                     .sort_spec
                     .as_ref()
                     .and_then(|s| s.direction_indicator(lc))
@@ -229,10 +323,10 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
     let mut row_count: u16 = 0;
     let num_columns = columns.len();
 
-    for (wt_idx, (wt, vals)) in state.worktrees.iter().zip(row_vals.iter()).enumerate() {
+    for (wt_idx, (wt, vals)) in state.live.rows.iter().zip(row_vals.iter()).enumerate() {
         // Insert a placeholder row for the section divider between owned and
         // unowned worktrees.  The actual divider content is overlaid later.
-        if state.unowned_start_index == Some(wt_idx) {
+        if state.live.unowned_start_index == Some(wt_idx) {
             let empty_cells: Vec<Cell> = (0..num_columns).map(|_| Cell::from("")).collect();
             all_rows.push(Row::new(empty_cells));
             divider_row_offset = Some(row_count);
@@ -240,15 +334,26 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         }
 
         let is_pruned = matches!(wt.status, WorktreeStatus::Done(FinalStatus::Pruned));
+        let row_idx = wt_idx;
         let main_cells: Vec<Cell> = if is_pruned {
             // Status and Annotation keep their normal cells; other columns are
             // left empty because their content is overlaid with a single
             // continuous strikethrough line.
             columns
                 .iter()
-                .map(|col| {
+                .enumerate()
+                .map(|(i, col)| {
                     if matches!(col, Column::Status | Column::Annotation) {
-                        render_cell(col, wt, vals, state.tick, state.stat)
+                        render_cell(
+                            col,
+                            wt,
+                            vals,
+                            state.tick,
+                            state.live.cfg.stat,
+                            assigned_widths[i],
+                            |fs| state.live.is_cell_loading(row_idx, fs),
+                            |fs| state.live.is_cell_unloaded(row_idx, fs),
+                        )
                     } else {
                         Cell::from("")
                     }
@@ -257,10 +362,26 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         } else {
             columns
                 .iter()
-                .map(|col| render_cell(col, wt, vals, state.tick, state.stat))
+                .enumerate()
+                .map(|(i, col)| {
+                    render_cell(
+                        col,
+                        wt,
+                        vals,
+                        state.tick,
+                        state.live.cfg.stat,
+                        assigned_widths[i],
+                        |fs| state.live.is_cell_loading(row_idx, fs),
+                        |fs| state.live.is_cell_unloaded(row_idx, fs),
+                    )
+                })
                 .collect()
         };
-        all_rows.push(Row::new(main_cells));
+        let mut row = Row::new(main_cells);
+        if wt.info.is_current {
+            row = row.style(Style::default().bg(Color::Indexed(235)));
+        }
+        all_rows.push(row);
         if is_pruned {
             pruned_overlays.push((
                 row_count,
@@ -306,7 +427,8 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
 
         // Summary row with total size (excludes pruned worktrees)
         let total_bytes: u64 = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .filter(|wt| wt.info.kind == EntryKind::Worktree)
             .filter(|wt| !matches!(wt.status, WorktreeStatus::Done(FinalStatus::Pruned)))
@@ -496,35 +618,184 @@ fn render_remote_cell(info: &WorktreeInfo, stat: Stat) -> Cell<'static> {
     }
 }
 
+/// Frames in one full breath (dim → bright → dim). At the driver's 80ms tick
+/// rate, 16 frames = ~1.3s full cycle. Halve for a snappier pulse, double
+/// for a slower one.
+const SKELETON_BREATH_FRAMES: usize = 16;
+
+/// xterm 256-color grayscale ramp endpoints. Indices 232 (near-black) through
+/// 255 (white) form a 24-step ramp — supported by every terminal that does
+/// 256 colors (effectively all modern terminals).
+const SKELETON_GRAY_DARKEST: u8 = 234;
+const SKELETON_GRAY_BRIGHTEST: u8 = 253;
+
+/// Render a skeleton placeholder for an unfilled cell — a row of `▬`
+/// (BLACK RECTANGLE U+25AC) characters sized to the column's assigned
+/// width, breathing uniformly along the xterm 256-color grayscale ramp
+/// via a triangle wave. The rectangle char is centered vertically in the
+/// cell and shorter than `█`, giving the bar a soft low-profile feel
+/// without any height-mismatch caps.
+fn loading_shimmer_cell(width: u16, tick: usize) -> Cell<'static> {
+    if width == 0 {
+        return Cell::from("");
+    }
+    const BAR_CHAR: &str = "\u{25AC}"; // ▬
+    let bar: String = BAR_CHAR.repeat(width as usize);
+    Cell::from(Span::styled(
+        bar,
+        Style::default().fg(Color::Indexed(skeleton_pulse_color(tick))),
+    ))
+}
+
+/// Triangle-wave brightness selector. Returns a 256-color palette index that
+/// ramps from `SKELETON_GRAY_DARKEST` up to `SKELETON_GRAY_BRIGHTEST` and
+/// back, completing one full breath every `SKELETON_BREATH_FRAMES` ticks.
+fn skeleton_pulse_color(tick: usize) -> u8 {
+    let half = SKELETON_BREATH_FRAMES / 2;
+    let phase = tick % SKELETON_BREATH_FRAMES;
+    let t = if phase < half {
+        phase
+    } else {
+        SKELETON_BREATH_FRAMES - phase
+    };
+    let span = (SKELETON_GRAY_BRIGHTEST - SKELETON_GRAY_DARKEST) as usize;
+    let offset = (t * span) / half;
+    SKELETON_GRAY_DARKEST + offset as u8
+}
+
+/// Render a "data didn't load" placeholder for a cell whose patch was not
+/// received before the user cancelled (Ctrl-C). Single em-dash (U+2014) in
+/// `Color::Gray`, centered within the column's assigned `width` via leading
+/// spaces. Distinct from the loading shimmer (full-width bar of U+25AC) and
+/// from a legitimately-empty cell (a blank).
+fn not_loaded_cell(width: u16) -> Cell<'static> {
+    if width == 0 {
+        return Cell::from("");
+    }
+    let left_pad = (width as usize).saturating_sub(1) / 2;
+    let padded: String = " ".repeat(left_pad) + "\u{2014}";
+    Cell::from(Span::styled(padded, Style::default().fg(Color::Gray)))
+}
+
 /// Render a single cell for the given column and worktree row.
+///
+/// `width` is the column's assigned width — used to size shimmer bars when
+/// the cell is in a loading state.
+/// `is_cell_unloaded` returns true when the user cancelled before the cell's
+/// patch arrived; takes precedence over `is_cell_loading`.
+#[allow(clippy::too_many_arguments)]
 fn render_cell(
     col: &Column,
     wt: &super::state::WorktreeRow,
     vals: &ColumnValues,
     tick: usize,
     stat: Stat,
+    width: u16,
+    is_cell_loading: impl Fn(FieldSet) -> bool,
+    is_cell_unloaded: impl Fn(FieldSet) -> bool,
 ) -> Cell<'static> {
     match col {
         Column::Status => render_status_cell(wt, tick),
         Column::Annotation => render_annotation_cell(&wt.info),
         Column::Branch => Cell::from(vals.branch.clone()),
         Column::Path => Cell::from(vals.path.clone()),
-        Column::Size => Cell::from(vals.size.clone()),
-        Column::Base => render_base_cell(&wt.info, stat),
-        Column::Changes => render_changes_cell(&wt.info, stat),
-        Column::Remote => render_remote_cell(&wt.info, stat),
-        Column::Age => {
-            let cell = Cell::from(vals.branch_age.clone());
-            if vals.is_old_branch {
-                cell.style(Style::default().add_modifier(Modifier::DIM))
+        Column::Size => {
+            if vals.size.is_empty() {
+                if is_cell_unloaded(FieldSet::SIZE) {
+                    not_loaded_cell(width)
+                } else if is_cell_loading(FieldSet::SIZE) {
+                    loading_shimmer_cell(width, tick)
+                } else {
+                    Cell::from(vals.size.clone())
+                }
             } else {
-                cell
+                Cell::from(vals.size.clone())
             }
         }
-        Column::Owner => Cell::from(vals.owner.clone()),
-        Column::Hash => Cell::from(vals.hash.clone()),
+        Column::Base => {
+            let unfilled = wt.info.ahead.is_none() && wt.info.behind.is_none();
+            if unfilled && is_cell_unloaded(FieldSet::BASE_AHEAD_BEHIND) {
+                not_loaded_cell(width)
+            } else if unfilled && is_cell_loading(FieldSet::BASE_AHEAD_BEHIND) {
+                loading_shimmer_cell(width, tick)
+            } else {
+                render_base_cell(&wt.info, stat)
+            }
+        }
+        Column::Changes => {
+            let unfilled = wt.info.staged + wt.info.unstaged + wt.info.untracked == 0;
+            if unfilled && is_cell_unloaded(FieldSet::CHANGES) {
+                not_loaded_cell(width)
+            } else if unfilled && is_cell_loading(FieldSet::CHANGES) {
+                loading_shimmer_cell(width, tick)
+            } else {
+                render_changes_cell(&wt.info, stat)
+            }
+        }
+        Column::Remote => {
+            let unfilled = wt.info.remote_ahead.is_none() && wt.info.remote_behind.is_none();
+            if unfilled && is_cell_unloaded(FieldSet::REMOTE_AHEAD_BEHIND) {
+                not_loaded_cell(width)
+            } else if unfilled && is_cell_loading(FieldSet::REMOTE_AHEAD_BEHIND) {
+                loading_shimmer_cell(width, tick)
+            } else {
+                render_remote_cell(&wt.info, stat)
+            }
+        }
+        Column::Age => {
+            if vals.branch_age.is_empty() {
+                if is_cell_unloaded(FieldSet::BRANCH_AGE) {
+                    not_loaded_cell(width)
+                } else if is_cell_loading(FieldSet::BRANCH_AGE) {
+                    loading_shimmer_cell(width, tick)
+                } else {
+                    Cell::from(vals.branch_age.clone())
+                }
+            } else {
+                let cell = Cell::from(vals.branch_age.clone());
+                if vals.is_old_branch {
+                    cell.style(Style::default().add_modifier(Modifier::DIM))
+                } else {
+                    cell
+                }
+            }
+        }
+        Column::Owner => {
+            if vals.owner.is_empty() {
+                if is_cell_unloaded(FieldSet::OWNER) {
+                    not_loaded_cell(width)
+                } else if is_cell_loading(FieldSet::OWNER) {
+                    loading_shimmer_cell(width, tick)
+                } else {
+                    Cell::from(vals.owner.clone())
+                }
+            } else {
+                Cell::from(vals.owner.clone())
+            }
+        }
+        Column::Hash => {
+            if vals.hash.is_empty() {
+                if is_cell_unloaded(FieldSet::LAST_COMMIT) {
+                    not_loaded_cell(width)
+                } else if is_cell_loading(FieldSet::LAST_COMMIT) {
+                    loading_shimmer_cell(width, tick)
+                } else {
+                    Cell::from(vals.hash.clone())
+                }
+            } else {
+                Cell::from(vals.hash.clone())
+            }
+        }
         Column::LastCommit => {
-            if vals.last_commit_age.is_empty() {
+            if vals.last_commit_age.is_empty() && vals.last_commit_subject.is_empty() {
+                if is_cell_unloaded(FieldSet::LAST_COMMIT) {
+                    not_loaded_cell(width)
+                } else if is_cell_loading(FieldSet::LAST_COMMIT) {
+                    loading_shimmer_cell(width, tick)
+                } else {
+                    Cell::from("")
+                }
+            } else if vals.last_commit_age.is_empty() {
                 Cell::from(vals.last_commit_subject.clone())
             } else if vals.last_commit_subject.is_empty() {
                 let cell = Cell::from(vals.last_commit_age.clone());
@@ -843,4 +1114,373 @@ fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
     }
 
     Cell::from(Line::from(spans))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::sort::SortSpec;
+    use crate::core::worktree::list::{Stat, WorktreeInfo};
+    use crate::core::worktree::sync_dag::OperationPhase;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::path::PathBuf;
+
+    fn make_test_state(verbose: u8) -> TuiState {
+        TuiState::new(
+            Vec::<OperationPhase>::new(),
+            vec![WorktreeInfo::empty("master")],
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test"),
+            Stat::Summary,
+            verbose,
+            None,
+            false,
+            None,
+            None::<SortSpec>,
+            true,
+            false,
+        )
+    }
+
+    #[test]
+    fn loading_shimmer_cell_zero_width_returns_empty() {
+        // Width-0 columns shouldn't paint anything.
+        let backend = TestBackend::new(1, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let cell = loading_shimmer_cell(0, 0);
+                let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(0)]);
+                frame.render_widget(table, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), " ");
+    }
+
+    #[test]
+    fn loading_shimmer_cell_fills_column_with_rectangle_chars() {
+        // Render a skeleton cell and confirm every cell in the bar is the
+        // BLACK RECTANGLE U+25AC glyph across the full assigned width.
+        let backend = TestBackend::new(10, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let cell = loading_shimmer_cell(10, 0);
+                let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
+                frame.render_widget(table, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..10)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            row.chars().all(|c| c == '\u{25AC}'),
+            "skeleton bar should be all ▬, got {row:?}"
+        );
+    }
+
+    #[test]
+    fn loading_shimmer_cell_pulses_uniformly_across_phases() {
+        // The whole bar should share one foreground color at any given tick,
+        // and that color should differ across pulse phases.
+        let render_at = |tick: usize| -> ratatui::style::Color {
+            let backend = TestBackend::new(20, 1);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    let cell = loading_shimmer_cell(20, tick);
+                    let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(20)]);
+                    frame.render_widget(table, frame.area());
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            // Confirm uniform fg across the bar.
+            let first_fg = buffer[(0, 0)].fg;
+            for x in 1..20 {
+                assert_eq!(
+                    buffer[(x, 0)].fg,
+                    first_fg,
+                    "skeleton bar should be uniform in color at x={x} (tick={tick})"
+                );
+            }
+            first_fg
+        };
+
+        // Tick 0 (darkest) vs tick at the bright peak — different colors.
+        let dark = render_at(0);
+        let bright = render_at(SKELETON_BREATH_FRAMES / 2);
+        assert_ne!(
+            dark, bright,
+            "skeleton bar should pulse across the breath (dark={dark:?}, bright={bright:?})"
+        );
+    }
+
+    #[test]
+    fn skeleton_pulse_color_traces_a_triangle_wave() {
+        // At tick 0 we're at the darkest stop.
+        assert_eq!(skeleton_pulse_color(0), SKELETON_GRAY_DARKEST);
+        // At the half-cycle we're at the brightest stop.
+        assert_eq!(
+            skeleton_pulse_color(SKELETON_BREATH_FRAMES / 2),
+            SKELETON_GRAY_BRIGHTEST
+        );
+        // At the end of the cycle we're back at darkest (modular).
+        assert_eq!(
+            skeleton_pulse_color(SKELETON_BREATH_FRAMES),
+            SKELETON_GRAY_DARKEST
+        );
+        // Symmetry: ascending and descending halves visit the same brightness.
+        let quarter = SKELETON_BREATH_FRAMES / 4;
+        let three_quarter = SKELETON_BREATH_FRAMES * 3 / 4;
+        assert_eq!(
+            skeleton_pulse_color(quarter),
+            skeleton_pulse_color(three_quarter),
+            "triangle wave should be symmetric around the peak"
+        );
+    }
+
+    #[test]
+    fn render_footer_no_op_when_not_verbose() {
+        let state = make_test_state(0);
+        assert!(!state.show_hook_sub_rows);
+        let backend = TestBackend::new(40, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_footer(&state, frame, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        // All cells should be empty (default).
+        for cell in buffer.content().iter() {
+            assert_eq!(cell.symbol(), " ");
+        }
+    }
+
+    #[test]
+    fn render_footer_shows_inflight_and_elapsed_when_verbose() {
+        let mut state = make_test_state(1);
+        state.render_start_elapsed = std::time::Duration::from_millis(1234);
+        let backend = TestBackend::new(60, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_footer(&state, frame, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(row.contains("inflight:"), "row was: {row:?}");
+        assert!(row.contains("elapsed:"), "row was: {row:?}");
+        assert!(row.contains("1.2s"), "row was: {row:?}");
+    }
+
+    #[test]
+    fn not_loaded_cell_renders_centered_em_dash_in_gray() {
+        // The "didn't load" cell should be a single em-dash (U+2014) in
+        // Color::Gray, centered within the column's assigned width via
+        // leading spaces. Distinct from the breathing skeleton bar (full
+        // width of U+25AC).
+        let backend = TestBackend::new(5, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let cell = not_loaded_cell(5);
+                let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(5)]);
+                frame.render_widget(table, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..5)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            row.contains("\u{2014}"),
+            "expected em-dash in row; got {row:?}"
+        );
+        // Em-dash should sit at index 2 (center of 5: left_pad = (5-1)/2 = 2).
+        assert_eq!(
+            buffer[(2, 0)].symbol(),
+            "\u{2014}",
+            "em-dash should be centered at index 2 for width 5; row was {row:?}"
+        );
+        assert_eq!(
+            buffer[(2, 0)].fg,
+            ratatui::style::Color::Gray,
+            "em-dash should be Color::Gray for visibility"
+        );
+    }
+
+    #[test]
+    fn not_loaded_cell_zero_width_returns_empty() {
+        // Width 0 must not panic and should render nothing.
+        let backend = TestBackend::new(1, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let cell = not_loaded_cell(0);
+                let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(0)]);
+                frame.render_widget(table, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), " ");
+    }
+
+    #[test]
+    fn render_cell_uses_not_loaded_when_cancelled_and_unfilled() {
+        // For each loadable column, with is_cell_unloaded returning true,
+        // the cell should render the dim em-dash, not the shimmer bar and
+        // not an empty cell.
+        use crate::core::worktree::info_field::FieldSet;
+        use crate::output::format::{compute_column_values, ColumnContext};
+        use crate::output::tui::state::WorktreeRow;
+
+        let info = WorktreeInfo::empty("a");
+        let wt = WorktreeRow::idle(info.clone());
+        let ctx = ColumnContext {
+            project_root: &PathBuf::from("/tmp"),
+            cwd: &PathBuf::from("/tmp"),
+            now: 0,
+            stat: Stat::Lines,
+        };
+        let vals = compute_column_values(&info, &ctx);
+
+        let columns = [
+            (Column::Size, FieldSet::SIZE),
+            (Column::Base, FieldSet::BASE_AHEAD_BEHIND),
+            (Column::Changes, FieldSet::CHANGES),
+            (Column::Remote, FieldSet::REMOTE_AHEAD_BEHIND),
+            (Column::Age, FieldSet::BRANCH_AGE),
+            (Column::Owner, FieldSet::OWNER),
+            (Column::Hash, FieldSet::LAST_COMMIT),
+            (Column::LastCommit, FieldSet::LAST_COMMIT),
+        ];
+
+        for (col, _field) in columns {
+            let backend = TestBackend::new(10, 1);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    let cell = render_cell(
+                        &col,
+                        &wt,
+                        &vals,
+                        0,
+                        Stat::Lines,
+                        10,
+                        |_fs| false, // not loading (cancelled implies collection_complete)
+                        |_fs| true,  // is_cell_unloaded → true
+                    );
+                    let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
+                    frame.render_widget(table, frame.area());
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let row: String = (0..10)
+                .map(|x| buffer[(x, 0)].symbol().to_string())
+                .collect();
+            assert!(
+                row.contains("\u{2014}"),
+                "column {col:?} should render em-dash when cancelled and unfilled; row was {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_cell_uses_value_when_received_even_if_cancelled() {
+        // If the cell value is non-empty (received), is_cell_unloaded should
+        // be false and the value should render. Guards against rendering
+        // "—" over real data.
+        use crate::output::format::{compute_column_values, ColumnContext};
+        use crate::output::tui::state::WorktreeRow;
+
+        let mut info = WorktreeInfo::empty("a");
+        info.size_bytes = Some(1024);
+        let wt = WorktreeRow::idle(info.clone());
+        let ctx = ColumnContext {
+            project_root: &PathBuf::from("/tmp"),
+            cwd: &PathBuf::from("/tmp"),
+            now: 0,
+            stat: Stat::Lines,
+        };
+        let vals = compute_column_values(&info, &ctx);
+
+        let backend = TestBackend::new(10, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let cell = render_cell(
+                    &Column::Size,
+                    &wt,
+                    &vals,
+                    0,
+                    Stat::Lines,
+                    10,
+                    |_fs| false, // not loading
+                    |_fs| false, // not unloaded — received
+                );
+                let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
+                frame.render_widget(table, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..10)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            !row.contains("\u{2014}"),
+            "received cell should render value, not em-dash; got {row:?}"
+        );
+        assert!(
+            row.trim_end()
+                .chars()
+                .any(|c| c.is_ascii_digit() || c == 'B' || c == 'K'),
+            "received Size cell should render numeric/unit value; got {row:?}"
+        );
+    }
+
+    #[test]
+    fn render_footer_appends_cancelled_when_live_cancelled() {
+        let mut state = make_test_state(1);
+        state.render_start_elapsed = std::time::Duration::from_millis(1234);
+        state.live.mark_cancelled();
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_footer(&state, frame, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(row.contains("cancelled"), "row was: {row:?}");
+        assert!(row.contains("inflight:"), "row was: {row:?}");
+    }
+
+    #[test]
+    fn render_footer_no_cancelled_suffix_when_not_cancelled() {
+        let mut state = make_test_state(1);
+        state.render_start_elapsed = std::time::Duration::from_millis(1234);
+        // NOT calling mark_cancelled.
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_footer(&state, frame, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(!row.contains("cancelled"), "row was: {row:?}");
+    }
 }

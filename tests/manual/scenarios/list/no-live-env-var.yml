@@ -1,0 +1,29 @@
+name: List with DAFT_NO_LIVE=1 falls back to blocking output
+description:
+  When DAFT_NO_LIVE=1 is set, daft list uses the blocking one-shot rendering
+  even on a TTY. The output should match the historical blocking format.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+env:
+  DAFT_NO_LIVE: "1"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: List with DAFT_NO_LIVE=1
+    run: NO_COLOR=1 git-worktree-list 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"
+      # Live UX would emit dim middle-dot glyphs for unfilled cells. The
+      # blocking path computes everything synchronously and never emits them.
+      output_not_contains:
+        - "·"

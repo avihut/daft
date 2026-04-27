@@ -5,8 +5,10 @@
 use crate::{
     core::{
         worktree::{
-            prune,
-            sync_dag::{DagEvent, OperationPhase, TaskMessage, TaskStatus},
+            info_field::FieldSet,
+            list::{EntryKind, Stat},
+            list_stream, prune,
+            sync_dag::{DagEvent, OperationPhase, PatchSource, TaskMessage, TaskStatus},
         },
         CommandBridge, TuiBridge,
     },
@@ -21,6 +23,7 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{mpsc, Arc};
 
 /// Execute a single prune task for a DAG worker.
 #[allow(clippy::too_many_arguments)]
@@ -227,7 +230,6 @@ pub fn run_fetch_phase(
             branch_name: String::new(),
             status: TaskStatus::Failed,
             message: TaskMessage::Failed(format!("fetch failed: {e}")),
-            updated_info: None,
         });
         let _ = tx.send(DagEvent::AllDone);
         return false;
@@ -238,10 +240,58 @@ pub fn run_fetch_phase(
         branch_name: String::new(),
         status: TaskStatus::Succeeded,
         message: TaskMessage::Ok("fetched".into()),
-        updated_info: None,
     });
 
     true
+}
+
+/// After the Fetch phase completes, re-run the streaming collector
+/// against `REMOTE_DERIVED` fields for every worktree branch. Patches
+/// arrive as `PatchSource::PostFetch` so `LiveTable` can suppress any
+/// stale `Collector` patches on the same fields. Blocks on join() so
+/// patches land before the orchestrator dispatches per-branch tasks.
+pub fn spawn_post_fetch_refresh(
+    worktree_map: &HashMap<String, (PathBuf, bool)>,
+    settings: &Arc<DaftSettings>,
+    base_branch: &str,
+    user_email: Option<&str>,
+    stat: Stat,
+    git_common_dir: &std::path::Path,
+    tx: &mpsc::Sender<DagEvent>,
+) {
+    let targets: Vec<list_stream::CollectorTarget> = worktree_map
+        .iter()
+        .map(
+            |(branch_name, (path, _is_main))| list_stream::CollectorTarget {
+                branch_name: branch_name.clone(),
+                path: Some(path.clone()),
+                kind: EntryKind::Worktree,
+                is_detached: false,
+            },
+        )
+        .collect();
+    if targets.is_empty() {
+        return;
+    }
+    let ctx = Arc::new(list_stream::CollectorContext {
+        use_gitoxide: settings.use_gitoxide,
+        base_branch: base_branch.to_string(),
+        remote_name: settings.remote.clone(),
+        ownership_strategy: settings.ownership_strategy,
+        user_email: user_email.map(|s| s.to_string()),
+        git_common_dir: git_common_dir.to_path_buf(),
+    });
+    let handle = list_stream::spawn(
+        list_stream::CollectorRequest {
+            targets,
+            fields: FieldSet::REMOTE_DERIVED,
+            stat,
+            source: PatchSource::PostFetch,
+            ctx,
+        },
+        tx.clone(),
+    );
+    handle.join();
 }
 
 /// Render the result of a sequential prune operation (header, details, summary).

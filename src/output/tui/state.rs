@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::columns::Column;
+use super::live_table::{LiveTable, LiveTableConfig};
 
 /// Status of a high-level operation phase in the header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,22 +98,16 @@ pub struct HookSummaryEntry {
 /// Complete TUI state, rebuilt from DagEvents.
 pub struct TuiState {
     pub phases: Vec<PhaseState>,
-    pub worktrees: Vec<WorktreeRow>,
     pub done: bool,
     pub tick: usize,
-    pub project_root: PathBuf,
-    pub cwd: PathBuf,
-    pub stat: Stat,
     pub hook_summaries: Vec<HookSummaryEntry>,
     pub show_hook_sub_rows: bool,
-    /// User-selected columns (None = use responsive selection).
-    pub columns: Option<Vec<Column>>,
-    /// If true, the user explicitly chose columns (replace mode) — disables responsive dropping.
-    pub columns_explicit: bool,
-    /// Index of the first unowned worktree row (None if no unowned section).
-    pub unowned_start_index: Option<usize>,
-    /// User-specified sort order (None = default alphabetical).
-    pub sort_spec: Option<SortSpec>,
+    /// Wall-clock duration since the renderer started. Updated by `tick()`
+    /// from the driver's render-loop start instant. Used by the verbose
+    /// footer.
+    pub render_start_elapsed: std::time::Duration,
+    /// Worktree-rows widget (rows, sort, partition, patch application).
+    pub live: LiveTable,
 }
 
 /// A single row in the worktree table.
@@ -130,6 +125,24 @@ pub struct WorktreeRow {
     pub failure_reason: Option<String>,
 }
 
+impl WorktreeRow {
+    pub(crate) fn idle(info: WorktreeInfo) -> Self {
+        Self {
+            info,
+            status: WorktreeStatus::Idle,
+            prev_terminal_status: None,
+            hook_warned: false,
+            hook_failed: false,
+            hook_sub_rows: Vec::new(),
+            failure_reason: None,
+        }
+    }
+
+    pub(crate) fn placeholder() -> Self {
+        Self::idle(WorktreeInfo::empty(""))
+    }
+}
+
 impl TuiState {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -143,35 +156,28 @@ impl TuiState {
         columns_explicit: bool,
         unowned_start_index: Option<usize>,
         sort_spec: Option<SortSpec>,
+        pin_default_branch: bool,
+        partition_by_owner: bool,
     ) -> Self {
-        let mut worktrees: Vec<WorktreeRow> = worktree_infos
-            .into_iter()
-            .map(|info| WorktreeRow {
-                info,
-                status: WorktreeStatus::Idle,
-                prev_terminal_status: None,
-                hook_warned: false,
-                hook_failed: false,
-                hook_sub_rows: Vec::new(),
-                failure_reason: None,
-            })
-            .collect();
-        worktrees.sort_by(|a, b| {
-            // Default branch always first.
-            let default_order = |w: &WorktreeRow| u8::from(!w.info.is_default_branch);
-            let kind_order = |k: &EntryKind| match k {
-                EntryKind::Worktree => 0,
-                EntryKind::LocalBranch => 1,
-                EntryKind::RemoteBranch => 2,
-            };
-            default_order(a)
-                .cmp(&default_order(b))
-                .then_with(|| kind_order(&a.info.kind).cmp(&kind_order(&b.info.kind)))
-                .then_with(|| match &sort_spec {
-                    Some(spec) => spec.compare(&a.info, &b.info),
-                    None => a.info.name.to_lowercase().cmp(&b.info.name.to_lowercase()),
-                })
-        });
+        // For prune/sync the caller passes `partition_by_owner: false` and
+        // injects an externally-computed `unowned_start_index` (richer
+        // predicate via `is_branch_included` with include_filters). Setting
+        // `partition_by_owner: true` would let
+        // `LiveTable::resort_and_repartition` overwrite that injected value,
+        // so callers that supply an external boundary MUST pass `false`.
+        // `daft list` (Phase 2) sets `true` to let LiveTable own partitioning.
+        let cfg = LiveTableConfig {
+            stat,
+            columns,
+            columns_explicit,
+            sort_spec,
+            pin_default_branch,
+            partition_by_owner,
+            project_root,
+            cwd,
+        };
+        let mut live = LiveTable::new(worktree_infos, cfg);
+        live.unowned_start_index = unowned_start_index;
         Self {
             phases: phases
                 .into_iter()
@@ -180,19 +186,22 @@ impl TuiState {
                     status: PhaseStatus::Pending,
                 })
                 .collect(),
-            worktrees,
             done: false,
             tick: 0,
-            project_root,
-            cwd,
-            stat,
             hook_summaries: Vec::new(),
             show_hook_sub_rows: verbose >= 1,
-            columns,
-            columns_explicit,
-            unowned_start_index,
-            sort_spec,
+            render_start_elapsed: Duration::ZERO,
+            live,
         }
+    }
+
+    /// True when the table has reached a terminal state and the renderer
+    /// should exit. For commands with phases (prune/sync/clone), this means
+    /// `done` was set by `DagEvent::AllDone`. For phase-less commands
+    /// (`daft list`), it also returns true once
+    /// `live.collection_complete` is set by `WorktreeInfoCollectionDone`.
+    pub fn is_complete(&self) -> bool {
+        self.done || (self.phases.is_empty() && self.live.collection_complete)
     }
 
     pub fn apply_event(&mut self, event: &DagEvent) {
@@ -215,17 +224,9 @@ impl TuiState {
                     } else {
                         EntryKind::Worktree
                     };
-                    self.worktrees.push(WorktreeRow {
-                        info: WorktreeInfo {
-                            kind,
-                            ..WorktreeInfo::empty(branch_name)
-                        },
-                        status: WorktreeStatus::Idle,
-                        prev_terminal_status: None,
-                        hook_warned: false,
-                        hook_failed: false,
-                        hook_sub_rows: Vec::new(),
-                        failure_reason: None,
+                    self.live.push_row(WorktreeInfo {
+                        kind,
+                        ..WorktreeInfo::empty(branch_name)
                     });
                 }
                 if let Some(row) = self.find_row_mut(branch_name) {
@@ -241,7 +242,6 @@ impl TuiState {
                 branch_name,
                 status,
                 message,
-                updated_info,
             } => {
                 if *status == TaskStatus::PreconditionFailed {
                     // Restore the previous terminal status (saved by TaskStarted).
@@ -268,9 +268,9 @@ impl TuiState {
                         if failure_reason.is_some() {
                             row.failure_reason = failure_reason;
                         }
-                        if let Some(new_info) = updated_info {
-                            row.info = *new_info.clone();
-                        }
+                        // Refreshed WorktreeInfo cells now flow as
+                        // `WorktreeInfoUpdated` patches with
+                        // `PatchSource::PostTask(phase)` — see `LiveTable`.
                     }
                     self.check_phase_completion(phase);
                 }
@@ -284,7 +284,7 @@ impl TuiState {
                 // Mark any worktrees that were never touched as up-to-date.
                 // This covers prune (where only gone branches get events) and
                 // any other scenario where some rows stay idle.
-                for wt in &mut self.worktrees {
+                for wt in &mut self.live.rows {
                     if wt.status == WorktreeStatus::Idle {
                         wt.status = WorktreeStatus::Done(FinalStatus::UpToDate);
                     }
@@ -420,11 +420,15 @@ impl TuiState {
                     }
                 }
             }
+            DagEvent::WorktreeInfoUpdated { .. } | DagEvent::WorktreeInfoCollectionDone => {
+                self.live.apply_event(event);
+            }
         }
     }
 
     pub fn tick(&mut self) {
         self.tick += 1;
+        self.live.tick();
     }
 
     fn activate_phase(&mut self, phase: &OperationPhase) {
@@ -446,7 +450,7 @@ impl TuiState {
             OperationPhase::Push => "pushing",
             OperationPhase::Setup => "setting up",
         };
-        let any_active = self.worktrees.iter().any(
+        let any_active = self.live.rows.iter().any(
             |w| matches!(&w.status, WorktreeStatus::Active(label) if label == phase_active_label),
         );
         if !any_active {
@@ -459,7 +463,8 @@ impl TuiState {
     }
 
     fn find_row_mut(&mut self, branch_name: &str) -> Option<&mut WorktreeRow> {
-        self.worktrees
+        self.live
+            .rows
             .iter_mut()
             .find(|w| w.info.name == branch_name)
     }
@@ -538,6 +543,8 @@ mod tests {
             false,
             None,
             None,
+            true,
+            false,
         )
     }
 
@@ -565,7 +572,58 @@ mod tests {
             false,
             None,
             None,
+            true,
+            false,
         )
+    }
+
+    /// Build a TuiState with a caller-specified phase list. Thin wrapper
+    /// over `TuiState::new` that supplies sensible defaults for the rest of
+    /// the args (no worktrees, Stat::Summary, default columns/sort, etc.).
+    fn make_test_state_with_phases(phases: Vec<OperationPhase>) -> TuiState {
+        TuiState::new(
+            phases,
+            Vec::new(),
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test"),
+            Stat::Summary,
+            0,
+            None,
+            false,
+            None,
+            None,
+            true,
+            false,
+        )
+    }
+
+    #[test]
+    fn is_complete_false_initially() {
+        let state = make_test_state_with_phases(vec![OperationPhase::Fetch]);
+        assert!(!state.is_complete());
+    }
+
+    #[test]
+    fn is_complete_true_after_all_done_event() {
+        let mut state = make_test_state_with_phases(vec![OperationPhase::Fetch]);
+        state.apply_event(&DagEvent::AllDone);
+        assert!(state.is_complete());
+    }
+
+    #[test]
+    fn is_complete_true_after_collection_done_when_no_phases() {
+        let mut state = make_test_state_with_phases(vec![]);
+        state.apply_event(&DagEvent::WorktreeInfoCollectionDone);
+        assert!(state.is_complete());
+    }
+
+    #[test]
+    fn is_complete_false_after_collection_done_when_phases_present() {
+        // When phases exist, completion still requires AllDone — collection
+        // finishing is just one input among many.
+        let mut state = make_test_state_with_phases(vec![OperationPhase::Fetch]);
+        state.apply_event(&DagEvent::WorktreeInfoCollectionDone);
+        assert!(!state.is_complete());
     }
 
     #[test]
@@ -576,7 +634,8 @@ mod tests {
             .iter()
             .all(|p| p.status == PhaseStatus::Pending));
         assert!(state
-            .worktrees
+            .live
+            .rows
             .iter()
             .all(|w| w.status == WorktreeStatus::Idle));
         assert!(!state.done);
@@ -605,11 +664,11 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::UpToDate,
-            updated_info: None,
         });
 
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "master")
             .unwrap();
@@ -632,7 +691,8 @@ mod tests {
             branch_name: "feat/old".into(),
         });
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/old")
             .unwrap();
@@ -643,11 +703,11 @@ mod tests {
             branch_name: "feat/old".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::Removed,
-            updated_info: None,
         });
 
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/old")
             .unwrap();
@@ -667,11 +727,11 @@ mod tests {
             branch_name: "feat/old".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::SkippedDirty,
-            updated_info: None,
         });
 
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/old")
             .unwrap();
@@ -691,11 +751,11 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::Failed,
             message: TaskMessage::Failed("pull failed".into()),
-            updated_info: None,
         });
 
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "master")
             .unwrap();
@@ -711,11 +771,11 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::DepFailed,
             message: TaskMessage::Failed("dependency failed".into()),
-            updated_info: None,
         });
 
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "master")
             .unwrap();
@@ -747,7 +807,6 @@ mod tests {
             branch_name: String::new(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::Ok("fetched".into()),
-            updated_info: None,
         });
         // Fetch phase should now be completed (fetch task has empty branch_name,
         // so no row was Active for it -- but the phase was Active and now no
@@ -786,11 +845,11 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::Ok("Fast-forward".into()),
-            updated_info: None,
         });
 
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "master")
             .unwrap();
@@ -800,7 +859,7 @@ mod tests {
     #[test]
     fn auto_creates_row_for_unknown_branch() {
         let mut state = make_test_state();
-        assert_eq!(state.worktrees.len(), 3);
+        assert_eq!(state.live.rows.len(), 3);
 
         // A TaskStarted for an unknown branch should auto-create a row
         state.apply_event(&DagEvent::TaskStarted {
@@ -808,9 +867,10 @@ mod tests {
             branch_name: "feat/discovered".into(),
         });
 
-        assert_eq!(state.worktrees.len(), 4);
+        assert_eq!(state.live.rows.len(), 4);
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/discovered")
             .unwrap();
@@ -831,14 +891,14 @@ mod tests {
             branch_name: "feat/old".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::Removed,
-            updated_info: None,
         });
 
         state.apply_event(&DagEvent::AllDone);
 
         // feat/old was pruned
         let pruned = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/old")
             .unwrap();
@@ -846,52 +906,27 @@ mod tests {
 
         // The remaining idle rows should now be up-to-date
         let master = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "master")
             .unwrap();
         assert_eq!(master.status, WorktreeStatus::Done(FinalStatus::UpToDate));
 
         let feat_a = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/a")
             .unwrap();
         assert_eq!(feat_a.status, WorktreeStatus::Done(FinalStatus::UpToDate));
     }
 
-    #[test]
-    fn task_completed_with_updated_info_merges_into_row() {
-        let mut state = make_test_state();
-        state.apply_event(&DagEvent::TaskStarted {
-            phase: OperationPhase::Update,
-            branch_name: "master".into(),
-        });
-
-        let mut new_info = WorktreeInfo::empty("master");
-        new_info.remote_ahead = Some(0);
-        new_info.remote_behind = Some(0);
-        new_info.ahead = Some(0);
-        new_info.behind = Some(0);
-
-        state.apply_event(&DagEvent::TaskCompleted {
-            phase: OperationPhase::Update,
-            branch_name: "master".into(),
-            status: TaskStatus::Succeeded,
-            message: TaskMessage::Ok("Fast-forward".into()),
-            updated_info: Some(Box::new(new_info)),
-        });
-
-        let row = state
-            .worktrees
-            .iter()
-            .find(|w| w.info.name == "master")
-            .unwrap();
-        assert_eq!(row.info.remote_ahead, Some(0));
-        assert_eq!(row.info.remote_behind, Some(0));
-        assert_eq!(row.info.ahead, Some(0));
-        assert_eq!(row.info.behind, Some(0));
-    }
+    // The previous `task_completed_with_updated_info_merges_into_row` test
+    // was deleted: refreshed `WorktreeInfo` cells now flow as
+    // `WorktreeInfoUpdated` patches with `PatchSource::PostTask(phase)` rather
+    // than as a `Box<WorktreeInfo>` riding on `TaskCompleted`. The patch
+    // pipeline is covered by the streaming collector's own tests.
 
     #[test]
     fn hook_started_updates_status_label() {
@@ -901,7 +936,8 @@ mod tests {
             hook_type: HookType::PreRemove,
         });
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/old")
             .unwrap();
@@ -921,7 +957,8 @@ mod tests {
             output: Some("warning output".into()),
         });
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/old")
             .unwrap();
@@ -945,7 +982,8 @@ mod tests {
             output: None,
         });
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "master")
             .unwrap();
@@ -966,7 +1004,8 @@ mod tests {
 
         {
             let row = state
-                .worktrees
+                .live
+                .rows
                 .iter()
                 .find(|w| w.info.name == "feat/a")
                 .unwrap();
@@ -987,7 +1026,8 @@ mod tests {
         });
 
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/a")
             .unwrap();
@@ -1013,7 +1053,8 @@ mod tests {
         });
 
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/a")
             .unwrap();
@@ -1049,7 +1090,8 @@ mod tests {
         });
 
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/a")
             .unwrap();
@@ -1095,7 +1137,8 @@ mod tests {
         });
 
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/a")
             .unwrap();
@@ -1131,6 +1174,8 @@ mod tests {
             false,
             None,
             None,
+            true,
+            false,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1138,7 +1183,8 @@ mod tests {
             branch_name: "master".into(),
         });
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "master")
             .unwrap();
@@ -1149,10 +1195,10 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::Pushed,
-            updated_info: None,
         });
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "master")
             .unwrap();
@@ -1179,6 +1225,8 @@ mod tests {
             false,
             None,
             None,
+            true,
+            false,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1190,11 +1238,11 @@ mod tests {
             branch_name: "feat/a".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::NoPushUpstream,
-            updated_info: None,
         });
 
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/a")
             .unwrap();
@@ -1224,6 +1272,8 @@ mod tests {
             false,
             None,
             None,
+            true,
+            false,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1235,11 +1285,11 @@ mod tests {
             branch_name: "master".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::UpToDate,
-            updated_info: None,
         });
 
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "master")
             .unwrap();
@@ -1262,7 +1312,8 @@ mod tests {
         });
 
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/a")
             .unwrap();
@@ -1292,6 +1343,8 @@ mod tests {
             false,
             None,
             None,
+            true,
+            false,
         )
     }
 
@@ -1309,12 +1362,12 @@ mod tests {
             branch_name: "feat/old".into(),
             status: TaskStatus::Succeeded,
             message: TaskMessage::Conflict,
-            updated_info: None,
         });
 
         // Verify row shows conflict
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/old")
             .unwrap();
@@ -1332,12 +1385,12 @@ mod tests {
             branch_name: "feat/old".into(),
             status: TaskStatus::PreconditionFailed,
             message: TaskMessage::Failed("rebase conflict".into()),
-            updated_info: None,
         });
 
         // Row should show conflict again (restored from prev_terminal_status)
         let row = state
-            .worktrees
+            .live
+            .rows
             .iter()
             .find(|w| w.info.name == "feat/old")
             .unwrap();
