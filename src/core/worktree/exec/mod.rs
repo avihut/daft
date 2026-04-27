@@ -527,8 +527,9 @@ pub fn run_pipeline(
 /// pipeline is conveyed via the `command_preview` argument on `on_job_start`
 /// — not via the job name itself.
 ///
-/// `alias_cache`, when supplied, replaces the slow `$SHELL -i -c` rc-file
-/// load with an inlined alias table for the spawned shell.
+/// `alias_cache`, when supplied, lets `build_command` skip rc-file
+/// loading entirely by inlining a previously captured alias table for
+/// the spawned shell.
 pub fn run_pipeline_streaming(
     target: &ResolvedTarget,
     pipeline: &[CommandSpec],
@@ -694,14 +695,26 @@ where
 
 /// Build the `Command` that runs a `CommandSpec` for one worktree.
 ///
-/// User-defined aliases (e.g. `gss`, `gcvm`) resolve the same way they
-/// would in an interactive shell. The fast path inlines a cached alias
-/// table and runs `$SHELL -c '<aliases>; eval "$1"' -- <cmd>`, skipping
-/// the rc-file load (`-i`) entirely. The slow path falls back to
-/// `$SHELL -i -c <cmd>` so aliases still resolve when no cache is
-/// available (unsupported shell, capture failure, first run before
-/// caching). For `Argv`, parts are POSIX-quoted and joined first so the
-/// inner shell sees the same argument boundaries.
+/// User-defined aliases (e.g. `gss`, `gcvm`) resolve via a cached
+/// snapshot of the alias table and shell functions. The fast path
+/// inlines that snapshot and runs `$SHELL -c '<aliases>; eval "$1"' -- <cmd>`,
+/// avoiding any rc-file load.
+///
+/// The fallback path — used only when no cache is available
+/// (unsupported shell, capture timed out, capture aborted, or first run
+/// before the snapshot exists) — runs `$SHELL -c <cmd>` *without*
+/// `-i`. Earlier versions used `$SHELL -i -c <cmd>` so that aliases
+/// would still resolve from the rc-file in the no-cache case, but rc
+/// files frequently misbehave in non-interactive contexts (p10k instant
+/// prompt, `tput` without a TTY, plugins that read from stdin), and
+/// when they do, a `-i -c` fallback fails outright — making `daft exec`
+/// itself unusable. The rc-less path sacrifices alias resolution in the
+/// fallback to guarantee the user's command actually runs. With
+/// FD-isolated capture, the cache succeeds for the vast majority of
+/// setups, so this fallback rarely fires.
+///
+/// For `Argv`, parts are POSIX-quoted and joined first so the inner
+/// shell sees the same argument boundaries.
 pub(crate) fn build_command(spec: &CommandSpec, alias_cache: Option<&AliasCache>) -> Command {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
     let cmd_string = match spec {
@@ -732,15 +745,31 @@ pub(crate) fn build_command(spec: &CommandSpec, alias_cache: Option<&AliasCache>
             body.push_str(&cache.alias_lines);
             body.push_str("\neval \"$1\"");
             c.arg("-c").arg(body).arg("--").arg(cmd_string);
+            debug_log_command(&shell, "fast-path (cache)", &c);
         }
         None => {
-            // Slow path: load the user's rc files via `-i` so any aliases
-            // (and shell functions) resolve. Used when no cache is
-            // available — e.g. unsupported shell or capture failure.
-            c.arg("-i").arg("-c").arg(cmd_string);
+            // Rc-less fallback. Aliases won't resolve, but the user's
+            // command runs — preferred over `-i -c` for users whose rc
+            // files break in non-interactive mode.
+            c.arg("-c").arg(&cmd_string);
+            debug_log_command(&shell, "no-cache (rc-less)", &c);
         }
     }
     c
+}
+
+/// Stderr trace of the constructed command when `DAFT_EXEC_DEBUG=1` is
+/// set. Helps users diagnose alias-resolution problems they'd otherwise
+/// have no logs for. Silent unless the env var is set.
+fn debug_log_command(shell: &str, mode: &str, cmd: &Command) {
+    if std::env::var_os("DAFT_EXEC_DEBUG").is_none() {
+        return;
+    }
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    eprintln!("[daft-exec-debug] mode={mode} shell={shell} args={args:?}");
 }
 
 /// Shell-quote each argv element (POSIX) and join with spaces so the
@@ -1144,14 +1173,16 @@ mod tests {
     }
 
     #[test]
-    fn build_command_falls_back_to_interactive_shell_when_no_cache() {
-        // Slow path: when no alias cache is available (unsupported shell
-        // or capture failure), fall back to `$SHELL -i -c` so aliases
-        // still resolve via the user's rc files. Matches the behavior
-        // shipped for `-x` on `daft go` / `daft start` in #242.
+    fn build_command_no_cache_uses_rc_less_shell() {
+        // No-cache path: do NOT pass `-i` — rc-file evaluation fails for
+        // some users in non-interactive contexts (p10k instant prompt,
+        // plugins that need a TTY) and was making `daft exec` unusable.
+        // A pristine `$SHELL -c` is the safer default; aliases simply
+        // don't resolve in this fallback. With FD-isolated capture the
+        // cache succeeds for almost all users, so this rarely fires.
         let shell_cmd = build_command(&CommandSpec::Shell("gss".into()), None);
         let args: Vec<&std::ffi::OsStr> = shell_cmd.get_args().collect();
-        assert_eq!(args, vec!["-i", "-c", "gss"]);
+        assert_eq!(args, vec!["-c", "gss"]);
 
         // Argv parts are POSIX-quoted and joined so the inner shell sees
         // the same argument boundaries as the original argv.
@@ -1160,7 +1191,7 @@ mod tests {
             None,
         );
         let args: Vec<&std::ffi::OsStr> = argv_cmd.get_args().collect();
-        assert_eq!(args, vec!["-i", "-c", "echo 'hello world'"]);
+        assert_eq!(args, vec!["-c", "echo 'hello world'"]);
     }
 
     #[test]
