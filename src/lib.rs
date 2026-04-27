@@ -116,11 +116,17 @@ pub fn get_clap_args(expected_cmd: &str) -> Vec<String> {
 /// Returns `true` if the given argv corresponds to an invocation that should
 /// skip startup-time background work (update checks, trust pruning, etc.).
 ///
-/// `shell-init` is sourced from the user's shell rc files on every interactive
-/// shell startup, so its codepath must stay free of subprocess calls, file IO,
-/// network requests, and background-process spawns. `__*` subcommands are
-/// background tasks (e.g., `__check-update`, `__prune-trust`) and skipping
-/// further background work for them prevents recursive fork bombs.
+/// `shell-init` and `completions` both emit shell code to stdout that users
+/// `eval` from their shell rc files, so they run on every interactive shell
+/// startup. Their codepaths must stay free of subprocess calls, file IO,
+/// network requests, and background-process spawns. They must also stay quiet
+/// on stderr — `eval` only captures stdout, so banners on stderr (e.g., the
+/// update-available notice) leak straight into the user's terminal.
+///
+/// `__*` subcommands are background tasks (e.g., `__check-update`,
+/// `__prune-trust`, and the `__complete` tab-completion helper). Skipping
+/// further background work for them prevents recursive fork bombs and keeps
+/// tab completion responsive.
 ///
 /// New commands with similar constraints should be added here rather than
 /// introducing a parallel gate at the call sites.
@@ -128,7 +134,7 @@ pub fn skip_startup_tasks_for(args: &[String]) -> bool {
     let Some(sub) = args.get(1).map(String::as_str) else {
         return false;
     };
-    sub.starts_with("__") || sub == "shell-init"
+    sub.starts_with("__") || matches!(sub, "shell-init" | "completions")
 }
 
 pub mod commands;
@@ -298,6 +304,24 @@ mod tests {
             "git-daft",
             "shell-init",
             "zsh"
+        ])));
+    }
+
+    #[test]
+    fn test_skip_startup_tasks_completions() {
+        assert!(skip_startup_tasks_for(&args(&[
+            "daft",
+            "completions",
+            "zsh"
+        ])));
+    }
+
+    #[test]
+    fn test_skip_startup_tasks_completions_via_git_daft() {
+        assert!(skip_startup_tasks_for(&args(&[
+            "git-daft",
+            "completions",
+            "bash"
         ])));
     }
 
