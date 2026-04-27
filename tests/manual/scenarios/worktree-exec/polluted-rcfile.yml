@@ -1,0 +1,66 @@
+name: "Exec survives rc-file stdout pollution"
+description: |
+  Regression for the "completely useless" failure mode reported after
+  #414: a user with a working .zshrc/.bashrc that prints to stdout
+  during rc evaluation (p10k instant prompt, plugin status banners,
+  fortune cookies, "Welcome" echoes, etc.) would have that stdout
+  output spliced into the captured alias snapshot. The poisoned cache
+  was then replayed on every subsequent invocation, breaking every
+  command run through `daft exec`.
+
+  The fix routes captured `alias`/`typeset -f` output to dedicated temp
+  files inside the spawned shell (via env-var paths), so rc-file stdout
+  no longer corrupts the snapshot. This scenario exercises that
+  end-to-end with a deliberately noisy .bashrc.
+
+repos:
+  - name: exec-polluted
+    use_fixture: standard-remote
+
+steps:
+  - name: "Set up fake HOME with a noisy .bashrc that prints to stdout"
+    run: |
+      mkdir -p "$WORK_DIR/fakehome" && \
+        printf '%s\n%s\n%s\n%s\n' \
+          'echo "POLLUTION_BEFORE_PROMPT"' \
+          'printf "fortune cookie of the day\n"' \
+          'alias daft_polluted_alias="echo aliased > polluted_marker.txt"' \
+          'echo "POLLUTION_AFTER_ALIAS"' \
+          > "$WORK_DIR/fakehome/.bashrc"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/fakehome/.bashrc"
+
+  - name: "Clone the repository"
+    run: "git-worktree-clone --layout contained $REMOTE_EXEC_POLLUTED"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/exec-polluted/main"
+
+  - name: "Alias resolves through the cache despite rc-file pollution"
+    run: |
+      HOME="$WORK_DIR/fakehome" SHELL=/bin/bash \
+        git-worktree-exec main -- daft_polluted_alias 2>/dev/null
+    cwd: "$WORK_DIR/exec-polluted/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-polluted/main/polluted_marker.txt"
+      file_contains:
+        - path: "$WORK_DIR/exec-polluted/main/polluted_marker.txt"
+          content: "aliased"
+
+  - name: "Plain command runs even when no alias is involved"
+    run: |
+      HOME="$WORK_DIR/fakehome" SHELL=/bin/bash \
+        git-worktree-exec main -- sh -c 'echo plain > plain_marker.txt' 2>/dev/null
+    cwd: "$WORK_DIR/exec-polluted/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/exec-polluted/main/plain_marker.txt"
+      file_contains:
+        - path: "$WORK_DIR/exec-polluted/main/plain_marker.txt"
+          content: "plain"
