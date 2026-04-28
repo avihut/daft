@@ -195,8 +195,159 @@ fn run_tui(
     target: &crate::core::worktree::remove_repo::RepoTarget,
     worktrees: &[crate::core::worktree::remove_repo::WorktreeEntry],
 ) -> Result<()> {
-    // Bundle E will replace this with the OperationTable-driven path.
-    run_sequential(target, worktrees)
+    use crate::commands::sync_shared::{
+        check_tui_failures, execute_remove_bare_task, execute_remove_worktree_task,
+    };
+    use crate::core::worktree::list::{Stat, WorktreeInfo};
+    use crate::core::worktree::sync_dag::{
+        DagExecutor, OperationPhase, SyncDag, SyncTask, TaskId, TaskMessage, TaskOutcome,
+        TaskStatus,
+    };
+    use crate::output::tui::operation_table::{OperationTable, TableConfig};
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    let phases = vec![OperationPhase::RemoveRepo];
+
+    // Seed one TUI row per worktree (keyed by branch label so events emitted
+    // from `build_remove_repo` resolve via `find_row_mut(branch_name)`), plus
+    // one synthetic "(bare)" row for the terminal task.
+    let mut worktree_infos: Vec<WorktreeInfo> = worktrees
+        .iter()
+        .map(|w| {
+            let label = w.branch.as_deref().unwrap_or("(detached)");
+            WorktreeInfo::local_branch_stub(label, None)
+        })
+        .collect();
+    worktree_infos.push(WorktreeInfo::local_branch_stub("(bare)", None));
+
+    let dag = SyncDag::build_remove_repo(
+        worktrees
+            .iter()
+            .map(|w| {
+                (
+                    w.branch.clone().unwrap_or_else(|| "(detached)".into()),
+                    w.path.clone(),
+                )
+            })
+            .collect(),
+        target.bare_git_dir.clone(),
+    );
+
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    // Shared state for the orchestrator thread. `WorktreeEntry` is not `Clone`,
+    // so we share it via Arc and look up by path inside the executor closure.
+    let target_arc = Arc::new(target.clone());
+    let entries_arc: Arc<Vec<crate::core::worktree::remove_repo::WorktreeEntry>> = Arc::new(
+        worktrees
+            .iter()
+            .map(|w| crate::core::worktree::remove_repo::WorktreeEntry {
+                path: w.path.clone(),
+                branch: w.branch.clone(),
+                is_bare: w.is_bare,
+                is_detached: w.is_detached,
+            })
+            .collect(),
+    );
+    let hooks_arc = Arc::new(crate::hooks::HooksConfig::default());
+
+    let tx_for_tasks = tx.clone();
+    let target_for_tasks = Arc::clone(&target_arc);
+    let entries_for_tasks = Arc::clone(&entries_arc);
+    let hooks_for_tasks = Arc::clone(&hooks_arc);
+
+    let orchestrator = std::thread::spawn(move || {
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(
+            move |task: &SyncTask,
+                  outcomes: &HashSet<TaskOutcome>|
+                  -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
+                match &task.id {
+                    TaskId::RemoveWorktree(path) => {
+                        let entry = entries_for_tasks
+                            .iter()
+                            .find(|e| &e.path == path)
+                            .expect("entry for task path must exist");
+                        let (s, m) = execute_remove_worktree_task(
+                            &target_for_tasks,
+                            entry,
+                            &hooks_for_tasks,
+                            &tx_for_tasks,
+                        );
+                        (s, m, outcomes.clone())
+                    }
+                    TaskId::RemoveBare => {
+                        let (s, m) = execute_remove_bare_task(&target_for_tasks);
+                        (s, m, outcomes.clone())
+                    }
+                    _ => (
+                        TaskStatus::Skipped,
+                        TaskMessage::Ok("not applicable".into()),
+                        outcomes.clone(),
+                    ),
+                }
+            },
+        );
+    });
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    // Reserve viewport rows for hook sub-rows: at most 2 hooks per worktree
+    // (pre-remove + post-remove), and we may want a couple of job sub-rows
+    // each. Over-allocate since the inline ratatui viewport cannot grow.
+    let extra_rows = 5 + (worktrees.len() as u16) * 4;
+    let table = OperationTable::new(
+        phases,
+        worktree_infos,
+        target.project_root.clone(),
+        cwd,
+        Stat::Summary,
+        rx,
+        TableConfig {
+            columns: None,
+            columns_explicit: false,
+            sort_spec: None,
+            extra_rows,
+            verbosity: 0,
+            pin_default_branch: false,
+            partition_by_owner: false,
+        },
+        None,
+    );
+    let completed = table.run()?;
+
+    orchestrator
+        .join()
+        .map_err(|_| anyhow::anyhow!("DAG orchestrator thread panicked"))?;
+
+    if !completed.hook_summaries.is_empty() {
+        eprintln!();
+        eprintln!("Hooks:");
+        for entry in &completed.hook_summaries {
+            let status_word = if entry.warned { "warned" } else { "failed" };
+            let exit_str = entry
+                .exit_code
+                .map(|c| format!("exit {c}"))
+                .unwrap_or_else(|| "error".into());
+            eprintln!(
+                "  {}: {} {} ({}, {}ms)",
+                entry.branch_name,
+                entry.hook_type.filename(),
+                status_word,
+                exit_str,
+                entry.duration.as_millis()
+            );
+            if let Some(ref out) = entry.output {
+                for line in out.lines() {
+                    eprintln!("    {line}");
+                }
+            }
+        }
+    }
+
+    check_tui_failures(&completed.rows)?;
+    Ok(())
 }
 
 struct HookSummary {
