@@ -147,6 +147,17 @@ fn run_sequential(
                 output,
             } = ev
             {
+                // docs/superpowers/specs/2026-04-28-remove-repo-design.md L178:
+                // exit code reflects unwarned hook failures. Worktree filesystem
+                // removal proceeds regardless (TaskStatus::Succeeded), so we
+                // must mark `any_failed` here when a hook aborts in non-warned
+                // mode. Warned-only runs leave `any_failed` untouched.
+                // TODO(Bundle G): cover this exit-code path in the YAML
+                // scenario `remove-with-hooks.yml` — fail an Abort-mode hook
+                // and assert the process exits non-zero.
+                if !success && !warned {
+                    any_failed = true;
+                }
                 if !success || warned {
                     hook_summaries.push(HookSummary {
                         branch_name,
