@@ -81,7 +81,7 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     let result = if force_sequential {
         run_sequential(&target, &worktrees)
     } else {
-        run_tui(&target, &worktrees)
+        run_tui(&target, &worktrees, args.verbose)
     };
     maybe_redirect_cwd(&target);
     result
@@ -237,6 +237,7 @@ fn run_sequential(
 fn run_tui(
     target: &crate::core::worktree::remove_repo::RepoTarget,
     worktrees: &[crate::core::worktree::remove_repo::WorktreeEntry],
+    verbose: u8,
 ) -> Result<()> {
     use crate::commands::sync_shared::{
         check_tui_failures, execute_remove_bare_task, execute_remove_worktree_task,
@@ -341,8 +342,14 @@ fn run_tui(
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     // Reserve viewport rows for hook sub-rows: at most 2 hooks per worktree
     // (pre-remove + post-remove), and we may want a couple of job sub-rows
-    // each. Over-allocate since the inline ratatui viewport cannot grow.
-    let extra_rows = 5 + (worktrees.len() as u16) * 4;
+    // each. Over-allocate since the inline ratatui viewport cannot grow. Only
+    // budget the per-worktree slack when the user asked for hook detail rows
+    // via `-v` — at verbosity 0 they aren't rendered.
+    let extra_rows = 5 + if verbose >= 1 {
+        (worktrees.len() as u16) * 4
+    } else {
+        0
+    };
     let table = OperationTable::new(
         phases,
         worktree_infos,
@@ -355,7 +362,7 @@ fn run_tui(
             columns_explicit: false,
             sort_spec: None,
             extra_rows,
-            verbosity: 0,
+            verbosity: verbose,
             pin_default_branch: false,
             partition_by_owner: false,
         },
