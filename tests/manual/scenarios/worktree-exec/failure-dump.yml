@@ -29,7 +29,8 @@ steps:
     expect:
       exit_code: 1
       output_contains:
-        - "─── feat-a"
-        - "─── main"
+        - "✗ feat-a"
+        - "✗ main"
+        - "failed,"
         - "exit 1"
-        - "marker-line"
+        - "│ marker-line"
