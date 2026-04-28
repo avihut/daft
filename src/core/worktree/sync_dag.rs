@@ -35,6 +35,10 @@ pub enum TaskId {
     Push(String),
     /// Set up a worktree during clone.
     Setup(String),
+    /// Remove a single worktree (path is the unique key).
+    RemoveWorktree(std::path::PathBuf),
+    /// Remove the bare git directory after all worktrees are gone.
+    RemoveBare,
 }
 
 /// Execution status of a single task.
@@ -751,6 +755,20 @@ mod tests {
     #[test]
     fn remove_repo_phase_label() {
         assert_eq!(OperationPhase::RemoveRepo.label(), "Removing repository");
+    }
+
+    #[test]
+    fn remove_repo_task_ids_are_distinct() {
+        use std::path::PathBuf;
+        let a = TaskId::RemoveWorktree(PathBuf::from("/tmp/wt-a"));
+        let b = TaskId::RemoveWorktree(PathBuf::from("/tmp/wt-b"));
+        let bare = TaskId::RemoveBare;
+        assert_ne!(a, b);
+        assert_ne!(a, bare);
+        let mut set = std::collections::HashSet::new();
+        set.insert(a.clone());
+        assert!(set.contains(&a));
+        assert!(!set.contains(&b));
     }
 
     #[test]
