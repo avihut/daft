@@ -277,20 +277,11 @@ fn run_tui(
 
     let (tx, rx) = std::sync::mpsc::channel();
 
-    // Shared state for the orchestrator thread. `WorktreeEntry` is not `Clone`,
-    // so we share it via Arc and look up by path inside the executor closure.
+    // Shared state for the orchestrator thread. We share entries via Arc and
+    // look up by path inside the executor closure.
     let target_arc = Arc::new(target.clone());
-    let entries_arc: Arc<Vec<crate::core::worktree::remove_repo::WorktreeEntry>> = Arc::new(
-        worktrees
-            .iter()
-            .map(|w| crate::core::worktree::remove_repo::WorktreeEntry {
-                path: w.path.clone(),
-                branch: w.branch.clone(),
-                is_bare: w.is_bare,
-                is_detached: w.is_detached,
-            })
-            .collect(),
-    );
+    let entries_arc: Arc<Vec<crate::core::worktree::remove_repo::WorktreeEntry>> =
+        Arc::new(worktrees.to_vec());
     let hooks_arc = Arc::new(crate::hooks::HooksConfig::default());
 
     let tx_for_tasks = tx.clone();
