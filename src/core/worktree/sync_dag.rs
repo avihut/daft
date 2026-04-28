@@ -339,6 +339,69 @@ impl SyncDag {
         Self::build_sync(vec![], vec![], gone_branches, None, false)
     }
 
+    /// Build a DAG for `daft repo remove`.
+    ///
+    /// Each `(branch_name, worktree_path)` becomes a `RemoveWorktree` task with no
+    /// inter-task dependencies (parallel removal). A terminal `RemoveBare` task
+    /// depends on every worktree task; if `worktrees` is empty, `RemoveBare` is
+    /// the sole task with no dependencies.
+    pub fn build_remove_repo(
+        worktrees: Vec<(String, std::path::PathBuf)>,
+        bare_git_dir: std::path::PathBuf,
+    ) -> Self {
+        let mut tasks = Vec::new();
+        let mut dependencies: Vec<Vec<usize>> = Vec::new();
+        let mut dependents: Vec<Vec<usize>> = Vec::new();
+
+        let mut push_task = |task: SyncTask, deps: Vec<usize>| -> usize {
+            let idx = tasks.len();
+            tasks.push(task);
+            for &dep in &deps {
+                if dependents.len() <= dep {
+                    dependents.resize_with(dep + 1, Vec::new);
+                }
+                dependents[dep].push(idx);
+            }
+            dependencies.push(deps);
+            if dependents.len() <= idx {
+                dependents.resize_with(idx + 1, Vec::new);
+            }
+            idx
+        };
+
+        let mut worktree_indices = Vec::new();
+        for (branch, path) in &worktrees {
+            let idx = push_task(
+                SyncTask {
+                    id: TaskId::RemoveWorktree(path.clone()),
+                    phase: OperationPhase::RemoveRepo,
+                    worktree_path: Some(path.clone()),
+                    branch_name: branch.clone(),
+                },
+                vec![],
+            );
+            worktree_indices.push(idx);
+        }
+
+        push_task(
+            SyncTask {
+                id: TaskId::RemoveBare,
+                phase: OperationPhase::RemoveRepo,
+                worktree_path: Some(bare_git_dir),
+                branch_name: "(bare)".to_string(),
+            },
+            worktree_indices,
+        );
+
+        Self {
+            tasks,
+            dependencies,
+            dependents,
+            rebase_branch: None,
+            push: false,
+        }
+    }
+
     /// Get the dependency indices for a task.
     pub fn dependencies_of(&self, task_idx: usize) -> &[usize] {
         &self.dependencies[task_idx]
@@ -769,6 +832,38 @@ mod tests {
         set.insert(a.clone());
         assert!(set.contains(&a));
         assert!(!set.contains(&b));
+    }
+
+    #[test]
+    fn build_remove_repo_no_worktrees() {
+        use std::path::PathBuf;
+        let dag = SyncDag::build_remove_repo(vec![], PathBuf::from("/repo/.git"));
+        assert_eq!(dag.tasks.len(), 1);
+        assert_eq!(dag.tasks[0].id, TaskId::RemoveBare);
+        assert!(dag.dependencies_of(0).is_empty());
+    }
+
+    #[test]
+    fn build_remove_repo_terminal_bare_depends_on_all_worktrees() {
+        use std::path::PathBuf;
+        let worktrees = vec![
+            ("main".to_string(), PathBuf::from("/repo/main")),
+            ("feat/a".to_string(), PathBuf::from("/repo/feat-a")),
+            ("feat/b".to_string(), PathBuf::from("/repo/feat-b")),
+        ];
+        let dag = SyncDag::build_remove_repo(worktrees, PathBuf::from("/repo/.git"));
+        assert_eq!(dag.tasks.len(), 4);
+        for i in 0..3 {
+            assert!(
+                dag.dependencies_of(i).is_empty(),
+                "worktree task {i} should have no deps",
+            );
+        }
+        let bare_idx = dag.tasks.len() - 1;
+        assert_eq!(dag.tasks[bare_idx].id, TaskId::RemoveBare);
+        let mut deps = dag.dependencies_of(bare_idx).to_vec();
+        deps.sort();
+        assert_eq!(deps, vec![0, 1, 2]);
     }
 
     #[test]
