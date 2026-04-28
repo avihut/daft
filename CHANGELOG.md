@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.1](https://github.com/avihut/daft/compare/v1.10.0...v1.10.1) - 2026-04-28
+
+### Bug Fixes
+
+- *(hooks)* gate coordinator IPC behind cfg(unix) so Windows builds ([#426](https://github.com/avihut/daft/pull/426))
+
+### Miscellaneous
+
+- *(hooks)* warm up dev build via background mise dev job ([#425](https://github.com/avihut/daft/pull/425))
+
 ## [1.10.0](https://github.com/avihut/daft/compare/v1.9.1...v1.10.0) - 2026-04-28
 
 ### Bug Fixes
