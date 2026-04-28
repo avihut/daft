@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.0](https://github.com/avihut/daft/compare/v1.9.1...v1.10.0) - 2026-04-28
+
+### Bug Fixes
+
+- *(exec)* clarify failed-run output dump format ([#422](https://github.com/avihut/daft/pull/422))
+
+### Features
+
+- *(hooks)* background hook jobs + universal logging + daft hooks jobs CLI ([#411](https://github.com/avihut/daft/pull/411))
+
 ## [1.9.1](https://github.com/avihut/daft/compare/v1.9.0...v1.9.1) - 2026-04-27
 
 ### Bug Fixes
