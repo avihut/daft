@@ -4,18 +4,58 @@
 //! Each message is one JSON object followed by `\n`. The client sends a
 //! [`CoordinatorRequest`], and the coordinator responds with a
 //! [`CoordinatorResponse`].
+//!
+//! IPC is Unix-only. On non-Unix platforms `CoordinatorClient` exposes the
+//! same API but `connect()` always returns `Ok(None)` — there is no
+//! coordinator to talk to.
 
-use super::{coordinator_socket_path, CoordinatorRequest, CoordinatorResponse, JobInfo};
-use anyhow::{Context, Result};
+use super::JobInfo;
+#[cfg(unix)]
+use super::{coordinator_socket_path, CoordinatorRequest, CoordinatorResponse};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::Result;
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(unix)]
 use std::time::Duration;
 
 /// Client for communicating with a running coordinator.
+#[cfg(unix)]
 pub struct CoordinatorClient {
     stream: UnixStream,
 }
 
+/// Stub on non-Unix platforms — the field is `Infallible`, so the type
+/// can never be instantiated. `connect()` always returns `Ok(None)` and
+/// the rest of the surface is reachable only through an instance, so it
+/// is statically unreachable.
+#[cfg(not(unix))]
+pub struct CoordinatorClient(std::convert::Infallible);
+
+#[cfg(not(unix))]
+impl CoordinatorClient {
+    /// No coordinator IPC on non-Unix platforms.
+    pub fn connect(_repo_hash: &str) -> Result<Option<Self>> {
+        Ok(None)
+    }
+
+    pub fn list_jobs(&mut self) -> Result<Vec<JobInfo>> {
+        match self.0 {}
+    }
+
+    pub fn cancel_job(&mut self, _name: &str) -> Result<String> {
+        match self.0 {}
+    }
+
+    pub fn cancel_all(&mut self) -> Result<String> {
+        match self.0 {}
+    }
+}
+
+#[cfg(unix)]
 impl CoordinatorClient {
     /// Connect to the coordinator for the given repo.
     /// Returns `None` if no coordinator is running.
@@ -93,7 +133,7 @@ impl CoordinatorClient {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};

@@ -40,6 +40,25 @@ jobs:
       - name: Run Rust unit tests
         run: mise run test:unit
 
+  # Windows compile check — ensures the codebase still builds for the
+  # x86_64-pc-windows-msvc target that the release workflow ships. This
+  # only runs `cargo check`, not a full build or test, so it stays fast
+  # while catching platform-specific regressions (e.g. unconditional use
+  # of `std::os::unix::*` or `libc`) before they reach a release tag.
+  windows-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo check (Windows)
+        run: cargo check --all-targets
+
   # Test xtask man page generation
   xtask-test:
     runs-on: ubuntu-latest

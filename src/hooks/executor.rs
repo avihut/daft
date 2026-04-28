@@ -642,6 +642,7 @@ mod tests {
     use crate::hooks::PROJECT_HOOKS_DIR;
     use crate::output::TestOutput;
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
 
