@@ -75,13 +75,16 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
 
     let force_sequential =
         args.verbose >= 2 || !std::io::IsTerminal::is_terminal(&std::io::stderr());
-    if force_sequential {
-        run_sequential(&target, &worktrees)?;
+    // `maybe_redirect_cwd` runs regardless of success/failure: even on partial
+    // failure we may have removed the worktree containing the user's cwd, in
+    // which case we still need to hand the shell wrapper a safe directory.
+    let result = if force_sequential {
+        run_sequential(&target, &worktrees)
     } else {
-        run_tui(&target, &worktrees)?;
-    }
+        run_tui(&target, &worktrees)
+    };
     maybe_redirect_cwd(&target);
-    Ok(())
+    result
 }
 
 /// If the current working directory is inside the removed repo, hand the
