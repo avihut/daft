@@ -22,6 +22,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "release-notes",
     "remove",
     "rename",
+    "repo",
     "setup",
     "shared",
     "shell-init",
@@ -269,5 +270,16 @@ mod tests {
         let branches = vec!["main".to_string(), "develop".to_string()];
         let suggestions = find_similar("completely-unrelated-xyzzy", &branches, 5);
         assert!(suggestions.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod repo_subcommands_tests {
+    use super::*;
+    #[test]
+    fn daft_repo_subcommands_sorted() {
+        let mut sorted = DAFT_REPO_SUBCOMMANDS.to_vec();
+        sorted.sort();
+        assert_eq!(sorted, DAFT_REPO_SUBCOMMANDS);
     }
 }

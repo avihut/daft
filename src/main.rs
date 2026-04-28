@@ -138,6 +138,7 @@ fn main() -> Result<()> {
                     "multi-remote" => commands::multi_remote::run(),
                     "shared" => commands::shared::run(),
                     "release-notes" => commands::release_notes::run(),
+                    "repo" => commands::repo::run(),
                     "setup" => {
                         // Check for setup subcommands
                         if args.len() > 2 && args[2] == "shortcuts" {
