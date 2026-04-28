@@ -76,9 +76,49 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     let force_sequential =
         args.verbose >= 2 || !std::io::IsTerminal::is_terminal(&std::io::stderr());
     if force_sequential {
-        return run_sequential(&target, &worktrees);
+        run_sequential(&target, &worktrees)?;
+    } else {
+        run_tui(&target, &worktrees)?;
     }
-    run_tui(&target, &worktrees)
+    maybe_redirect_cwd(&target);
+    Ok(())
+}
+
+/// If the current working directory is inside the removed repo, hand the
+/// shell wrapper a safe path to `cd` into via `DAFT_CD_FILE`. Without this,
+/// the user's shell would be left sitting in a now-deleted directory.
+///
+/// Picks `project_root.parent()` first (the natural sibling), then falls back
+/// to `dirs::data_dir()`, then `dirs::home_dir()`, then `/`.
+///
+/// TODO(Bundle G): exercise this in the YAML scenario `remove-from-inside.yml`
+/// — the spec-aligned integration coverage. The unit-test layer cannot
+/// reliably exercise the cwd-mutation path because Rust unit tests share
+/// process-wide cwd / env state and run in parallel, which makes the test
+/// inherently racy with the rest of the suite.
+fn maybe_redirect_cwd(target: &crate::core::worktree::remove_repo::RepoTarget) {
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    if !cwd.starts_with(&target.project_root) {
+        return;
+    }
+    let safe_target = target
+        .project_root
+        .parent()
+        .map(|p| p.to_path_buf())
+        .or_else(dirs::data_dir)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| std::path::PathBuf::from("/"));
+    if let Ok(cd_file) = std::env::var(crate::CD_FILE_ENV) {
+        let _ = std::fs::write(&cd_file, format!("{}\n", safe_target.display()));
+    } else {
+        eprintln!(
+            "Run `cd {}` (your previous working directory was removed)",
+            safe_target.display()
+        );
+    }
 }
 
 fn print_plan(
