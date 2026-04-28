@@ -640,6 +640,25 @@ _daft() {
         return
     fi
 
+    # repo: complete subcommands and arguments
+    if (( CURRENT >= 3 )) && [[ "$words[2]" == "repo" ]]; then
+        if (( CURRENT == 3 )); then
+            compadd remove
+            return
+        fi
+        case "$words[3]" in
+            remove)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- -y --force --dry-run -v --verbose -h --help
+                    return
+                fi
+                _files -/
+                return
+                ;;
+        esac
+        return
+    fi
+
     # config: complete subcommands
     if (( CURRENT == 3 )) && [[ "$words[2]" == "config" ]]; then
         compadd remote-sync
@@ -779,7 +798,7 @@ _daft() {
             compadd -- --version -V --help -h
         else
             compadd hooks shell-init setup multi-remote release-notes doctor layout shared \
-                    config clone init go start carry exec update list prune rename sync remove adopt eject
+                    config repo clone init go start carry exec update list prune rename sync remove adopt eject
         fi
         return
     fi

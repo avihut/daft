@@ -465,6 +465,47 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
     }
 }
 
+/// Build the repo subcommand with nested subcommands
+fn build_fig_repo_subcommand() -> FigSubcommand {
+    let remove = FigSubcommand {
+        name: "remove".to_string(),
+        description: Some("Remove a repository, including all worktrees".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(FigArgs::Single(FigArg {
+            name: "path".to_string(),
+            description: Some("Path to the repo or any directory inside it".to_string()),
+            generators: None,
+        })),
+        options: Some(vec![
+            FigOption {
+                name: FigName::Multiple(vec!["--force".into(), "-y".into()]),
+                description: "Skip the confirmation prompt".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--dry-run".into()),
+                description: "Print what would be removed without touching anything".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--verbose".into(), "-v".into()]),
+                description: "Increase verbosity".into(),
+                args: None,
+            },
+        ]),
+    };
+
+    FigSubcommand {
+        name: "repo".to_string(),
+        description: Some("Repository-level operations".to_string()),
+        load_spec: None,
+        subcommands: Some(vec![remove]),
+        args: None,
+        options: None,
+    }
+}
+
 /// Build the multi-remote subcommand with nested subcommands
 fn build_fig_multi_remote_subcommand() -> FigSubcommand {
     FigSubcommand {
@@ -569,6 +610,7 @@ pub(super) fn generate_fig_daft_spec() -> Result<String> {
         build_fig_hooks_subcommand(),
         build_fig_multi_remote_subcommand(),
         build_fig_layout_subcommand(),
+        build_fig_repo_subcommand(),
     ];
     subcommands.extend(
         simple_subcommands
