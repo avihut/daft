@@ -332,3 +332,114 @@ pub fn render_prune_result(result: &prune::PruneResult, output: &mut dyn Output)
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// `daft repo remove` task execution
+// ─────────────────────────────────────────────────────────────────────
+
+use crate::core::worktree::remove_repo::{self, RepoTarget, WorktreeEntry};
+use crate::hooks::{HookContext, HookType, RemovalReason};
+use crate::output::tui::TuiPresenter;
+use crate::output::BufferingOutput;
+
+/// Execute one `RemoveWorktree` task.
+///
+/// Runs `worktree-pre-remove`, removes the worktree from disk via
+/// [`remove_repo::remove_worktree_filesystem`], then runs
+/// `worktree-post-remove`. Hook failures never abort the removal — they are
+/// surfaced via `DagEvent::HookCompleted` events for the renderer to summarize.
+#[allow(dead_code)] // Wired up by `daft repo remove` in the next commit.
+pub fn execute_remove_worktree_task(
+    target: &RepoTarget,
+    entry: &WorktreeEntry,
+    hooks_config: &crate::hooks::HooksConfig,
+    tx: &mpsc::Sender<DagEvent>,
+) -> (TaskStatus, TaskMessage) {
+    let label = entry.branch.clone().unwrap_or_else(|| "(detached)".into());
+
+    run_remove_hook_best_effort(target, entry, HookType::PreRemove, hooks_config, tx, &label);
+
+    let outcome = remove_repo::remove_worktree_filesystem(target, &entry.path);
+    if let Err(e) = outcome {
+        return (
+            TaskStatus::Failed,
+            TaskMessage::Failed(format!("remove failed: {e}")),
+        );
+    }
+
+    run_remove_hook_best_effort(
+        target,
+        entry,
+        HookType::PostRemove,
+        hooks_config,
+        tx,
+        &label,
+    );
+
+    (TaskStatus::Succeeded, TaskMessage::Removed)
+}
+
+/// Execute the terminal `RemoveBare` task.
+#[allow(dead_code)] // Wired up by `daft repo remove` in the next commit.
+pub fn execute_remove_bare_task(target: &RepoTarget) -> (TaskStatus, TaskMessage) {
+    match remove_repo::remove_bare_directory(target) {
+        Ok(()) => (TaskStatus::Succeeded, TaskMessage::Removed),
+        Err(e) => (
+            TaskStatus::Failed,
+            TaskMessage::Failed(format!("bare removal failed: {e}")),
+        ),
+    }
+}
+
+/// Run a remove hook for `entry` and forward lifecycle events to `tx`.
+///
+/// Uses [`TuiPresenter`] to send `HookStarted`/`HookCompleted` events through
+/// the channel — the same machinery `TuiBridge` uses for sync/prune. If the
+/// executor cannot be constructed (e.g. trust DB load fails), the call is a
+/// silent no-op so the removal still proceeds. If `executor.execute()`
+/// short-circuits with `Err` (FailMode::Abort), we still send a synthetic
+/// `HookCompleted` so the renderer sees the failure — mirrors `TuiBridge`.
+fn run_remove_hook_best_effort(
+    target: &RepoTarget,
+    entry: &WorktreeEntry,
+    hook_type: HookType,
+    hooks_config: &crate::hooks::HooksConfig,
+    tx: &mpsc::Sender<DagEvent>,
+    label: &str,
+) {
+    let executor = match HookExecutor::new(hooks_config.clone()) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let ctx = HookContext::new(
+        hook_type,
+        "repo-remove",
+        &target.project_root,
+        &target.bare_git_dir,
+        "origin",
+        &target.project_root,
+        &entry.path,
+        entry.branch.clone().unwrap_or_default(),
+    )
+    .with_removal_reason(RemovalReason::Manual);
+
+    let presenter = TuiPresenter::new(tx.clone(), label.to_string(), hook_type);
+    let mut output = BufferingOutput::new();
+
+    if let Err(e) = executor.execute(&ctx, &mut output, presenter) {
+        // FailMode::Abort path — execute() bailed before on_phase_complete
+        // ran, so HookStarted may be the only event the presenter sent.
+        // Synthesize a HookCompleted with the bail message so the renderer
+        // can surface it. Mirrors `TuiBridge::run_hook`.
+        let _ = tx.send(DagEvent::HookCompleted {
+            branch_name: label.to_string(),
+            hook_type,
+            success: false,
+            warned: false,
+            duration: std::time::Duration::ZERO,
+            exit_code: None,
+            output: Some(format!("{e:#}")),
+        });
+    }
+}
