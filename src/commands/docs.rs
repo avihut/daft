@@ -10,7 +10,7 @@ use std::path::Path;
 
 use crate::commands::{
     carry, checkout, clone, config, doctor, exec, fetch, flow_adopt, flow_eject, hooks, init,
-    layout, list, multi_remote, prune, release_notes, shared, shell_init, shortcuts, sync,
+    layout, list, multi_remote, prune, release_notes, repo, shared, shell_init, shortcuts, sync,
     worktree_branch,
 };
 use crate::styles;
@@ -122,6 +122,14 @@ fn get_daft_categories() -> Vec<CommandCategory> {
                     command: init::Args::command(),
                 },
             ],
+        },
+        CommandCategory {
+            title: "manage repositories",
+            layout: CategoryLayout::List,
+            commands: vec![CommandEntry {
+                display_name: "repo remove",
+                command: repo::remove::Args::command(),
+            }],
         },
         CommandCategory {
             title: "share configuration across worktrees",
@@ -247,6 +255,14 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
                     command: flow_eject::Args::command(),
                 },
             ],
+        },
+        CommandCategory {
+            title: "manage repositories",
+            layout: CategoryLayout::List,
+            commands: vec![CommandEntry {
+                display_name: "daft repo remove",
+                command: repo::remove::Args::command(),
+            }],
         },
         CommandCategory {
             title: "share configuration across worktrees",
