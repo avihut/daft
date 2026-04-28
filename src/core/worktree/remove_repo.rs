@@ -84,6 +84,49 @@ pub fn enumerate_worktrees(target: &RepoTarget) -> Result<Vec<WorktreeEntry>> {
     Ok(parse_worktree_list_porcelain(&stdout))
 }
 
+/// Outcome of removing a single worktree from the filesystem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoveWorktreeOutcome {
+    /// `git worktree remove --force` succeeded cleanly.
+    Removed,
+    /// `git worktree remove --force` failed; we removed the directory directly
+    /// and ran `git worktree prune`.
+    RemovedViaFallback,
+}
+
+/// Remove a single worktree from disk.
+///
+/// First tries `git --git-dir <bare> worktree remove --force <path>`. If that
+/// fails or leaves the directory in place, falls back to `rm -rf` followed by
+/// `git worktree prune` so the bare repo's administrative state is consistent.
+pub fn remove_worktree_filesystem(
+    target: &RepoTarget,
+    worktree_path: &Path,
+) -> Result<RemoveWorktreeOutcome> {
+    let try_git_remove = std::process::Command::new("git")
+        .arg("--git-dir")
+        .arg(&target.bare_git_dir)
+        .args(["worktree", "remove", "--force"])
+        .arg(worktree_path)
+        .output()
+        .context("git worktree remove failed to launch")?;
+
+    if try_git_remove.status.success() && !worktree_path.exists() {
+        return Ok(RemoveWorktreeOutcome::Removed);
+    }
+
+    if worktree_path.exists() {
+        std::fs::remove_dir_all(worktree_path)
+            .with_context(|| format!("rm -rf {} failed", worktree_path.display()))?;
+    }
+    let _ = std::process::Command::new("git")
+        .arg("--git-dir")
+        .arg(&target.bare_git_dir)
+        .args(["worktree", "prune"])
+        .status();
+    Ok(RemoveWorktreeOutcome::RemovedViaFallback)
+}
+
 /// Parse the porcelain output of `git worktree list --porcelain`, dropping the
 /// bare entry. Pure-string helper so it can be unit-tested without spawning
 /// git.
@@ -197,18 +240,18 @@ mod tests {
         assert!(err.contains("no such file or directory"), "{err}");
     }
 
-    #[test]
-    fn enumerate_worktrees_returns_only_main_for_fresh_repo() {
-        let tmp = tempfile::tempdir().unwrap();
-        init_repo(tmp.path());
-        std::fs::write(tmp.path().join("README"), b"hi").unwrap();
+    /// Initialize a repo at `dir` and create one initial commit. Returns when
+    /// the initial commit is in place so worktrees can be checked out off it.
+    fn init_repo_with_commit(dir: &Path) {
+        init_repo(dir);
+        std::fs::write(dir.join("README"), b"hi").unwrap();
         Command::new("git")
-            .current_dir(tmp.path())
+            .current_dir(dir)
             .args(["add", "."])
             .status()
             .unwrap();
         Command::new("git")
-            .current_dir(tmp.path())
+            .current_dir(dir)
             .env("GIT_AUTHOR_NAME", "t")
             .env("GIT_AUTHOR_EMAIL", "t@t.com")
             .env("GIT_COMMITTER_NAME", "t")
@@ -216,10 +259,38 @@ mod tests {
             .args(["commit", "-q", "-m", "init"])
             .status()
             .unwrap();
+    }
+
+    #[test]
+    fn enumerate_worktrees_returns_only_main_for_fresh_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo_with_commit(tmp.path());
 
         let target = resolve_repo(Some(tmp.path())).unwrap();
         let worktrees = enumerate_worktrees(&target).unwrap();
         assert_eq!(worktrees.len(), 1);
         assert_eq!(worktrees[0].path, tmp.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn remove_worktree_filesystem_deletes_dir_and_runs_git_remove() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo_with_commit(tmp.path());
+
+        let wt = tmp.path().join("wt-feat");
+        Command::new("git")
+            .current_dir(tmp.path())
+            .args(["worktree", "add", wt.to_str().unwrap(), "-b", "feat"])
+            .status()
+            .unwrap();
+        assert!(wt.exists(), "worktree was not created");
+
+        let target = resolve_repo(Some(tmp.path())).unwrap();
+        let outcome = remove_worktree_filesystem(&target, &wt).unwrap();
+        assert!(matches!(
+            outcome,
+            RemoveWorktreeOutcome::Removed | RemoveWorktreeOutcome::RemovedViaFallback
+        ));
+        assert!(!wt.exists(), "worktree should have been removed");
     }
 }
