@@ -1,6 +1,6 @@
 //! `daft repo remove` — remove a Git repository and all its worktrees.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -63,7 +63,22 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
         return Ok(());
     }
 
-    anyhow::bail!("interactive removal not yet implemented");
+    if !args.force {
+        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            bail!("Refusing to run without --force in non-interactive mode");
+        }
+        if !confirm_prompt(&target, worktrees.len())? {
+            println!("aborted");
+            return Ok(());
+        }
+    }
+
+    let force_sequential =
+        args.verbose >= 2 || !std::io::IsTerminal::is_terminal(&std::io::stderr());
+    if force_sequential {
+        return run_sequential(&target, &worktrees);
+    }
+    run_tui(&target, &worktrees)
 }
 
 fn print_plan(
@@ -77,6 +92,139 @@ fn print_plan(
     }
     println!("  bare      {}", target.bare_git_dir.display());
     println!("  trust DB entry for {}", target.bare_git_dir.display());
+}
+
+fn confirm_prompt(
+    target: &crate::core::worktree::remove_repo::RepoTarget,
+    n: usize,
+) -> Result<bool> {
+    use std::io::{BufRead, Write};
+    print!(
+        "Remove repo at {}? This will delete {n} worktrees and the bare git dir. [y/N] ",
+        target.project_root.display()
+    );
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(matches!(line.trim(), "y" | "Y"))
+}
+
+fn run_sequential(
+    target: &crate::core::worktree::remove_repo::RepoTarget,
+    worktrees: &[crate::core::worktree::remove_repo::WorktreeEntry],
+) -> Result<()> {
+    use crate::commands::sync_shared::{execute_remove_bare_task, execute_remove_worktree_task};
+    use crate::core::worktree::sync_dag::{DagEvent, TaskMessage, TaskStatus};
+
+    let hooks_config = crate::hooks::HooksConfig::default();
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    let mut hook_summaries: Vec<HookSummary> = Vec::new();
+    let mut any_failed = false;
+    for entry in worktrees {
+        let label = entry.branch.clone().unwrap_or_else(|| "(detached)".into());
+        let (status, msg) = execute_remove_worktree_task(target, entry, &hooks_config, &tx);
+        let line = match &msg {
+            TaskMessage::Removed => "removed".to_string(),
+            TaskMessage::Failed(e) => {
+                any_failed = true;
+                e.clone()
+            }
+            _ => "removed".to_string(),
+        };
+        println!("  {label}: {line}");
+        if matches!(status, TaskStatus::Failed) {
+            any_failed = true;
+        }
+        while let Ok(ev) = rx.try_recv() {
+            if let DagEvent::HookCompleted {
+                branch_name,
+                hook_type,
+                success,
+                warned,
+                duration,
+                exit_code,
+                output,
+            } = ev
+            {
+                if !success || warned {
+                    hook_summaries.push(HookSummary {
+                        branch_name,
+                        hook_type,
+                        success,
+                        warned,
+                        duration,
+                        exit_code,
+                        output,
+                    });
+                }
+            }
+        }
+    }
+
+    let (bare_status, bare_msg) = execute_remove_bare_task(target);
+    let bare_line = match &bare_msg {
+        TaskMessage::Removed => "removed".to_string(),
+        TaskMessage::Failed(e) => e.clone(),
+        _ => "removed".to_string(),
+    };
+    println!("  (bare): {bare_line}");
+    if matches!(bare_status, TaskStatus::Failed) {
+        any_failed = true;
+    }
+
+    print_hook_summary(&hook_summaries);
+    if any_failed {
+        bail!("repo removal had failures (see above)");
+    }
+    Ok(())
+}
+
+fn run_tui(
+    target: &crate::core::worktree::remove_repo::RepoTarget,
+    worktrees: &[crate::core::worktree::remove_repo::WorktreeEntry],
+) -> Result<()> {
+    // Bundle E will replace this with the OperationTable-driven path.
+    run_sequential(target, worktrees)
+}
+
+struct HookSummary {
+    branch_name: String,
+    #[allow(dead_code)] // Held for symmetry; not yet used in summary output.
+    success: bool,
+    hook_type: crate::hooks::HookType,
+    warned: bool,
+    duration: std::time::Duration,
+    exit_code: Option<i32>,
+    output: Option<String>,
+}
+
+fn print_hook_summary(entries: &[HookSummary]) {
+    if entries.is_empty() {
+        return;
+    }
+    eprintln!();
+    eprintln!("Hooks:");
+    for h in entries {
+        let status_word = if h.warned { "warned" } else { "failed" };
+        let exit_str = h
+            .exit_code
+            .map(|c| format!("exit {c}"))
+            .unwrap_or_else(|| "error".into());
+        eprintln!(
+            "  {}: {} {} ({}, {}ms)",
+            h.branch_name,
+            h.hook_type.filename(),
+            status_word,
+            exit_str,
+            h.duration.as_millis()
+        );
+        if let Some(ref out) = h.output {
+            for line in out.lines() {
+                eprintln!("    {line}");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -130,5 +278,25 @@ mod tests {
 
         assert!(tmp.path().join(".git").exists(), "bare git dir must remain");
         assert!(wt.exists(), "worktree must remain");
+    }
+
+    #[test]
+    fn run_force_removes_repo_end_to_end() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = make_repo_with_worktree(tmp.path());
+
+        let args = Args {
+            path: Some(tmp.path().to_path_buf()),
+            force: true,
+            dry_run: false,
+            verbose: 2, // force sequential path
+        };
+        run_with_args(&args).unwrap();
+
+        assert!(
+            !tmp.path().join(".git").exists(),
+            "bare git dir must be gone"
+        );
+        assert!(!wt.exists(), "worktree must be gone");
     }
 }

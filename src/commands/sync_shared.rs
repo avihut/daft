@@ -348,7 +348,6 @@ use crate::output::BufferingOutput;
 /// [`remove_repo::remove_worktree_filesystem`], then runs
 /// `worktree-post-remove`. Hook failures never abort the removal — they are
 /// surfaced via `DagEvent::HookCompleted` events for the renderer to summarize.
-#[allow(dead_code)] // Wired up by `daft repo remove` in the next commit.
 pub fn execute_remove_worktree_task(
     target: &RepoTarget,
     entry: &WorktreeEntry,
@@ -380,7 +379,6 @@ pub fn execute_remove_worktree_task(
 }
 
 /// Execute the terminal `RemoveBare` task.
-#[allow(dead_code)] // Wired up by `daft repo remove` in the next commit.
 pub fn execute_remove_bare_task(target: &RepoTarget) -> (TaskStatus, TaskMessage) {
     match remove_repo::remove_bare_directory(target) {
         Ok(()) => (TaskStatus::Succeeded, TaskMessage::Removed),
