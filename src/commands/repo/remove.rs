@@ -297,13 +297,25 @@ fn run_tui(
                   -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
                 match &task.id {
                     TaskId::RemoveWorktree(path) => {
-                        let entry = entries_for_tasks
-                            .iter()
-                            .find(|e| &e.path == path)
-                            .expect("entry for task path must exist");
+                        // Soft-fail rather than panic: a panic here would hang
+                        // the worker pool waiting on its cvar. The invariant
+                        // (one entry per RemoveWorktree task) is held by
+                        // construction, but we still degrade gracefully.
+                        let Some(entry) =
+                            entries_for_tasks.iter().find(|e| &e.path == path).cloned()
+                        else {
+                            return (
+                                TaskStatus::Failed,
+                                TaskMessage::Failed(format!(
+                                    "internal: no entry for {}",
+                                    path.display()
+                                )),
+                                outcomes.clone(),
+                            );
+                        };
                         let (s, m) = execute_remove_worktree_task(
                             &target_for_tasks,
-                            entry,
+                            &entry,
                             &hooks_for_tasks,
                             &tx_for_tasks,
                         );
