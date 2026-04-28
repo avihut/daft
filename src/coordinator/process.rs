@@ -9,6 +9,7 @@
 //! handling IPC requests from CLI commands (`daft hooks jobs`).
 
 use super::log_store::{JobMeta, JobStatus, LogStore};
+#[cfg(unix)]
 use super::{
     coordinator_pid_path, coordinator_socket_path, CoordinatorRequest, CoordinatorResponse, JobInfo,
 };
@@ -368,6 +369,7 @@ fn run_single_background_job(
 /// - The `shutdown` flag is set (e.g., when all jobs complete)
 ///
 /// Returns a `JoinHandle` for the listener thread.
+#[cfg(unix)]
 fn start_socket_listener(
     repo_hash: &str,
     store_base: std::path::PathBuf,
@@ -427,6 +429,7 @@ fn start_socket_listener(
 }
 
 /// Handle a single client connection: read a request, process it, send a response.
+#[cfg(unix)]
 fn handle_client_connection(
     stream: std::os::unix::net::UnixStream,
     store: &LogStore,
@@ -518,6 +521,7 @@ fn handle_client_connection(
 }
 
 /// Build a list of job info from the log store.
+#[cfg(unix)]
 fn build_job_list(store: &LogStore) -> Vec<JobInfo> {
     let job_dirs = match store.list_job_dirs() {
         Ok(dirs) => dirs,
@@ -553,6 +557,7 @@ fn build_job_list(store: &LogStore) -> Vec<JobInfo> {
 /// Cancel a single job by name. Records the name in `cancelled_jobs` so
 /// the post-run classifier reports `JobStatus::Cancelled` rather than
 /// `JobStatus::Failed`.
+#[cfg(unix)]
 fn cancel_single_job(
     name: &str,
     child_pids: &ChildPidMap,
@@ -579,6 +584,7 @@ fn cancel_single_job(
 }
 
 /// Write a JSON response to the stream.
+#[cfg(unix)]
 fn send_response(stream: &std::os::unix::net::UnixStream, response: &CoordinatorResponse) {
     use std::io::Write;
     let mut msg = match serde_json::to_string(response) {
@@ -591,6 +597,7 @@ fn send_response(stream: &std::os::unix::net::UnixStream, response: &Coordinator
 }
 
 /// Write the coordinator PID file.
+#[cfg(unix)]
 fn write_pid_file(repo_hash: &str) -> Result<std::path::PathBuf> {
     let pid_path = coordinator_pid_path(repo_hash)?;
     if let Some(parent) = pid_path.parent() {
@@ -683,7 +690,7 @@ pub fn fork_coordinator(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::executor::JobSpec;
