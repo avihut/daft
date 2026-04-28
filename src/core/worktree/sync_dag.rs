@@ -107,6 +107,8 @@ pub enum OperationPhase {
     Rebase(String),
     Push,
     Setup,
+    /// Removing a repo's worktrees (and finally its bare git dir).
+    RemoveRepo,
 }
 
 impl OperationPhase {
@@ -119,6 +121,7 @@ impl OperationPhase {
             Self::Rebase(branch) => format!("Rebasing onto {branch}"),
             Self::Push => "Pushing to remote".into(),
             Self::Setup => "Setting up worktrees".to_string(),
+            Self::RemoveRepo => "Removing repository".to_string(),
         }
     }
 }
@@ -743,6 +746,11 @@ mod tests {
             OperationPhase::Rebase("master".into()).label(),
             "Rebasing onto master"
         );
+    }
+
+    #[test]
+    fn remove_repo_phase_label() {
+        assert_eq!(OperationPhase::RemoveRepo.label(), "Removing repository");
     }
 
     #[test]

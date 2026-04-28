@@ -218,6 +218,7 @@ impl TuiState {
                     OperationPhase::Rebase(_) => "rebasing",
                     OperationPhase::Push => "pushing",
                     OperationPhase::Setup => "setting up",
+                    OperationPhase::RemoveRepo => "removing",
                 };
                 // Auto-create row for newly discovered branches (e.g., gone branches
                 // found after fetch completes while TUI is already running).
@@ -452,6 +453,7 @@ impl TuiState {
             OperationPhase::Rebase(_) => "rebasing",
             OperationPhase::Push => "pushing",
             OperationPhase::Setup => "setting up",
+            OperationPhase::RemoveRepo => "removing",
         };
         let any_active = self.live.rows.iter().any(
             |w| matches!(&w.status, WorktreeStatus::Active(label) if label == phase_active_label),
@@ -509,6 +511,12 @@ impl TuiState {
                     TaskMessage::BaseCreated => FinalStatus::Updated,
                     TaskMessage::NotFound => FinalStatus::Skipped,
                     _ => FinalStatus::Updated,
+                },
+                OperationPhase::RemoveRepo => match message {
+                    TaskMessage::Removed | TaskMessage::Deferred => FinalStatus::Pruned,
+                    TaskMessage::SkippedDirty => FinalStatus::Dirty,
+                    TaskMessage::NoActionNeeded => FinalStatus::UpToDate,
+                    _ => FinalStatus::UpToDate,
                 },
             },
             TaskStatus::PreconditionFailed => FinalStatus::Skipped,
