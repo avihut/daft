@@ -74,7 +74,7 @@ git = ">= 2.5"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive", "cargo"] }
-clap_complete = "4.5"
+clap_complete = "4.6"
 anyhow = "1.0"
 dirs = "6.0"
 which = "8.0"
@@ -86,8 +86,8 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 termimad = "0.34"
-version-migrate = "0.18"
-gix = { version = "0.82", default-features = false, features = [
+version-migrate = "0.20"
+gix = { version = "0.83", default-features = false, features = [
     "blocking-network-client",
     "blocking-http-transport-reqwest-rust-tls",
     "status",
