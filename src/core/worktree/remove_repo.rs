@@ -6,6 +6,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 
+pub use crate::core::worktree::prune::WorktreeEntry;
+
 /// Identity of a repo to be removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoTarget {
@@ -60,6 +62,90 @@ pub fn resolve_repo(path: Option<&Path>) -> Result<RepoTarget> {
     })
 }
 
+/// Enumerate the checked-out worktrees of `target`.
+///
+/// Runs `git --git-dir <bare> worktree list --porcelain` and filters out the
+/// bare entry. Operates by `--git-dir` rather than cwd so the call still works
+/// when the current working directory is being removed.
+pub fn enumerate_worktrees(target: &RepoTarget) -> Result<Vec<WorktreeEntry>> {
+    let output = std::process::Command::new("git")
+        .arg("--git-dir")
+        .arg(&target.bare_git_dir)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .context("git worktree list failed")?;
+    if !output.status.success() {
+        bail!(
+            "git worktree list exited {}",
+            output.status.code().unwrap_or(-1)
+        );
+    }
+    let stdout = String::from_utf8(output.stdout).context("worktree-list output not UTF-8")?;
+    Ok(parse_worktree_list_porcelain(&stdout))
+}
+
+/// Parse the porcelain output of `git worktree list --porcelain`, dropping the
+/// bare entry. Pure-string helper so it can be unit-tested without spawning
+/// git.
+fn parse_worktree_list_porcelain(stdout: &str) -> Vec<WorktreeEntry> {
+    let mut out = Vec::new();
+    let mut path: Option<PathBuf> = None;
+    let mut branch: Option<String> = None;
+    let mut is_bare = false;
+    let mut is_detached = false;
+    for line in stdout.lines() {
+        if line.is_empty() {
+            if let Some(p) = path.take() {
+                if !is_bare {
+                    out.push(WorktreeEntry {
+                        path: p,
+                        branch: branch.take(),
+                        is_bare,
+                        is_detached,
+                    });
+                }
+                branch = None;
+                is_bare = false;
+                is_detached = false;
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            if let Some(p) = path.take() {
+                if !is_bare {
+                    out.push(WorktreeEntry {
+                        path: p,
+                        branch: branch.take(),
+                        is_bare,
+                        is_detached,
+                    });
+                }
+                branch = None;
+                is_bare = false;
+                is_detached = false;
+            }
+            path = Some(PathBuf::from(rest));
+        } else if let Some(rest) = line.strip_prefix("branch refs/heads/") {
+            branch = Some(rest.to_string());
+        } else if line == "bare" {
+            is_bare = true;
+        } else if line == "detached" {
+            is_detached = true;
+        }
+    }
+    if let Some(p) = path {
+        if !is_bare {
+            out.push(WorktreeEntry {
+                path: p,
+                branch,
+                is_bare,
+                is_detached,
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +195,31 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("no such file or directory"), "{err}");
+    }
+
+    #[test]
+    fn enumerate_worktrees_returns_only_main_for_fresh_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        std::fs::write(tmp.path().join("README"), b"hi").unwrap();
+        Command::new("git")
+            .current_dir(tmp.path())
+            .args(["add", "."])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t.com")
+            .args(["commit", "-q", "-m", "init"])
+            .status()
+            .unwrap();
+
+        let target = resolve_repo(Some(tmp.path())).unwrap();
+        let worktrees = enumerate_worktrees(&target).unwrap();
+        assert_eq!(worktrees.len(), 1);
+        assert_eq!(worktrees[0].path, tmp.path().canonicalize().unwrap());
     }
 }
