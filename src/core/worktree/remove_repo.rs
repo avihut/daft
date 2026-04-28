@@ -127,6 +127,44 @@ pub fn remove_worktree_filesystem(
     Ok(RemoveWorktreeOutcome::RemovedViaFallback)
 }
 
+/// Remove the bare git directory for `target`, walk up the parent chain
+/// removing empty parent directories, and clean up the trust DB entry for
+/// this bare path.
+///
+/// The empty-parent walk is best-effort: it stops at the first non-empty
+/// directory so user data outside the repo is never touched. Trust DB
+/// cleanup is also best-effort — failures to load or save the database are
+/// swallowed because the repo is already gone at that point.
+pub fn remove_bare_directory(target: &RepoTarget) -> Result<()> {
+    if target.bare_git_dir.exists() {
+        std::fs::remove_dir_all(&target.bare_git_dir)
+            .with_context(|| format!("rm -rf {} failed", target.bare_git_dir.display()))?;
+    }
+    let mut cursor = target.project_root.clone();
+    while cursor.exists() {
+        let mut iter = match std::fs::read_dir(&cursor) {
+            Ok(it) => it,
+            Err(_) => break,
+        };
+        if iter.next().is_some() {
+            break;
+        }
+        if std::fs::remove_dir(&cursor).is_err() {
+            break;
+        }
+        match cursor.parent() {
+            Some(p) => cursor = p.to_path_buf(),
+            None => break,
+        }
+    }
+    // Drop trust DB entry. Best-effort.
+    if let Ok(mut db) = crate::hooks::TrustDatabase::load() {
+        db.reset_repo(&target.bare_git_dir);
+        let _ = db.save();
+    }
+    Ok(())
+}
+
 /// Parse the porcelain output of `git worktree list --porcelain`, dropping the
 /// bare entry. Pure-string helper so it can be unit-tested without spawning
 /// git.
@@ -270,6 +308,62 @@ mod tests {
         let worktrees = enumerate_worktrees(&target).unwrap();
         assert_eq!(worktrees.len(), 1);
         assert_eq!(worktrees[0].path, tmp.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn remove_bare_directory_deletes_bare_and_empty_parents() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Sentinel so the walk-up has a non-empty floor at tmp.path() — the
+        // spec walks past empty parents (e.g. nested `.worktrees` layouts), so
+        // we have to give it something to stop on or it would consume tmp too.
+        std::fs::write(tmp.path().join("keep-me"), b"sibling").unwrap();
+        let project = tmp.path().join("myrepo");
+        std::fs::create_dir_all(&project).unwrap();
+        Command::new("git")
+            .arg("init")
+            .arg("--bare")
+            .arg("-q")
+            .arg(project.join(".git"))
+            .status()
+            .unwrap();
+        let bare = project.join(".git");
+        assert!(bare.exists());
+
+        let target = RepoTarget {
+            bare_git_dir: bare.clone(),
+            project_root: project.clone(),
+        };
+        remove_bare_directory(&target).unwrap();
+        assert!(!bare.exists(), "bare dir should be gone");
+        assert!(!project.exists(), "empty project root should be cleaned up");
+        assert!(tmp.path().exists());
+    }
+
+    #[test]
+    fn remove_bare_directory_leaves_non_empty_parent_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("myrepo");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("README"), b"hi").unwrap();
+        Command::new("git")
+            .arg("init")
+            .arg("--bare")
+            .arg("-q")
+            .arg(project.join(".git"))
+            .status()
+            .unwrap();
+        let bare = project.join(".git");
+
+        let target = RepoTarget {
+            bare_git_dir: bare.clone(),
+            project_root: project.clone(),
+        };
+        remove_bare_directory(&target).unwrap();
+        assert!(!bare.exists());
+        assert!(
+            project.exists(),
+            "non-empty project root must not be removed"
+        );
     }
 
     #[test]
