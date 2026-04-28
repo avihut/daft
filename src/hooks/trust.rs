@@ -439,10 +439,12 @@ impl TrustDatabase {
 
     /// Reset all per-repo settings to defaults (trust, layout, and any future
     /// fields). Use when a repo is re-cloned and stale config should not carry
-    /// over.
-    pub fn reset_repo(&mut self, git_dir: &Path) {
-        self.remove_trust(git_dir);
-        self.remove_layout(git_dir);
+    /// over. Returns `true` if any entry was actually removed.
+    pub fn reset_repo(&mut self, git_dir: &Path) -> bool {
+        // Bind both results before the `||` so neither call short-circuits.
+        let removed_trust = self.remove_trust(git_dir);
+        let removed_layout = self.remove_layout(git_dir);
+        removed_trust || removed_layout
     }
 
     /// Add a pattern-based trust rule.
@@ -706,6 +708,25 @@ mod tests {
         // Remove trust
         assert!(db.remove_trust(git_dir));
         assert_eq!(db.get_trust_level(git_dir), TrustLevel::Deny);
+    }
+
+    #[test]
+    fn reset_repo_returns_true_only_when_something_is_removed() {
+        let mut db = TrustDatabase::default();
+        let git_dir = Path::new("/path/to/missing/.git");
+
+        // No entries → nothing to remove.
+        assert!(!db.reset_repo(git_dir), "no entries → returns false");
+
+        // A trust entry alone → reset reports a removal.
+        db.set_trust_level(git_dir, TrustLevel::Allow);
+        assert!(db.reset_repo(git_dir), "with a trust entry → returns true");
+        assert!(!db.reset_repo(git_dir), "after reset → returns false again");
+
+        // A layout entry alone → reset reports a removal.
+        db.set_layout(git_dir, "sibling".to_string());
+        assert!(db.reset_repo(git_dir), "with a layout entry → returns true");
+        assert!(!db.reset_repo(git_dir), "after reset → returns false again");
     }
 
     #[test]
