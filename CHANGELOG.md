@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.0](https://github.com/avihut/daft/compare/v1.9.1...v2.0.0) - 2026-04-28
+
+### Features
+
+- *(hooks)* [**breaking**] background hook jobs + universal logging + daft hooks jobs CLI ([#411](https://github.com/avihut/daft/pull/411))
+
 ## [1.9.1](https://github.com/avihut/daft/compare/v1.9.0...v1.9.1) - 2026-04-27
 
 ### Bug Fixes
