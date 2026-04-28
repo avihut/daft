@@ -43,6 +43,9 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "worktree-sync",
 ];
 
+/// All subcommands available via `daft repo <verb>`.
+pub const DAFT_REPO_SUBCOMMANDS: &[&str] = &["remove"];
+
 /// Compute Levenshtein edit distance between two strings.
 fn levenshtein_distance(a: &str, b: &str) -> usize {
     let a_len = a.len();

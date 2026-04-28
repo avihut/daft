@@ -23,6 +23,7 @@ pub mod list_live;
 pub mod multi_remote;
 pub mod prune;
 pub mod release_notes;
+pub mod repo;
 pub mod setup;
 pub mod shared;
 pub mod shell_init;
