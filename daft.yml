@@ -42,6 +42,10 @@ hooks:
       - name: bun install
         run: bun install
         needs: [mise install]
+      - name: mise dev
+        run: mise run dev
+        needs: [bun install]
+        background: true
 
   worktree-pre-remove:
     jobs:
