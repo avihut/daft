@@ -1,0 +1,39 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-daft-repo-remove 1  "git-daft-repo-remove 1.10.1" 
+.SH NAME
+git\-daft\-repo\-remove \- Remove a Git repository and all its worktrees
+.SH SYNOPSIS
+\fBgit\-daft\-repo\-remove\fR [\fB\-y\fR|\fB\-\-force\fR] [\fB\-\-dry\-run\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIPATH\fR] 
+.SH DESCRIPTION
+.PP
+Removes a Git repository identified by <path> (or the current directory if no
+path is given), including the bare git directory and every checked\-out
+worktree. For each worktree, the worktree\-pre\-remove and worktree\-post\-remove
+lifecycle hooks are run when the repository is daft\-managed and trusted.
+.PP
+Hook failures do not abort removal; failed hooks are summarized after the
+operation completes. The repo is removed regardless.
+.PP
+Refuses to operate on paths that are not inside a Git repository.
+.SH OPTIONS
+.TP
+\fB\-y\fR, \fB\-\-force\fR
+Skip the confirmation prompt
+.TP
+\fB\-\-dry\-run\fR
+Print what would be removed without touching anything
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Increase verbosity (\-v hook details, \-vv full sequential output)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+[\fIPATH\fR]
+Path to the repo or any directory inside it (default: cwd)
+.SH VERSION
+v1.10.1
