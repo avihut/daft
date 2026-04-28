@@ -28,6 +28,7 @@ pub mod previous;
 pub mod prune;
 pub mod push;
 pub mod rebase;
+pub mod remove_repo;
 pub mod rename;
 pub mod sync_dag;
 pub mod temp_worktree;
