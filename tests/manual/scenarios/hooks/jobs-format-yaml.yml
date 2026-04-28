@@ -1,0 +1,50 @@
+name: Hooks jobs list YAML format
+description: daft hooks jobs --format yaml emits a YAML list of job maps
+
+repos:
+  - name: test-jobs-fmt-yaml
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Jobs format yaml"
+        commits:
+          - message: "Initial commit"
+      - name: feature/fmt-yaml
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: greet
+              run: echo hi
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_JOBS_FMT_YAML
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-yaml/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout branch to trigger hook
+    run: git-worktree-checkout feature/fmt-yaml 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-yaml/main"
+    expect:
+      exit_code: 0
+
+  - name: YAML output has expected keys
+    run: daft hooks jobs --format yaml 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-yaml/feature/fmt-yaml"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "name: greet"
+        - "status: completed"
+        - "hook_type: worktree-post-create"
+        - "invocation_id:"

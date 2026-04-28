@@ -1,6 +1,6 @@
 //! Rich (indicatif) renderer for interactive terminals.
 
-use super::formatting::{DARK_GREY, ITALIC, ORANGE};
+use super::formatting::{BLUE, DARK_GREY, ITALIC, ORANGE};
 use super::{JobOutcome, JobResultEntry};
 use crate::settings::HookOutputConfig;
 use crate::styles;
@@ -498,6 +498,47 @@ impl HookProgressRenderer {
         ) {
             self.mp.println(line).ok();
         }
+    }
+
+    /// Add a pre-built result entry (e.g., for background jobs).
+    pub fn push_finished_job(&mut self, entry: JobResultEntry) {
+        self.finished_jobs.push(entry);
+    }
+
+    /// Show a background job dispatch in the live progress area.
+    ///
+    /// Uses `mp.println()` for permanent output (same as `finish_job`),
+    /// so lines survive MultiProgress redraws and appear reliably.
+    pub fn show_background_job(&self, name: &str, description: Option<&str>) {
+        let cyan = "\x1b[38;5;80m";
+
+        let blue_pipe = if self.use_color {
+            format!("{BLUE}\u{2503}{}", styles::RESET)
+        } else {
+            "\u{2503}".to_string()
+        };
+
+        let name_line = if self.use_color {
+            format!(
+                "{blue_pipe}  {BLUE}{name}{} {cyan}(background){}",
+                styles::RESET,
+                styles::RESET
+            )
+        } else {
+            format!("{blue_pipe}  {name} (background)")
+        };
+        self.mp.println(name_line).ok();
+
+        if let Some(desc) = description {
+            let desc_line = if self.use_color {
+                format!("{blue_pipe}  {DARK_GREY}{desc}{}", styles::RESET)
+            } else {
+                format!("{blue_pipe}  {desc}")
+            };
+            self.mp.println(desc_line).ok();
+        }
+
+        self.mp.println(String::new()).ok();
     }
 
     /// Extract finished job results (for use in callers that need them).

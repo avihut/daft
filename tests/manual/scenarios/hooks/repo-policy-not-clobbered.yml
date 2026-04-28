@@ -1,0 +1,111 @@
+name: repo-policy.json is not clobbered by a hook fire that omits the log block
+description:
+  "Regression for Task 8 / Bug 3: `write_repo_policy` field-merges with the
+  on-disk values, so a subsequent hook fire that produces an all-None policy (no
+  top-level `log:` block, no per-job log_config) must not silently wipe the
+  previously persisted tuning. The pre-fix bug overwrote the sidecar with
+  defaults on every fire, losing the user's max_total_size/keep_last settings.
+  Verifies by: (1) firing post-create with a daft.yml containing top-level log:
+  {max_total_size: 100MB, keep_last: 5} → policy persisted; (2) editing daft.yml
+  in place to remove the log block; (3) re-firing post-create via `daft hooks
+  run`; (4) asserting repo-policy.json STILL has 100MB / 5."
+
+env:
+  # Suppress the autospawned cleanup pipeline so any stray policy reads/writes
+  # from an unrelated path don't muddy the sidecar.
+  DAFT_NO_LOG_CLEAN: "1"
+
+repos:
+  - name: test-repo-policy-noclobber
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Repo policy no-clobber"
+        commits:
+          - message: "Initial commit"
+      - name: feature/x
+        from: main
+    daft_yml: |
+      log:
+        max_total_size: 100MB
+        keep_last: 5
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: hello
+              run: echo hi
+
+steps:
+  - name: Clone the repository with --trust-hooks
+    run:
+      env -u DAFT_TESTING git-worktree-clone --trust-hooks --layout contained
+      $REMOTE_TEST_REPO_POLICY_NOCLOBBER 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature/x — first fire writes the log defaults to the sidecar
+    run: env -u DAFT_TESTING git-worktree-checkout feature/x 2>&1
+    cwd: "$WORK_DIR/test-repo-policy-noclobber/main"
+    expect:
+      exit_code: 0
+
+  - name: Confirm the first fire persisted max_total_size=100MB and keep_last=5
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-repo-policy-noclobber/.git/daft-id")
+      POLICY="$HOME/.local/state/daft/jobs/$REPO_ID/repo-policy.json"
+      [ -f "$POLICY" ] || { echo "policy missing"; exit 1; }
+      cat "$POLICY"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"max_total_size_bytes": 104857600'
+        - '"keep_last": 5'
+
+  - name:
+      "Rewrite daft.yml on feature/x to remove the top-level log block (the hook
+      stays — next fire produces an all-None policy)"
+    run: |
+      cat > daft.yml <<'YML'
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: hello
+              run: echo hi
+      YML
+      echo "REWROTE_DAFT_YML"
+      cat daft.yml
+    cwd: "$WORK_DIR/test-repo-policy-noclobber/feature/x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "REWROTE_DAFT_YML"
+
+  - name:
+      Re-fire worktree-post-create via `daft hooks run`. With the log block
+      gone, this fire's build_repo_policy returns all-None — but the field-merge
+      in write_repo_policy must preserve the on-disk tuning.
+    run: daft hooks run worktree-post-create 2>&1
+    cwd: "$WORK_DIR/test-repo-policy-noclobber/feature/x"
+    expect:
+      exit_code: 0
+
+  - name:
+      repo-policy.json must STILL contain max_total_size=100MB and keep_last=5 —
+      the unset fields were preserved, not clobbered to None.
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-repo-policy-noclobber/.git/daft-id")
+      POLICY="$HOME/.local/state/daft/jobs/$REPO_ID/repo-policy.json"
+      echo "----- repo-policy.json AFTER second fire -----"
+      cat "$POLICY"
+      echo
+      echo "-----------------------------------------------"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"max_total_size_bytes": 104857600'
+        - '"keep_last": 5'
+      output_not_contains:
+        - '"max_total_size_bytes": null'
+        - '"keep_last": null'

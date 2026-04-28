@@ -13,6 +13,7 @@ pub(super) const YELLOW: &str = "\x1b[38;5;220m";
 pub(super) const GREY: &str = "\x1b[38;5;245m";
 pub(super) const BRIGHT_WHITE: &str = "\x1b[97m";
 pub(super) const DARK_GREY: &str = "\x1b[38;5;240m";
+pub(super) const BLUE: &str = "\x1b[38;5;75m";
 pub(super) const ITALIC: &str = "\x1b[3m";
 
 /// Default name-column width used when no target list is available to compute
@@ -107,6 +108,17 @@ pub(super) fn format_summary_lines(
                         lines.push(format!("{YELLOW}  \u{2298} {}{}", job.name, styles::RESET));
                     }
                 }
+                JobOutcome::Background { description } => {
+                    let desc = description
+                        .as_deref()
+                        .map(|d| format!(" {GREY}\u{2014} {d}{}", styles::RESET))
+                        .unwrap_or_default();
+                    lines.push(format!(
+                        "{BLUE}  \u{21BB} {} {GREY}(background){}{desc}",
+                        job.name,
+                        styles::RESET
+                    ));
+                }
             }
         }
     } else {
@@ -129,6 +141,13 @@ pub(super) fn format_summary_lines(
                     } else {
                         lines.push(format!("  \u{2298} {}", job.name));
                     }
+                }
+                JobOutcome::Background { description } => {
+                    let desc = description
+                        .as_deref()
+                        .map(|d| format!(" \u{2014} {d}"))
+                        .unwrap_or_default();
+                    lines.push(format!("  \u{21BB} {} (background){desc}", job.name));
                 }
             }
         }

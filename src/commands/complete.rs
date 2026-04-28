@@ -163,6 +163,24 @@ fn complete(
         // shared-worktrees: complete worktree directory names
         ("shared-worktrees", _) => complete_worktree_names(word),
 
+        // hooks jobs: complete job addresses (names, invocation IDs, composite).
+        // Entries are KIND-tagged and pre-padded by `format_section_rows`; the
+        // zsh wrapper splits by KIND and emits one `compadd -V` per group so
+        // categories cluster (job names, then invocations, then worktrees).
+        // No cross-section value alignment needed — each group has its own.
+        ("hooks-jobs-job", 1) => complete_job_addresses(word),
+
+        // hooks jobs retry: complete retry targets (hook types, invocation IDs, job names with failures)
+        ("hooks-jobs-retry", 1) => complete_retry_targets(word).map(align_completion_columns),
+
+        ("hooks-jobs-retry-worktree", 1) => {
+            complete_retry_worktrees(word).map(align_completion_columns)
+        }
+        ("hooks-jobs-worktree", 1) => {
+            complete_listing_worktrees(word).map(align_completion_columns)
+        }
+        ("hooks-jobs-hook-filter", 1) => complete_hook_types(word).map(align_completion_columns),
+
         // Default: no completions
         _ => Ok(vec![]),
     }
@@ -776,6 +794,573 @@ fn complete_worktree_names(prefix: &str) -> Result<Vec<String>> {
         .collect();
     entries.sort();
     entries.dedup();
+    Ok(entries)
+}
+
+/// Complete job addresses for `hooks jobs logs/cancel/retry`.
+///
+/// Supports three levels of colon-separated addressing:
+/// - `name` or `abcd` (0 colons): job names from latest invocation + short IDs
+/// - `abcd:name` (1 colon): jobs within a specific invocation OR invocations for a worktree
+/// - `worktree:abcd:name` (2 colons): jobs within a specific worktree+invocation
+fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
+    use crate::coordinator::log_store::LogStore;
+
+    let repo_hash = match crate::core::repo_identity::compute_repo_id() {
+        Ok(h) => h,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let store = match LogStore::for_repo(&repo_hash) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
+    let now = chrono::Utc::now();
+
+    let colon_count = prefix.matches(':').count();
+
+    match colon_count {
+        0 => {
+            // First level: job names from latest invocation + invocation short IDs
+            let invocations = store
+                .list_invocations_for_worktree(&current_worktree)
+                .unwrap_or_default();
+            let mut entries = Vec::new();
+
+            // Job names from the latest invocation
+            let mut job_rows: Vec<(String, Vec<String>)> = Vec::new();
+            if let Some(latest) = invocations.last() {
+                let job_dirs = store
+                    .list_jobs_in_invocation(&latest.invocation_id)
+                    .unwrap_or_default();
+                for dir in &job_dirs {
+                    if let Ok(meta) = store.read_meta(dir) {
+                        if meta.name.starts_with(prefix) {
+                            let short_id =
+                                &latest.invocation_id[..4.min(latest.invocation_id.len())];
+                            let ago = crate::output::format::shorthand_from_seconds(
+                                now.signed_duration_since(latest.created_at).num_seconds(),
+                            );
+                            job_rows.push((
+                                meta.name.clone(),
+                                vec![
+                                    job_status_icon(&meta.status).to_string(),
+                                    format!("-- {ago} ago"),
+                                    format!("[{short_id}]"),
+                                ],
+                            ));
+                        }
+                    }
+                }
+            }
+            entries.extend(format_section_rows("JOB", job_rows));
+
+            // Invocation short IDs
+            let mut inv_rows: Vec<(String, Vec<String>)> = Vec::new();
+            for inv in &invocations {
+                let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+                if short_id.starts_with(prefix) {
+                    let ago = crate::output::format::shorthand_from_seconds(
+                        now.signed_duration_since(inv.created_at).num_seconds(),
+                    );
+                    let job_count = store
+                        .list_jobs_in_invocation(&inv.invocation_id)
+                        .map(|d| d.len())
+                        .unwrap_or(0);
+                    inv_rows.push((
+                        short_id.to_string(),
+                        vec![
+                            inv.trigger_command.clone(),
+                            format!("-- {ago} ago"),
+                            format!("({job_count} job{})", if job_count == 1 { "" } else { "s" }),
+                        ],
+                    ));
+                }
+            }
+            entries.extend(format_section_rows("INV", inv_rows));
+
+            // Worktree-name drill-down candidates. The current worktree's
+            // invocations are already shown above as bare short IDs, so
+            // skip it here to avoid noise. The trailing `:` lets the user
+            // chain straight into the colon_count==1 branch (which handles
+            // `feature:1f2b` → invocation IDs under that worktree).
+            let all_invocations = store.list_invocations().unwrap_or_default();
+            let worktrees = store.list_distinct_worktrees().unwrap_or_default();
+            entries.extend(worktree_drilldown_entries(
+                &all_invocations,
+                &worktrees,
+                &current_worktree,
+                prefix,
+                now,
+            ));
+
+            Ok(entries)
+        }
+        1 => {
+            // After one colon: try as inv:job, then as worktree:inv
+            let (before, after) = prefix.split_once(':').unwrap_or(("", ""));
+
+            let invocations = store
+                .list_invocations_for_worktree(&current_worktree)
+                .unwrap_or_default();
+            let matching: Vec<_> = invocations
+                .iter()
+                .filter(|inv| inv.invocation_id.starts_with(before))
+                .collect();
+
+            if matching.len() == 1 {
+                // inv:job completions
+                let inv = matching[0];
+                let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+                let job_dirs = store
+                    .list_jobs_in_invocation(&inv.invocation_id)
+                    .unwrap_or_default();
+                let mut rows: Vec<(String, Vec<String>)> = Vec::new();
+                for dir in &job_dirs {
+                    if let Ok(meta) = store.read_meta(dir) {
+                        if meta.name.starts_with(after) {
+                            rows.push((
+                                format!("{short_id}:{}", meta.name),
+                                vec![job_status_icon(&meta.status).to_string()],
+                            ));
+                        }
+                    }
+                }
+                return Ok(format_section_rows("JOB", rows));
+            }
+
+            // Try as worktree: prefix
+            let wt_invocations = store
+                .list_invocations_for_worktree(before)
+                .unwrap_or_default();
+            let mut rows: Vec<(String, Vec<String>)> = Vec::new();
+            for inv in &wt_invocations {
+                let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+                if short_id.starts_with(after) {
+                    let ago = crate::output::format::shorthand_from_seconds(
+                        now.signed_duration_since(inv.created_at).num_seconds(),
+                    );
+                    rows.push((
+                        format!("{before}:{short_id}"),
+                        vec![inv.trigger_command.clone(), format!("-- {ago} ago")],
+                    ));
+                }
+            }
+            Ok(format_section_rows("INV", rows))
+        }
+        2 => {
+            // worktree:inv:job
+            let parts: Vec<&str> = prefix.rsplitn(3, ':').collect();
+            let (job_prefix, inv_prefix, wt) = (parts[0], parts[1], parts[2]);
+            let invocations = store.list_invocations_for_worktree(wt).unwrap_or_default();
+            let matching: Vec<_> = invocations
+                .iter()
+                .filter(|inv| inv.invocation_id.starts_with(inv_prefix))
+                .collect();
+
+            if matching.len() != 1 {
+                return Ok(vec![]);
+            }
+            let inv = matching[0];
+            let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+            let job_dirs = store
+                .list_jobs_in_invocation(&inv.invocation_id)
+                .unwrap_or_default();
+            let mut rows: Vec<(String, Vec<String>)> = Vec::new();
+            for dir in &job_dirs {
+                if let Ok(meta) = store.read_meta(dir) {
+                    if meta.name.starts_with(job_prefix) {
+                        rows.push((
+                            format!("{wt}:{short_id}:{}", meta.name),
+                            vec![job_status_icon(&meta.status).to_string()],
+                        ));
+                    }
+                }
+            }
+            Ok(format_section_rows("JOB", rows))
+        }
+        _ => Ok(vec![]),
+    }
+}
+
+/// Build worktree-drill-down entries for the colon_count==0 branch of
+/// `hooks-jobs-job` completion. Pure helper extracted for unit testing —
+/// `complete_job_addresses` itself depends on global repo state.
+///
+/// Emits one `<wt>:\tworktree\t<count>, <ago>` entry per distinct worktree
+/// that (a) is not the current worktree, (b) starts with `prefix`. The
+/// trailing colon lets the shell hand off to the colon_count==1 branch
+/// once the user accepts the candidate.
+fn worktree_drilldown_entries(
+    invocations: &[crate::coordinator::log_store::InvocationMeta],
+    distinct_worktrees: &[String],
+    current_worktree: &str,
+    prefix: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<String> {
+    let mut rows: Vec<(String, Vec<String>)> = Vec::new();
+    for wt in distinct_worktrees {
+        if wt == current_worktree {
+            continue;
+        }
+        if !wt.starts_with(prefix) {
+            continue;
+        }
+        let wt_invs: Vec<_> = invocations.iter().filter(|i| i.worktree == *wt).collect();
+        let inv_count = wt_invs.len();
+        let latest = wt_invs.iter().map(|i| i.created_at).max();
+        let ago = latest
+            .map(|t| {
+                crate::output::format::shorthand_from_seconds(
+                    now.signed_duration_since(t).num_seconds(),
+                )
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        rows.push((
+            format!("{wt}:"),
+            vec![
+                "worktree".to_string(),
+                format!(
+                    "{inv_count} invocation{}, {ago} ago",
+                    if inv_count == 1 { "" } else { "s" },
+                ),
+            ],
+        ));
+    }
+    format_section_rows("WT", rows)
+}
+
+/// Map a `JobStatus` to its display icon + label as used in completion
+/// menu descriptions. The same mapping appears in three colon-count
+/// branches of `complete_job_addresses` plus `complete_retry_targets`,
+/// so it's centralized here.
+fn job_status_icon(status: &crate::coordinator::log_store::JobStatus) -> &'static str {
+    use crate::coordinator::log_store::JobStatus;
+    match status {
+        JobStatus::Completed => "\u{2713} completed",
+        JobStatus::Failed => "\u{2717} failed",
+        JobStatus::Running => "\u{27f3} running",
+        JobStatus::Cancelled => "\u{2014} cancelled",
+        JobStatus::Skipped => "\u{2014} skipped",
+    }
+}
+
+/// Format a completion section as `KIND\t<value>\t<display>` lines.
+///
+/// `kind` is a short tag (e.g. `JOB`, `INV`, `WT`) the zsh wrapper uses
+/// to bucket entries into separate `compadd -V <kind>` groups so they
+/// cluster instead of intermixing alphabetically. `<value>` is the bare
+/// token inserted on accept; `<display>` is the fully formatted line
+/// shown in the menu, with the value padded to the section-wide max
+/// width plus per-cell padding so columns align within the group.
+///
+/// Bash users see only `<value>` (its wrapper drops the KIND prefix);
+/// fish completions register flags declaratively and bypass this path.
+///
+/// `visible_width` is used so multi-byte status icons (`✓`, `✗`, `⟳`)
+/// and any future ANSI in cell content size correctly.
+fn format_section_rows(kind: &str, rows: Vec<(String, Vec<String>)>) -> Vec<String> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let max_value_width = rows
+        .iter()
+        .map(|(v, _)| crate::output::format::visible_width(v))
+        .max()
+        .unwrap_or(0);
+    let n_cells = rows.iter().map(|(_, c)| c.len()).max().unwrap_or(0);
+    let mut max_cell_widths = vec![0usize; n_cells];
+    for (_, cells) in &rows {
+        for (i, cell) in cells.iter().enumerate() {
+            let w = crate::output::format::visible_width(cell);
+            if w > max_cell_widths[i] {
+                max_cell_widths[i] = w;
+            }
+        }
+    }
+    rows.into_iter()
+        .map(|(value, cells)| {
+            let value_pad =
+                max_value_width.saturating_sub(crate::output::format::visible_width(&value));
+            let padded_value = format!("{value}{}", " ".repeat(value_pad));
+            let padded_cells: Vec<String> = cells
+                .iter()
+                .enumerate()
+                .map(|(i, cell)| {
+                    let w = crate::output::format::visible_width(cell);
+                    let pad = max_cell_widths[i].saturating_sub(w);
+                    format!("{cell}{}", " ".repeat(pad))
+                })
+                .collect();
+            let display = format!("{padded_value}  {}", padded_cells.join(" "));
+            format!("{kind}\t{value}\t{display}")
+        })
+        .collect()
+}
+
+/// Pad the value column of `<value>\t<description>`-shaped completion
+/// entries so the description column starts at the same x position
+/// regardless of value width. The zsh wrapper replaces `\t` with two
+/// spaces and emits the descriptions verbatim, so without this the menu
+/// shows ragged columns. Bash users see the value-only candidates and
+/// are unaffected; entries that don't carry a `\t` pass through.
+fn align_completion_columns(entries: Vec<String>) -> Vec<String> {
+    let max_value_width = entries
+        .iter()
+        .filter_map(|e| {
+            e.split_once('\t')
+                .map(|(v, _)| crate::output::format::visible_width(v))
+        })
+        .max()
+        .unwrap_or(0);
+
+    entries
+        .into_iter()
+        .map(|e| match e.split_once('\t') {
+            Some((value, rest)) => {
+                let pad =
+                    max_value_width.saturating_sub(crate::output::format::visible_width(value));
+                let padding = " ".repeat(pad);
+                format!("{value}\t{padding}{rest}")
+            }
+            None => e,
+        })
+        .collect()
+}
+
+/// Complete retry targets for `hooks jobs retry <TAB>`.
+///
+/// Offers three categories of completions filtered to things that actually have
+/// failed or cancelled jobs:
+/// - Hook types with failures
+/// - Invocation short IDs with failures
+/// - Job names from the most recent failing invocation
+fn complete_retry_targets(prefix: &str) -> Result<Vec<String>> {
+    use crate::coordinator::log_store::{JobStatus, LogStore};
+
+    let repo_hash = match crate::core::repo_identity::compute_repo_id() {
+        Ok(h) => h,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let store = match LogStore::for_repo(&repo_hash) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
+    let now = chrono::Utc::now();
+    let invocations = store
+        .list_invocations_for_worktree(&current_worktree)
+        .unwrap_or_default();
+
+    let mut entries = Vec::new();
+
+    // 1. Hook types with failures
+    let mut hooks_with_failures: std::collections::HashMap<String, (usize, usize)> =
+        std::collections::HashMap::new();
+    for inv in &invocations {
+        let job_dirs = store
+            .list_jobs_in_invocation(&inv.invocation_id)
+            .unwrap_or_default();
+        let failed_count = job_dirs
+            .iter()
+            .filter_map(|d| store.read_meta(d).ok())
+            .filter(|m| matches!(m.status, JobStatus::Failed | JobStatus::Cancelled))
+            .count();
+        if failed_count > 0 {
+            let entry = hooks_with_failures
+                .entry(inv.hook_type.clone())
+                .or_insert((0, 0));
+            entry.0 += failed_count;
+            entry.1 += 1;
+        }
+    }
+    for (hook, (failed, inv_count)) in &hooks_with_failures {
+        if hook.starts_with(prefix) {
+            entries.push(format!(
+                "{hook}\thook -- {failed} failed across {inv_count} invocation{}",
+                if *inv_count == 1 { "" } else { "s" },
+            ));
+        }
+    }
+
+    // 2. Invocation short IDs with failures
+    for inv in &invocations {
+        let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+        if !short_id.starts_with(prefix) {
+            continue;
+        }
+        let job_dirs = store
+            .list_jobs_in_invocation(&inv.invocation_id)
+            .unwrap_or_default();
+        let failed_count = job_dirs
+            .iter()
+            .filter_map(|d| store.read_meta(d).ok())
+            .filter(|m| matches!(m.status, JobStatus::Failed | JobStatus::Cancelled))
+            .count();
+        if failed_count > 0 {
+            let ago = crate::output::format::shorthand_from_seconds(
+                now.signed_duration_since(inv.created_at).num_seconds(),
+            );
+            entries.push(format!(
+                "{short_id}\tinvocation -- {}, {failed_count} failed, {ago} ago",
+                inv.trigger_command,
+            ));
+        }
+    }
+
+    // 3. Job names from latest invocation with failures
+    for inv in invocations.iter().rev() {
+        let job_dirs = store
+            .list_jobs_in_invocation(&inv.invocation_id)
+            .unwrap_or_default();
+        let failed_jobs: Vec<_> = job_dirs
+            .iter()
+            .filter_map(|d| store.read_meta(d).ok())
+            .filter(|m| matches!(m.status, JobStatus::Failed | JobStatus::Cancelled))
+            .collect();
+        if !failed_jobs.is_empty() {
+            let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
+            let ago = crate::output::format::shorthand_from_seconds(
+                now.signed_duration_since(inv.created_at).num_seconds(),
+            );
+            for meta in &failed_jobs {
+                if meta.name.starts_with(prefix) {
+                    entries.push(format!(
+                        "{}\tjob -- failed in {short_id}, {ago} ago",
+                        meta.name,
+                    ));
+                }
+            }
+            break;
+        }
+    }
+
+    Ok(entries)
+}
+
+fn complete_retry_worktrees(prefix: &str) -> Result<Vec<String>> {
+    use crate::coordinator::log_store::{JobStatus, LogStore};
+
+    let repo_hash = match crate::core::repo_identity::compute_repo_id() {
+        Ok(h) => h,
+        Err(_) => return Ok(vec![]),
+    };
+    let store = match LogStore::for_repo(&repo_hash) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let now = chrono::Utc::now();
+    let invocations = store.list_invocations().unwrap_or_default();
+
+    let mut worktree_stats: std::collections::HashMap<
+        String,
+        (usize, chrono::DateTime<chrono::Utc>),
+    > = std::collections::HashMap::new();
+    for inv in &invocations {
+        let job_dirs = store
+            .list_jobs_in_invocation(&inv.invocation_id)
+            .unwrap_or_default();
+        let failed = job_dirs
+            .iter()
+            .filter_map(|d| store.read_meta(d).ok())
+            .filter(|m| matches!(m.status, JobStatus::Failed | JobStatus::Cancelled))
+            .count();
+        let entry = worktree_stats
+            .entry(inv.worktree.clone())
+            .or_insert((0, inv.created_at));
+        entry.0 += failed;
+        if inv.created_at > entry.1 {
+            entry.1 = inv.created_at;
+        }
+    }
+
+    let mut entries = Vec::new();
+    for (wt, (failed, latest)) in &worktree_stats {
+        if *failed == 0 {
+            continue;
+        }
+        if wt.starts_with(prefix) {
+            let ago = crate::output::format::shorthand_from_seconds(
+                now.signed_duration_since(*latest).num_seconds(),
+            );
+            entries.push(format!("{wt}\tworktree\t{failed} failed, {ago} ago"));
+        }
+    }
+    Ok(entries)
+}
+
+fn complete_listing_worktrees(prefix: &str) -> Result<Vec<String>> {
+    use crate::coordinator::log_store::LogStore;
+
+    let repo_hash = match crate::core::repo_identity::compute_repo_id() {
+        Ok(h) => h,
+        Err(_) => return Ok(vec![]),
+    };
+    let store = match LogStore::for_repo(&repo_hash) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let now = chrono::Utc::now();
+    let invocations = store.list_invocations().unwrap_or_default();
+    let worktrees = store.list_distinct_worktrees().unwrap_or_default();
+
+    let mut entries = Vec::new();
+    for wt in &worktrees {
+        if !wt.starts_with(prefix) {
+            continue;
+        }
+        let wt_invs: Vec<_> = invocations.iter().filter(|i| i.worktree == *wt).collect();
+        let latest = wt_invs.iter().map(|i| i.created_at).max();
+        let ago = latest
+            .map(|t| {
+                crate::output::format::shorthand_from_seconds(
+                    now.signed_duration_since(t).num_seconds(),
+                )
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        let inv_count = wt_invs.len();
+        entries.push(format!(
+            "{wt}\tworktree\t{inv_count} invocation{}, {ago} ago",
+            if inv_count == 1 { "" } else { "s" },
+        ));
+    }
+    Ok(entries)
+}
+
+fn complete_hook_types(prefix: &str) -> Result<Vec<String>> {
+    use crate::coordinator::log_store::LogStore;
+
+    let repo_hash = match crate::core::repo_identity::compute_repo_id() {
+        Ok(h) => h,
+        Err(_) => return Ok(vec![]),
+    };
+    let store = match LogStore::for_repo(&repo_hash) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let invocations = store.list_invocations().unwrap_or_default();
+    let mut hook_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for inv in &invocations {
+        *hook_counts.entry(inv.hook_type.clone()).or_insert(0) += 1;
+    }
+
+    let mut entries = Vec::new();
+    for (hook, count) in &hook_counts {
+        if hook.starts_with(prefix) {
+            entries.push(format!(
+                "{hook}\thook\t{count} invocation{}",
+                if *count == 1 { "" } else { "s" },
+            ));
+        }
+    }
     Ok(entries)
 }
 
@@ -2038,6 +2623,213 @@ mod tests {
         assert_eq!(
             parts[1], "",
             "author should be empty when Author column disabled"
+        );
+    }
+
+    fn inv(
+        id: &str,
+        worktree: &str,
+        ago_secs: i64,
+    ) -> crate::coordinator::log_store::InvocationMeta {
+        let now = chrono::Utc::now();
+        crate::coordinator::log_store::InvocationMeta {
+            invocation_id: id.to_string(),
+            worktree: worktree.to_string(),
+            hook_type: "worktree-post-create".to_string(),
+            trigger_command: "worktree-post-create".to_string(),
+            created_at: now - chrono::Duration::seconds(ago_secs),
+        }
+    }
+
+    #[test]
+    fn worktree_drilldown_skips_current_and_emits_trailing_colon() {
+        let now = chrono::Utc::now();
+        let invocations = vec![
+            inv("1f2b000000000000", "feature", 60),
+            inv("907e000000000000", "master", 120),
+        ];
+        let worktrees = vec!["feature".to_string(), "master".to_string()];
+
+        let entries = worktree_drilldown_entries(&invocations, &worktrees, "master", "", now);
+
+        // `master` is the current worktree → skipped. `feature` emitted with
+        // trailing `:` so the shell can chain into the colon_count==1 branch.
+        // After kind tagging: `WT\tfeature:\t…`.
+        assert_eq!(entries.len(), 1, "got: {entries:?}");
+        assert!(
+            entries[0].starts_with("WT\tfeature:\t"),
+            "expected `WT\\tfeature:\\t…`, got {:?}",
+            entries[0]
+        );
+        assert!(
+            entries[0].contains("worktree"),
+            "expected `worktree` annotation, got {:?}",
+            entries[0]
+        );
+        assert!(
+            entries[0].contains("1 invocation"),
+            "expected invocation count, got {:?}",
+            entries[0]
+        );
+    }
+
+    #[test]
+    fn worktree_drilldown_filters_by_prefix() {
+        let now = chrono::Utc::now();
+        let invocations = vec![
+            inv("aaaa000000000000", "feat-auth", 60),
+            inv("bbbb000000000000", "fix-typo", 60),
+            inv("cccc000000000000", "chore-deps", 60),
+        ];
+        let worktrees = vec![
+            "feat-auth".to_string(),
+            "fix-typo".to_string(),
+            "chore-deps".to_string(),
+        ];
+
+        let entries = worktree_drilldown_entries(&invocations, &worktrees, "master", "f", now);
+        assert_eq!(
+            entries.len(),
+            2,
+            "expected feat-auth + fix-typo, got {entries:?}"
+        );
+        // After kind tagging, entries start with `WT\t<value>\t…`.
+        assert!(entries.iter().any(|e| e.starts_with("WT\tfeat-auth:\t")));
+        assert!(entries.iter().any(|e| e.starts_with("WT\tfix-typo:\t")));
+    }
+
+    #[test]
+    fn format_section_rows_emits_kind_value_display_with_padded_cells() {
+        let rows = vec![
+            (
+                "4eef".to_string(),
+                vec![
+                    "hooks jobs retry".to_string(),
+                    "-- 4h ago".to_string(),
+                    "(3 jobs)".to_string(),
+                ],
+            ),
+            (
+                "907e".to_string(),
+                vec![
+                    "worktree-post-create".to_string(),
+                    "-- 13h ago".to_string(),
+                    "(5 jobs)".to_string(),
+                ],
+            ),
+        ];
+        let out = format_section_rows("INV", rows);
+        assert_eq!(out.len(), 2);
+        // Format: KIND\t<bare-value>\t<padded-display>
+        // Both values are 4 chars → max_value_width=4, no value padding.
+        // Cell 0 max = 20 → "hooks jobs retry" gets 4 trailing spaces.
+        // Cell 1 max = 10 → "-- 4h ago" gets 1 trailing space.
+        // Cell 2 max = 8 (both) → no padding.
+        // Display = "<padded_value>  <cells joined by ' '>" = "4eef  hooks jobs retry     -- 4h ago  (3 jobs)"
+        assert_eq!(
+            out[0],
+            "INV\t4eef\t4eef  hooks jobs retry     -- 4h ago  (3 jobs)"
+        );
+        assert_eq!(
+            out[1],
+            "INV\t907e\t907e  worktree-post-create -- 13h ago (5 jobs)"
+        );
+    }
+
+    #[test]
+    fn format_section_rows_uses_visible_width_for_multibyte_icons() {
+        let rows = vec![
+            (
+                "a".to_string(),
+                vec!["\u{2717} failed".to_string(), "extra".to_string()],
+            ),
+            (
+                "b".to_string(),
+                vec!["\u{2713} completed".to_string(), "extra".to_string()],
+            ),
+        ];
+        let out = format_section_rows("JOB", rows);
+        // Cell 0 max visible width = 11. "✗ failed" (8 visible) → 3 trailing spaces;
+        // plus the 1-space cell joiner = 4 spaces total between "failed" and "extra".
+        assert!(
+            out[0].contains("\u{2717} failed    extra"),
+            "got: {:?}",
+            out[0]
+        );
+        assert!(
+            out[1].contains("\u{2713} completed extra"),
+            "got: {:?}",
+            out[1]
+        );
+    }
+
+    #[test]
+    fn format_section_rows_pads_value_column_within_section() {
+        // Mixed value widths within section: helper pads the value column
+        // (in the display string) to the section-wide max — the bare value
+        // in column 1 stays unpadded so insertion remains clean.
+        let rows = vec![
+            ("a".to_string(), vec!["x".to_string()]),
+            ("longer".to_string(), vec!["x".to_string()]),
+        ];
+        let out = format_section_rows("JOB", rows);
+        // First column unpadded (raw value); display column has padded value.
+        assert_eq!(out[0], "JOB\ta\ta       x");
+        assert_eq!(out[1], "JOB\tlonger\tlonger  x");
+    }
+
+    #[test]
+    fn format_section_rows_empty_input_returns_empty() {
+        assert!(format_section_rows("JOB", vec![]).is_empty());
+    }
+
+    #[test]
+    fn align_completion_columns_pads_value_to_max_width() {
+        let entries = vec![
+            "4eef\thooks jobs retry".to_string(),
+            "warm-build\t✗ failed".to_string(),
+            "feature:\tworktree".to_string(),
+        ];
+        // Longest value is "warm-build" (10). Padding for "4eef" is 6, for
+        // "feature:" is 2, for "warm-build" is 0.
+        let aligned = align_completion_columns(entries);
+        assert_eq!(aligned[0], "4eef\t      hooks jobs retry");
+        assert_eq!(aligned[1], "warm-build\t✗ failed");
+        assert_eq!(aligned[2], "feature:\t  worktree");
+    }
+
+    #[test]
+    fn align_completion_columns_passes_through_entries_without_tab() {
+        // Bash users get only the value-side; entries without tabs (rare,
+        // but possible if a completer emits raw values) shouldn't crash.
+        let entries = vec!["bare-value".to_string(), "with\tdesc".to_string()];
+        let aligned = align_completion_columns(entries);
+        assert_eq!(aligned[0], "bare-value");
+        assert_eq!(aligned[1], "with\tdesc");
+    }
+
+    #[test]
+    fn align_completion_columns_handles_empty_input() {
+        let aligned = align_completion_columns(vec![]);
+        assert!(aligned.is_empty());
+    }
+
+    #[test]
+    fn worktree_drilldown_pluralizes_invocation_count() {
+        let now = chrono::Utc::now();
+        let invocations = vec![
+            inv("1111000000000000", "feature", 30),
+            inv("2222000000000000", "feature", 60),
+            inv("3333000000000000", "feature", 90),
+        ];
+        let worktrees = vec!["feature".to_string()];
+
+        let entries = worktree_drilldown_entries(&invocations, &worktrees, "master", "", now);
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0].contains("3 invocations,"),
+            "expected `3 invocations,` (plural), got {:?}",
+            entries[0]
         );
     }
 }

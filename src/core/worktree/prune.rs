@@ -702,6 +702,9 @@ fn remove_worktree(
         }
     }
 
+    // Cancel any running background jobs for this worktree (best-effort).
+    cancel_background_jobs_for_worktree(branch_name, sink);
+
     // Pre-remove hook
     run_removal_hook(HookType::PreRemove, ctx, wt_path, branch_name, sink);
 
@@ -816,6 +819,70 @@ fn delete_branch(git: &GitCommand, branch_name: &str, sink: &mut dyn ProgressSin
     }
 }
 
+// ── Background job cancellation ────────────────────────────────────────────
+
+/// Returns true when `job` belongs to the worktree identified by `branch_slug`.
+///
+/// `JobInfo.worktree` carries the branch slug (e.g. "feat/x") set from
+/// `ctx.branch_name` at job-launch time, NOT the filesystem path. Comparing
+/// against a path here would never match.
+fn worktree_matches_job(job: &crate::coordinator::JobInfo, branch_slug: &str) -> bool {
+    job.worktree == branch_slug
+}
+
+/// Cancel any running background jobs for a specific worktree.
+///
+/// This is best-effort: if no coordinator is running, or if the coordinator
+/// cannot be reached, the error is silently ignored so removal proceeds.
+pub(crate) fn cancel_background_jobs_for_worktree(branch_slug: &str, sink: &mut dyn ProgressSink) {
+    use crate::coordinator::client::CoordinatorClient;
+    use crate::coordinator::log_store::JobStatus;
+
+    // Compute repo hash using the centralized repo_identity module.
+    let repo_hash = match crate::core::repo_identity::compute_repo_id() {
+        Ok(id) => id,
+        Err(_) => return, // Unable to compute repo ID — nothing to cancel.
+    };
+
+    // The coordinator's `handle_client_connection` services exactly one
+    // request per stream, so we open a fresh client for `list_jobs` and for
+    // each `cancel_job` call. Reusing a single client across multiple sends
+    // yields a Broken-pipe error on the second send.
+    let mut list_client = match CoordinatorClient::connect(&repo_hash) {
+        Ok(Some(c)) => c,
+        _ => return, // No coordinator running or unreachable — nothing to cancel.
+    };
+
+    let jobs = match list_client.list_jobs() {
+        Ok(j) => j,
+        Err(_) => return,
+    };
+    drop(list_client);
+
+    for job in jobs {
+        if matches!(job.status, JobStatus::Running) && worktree_matches_job(&job, branch_slug) {
+            sink.on_step(&format!("Stopping background job '{}'...", job.name));
+            let mut cancel_client = match CoordinatorClient::connect(&repo_hash) {
+                Ok(Some(c)) => c,
+                _ => {
+                    sink.on_warning(&format!(
+                        "Failed to cancel background job '{}': coordinator no longer reachable",
+                        job.name
+                    ));
+                    continue;
+                }
+            };
+            match cancel_client.cancel_job(&job.name) {
+                Ok(_) => sink.on_step(&format!("Stopped background job '{}'", job.name)),
+                Err(e) => sink.on_warning(&format!(
+                    "Failed to cancel background job '{}': {e}",
+                    job.name
+                )),
+            }
+        }
+    }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /// Parse `git worktree list --porcelain` into structured entries.
@@ -915,5 +982,24 @@ fn cleanup_empty_parent_dirs(
             }
             Err(_) => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cancel_helper_matches_on_branch_slug_not_filesystem_path() {
+        use crate::coordinator::log_store::JobStatus;
+        use crate::coordinator::JobInfo;
+        let job = JobInfo {
+            name: "warm-build".into(),
+            hook_type: "worktree-post-create".into(),
+            worktree: "feat/x".into(),
+            status: JobStatus::Running,
+            elapsed_secs: Some(5),
+            exit_code: None,
+        };
+        assert!(super::worktree_matches_job(&job, "feat/x"));
+        assert!(!super::worktree_matches_job(&job, "/repo/feat/x"));
     }
 }

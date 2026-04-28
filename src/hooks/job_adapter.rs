@@ -6,11 +6,23 @@
 //! RC-file sourcing, template substitution) happens here so that the
 //! executor never needs to know about hook configuration details.
 
-use crate::executor::JobSpec;
+use super::yaml_config_loader::merge_log_configs;
+use crate::executor::{JobSpec, LogConfig};
 use crate::hooks::environment::{HookContext, HookEnvironment};
 use crate::hooks::yaml_config::JobDef;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+/// A job that was declared in YAML but filtered out before execution.
+///
+/// Produced by `yaml_jobs_to_specs` alongside the kept `JobSpec`s so the
+/// caller can record a skipped-job entry in the log store.
+#[derive(Debug, Clone)]
+pub struct SkippedJob {
+    pub name: String,
+    pub background: bool,
+    pub reason: String,
+}
 
 /// Convert YAML job definitions into format-agnostic [`JobSpec`] values.
 ///
@@ -28,6 +40,7 @@ use std::path::{Path, PathBuf};
 /// **Note:** Group jobs (`job.group.is_some()`) are skipped in this
 /// initial implementation. They will be handled when the yaml_executor
 /// is fully migrated to the generic executor.
+#[allow(clippy::too_many_arguments)]
 pub fn yaml_jobs_to_specs(
     jobs: &[JobDef],
     ctx: &HookContext,
@@ -35,59 +48,104 @@ pub fn yaml_jobs_to_specs(
     source_dir: &str,
     working_dir: &Path,
     rc: Option<&str>,
-) -> Vec<JobSpec> {
-    jobs.iter()
-        .filter_map(|job| {
-            // Skip group jobs — they contain nested sub-jobs that require
-            // recursive handling. This will be wired up when the
-            // yaml_executor is fully migrated to the generic executor.
-            if job.group.is_some() {
-                return None;
-            }
+    hook_background: Option<bool>,
+    repo_log: Option<&LogConfig>,
+) -> (Vec<JobSpec>, Vec<SkippedJob>) {
+    let mut kept: Vec<JobSpec> = Vec::new();
+    let mut skipped: Vec<SkippedJob> = Vec::new();
 
-            // Skip jobs with a platform-specific run map that has no
-            // entry for the current OS.
-            if super::yaml_executor::is_platform_skip(job) {
-                return None;
-            }
+    for job in jobs {
+        let name = job.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
+        let declared_background = job.background.or(hook_background).unwrap_or(false);
 
-            let name = job.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
-
-            let cmd = super::yaml_executor::resolve_command(job, ctx, Some(&name), source_dir);
-
-            // Prepend RC file sourcing if configured.
-            let cmd = match rc {
-                Some(rc_path) => format!("source {rc_path} && {cmd}"),
-                None => cmd,
-            };
-
-            // Build merged environment: hook-level env first, then
-            // per-job env (job wins on conflict).
-            let mut env = hook_env.clone();
-            if let Some(ref job_env) = job.env {
-                env.extend(job_env.clone());
-            }
-
-            // Resolve working directory.
-            let wd = if let Some(ref root) = job.root {
-                working_dir.join(root)
-            } else {
-                working_dir.to_path_buf()
-            };
-
-            Some(JobSpec {
+        if job.group.is_some() {
+            skipped.push(SkippedJob {
                 name,
-                command: cmd,
-                working_dir: wd,
-                env,
-                description: job.description.clone(),
-                needs: job.needs.clone().unwrap_or_default(),
-                interactive: job.interactive == Some(true),
-                fail_text: job.fail_text.clone(),
-                timeout: JobSpec::DEFAULT_TIMEOUT,
-            })
-        })
-        .collect()
+                background: declared_background,
+                reason: "skip: group jobs are not yet supported by the generic executor"
+                    .to_string(),
+            });
+            continue;
+        }
+
+        if super::yaml_executor::is_platform_skip(job) {
+            skipped.push(SkippedJob {
+                name,
+                background: declared_background,
+                reason: format!(
+                    "skip: platform-specific run has no entry for {}",
+                    std::env::consts::OS
+                ),
+            });
+            continue;
+        }
+
+        if let Some(ref skip) = job.skip {
+            if let Some(info) = super::conditions::should_skip(skip, working_dir) {
+                skipped.push(SkippedJob {
+                    name,
+                    background: declared_background,
+                    reason: info.reason,
+                });
+                continue;
+            }
+        }
+
+        if let Some(ref only) = job.only {
+            if let Some(info) = super::conditions::should_only_skip(only, working_dir) {
+                skipped.push(SkippedJob {
+                    name,
+                    background: declared_background,
+                    reason: info.reason,
+                });
+                continue;
+            }
+        }
+
+        let cmd = super::yaml_executor::resolve_command(job, ctx, Some(&name), source_dir);
+
+        let cmd = match rc {
+            Some(rc_path) => format!("source {rc_path} && {cmd}"),
+            None => cmd,
+        };
+
+        let mut env = hook_env.clone();
+        if let Some(ref job_env) = job.env {
+            env.extend(job_env.clone());
+        }
+
+        let wd = if let Some(ref root) = job.root {
+            working_dir.join(root)
+        } else {
+            working_dir.to_path_buf()
+        };
+
+        kept.push(JobSpec {
+            name,
+            command: cmd,
+            working_dir: wd,
+            env,
+            description: job.description.clone(),
+            needs: job.needs.clone().unwrap_or_default(),
+            interactive: job.interactive == Some(true),
+            fail_text: job.fail_text.clone(),
+            timeout: JobSpec::DEFAULT_TIMEOUT,
+            background: declared_background,
+            background_output: job.background_output.clone(),
+            log_config: merge_job_log(job.log.clone(), repo_log),
+        });
+    }
+
+    // Remove needs: references to skipped jobs so dependent jobs don't
+    // fail DAG construction. A skipped dependency is vacuously satisfied —
+    // it was never going to run, and we shouldn't block dependents on it.
+    let skipped_names: std::collections::HashSet<&str> =
+        skipped.iter().map(|s| s.name.as_str()).collect();
+    for spec in &mut kept {
+        spec.needs.retain(|n| !skipped_names.contains(n.as_str()));
+    }
+
+    (kept, skipped)
 }
 
 /// Convert legacy hook script paths into [`JobSpec`] values.
@@ -116,6 +174,22 @@ pub fn scripts_to_specs(
             }
         })
         .collect()
+}
+
+/// Merge a per-job [`LogConfig`] with the repo-level default, with per-job
+/// fields taking precedence. Either or both may be `None`; the result is
+/// `None` only when both are.
+///
+/// Used by [`yaml_jobs_to_specs`] so top-level `log:` defaults in `daft.yml`
+/// (e.g. `max_total_size`, `keep_last`, `stale_running_after`) flow into
+/// each job's `log_config` and reach `build_repo_policy`.
+fn merge_job_log(per_job: Option<LogConfig>, repo: Option<&LogConfig>) -> Option<LogConfig> {
+    match (per_job, repo) {
+        (None, None) => None,
+        (Some(j), None) => Some(j),
+        (None, Some(r)) => Some(r.clone()),
+        (Some(j), Some(r)) => Some(merge_log_configs(j, r.clone())),
+    }
 }
 
 #[cfg(test)]
@@ -159,8 +233,16 @@ mod tests {
         }];
 
         let hook_env = HashMap::new();
-        let specs =
-            yaml_jobs_to_specs(&jobs, &ctx, &hook_env, ".daft", Path::new("/project"), None);
+        let (specs, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &hook_env,
+            ".daft",
+            Path::new("/project"),
+            None,
+            None,
+            None,
+        );
 
         assert_eq!(specs.len(), 1);
         let s = &specs[0];
@@ -203,18 +285,23 @@ mod tests {
             ..Default::default()
         }];
 
-        let specs = yaml_jobs_to_specs(
+        let (kept, skipped) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
             None,
+            None,
+            None,
         );
         assert!(
-            specs.is_empty(),
+            kept.is_empty(),
             "platform-mismatched job should be excluded"
         );
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "os-specific");
+        assert!(skipped[0].reason.contains("platform"));
     }
 
     #[test]
@@ -226,13 +313,15 @@ mod tests {
             ..Default::default()
         }];
 
-        let specs = yaml_jobs_to_specs(
+        let (specs, _) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &HashMap::new(),
             ".daft",
             Path::new("/project"),
             Some("~/.bashrc"),
+            None,
+            None,
         );
 
         assert_eq!(specs.len(), 1);
@@ -249,12 +338,14 @@ mod tests {
             ..Default::default()
         }];
 
-        let specs = yaml_jobs_to_specs(
+        let (specs, _) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &HashMap::new(),
             ".daft",
             Path::new("/project"),
+            None,
+            None,
             None,
         );
 
@@ -283,8 +374,16 @@ mod tests {
             ..Default::default()
         }];
 
-        let specs =
-            yaml_jobs_to_specs(&jobs, &ctx, &hook_env, ".daft", Path::new("/project"), None);
+        let (specs, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &hook_env,
+            ".daft",
+            Path::new("/project"),
+            None,
+            None,
+            None,
+        );
 
         assert_eq!(specs.len(), 1);
         let env = &specs[0].env;
@@ -310,12 +409,14 @@ mod tests {
             },
         ];
 
-        let specs = yaml_jobs_to_specs(
+        let (specs, _) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
+            None,
+            None,
             None,
         );
 
@@ -332,12 +433,14 @@ mod tests {
             ..Default::default()
         }];
 
-        let specs = yaml_jobs_to_specs(
+        let (specs, _) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
+            None,
+            None,
             None,
         );
 
@@ -369,20 +472,260 @@ mod tests {
             },
         ];
 
-        let specs = yaml_jobs_to_specs(
+        let (kept, skipped) = yaml_jobs_to_specs(
             &jobs,
             &ctx,
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
             None,
+            None,
+            None,
         );
 
-        assert_eq!(specs.len(), 1, "group job should be excluded");
-        assert_eq!(specs[0].name, "normal");
+        assert_eq!(kept.len(), 1, "group job should be excluded");
+        assert_eq!(kept[0].name, "normal");
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "grouped");
+        assert!(skipped[0].reason.contains("group"));
+    }
+
+    #[test]
+    fn platform_skip_produces_skipped_job_entry() {
+        use crate::hooks::yaml_config::{PlatformRunCommand, TargetOs};
+        let mut run_map = HashMap::new();
+        let other_os = if cfg!(target_os = "macos") {
+            TargetOs::Linux
+        } else {
+            TargetOs::Macos
+        };
+        run_map.insert(other_os, PlatformRunCommand::Simple("echo other".into()));
+
+        let jobs = vec![JobDef {
+            name: Some("platform-only".to_string()),
+            run: Some(RunCommand::Platform(run_map)),
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let env = HashMap::new();
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &env,
+            "/src",
+            std::path::Path::new("/work"),
+            None,
+            None,
+            None,
+        );
+
+        assert!(kept.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "platform-only");
+        assert!(skipped[0].reason.contains("platform"));
+    }
+
+    #[test]
+    fn group_jobs_produce_skipped_job_entry() {
+        let jobs = vec![JobDef {
+            name: Some("my-group".to_string()),
+            group: Some(GroupDef::default()),
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let env = HashMap::new();
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &env,
+            "/src",
+            std::path::Path::new("/work"),
+            None,
+            None,
+            None,
+        );
+
+        assert!(kept.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "my-group");
+        assert!(skipped[0].reason.contains("group"));
+    }
+
+    #[test]
+    fn per_job_skip_true_produces_skipped_entry() {
+        use crate::hooks::yaml_config::{JobDef, SkipCondition};
+        let jobs = vec![JobDef {
+            name: Some("gated".to_string()),
+            run: Some(crate::hooks::yaml_config::RunCommand::Simple(
+                "echo gated".to_string(),
+            )),
+            skip: Some(SkipCondition::Bool(true)),
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let env = HashMap::new();
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &env,
+            "/src",
+            std::path::Path::new("/work"),
+            None,
+            None,
+            None,
+        );
+
+        assert!(kept.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "gated");
+        assert_eq!(skipped[0].reason, "skip: true");
+    }
+
+    #[test]
+    fn per_job_skip_false_keeps_job() {
+        use crate::hooks::yaml_config::{JobDef, SkipCondition};
+        let jobs = vec![JobDef {
+            name: Some("always-runs".to_string()),
+            run: Some(crate::hooks::yaml_config::RunCommand::Simple(
+                "echo go".to_string(),
+            )),
+            skip: Some(SkipCondition::Bool(false)),
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let env = HashMap::new();
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &env,
+            "/src",
+            std::path::Path::new("/work"),
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(kept.len(), 1);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn kept_spec_needs_are_stripped_of_skipped_dependencies() {
+        use crate::hooks::yaml_config::{JobDef, SkipCondition};
+        let jobs = vec![
+            JobDef {
+                name: Some("skipped-dep".to_string()),
+                run: Some(crate::hooks::yaml_config::RunCommand::Simple(
+                    "echo nope".to_string(),
+                )),
+                skip: Some(SkipCondition::Bool(true)),
+                ..Default::default()
+            },
+            JobDef {
+                name: Some("dependent".to_string()),
+                run: Some(crate::hooks::yaml_config::RunCommand::Simple(
+                    "echo yes".to_string(),
+                )),
+                needs: Some(vec!["skipped-dep".to_string()]),
+                ..Default::default()
+            },
+        ];
+
+        let ctx = make_ctx();
+        let env = HashMap::new();
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &env,
+            "/src",
+            std::path::Path::new("/work"),
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].name, "dependent");
+        assert!(
+            kept[0].needs.is_empty(),
+            "needs: list should have been stripped of the skipped dependency, but got {:?}",
+            kept[0].needs
+        );
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "skipped-dep");
+    }
+
+    #[test]
+    fn per_job_only_false_produces_skipped_entry() {
+        use crate::hooks::yaml_config::{JobDef, OnlyCondition};
+        let jobs = vec![JobDef {
+            name: Some("conditional".to_string()),
+            run: Some(crate::hooks::yaml_config::RunCommand::Simple(
+                "echo cond".to_string(),
+            )),
+            only: Some(OnlyCondition::Bool(false)),
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let env = HashMap::new();
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &env,
+            "/src",
+            std::path::Path::new("/work"),
+            None,
+            None,
+            None,
+        );
+
+        assert!(kept.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].reason, "only: false");
     }
 
     // ── scripts_to_specs ────────────────────────────────────────────────
+
+    #[test]
+    fn test_background_fields_pass_through() {
+        use crate::hooks::yaml_config::{BackgroundOutput, LogConfig};
+
+        let jobs = vec![JobDef {
+            name: Some("bg-job".to_string()),
+            run: Some(RunCommand::Simple("echo hi".to_string())),
+            background: Some(true),
+            background_output: Some(BackgroundOutput::Silent),
+            log: Some(LogConfig {
+                retention: Some("14d".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let (specs, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(specs.len(), 1);
+        assert!(specs[0].background);
+        assert_eq!(specs[0].background_output, Some(BackgroundOutput::Silent));
+        assert_eq!(
+            specs[0].log_config.as_ref().unwrap().retention,
+            Some("14d".to_string())
+        );
+    }
 
     #[test]
     fn scripts_name_from_filename() {
@@ -456,5 +799,160 @@ mod tests {
         assert!(s.fail_text.is_none());
         assert!(s.description.is_none());
         assert_eq!(s.timeout, JobSpec::DEFAULT_TIMEOUT);
+    }
+
+    // ── repo-level log merge ─────────────────────────────────────────────
+    //
+    // Top-level `log:` defaults in `daft.yml` (max_total_size, keep_last,
+    // stale_running_after, plus retention/max_log_size) must propagate into
+    // each job's `log_config`, with per-job blocks taking precedence.
+
+    #[test]
+    fn merges_repo_log_into_jobs_without_per_job_log() {
+        use crate::executor::LogConfig;
+
+        let jobs = vec![JobDef {
+            name: Some("build".to_string()),
+            run: Some(RunCommand::Simple("cargo build".to_string())),
+            log: None,
+            ..Default::default()
+        }];
+
+        let repo_log = LogConfig {
+            max_total_size: Some("1GB".to_string()),
+            keep_last: Some(5),
+            stale_running_after: Some("48h".to_string()),
+            ..Default::default()
+        };
+
+        let ctx = make_ctx();
+        let (kept, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            None,
+            None,
+            Some(&repo_log),
+        );
+
+        assert_eq!(kept.len(), 1);
+        let lc = kept[0]
+            .log_config
+            .as_ref()
+            .expect("log_config should be Some when repo-level log is provided");
+        assert_eq!(lc.max_total_size.as_deref(), Some("1GB"));
+        assert_eq!(lc.keep_last, Some(5));
+        assert_eq!(lc.stale_running_after.as_deref(), Some("48h"));
+    }
+
+    #[test]
+    fn per_job_log_overrides_repo_log() {
+        use crate::executor::LogConfig;
+
+        let jobs = vec![JobDef {
+            name: Some("build".to_string()),
+            run: Some(RunCommand::Simple("cargo build".to_string())),
+            log: Some(LogConfig {
+                retention: Some("1d".to_string()),
+                max_log_size: Some("1MB".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let repo_log = LogConfig {
+            retention: Some("30d".to_string()),
+            max_total_size: Some("1GB".to_string()),
+            keep_last: Some(3),
+            ..Default::default()
+        };
+
+        let ctx = make_ctx();
+        let (kept, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            None,
+            None,
+            Some(&repo_log),
+        );
+
+        assert_eq!(kept.len(), 1);
+        let lc = kept[0].log_config.as_ref().unwrap();
+        // Per-job overrides win
+        assert_eq!(
+            lc.retention.as_deref(),
+            Some("1d"),
+            "per-job retention should override repo-level"
+        );
+        assert_eq!(lc.max_log_size.as_deref(), Some("1MB"));
+        // Repo-level fills in unset per-job fields
+        assert_eq!(
+            lc.max_total_size.as_deref(),
+            Some("1GB"),
+            "repo-level max_total_size should fill in"
+        );
+        assert_eq!(lc.keep_last, Some(3), "repo-level keep_last should fill in");
+    }
+
+    #[test]
+    fn no_repo_log_keeps_per_job_log_unchanged() {
+        use crate::executor::LogConfig;
+
+        let jobs = vec![JobDef {
+            name: Some("build".to_string()),
+            run: Some(RunCommand::Simple("cargo build".to_string())),
+            log: Some(LogConfig {
+                retention: Some("7d".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let (kept, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(kept.len(), 1);
+        let lc = kept[0].log_config.as_ref().unwrap();
+        assert_eq!(lc.retention.as_deref(), Some("7d"));
+        assert!(lc.max_total_size.is_none());
+    }
+
+    #[test]
+    fn no_log_at_either_level_yields_none() {
+        let jobs = vec![JobDef {
+            name: Some("build".to_string()),
+            run: Some(RunCommand::Simple("cargo build".to_string())),
+            log: None,
+            ..Default::default()
+        }];
+
+        let ctx = make_ctx();
+        let (kept, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].log_config.is_none());
     }
 }

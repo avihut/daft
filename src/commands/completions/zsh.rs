@@ -404,7 +404,7 @@ _daft() {
             fi
         done
         case "$_fmt_path" in
-            list|worktree-list|"hooks trust list"|"layout list"|"shared status")
+            list|worktree-list|"hooks trust list"|"hooks jobs"|"layout list"|"shared status")
                 compadd json ndjson tsv csv yaml toon markdown
                 return
                 ;;
@@ -419,7 +419,7 @@ _daft() {
     if (( CURRENT >= 3 )) && [[ "$words[2]" == "hooks" ]]; then
         # hooks subcommand completion (position 3)
         if (( CURRENT == 3 )); then
-            compadd trust prompt deny status migrate install validate dump run
+            compadd trust prompt deny status migrate install validate dump run jobs
             _files -/
             return
         fi
@@ -502,6 +502,102 @@ _daft() {
             migrate)
                 if [[ "$curword" == -* ]]; then
                     compadd -- --dry-run -h --help
+                fi
+                return
+                ;;
+            jobs)
+                if (( CURRENT == 4 )); then
+                    # When the user is typing a flag (`--w<TAB>`), offer the
+                    # listing-form flags instead of subcommands — the existing
+                    # CURRENT > 4 fall-through (line ~575) only handles the
+                    # case where a subcommand has already been chosen.
+                    if [[ "$curword" == -* ]]; then
+                        compadd -- --all --format --template --no-headers --worktree --status --hook -h --help
+                    else
+                        compadd logs cancel retry prune
+                    fi
+                    return
+                fi
+                case "$words[4]" in
+                    logs|cancel)
+                        if [[ "$curword" == -* ]]; then
+                            compadd -- --inv -h --help
+                            return
+                        fi
+                        # KIND-tagged input: each line is `KIND\t<value>\t<display>`.
+                        # Split into per-kind arrays so we can emit one
+                        # `compadd -V <kind>` per group (job names cluster
+                        # together, then invocations, then worktrees).
+                        local -a _job_v _job_d _inv_v _inv_d _wt_v _wt_d
+                        local _line _kind _rest _val _disp
+                        while IFS='' read -r _line; do
+                            _kind="${_line%%$'\t'*}"
+                            _rest="${_line#*$'\t'}"
+                            _val="${_rest%%$'\t'*}"
+                            _disp="${_rest#*$'\t'}"
+                            case "$_kind" in
+                                JOB) _job_v+=("$_val"); _job_d+=("$_disp") ;;
+                                INV) _inv_v+=("$_val"); _inv_d+=("$_disp") ;;
+                                WT)  _wt_v+=("$_val");  _wt_d+=("$_disp") ;;
+                            esac
+                        done < <(daft __complete hooks-jobs-job "$curword" 2>/dev/null)
+                        # -V <name> creates an order-preserving group; the
+                        # menu shows job names first, then invocations,
+                        # then worktrees (matches user's most-likely target).
+                        (( ${#_job_v} )) && compadd -V job -l -d _job_d -a _job_v
+                        (( ${#_inv_v} )) && compadd -V inv -l -d _inv_d -a _inv_v
+                        (( ${#_wt_v}  )) && compadd -V wt  -l -d _wt_d  -a _wt_v
+                        return
+                        ;;
+                    retry)
+                        local prev="$words[$((CURRENT-1))]"
+                        if [[ "$prev" == "--worktree" ]]; then
+                            local -a _vals _descs
+                            while IFS='' read -r _line; do
+                                _vals+=("${_line%%$'\t'*}")
+                                _descs+=("${_line//$'\t'/  }")
+                            done < <(daft __complete hooks-jobs-retry-worktree "$curword" 2>/dev/null)
+                            compadd -l -d _descs -a _vals
+                            return
+                        fi
+                        if [[ "$curword" == -* ]]; then
+                            compadd -- --hook --inv --job --worktree --cwd -h --help
+                            return
+                        fi
+                        local -a _vals _descs
+                        while IFS='' read -r _line; do
+                            _vals+=("${_line%%$'\t'*}")
+                            _descs+=("${_line//$'\t'/  }")
+                        done < <(daft __complete hooks-jobs-retry "$curword" 2>/dev/null)
+                        compadd -l -d _descs -a _vals
+                        return
+                        ;;
+                esac
+                local prev="$words[$((CURRENT-1))]"
+                if [[ "$prev" == "--worktree" ]]; then
+                    local -a _vals _descs
+                    while IFS='' read -r _line; do
+                        _vals+=("${_line%%$'\t'*}")
+                        _descs+=("${_line//$'\t'/  }")
+                    done < <(daft __complete hooks-jobs-worktree "$curword" 2>/dev/null)
+                    compadd -l -d _descs -a _vals
+                    return
+                fi
+                if [[ "$prev" == "--status" ]]; then
+                    compadd -- failed completed running cancelled skipped
+                    return
+                fi
+                if [[ "$prev" == "--hook" ]]; then
+                    local -a _vals _descs
+                    while IFS='' read -r _line; do
+                        _vals+=("${_line%%$'\t'*}")
+                        _descs+=("${_line//$'\t'/  }")
+                    done < <(daft __complete hooks-jobs-hook-filter "$curword" 2>/dev/null)
+                    compadd -l -d _descs -a _vals
+                    return
+                fi
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --all --format --template --no-headers --worktree --status --hook -h --help
                 fi
                 return
                 ;;

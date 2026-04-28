@@ -1,0 +1,108 @@
+name: Log cleanup enforces per-repo size budget by evicting oldest invocations
+description:
+  "Sets max_total_size=10KB and keep_last=1 on a job whose stdout is ~4KB. Fires
+  the hook five times so total disk usage exceeds the budget. After cleanup
+  runs, the size budget must evict at least the oldest invocations (LRU), with
+  the most recent one always preserved."
+
+env:
+  # Suppress the background cleanup autospawn so the inv count remains stable
+  # until the scenario explicitly invokes `daft hooks jobs prune`.
+  DAFT_NO_LOG_CLEAN: "1"
+
+repos:
+  - name: test-log-cleanup-budget
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Log cleanup budget test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/budget
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: spam
+              run: |
+                python3 -c "import sys; sys.stdout.write('x' * 4096); sys.stdout.flush()"
+              log:
+                max_total_size: 10KB
+                keep_last: 1
+
+steps:
+  - name: Clone the repository with --trust-hooks
+    run:
+      env -u DAFT_TESTING git-worktree-clone --trust-hooks --layout contained
+      $REMOTE_TEST_LOG_CLEANUP_BUDGET 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (first invocation on this worktree)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/budget 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-budget/main"
+    expect:
+      exit_code: 0
+
+  - name: Fire the spam hook four more times via `daft hooks run`
+    run: |
+      cd "$WORK_DIR/test-log-cleanup-budget/feature/budget"
+      for i in 1 2 3 4; do
+        daft hooks run worktree-post-create 2>&1 || exit 1
+        sleep 0.1
+      done
+      echo MANUAL_RUNS_DONE
+    expect:
+      exit_code: 0
+      output_contains:
+        - "MANUAL_RUNS_DONE"
+
+  - name: Snapshot invocation count and capture the newest invocation id
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-budget/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+      echo "INV_COUNT_BEFORE=$INV_COUNT"
+      [ "$INV_COUNT" -ge 5 ] || { echo "expected >=5, got $INV_COUNT"; exit 1; }
+      # Newest = most recently mtime-modified subdir.
+      NEWEST=$(ls -1tr "$JOBS_DIR" | grep -v '\.json$' | tail -1)
+      echo "NEWEST=$NEWEST"
+      mkdir -p "$WORK_DIR/.scratch"
+      printf '%s' "$NEWEST" > "$WORK_DIR/.scratch/newest-inv"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INV_COUNT_BEFORE="
+        - "NEWEST="
+
+  - name: Run the foreground cleanup pipeline — budget pass should evict oldest
+    run: daft hooks jobs prune 2>&1
+    cwd: "$WORK_DIR/test-log-cleanup-budget/feature/budget"
+    expect:
+      exit_code: 0
+
+  - name:
+      Confirm the budget evicted at least 3 invocations and the most-recent one
+      survived
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-budget/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+      echo "INV_COUNT_AFTER=$INV_COUNT"
+      # We started with at least 5 worktree-post-create invocations on
+      # feature/budget plus 1 on main (from clone). After eviction, total
+      # should be small. The exact count depends on which invs the budget
+      # walks first, but at least 3 of the spam invocations must be gone.
+      [ "$INV_COUNT" -le 3 ] || { echo "expected <=3, got $INV_COUNT"; exit 1; }
+      # The newest spam invocation must still be on disk.
+      NEWEST=$(cat "$WORK_DIR/.scratch/newest-inv")
+      [ -d "$JOBS_DIR/$NEWEST" ] || { echo "newest invocation $NEWEST was evicted"; exit 1; }
+      echo "NEWEST_SURVIVED=1"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INV_COUNT_AFTER="
+        - "NEWEST_SURVIVED=1"

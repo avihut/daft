@@ -1,0 +1,111 @@
+name: prune --dry-run reports the correct invocation count
+description:
+  "Regression for Bug 4 / Task 10: when retention is past due for every job
+  across multiple invocations, `daft hooks jobs prune --dry-run` must summarize
+  the candidates as `Would remove N job(s) across M invocation(s)` where M
+  matches the number of distinct invocation directories holding candidates — not
+  0. The pre-fix bug summarized invocations as 0 even when jobs were reported.
+  Sets up two invocations (post-create fires once on the cloned default branch's
+  worktree and once on the new feature/x worktree), each with two jobs,
+  backdates everything past the 1-day retention, and asserts the dry-run
+  summary."
+
+env:
+  # Suppress the autospawn so the only prune is the explicit one we run below.
+  DAFT_NO_LOG_CLEAN: "1"
+
+repos:
+  - name: test-prune-dryrun-invs
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Prune dry-run invocation accounting"
+        commits:
+          - message: "Initial commit"
+      - name: feature/x
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: build
+              run: echo build-output
+              log:
+                retention: 1d
+                keep_last: 0
+            - name: lint
+              run: echo lint-output
+              log:
+                retention: 1d
+                keep_last: 0
+
+steps:
+  - name: Clone the repository with --trust-hooks
+    run:
+      env -u DAFT_TESTING git-worktree-clone --trust-hooks --layout contained
+      $REMOTE_TEST_PRUNE_DRYRUN_INVS 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature/x — fires worktree-post-create with both jobs
+    run: env -u DAFT_TESTING git-worktree-checkout feature/x 2>&1
+    cwd: "$WORK_DIR/test-prune-dryrun-invs/main"
+    expect:
+      exit_code: 0
+
+  - name:
+      Snapshot invocation count — clone fires post-create on main, then the
+      explicit checkout fires it on feature/x → exactly 2 invocations.
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-prune-dryrun-invs/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+      echo "INV_COUNT=$INV_COUNT"
+      [ "$INV_COUNT" = "2" ] || { echo "expected exactly 2 invocations, got $INV_COUNT"; exit 1; }
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INV_COUNT=2"
+
+  - name: Backdate every meta.json to 2 days ago (past the 1d retention)
+    run: |
+      REPO_ID=$(cat "$WORK_DIR/test-prune-dryrun-invs/.git/daft-id")
+      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      python3 - "$JOBS_DIR" <<'PY'
+      import sys, json, os, datetime
+      root = sys.argv[1]
+      old = (datetime.datetime.utcnow() - datetime.timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+      for dirpath, _, files in os.walk(root):
+          for f in files:
+              if f != "meta.json":
+                  continue
+              p = os.path.join(dirpath, f)
+              with open(p) as fh:
+                  m = json.load(fh)
+              for k in ("created_at", "started_at", "finished_at"):
+                  if isinstance(m.get(k), str) and m.get(k):
+                      m[k] = old
+              with open(p, "w") as fh:
+                  json.dump(m, fh)
+      print("BACKDATE_OK")
+      PY
+    expect:
+      exit_code: 0
+      output_contains:
+        - "BACKDATE_OK"
+
+  - name:
+      Run `daft hooks jobs prune --dry-run` — summary must include `across 2
+      invocation(s)` (Bug 4 / Task 10 regression). All four jobs (two per
+      invocation) should be reported as removable.
+    run: daft hooks jobs prune --dry-run 2>&1
+    cwd: "$WORK_DIR/test-prune-dryrun-invs/feature/x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Would remove 4 job(s) across 2 invocation(s)"
+      output_not_contains:
+        - "across 0 invocation(s)"
+        - "Removed"

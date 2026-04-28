@@ -196,6 +196,17 @@ impl PlainHookRenderer {
         }
     }
 
+    /// Add a pre-built result entry (e.g., for background jobs).
+    pub fn push_finished_job(&mut self, entry: JobResultEntry) {
+        self.finished_jobs.push(entry);
+    }
+
+    /// Show a background job dispatch in plain output.
+    pub fn show_background_job(&self, name: &str, description: Option<&str>) {
+        let desc = description.map(|d| format!(" -- {d}")).unwrap_or_default();
+        eprintln!("  {name} (background){desc}");
+    }
+
     pub fn take_finished_jobs(&mut self) -> Vec<JobResultEntry> {
         std::mem::take(&mut self.finished_jobs)
     }

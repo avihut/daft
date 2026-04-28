@@ -1,0 +1,76 @@
+name: Re-cloning a repo produces a fresh log-store view
+description:
+  "Verifies that deleting a repo directory and re-cloning the same remote to the
+  same path yields a clean `daft hooks jobs` listing — the old invocations do
+  not re-attach to the new repo because repo identity is keyed by the
+  `.git/daft-id` file, which is destroyed with the repo."
+
+repos:
+  - name: test-reclone-id
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Reclone identity test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/rx
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: will-fail
+              run: "exit 1"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_RECLONE_ID
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-reclone-id/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (post-create fails)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/rx 2>&1
+    cwd: "$WORK_DIR/test-reclone-id/main"
+    expect:
+      exit_code: 0
+
+  - name: List jobs — should show the failed invocation
+    run: daft hooks jobs --all 2>&1
+    cwd: "$WORK_DIR/test-reclone-id/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "will-fail"
+        - "failed"
+
+  - name: Delete the repo directory
+    run: rm -rf "$WORK_DIR/test-reclone-id"
+    expect:
+      exit_code: 0
+
+  - name: Re-clone the same remote to the same path
+    run: git-worktree-clone --layout contained $REMOTE_TEST_RECLONE_ID
+    expect:
+      exit_code: 0
+
+  - name: Trust the re-cloned repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-reclone-id/main"
+    expect:
+      exit_code: 0
+
+  - name: List jobs in re-cloned repo — should be empty (fresh identity)
+    run: daft hooks jobs --all 2>&1
+    cwd: "$WORK_DIR/test-reclone-id/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "No background job history found"

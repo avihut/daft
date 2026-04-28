@@ -1,0 +1,50 @@
+name: Hooks jobs list Markdown format
+description: daft hooks jobs --format markdown emits a GFM table
+
+repos:
+  - name: test-jobs-fmt-md
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Jobs format md"
+        commits:
+          - message: "Initial commit"
+      - name: feature/fmt-md
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: greet
+              run: echo hi
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_JOBS_FMT_MD
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-md/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout branch to trigger hook
+    run: git-worktree-checkout feature/fmt-md 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-md/main"
+    expect:
+      exit_code: 0
+
+  - name: Markdown output is a GFM table with the job row
+    run: daft hooks jobs --format markdown 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-md/feature/fmt-md"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "| invocation_id"
+        - "| ---"
+        - "| greet "
+        - "| completed "

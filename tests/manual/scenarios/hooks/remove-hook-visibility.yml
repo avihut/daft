@@ -1,0 +1,115 @@
+name: Remove-hook invocation is visible after worktree deletion
+description:
+  "Direct regression for the originally-reported bug: worktree-pre-remove hooks
+  that declare only foreground jobs used to leave zero records in 'daft hooks
+  jobs'. Foreground jobs ran fine and their stdout was visible live, but the
+  universal invocation record + per-job rows were never written, so the user had
+  no way to audit what ran during removal. After the universal hook invocation
+  logging feature, even a pre-remove hook with exclusively foreground jobs must
+  produce an invocation record and per-job records, and those records must
+  persist in the log store after the worktree directory is gone. This scenario
+  creates a worktree, deletes it via 'git-worktree-branch -D' (which fires
+  worktree-pre-remove), then from the surviving main worktree asserts that 'daft
+  hooks jobs --all' lists the pre-remove invocation and that 'daft hooks jobs
+  logs' can still address the removed worktree's jobs via the composite
+  'worktree:job' syntax."
+
+repos:
+  - name: test-remove-hook-visibility
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Remove-hook visibility test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/goes-away
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-pre-remove:
+          jobs:
+            - name: cleanup-db
+              run: echo removing-db-volumes
+            - name: announce-removal
+              run: echo goodbye
+
+steps:
+  - name: Clone the repository
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REMOVE_HOOK_VISIBILITY
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-remove-hook-visibility/main"
+      files_exist:
+        - "$WORK_DIR/test-remove-hook-visibility/main/daft.yml"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-remove-hook-visibility/main"
+    expect:
+      exit_code: 0
+
+  - name: Create the worktree that will be removed
+    run: env -u DAFT_TESTING git-worktree-checkout feature/goes-away 2>&1
+    cwd: "$WORK_DIR/test-remove-hook-visibility/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-remove-hook-visibility/feature/goes-away"
+
+  - name: Remove worktree — fires worktree-pre-remove foreground jobs
+    run: env -u DAFT_TESTING git-worktree-branch -D feature/goes-away 2>&1
+    cwd: "$WORK_DIR/test-remove-hook-visibility/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "removing-db-volumes"
+        - "goodbye"
+      files_not_exist:
+        - "$WORK_DIR/test-remove-hook-visibility/feature/goes-away"
+
+  - name:
+      List jobs across all worktrees — pre-remove invocation must persist after
+      the removed worktree is gone
+    run: daft hooks jobs --all 2>&1
+    cwd: "$WORK_DIR/test-remove-hook-visibility/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature/goes-away"
+        - "worktree-pre-remove"
+        - "cleanup-db"
+        - "announce-removal"
+        - "completed"
+      output_not_contains:
+        - "(no jobs declared)"
+        - "No background job history found."
+
+  - name:
+      Log for the first pre-remove job — addressed via the three-segment
+      'worktree::job' composite syntax (empty invocation prefix matches the
+      single invocation) because the worktree directory is gone and cwd is now
+      the main worktree
+    run: daft hooks jobs logs "feature/goes-away::cleanup-db" 2>&1
+    cwd: "$WORK_DIR/test-remove-hook-visibility/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "cleanup-db"
+        - "removing-db-volumes"
+        - "COMPLETED"
+
+  - name:
+      Log for the second pre-remove job — composite addressing still works after
+      removal
+    run: daft hooks jobs logs "feature/goes-away::announce-removal" 2>&1
+    cwd: "$WORK_DIR/test-remove-hook-visibility/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "announce-removal"
+        - "goodbye"
+        - "COMPLETED"

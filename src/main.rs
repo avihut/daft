@@ -48,11 +48,16 @@ fn main() -> Result<()> {
     let argv: Vec<String> = std::env::args().collect();
     let skip_startup_tasks = daft::skip_startup_tasks_for(&argv);
 
+    // Also skip background spawning if we're inside a coordinator process
+    let is_coordinator = std::env::var("DAFT_IS_COORDINATOR").is_ok();
+
+    let skip_background = skip_startup_tasks || is_coordinator;
+
     // Warn if config directory is overridden (security measure against trust DB hijacking).
     // Only in dev builds — release builds ignore DAFT_CONFIG_DIR entirely.
     if cfg!(daft_dev_build) {
         if let Ok(dir) = std::env::var(daft::CONFIG_DIR_ENV) {
-            if !dir.is_empty() && !skip_startup_tasks {
+            if !dir.is_empty() && !skip_background {
                 eprintln!("warning: config directory overridden via DAFT_CONFIG_DIR");
                 eprintln!("  -> {dir}");
             }
@@ -60,15 +65,20 @@ fn main() -> Result<()> {
     }
 
     // Check for updates (reads cache, spawns background check if stale)
-    let update_notification = if !skip_startup_tasks {
+    let update_notification = if !skip_background {
         daft::update_check::maybe_check_for_update()
     } else {
         None
     };
 
     // Prune stale trust entries (background, once per 24h)
-    if !skip_startup_tasks {
+    if !skip_background {
         daft::trust_prune::maybe_prune_trust();
+    }
+
+    // Clean up hook job logs (background, once per 24h)
+    if !skip_background {
+        daft::log_clean::maybe_clean_logs();
     }
 
     // Route to the appropriate command based on invocation name
@@ -116,6 +126,10 @@ fn main() -> Result<()> {
                     }
                     "__prune-trust" => {
                         let _ = daft::trust_prune::run_prune_trust();
+                        return Ok(());
+                    }
+                    "__clean-logs" => {
+                        let _ = daft::log_clean::run_clean_logs();
                         return Ok(());
                     }
                     "config" => commands::config::run(),

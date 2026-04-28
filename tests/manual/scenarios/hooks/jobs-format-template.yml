@@ -1,0 +1,50 @@
+name: Hooks jobs list Tera template
+description:
+  daft hooks jobs --template renders each row via the supplied Tera template
+
+repos:
+  - name: test-jobs-fmt-tmpl
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Jobs format tmpl"
+        commits:
+          - message: "Initial commit"
+      - name: feature/fmt-tmpl
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: greet
+              run: echo hi
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_JOBS_FMT_TMPL
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-tmpl/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout branch to trigger hook
+    run: git-worktree-checkout feature/fmt-tmpl 2>&1
+    cwd: "$WORK_DIR/test-jobs-fmt-tmpl/main"
+    expect:
+      exit_code: 0
+
+  - name: Template renders name:status per row
+    run:
+      "daft hooks jobs --template '{% for j in items %}{{ j.name }}:{{ j.status
+      }}\n{% endfor %}' 2>&1"
+    cwd: "$WORK_DIR/test-jobs-fmt-tmpl/feature/fmt-tmpl"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "greet:completed"

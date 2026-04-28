@@ -405,6 +405,45 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
         }),
     };
 
+    let hooks_jobs = FigSubcommand {
+        name: "jobs".to_string(),
+        description: Some("View and manage background hook jobs".to_string()),
+        load_spec: None,
+        subcommands: Some(vec![
+            fig_subcommand("logs", "Show logs for a job"),
+            fig_subcommand("cancel", "Cancel a running job"),
+            fig_subcommand("retry", "Re-run failed jobs from an invocation"),
+            fig_subcommand("prune", "Remove old job records past retention"),
+        ]),
+        args: None,
+        options: Some({
+            let mut opts = vec![
+                FigOption {
+                    name: FigName::Single("--all".into()),
+                    description: "Show jobs across all worktrees".into(),
+                    args: None,
+                },
+                FigOption {
+                    name: FigName::Single("--worktree".into()),
+                    description: "Filter to a specific worktree".into(),
+                    args: Some(FigOptionArg { suggestions: None }),
+                },
+                FigOption {
+                    name: FigName::Single("--status".into()),
+                    description: "Filter by job status".into(),
+                    args: Some(FigOptionArg { suggestions: None }),
+                },
+                FigOption {
+                    name: FigName::Single("--hook".into()),
+                    description: "Filter to invocations of this hook type".into(),
+                    args: Some(FigOptionArg { suggestions: None }),
+                },
+            ];
+            opts.extend(build_emit_options("hooks jobs"));
+            opts
+        }),
+    };
+
     FigSubcommand {
         name: "hooks".to_string(),
         description: Some("Manage lifecycle hooks".to_string()),
@@ -419,6 +458,7 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
             fig_subcommand("validate", "Validate hooks config"),
             fig_subcommand("dump", "Show merged config"),
             hooks_run,
+            hooks_jobs,
         ]),
         args: None,
         options: None,

@@ -17,6 +17,7 @@
 mod dump;
 mod formatting;
 mod install;
+mod jobs;
 mod migrate;
 mod run_cmd;
 mod status;
@@ -250,6 +251,32 @@ fn dump_long_about() -> String {
     .join("\n")
 }
 
+fn jobs_long_about() -> String {
+    [
+        "Manage background hook jobs.",
+        "",
+        "Hooks that declare `background: true` run asynchronously after the",
+        "triggering command returns. This subcommand provides visibility and",
+        "control over those jobs — listing, inspecting logs, cancelling,",
+        "retrying, and pruning old records.",
+        "",
+        "Subcommands:",
+        &def("logs", "View the output log for a background job"),
+        &def("cancel", "Cancel a running background job"),
+        &def("retry", "Re-run failed jobs from an invocation"),
+        &def(
+            "prune",
+            "Remove old job records (invocations, metadata, logs) past retention",
+        ),
+        "",
+        &format!(
+            "Without a subcommand, lists jobs grouped by worktree and invocation. Use {} for structured output.",
+            bold("--format")
+        ),
+    ]
+    .join("\n")
+}
+
 fn run_long_about() -> String {
     [
         "Manually run a hook by name.",
@@ -348,6 +375,10 @@ enum HooksCommand {
     /// Dump the merged YAML hooks configuration
     #[command(long_about = dump_long_about())]
     Dump,
+
+    /// Manage background hook jobs
+    #[command(name = "jobs", long_about = jobs_long_about())]
+    Jobs(jobs::JobsArgs),
 
     /// Rename deprecated hook files to their new names
     #[command(long_about = migrate_long_about())]
@@ -483,6 +514,7 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::Install { hooks }) => install::cmd_install(&hooks, &mut output),
         Some(HooksCommand::Validate) => validate::cmd_validate(&mut output),
         Some(HooksCommand::Dump) => dump::cmd_dump(&mut output),
+        Some(HooksCommand::Jobs(jobs_args)) => jobs::run(jobs_args, &args.path, &mut output),
         Some(HooksCommand::Run(run_args)) => run_cmd::cmd_run(&run_args, &mut output),
         None => {
             status::cmd_status(&args.path, false, &mut output)?;

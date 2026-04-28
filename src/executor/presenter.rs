@@ -44,6 +44,9 @@ pub trait JobPresenter: Send + Sync {
     /// A job was cancelled by SIGINT while still running.
     fn on_job_cancelled(&self, name: &str, duration: Duration);
 
+    /// A job was dispatched to run in the background.
+    fn on_job_background(&self, name: &str, description: Option<&str>);
+
     /// A general informational message (not tied to a specific job).
     fn on_message(&self, msg: &str);
 
@@ -91,9 +94,8 @@ impl JobPresenter for NullPresenter {
         _command_preview: Option<&str>,
     ) {
     }
-
     fn on_job_cancelled(&self, _name: &str, _duration: Duration) {}
-
+    fn on_job_background(&self, _name: &str, _description: Option<&str>) {}
     fn on_message(&self, _msg: &str) {}
     fn on_phase_complete(&self, _total_duration: Duration) {}
     fn take_results(&self) -> Vec<JobResult> {

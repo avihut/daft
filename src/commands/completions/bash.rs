@@ -230,7 +230,7 @@ _daft() {
             fi
         done
         case "$_fmt_path" in
-            list|worktree-list|"hooks trust list"|"layout list"|"shared status")
+            list|worktree-list|"hooks trust list"|"hooks jobs"|"layout list"|"shared status")
                 COMPREPLY=( $(compgen -W "json ndjson tsv csv yaml toon markdown" -- "$cur") )
                 return 0
                 ;;
@@ -245,7 +245,7 @@ _daft() {
     if [[ $cword -ge 2 && "${words[1]}" == "hooks" ]]; then
         # hooks subcommand completion (position 2)
         if [[ $cword -eq 2 ]]; then
-            COMPREPLY=( $(compgen -W "trust prompt deny status migrate install validate dump run" -- "$cur") )
+            COMPREPLY=( $(compgen -W "trust prompt deny status migrate install validate dump run jobs" -- "$cur") )
             COMPREPLY+=( $(compgen -d -- "$cur") )
             return 0
         fi
@@ -319,6 +319,97 @@ _daft() {
             migrate)
                 if [[ "$cur" == -* ]]; then
                     COMPREPLY=( $(compgen -W "--dry-run -h --help" -- "$cur") )
+                fi
+                return 0
+                ;;
+            jobs)
+                if [[ $cword -eq 3 ]]; then
+                    # Flag prefix → emit listing-form flags; otherwise the
+                    # subcommands. The cword > 3 branch below only runs once
+                    # a subcommand has been chosen.
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=( $(compgen -W "--all --format --template --no-headers --worktree --status --hook -h --help" -- "$cur") )
+                    else
+                        COMPREPLY=( $(compgen -W "logs cancel retry prune" -- "$cur") )
+                    fi
+                    return 0
+                fi
+                case "${words[3]}" in
+                    logs|cancel)
+                        if [[ "$cur" == -* ]]; then
+                            COMPREPLY=( $(compgen -W "--inv -h --help" -- "$cur") )
+                            return 0
+                        fi
+                        # Lines are `KIND\t<value>\t<display>`. Bash only
+                        # uses the bare value, so strip KIND then take the
+                        # first remaining tab-separated field.
+                        local completions
+                        completions=$(daft __complete hooks-jobs-job "$cur" 2>/dev/null)
+                        if [[ -n "$completions" ]]; then
+                            while IFS=$'\n' read -r line; do
+                                local rest="${line#*	}"
+                                local val="${rest%%	*}"
+                                COMPREPLY+=( "$val" )
+                            done <<< "$completions"
+                        fi
+                        return 0
+                        ;;
+                    retry)
+                        if [[ "${prev}" == "--worktree" ]]; then
+                            local completions
+                            completions=$(daft __complete hooks-jobs-retry-worktree "$cur" 2>/dev/null)
+                            if [[ -n "$completions" ]]; then
+                                while IFS=$'\n' read -r line; do
+                                    local val="${line%%	*}"
+                                    COMPREPLY+=("$val")
+                                done <<< "$completions"
+                            fi
+                            return 0
+                        fi
+                        if [[ "$cur" == -* ]]; then
+                            COMPREPLY=( $(compgen -W "--hook --inv --job --worktree --cwd -h --help" -- "$cur") )
+                            return 0
+                        fi
+                        local completions
+                        completions=$(daft __complete hooks-jobs-retry "$cur" 2>/dev/null)
+                        if [[ -n "$completions" ]]; then
+                            while IFS=$'\n' read -r line; do
+                                local val="${line%%	*}"
+                                COMPREPLY+=("$val")
+                            done <<< "$completions"
+                        fi
+                        return 0
+                        ;;
+                esac
+                if [[ "${prev}" == "--worktree" ]]; then
+                    local completions
+                    completions=$(daft __complete hooks-jobs-worktree "$cur" 2>/dev/null)
+                    if [[ -n "$completions" ]]; then
+                        while IFS=$'\n' read -r line; do
+                            local val="${line%%	*}"
+                            COMPREPLY+=("$val")
+                        done <<< "$completions"
+                    fi
+                    return 0
+                fi
+                if [[ "${prev}" == "--status" ]]; then
+                    COMPREPLY=( $(compgen -W "failed completed running cancelled skipped" -- "$cur") )
+                    return 0
+                fi
+                if [[ "${prev}" == "--hook" ]]; then
+                    local completions
+                    completions=$(daft __complete hooks-jobs-hook-filter "$cur" 2>/dev/null)
+                    if [[ -n "$completions" ]]; then
+                        while IFS=$'\n' read -r line; do
+                            local val="${line%%	*}"
+                            COMPREPLY+=("$val")
+                        done <<< "$completions"
+                    fi
+                    return 0
+                fi
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--all --format --template --no-headers --worktree --status --hook -h --help" -- "$cur") )
+                    return 0
                 fi
                 return 0
                 ;;

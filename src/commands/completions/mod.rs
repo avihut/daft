@@ -221,6 +221,7 @@ pub(super) fn emit_formats_for(command_path: &str) -> Option<Vec<&'static str>> 
         "git-worktree-list" | "list" => Shape::Tabular,
         "release-notes" => Shape::Document,
         "hooks trust list" => Shape::Tabular,
+        "hooks jobs" => Shape::Tabular,
         "layout list" => Shape::Tabular,
         "shared status" => Shape::Matrix,
         "multi-remote status" => Shape::Sectioned,
@@ -823,6 +824,7 @@ before adding flags (zsh flag-leak regression)"
             "list",
             "release-notes",
             "hooks trust list",
+            "hooks jobs",
             "layout list",
             "shared status",
             "multi-remote status",
@@ -902,7 +904,7 @@ before adding flags (zsh flag-leak regression)"
         let script = bash::DAFT_BASH_COMPLETIONS;
         assert!(
             script.contains(
-                "list|worktree-list|\"hooks trust list\"|\"layout list\"|\"shared status\""
+                "list|worktree-list|\"hooks trust list\"|\"hooks jobs\"|\"layout list\"|\"shared status\""
             ),
             "bash umbrella must dispatch tabular/matrix paths to all-7-format list"
         );

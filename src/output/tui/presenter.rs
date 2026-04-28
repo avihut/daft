@@ -150,6 +150,10 @@ impl JobPresenter for TuiPresenter {
         self.on_job_failure(name, duration);
     }
 
+    fn on_job_background(&self, _name: &str, _description: Option<&str>) {
+        // No-op: TUI does not display background job dispatches.
+    }
+
     fn on_message(&self, _msg: &str) {
         // No-op: TUI does not display informational messages inline.
     }

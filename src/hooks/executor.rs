@@ -328,6 +328,7 @@ impl HookExecutor {
             &self.config.output,
             &self.job_filter,
             presenter,
+            yaml_config.log.as_ref(),
         )?;
 
         if !result.success && !result.skipped {
@@ -437,6 +438,7 @@ impl HookExecutor {
             &specs,
             crate::executor::ExecutionMode::Piped,
             &presenter,
+            None,
         )?;
 
         presenter.on_phase_complete(hook_start.elapsed());

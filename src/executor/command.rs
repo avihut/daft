@@ -41,6 +41,10 @@ pub struct CommandResult {
 /// is provided, every line read from stdout **and** stderr is forwarded
 /// through it (useful for live progress display).
 ///
+/// If `pid_sender` is provided, the spawned child's PID is sent through
+/// it once, immediately after spawn (used by the coordinator to register
+/// background-job PIDs for cancellation).
+///
 /// The caller is responsible for building the complete set of environment
 /// variables (hook env + extra env) and passing them in `env`.
 pub fn run_command(
@@ -49,6 +53,7 @@ pub fn run_command(
     working_dir: &Path,
     timeout: Duration,
     line_sender: Option<std::sync::mpsc::Sender<String>>,
+    pid_sender: Option<std::sync::mpsc::Sender<u32>>,
 ) -> Result<CommandResult> {
     let mut command = Command::new("sh");
     command.args(["-c", cmd]);
@@ -61,9 +66,29 @@ pub fn run_command(
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
+    // Move the child into its own session/process-group so cancelling can
+    // signal every descendant. Without this, on shells that fork+wait (e.g.
+    // dash with certain command shapes) signalling the bare PID kills only
+    // the wrapping `sh` and orphans the actual workload (e.g. `sleep 30`).
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        let setsid_hook = || -> std::io::Result<()> {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        };
+        command.pre_exec(setsid_hook);
+    }
+
     let mut child = command
         .spawn()
         .with_context(|| format!("Failed to spawn: {cmd}"))?;
+
+    if let Some(tx) = pid_sender {
+        let _ = tx.send(child.id());
+    }
 
     let stdout_handle = child.stdout.take();
     let stderr_handle = child.stderr.take();
@@ -254,7 +279,8 @@ mod tests {
     fn run_command_echo() {
         let env = HashMap::new();
         let dir = std::env::temp_dir();
-        let result = run_command("echo hello", &env, &dir, Duration::from_secs(5), None).unwrap();
+        let result =
+            run_command("echo hello", &env, &dir, Duration::from_secs(5), None, None).unwrap();
         assert!(result.success);
         assert_eq!(result.exit_code, Some(0));
         assert_eq!(result.stdout.trim(), "hello");
@@ -265,7 +291,15 @@ mod tests {
     fn run_command_captures_stderr() {
         let env = HashMap::new();
         let dir = std::env::temp_dir();
-        let result = run_command("echo err >&2", &env, &dir, Duration::from_secs(5), None).unwrap();
+        let result = run_command(
+            "echo err >&2",
+            &env,
+            &dir,
+            Duration::from_secs(5),
+            None,
+            None,
+        )
+        .unwrap();
         assert!(result.success);
         assert_eq!(result.stderr.trim(), "err");
     }
@@ -274,7 +308,8 @@ mod tests {
     fn run_command_nonzero_exit() {
         let env = HashMap::new();
         let dir = std::env::temp_dir();
-        let result = run_command("exit 42", &env, &dir, Duration::from_secs(5), None).unwrap();
+        let result =
+            run_command("exit 42", &env, &dir, Duration::from_secs(5), None, None).unwrap();
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(42));
     }
@@ -290,6 +325,7 @@ mod tests {
             &dir,
             Duration::from_secs(5),
             None,
+            None,
         )
         .unwrap();
         assert!(result.success);
@@ -300,7 +336,7 @@ mod tests {
     fn run_command_working_dir() {
         let env = HashMap::new();
         let dir = std::env::temp_dir();
-        let result = run_command("pwd", &env, &dir, Duration::from_secs(5), None).unwrap();
+        let result = run_command("pwd", &env, &dir, Duration::from_secs(5), None, None).unwrap();
         assert!(result.success);
         // On macOS /tmp is a symlink to /private/tmp, so canonicalize both.
         let expected = dir.canonicalize().unwrap();
@@ -321,6 +357,7 @@ mod tests {
             &dir,
             Duration::from_secs(5),
             Some(tx),
+            None,
         )
         .unwrap();
         assert!(result.success);
@@ -334,7 +371,14 @@ mod tests {
     fn run_command_timeout() {
         let env = HashMap::new();
         let dir = std::env::temp_dir();
-        let result = run_command("sleep 60", &env, &dir, Duration::from_millis(200), None);
+        let result = run_command(
+            "sleep 60",
+            &env,
+            &dir,
+            Duration::from_millis(200),
+            None,
+            None,
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         let msg = format!("{err:#}");
@@ -342,6 +386,26 @@ mod tests {
             msg.contains("timed out"),
             "expected timeout error, got: {msg}"
         );
+    }
+
+    #[test]
+    fn run_command_sends_child_pid_on_pid_sender() {
+        let (pid_tx, pid_rx) = mpsc::channel::<u32>();
+        let env = HashMap::new();
+        let dir = std::env::temp_dir();
+        run_command(
+            "true",
+            &env,
+            &dir,
+            Duration::from_secs(5),
+            None,
+            Some(pid_tx),
+        )
+        .unwrap();
+        let pid = pid_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("pid not sent");
+        assert!(pid > 0, "pid should be a positive integer");
     }
 
     // ── run_command_interactive ─────────────────────────────────────────

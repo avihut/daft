@@ -1,0 +1,59 @@
+name: Two-segment worktree:job address works for logs
+description:
+  "Verifies the B-1 fold-in fix: 'daft hooks jobs logs worktree:job' resolves
+  the worktree:job two-segment form correctly."
+
+repos:
+  - name: test-retry-addr
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Address test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/addr
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: addr-job
+              run: echo address-output
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_RETRY_ADDR
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-retry-addr/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch
+    run: env -u DAFT_TESTING git-worktree-checkout feature/addr 2>&1
+    cwd: "$WORK_DIR/test-retry-addr/main"
+    expect:
+      exit_code: 0
+
+  - name: View log via two-segment worktree:job from inside the worktree
+    run: daft hooks jobs logs feature/addr:addr-job 2>&1
+    cwd: "$WORK_DIR/test-retry-addr/feature/addr"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "addr-job"
+        - "address-output"
+
+  - name: View log via two-segment worktree:job from the main worktree
+    run: daft hooks jobs logs feature/addr:addr-job 2>&1
+    cwd: "$WORK_DIR/test-retry-addr/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "addr-job"
+        - "address-output"

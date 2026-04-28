@@ -13,7 +13,7 @@ use crate::{
         format::{
             compute_column_values, format_ahead_behind, format_head_status, format_human_size,
             format_remote_status, format_shorthand_age, relative_display_path,
-            shorthand_from_seconds, ColumnContext,
+            shorthand_from_seconds, strip_ansi, ColumnContext,
         },
         CliOutput, Output, OutputConfig,
     },
@@ -1011,24 +1011,6 @@ fn print_table(
     }
 
     println!("{table}");
-}
-
-/// Strip ANSI escape codes from a string so it can be re-wrapped with a single style.
-fn strip_ansi(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut in_escape = false;
-    for c in s.chars() {
-        if in_escape {
-            if c.is_ascii_alphabetic() {
-                in_escape = false;
-            }
-        } else if c == '\x1b' {
-            in_escape = true;
-        } else {
-            result.push(c);
-        }
-    }
-    result
 }
 
 #[cfg(test)]

@@ -1,0 +1,93 @@
+name: Retry preserves DAG needs within the retry set and prunes outside edges
+description:
+  "Verifies DAG-aware retry. Hook declares a->b->c chain. First run: a succeeds,
+  b fails, c is skipped due to dep failure. Retry picks up b and c, prunes b dep
+  on a, preserves c dep on b."
+
+repos:
+  - name: test-retry-dag
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# DAG retry test"
+          - path: maybe-fail.sh
+            content: |
+              #!/usr/bin/env bash
+              if [ ! -f /tmp/daft-dag-test-pass ]; then
+                echo "b fails"
+                exit 1
+              fi
+              echo "b passes"
+        commits:
+          - message: "Initial commit"
+      - name: feature/dag
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: step-a
+              run: echo a-ok
+            - name: step-b
+              run: bash maybe-fail.sh
+              needs: [step-a]
+            - name: step-c
+              run: echo c-runs
+              needs: [step-b]
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_RETRY_DAG
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-retry-dag/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (a passes, b fails, c skipped)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/dag 2>&1
+    cwd: "$WORK_DIR/test-retry-dag/main"
+    expect:
+      exit_code: 0
+
+  - name: List jobs — a completed, b failed
+    run: daft hooks jobs 2>&1
+    cwd: "$WORK_DIR/test-retry-dag/feature/dag"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "step-a"
+        - "completed"
+        - "step-b"
+        - "failed"
+
+  - name: Retry — should retry b and c but not a
+    run: daft hooks jobs retry 2>&1
+    cwd: "$WORK_DIR/test-retry-dag/feature/dag"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Retried"
+
+  - name: Fix step-b
+    run: touch /tmp/daft-dag-test-pass
+    expect:
+      exit_code: 0
+
+  - name: Retry again — b passes, c should run
+    run: daft hooks jobs retry 2>&1
+    cwd: "$WORK_DIR/test-retry-dag/feature/dag"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Retried"
+
+  - name: Clean up sentinel
+    run: rm -f /tmp/daft-dag-test-pass
+    expect:
+      exit_code: 0

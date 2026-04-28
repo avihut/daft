@@ -109,12 +109,74 @@ pub fn format_remote_status(
     parts.join(" ")
 }
 
+/// Strip ANSI CSI escape sequences from a string.
+///
+/// Used for measuring the *visible* width of a styled string — width-based
+/// layout code must not count escape bytes.
+pub fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut in_escape = false;
+    for c in s.chars() {
+        if in_escape {
+            if c.is_ascii_alphabetic() {
+                in_escape = false;
+            }
+        } else if c == '\x1b' {
+            in_escape = true;
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Count the *visible* width of a string in chars, ignoring ANSI CSI escapes.
+///
+/// Equivalent to `strip_ansi(s).chars().count()` but walks the string in a
+/// single pass without allocating.
+pub fn visible_width(s: &str) -> usize {
+    let mut count = 0usize;
+    let mut in_escape = false;
+    for c in s.chars() {
+        if in_escape {
+            if c.is_ascii_alphabetic() {
+                in_escape = false;
+            }
+        } else if c == '\x1b' {
+            in_escape = true;
+        } else {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Pad `s` with trailing spaces so its *visible* width reaches `target`.
+/// If `s` already meets or exceeds `target`, returns it unchanged.
+///
+/// "Visible width" is the char count after `strip_ansi`. ANSI escape bytes
+/// are not counted.
+pub fn pad_to_visible_width(s: &str, target: usize) -> String {
+    let visible = visible_width(s);
+    if visible >= target {
+        s.to_string()
+    } else {
+        let mut out = String::with_capacity(s.len() + (target - visible));
+        out.push_str(s);
+        for _ in 0..(target - visible) {
+            out.push(' ');
+        }
+        out
+    }
+}
+
 /// Convert seconds elapsed into a compact shorthand string.
 ///
 /// Examples: `<1m`, `5m`, `3h`, `2d`, `3w`, `5mo`, `2y`.
 pub fn shorthand_from_seconds(secs: i64) -> String {
     if secs < 0 {
-        return "<1m".to_string();
+        // Negative inputs are clock skew; clamp to "just now".
+        return "0s".to_string();
     }
     let minutes = secs / 60;
     let hours = secs / 3600;
@@ -124,7 +186,7 @@ pub fn shorthand_from_seconds(secs: i64) -> String {
     let years = days / 365;
 
     if minutes < 1 {
-        "<1m".to_string()
+        format!("{secs}s")
     } else if hours < 1 {
         format!("{minutes}m")
     } else if days < 1 {
@@ -326,9 +388,10 @@ mod tests {
 
     #[test]
     fn test_shorthand_from_seconds_sub_minute() {
-        assert_eq!(shorthand_from_seconds(0), "<1m");
-        assert_eq!(shorthand_from_seconds(30), "<1m");
-        assert_eq!(shorthand_from_seconds(59), "<1m");
+        assert_eq!(shorthand_from_seconds(0), "0s");
+        assert_eq!(shorthand_from_seconds(1), "1s");
+        assert_eq!(shorthand_from_seconds(30), "30s");
+        assert_eq!(shorthand_from_seconds(59), "59s");
     }
 
     #[test]
@@ -374,8 +437,9 @@ mod tests {
     }
 
     #[test]
-    fn test_shorthand_from_seconds_negative() {
-        assert_eq!(shorthand_from_seconds(-100), "<1m");
+    fn test_shorthand_from_seconds_negative_clamps_to_zero() {
+        assert_eq!(shorthand_from_seconds(-1), "0s");
+        assert_eq!(shorthand_from_seconds(-100), "0s");
     }
 
     #[test]
@@ -420,5 +484,83 @@ mod tests {
         assert!(!is_old_seconds(7 * 86400));
         assert!(is_old_seconds(7 * 86400 + 1));
         assert!(is_old_seconds(30 * 86400));
+    }
+
+    #[test]
+    fn strip_ansi_removes_csi_sequences() {
+        assert_eq!(strip_ansi("\x1b[2mhello\x1b[0m"), "hello");
+        assert_eq!(strip_ansi("\x1b[38;5;208mwarn\x1b[0m"), "warn");
+        assert_eq!(strip_ansi("plain"), "plain");
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn strip_ansi_preserves_unicode_glyphs() {
+        // Box-drawing and arrows must survive — these are core to the timeline
+        // display.
+        assert_eq!(strip_ansi("\x1b[2m│\x1b[0m"), "│");
+        assert_eq!(
+            strip_ansi("\x1b[38;5;208m\u{2192}\x1b[0m install"),
+            "\u{2192} install",
+        );
+    }
+
+    #[test]
+    fn visible_width_strips_csi_sequences() {
+        assert_eq!(visible_width("\x1b[2mhello\x1b[0m"), 5);
+        assert_eq!(visible_width("\x1b[38;5;208mwarn\x1b[0m"), 4);
+        assert_eq!(visible_width("plain"), 5);
+        assert_eq!(visible_width(""), 0);
+    }
+
+    #[test]
+    fn visible_width_preserves_unicode_glyphs() {
+        // Box-drawing and arrows must count as visible chars.
+        assert_eq!(visible_width("\x1b[2m│\x1b[0m"), 1);
+        assert_eq!(
+            visible_width("\x1b[38;5;208m\u{2192}\x1b[0m install"),
+            "\u{2192} install".chars().count(),
+        );
+    }
+
+    #[test]
+    fn visible_width_matches_strip_ansi_chars_count() {
+        let cases = [
+            "",
+            "plain",
+            "\x1b[31mfailed!\x1b[0m",
+            "\x1b[2m│\x1b[0m   row",
+            "\x1b[38;5;208m\u{27f3} running (stale)\x1b[0m",
+        ];
+        for c in cases {
+            assert_eq!(
+                visible_width(c),
+                strip_ansi(c).chars().count(),
+                "mismatch for input: {c:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn pad_to_visible_width_no_pad_when_already_at_or_above_target() {
+        assert_eq!(pad_to_visible_width("abc", 3), "abc");
+        assert_eq!(pad_to_visible_width("abcd", 3), "abcd");
+    }
+
+    #[test]
+    fn pad_to_visible_width_appends_trailing_spaces_to_reach_target() {
+        assert_eq!(pad_to_visible_width("ab", 5), "ab   ");
+    }
+
+    #[test]
+    fn pad_to_visible_width_counts_visible_chars_not_ansi_bytes() {
+        // Cell with red wrapping reports raw len 14 but visible len 7.
+        let cell = "\x1b[31mfailed!\x1b[0m";
+        let padded = pad_to_visible_width(cell, 10);
+        // Visible width must be exactly 10 after padding.
+        assert_eq!(strip_ansi(&padded).chars().count(), 10);
+        // ANSI bytes preserved at the start; trailing spaces appended after RESET.
+        assert!(padded.starts_with("\x1b[31mfailed!\x1b[0m"));
+        assert!(padded.ends_with("   "));
     }
 }

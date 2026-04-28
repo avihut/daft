@@ -7,12 +7,58 @@
 pub mod cli_presenter;
 pub mod command;
 pub mod dag;
+pub mod log_sink;
 pub mod presenter;
 pub mod runner;
+
+pub use log_sink::{BufferingLogSink, LogSink};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
+
+// ─────────────────────────────────────────────────────────────────────────
+// Background execution types
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Output behavior for background jobs.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackgroundOutput {
+    /// Always write to log file; terminal notification on failure.
+    Log,
+    /// Write to log file only on failure; no terminal notification.
+    Silent,
+}
+
+/// Log configuration for a job.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct LogConfig {
+    /// Log retention duration (e.g., "7d", "24h", "30m").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<String>,
+
+    /// Maximum size of a single output.log before it is truncated at cleanup
+    /// time. Accepts `10MB`, `2GB`, etc. Per-job overridable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_log_size: Option<String>,
+
+    /// Maximum total bytes consumed by all log dirs under
+    /// `<state>/jobs/<repo-uuid>/`. Accepts `500MB`, `2GB`. Repo-level only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_size: Option<String>,
+
+    /// Always retain at least this many invocations per worktree, regardless
+    /// of retention or budget. Repo-level only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_last: Option<usize>,
+
+    /// A `Running`-status job older than this with no live coordinator socket
+    /// is treated as cancelled for cleanup purposes. Accepts `24h`. Repo-level
+    /// only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_running_after: Option<String>,
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Core types
@@ -39,6 +85,12 @@ pub struct JobSpec {
     pub fail_text: Option<String>,
     /// Maximum time the job is allowed to run.
     pub timeout: Duration,
+    /// Whether this job should run in the background.
+    pub background: bool,
+    /// Output behavior for background execution.
+    pub background_output: Option<BackgroundOutput>,
+    /// Log configuration for this job.
+    pub log_config: Option<LogConfig>,
 }
 
 impl JobSpec {
@@ -58,6 +110,9 @@ impl Default for JobSpec {
             interactive: false,
             fail_text: None,
             timeout: JobSpec::DEFAULT_TIMEOUT,
+            background: false,
+            background_output: None,
+            log_config: None,
         }
     }
 }
@@ -143,6 +198,9 @@ mod tests {
         assert!(spec.fail_text.is_none());
         assert!(spec.description.is_none());
         assert_eq!(spec.timeout, JobSpec::DEFAULT_TIMEOUT);
+        assert!(!spec.background);
+        assert!(spec.background_output.is_none());
+        assert!(spec.log_config.is_none());
     }
 
     #[test]
@@ -165,6 +223,9 @@ mod tests {
             interactive: true,
             fail_text: Some("install failed".into()),
             timeout: Duration::from_secs(60),
+            background: false,
+            background_output: None,
+            log_config: None,
         };
 
         assert_eq!(spec.name, "install");
@@ -176,6 +237,9 @@ mod tests {
         assert!(spec.interactive);
         assert_eq!(spec.fail_text.as_deref(), Some("install failed"));
         assert_eq!(spec.timeout, Duration::from_secs(60));
+        assert!(!spec.background);
+        assert!(spec.background_output.is_none());
+        assert!(spec.log_config.is_none());
     }
 
     // ── ExecutionMode ───────────────────────────────────────────────────

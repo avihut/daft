@@ -1454,6 +1454,9 @@ mod streaming_skip_emission_tests {
         ) {
             self.log(&format!("skipped:{name}:{}", preview.unwrap_or("")));
         }
+        fn on_job_background(&self, name: &str, _description: Option<&str>) {
+            self.log(&format!("background:{name}"));
+        }
         fn on_message(&self, _: &str) {}
         fn on_phase_complete(&self, _: std::time::Duration) {}
         fn take_results(&self) -> Vec<crate::executor::JobResult> {

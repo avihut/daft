@@ -22,6 +22,8 @@ mod cli;
 pub mod emit;
 pub mod format;
 pub mod hook_progress;
+pub mod outline;
+pub mod pager;
 mod test;
 pub mod tui;
 

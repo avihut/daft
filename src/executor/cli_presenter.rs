@@ -46,6 +46,7 @@ impl CliPresenter {
             JobOutcome::Success => NodeStatus::Succeeded,
             JobOutcome::Failed => NodeStatus::Failed,
             JobOutcome::Skipped { .. } => NodeStatus::Skipped,
+            JobOutcome::Background { .. } => NodeStatus::Pending,
         };
 
         JobResult {
@@ -101,6 +102,12 @@ impl JobPresenter for CliPresenter {
     fn on_job_cancelled(&self, name: &str, duration: Duration) {
         let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
         r.finish_job_cancelled(name, duration);
+    }
+
+    fn on_job_background(&self, name: &str, description: Option<&str>) {
+        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
+        r.show_background_job(name, description);
+        r.record_background_job(name, description);
     }
 
     fn on_message(&self, msg: &str) {

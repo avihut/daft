@@ -1,0 +1,67 @@
+name: Cross-worktree retry via --worktree flag and composite address
+description:
+  "Verifies that 'retry --worktree feature/x' works from a different worktree,
+  and that the composite address form 'retry feature/x:job-name' also works
+  after C lifts B's guard."
+
+repos:
+  - name: test-cross-retry
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Cross-worktree retry test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/target
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: cross-job
+              run: "exit 1"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_CROSS_RETRY
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-cross-retry/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (hook fires, job fails)
+    run: env -u DAFT_TESTING git-worktree-checkout feature/target 2>&1
+    cwd: "$WORK_DIR/test-cross-retry/main"
+    expect:
+      exit_code: 0
+
+  - name: Retry from main worktree using --worktree flag
+    run: daft hooks jobs retry --worktree feature/target 2>&1
+    cwd: "$WORK_DIR/test-cross-retry/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Retried"
+
+  - name: View jobs of feature/target from main using --worktree
+    run: daft hooks jobs --worktree feature/target 2>&1
+    cwd: "$WORK_DIR/test-cross-retry/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "cross-job"
+        - "hooks jobs retry"
+
+  - name: Retry from main using composite address
+    run: daft hooks jobs retry feature/target:cross-job 2>&1
+    cwd: "$WORK_DIR/test-cross-retry/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Retried 1 job"

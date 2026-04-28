@@ -6,12 +6,16 @@
 //! Job execution is delegated to the generic executor (`crate::executor::runner`)
 //! via the job adapter (`crate::hooks::job_adapter`).
 
+pub mod partition;
+pub use partition::partition_foreground_background;
+
 use super::environment::HookContext;
 use super::executor::HookResult;
 use super::template;
 use super::yaml_config::{GroupDef, HookDef, JobDef};
 use super::yaml_config_loader::get_effective_jobs;
 use crate::executor::presenter::JobPresenter;
+use crate::executor::LogConfig;
 use crate::hooks::tracking::{effective_tracks, TrackedAttribute};
 use crate::output::Output;
 use crate::settings::HookOutputConfig;
@@ -94,6 +98,7 @@ pub fn execute_yaml_hook(
         output_config,
         &JobFilter::default(),
         &presenter,
+        None,
     )
 }
 
@@ -110,6 +115,7 @@ pub fn execute_yaml_hook_with_rc(
     _output_config: &HookOutputConfig,
     filter: &JobFilter,
     presenter: &Arc<dyn JobPresenter>,
+    repo_log: Option<&LogConfig>,
 ) -> Result<HookResult> {
     // Check hook-level skip/only conditions
     if let Some(ref skip) = hook_def.skip {
@@ -131,6 +137,36 @@ pub fn execute_yaml_hook_with_rc(
                 HookResult::skipped(info.reason)
             });
         }
+    }
+
+    // Build hook environment early so we can write an invocation record
+    // unconditionally — every hook that fires (even empty / fully-filtered)
+    // gets logged before any early returns below.
+    let hook_env_obj = super::environment::HookEnvironment::from_context(ctx);
+
+    // Compute repo hash and invocation ID unconditionally so every hook
+    // invocation lands in the log store, even fg-only, empty, and remove hooks.
+    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
+    let invocation_id = crate::coordinator::log_store::generate_invocation_id();
+    let store = std::sync::Arc::new(crate::coordinator::log_store::LogStore::for_repo(
+        &repo_hash,
+    )?);
+
+    let trigger_command = if ctx.command == "hooks-run" {
+        format!("hooks run {}", hook_name)
+    } else {
+        hook_name.to_string()
+    };
+
+    let inv_meta = crate::coordinator::log_store::InvocationMeta {
+        invocation_id: invocation_id.clone(),
+        trigger_command: trigger_command.clone(),
+        hook_type: hook_name.to_string(),
+        worktree: ctx.branch_name.clone(),
+        created_at: chrono::Utc::now(),
+    };
+    if let Err(e) = store.write_invocation_meta(&invocation_id, &inv_meta) {
+        eprintln!("daft: failed to write invocation meta for '{hook_name}': {e}");
     }
 
     let mut jobs = get_effective_jobs(hook_def);
@@ -195,38 +231,153 @@ pub fn execute_yaml_hook_with_rc(
         ExecutionMode::Parallel => crate::executor::ExecutionMode::Parallel,
     };
 
-    // Build hook environment
-    let hook_env_obj = super::environment::HookEnvironment::from_context(ctx);
+    // Build hook environment map for job specs (uses the hoisted hook_env_obj).
     let hook_env = hook_env_obj.vars().clone();
 
     // Convert filtered JobDefs to generic JobSpecs
-    let specs = crate::hooks::job_adapter::yaml_jobs_to_specs(
+    let (specs, skipped_jobs) = crate::hooks::job_adapter::yaml_jobs_to_specs(
         &jobs,
         ctx,
         &hook_env,
         source_dir,
         working_dir,
         rc,
+        hook_def.background,
+        repo_log,
     );
+
+    // Write sparse records for jobs that were filtered out before execution.
+    // Each skipped job gets a meta.json + log file containing the reason so
+    // the user can investigate via `daft hooks jobs logs <name>`. This runs
+    // BEFORE the `specs.is_empty()` early return so fully-filtered hooks still
+    // produce skipped-job records.
+    for sj in &skipped_jobs {
+        let meta = crate::coordinator::log_store::JobMeta::skipped(
+            &sj.name,
+            hook_name,
+            &ctx.branch_name,
+            "",
+            sj.background,
+            vec![],
+        );
+        if let Err(e) = store.write_job_record(&invocation_id, &meta, sj.reason.as_bytes()) {
+            eprintln!(
+                "daft: failed to write skipped job record for '{}': {e}",
+                sj.name
+            );
+        }
+    }
+
+    // Capture the repo-level cleanup policy as a sidecar so cleanup doesn't
+    // need to re-parse `daft.yml` later. Written once per hook fire after
+    // spec building; most-recent write wins. Note: early returns above (no
+    // jobs defined, all jobs filtered by tags or changed-attribute tracking)
+    // skip this write, so the previous sidecar value remains in effect until
+    // the next non-fully-filtered fire. Best-effort: a failed write should
+    // not break the hook fire.
+    let repo_policy = crate::coordinator::clean_policy::build_repo_policy(&specs);
+    if let Err(e) = store.write_repo_policy(&repo_policy) {
+        eprintln!("daft: failed to write repo policy for '{hook_name}': {e}");
+    }
 
     if specs.is_empty() {
         return Ok(HookResult::skipped("All jobs skipped"));
     }
 
+    // Partition into foreground and background phases.
+    // Background jobs that are transitively depended on by foreground jobs
+    // are promoted to foreground to preserve DAG validity.
+    let (fg_specs, bg_specs) = partition_foreground_background(&specs);
+
+    // Warn about promoted jobs (background flag was true but they ended up
+    // in the foreground partition because a foreground job depends on them).
+    for spec in &fg_specs {
+        if spec.background {
+            presenter.on_message(&format!(
+                "⚠ Job '{}' promoted to foreground (required by a foreground job)",
+                spec.name,
+            ));
+        }
+    }
+
     // Clear any active spinner — the presenter writes directly to stderr.
     output.finish_spinner();
+
+    let fg_sink: std::sync::Arc<dyn crate::executor::log_sink::LogSink> =
+        std::sync::Arc::new(crate::executor::log_sink::BufferingLogSink::new(
+            std::sync::Arc::clone(&store),
+            invocation_id.clone(),
+            hook_name.to_string(),
+            ctx.branch_name.clone(),
+        ));
 
     // Use presenter for header and execution
     presenter.on_phase_start(hook_name);
     let hook_start = std::time::Instant::now();
 
-    // Execute via the generic runner
-    let results = crate::executor::runner::run_jobs(&specs, exec_mode, presenter)?;
+    // Execute foreground jobs via the generic runner
+    let fg_results =
+        crate::executor::runner::run_jobs(&fg_specs, exec_mode, presenter, Some(&fg_sink))?;
+
+    // If there are no background jobs, print summary and return.
+    if bg_specs.is_empty() {
+        presenter.on_phase_complete(hook_start.elapsed());
+        return job_results_to_hook_result(&fg_results);
+    }
+
+    // If DAFT_NO_BACKGROUND_JOBS is set, run background jobs inline as foreground.
+    if std::env::var("DAFT_NO_BACKGROUND_JOBS").is_ok() {
+        let bg_results =
+            crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter, Some(&fg_sink))?;
+        presenter.on_phase_complete(hook_start.elapsed());
+        let mut all_results = fg_results;
+        all_results.extend(bg_results);
+        return job_results_to_hook_result(&all_results);
+    }
+
+    // Register background jobs in the presenter (live progress + summary)
+    // BEFORE on_phase_complete so they appear in both sections.
+    for spec in &bg_specs {
+        presenter.on_job_background(&spec.name, spec.description.as_deref());
+    }
 
     presenter.on_phase_complete(hook_start.elapsed());
 
-    // Convert Vec<JobResult> to HookResult
-    job_results_to_hook_result(&results)
+    // Dispatch background jobs to a forked coordinator process.
+    #[cfg(unix)]
+    {
+        let mut coord_state =
+            crate::coordinator::process::CoordinatorState::new(&repo_hash, &invocation_id)
+                .with_metadata(&trigger_command, hook_name, &ctx.branch_name);
+        for spec in bg_specs {
+            coord_state.add_job(spec);
+        }
+
+        let bg_count = coord_state.jobs.len();
+        crate::coordinator::process::fork_coordinator(coord_state, (*store).clone())?;
+
+        presenter.on_message(&format!(
+            "⟳ {} background job{} running — daft hooks jobs to manage",
+            bg_count,
+            if bg_count == 1 { "" } else { "s" },
+        ));
+    }
+
+    // On non-Unix platforms, background coordinator is not available.
+    // Fall back to running background jobs inline.
+    #[cfg(not(unix))]
+    {
+        let bg_results =
+            crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter, Some(&fg_sink))?;
+        let mut all_results = fg_results.clone();
+        all_results.extend(bg_results);
+        return job_results_to_hook_result(&all_results);
+    }
+
+    // Convert foreground results to HookResult (background jobs are now
+    // running in the forked coordinator and do not affect the hook outcome).
+    #[cfg(unix)]
+    job_results_to_hook_result(&fg_results)
 }
 
 /// Convert generic executor results into a `HookResult`.
