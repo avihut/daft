@@ -1,0 +1,29 @@
+name: Remove vanilla (non-daft) repo
+description: >
+  daft repo remove handles a plain git init repo with no daft hooks. The repo is
+  created with mkdir + git init (not daft clone), an initial commit is added
+  with env-based identity, and daft repo remove --force tears it down cleanly.
+  Verifies daft works on bare-vanilla git repos.
+
+steps:
+  - name: Make a vanilla git repo with one commit
+    run: |
+      mkdir -p "$WORK_DIR/plain"
+      cd "$WORK_DIR/plain"
+      git init -q
+      echo hi > README.md
+      git add README.md
+      git commit -q -m "init"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/plain"
+        - "$WORK_DIR/plain/.git"
+
+  - name: Remove the vanilla repo
+    run: daft repo remove --force "$WORK_DIR/plain" 2>&1
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/plain"
+        - "$WORK_DIR/plain/.git"

@@ -1,0 +1,22 @@
+name: Remove rejects non-git paths
+description: >
+  daft repo remove refuses to operate on a directory that is not inside a git
+  repository. Asserts non-zero exit, an explanatory error message in the
+  combined output, and that the directory is left untouched.
+
+steps:
+  - name: Make an empty (non-git) directory
+    run: mkdir -p "$WORK_DIR/not-a-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/not-a-repo"
+
+  - name: Try to remove it (should fail)
+    run: daft repo remove --force "$WORK_DIR/not-a-repo" 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not inside a Git repository"
+      dirs_exist:
+        - "$WORK_DIR/not-a-repo"

@@ -1,0 +1,76 @@
+name: Remove repo with worktree-pre-remove hooks
+description: >
+  When a daft-trusted repo has a worktree-pre-remove hook, daft repo remove
+  fires it for every worktree before tearing the worktree down. The marker files
+  written by the hook prove the hook ran. After removal the bare git directory
+  and all worktrees are gone but the marker files survive in a sibling location.
+  Note: the abort/exit-code-propagation variant called out in the plan is not
+  testable from YAML for worktree-pre-remove (HookDef has no fail_mode key and
+  pre-remove defaults to FailMode::Warn — see src/hooks/mod.rs:184). The
+  abort-mode-from-config path is also not exposed through user-facing YAML for
+  this hook type. Bundle G's bash integration test covers the marker side; the
+  abort-exit-code path is deferred until the YAML config exposes fail_mode for
+  pre-remove or until the bash test grows that case.
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Hooks remove test"
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-pre-remove:
+          jobs:
+            - name: marker
+              run: 'echo "pre-remove ran for ${DAFT_BRANCH_NAME}" >> "${WORK_DIR}/hook-markers.txt"'
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+      files_exist:
+        - "$WORK_DIR/test-repo/main/daft.yml"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Add a develop worktree (inherits hooks from main)
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+      files_exist:
+        - "$WORK_DIR/test-repo/develop/daft.yml"
+
+  - name: Remove the repo — pre-remove hook fires per worktree
+    run: daft repo remove --force "$WORK_DIR/test-repo" 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/main"
+        - "$WORK_DIR/test-repo/develop"
+        - "$WORK_DIR/test-repo/.git"
+      files_exist:
+        - "$WORK_DIR/hook-markers.txt"
+      file_contains:
+        - path: "$WORK_DIR/hook-markers.txt"
+          content: "main"
+        - path: "$WORK_DIR/hook-markers.txt"
+          content: "develop"

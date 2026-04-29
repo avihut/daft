@@ -1,0 +1,41 @@
+name: Remove --dry-run prints plan but touches nothing
+description: >
+  daft repo remove --dry-run reports what would be removed (worktrees, bare git
+  dir, trust DB entry) and exits 0 without modifying the filesystem.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.git"
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Add a develop worktree to make the plan multi-line
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Dry-run reports plan, leaves repo untouched
+    run: daft repo remove --dry-run "$WORK_DIR/test-repo" 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Would remove"
+        - "main"
+        - "develop"
+        - "trust DB entry"
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.git"
+        - "$WORK_DIR/test-repo/main"
+        - "$WORK_DIR/test-repo/develop"
