@@ -193,10 +193,51 @@ pub fn handle_post_tui_deferred(
 }
 
 /// Check if any TUI tasks failed and bail if so.
+///
+/// This variant is intentionally tolerant of hook failures: a row whose
+/// filesystem-side task succeeded but whose hook aborted is still considered
+/// a success. `prune` relies on this — it deliberately keeps going past hook
+/// failures and reports them via the post-TUI summary without flipping the
+/// process exit code.
 pub fn check_tui_failures(rows: &[WorktreeRow]) -> anyhow::Result<()> {
     let failed_count = rows
         .iter()
         .filter(|w| matches!(&w.status, WorktreeStatus::Done(FinalStatus::Failed)))
+        .count();
+
+    if failed_count > 0 {
+        anyhow::bail!("{failed_count} task(s) failed");
+    }
+
+    Ok(())
+}
+
+/// Strict variant of [`check_tui_failures`] used by `daft repo remove`.
+///
+/// repo-remove enforces stricter exit-code semantics than prune: per
+/// `docs/superpowers/specs/2026-04-28-remove-repo-design.md` line 178, the
+/// process exits non-zero if at least one hook failed in a non-warned mode,
+/// even though the filesystem-side worktree removal proceeded (which leaves
+/// the row at `WorktreeStatus::Done(FinalStatus::Pruned)`). The TUI marks
+/// such a row with `hook_failed = true` (see
+/// `src/output/tui/state.rs` — `HookCompleted` handler), so we treat that
+/// flag as a run failure here.
+///
+/// The sequential path enforces the same rule directly in
+/// `commands/repo/remove.rs::run_sequential` via `any_failed`. Without this
+/// helper the TUI path would silently exit 0 in the same scenario.
+///
+/// Note: a row may be both `Done(Failed)` and `hook_failed`; we count it
+/// once via a single OR-filter to keep the error message accurate.
+///
+/// Coverage: the strict-vs-tolerant asymmetry is unit-tested below. The
+/// abort-mode end-to-end YAML scenario is deferred until the YAML config
+/// surface exposes `fail_mode` for `worktree-pre-remove` (documented in
+/// `tests/manual/scenarios/repo/remove-with-hooks.yml`).
+pub fn check_tui_failures_strict(rows: &[WorktreeRow]) -> anyhow::Result<()> {
+    let failed_count = rows
+        .iter()
+        .filter(|w| matches!(&w.status, WorktreeStatus::Done(FinalStatus::Failed)) || w.hook_failed)
         .count();
 
     if failed_count > 0 {
@@ -439,5 +480,83 @@ fn run_remove_hook_best_effort(
             exit_code: None,
             output: Some(format!("{e:#}")),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::worktree::list::WorktreeInfo;
+    use crate::output::tui::WorktreeRow;
+
+    fn pruned_row(branch: &str) -> WorktreeRow {
+        let mut row = WorktreeRow::idle(WorktreeInfo::local_branch_stub(branch, None));
+        row.status = WorktreeStatus::Done(FinalStatus::Pruned);
+        row
+    }
+
+    fn failed_row(branch: &str) -> WorktreeRow {
+        let mut row = WorktreeRow::idle(WorktreeInfo::local_branch_stub(branch, None));
+        row.status = WorktreeStatus::Done(FinalStatus::Failed);
+        row
+    }
+
+    /// Regression test for the asymmetry fixed by `check_tui_failures_strict`:
+    /// a non-warned hook failure leaves the row at `Done(Pruned)` because the
+    /// filesystem-side worktree removal still succeeds. The tolerant variant
+    /// (used by prune) returns Ok; the strict variant (used by repo-remove)
+    /// must bail. See spec line 178 of the remove-repo design doc.
+    #[test]
+    fn strict_variant_bails_on_hook_failed_only() {
+        let mut row = pruned_row("main");
+        row.hook_failed = true;
+
+        let strict_rows = [row];
+        assert!(
+            check_tui_failures_strict(&strict_rows).is_err(),
+            "strict variant must bail on hook_failed even with Done(Pruned) status"
+        );
+
+        // Build a fresh equivalent row for the tolerant variant — WorktreeRow
+        // isn't Clone, so we re-construct rather than try to share state.
+        let mut tolerant_row = pruned_row("main");
+        tolerant_row.hook_failed = true;
+        let tolerant_rows = [tolerant_row];
+        assert!(
+            check_tui_failures(&tolerant_rows).is_ok(),
+            "tolerant variant (used by prune) must NOT bail on hook_failed alone"
+        );
+    }
+
+    /// Both variants agree when the row's task itself failed.
+    #[test]
+    fn both_variants_bail_on_done_failed() {
+        let strict_rows = [failed_row("main")];
+        assert!(check_tui_failures_strict(&strict_rows).is_err());
+        let tolerant_rows = [failed_row("main")];
+        assert!(check_tui_failures(&tolerant_rows).is_err());
+    }
+
+    /// A row marked both `Done(Failed)` AND `hook_failed` counts only once
+    /// in the strict variant — no double-counting in the error message.
+    #[test]
+    fn strict_variant_counts_combined_failure_once() {
+        let mut row = failed_row("main");
+        row.hook_failed = true;
+        let rows = [row];
+        let err = check_tui_failures_strict(&rows).unwrap_err();
+        assert!(
+            err.to_string().starts_with("1 task(s) failed"),
+            "expected single-failure count, got: {err}"
+        );
+    }
+
+    /// A clean run (no hook failures, all rows succeeded) passes both
+    /// variants.
+    #[test]
+    fn neither_variant_bails_on_clean_rows() {
+        let rows = [pruned_row("main"), pruned_row("develop")];
+        assert!(check_tui_failures(&rows).is_ok());
+        assert!(check_tui_failures_strict(&rows).is_ok());
     }
 }

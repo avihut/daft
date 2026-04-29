@@ -240,7 +240,7 @@ fn run_tui(
     verbose: u8,
 ) -> Result<()> {
     use crate::commands::sync_shared::{
-        check_tui_failures, execute_remove_bare_task, execute_remove_worktree_task,
+        check_tui_failures_strict, execute_remove_bare_task, execute_remove_worktree_task,
     };
     use crate::core::worktree::list::{Stat, WorktreeInfo};
     use crate::core::worktree::sync_dag::{
@@ -399,7 +399,12 @@ fn run_tui(
         }
     }
 
-    check_tui_failures(&completed.rows)?;
+    // repo-remove uses the strict variant: a non-warned hook failure must
+    // flip the process exit code even when the row is `Done(Pruned)` because
+    // the filesystem-side removal succeeded. See
+    // `sync_shared::check_tui_failures_strict` for the rationale; this keeps
+    // the TUI path symmetric with `run_sequential`'s `any_failed` handling.
+    check_tui_failures_strict(&completed.rows)?;
     Ok(())
 }
 
