@@ -55,8 +55,14 @@ pub fn run() -> Result<()> {
 pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     use crate::core::worktree::remove_repo::{enumerate_worktrees, resolve_repo};
 
-    let target = resolve_repo(args.path.as_deref())?;
-    let worktrees = enumerate_worktrees(&target)?;
+    let settings = crate::core::settings::DaftSettings::load()?;
+    let use_gitoxide = settings.use_gitoxide;
+    if crate::git::should_show_gitoxide_notice(use_gitoxide) {
+        eprintln!("[experimental] Using gitoxide backend for git operations");
+    }
+
+    let target = resolve_repo(args.path.as_deref(), use_gitoxide)?;
+    let worktrees = enumerate_worktrees(&target, use_gitoxide)?;
 
     if args.dry_run {
         print_plan(&target, &worktrees);
