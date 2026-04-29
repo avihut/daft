@@ -215,6 +215,118 @@ test_repo_remove_non_git_path_fails() {
     return 0
 }
 
+# Test 5: Regression test for `mise-tasks/sandbox/clean-repos` denylist.
+# Spec calls for a scenario that creates two repos under the sandbox, runs the
+# helper, and asserts both repos are gone while no spurious files were touched
+# in the denylisted subtrees (bin/, config/, data/, state/).
+#
+# Implementation choice (Plan A from issue plan, but invoking the script
+# directly instead of via `mise run`): the helper resolves its target via
+# `sandbox_dir` in `mise-tasks/sandbox/_lib.sh`, which honors
+# `DAFT_SANDBOX_BASE` and uses the *current pwd* hash. Going through `mise run`
+# would walk up to find the daft project's mise.toml from the test's pwd,
+# coupling the test to the daft repo layout. Direct invocation with a faked
+# pwd and DAFT_SANDBOX_BASE keeps the test isolated and exercises the same
+# denylist logic that the mise task runs.
+test_repo_remove_clean_repos_helper() {
+    local fake_pwd sandbox_base hash sandbox_dir
+    # Resolve through `cd ... && pwd` so the path matches what `pwd` returns
+    # inside `sandbox_dir()`. macOS `mktemp` can yield paths like
+    # `/var/folders/.../T//foo` (note the double-slash), but `pwd` normalizes
+    # to a single slash — and `sandbox_dir()` hashes the `pwd` output, so the
+    # two must agree byte-for-byte for the hashes to match.
+    fake_pwd=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/daft-clean-repos-pwd.XXXXXX")" && pwd)
+    sandbox_base=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/daft-clean-repos-base.XXXXXX")" && pwd)
+    # Trap on RETURN to clean up even when assertions fail mid-way.
+    # shellcheck disable=SC2064
+    trap "rm -rf '$fake_pwd' '$sandbox_base'" RETURN
+
+    if command -v sha256sum &>/dev/null; then
+        hash=$(echo -n "$fake_pwd" | sha256sum | cut -c1-8)
+    else
+        hash=$(echo -n "$fake_pwd" | shasum -a 256 | cut -c1-8)
+    fi
+    sandbox_dir="$sandbox_base/daft-sandbox-$hash"
+
+    # Two real git repos under test/ — these are what clean-repos should
+    # discover and remove.
+    mkdir -p "$sandbox_dir/test/scenario1/work"
+    mkdir -p "$sandbox_dir/test/scenario2/work"
+    (
+        cd "$sandbox_dir/test/scenario1/work"
+        git init -q
+        echo "scenario1" > README
+        git add README
+        git commit -q -m "init"
+    ) || return 1
+    (
+        cd "$sandbox_dir/test/scenario2/work"
+        git init -q
+        echo "scenario2" > README
+        git add README
+        git commit -q -m "init"
+    ) || return 1
+
+    # Sentinel files in the denylisted subtrees (and a stray .git that lives
+    # inside one of them, to prove the prune actually skips those paths).
+    mkdir -p "$sandbox_dir/bin" "$sandbox_dir/config" "$sandbox_dir/data" "$sandbox_dir/state"
+    echo "bin sentinel" > "$sandbox_dir/bin/keep-me"
+    echo "config sentinel" > "$sandbox_dir/config/keep-me"
+    echo "data sentinel" > "$sandbox_dir/data/keep-me"
+    echo "state sentinel" > "$sandbox_dir/state/keep-me"
+    # A .git file lurking inside data/ to verify the prune denylist excludes
+    # it. If the find command walks into data/ this would be discovered as a
+    # repo and `daft repo remove` would fail (or worse, blow it away).
+    mkdir -p "$sandbox_dir/data/.git"
+    echo "ref: refs/heads/main" > "$sandbox_dir/data/.git/HEAD"
+
+    # Run the helper directly. fake_pwd is the cwd that sandbox_dir() hashes,
+    # and DAFT_SANDBOX_BASE replaces /tmp as the parent directory.
+    (
+        cd "$fake_pwd"
+        DAFT_SANDBOX_BASE="$sandbox_base" \
+            bash "$PROJECT_ROOT/mise-tasks/sandbox/clean-repos"
+    ) || {
+        log_error "clean-repos helper exited non-zero"
+        return 1
+    }
+
+    # Both repos must be gone.
+    if [[ -d "$sandbox_dir/test/scenario1/work" ]]; then
+        log_error "clean-repos did not remove scenario1 repo"
+        return 1
+    fi
+    if [[ -d "$sandbox_dir/test/scenario2/work" ]]; then
+        log_error "clean-repos did not remove scenario2 repo"
+        return 1
+    fi
+
+    # Sentinels in the denylisted subtrees must survive untouched.
+    for subtree in bin config data state; do
+        if [[ ! -f "$sandbox_dir/$subtree/keep-me" ]]; then
+            log_error "clean-repos clobbered $subtree/keep-me sentinel"
+            return 1
+        fi
+        local got
+        got=$(cat "$sandbox_dir/$subtree/keep-me")
+        if [[ "$got" != "$subtree sentinel" ]]; then
+            log_error "$subtree/keep-me sentinel was modified: $got"
+            return 1
+        fi
+    done
+
+    # The .git lurking inside data/ must still be there — it must not have
+    # been discovered through the denylist, and `daft repo remove` must not
+    # have eaten it.
+    if [[ ! -d "$sandbox_dir/data/.git" ]]; then
+        log_error "clean-repos walked into data/ and removed the lurker .git"
+        return 1
+    fi
+
+    log_success "clean-repos removes test repos and respects bin/config/data/state denylist"
+    return 0
+}
+
 # Run all repo-remove integration tests.
 run_repo_remove_tests() {
     log "Running daft repo remove integration tests..."
@@ -223,6 +335,7 @@ run_repo_remove_tests() {
     run_test "repo_remove_runs_pre_remove_hooks" "test_repo_remove_runs_pre_remove_hooks"
     run_test "repo_remove_dry_run" "test_repo_remove_dry_run"
     run_test "repo_remove_non_git_path_fails" "test_repo_remove_non_git_path_fails"
+    run_test "repo_remove_clean_repos_helper" "test_repo_remove_clean_repos_helper"
 }
 
 # Main execution
