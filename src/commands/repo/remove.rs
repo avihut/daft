@@ -240,6 +240,46 @@ fn run_sequential(
     Ok(())
 }
 
+/// Build the per-worktree TUI rows for `daft repo remove`.
+///
+/// One row per `WorktreeEntry`, keyed by the branch label so DAG events
+/// emitted from `build_remove_repo` resolve via `find_row_mut(branch_name)`.
+/// `path` is populated so `WorktreeInfo::refresh_dynamic_fields` can fill in
+/// Path/Base/Changes/etc. cells (without a path it returns early and the row
+/// stays as loaders).
+///
+/// Note: the bare-removal task (`TaskId::RemoveBare`) emits events with
+/// `branch_name: "(bare)"` but we deliberately do NOT add a row for it —
+/// `find_row_mut` returns `None` and silently no-ops. The OperationPhase
+/// indicator at the top of the TUI ("Removing repository") already gives the
+/// user feedback that the overall operation is in flight.
+fn build_tui_rows(
+    worktrees: &[crate::core::worktree::remove_repo::WorktreeEntry],
+) -> Vec<crate::core::worktree::list::WorktreeInfo> {
+    use crate::core::worktree::list::WorktreeInfo;
+
+    worktrees
+        .iter()
+        .map(|w| {
+            let label = w.branch.as_deref().unwrap_or("(detached)");
+            let mut info = WorktreeInfo::empty(label);
+            info.path = Some(w.path.clone());
+            info
+        })
+        .collect()
+}
+
+/// Reserve viewport rows for hook sub-rows: at most 2 hooks per worktree
+/// (pre-remove + post-remove), with a couple of job sub-rows each. We
+/// over-allocate because the inline ratatui viewport cannot grow.
+///
+/// Always allocates the per-worktree slack regardless of verbosity: hooks
+/// during `daft repo remove` may be doing critical teardown (docker, networks,
+/// mounts) and the user shouldn't have to pass `-v` to see them run.
+fn hook_viewport_budget(worktrees_len: usize) -> u16 {
+    5 + (worktrees_len as u16) * 4
+}
+
 fn run_tui(
     target: &crate::core::worktree::remove_repo::RepoTarget,
     worktrees: &[crate::core::worktree::remove_repo::WorktreeEntry],
@@ -248,7 +288,7 @@ fn run_tui(
     use crate::commands::sync_shared::{
         check_tui_failures_strict, execute_remove_bare_task, execute_remove_worktree_task,
     };
-    use crate::core::worktree::list::{Stat, WorktreeInfo};
+    use crate::core::worktree::list::Stat;
     use crate::core::worktree::sync_dag::{
         DagExecutor, OperationPhase, SyncDag, SyncTask, TaskId, TaskMessage, TaskOutcome,
         TaskStatus,
@@ -260,17 +300,7 @@ fn run_tui(
 
     let phases = vec![OperationPhase::RemoveRepo];
 
-    // Seed one TUI row per worktree (keyed by branch label so events emitted
-    // from `build_remove_repo` resolve via `find_row_mut(branch_name)`), plus
-    // one synthetic "(bare)" row for the terminal task.
-    let mut worktree_infos: Vec<WorktreeInfo> = worktrees
-        .iter()
-        .map(|w| {
-            let label = w.branch.as_deref().unwrap_or("(detached)");
-            WorktreeInfo::local_branch_stub(label, None)
-        })
-        .collect();
-    worktree_infos.push(WorktreeInfo::local_branch_stub("(bare)", None));
+    let worktree_infos = build_tui_rows(worktrees);
 
     let dag = SyncDag::build_remove_repo(
         worktrees
@@ -346,16 +376,13 @@ fn run_tui(
     });
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    // Reserve viewport rows for hook sub-rows: at most 2 hooks per worktree
-    // (pre-remove + post-remove), and we may want a couple of job sub-rows
-    // each. Over-allocate since the inline ratatui viewport cannot grow. Only
-    // budget the per-worktree slack when the user asked for hook detail rows
-    // via `-v` — at verbosity 0 they aren't rendered.
-    let extra_rows = 5 + if verbose >= 1 {
-        (worktrees.len() as u16) * 4
-    } else {
-        0
-    };
+    let extra_rows = hook_viewport_budget(worktrees.len());
+    // Bump verbosity to at least 1 so hook sub-rows render in the TUI. For
+    // `daft repo remove`, hooks may be doing critical teardown (docker,
+    // networks, mounts) and the user shouldn't have to pass `-v` to see them.
+    // The `force_sequential` gate above (`verbose >= 2`) is computed on the
+    // raw `args.verbose`, so this bump only affects the TUI path.
+    let table_verbosity = verbose.max(1);
     let table = OperationTable::new(
         phases,
         worktree_infos,
@@ -368,7 +395,7 @@ fn run_tui(
             columns_explicit: false,
             sort_spec: None,
             extra_rows,
-            verbosity: verbose,
+            verbosity: table_verbosity,
             pin_default_branch: false,
             partition_by_owner: false,
         },
@@ -524,5 +551,90 @@ mod tests {
             "bare git dir must be gone"
         );
         assert!(!wt.exists(), "worktree must be gone");
+    }
+
+    use crate::core::worktree::list::EntryKind;
+    use crate::core::worktree::remove_repo::WorktreeEntry;
+    use std::path::PathBuf;
+
+    fn entry(branch: Option<&str>, path: &str) -> WorktreeEntry {
+        WorktreeEntry {
+            path: PathBuf::from(path),
+            branch: branch.map(String::from),
+            is_bare: false,
+            is_detached: branch.is_none(),
+        }
+    }
+
+    #[test]
+    fn build_tui_rows_omits_synthetic_bare_row() {
+        let entries = vec![
+            entry(Some("master"), "/repo/master"),
+            entry(Some("feature"), "/repo/feature"),
+        ];
+        let rows = build_tui_rows(&entries);
+        assert!(
+            rows.iter().all(|r| r.name != "(bare)"),
+            "build_tui_rows must not emit a synthetic '(bare)' row; got names: {:?}",
+            rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn build_tui_rows_one_per_entry_with_path_and_worktree_kind() {
+        let entries = vec![
+            entry(Some("master"), "/repo/master"),
+            entry(Some("feature"), "/repo/feature"),
+        ];
+        let rows = build_tui_rows(&entries);
+        assert_eq!(
+            rows.len(),
+            entries.len(),
+            "build_tui_rows must return exactly one row per WorktreeEntry"
+        );
+        for (row, source) in rows.iter().zip(entries.iter()) {
+            assert_eq!(
+                row.name,
+                source.branch.clone().unwrap_or_else(|| "(detached)".into()),
+                "row name should mirror the entry's branch label"
+            );
+            assert_eq!(
+                row.path.as_ref(),
+                Some(&source.path),
+                "row.path must be Some(entry.path) so refresh_dynamic_fields can populate cells"
+            );
+            assert_eq!(
+                row.kind,
+                EntryKind::Worktree,
+                "row kind must be Worktree (not LocalBranch) so the TUI treats it as a real checkout"
+            );
+        }
+    }
+
+    #[test]
+    fn build_tui_rows_handles_detached_worktree() {
+        let entries = vec![entry(None, "/repo/sandbox")];
+        let rows = build_tui_rows(&entries);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "(detached)");
+        assert_eq!(
+            rows[0].path.as_deref(),
+            Some(std::path::Path::new("/repo/sandbox"))
+        );
+    }
+
+    #[test]
+    fn hook_viewport_budget_nonzero_for_default_verbosity() {
+        // Bug 3: hook viewport must be allocated regardless of verbosity, so
+        // hook progress is visible at the default `verbose=0`.
+        assert!(
+            hook_viewport_budget(0) > 0,
+            "budget must reserve baseline rows even with no worktrees"
+        );
+        assert!(
+            hook_viewport_budget(2) > hook_viewport_budget(0),
+            "budget must scale with worktree count"
+        );
+        assert_eq!(hook_viewport_budget(2), 5 + 2 * 4);
     }
 }
