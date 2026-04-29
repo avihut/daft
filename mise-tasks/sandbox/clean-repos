@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+#MISE description="Run `daft repo remove` on every git repo under the dev sandbox"
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/_lib.sh"
+sandbox_dir="$(sandbox_dir)"
+
+if [ ! -d "$sandbox_dir" ]; then
+    echo "No sandbox at ${sandbox_dir}"
+    exit 0
+fi
+
+# Find every .git (file or directory), filtered out of the known non-repo
+# subtrees (bin/, config/, data/, state/). Resolve each to its repo root
+# (the parent of .git), dedup, then run `daft repo remove --force` per repo.
+mapfile -t repos < <(
+    find "$sandbox_dir" \
+         -path "${sandbox_dir}/bin"    -prune -o \
+         -path "${sandbox_dir}/config" -prune -o \
+         -path "${sandbox_dir}/data"   -prune -o \
+         -path "${sandbox_dir}/state"  -prune -o \
+         -name .git -print 2>/dev/null \
+      | xargs -I{} dirname {} \
+      | sort -u
+)
+
+if [ ${#repos[@]} -eq 0 ]; then
+    echo "No repos found under ${sandbox_dir}"
+    exit 0
+fi
+
+for repo in "${repos[@]}"; do
+    echo "Removing $repo"
+    if ! daft repo remove --force "$repo"; then
+        echo "  (failed — continuing)"
+    fi
+done
