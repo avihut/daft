@@ -30,6 +30,17 @@ pub fn resolve_repo(path: Option<&Path>, use_gitoxide: bool) -> Result<RepoTarge
     if !start.exists() {
         bail!("{}: no such file or directory", start.display());
     }
+    // Canonicalize `start` upfront so subsequent path joins are unambiguous.
+    // Both backends can return `common_dir` as a relative path; on the CLI side
+    // `git -C <start> rev-parse --git-common-dir` returns a path relative to
+    // `start`, while gitoxide's `repo.common_dir()` returns a path relative to
+    // the *process* cwd. With a relative `start` the gitoxide path then
+    // double-prefixed (`<rel-start>/<rel-start>/.git`) when joined naively.
+    // Anchoring `start` to an absolute path eliminates that ambiguity for both
+    // backends. Regression: bash test `repo_remove_relative_path_from_parent`
+    // under `DAFT_USE_GITOXIDE=1`.
+    let start = std::fs::canonicalize(&start)
+        .with_context(|| format!("could not canonicalize {}", start.display()))?;
 
     let common_dir = if use_gitoxide {
         resolve_common_dir_gix(&start)?
@@ -365,6 +376,38 @@ mod tests {
                 err.contains("not inside a Git repository"),
                 "unexpected error: {err}"
             );
+        });
+    }
+
+    #[test]
+    fn resolve_repo_handles_relative_path_from_parent() {
+        // CI regression: under DAFT_USE_GITOXIDE=1, `daft repo remove
+        // <relative-path>` from the parent dir failed with
+        // "could not canonicalize <rel>/<rel>/.git" — gitoxide's
+        // `repo.common_dir()` returned a path relative to the *process* cwd,
+        // not relative to `start`, so the naive `start.join(common_dir)`
+        // double-prefixed the directory. Guard both backends.
+        for_each_backend(|use_gitoxide| {
+            let tmp = tempfile::tempdir().unwrap();
+            let canonical_tmp = tmp.path().canonicalize().unwrap();
+            let repo_dir = canonical_tmp.join("myrepo");
+            std::fs::create_dir(&repo_dir).unwrap();
+            init_repo(&repo_dir);
+
+            // Switch into the parent and pass a relative path to the repo
+            // — the same shape a user types: `daft repo remove myrepo`.
+            let prev_cwd = std::env::current_dir().unwrap();
+            std::env::set_current_dir(&canonical_tmp).unwrap();
+            let result = resolve_repo(Some(Path::new("myrepo")), use_gitoxide);
+            // Restore before asserting so a panic doesn't leak cwd into other
+            // tests in the same process.
+            std::env::set_current_dir(prev_cwd).unwrap();
+
+            let target = result.unwrap_or_else(|e| {
+                panic!("relative path failed (use_gitoxide={use_gitoxide}): {e:#}")
+            });
+            assert_eq!(target.project_root, repo_dir);
+            assert!(target.bare_git_dir.ends_with(".git"));
         });
     }
 
