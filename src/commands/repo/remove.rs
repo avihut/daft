@@ -398,6 +398,12 @@ fn run_tui(
             verbosity: table_verbosity,
             pin_default_branch: false,
             partition_by_owner: false,
+            // Repo removal doesn't stream field updates — `WorktreeInfo` rows
+            // are seeded with whatever we know up front (path, branch, kind)
+            // and never patched. Mark every field as already-received so the
+            // table renders blanks for unset cells instead of perpetual
+            // loaders.
+            seeded_fields: crate::core::worktree::info_field::FieldSet::ALL,
         },
         None,
     );
