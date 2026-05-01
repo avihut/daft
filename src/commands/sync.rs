@@ -459,6 +459,12 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     if stat == Stat::Lines {
         streaming_fields |= FieldSet::BASE_LINES | FieldSet::CHANGES_LINES | FieldSet::REMOTE_LINES;
     }
+    // Everything the synchronous seed populated authoritatively — i.e.
+    // everything *not* arriving via the streaming collector. Pre-marking
+    // these bits in each row's `received_patches` prevents the loading
+    // shimmer from animating forever for cells the seed already finalized
+    // (e.g. `info.owner = None` for the default branch row).
+    let seeded_fields = !streaming_fields;
 
     // ── Create TUI state with known phases and worktrees ───────────────
     if args.force_deprecated {
@@ -877,6 +883,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             verbosity: args.verbose,
             pin_default_branch: true,
             partition_by_owner: false, // External unowned_start_index drives the partition.
+            seeded_fields,
         },
         unowned_start_index,
     );

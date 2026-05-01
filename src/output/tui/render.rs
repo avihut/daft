@@ -1140,6 +1140,7 @@ mod tests {
             None::<SortSpec>,
             true,
             false,
+            crate::core::worktree::info_field::FieldSet::EMPTY,
         )
     }
 

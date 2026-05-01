@@ -1,4 +1,5 @@
 use crate::core::sort::SortSpec;
+use crate::core::worktree::info_field::FieldSet;
 use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
 use crate::core::worktree::sync_dag::{
     DagEvent, JobCompletionStatus, OperationPhase, TaskMessage, TaskStatus,
@@ -158,6 +159,7 @@ impl TuiState {
         sort_spec: Option<SortSpec>,
         pin_default_branch: bool,
         partition_by_owner: bool,
+        seeded_fields: FieldSet,
     ) -> Self {
         // For prune/sync the caller passes `partition_by_owner: false` and
         // injects an externally-computed `unowned_start_index` (richer
@@ -175,6 +177,7 @@ impl TuiState {
             partition_by_owner,
             project_root,
             cwd,
+            seeded_fields,
         };
         let mut live = LiveTable::new(worktree_infos, cfg);
         live.unowned_start_index = unowned_start_index;
@@ -545,6 +548,7 @@ mod tests {
             None,
             true,
             false,
+            FieldSet::EMPTY,
         )
     }
 
@@ -574,6 +578,7 @@ mod tests {
             None,
             true,
             false,
+            FieldSet::EMPTY,
         )
     }
 
@@ -594,6 +599,7 @@ mod tests {
             None,
             true,
             false,
+            FieldSet::EMPTY,
         )
     }
 
@@ -1176,6 +1182,7 @@ mod tests {
             None,
             true,
             false,
+            FieldSet::EMPTY,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1227,6 +1234,7 @@ mod tests {
             None,
             true,
             false,
+            FieldSet::EMPTY,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1274,6 +1282,7 @@ mod tests {
             None,
             true,
             false,
+            FieldSet::EMPTY,
         );
 
         state.apply_event(&DagEvent::TaskStarted {
@@ -1345,6 +1354,7 @@ mod tests {
             None,
             true,
             false,
+            FieldSet::EMPTY,
         )
     }
 

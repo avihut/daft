@@ -6,6 +6,7 @@
 
 use super::{columns::Column, driver::TuiRenderer, state::TuiState};
 use crate::{
+    core::worktree::info_field::FieldSet,
     core::worktree::list::Stat,
     core::worktree::sync_dag::OperationPhase,
     core::{
@@ -42,6 +43,12 @@ pub struct TableConfig {
     /// external value is injected into `live.unowned_start_index` after
     /// `TuiState::new` returns, and we must not let LiveTable overwrite it.
     pub partition_by_owner: bool,
+    /// Fields that the synchronous seed populated authoritatively. These
+    /// bits are pre-set in each row's `received_patches`, so cells whose
+    /// seed value is final (e.g. `owner = None` for the default branch in
+    /// prune/sync, where the streaming collector won't emit an `Owner`
+    /// patch) skip the loading shimmer instead of animating forever.
+    pub seeded_fields: FieldSet,
 }
 
 /// Result returned after the TUI completes.
@@ -120,6 +127,7 @@ impl OperationTable {
             self.config.sort_spec,
             self.config.pin_default_branch,
             self.config.partition_by_owner,
+            self.config.seeded_fields,
         );
 
         let renderer =
@@ -151,6 +159,7 @@ mod tests {
             verbosity: 0,
             pin_default_branch: true,
             partition_by_owner: true,
+            seeded_fields: FieldSet::EMPTY,
         };
         assert_eq!(cfg_silent.verbosity, 0);
 
@@ -162,6 +171,7 @@ mod tests {
             verbosity: 1,
             pin_default_branch: true,
             partition_by_owner: true,
+            seeded_fields: FieldSet::EMPTY,
         };
         assert!(cfg_verbose.verbosity >= 1);
     }

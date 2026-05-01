@@ -31,6 +31,12 @@ pub struct LiveTableConfig {
     pub partition_by_owner: bool,
     pub project_root: PathBuf,
     pub cwd: PathBuf,
+    /// Fields the synchronous seed populated authoritatively. Each row's
+    /// `received_patches` is initialized to this set so cells whose seed
+    /// value is final (e.g. `owner = None` for the default branch) don't
+    /// render the loading shimmer indefinitely when the streaming collector
+    /// won't emit a patch for them.
+    pub seeded_fields: FieldSet,
 }
 
 pub struct LiveTable {
@@ -53,7 +59,12 @@ pub struct LiveTable {
 
 impl LiveTable {
     pub fn new(seed: Vec<WorktreeInfo>, cfg: LiveTableConfig) -> Self {
-        let received_patches = vec![FieldSet::EMPTY; seed.len()];
+        // Pre-seed `received_patches` with the bits the synchronous seed
+        // populated authoritatively. This stops the loading shimmer for
+        // cells whose seed value is final and the streaming collector
+        // won't emit a patch for (e.g. `info.owner = None` for the
+        // default branch row in `daft prune` / `daft sync`).
+        let received_patches = vec![cfg.seeded_fields; seed.len()];
         let rows: Vec<WorktreeRow> = seed.into_iter().map(WorktreeRow::idle).collect();
         let mut t = Self {
             rows,
@@ -241,6 +252,7 @@ mod tests {
             partition_by_owner: false,
             project_root: PathBuf::from("/tmp"),
             cwd: PathBuf::from("/tmp"),
+            seeded_fields: FieldSet::EMPTY,
         }
     }
 
@@ -343,5 +355,28 @@ mod tests {
         assert!(t.is_cell_loading(0, FieldSet::SIZE));
         t.mark_cancelled();
         assert!(!t.is_cell_loading(0, FieldSet::SIZE));
+    }
+
+    #[test]
+    fn seeded_fields_marks_cells_received_at_construction() {
+        // Regression guard for the prune/sync default-branch owner shimmer:
+        // when the synchronous seed authoritatively populates a field
+        // (including the empty/None case for the default branch's owner),
+        // the cell must NOT render the loading shimmer just because the
+        // streaming collector won't emit a patch for it.
+        let mut cfg = cfg();
+        cfg.seeded_fields = FieldSet::OWNER;
+        let t = LiveTable::new(vec![info("main")], cfg);
+        assert!(!t.is_cell_loading(0, FieldSet::OWNER));
+    }
+
+    #[test]
+    fn seeded_fields_empty_preserves_existing_loading_behavior() {
+        // Paired with `seeded_fields_marks_cells_received_at_construction`:
+        // the default `seeded_fields = EMPTY` keeps the existing semantics
+        // where every cell starts in the loading state until a patch lands.
+        let cfg = cfg(); // seeded_fields: FieldSet::EMPTY
+        let t = LiveTable::new(vec![info("main")], cfg);
+        assert!(t.is_cell_loading(0, FieldSet::OWNER));
     }
 }
