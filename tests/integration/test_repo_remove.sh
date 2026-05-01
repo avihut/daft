@@ -362,6 +362,138 @@ test_repo_remove_from_non_repo_cwd() {
     return 0
 }
 
+# Test 7: CRITICAL data-loss regression — `daft repo remove` must NEVER
+# remove the directory containing the project root. An earlier revision
+# walked up the parent chain removing empty directories, which (in the
+# real-world case that surfaced this) consumed the user's `test/` dir
+# after removing `test/myrepo/`. Anything above project_root is user
+# territory.
+test_repo_remove_preserves_empty_parent_directory() {
+    local remote_repo container
+    remote_repo=$(create_test_remote "test-repo-remove-parent-preservation" "main")
+
+    # Container dir whose ONLY child will be the project_root. After removal
+    # it would become empty — the bug under test.
+    container=$(mktemp -d "${TMPDIR:-/tmp}/daft-empty-parent.XXXXXX")
+    trap 'rm -rf "$container"' RETURN
+
+    (cd "$container" && git-worktree-clone --layout contained "$remote_repo") || return 1
+    local project_root="$container/test-repo-remove-parent-preservation"
+    assert_directory_exists "$project_root" || return 1
+
+    # Sanity: container has only the project_root inside.
+    local entry_count
+    entry_count=$(find "$container" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')
+    if [[ "$entry_count" != "1" ]]; then
+        log_error "test setup: expected container to have exactly 1 child, got $entry_count"
+        return 1
+    fi
+
+    cd "$container" || return 1
+    daft repo remove --force "$project_root" || return 1
+
+    if [[ -d "$project_root" ]]; then
+        log_error "project_root not removed: $project_root"
+        return 1
+    fi
+    if [[ ! -d "$container" ]]; then
+        log_error "DATA LOSS: container directory was removed: $container"
+        return 1
+    fi
+
+    log_success "daft repo remove preserves the parent directory even when empty"
+    return 0
+}
+
+# Test 8: Run with relative path argument from inside the parent directory
+# (matches the failure-reporting reproduction: `cd parent && daft repo remove repo`).
+test_repo_remove_relative_path_from_parent() {
+    local remote_repo container
+    remote_repo=$(create_test_remote "test-repo-remove-rel-from-parent" "main")
+    container=$(mktemp -d "${TMPDIR:-/tmp}/daft-rel-from-parent.XXXXXX")
+    trap 'rm -rf "$container"' RETURN
+
+    (cd "$container" && git-worktree-clone --layout contained "$remote_repo") || return 1
+    local project_root="$container/test-repo-remove-rel-from-parent"
+    assert_directory_exists "$project_root" || return 1
+
+    cd "$container" || return 1
+    daft repo remove --force "test-repo-remove-rel-from-parent" || return 1
+
+    if [[ -d "$project_root" ]]; then
+        log_error "project_root not removed via relative path: $project_root"
+        return 1
+    fi
+    if [[ ! -d "$container" ]]; then
+        log_error "DATA LOSS via relative path: container removed: $container"
+        return 1
+    fi
+
+    log_success "daft repo remove works with a relative path from the parent dir"
+    return 0
+}
+
+# Test 9: Run without a path argument from inside the project_root.
+# Default-cwd resolution must find the bare and remove it cleanly.
+test_repo_remove_no_arg_from_inside_project_root() {
+    local remote_repo container
+    remote_repo=$(create_test_remote "test-repo-remove-no-arg" "main")
+    container=$(mktemp -d "${TMPDIR:-/tmp}/daft-no-arg.XXXXXX")
+    trap 'rm -rf "$container"' RETURN
+
+    (cd "$container" && git-worktree-clone --layout contained "$remote_repo") || return 1
+    local project_root="$container/test-repo-remove-no-arg"
+
+    # CWD = project_root. After bare removal the cwd disappears, so we move
+    # to a safe parent before checking — but daft must succeed regardless.
+    cd "$project_root" || return 1
+    daft repo remove --force || return 1
+
+    cd "$container" || return 1
+    if [[ -d "$project_root" ]]; then
+        log_error "project_root not removed (no-arg form): $project_root"
+        return 1
+    fi
+    if [[ ! -d "$container" ]]; then
+        log_error "DATA LOSS via no-arg form: container removed: $container"
+        return 1
+    fi
+
+    log_success "daft repo remove (no arg) works from inside project_root"
+    return 0
+}
+
+# Test 10: Run from inside one of the worktrees. The command must resolve
+# the bare via the worktree's git common dir, remove every worktree
+# (including the one we're standing in), and leave the parent intact.
+test_repo_remove_from_inside_worktree() {
+    local remote_repo container
+    remote_repo=$(create_test_remote "test-repo-remove-from-wt" "main")
+    container=$(mktemp -d "${TMPDIR:-/tmp}/daft-from-wt.XXXXXX")
+    trap 'rm -rf "$container"' RETURN
+
+    (cd "$container" && git-worktree-clone --layout contained "$remote_repo") || return 1
+    local project_root="$container/test-repo-remove-from-wt"
+    local main_wt="$project_root/main"
+    assert_directory_exists "$main_wt" || return 1
+
+    cd "$main_wt" || return 1
+    daft repo remove --force || return 1
+
+    cd "$container" || return 1
+    if [[ -d "$project_root" ]]; then
+        log_error "project_root not removed (from-worktree): $project_root"
+        return 1
+    fi
+    if [[ ! -d "$container" ]]; then
+        log_error "DATA LOSS from-worktree: container removed: $container"
+        return 1
+    fi
+
+    log_success "daft repo remove works when run from inside a worktree"
+    return 0
+}
+
 # Run all repo-remove integration tests.
 run_repo_remove_tests() {
     log "Running daft repo remove integration tests..."
@@ -372,6 +504,10 @@ run_repo_remove_tests() {
     run_test "repo_remove_non_git_path_fails" "test_repo_remove_non_git_path_fails"
     run_test "repo_remove_clean_repos_helper" "test_repo_remove_clean_repos_helper"
     run_test "repo_remove_from_non_repo_cwd" "test_repo_remove_from_non_repo_cwd"
+    run_test "repo_remove_preserves_empty_parent_directory" "test_repo_remove_preserves_empty_parent_directory"
+    run_test "repo_remove_relative_path_from_parent" "test_repo_remove_relative_path_from_parent"
+    run_test "repo_remove_no_arg_from_inside_project_root" "test_repo_remove_no_arg_from_inside_project_root"
+    run_test "repo_remove_from_inside_worktree" "test_repo_remove_from_inside_worktree"
 }
 
 # Main execution

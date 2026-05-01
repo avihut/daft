@@ -209,34 +209,31 @@ pub fn remove_worktree_filesystem(
     Ok(RemoveWorktreeOutcome::RemovedViaFallback)
 }
 
-/// Remove the bare git directory for `target`, walk up the parent chain
-/// removing empty parent directories, and clean up the trust DB entry for
-/// this bare path.
+/// Remove the bare git directory for `target`, remove the project root
+/// directory itself if empty, and clean up the trust DB entry.
 ///
-/// The empty-parent walk is best-effort: it stops at the first non-empty
-/// directory so user data outside the repo is never touched. Trust DB
-/// cleanup is also best-effort — failures to load or save the database are
-/// swallowed because the repo is already gone at that point.
+/// **Never walks above `target.project_root`.** A previous version walked up
+/// the parent chain removing empty directories, which could consume the
+/// user's containing directory (e.g. `/tmp/sandbox/test/` after removing
+/// `/tmp/sandbox/test/myrepo`). Anything above the project root is user
+/// territory and must not be touched.
+///
+/// Trust DB cleanup is best-effort — failures to load or save the database
+/// are swallowed because the repo is already gone at that point.
 pub fn remove_bare_directory(target: &RepoTarget) -> Result<()> {
     if target.bare_git_dir.exists() {
         std::fs::remove_dir_all(&target.bare_git_dir)
             .with_context(|| format!("rm -rf {} failed", target.bare_git_dir.display()))?;
     }
-    let mut cursor = target.project_root.clone();
-    while cursor.exists() {
-        let mut iter = match std::fs::read_dir(&cursor) {
-            Ok(it) => it,
-            Err(_) => break,
-        };
-        if iter.next().is_some() {
-            break;
-        }
-        if std::fs::remove_dir(&cursor).is_err() {
-            break;
-        }
-        match cursor.parent() {
-            Some(p) => cursor = p.to_path_buf(),
-            None => break,
+    // Remove project_root itself when empty (it is the layout boundary the
+    // user identified by passing the path or running from inside it). Do NOT
+    // walk to its parent — that's user-owned space.
+    if target.project_root.exists() {
+        let is_empty = std::fs::read_dir(&target.project_root)
+            .map(|mut it| it.next().is_none())
+            .unwrap_or(false);
+        if is_empty {
+            let _ = std::fs::remove_dir(&target.project_root);
         }
     }
     // Drop trust DB entry. Best-effort. Only re-write the file when something
@@ -450,12 +447,8 @@ mod tests {
     }
 
     #[test]
-    fn remove_bare_directory_deletes_bare_and_empty_parents() {
+    fn remove_bare_directory_removes_bare_and_empty_project_root_only() {
         let tmp = tempfile::tempdir().unwrap();
-        // Sentinel so the walk-up has a non-empty floor at tmp.path() — the
-        // spec walks past empty parents (e.g. nested `.worktrees` layouts), so
-        // we have to give it something to stop on or it would consume tmp too.
-        std::fs::write(tmp.path().join("keep-me"), b"sibling").unwrap();
         let project = tmp.path().join("myrepo");
         std::fs::create_dir_all(&project).unwrap();
         Command::new("git")
@@ -475,7 +468,47 @@ mod tests {
         remove_bare_directory(&target).unwrap();
         assert!(!bare.exists(), "bare dir should be gone");
         assert!(!project.exists(), "empty project root should be cleaned up");
-        assert!(tmp.path().exists());
+        assert!(
+            tmp.path().exists(),
+            "parent of project_root must NEVER be removed, even when empty"
+        );
+    }
+
+    #[test]
+    fn remove_bare_directory_does_not_delete_empty_parent_of_project_root() {
+        // Critical regression test: an earlier implementation walked up the
+        // parent chain removing empty directories, which could consume the
+        // user's containing directory (e.g. /tmp/sandbox/test/ after removing
+        // /tmp/sandbox/test/myrepo). Anything above project_root is user
+        // territory.
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().join("test");
+        let project = parent.join("myrepo");
+        std::fs::create_dir_all(&project).unwrap();
+        Command::new("git")
+            .arg("init")
+            .arg("--bare")
+            .arg("-q")
+            .arg(project.join(".git"))
+            .status()
+            .unwrap();
+        let bare = project.join(".git");
+
+        // `parent` contains only `myrepo/`, so it would become empty after
+        // project_root removal — the bug under test.
+        let target = RepoTarget {
+            bare_git_dir: bare.clone(),
+            project_root: project.clone(),
+        };
+        remove_bare_directory(&target).unwrap();
+
+        assert!(!bare.exists(), "bare dir should be gone");
+        assert!(!project.exists(), "empty project root should be removed");
+        assert!(
+            parent.exists(),
+            "parent of project_root must NOT be removed even when empty after the operation \
+             (would consume the user's containing directory)"
+        );
     }
 
     #[test]
