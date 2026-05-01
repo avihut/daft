@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.2](https://github.com/avihut/daft/compare/v1.10.1...v1.10.2) - 2026-05-01
+
+### Bug Fixes
+
+- *(tui)* stop default-branch owner shimmer in prune/sync ([#430](https://github.com/avihut/daft/pull/430))
+
+### Miscellaneous
+
+- *(deps)* add 7-day cooldown across cargo, bun, mise, dependabot, and CI ([#431](https://github.com/avihut/daft/pull/431))
+
 ## [1.10.1](https://github.com/avihut/daft/compare/v1.10.0...v1.10.1) - 2026-04-28
 
 ### Bug Fixes
