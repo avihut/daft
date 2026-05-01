@@ -1,0 +1,54 @@
+name: mise tool updates
+
+# Weekly job that runs `mise upgrade` to refresh tool versions in mise.lock
+# (and mise.toml when --bump-able), then opens a PR if anything changed.
+# The 7-day cooldown in mise.toml's [settings] minimum_release_age means this
+# only ever picks versions that have aged past the gate — no fresh releases
+# enter without intent.
+on:
+  schedule:
+    # Mondays 08:00 UTC (= 11:00 Asia/Jerusalem). Weekly is enough — mise tools
+    # turn over much slower than the cargo/bun deps Dependabot watches daily.
+    - cron: "0 8 * * 1"
+  workflow_dispatch: {} # manual trigger from the Actions UI
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install mise
+        uses: jdx/mise-action@v4
+
+      - name: Run mise upgrade
+        # Stays within the constraints already in mise.toml (e.g. `bun = "1.3"`
+        # → newest 1.3.x). Use `mise upgrade --bump` manually when you want to
+        # advance the constraint itself.
+        run: mise upgrade
+
+      - name: Open PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "deps: bump mise tools"
+          title: "deps: bump mise tools"
+          body: |
+            Automated `mise upgrade` run.
+
+            Versions selected are subject to the 7-day cooldown set in
+            `mise.toml` `[settings] minimum_release_age = "7d"`. To advance a
+            constraint (e.g. `bun = "1.3"` -> `"1.4"`), run
+            `mise upgrade --bump` locally and commit instead.
+
+            Note: PRs opened by the default GITHUB_TOKEN do not trigger other
+            workflows. To run CI on this PR, push an empty commit or close
+            and reopen it. Alternatively, set the action's `token:` input to
+            a PAT with workflow permissions.
+          branch: deps/mise-auto-upgrade
+          delete-branch: true
+          labels: |
+            dependencies
