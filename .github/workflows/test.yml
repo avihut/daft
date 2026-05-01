@@ -24,12 +24,74 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  # Detect which kinds of files changed in this PR. Each downstream job
+  # gates on these outputs so we only spin up runners when relevant. Any
+  # change to test.yml itself sets `self=true`, which OR's into every
+  # other gate, so editing the workflow re-validates the whole suite.
+  # Skipped jobs consume zero CI minutes.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      self: ${{ steps.detect.outputs.self }}
+      rust: ${{ steps.detect.outputs.rust }}
+      tests: ${{ steps.detect.outputs.tests }}
+      xtask: ${{ steps.detect.outputs.xtask }}
+      man: ${{ steps.detect.outputs.man }}
+      lockfile: ${{ steps.detect.outputs.lockfile }}
+    steps:
+      - id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          files=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename')
+          echo "Changed files in this PR:"
+          echo "$files"
+          echo "---"
+
+          self=false
+          rust=false
+          tests=false
+          xtask=false
+          man=false
+          lockfile=false
+
+          if echo "$files" | grep -qxE '\.github/workflows/test\.yml'; then
+            self=true
+          fi
+          if echo "$files" | grep -qE '^(src/|Cargo\.(toml|lock)|mise\.(toml|lock)|lefthook\.yml)'; then
+            rust=true
+          fi
+          if echo "$files" | grep -qE '^(tests/|scripts/)'; then
+            tests=true
+          fi
+          if echo "$files" | grep -qE '^xtask/'; then
+            xtask=true
+          fi
+          if echo "$files" | grep -qE '^(man/|docs/cli/)'; then
+            man=true
+          fi
+          if echo "$files" | grep -qxE '(Cargo\.lock|bun\.lock|\.dep-age-allowlist|cooldown\.toml|bunfig\.toml)'; then
+            lockfile=true
+          fi
+
+          for k in self rust tests xtask man lockfile; do
+            echo "$k=${!k}" | tee -a "$GITHUB_OUTPUT"
+          done
+
   # Supply-chain gate: refuse PRs that introduce dep-lock entries younger than
   # 7 days (Cargo.lock + bun.lock). Bypass via .dep-age-allowlist (with
   # rationale) or commit env ALLOW_FRESH_DEPS=1 in an emergency.
   dep-age-check:
+    needs: changes
+    if:
+      needs.changes.outputs.self == 'true' || needs.changes.outputs.lockfile ==
+      'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -46,6 +108,11 @@ jobs:
 
   # Fast feedback: formatting, linting, unit tests (debug mode only - no release build needed)
   lint:
+    needs: changes
+    if:
+      needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
+      'true' || needs.changes.outputs.tests == 'true' ||
+      needs.changes.outputs.xtask == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -82,6 +149,10 @@ jobs:
   # while catching platform-specific regressions (e.g. unconditional use
   # of `std::os::unix::*` or `libc`) before they reach a release tag.
   windows-check:
+    needs: changes
+    if:
+      needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
+      'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -97,6 +168,11 @@ jobs:
 
   # Test xtask man page generation
   xtask-test:
+    needs: changes
+    if:
+      needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
+      'true' || needs.changes.outputs.xtask == 'true' ||
+      needs.changes.outputs.man == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -198,6 +274,10 @@ jobs:
 
   # Build release binary once, share across integration test matrix
   build:
+    needs: changes
+    if:
+      needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
+      'true' || needs.changes.outputs.tests == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -372,6 +452,10 @@ jobs:
 
   # Homebrew installation simulation (macOS)
   homebrew-simulation:
+    needs: changes
+    if:
+      needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
+      'true' || needs.changes.outputs.man == 'true'
     runs-on: macos-latest
 
     steps:
