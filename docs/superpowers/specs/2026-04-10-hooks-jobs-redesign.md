@@ -202,7 +202,6 @@ stream.
 - **Duration column**: `finished_at - started_at` for terminal jobs,
   `now - started_at` for running jobs. Compact format with adaptive precision so
   sub-second jobs remain distinguishable:
-
   - `< 1s` → `Nms` (e.g. `36ms`)
   - `< 1min` → `Ns` (e.g. `12s`)
   - `< 1h` → `MmSs` (e.g. `1m32s`)

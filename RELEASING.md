@@ -60,7 +60,6 @@ git push origin main --tags
 The GitHub Actions workflow will automatically:
 
 1. **Build** binaries for:
-
    - macOS Intel (x86_64-apple-darwin)
    - macOS Apple Silicon (aarch64-apple-darwin)
    - Windows 64-bit (x86_64-pc-windows-msvc)
@@ -68,14 +67,12 @@ The GitHub Actions workflow will automatically:
    - Linux ARM64 (aarch64-unknown-linux-gnu)
 
 2. **Generate** installers:
-
    - PowerShell installer script (`daft-installer.ps1`)
    - Shell installer script (`daft-installer.sh`)
    - MSI installer for Windows
    - Homebrew formula (`Formula/daft.rb`)
 
 3. **Create** GitHub Release with:
-
    - Compiled binaries (tar.xz for macOS/Linux, zip for Windows)
    - Installers
    - Checksums (`SHA256SUMS`)

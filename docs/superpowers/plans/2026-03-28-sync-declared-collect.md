@@ -2233,7 +2233,6 @@ git commit -m "style: format and lint fixes for sync collect feature"
 ## Self-Review Checklist
 
 1. **Spec coverage:**
-
    - Uncollected file detection: Task 2
    - TUI with tabs: Task 7 (render) + Task 4 (state)
    - Left panel worktree list with navigation: Task 7 (render) + Task 5 (input)

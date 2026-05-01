@@ -27,19 +27,16 @@ updates.
 ### Create Personal Access Token
 
 1. **Go to GitHub Settings**
-
    - Click your profile picture → Settings
    - Scroll to "Developer settings" (bottom left)
    - Click "Personal access tokens" → "Tokens (classic)"
 
 2. **Generate New Token**
-
    - Click "Generate new token (classic)"
    - **Note**: `daft-homebrew-updater`
    - **Expiration**: Choose "No expiration" or "1 year" (you'll need to renew)
 
 3. **Select Scopes**
-
    - ✅ `repo` (all sub-options under Repository)
      - This allows the workflow to commit the updated formula
 
@@ -51,13 +48,11 @@ updates.
 ### Add Secret to Repository
 
 1. **Navigate to Repository Settings**
-
    - Go to https://github.com/avihut/daft
    - Click "Settings" tab
    - Click "Secrets and variables" → "Actions"
 
 2. **Add New Secret**
-
    - Click "New repository secret"
    - **Name**: `HOMEBREW_TAP_TOKEN`
    - **Secret**: Paste the personal access token
@@ -253,13 +248,11 @@ git push origin v0.1.0
 ### Monitor Release
 
 1. **Watch GitHub Actions**
-
    - Go to https://github.com/avihut/daft/actions
    - You should see a "Release" workflow running
    - It takes approximately 8-12 minutes
 
 2. **Check Progress**
-
    - ✅ **plan** job: Determines what to build (~1 min)
    - ✅ **build-local-artifacts** jobs: Builds for each platform (~3-5 min each,
      parallel)
@@ -268,7 +261,6 @@ git push origin v0.1.0
    - ✅ **announce** job: Finalizes release (~30 sec)
 
 3. **Verify Release Created**
-
    - Check https://github.com/avihut/daft/releases
    - Should see "v0.1.0" release with artifacts:
      - `daft-aarch64-apple-darwin.tar.xz`
