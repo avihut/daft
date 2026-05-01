@@ -99,7 +99,6 @@ From the original conversation:
 
 5. **Disambiguation rules for single-token positional arg.** Proposed
    heuristics:
-
    - Matches a known hook type (`worktree-post-create`, `worktree-pre-remove`,
      `post-clone`, etc.) → hook scope.
    - All-hex short prefix (`a3f2`, etc.) → invocation scope.
