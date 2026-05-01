@@ -10,6 +10,14 @@ IMPORTANT: These rules must NEVER be violated:
 2. **Never use this repository for testing** — This project's own git repo must
    never be used as a test subject for worktree commands. Tests must always
    create isolated temporary repositories.
+3. **Don't weaken `.github/workflows/claude-pr-review.yml`** — its security
+   properties are deliberate: SHA-pinned actions, `environment: claude-review`
+   (master-only deployment-branch policy), `author_association == 'OWNER'`
+   gating on the `/claude review` comment trigger, no `pull_request` or
+   `pull_request_target` event, and `timeout-minutes`. Never re-introduce a
+   `pull_request[_target]` trigger. Never reference `CLAUDE_CODE_OAUTH_TOKEN`
+   from any other workflow. Never replace SHA pins with mutable refs (Dependabot
+   keeps them current). Workflow changes are CODEOWNERS-gated to `@avihut`.
 
 ## Safe Local Testing with Git
 
