@@ -19,7 +19,7 @@ pre-commit:
       run: bun run prettier --write {staged_files}
       stage_fixed: true
     biome-check:
-      glob: "docs/.vitepress/**/*.{ts,js,json}"
+      glob: "docs/.vitepress/**/*.{ts,js,json,css}"
       root: "docs/"
       run: bunx biome check --write {staged_files}
       stage_fixed: true
