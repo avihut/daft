@@ -3,9 +3,22 @@ name: Benchmarks
 on:
   push:
     branches: [master]
-    paths-ignore:
-      - "*.md"
-      - "docs/**"
+    # Same model as test.yml: default to running on any change, negate the
+    # things that don't affect benchmark numbers. Self-changes to bench.yml
+    # are intentionally NOT negated.
+    paths:
+      - "**"
+      - "!*.md"
+      - "!docs/**"
+      - "!.github/CODEOWNERS"
+      - "!.github/dependabot.yml"
+      - "!.github/workflows/claude-pr-review.yml"
+      - "!.github/workflows/docs.yml"
+      - "!.github/workflows/mise-tool-updates.yml"
+      - "!.github/workflows/release-plz.yml"
+      - "!.github/workflows/release.yml"
+      - "!.github/workflows/test-homebrew.yml"
+      - "!.github/workflows/test.yml"
   workflow_dispatch:
 
 permissions:
