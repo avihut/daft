@@ -100,6 +100,10 @@ url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-windows-
 version = "0.2.0"
 backend = "cargo:cargo-cooldown"
 
+[[tools."cargo:cargo-cooldown"]]
+version = "0.2.0"
+backend = "cargo:cargo-cooldown"
+
 [[tools.cocogitto]]
 version = "7.0.0"
 backend = "aqua:cocogitto/cocogitto"
