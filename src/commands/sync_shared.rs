@@ -389,15 +389,34 @@ use crate::output::BufferingOutput;
 /// [`remove_repo::remove_worktree_filesystem`], then runs
 /// `worktree-post-remove`. Hook failures never abort the removal — they are
 /// surfaced via `DagEvent::HookCompleted` events for the renderer to summarize.
+///
+/// `remote_name` is exposed to hooks as `$DAFT_REMOTE_NAME` (e.g. `origin`,
+/// or whatever the user configured via `daft.remote`). `main_worktree_path`
+/// is exposed as `$DAFT_SOURCE_WORKTREE` and should point at a directory
+/// that is a real git working tree (typically the main worktree). When the
+/// caller has no main worktree to offer (e.g. bare-only repo), pass `None`
+/// and we fall back to `target.project_root`.
 pub fn execute_remove_worktree_task(
     target: &RepoTarget,
     entry: &WorktreeEntry,
     hooks_config: &crate::hooks::HooksConfig,
+    remote_name: &str,
+    main_worktree_path: Option<&std::path::Path>,
     tx: &mpsc::Sender<DagEvent>,
 ) -> (TaskStatus, TaskMessage) {
     let label = entry.branch.clone().unwrap_or_else(|| "(detached)".into());
+    let source_worktree = main_worktree_path.unwrap_or(&target.project_root);
 
-    run_remove_hook_best_effort(target, entry, HookType::PreRemove, hooks_config, tx, &label);
+    run_remove_hook_best_effort(
+        target,
+        entry,
+        HookType::PreRemove,
+        hooks_config,
+        remote_name,
+        source_worktree,
+        tx,
+        &label,
+    );
 
     let outcome = remove_repo::remove_worktree_filesystem(target, &entry.path);
     if let Err(e) = outcome {
@@ -412,6 +431,8 @@ pub fn execute_remove_worktree_task(
         entry,
         HookType::PostRemove,
         hooks_config,
+        remote_name,
+        source_worktree,
         tx,
         &label,
     );
@@ -438,11 +459,14 @@ pub fn execute_remove_bare_task(target: &RepoTarget) -> (TaskStatus, TaskMessage
 /// silent no-op so the removal still proceeds. If `executor.execute()`
 /// short-circuits with `Err` (FailMode::Abort), we still send a synthetic
 /// `HookCompleted` so the renderer sees the failure — mirrors `TuiBridge`.
+#[allow(clippy::too_many_arguments)]
 fn run_remove_hook_best_effort(
     target: &RepoTarget,
     entry: &WorktreeEntry,
     hook_type: HookType,
     hooks_config: &crate::hooks::HooksConfig,
+    remote_name: &str,
+    source_worktree: &std::path::Path,
     tx: &mpsc::Sender<DagEvent>,
     label: &str,
 ) {
@@ -456,8 +480,8 @@ fn run_remove_hook_best_effort(
         "repo-remove",
         &target.project_root,
         &target.bare_git_dir,
-        "origin",
-        &target.project_root,
+        remote_name,
+        source_worktree,
         &entry.path,
         entry.branch.clone().unwrap_or_default(),
     )

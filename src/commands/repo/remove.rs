@@ -17,6 +17,10 @@ lifecycle hooks are run when the repository is daft-managed and trusted.
 Hook failures do not abort removal; failed hooks are summarized after the
 operation completes. The repo is removed regardless.
 
+worktree-post-remove fires AFTER the worktree directory has been deleted —
+$DAFT_WORKTREE_PATH points at a path that no longer exists. Hook scripts that
+need to inspect the worktree must do so in worktree-pre-remove.
+
 Refuses to operate on paths that are not inside a Git repository.
 "#)]
 pub struct Args {
@@ -45,8 +49,20 @@ pub fn run() -> Result<()> {
     // Build clap argv: program name + everything after `daft repo remove`.
     // `daft repo` is a subcommand category (like `daft setup shortcuts`), so
     // `crate::get_clap_args` does not recognize it; we rebuild argv manually.
+    //
+    // The router in `src/main.rs` only dispatches here when argv[1] == "repo"
+    // and argv[2] == "remove", so `skip(3)` is correct. Assert the invariant
+    // in debug builds — if a future shortcut alias or alternative entry path
+    // dispatches here without that argv shape, we want a loud failure rather
+    // than silently dropping or shifting positional arguments.
+    let raw_args: Vec<String> = std::env::args().collect();
+    debug_assert!(
+        raw_args.len() >= 3 && raw_args[1] == "repo" && raw_args[2] == "remove",
+        "repo::remove::run() invoked with unexpected argv: {raw_args:?} \
+         (expected `daft repo remove ...`)"
+    );
     let argv: Vec<String> = std::iter::once("git-daft-repo-remove".to_string())
-        .chain(std::env::args().skip(3))
+        .chain(raw_args.into_iter().skip(3))
         .collect();
     let args = Args::parse_from(argv);
     run_with_args(&args)
@@ -86,6 +102,14 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
         }
     }
 
+    // Snapshot cwd BEFORE we delete anything. If the user is running from
+    // inside a worktree that's about to be removed, `std::env::current_dir()`
+    // after the removal returns ENOENT (the inode is gone) and we lose the
+    // signal we need to write `DAFT_CD_FILE`. Captured ahead of time, the
+    // path itself is enough — we just need a string to compare against
+    // `project_root`. Integration coverage: `remove-from-inside.yml`.
+    let original_cwd = std::env::current_dir().ok();
+
     // The TUI is meaningful only when there are concurrent worktree-removal
     // tasks to track. When the worktree list is empty, the only task is the
     // single bare-removal — sequential output is clearer (and avoids the
@@ -97,11 +121,11 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     // failure we may have removed the worktree containing the user's cwd, in
     // which case we still need to hand the shell wrapper a safe directory.
     let result = if force_sequential {
-        run_sequential(&target, &worktrees)
+        run_sequential(&target, &worktrees, &settings)
     } else {
-        run_tui(&target, &worktrees, args.verbose)
+        run_tui(&target, &worktrees, args.verbose, &settings)
     };
-    maybe_redirect_cwd(&target);
+    maybe_redirect_cwd(&target, original_cwd.as_deref());
     result
 }
 
@@ -115,10 +139,19 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
 /// Integration coverage lives in `tests/manual/scenarios/repo/remove-from-inside.yml`
 /// — the unit-test layer can't reliably exercise the cwd-mutation path because
 /// Rust unit tests share process-wide cwd / env state and run in parallel.
-fn maybe_redirect_cwd(target: &crate::core::worktree::remove_repo::RepoTarget) {
-    let cwd = match std::env::current_dir() {
-        Ok(c) => c,
-        Err(_) => return,
+fn maybe_redirect_cwd(
+    target: &crate::core::worktree::remove_repo::RepoTarget,
+    original_cwd: Option<&std::path::Path>,
+) {
+    // Prefer the snapshot taken before removal: by the time we get here the
+    // user's worktree is gone and `std::env::current_dir()` may fail with
+    // ENOENT. Fall back to a fresh lookup only if the caller didn't capture.
+    let cwd = match original_cwd {
+        Some(c) => c.to_path_buf(),
+        None => match std::env::current_dir() {
+            Ok(c) => c,
+            Err(_) => return,
+        },
     };
     if !cwd.starts_with(&target.project_root) {
         return;
@@ -176,18 +209,27 @@ fn confirm_prompt(
 fn run_sequential(
     target: &crate::core::worktree::remove_repo::RepoTarget,
     worktrees: &[crate::core::worktree::remove_repo::WorktreeEntry],
+    settings: &crate::core::settings::DaftSettings,
 ) -> Result<()> {
     use crate::commands::sync_shared::{execute_remove_bare_task, execute_remove_worktree_task};
     use crate::core::worktree::sync_dag::{DagEvent, TaskMessage, TaskStatus};
 
     let hooks_config = crate::hooks::HooksConfig::default();
+    let main_worktree_path = main_worktree_path(worktrees);
     let (tx, rx) = std::sync::mpsc::channel();
 
     let mut hook_summaries: Vec<HookSummary> = Vec::new();
     let mut any_failed = false;
     for entry in worktrees {
         let label = entry.branch.clone().unwrap_or_else(|| "(detached)".into());
-        let (status, msg) = execute_remove_worktree_task(target, entry, &hooks_config, &tx);
+        let (status, msg) = execute_remove_worktree_task(
+            target,
+            entry,
+            &hooks_config,
+            &settings.remote,
+            main_worktree_path,
+            &tx,
+        );
         let line = match &msg {
             TaskMessage::Removed => "removed".to_string(),
             TaskMessage::Failed(e) => {
@@ -313,6 +355,25 @@ fn build_tui_rows(
         .collect()
 }
 
+/// Pick the main worktree's path from the enumerated list. `git worktree
+/// list --porcelain` (and our gix-backed equivalent) emits the main worktree
+/// first; we rely on that ordering to identify it. The main worktree is the
+/// first non-bare entry that isn't a detached-HEAD sandbox. Returns `None`
+/// for bare-only repos with no checked-out worktrees.
+///
+/// Used to populate `$DAFT_SOURCE_WORKTREE` for `worktree-pre/post-remove`
+/// hooks. Setting this to the actual main worktree (rather than the
+/// `project_root` parent) means hook scripts that `cd "$DAFT_SOURCE_WORKTREE"`
+/// land inside a real git working tree where `git` commands behave normally.
+fn main_worktree_path(
+    worktrees: &[crate::core::worktree::remove_repo::WorktreeEntry],
+) -> Option<&std::path::Path> {
+    worktrees
+        .iter()
+        .find(|w| !w.is_bare && !w.is_detached)
+        .map(|w| w.path.as_path())
+}
+
 /// Reserve viewport rows for hook sub-rows: at most 2 hooks per worktree
 /// (pre-remove + post-remove), with a couple of job sub-rows each. We
 /// over-allocate because the inline ratatui viewport cannot grow.
@@ -320,14 +381,19 @@ fn build_tui_rows(
 /// Always allocates the per-worktree slack regardless of verbosity: hooks
 /// during `daft repo remove` may be doing critical teardown (docker, networks,
 /// mounts) and the user shouldn't have to pass `-v` to see them run.
+///
+/// Uses saturating arithmetic so absurdly large worktree counts (>16k) don't
+/// overflow `u16` — the viewport just clamps to its max.
 fn hook_viewport_budget(worktrees_len: usize) -> u16 {
-    5 + (worktrees_len as u16) * 4
+    let total = worktrees_len.saturating_mul(4).saturating_add(5);
+    total.try_into().unwrap_or(u16::MAX)
 }
 
 fn run_tui(
     target: &crate::core::worktree::remove_repo::RepoTarget,
     worktrees: &[crate::core::worktree::remove_repo::WorktreeEntry],
     verbose: u8,
+    settings: &crate::core::settings::DaftSettings,
 ) -> Result<()> {
     use crate::commands::sync_shared::{
         check_tui_failures_strict, execute_remove_bare_task, execute_remove_worktree_task,
@@ -367,11 +433,16 @@ fn run_tui(
     let entries_arc: Arc<Vec<crate::core::worktree::remove_repo::WorktreeEntry>> =
         Arc::new(worktrees.to_vec());
     let hooks_arc = Arc::new(crate::hooks::HooksConfig::default());
+    let remote_name_arc: Arc<String> = Arc::new(settings.remote.clone());
+    let main_worktree_path_arc: Arc<Option<PathBuf>> =
+        Arc::new(main_worktree_path(worktrees).map(|p| p.to_path_buf()));
 
     let tx_for_tasks = tx.clone();
     let target_for_tasks = Arc::clone(&target_arc);
     let entries_for_tasks = Arc::clone(&entries_arc);
     let hooks_for_tasks = Arc::clone(&hooks_arc);
+    let remote_name_for_tasks = Arc::clone(&remote_name_arc);
+    let main_worktree_path_for_tasks = Arc::clone(&main_worktree_path_arc);
 
     let orchestrator = std::thread::spawn(move || {
         let executor = DagExecutor::new(dag, tx);
@@ -401,6 +472,8 @@ fn run_tui(
                             &target_for_tasks,
                             &entry,
                             &hooks_for_tasks,
+                            &remote_name_for_tasks,
+                            main_worktree_path_for_tasks.as_deref(),
                             &tx_for_tasks,
                         );
                         (s, m, outcomes.clone())
@@ -741,5 +814,76 @@ mod tests {
             "budget must scale with worktree count"
         );
         assert_eq!(hook_viewport_budget(2), 5 + 2 * 4);
+    }
+
+    #[test]
+    fn hook_viewport_budget_saturates_on_huge_input() {
+        // PR-review hardening: a wildly large worktree count must clamp to
+        // `u16::MAX` rather than overflow. The previous unchecked
+        // `worktrees_len as u16 * 4` would panic in debug for >16383 and wrap
+        // silently in release.
+        assert_eq!(hook_viewport_budget(usize::MAX), u16::MAX);
+        assert_eq!(hook_viewport_budget(u16::MAX as usize), u16::MAX);
+        // Just below the saturation threshold should still scale linearly.
+        assert_eq!(hook_viewport_budget(100), 5 + 100 * 4);
+    }
+
+    #[test]
+    fn main_worktree_path_picks_first_non_bare_non_detached() {
+        use crate::core::worktree::remove_repo::WorktreeEntry;
+        use std::path::PathBuf;
+
+        let entries = vec![
+            WorktreeEntry {
+                path: PathBuf::from("/tmp/repo/main"),
+                branch: Some("main".into()),
+                is_bare: false,
+                is_detached: false,
+            },
+            WorktreeEntry {
+                path: PathBuf::from("/tmp/repo/feature"),
+                branch: Some("feature".into()),
+                is_bare: false,
+                is_detached: false,
+            },
+        ];
+        assert_eq!(
+            main_worktree_path(&entries),
+            Some(std::path::Path::new("/tmp/repo/main"))
+        );
+    }
+
+    #[test]
+    fn main_worktree_path_skips_detached_sandboxes() {
+        use crate::core::worktree::remove_repo::WorktreeEntry;
+        use std::path::PathBuf;
+
+        // If a detached-HEAD sandbox happens to land before the main worktree
+        // in the porcelain output, we must still pick the real working tree.
+        let entries = vec![
+            WorktreeEntry {
+                path: PathBuf::from("/tmp/repo/sandbox"),
+                branch: None,
+                is_bare: false,
+                is_detached: true,
+            },
+            WorktreeEntry {
+                path: PathBuf::from("/tmp/repo/main"),
+                branch: Some("main".into()),
+                is_bare: false,
+                is_detached: false,
+            },
+        ];
+        assert_eq!(
+            main_worktree_path(&entries),
+            Some(std::path::Path::new("/tmp/repo/main"))
+        );
+    }
+
+    #[test]
+    fn main_worktree_path_returns_none_for_bare_only() {
+        // No checked-out worktrees at all → no source worktree to point hooks
+        // at. Caller falls back to `project_root` in that case.
+        assert!(main_worktree_path(&[]).is_none());
     }
 }

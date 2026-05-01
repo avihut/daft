@@ -30,9 +30,16 @@ each worktree when the repo is daft-managed and trusted.
   removes the worktree, then runs `worktree-post-remove`.
 - Hook failures **do not abort** the run. The repo is removed regardless;
   failed hooks appear in the post-run summary.
-- After all worktrees are gone, removes the bare git directory and walks
-  upward removing any now-empty parent directories. Drops the trust DB entry
-  for the bare git path.
+- `worktree-post-remove` fires **after** the worktree directory has been
+  deleted — `$DAFT_WORKTREE_PATH` points at a directory that no longer exists
+  on disk. Hook scripts that need to inspect the worktree must do so in
+  `worktree-pre-remove` instead. `$DAFT_SOURCE_WORKTREE` (the main worktree)
+  is still present at `post-remove` time unless it itself is the worktree
+  being removed.
+- After all worktrees are gone, removes the bare git directory and the
+  project root if it is empty. **Does not** walk further up — the parent
+  directory of the project root is user-owned and is left untouched. Drops
+  the trust DB entry for the bare git path.
 - If invoked from inside the removed repo, writes a safe target path to
   `DAFT_CD_FILE` so the shell wrapper `cd`s out of the deleted directory.
 

@@ -24,7 +24,16 @@ steps:
       rc=$?
       echo "---"
       echo "cd_file_size=$(wc -c < "$cd_file")"
-      echo "cd_target=$(cat "$cd_file")"
+      # Tag the value so the assertion can match a non-empty target without
+      # tripping on the trailing newline. `target_present=yes` only appears
+      # when the file is non-empty AND its content (the redirect path) is
+      # not empty — i.e. `maybe_redirect_cwd` actually computed a fallback.
+      cd_target_value=$(cat "$cd_file")
+      if [[ -n "$cd_target_value" ]]; then
+        echo "target_present=yes"
+      else
+        echo "target_present=no"
+      fi
       rm -f "$cd_file"
       exit $rc
     cwd: "$WORK_DIR/test-repo/main"
@@ -35,6 +44,7 @@ steps:
         - "$WORK_DIR/test-repo/.git"
         - "$WORK_DIR/test-repo/main"
       output_contains:
-        - "cd_target="
+        - "target_present=yes"
       output_not_contains:
         - "cd_file_size=0"
+        - "target_present=no"

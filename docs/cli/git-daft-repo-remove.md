@@ -17,6 +17,10 @@ lifecycle hooks are run when the repository is daft-managed and trusted.
 Hook failures do not abort removal; failed hooks are summarized after the
 operation completes. The repo is removed regardless.
 
+worktree-post-remove fires AFTER the worktree directory has been deleted —
+$DAFT_WORKTREE_PATH points at a path that no longer exists. Hook scripts that
+need to inspect the worktree must do so in worktree-pre-remove.
+
 Refuses to operate on paths that are not inside a Git repository.
 
 ## Usage
