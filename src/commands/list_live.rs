@@ -230,6 +230,11 @@ pub fn run_live(args: Args, settings: DaftSettings) -> Result<()> {
         sort_spec,
         false, // pin_default_branch
         false, // partition_by_owner
+        // The streaming collector requests `FieldSet::ALL` (see CollectorRequest
+        // above), so the seed never authoritatively finalizes any field for
+        // `daft list` — every cell starts in the loading state and transitions
+        // when its patch lands.
+        FieldSet::EMPTY,
     );
 
     // Single source of truth for cancellation: the renderer's Ctrl-C handler

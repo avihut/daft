@@ -626,8 +626,10 @@ const SKELETON_BREATH_FRAMES: usize = 16;
 /// xterm 256-color grayscale ramp endpoints. Indices 232 (near-black) through
 /// 255 (white) form a 24-step ramp — supported by every terminal that does
 /// 256 colors (effectively all modern terminals).
-const SKELETON_GRAY_DARKEST: u8 = 234;
-const SKELETON_GRAY_BRIGHTEST: u8 = 253;
+/// Index 239 on the xterm grayscale ramp ≈ 30% luminance (RGB 78,78,78).
+const SKELETON_GRAY_DARKEST: u8 = 239;
+/// Index 252 on the xterm grayscale ramp ≈ 80% luminance (RGB 208,208,208).
+const SKELETON_GRAY_BRIGHTEST: u8 = 252;
 
 /// Render a skeleton placeholder for an unfilled cell — a row of `▬`
 /// (BLACK RECTANGLE U+25AC) characters sized to the column's assigned
@@ -1140,6 +1142,7 @@ mod tests {
             None::<SortSpec>,
             true,
             false,
+            crate::core::worktree::info_field::FieldSet::EMPTY,
         )
     }
 

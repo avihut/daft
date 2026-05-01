@@ -31,6 +31,17 @@ pub struct LiveTableConfig {
     pub partition_by_owner: bool,
     pub project_root: PathBuf,
     pub cwd: PathBuf,
+    /// Fields whose authoritative value is determined before TUI start —
+    /// either populated by the synchronous seed, or guaranteed never to
+    /// arrive via the streaming collector. Pre-marking these in
+    /// `received_patches` prevents the shimmer for cells the streaming
+    /// collector won't emit a patch for, including the legitimate-empty
+    /// case (e.g. the default branch's owner is `None` by design and
+    /// must render as final, not loading). The render path keys shimmer
+    /// off `vals.X.is_empty()` rather than the bit alone, so cells with
+    /// the bit set but no seed value render as "final empty" rather than
+    /// shimmering.
+    pub seeded_fields: FieldSet,
 }
 
 pub struct LiveTable {
@@ -53,7 +64,11 @@ pub struct LiveTable {
 
 impl LiveTable {
     pub fn new(seed: Vec<WorktreeInfo>, cfg: LiveTableConfig) -> Self {
-        let received_patches = vec![FieldSet::EMPTY; seed.len()];
+        // Pre-seed `received_patches` with bits for fields not arriving via
+        // the streaming collector. This stops the loading shimmer for cells
+        // the collector won't emit a patch for (e.g. `info.owner = None` for
+        // the default branch row in `daft prune` / `daft sync`).
+        let received_patches = vec![cfg.seeded_fields; seed.len()];
         let rows: Vec<WorktreeRow> = seed.into_iter().map(WorktreeRow::idle).collect();
         let mut t = Self {
             rows,
@@ -200,9 +215,14 @@ impl LiveTable {
     }
 
     /// Append a new row, keeping `received_patches` in lockstep so
-    /// `is_cell_loading` cannot index out of bounds. Used when a
-    /// dynamically-discovered branch (e.g. a gone branch surfaced after
-    /// fetch) gets a row.
+    /// `is_cell_loading` cannot index out of bounds. Initialized to
+    /// `FieldSet::EMPTY`: dynamically-discovered branches have no
+    /// upfront seed, so every cell starts as "loading" until a patch
+    /// arrives. This is a conservative default, not provably-correct
+    /// for all callers — cells that no patch ever lands on (e.g.
+    /// gone branches surfaced after fetch in prune) will shimmer
+    /// indefinitely. Callers that need rows treated as seed-final
+    /// should extend this API rather than rely on the default.
     pub fn push_row(&mut self, info: WorktreeInfo) {
         self.rows.push(WorktreeRow::idle(info));
         self.received_patches.push(FieldSet::EMPTY);
@@ -241,6 +261,7 @@ mod tests {
             partition_by_owner: false,
             project_root: PathBuf::from("/tmp"),
             cwd: PathBuf::from("/tmp"),
+            seeded_fields: FieldSet::EMPTY,
         }
     }
 
@@ -343,5 +364,28 @@ mod tests {
         assert!(t.is_cell_loading(0, FieldSet::SIZE));
         t.mark_cancelled();
         assert!(!t.is_cell_loading(0, FieldSet::SIZE));
+    }
+
+    #[test]
+    fn seeded_fields_marks_cells_received_at_construction() {
+        // Regression guard for the prune/sync default-branch owner shimmer:
+        // when the synchronous seed authoritatively populates a field
+        // (including the empty/None case for the default branch's owner),
+        // the cell must NOT render the loading shimmer just because the
+        // streaming collector won't emit a patch for it.
+        let mut cfg = cfg();
+        cfg.seeded_fields = FieldSet::OWNER;
+        let t = LiveTable::new(vec![info("main")], cfg);
+        assert!(!t.is_cell_loading(0, FieldSet::OWNER));
+    }
+
+    #[test]
+    fn seeded_fields_empty_preserves_existing_loading_behavior() {
+        // Paired with `seeded_fields_marks_cells_received_at_construction`:
+        // the default `seeded_fields = EMPTY` keeps the existing semantics
+        // where every cell starts in the loading state until a patch lands.
+        let cfg = cfg(); // seeded_fields: FieldSet::EMPTY
+        let t = LiveTable::new(vec![info("main")], cfg);
+        assert!(t.is_cell_loading(0, FieldSet::OWNER));
     }
 }

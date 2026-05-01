@@ -1109,6 +1109,10 @@ fn create_satellite_worktrees_tui(
             verbosity,
             pin_default_branch: true,
             partition_by_owner: false, // Clone does not partition by owner.
+            // Clone seeds bare `WorktreeInfo::empty(...)` stubs and streams
+            // the populated fields via `list_stream::spawn` (see
+            // `stream_post_setup_info`). Nothing is finalized at seed time.
+            seeded_fields: FieldSet::EMPTY,
         },
         None,
     );

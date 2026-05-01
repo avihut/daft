@@ -310,6 +310,7 @@ mod tests {
             None,
             false,
             false,
+            crate::core::worktree::info_field::FieldSet::EMPTY,
         );
         let (_tx, rx) = mpsc::channel();
         let renderer = TuiRenderer::new(state, rx).with_cancel_signal(Arc::clone(&signal));
@@ -342,6 +343,7 @@ mod tests {
             None,
             false,
             false,
+            crate::core::worktree::info_field::FieldSet::EMPTY,
         );
         let (_tx, rx) = mpsc::channel();
         let renderer = TuiRenderer::new(state, rx);
@@ -369,6 +371,7 @@ mod tests {
             None,
             true,
             false,
+            crate::core::worktree::info_field::FieldSet::EMPTY,
         );
         assert!(!state.live.cancelled);
         assert!(!state.live.collection_complete);
