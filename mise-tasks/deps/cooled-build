@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Build through cargo-cooldown — fails if a fresh transitive crate sneaks in"
+set -euo pipefail
+
+exec cargo cooldown build "$@"

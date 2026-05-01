@@ -8,6 +8,24 @@ on:
       - "docs/**"
 
 jobs:
+  # Supply-chain gate: refuse PRs that introduce dep-lock entries younger than
+  # 7 days (Cargo.lock + bun.lock). Bypass via .dep-age-allowlist (with
+  # rationale) or commit env ALLOW_FRESH_DEPS=1 in an emergency.
+  dep-age-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check lockfile freshness
+        env:
+          # github.base_ref is a refname (cannot contain shell metacharacters
+          # per git ref-format rules); we still funnel it through env to avoid
+          # interpolating it into the shell command directly.
+          PR_BASE_REF: ${{ github.base_ref }}
+        run: BASE_REF="origin/${PR_BASE_REF}" scripts/check-lockfile-age.sh
+
   # Fast feedback: formatting, linting, unit tests (debug mode only - no release build needed)
   lint:
     runs-on: ubuntu-latest

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Fail if Cargo.lock or bun.lock introduces deps newer than 7 days vs base ref"
+set -euo pipefail
+
+base_ref="${1:-${BASE_REF:-origin/master}}"
+exec scripts/check-lockfile-age.sh "$base_ref"

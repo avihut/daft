@@ -1,0 +1,15 @@
+# Lockfile age-check allowlist. One entry per line. Comments start with `#`.
+#
+# Format:
+#   <ecosystem>:<name>           — exempt every version of the package
+#   <ecosystem>:<name>@<version> — exempt one specific version
+#
+# Ecosystems: cargo, npm
+#
+# Always include WHY in a comment above the entry, and remove the entry once
+# the underlying version has aged past the threshold. Entries here weaken our
+# supply-chain posture; they should be temporary.
+#
+# Example:
+#   # CVE-2026-XXXX patched in 0.2.4, no older fix available
+#   cargo:somecrate@0.2.4

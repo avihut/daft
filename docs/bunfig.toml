@@ -1,0 +1,5 @@
+[install]
+# See ../bunfig.toml for rationale. Duplicated because Bun reads bunfig.toml
+# from the cwd, and `mise run docs:site*` invokes Bun from this directory.
+minimumReleaseAge = 604800
+minimumReleaseAgeExcludes = []
