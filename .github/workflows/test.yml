@@ -3,9 +3,24 @@ name: Test Git Worktree Workflow
 on:
   pull_request:
     branches: [main, master]
-    paths-ignore:
-      - "*.md"
-      - "docs/**"
+    # Default to running on any change, then negate the things that don't
+    # affect the Rust build/test surface. New files default to triggering
+    # this workflow -- safer than allowlisting and forgetting to update.
+    # Note: .github/workflows/test.yml is intentionally NOT negated, so
+    # changes to this workflow re-run the suite to validate them.
+    paths:
+      - "**"
+      - "!*.md"
+      - "!docs/**"
+      - "!.github/CODEOWNERS"
+      - "!.github/dependabot.yml"
+      - "!.github/workflows/bench.yml"
+      - "!.github/workflows/claude-pr-review.yml"
+      - "!.github/workflows/docs.yml"
+      - "!.github/workflows/mise-tool-updates.yml"
+      - "!.github/workflows/release-plz.yml"
+      - "!.github/workflows/release.yml"
+      - "!.github/workflows/test-homebrew.yml"
 
 permissions:
   contents: read
