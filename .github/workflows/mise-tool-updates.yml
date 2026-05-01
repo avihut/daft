@@ -7,9 +7,10 @@ name: mise tool updates
 # enter without intent.
 on:
   schedule:
-    # Mondays 08:00 UTC (= 11:00 Asia/Jerusalem). Weekly is enough — mise tools
-    # turn over much slower than the cargo/bun deps Dependabot watches daily.
-    - cron: "0 8 * * 1"
+    # Daily 06:00 UTC (= 09:00 Asia/Jerusalem) — matches the Dependabot
+    # schedule. Most days this is a no-op (nothing has aged into the gate);
+    # the action only opens a PR when there's an actual diff.
+    - cron: "0 6 * * *"
   workflow_dispatch: {} # manual trigger from the Actions UI
 
 permissions:
