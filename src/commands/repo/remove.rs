@@ -112,11 +112,9 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
 /// Picks `project_root.parent()` first (the natural sibling), then falls back
 /// to `dirs::data_dir()`, then `dirs::home_dir()`, then `/`.
 ///
-/// TODO(Bundle G): exercise this in the YAML scenario `remove-from-inside.yml`
-/// — the spec-aligned integration coverage. The unit-test layer cannot
-/// reliably exercise the cwd-mutation path because Rust unit tests share
-/// process-wide cwd / env state and run in parallel, which makes the test
-/// inherently racy with the rest of the suite.
+/// Integration coverage lives in `tests/manual/scenarios/repo/remove-from-inside.yml`
+/// — the unit-test layer can't reliably exercise the cwd-mutation path because
+/// Rust unit tests share process-wide cwd / env state and run in parallel.
 fn maybe_redirect_cwd(target: &crate::core::worktree::remove_repo::RepoTarget) {
     let cwd = match std::env::current_dir() {
         Ok(c) => c,
@@ -218,9 +216,12 @@ fn run_sequential(
                 // removal proceeds regardless (TaskStatus::Succeeded), so we
                 // must mark `any_failed` here when a hook aborts in non-warned
                 // mode. Warned-only runs leave `any_failed` untouched.
-                // TODO(Bundle G): cover this exit-code path in the YAML
-                // scenario `remove-with-hooks.yml` — fail an Abort-mode hook
-                // and assert the process exits non-zero.
+                //
+                // Integration coverage for the abort-mode exit-code path is
+                // deferred until YAML config exposes `fail_mode` for
+                // `worktree-pre-remove` (see #446). Today the schema defaults
+                // to Warn and provides no override, so neither YAML scenarios
+                // nor bats tests can drive this branch.
                 if !success && !warned {
                     any_failed = true;
                 }
