@@ -251,19 +251,31 @@ fn run_sequential(
 ///
 /// One row per `WorktreeEntry`, keyed by the branch label so DAG events
 /// emitted from `build_remove_repo` resolve via `find_row_mut(branch_name)`.
-/// `path` is populated so `WorktreeInfo::refresh_dynamic_fields` can fill in
-/// Path/Base/Changes/etc. cells (without a path it returns early and the row
-/// stays as loaders).
+/// `path` is populated so `WorktreeInfo::refresh_dynamic_fields` could fill
+/// in Path/Base/Changes/etc. cells (we don't call it here because most of
+/// those fields require base-branch comparison, status scan, network, or
+/// owner resolution — none of which is worth doing for a repo about to be
+/// deleted). However, we DO read HEAD commit metadata
+/// (`last_commit_{timestamp,hash,subject}` and `branch_creation_timestamp`)
+/// synchronously per worktree: it's purely local, cheap, and lets the TUI
+/// render real values for the Commit / Hash / Age columns instead of blanks.
 ///
-/// Note: the bare-removal task (`TaskId::RemoveBare`) emits events with
-/// `branch_name: "(bare)"` but we deliberately do NOT add a row for it —
-/// `find_row_mut` returns `None` and silently no-ops. The OperationPhase
-/// indicator at the top of the TUI ("Removing repository") already gives the
-/// user feedback that the overall operation is in flight.
+/// Note: the bare-removal task (`TaskId::RemoveBare`) emits events with an
+/// empty `branch_name` so the TUI's auto-create guard skips it; no row is
+/// needed for the bare git dir. The OperationPhase indicator at the top of
+/// the TUI ("Removing repository") already gives the user feedback that the
+/// overall operation is in flight.
 fn build_tui_rows(
     worktrees: &[crate::core::worktree::remove_repo::WorktreeEntry],
 ) -> Vec<crate::core::worktree::list::WorktreeInfo> {
-    use crate::core::worktree::list::WorktreeInfo;
+    use crate::core::worktree::list::{
+        get_branch_creation_timestamp, get_commit_metadata, WorktreeInfo,
+    };
+
+    // Subprocess backend is fine here: this runs once at TUI bootstrap for a
+    // typical 1-10 worktrees. Threading `use_gitoxide` through is out of
+    // scope; `get_commit_metadata` falls back cleanly when gitoxide is off.
+    let git = crate::git::GitCommand::new(true);
 
     worktrees
         .iter()
@@ -271,6 +283,20 @@ fn build_tui_rows(
             let label = w.branch.as_deref().unwrap_or("(detached)");
             let mut info = WorktreeInfo::empty(label);
             info.path = Some(w.path.clone());
+
+            let (ts, hash, subj) = get_commit_metadata(&w.path, &git);
+            info.last_commit_timestamp = ts;
+            info.last_commit_hash = hash;
+            info.last_commit_subject = subj;
+
+            // `branch_creation_timestamp` (Age column source) needs a branch
+            // name; detached worktrees have none, so leave it as `None` and
+            // the Age cell renders blank — which is correct, "branch age"
+            // doesn't apply without a branch.
+            if let Some(branch) = w.branch.as_deref() {
+                info.branch_creation_timestamp = get_branch_creation_timestamp(branch, &w.path);
+            }
+
             info
         })
         .collect()
@@ -633,6 +659,61 @@ mod tests {
         assert_eq!(
             rows[0].path.as_deref(),
             Some(std::path::Path::new("/repo/sandbox"))
+        );
+    }
+
+    #[test]
+    fn build_tui_rows_populates_head_commit_metadata() {
+        // Bug 2: Commit / Hash / Age cells were blank because
+        // `build_tui_rows` constructed `WorktreeInfo` rows with `path` set
+        // but never populated last_commit_{timestamp,hash,subject} or
+        // branch_creation_timestamp. These fields are local and cheap to
+        // read at row-build time.
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = make_repo_with_worktree(tmp.path());
+
+        // Capture the actual abbreviated SHA and message for the worktree's
+        // HEAD; SHA is unstable across timestamps/authors so we read it back.
+        let sha_out = Command::new("git")
+            .current_dir(&wt)
+            .args(["rev-parse", "--short", "HEAD"])
+            .output()
+            .unwrap();
+        let expected_hash = String::from_utf8(sha_out.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert!(
+            !expected_hash.is_empty(),
+            "test setup: rev-parse --short HEAD must return a hash"
+        );
+
+        let entries = vec![WorktreeEntry {
+            path: wt.clone(),
+            branch: Some("feat".to_string()),
+            is_bare: false,
+            is_detached: false,
+        }];
+        let rows = build_tui_rows(&entries);
+
+        assert_eq!(rows.len(), 1);
+        let info = &rows[0];
+        assert_eq!(
+            info.last_commit_hash.as_deref(),
+            Some(expected_hash.as_str()),
+            "last_commit_hash must match `git rev-parse --short HEAD`",
+        );
+        assert!(
+            info.last_commit_timestamp.is_some(),
+            "last_commit_timestamp must be populated",
+        );
+        assert_eq!(
+            info.last_commit_subject, "init",
+            "last_commit_subject must match the commit message",
+        );
+        assert!(
+            info.branch_creation_timestamp.is_some(),
+            "branch_creation_timestamp must be populated for non-detached worktrees so the Age column has data",
         );
     }
 

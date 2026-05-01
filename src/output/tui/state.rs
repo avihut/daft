@@ -871,6 +871,27 @@ mod tests {
     }
 
     #[test]
+    fn task_started_with_empty_branch_name_does_not_auto_create_row() {
+        // Regression for the `(bare)` row reappearing in `daft repo remove`:
+        // the bare-removal task fires `TaskStarted` with an empty branch_name
+        // (so auto-create is skipped). The phase header still activates;
+        // only the row creation is suppressed.
+        let mut state = make_test_state();
+        let initial_rows = state.live.rows.len();
+
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::RemoveRepo,
+            branch_name: String::new(),
+        });
+
+        assert_eq!(
+            state.live.rows.len(),
+            initial_rows,
+            "TaskStarted with empty branch_name must not auto-create a row",
+        );
+    }
+
+    #[test]
     fn auto_creates_row_for_unknown_branch() {
         let mut state = make_test_state();
         assert_eq!(state.live.rows.len(), 3);

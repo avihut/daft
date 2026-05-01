@@ -388,7 +388,13 @@ impl SyncDag {
                 id: TaskId::RemoveBare,
                 phase: OperationPhase::RemoveRepo,
                 worktree_path: Some(bare_git_dir),
-                branch_name: "(bare)".to_string(),
+                // Intentionally empty: the TUI's TaskStarted handler
+                // auto-creates a row for any non-empty branch_name. A
+                // sentinel like "(bare)" would surface as a synthetic row
+                // even though no row exists for the bare git dir. The
+                // OperationPhase header ("Removing repository") already
+                // covers progress for this task visually.
+                branch_name: String::new(),
             },
             worktree_indices,
         );
@@ -841,6 +847,22 @@ mod tests {
         assert_eq!(dag.tasks.len(), 1);
         assert_eq!(dag.tasks[0].id, TaskId::RemoveBare);
         assert!(dag.dependencies_of(0).is_empty());
+    }
+
+    #[test]
+    fn build_remove_repo_bare_task_has_empty_branch_name() {
+        // The TUI auto-create guard at state.rs:225 keys on a non-empty
+        // branch_name; a non-empty sentinel like "(bare)" causes a synthetic
+        // row to appear when the bare-removal task fires its TaskStarted
+        // event. Keeping branch_name empty suppresses auto-creation while
+        // phase activation still works.
+        use std::path::PathBuf;
+        let dag = SyncDag::build_remove_repo(vec![], PathBuf::from("/repo/.git"));
+        assert_eq!(dag.tasks[0].id, TaskId::RemoveBare);
+        assert_eq!(
+            dag.tasks[0].branch_name, "",
+            "RemoveBare branch_name must be empty so the TUI auto-create guard skips it",
+        );
     }
 
     #[test]
