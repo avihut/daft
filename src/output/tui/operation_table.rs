@@ -43,11 +43,7 @@ pub struct TableConfig {
     /// external value is injected into `live.unowned_start_index` after
     /// `TuiState::new` returns, and we must not let LiveTable overwrite it.
     pub partition_by_owner: bool,
-    /// Fields that the synchronous seed populated authoritatively. These
-    /// bits are pre-set in each row's `received_patches`, so cells whose
-    /// seed value is final (e.g. `owner = None` for the default branch in
-    /// prune/sync, where the streaming collector won't emit an `Owner`
-    /// patch) skip the loading shimmer instead of animating forever.
+    /// Forwarded to [`super::LiveTableConfig::seeded_fields`]. See its doc for semantics.
     pub seeded_fields: FieldSet,
 }
 

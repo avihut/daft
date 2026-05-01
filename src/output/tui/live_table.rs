@@ -31,11 +31,16 @@ pub struct LiveTableConfig {
     pub partition_by_owner: bool,
     pub project_root: PathBuf,
     pub cwd: PathBuf,
-    /// Fields the synchronous seed populated authoritatively. Each row's
-    /// `received_patches` is initialized to this set so cells whose seed
-    /// value is final (e.g. `owner = None` for the default branch) don't
-    /// render the loading shimmer indefinitely when the streaming collector
-    /// won't emit a patch for them.
+    /// Fields whose authoritative value is determined before TUI start —
+    /// either populated by the synchronous seed, or guaranteed never to
+    /// arrive via the streaming collector. Pre-marking these in
+    /// `received_patches` prevents the shimmer for cells the streaming
+    /// collector won't emit a patch for, including the legitimate-empty
+    /// case (e.g. the default branch's owner is `None` by design and
+    /// must render as final, not loading). The render path keys shimmer
+    /// off `vals.X.is_empty()` rather than the bit alone, so cells with
+    /// the bit set but no seed value render as "final empty" rather than
+    /// shimmering.
     pub seeded_fields: FieldSet,
 }
 
@@ -59,11 +64,10 @@ pub struct LiveTable {
 
 impl LiveTable {
     pub fn new(seed: Vec<WorktreeInfo>, cfg: LiveTableConfig) -> Self {
-        // Pre-seed `received_patches` with the bits the synchronous seed
-        // populated authoritatively. This stops the loading shimmer for
-        // cells whose seed value is final and the streaming collector
-        // won't emit a patch for (e.g. `info.owner = None` for the
-        // default branch row in `daft prune` / `daft sync`).
+        // Pre-seed `received_patches` with bits for fields not arriving via
+        // the streaming collector. This stops the loading shimmer for cells
+        // the collector won't emit a patch for (e.g. `info.owner = None` for
+        // the default branch row in `daft prune` / `daft sync`).
         let received_patches = vec![cfg.seeded_fields; seed.len()];
         let rows: Vec<WorktreeRow> = seed.into_iter().map(WorktreeRow::idle).collect();
         let mut t = Self {
@@ -211,9 +215,14 @@ impl LiveTable {
     }
 
     /// Append a new row, keeping `received_patches` in lockstep so
-    /// `is_cell_loading` cannot index out of bounds. Used when a
-    /// dynamically-discovered branch (e.g. a gone branch surfaced after
-    /// fetch) gets a row.
+    /// `is_cell_loading` cannot index out of bounds. Initialized to
+    /// `FieldSet::EMPTY`: dynamically-discovered branches have no
+    /// upfront seed, so every cell starts as "loading" until a patch
+    /// arrives. This is a conservative default, not provably-correct
+    /// for all callers — cells that no patch ever lands on (e.g.
+    /// gone branches surfaced after fetch in prune) will shimmer
+    /// indefinitely. Callers that need rows treated as seed-final
+    /// should extend this API rather than rely on the default.
     pub fn push_row(&mut self, info: WorktreeInfo) {
         self.rows.push(WorktreeRow::idle(info));
         self.received_patches.push(FieldSet::EMPTY);

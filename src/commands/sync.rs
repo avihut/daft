@@ -459,10 +459,9 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     if stat == Stat::Lines {
         streaming_fields |= FieldSet::BASE_LINES | FieldSet::CHANGES_LINES | FieldSet::REMOTE_LINES;
     }
-    // Everything the synchronous seed populated authoritatively — i.e.
-    // everything *not* arriving via the streaming collector. Pre-marking
-    // these bits in each row's `received_patches` prevents the loading
-    // shimmer from animating forever for cells the seed already finalized
+    // Bits for fields *not* arriving via the streaming collector. Pre-marking
+    // these in each row's `received_patches` prevents the loading shimmer
+    // from animating forever for cells the collector won't emit a patch for
     // (e.g. `info.owner = None` for the default branch row).
     let seeded_fields = !streaming_fields;
 
