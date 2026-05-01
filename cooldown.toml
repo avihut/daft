@@ -1,0 +1,22 @@
+# cargo-cooldown configuration.
+# https://github.com/dertin/cargo-cooldown
+#
+# Schema below targets cargo-cooldown >= 0.3.0. With 0.2.0 (what mise's own
+# 7-day install gate selects today) only `cooldown_minutes` is honored; the
+# rest of the keys take effect once 0.3.0 ages past the gate.
+#
+# 7 days * 24 hours * 60 minutes = 10080.
+cooldown_minutes = 10080
+
+# Warn rather than fail when Cargo's own resolution forces a fresh version
+# (semver range, target-specific dep, etc.). Pair with the lockfile-age CI
+# check, which is the hard gate.
+enforcement = "cargo_compatible"
+cargo_compatible_accept = "prompt"
+
+# Treat the pre-run Cargo.lock as the version floor — don't downgrade what's
+# already in there.
+lockfile_baseline = "floor"
+
+# Per-crate exemptions go below as `[[allow.exact]]` (specific version) or
+# `[[allow.package]] minutes = 0` (always exempt). Document why in a comment.

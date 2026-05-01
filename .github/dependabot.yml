@@ -1,5 +1,9 @@
 # Dependabot configuration for automatic dependency updates
 # https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# Cooldown policy: every ecosystem waits 7 days before opening a version-update
+# PR. Security updates bypass cooldown automatically (Dependabot behavior, not
+# configurable). To exempt a specific package, add it under cooldown.exclude.
 
 version: 2
 updates:
@@ -11,6 +15,8 @@ updates:
       interval: "daily"
       time: "09:00"
       timezone: "Asia/Jerusalem"
+    cooldown:
+      default-days: 7
     # Group all Cargo updates into a single PR when possible
     groups:
       cargo-dependencies:
@@ -37,6 +43,8 @@ updates:
       interval: "daily"
       time: "09:00"
       timezone: "Asia/Jerusalem"
+    cooldown:
+      default-days: 7
     # Group all GitHub Actions updates into a single PR
     groups:
       github-actions:
@@ -51,13 +59,39 @@ updates:
       include: "scope"
     rebase-strategy: "auto"
 
-  - package-ecosystem: "npm"
+  # Root JS deps (prettier dev dep, bun.lock at repo root)
+  - package-ecosystem: "bun"
+    directory: "/"
+    target-branch: "master"
+    schedule:
+      interval: "daily"
+      time: "09:00"
+      timezone: "Asia/Jerusalem"
+    cooldown:
+      default-days: 7
+    groups:
+      js-dependencies:
+        patterns:
+          - "*"
+    labels:
+      - "dependencies"
+      - "javascript"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    rebase-strategy: "auto"
+
+  # Docs site JS deps (VitePress + Biome, bun.lock under /docs)
+  - package-ecosystem: "bun"
     directory: "/docs"
     target-branch: "master"
     schedule:
       interval: "daily"
       time: "09:00"
       timezone: "Asia/Jerusalem"
+    cooldown:
+      default-days: 7
     groups:
       docs-dependencies:
         patterns:

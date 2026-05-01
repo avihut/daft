@@ -61,6 +61,17 @@ This project follows the XDG Base Directory Specification. Use the `dirs` crate
 for cross-platform path resolution. Never hardcode `~/` paths for config or data
 storage.
 
+## Dependency Cooldown
+
+7-day age gate across mise tools, Bun (`bunfig.toml`), Dependabot version PRs,
+and a CI lockfile-age check (`scripts/check-lockfile-age.sh`). Dependabot
+security PRs bypass automatically.
+
+When adding a package, pin to a version ≥7 days old: `cargo add foo@<version>`
+or `bun add foo@<version>`. To bypass, add an entry (with `# why:` rationale) to
+`.dep-age-allowlist`, `bunfig.toml` `minimumReleaseAgeExcludes`, or
+`cooldown.toml`; emergency CI override is `ALLOW_FRESH_DEPS=1`.
+
 ## Architecture
 
 **Multicall binary**: All commands route through a single `daft` binary

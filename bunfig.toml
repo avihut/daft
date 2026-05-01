@@ -1,0 +1,9 @@
+[install]
+# Refuse to install package versions newer than 7 days. Mitigates supply-chain
+# attacks (compromised packages are typically caught and yanked within hours).
+# Security bypass: add the package name to minimumReleaseAgeExcludes with a
+# comment explaining why, then remove the entry once the gate would no longer
+# block it.
+# https://bun.com/docs/runtime/bunfig#install-minimumreleaseage
+minimumReleaseAge = 604800
+minimumReleaseAgeExcludes = []
