@@ -31,16 +31,21 @@ _.source = ["shared-env.sh"]
 INTEGRATION_TESTS_DIR = "tests/integration"
 INTEGRATION_TEMP_DIR = "/tmp/git-worktree-integration-tests"
 
-# Auto-install JS dependencies (Prettier) when package.json changes
+# Sync mise tools and JS deps automatically on cd. The hash gate keeps this
+# nearly free when nothing changed; when mise.toml/mise.lock or
+# package.json/bun.lock change (e.g. after `git pull` and a re-cd), it
+# proactively re-runs the install commands.
 [hooks]
 enter = """
 mkdir -p .mise
 hashfile=".mise/deps_hash"
-current_hash=$(cat package.json bun.lock 2>/dev/null | md5 -q 2>/dev/null || cat package.json bun.lock 2>/dev/null | md5sum | cut -d' ' -f1)
+hash_inputs() { cat package.json bun.lock mise.toml mise.lock 2>/dev/null; }
+current_hash=$(hash_inputs | md5 -q 2>/dev/null || hash_inputs | md5sum | cut -d' ' -f1)
 if [ ! -d "node_modules" ] || [ ! -f "$hashfile" ] || [ "$(cat "$hashfile" 2>/dev/null)" != "$current_hash" ]; then
-  echo "[mise] Installing JS dependencies..."
+  echo "[mise] Syncing dev tools and JS deps..."
+  mise install
   bun install --frozen-lockfile 2>/dev/null || bun install
-  current_hash=$(cat package.json bun.lock 2>/dev/null | md5 -q 2>/dev/null || cat package.json bun.lock 2>/dev/null | md5sum | cut -d' ' -f1)
+  current_hash=$(hash_inputs | md5 -q 2>/dev/null || hash_inputs | md5sum | cut -d' ' -f1)
   echo "$current_hash" > "$hashfile"
 fi
 """
