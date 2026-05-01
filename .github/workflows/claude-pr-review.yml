@@ -1,16 +1,21 @@
 name: Claude PR Review
 
-# Auto-runs on PRs opened by the repo owner (avihut). External contributors
-# cannot trigger Claude runs implicitly. Maintainers can opt-in by commenting
-# "/claude review" or by running the workflow manually.
+# Reviews are explicitly opt-in. To request a review, a maintainer comments
+# "/claude review" on the target PR, or triggers this workflow manually from
+# the Actions tab. There is no auto-trigger: opening a PR (yours or anyone
+# else's) does not spend Claude subscription quota until someone asks.
+#
+# The CLAUDE_CODE_OAUTH_TOKEN secret is bound to a GitHub Environment with a
+# master-only deployment-branch policy. Both supported triggers (issue_comment,
+# workflow_dispatch) run from the default-branch context, so the policy lets
+# them through. A workflow YAML modified on a feature branch cannot reach the
+# secret -- which is the whole point of routing the auto-trigger out.
 #
 # All untrusted inputs (comment bodies, PR titles, etc.) are referenced only
 # inside `if:` expression contexts via `contains()`, never interpolated into
 # `run:` shell commands. The action's `prompt:` value is a static string.
 
 on:
-  pull_request:
-    types: [opened, synchronize]
   issue_comment:
     types: [created]
   workflow_dispatch:
@@ -27,33 +32,12 @@ permissions:
 
 concurrency:
   group:
-    claude-review-${{ github.event.pull_request.number ||
-    github.event.issue.number || github.event.inputs.pr_number }}
+    claude-review-${{ github.event.issue.number || github.event.inputs.pr_number
+    }}
   cancel-in-progress: true
 
 jobs:
-  review-owner:
-    if: |
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.user.login == 'avihut'
-    runs-on: ubuntu-latest
-    environment: claude-review
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 20
-      - uses: anthropics/claude-code-action@v1
-        with:
-          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: |
-            Review this pull request against the project's CLAUDE.md guidelines.
-            Focus on: Rust correctness and idioms, test coverage (every bug fix
-            needs a regression test), shell-eval'd command hot-path constraints,
-            security, and performance. Leave actionable inline comments where
-            applicable.
-          track_progress: true
-
-  review-opt-in:
+  review:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issue_comment' &&
