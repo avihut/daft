@@ -177,6 +177,30 @@ After branches are merged and deleted on the remote:
 daft prune
 ```
 
+### Removing a Repository
+
+To tear down a daft-managed repository entirely — bare git directory, every
+worktree, trust DB entry, and any `worktree-pre/post-remove` hooks — use
+`daft repo remove`:
+
+```bash
+# Remove the repo containing the current directory
+daft repo remove
+
+# Remove a repo by path (works from anywhere)
+daft repo remove ~/code/old-project
+
+# Preview what would happen first
+daft repo remove --dry-run ~/code/old-project
+
+# Skip the confirmation prompt
+daft repo remove --force ~/code/old-project
+```
+
+When run from inside the repo being deleted, daft writes a safe redirect path to
+`$DAFT_CD_FILE` so the shell wrapper `cd`s the user out of the now-deleted
+directory. See [`daft repo remove`](/cli/daft-repo-remove) for full reference.
+
 ### Syncing Everything
 
 Prune stale worktrees and update all remaining ones in a single command:
