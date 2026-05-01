@@ -494,6 +494,60 @@ test_repo_remove_from_inside_worktree() {
     return 0
 }
 
+# Test 11: Bare-only repo (no worktrees). The TUI is overkill for a single
+# bare-removal task and previously rendered an empty-table-with-headers that
+# looked like a glitch. The command now uses the sequential path when the
+# worktree list is empty and emits a clear (bare): removed line.
+test_repo_remove_bare_only_no_worktrees() {
+    local remote_repo container
+    remote_repo=$(create_test_remote "test-repo-remove-bare-only" "main")
+    container=$(mktemp -d "${TMPDIR:-/tmp}/daft-bare-only.XXXXXX")
+    trap 'rm -rf "$container"' RETURN
+
+    # `--no-checkout` produces just the bare repo, no worktrees.
+    (cd "$container" && git-worktree-clone --layout contained --no-checkout "$remote_repo") || return 1
+    local project_root="$container/test-repo-remove-bare-only"
+    assert_directory_exists "$project_root" || return 1
+    assert_directory_exists "$project_root/.git" || return 1
+
+    # Sanity: no worktree dirs siblings to .git.
+    local sibling_count
+    sibling_count=$(find "$project_root" -mindepth 1 -maxdepth 1 -not -name '.git' | wc -l | tr -d ' ')
+    if [[ "$sibling_count" != "0" ]]; then
+        log_error "test setup: expected no worktree siblings, found $sibling_count"
+        return 1
+    fi
+
+    cd "$container" || return 1
+    local out
+    out=$(daft repo remove --force "$project_root" 2>&1) || return 1
+
+    # Must NOT show the TUI status header for an empty worktree list.
+    if echo "$out" | grep -qE '^Status[[:space:]]+Branch'; then
+        log_error "Empty repo-remove must skip the TUI; got Status header in output:"
+        log_error "$out"
+        return 1
+    fi
+    # Must report bare removal explicitly.
+    if ! echo "$out" | grep -q "(bare): removed"; then
+        log_error "Expected '(bare): removed' line; got:"
+        log_error "$out"
+        return 1
+    fi
+
+    if [[ -d "$project_root" ]]; then
+        log_error "project_root not removed: $project_root"
+        return 1
+    fi
+    if [[ ! -d "$container" ]]; then
+        log_error "DATA LOSS: container directory removed: $container"
+        return 1
+    fi
+
+    log_success "daft repo remove handles bare-only repos with sequential output"
+    return 0
+}
+
 # Run all repo-remove integration tests.
 run_repo_remove_tests() {
     log "Running daft repo remove integration tests..."
@@ -508,6 +562,7 @@ run_repo_remove_tests() {
     run_test "repo_remove_relative_path_from_parent" "test_repo_remove_relative_path_from_parent"
     run_test "repo_remove_no_arg_from_inside_project_root" "test_repo_remove_no_arg_from_inside_project_root"
     run_test "repo_remove_from_inside_worktree" "test_repo_remove_from_inside_worktree"
+    run_test "repo_remove_bare_only_no_worktrees" "test_repo_remove_bare_only_no_worktrees"
 }
 
 # Main execution
