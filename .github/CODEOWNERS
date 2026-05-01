@@ -1,0 +1,14 @@
+# CODEOWNERS for daft
+#
+# Files listed here trigger required review from the listed owner before
+# merging, IF branch protection on master is configured with "Require review
+# from Code Owners". Without that branch-protection rule, this file only
+# auto-requests reviews -- it does not block merges.
+#
+# Scope is intentionally narrow: only paths whose modification could weaken
+# repository security posture (workflow YAML, this file, Dependabot config)
+# are owner-gated. Day-to-day source changes follow the normal PR flow.
+
+/.github/workflows/    @avihut
+/.github/CODEOWNERS    @avihut
+/.github/dependabot.yml @avihut
