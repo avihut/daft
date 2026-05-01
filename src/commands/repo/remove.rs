@@ -55,7 +55,14 @@ pub fn run() -> Result<()> {
 pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     use crate::core::worktree::remove_repo::{enumerate_worktrees, resolve_repo};
 
-    let settings = crate::core::settings::DaftSettings::load()?;
+    // Load global config only. `daft repo remove` is the one daft command that
+    // commonly runs from outside any repo (e.g. `daft repo remove ./old-repo`
+    // from a parent directory). `DaftSettings::load()` ultimately calls
+    // `git.config_get` which does `gix::discover(&cwd)` and fails outside a
+    // repo, so the local-config variant breaks the basic
+    // `daft repo remove <path>` invocation. The only setting we read here is
+    // `use_gitoxide`, which users typically configure globally anyway.
+    let settings = crate::core::settings::DaftSettings::load_global()?;
     let use_gitoxide = settings.use_gitoxide;
     if crate::git::should_show_gitoxide_notice(use_gitoxide) {
         eprintln!("[experimental] Using gitoxide backend for git operations");

@@ -327,6 +327,41 @@ test_repo_remove_clean_repos_helper() {
     return 0
 }
 
+# Test 6: Regression — running `daft repo remove <path>` from a CWD that is
+# not itself inside a git repo (e.g. a sandbox /tmp dir) must succeed. Earlier
+# revisions called `DaftSettings::load()` unconditionally, which discovers a
+# git repo from CWD via gitoxide and errors out before the path argument was
+# ever consulted. The fix uses `load_global()`; this test pins it.
+test_repo_remove_from_non_repo_cwd() {
+    local remote_repo non_git_parent
+    remote_repo=$(create_test_remote "test-repo-remove-non-repo-cwd" "main")
+
+    # Clone into a known parent dir that is itself NOT a git repo.
+    non_git_parent=$(mktemp -d "${TMPDIR:-/tmp}/daft-non-repo-cwd.XXXXXX")
+    trap 'rm -rf "$non_git_parent"' RETURN
+
+    (cd "$non_git_parent" && git-worktree-clone --layout contained "$remote_repo") || return 1
+    local project_root="$non_git_parent/test-repo-remove-non-repo-cwd"
+    assert_directory_exists "$project_root" || return 1
+
+    # CWD is the non-repo parent. Pass the repo path as an argument.
+    cd "$non_git_parent" || return 1
+    if [[ -d ".git" ]]; then
+        log_error "test setup error: $non_git_parent unexpectedly is a git repo"
+        return 1
+    fi
+
+    daft repo remove --force "$project_root" || return 1
+
+    if [[ -d "$project_root" ]]; then
+        log_error "daft repo remove should have removed $project_root"
+        return 1
+    fi
+
+    log_success "daft repo remove works from a non-repo cwd with explicit path"
+    return 0
+}
+
 # Run all repo-remove integration tests.
 run_repo_remove_tests() {
     log "Running daft repo remove integration tests..."
@@ -336,6 +371,7 @@ run_repo_remove_tests() {
     run_test "repo_remove_dry_run" "test_repo_remove_dry_run"
     run_test "repo_remove_non_git_path_fails" "test_repo_remove_non_git_path_fails"
     run_test "repo_remove_clean_repos_helper" "test_repo_remove_clean_repos_helper"
+    run_test "repo_remove_from_non_repo_cwd" "test_repo_remove_from_non_repo_cwd"
 }
 
 # Main execution
