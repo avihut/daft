@@ -480,6 +480,62 @@ __V2__
     fi
 }
 
+# Regression test: `daft repo remove` is a subcommand (not a separate
+# binary), so the wrapper must wire DAFT_CD_FILE for it the same way it
+# does for `daft layout`. Without this, running `daft repo remove .` from
+# inside a worktree leaves the user's shell sitting in a deleted dir
+# (the binary falls back to `eprintln!("Run cd ...")` because no
+# DAFT_CD_FILE was set in env). User-reported field test caught this.
+test_daft_repo_wrapper_writes_cd_file() {
+    log "Testing: daft repo wrapper sets DAFT_CD_FILE so cd-out works after remove"
+
+    local remote_dir
+    remote_dir=$(create_test_remote "test-repo-wrapper-remove" "main")
+
+    # Clone via the actual binary to set up the working repo.
+    git-worktree-clone --layout contained "$remote_dir" >/dev/null 2>&1
+    local project_root="$PWD/test-repo-wrapper-remove"
+    local main_worktree="$project_root/main"
+    if [[ ! -d "$main_worktree" ]]; then
+        log_error "setup: main worktree not created at $main_worktree"
+        return 1
+    fi
+
+    # Source the wrapper, cd into the worktree about to be deleted, run
+    # `daft repo remove --force`, then verify the wrapper's `cd` happened
+    # by reading $PWD afterwards. If the wrapper didn't pass DAFT_CD_FILE,
+    # the binary's fallback kicks in and the shell stays in the (now-gone)
+    # worktree dir — so `pwd` returns the project_root or fails.
+    local out
+    out=$(MAIN_WT="$main_worktree" PROJECT_ROOT="$project_root" bash -c '
+        eval "$(daft shell-init bash)"
+        builtin cd "$MAIN_WT" || exit 11
+        # Suppress the binary chatter; we only care about post-cd state.
+        daft repo remove --force >/dev/null 2>&1 || true
+        # Print the pwd the *wrapper* landed us in.
+        builtin pwd
+    ' 2>&1) || true
+
+    if [[ -z "$out" ]]; then
+        log_error "wrapper produced no pwd output"
+        echo "Output: $out"
+        return 1
+    fi
+    # Successful wrapper redirect lands us in some sibling/ancestor dir
+    # that is NOT inside the now-deleted project_root.
+    if [[ "$out" == "$project_root"* ]]; then
+        log_error "wrapper did not cd out of deleted project_root: $out"
+        return 1
+    fi
+    if [[ -d "$project_root" ]]; then
+        log_error "project_root not removed: $project_root"
+        return 1
+    fi
+
+    log_success "daft repo wrapper redirected shell out of deleted project (now in: $out)"
+    return 0
+}
+
 # --- Main Test Runner ---
 
 main() {
@@ -509,6 +565,7 @@ main() {
     run_test "daft_wrapper_passthrough" test_daft_wrapper_passthrough
     run_test "daft_wrapper_intercepts_subcommand" test_daft_wrapper_intercepts_subcommand
     run_test "wrapper_resolves_binary_live" test_wrapper_resolves_binary_live
+    run_test "daft_repo_wrapper_writes_cd_file" test_daft_repo_wrapper_writes_cd_file
 
     print_summary
 }
