@@ -93,6 +93,29 @@ temp file and pass its path via `DAFT_CD_FILE`. When set, commands write the cd
 target to that file, and the wrapper reads it after the command finishes to `cd`
 into new worktrees. Stdout flows directly to the terminal.
 
+IMPORTANT: Any command that adds, removes, moves, or otherwise changes the
+filesystem layout the user is working inside MUST be wired into the shell
+wrapper's cd-redirect path. The user's cwd may become invalid (worktree deleted,
+renamed, moved between layouts), and the binary cannot fix that on its own —
+only the parent shell can `cd`. Concretely, when adding such a command:
+
+1. Have the binary write the redirect target to `DAFT_CD_FILE` when set, and
+   fall back to a `Run \`cd ...\`` eprintln otherwise (so users without the
+   wrapper still get a hint).
+2. Add the subcommand verb to the `daft()` wrapper in
+   `src/commands/shell_init.rs` — both the bash/zsh `case` and the fish `case` —
+   alongside existing entries like `layout|repo`. New separate binaries
+   (symlinks like `git-worktree-*`) route through `__daft_wrapper`
+   automatically; new daft _subcommands_ do not, and must be added by name.
+3. Cover the wrapper integration with a regression test in
+   `tests/integration/test_shell_init.sh` that sources the wrapper, runs the
+   command, and asserts `builtin pwd` lands in the expected place. The YAML
+   scenarios under `tests/manual/scenarios/` only exercise the binary directly —
+   they cannot catch a missing wrapper case.
+
+The `daft repo remove` field-test bug (binary wrote DAFT_CD_FILE correctly but
+the wrapper had no `repo)` case) is the canonical example.
+
 **Shell-eval'd commands are on the hot path**: `daft shell-init` and
 `daft completions <shell>` both emit shell code that users `eval` from their rc
 files (`~/.bashrc`, `~/.zshrc`, etc.), so they run on every interactive shell
@@ -156,6 +179,11 @@ produce patch bumps; edit `Cargo.toml` in the Release PR for minor/major bumps.
    `tests/README.md` for schema reference)
 8. Add bash integration tests in `tests/integration/` following existing
    patterns
+9. **If the command can change the layout the user's cwd lives inside** (creates
+   / removes / moves / renames worktrees or repos), wire it into the shell
+   wrapper: write `DAFT_CD_FILE` from the binary AND add the verb to the
+   `daft()` wrapper in `src/commands/shell_init.rs` (both bash/zsh and fish).
+   See the Shell integration section for the full contract.
 
 ## Shell Completions
 
