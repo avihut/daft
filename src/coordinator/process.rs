@@ -14,6 +14,7 @@ use super::{
     coordinator_pid_path, coordinator_socket_path, CoordinatorRequest, CoordinatorResponse, JobInfo,
 };
 use crate::executor::command::run_command;
+use crate::executor::dag::DagGraph;
 use crate::executor::{JobResult, JobSpec, NodeStatus};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -92,45 +93,50 @@ impl CoordinatorState {
         cancel_all: &Arc<AtomicBool>,
         cancelled_jobs: &CancelledJobs,
     ) -> Result<Vec<JobResult>> {
-        let mut handles = Vec::new();
-        let results = Arc::new(Mutex::new(Vec::new()));
+        if self.jobs.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        for job in &self.jobs {
-            let job = job.clone();
-            let inv_id = self.invocation_id.clone();
-            let store_base = store.base_dir.clone();
-            let results = Arc::clone(&results);
-            let child_pids = Arc::clone(child_pids);
-            let cancel_all = Arc::clone(cancel_all);
-            let cancelled_jobs = Arc::clone(cancelled_jobs);
-            let hook_type = self.hook_type.clone();
-            let worktree = self.worktree.clone();
+        // Build the DAG from `needs:`. Reusing the same scheduler the foreground
+        // runner uses so foreground and background share one ordering contract.
+        let nodes: Vec<(String, Vec<String>)> = self
+            .jobs
+            .iter()
+            .map(|j| (j.name.clone(), j.needs.clone()))
+            .collect();
+        let graph =
+            DagGraph::new(nodes).map_err(|e| anyhow::anyhow!("invalid background job DAG: {e}"))?;
 
-            let handle = std::thread::spawn(move || {
-                let local_store = LogStore::new(store_base);
-                let ctx = JobInvocationContext {
-                    invocation_id: &inv_id,
-                    hook_type: &hook_type,
-                    worktree: &worktree,
+        let job_map: HashMap<&str, &JobSpec> =
+            self.jobs.iter().map(|j| (j.name.as_str(), j)).collect();
+
+        let results = Arc::new(Mutex::new(Vec::<JobResult>::new()));
+        let max_workers = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+
+        graph.run_parallel(
+            |_idx, name| {
+                let Some(job) = job_map.get(name).copied() else {
+                    return NodeStatus::Failed;
                 };
-                // TODO(daft#454, Task 4): plug this into DagGraph::run_parallel and
-                // propagate the NodeStatus instead of discarding it.
-                let _ = run_single_background_job(
-                    &job,
+                let ctx = JobInvocationContext {
+                    invocation_id: &self.invocation_id,
+                    hook_type: &self.hook_type,
+                    worktree: &self.worktree,
+                };
+                run_single_background_job(
+                    job,
                     &ctx,
-                    &local_store,
+                    store,
                     &results,
-                    &child_pids,
-                    &cancel_all,
-                    &cancelled_jobs,
-                );
-            });
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            handle.join().ok();
-        }
+                    child_pids,
+                    cancel_all,
+                    cancelled_jobs,
+                )
+            },
+            max_workers,
+        );
 
         let results = match Arc::try_unwrap(results) {
             Ok(mutex) => mutex.into_inner().unwrap_or_default(),
