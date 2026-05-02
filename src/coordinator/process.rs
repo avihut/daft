@@ -115,7 +115,7 @@ impl CoordinatorState {
             .map(|n| n.get())
             .unwrap_or(4);
 
-        graph.run_parallel(
+        let statuses = graph.run_parallel(
             |_idx, name| {
                 let Some(job) = job_map.get(name).copied() else {
                     return NodeStatus::Failed;
@@ -137,6 +137,47 @@ impl CoordinatorState {
             },
             max_workers,
         );
+
+        // Synthesize meta + JobResult for jobs the DAG marked DepFailed (the
+        // closure is not invoked for them, so they would otherwise be invisible
+        // to `daft hooks jobs`).
+        for (idx, status) in statuses.iter().enumerate() {
+            if *status != NodeStatus::DepFailed {
+                continue;
+            }
+            let Some(job) = self.jobs.get(idx) else {
+                continue;
+            };
+            if let Ok(job_dir) = store.create_job_dir(&self.invocation_id, &job.name) {
+                let meta = JobMeta::skipped(
+                    &job.name,
+                    &self.hook_type,
+                    &self.worktree,
+                    &job.command,
+                    job.background,
+                    job.needs.clone(),
+                );
+                if let Err(e) = store.write_meta(&job_dir, &meta) {
+                    eprintln!(
+                        "daft: failed to write dep-failed meta for '{}': {e}",
+                        job.name
+                    );
+                }
+            } else {
+                eprintln!(
+                    "daft: failed to create dep-failed log dir for '{}'",
+                    job.name
+                );
+            }
+            results.lock().unwrap().push(JobResult {
+                name: job.name.clone(),
+                status: NodeStatus::DepFailed,
+                duration: std::time::Duration::ZERO,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: "Dependency failed; job did not run".to_string(),
+            });
+        }
 
         let results = match Arc::try_unwrap(results) {
             Ok(mutex) => mutex.into_inner().unwrap_or_default(),
@@ -682,8 +723,27 @@ pub fn fork_coordinator(
             .ok();
 
             // Run all jobs (blocking).
-            let _results =
-                state.run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)?;
+            let _results = match state.run_all_with_cancel(
+                &store,
+                &child_pids,
+                &cancel_all,
+                &cancelled_jobs,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("daft: coordinator error: {e}");
+                    // Best-effort cleanup of the listener and PID file before exiting.
+                    shutdown.store(true, Ordering::Relaxed);
+                    if let Some((handle, socket_path)) = listener_handle {
+                        std::fs::remove_file(&socket_path).ok();
+                        handle.join().ok();
+                    }
+                    if let Some(path) = pid_path {
+                        std::fs::remove_file(&path).ok();
+                    }
+                    process::exit(1);
+                }
+            };
 
             // Signal the listener to stop and wait for it.
             shutdown.store(true, Ordering::Relaxed);
