@@ -10,6 +10,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_init.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_checkout.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_checkout_branch.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_prune.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/test_repo_remove.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_branch_delete.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_fetch.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_config.sh"
@@ -301,6 +302,7 @@ run_all_integration_tests() {
     run_checkout_tests
     run_checkout_branch_tests
     run_prune_tests
+    run_repo_remove_tests
     run_branch_delete_tests
     run_rename_tests
     run_fetch_tests

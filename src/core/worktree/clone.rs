@@ -73,8 +73,10 @@ fn store_layout(git_dir: &Path, layout: &Layout, progress: &mut dyn ProgressSink
     match TrustDatabase::load() {
         Ok(mut db) => {
             // Reset prior entries: a re-clone into the same path means the old
-            // config is stale and should not carry over.
-            db.reset_repo(git_dir);
+            // config is stale and should not carry over. Return value
+            // intentionally ignored — we always save below to record the new
+            // layout.
+            let _ = db.reset_repo(git_dir);
 
             db.set_layout(git_dir, layout.name.clone());
             if let Err(e) = db.save() {

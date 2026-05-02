@@ -825,6 +825,9 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         (status, message, new_outcomes)
                     }
                     TaskId::Setup(_) => unreachable!("Setup is only used by clone"),
+                    TaskId::RemoveWorktree(_) | TaskId::RemoveBare => {
+                        unreachable!("RemoveWorktree/RemoveBare are only used by repo remove")
+                    }
                 }
             },
         );

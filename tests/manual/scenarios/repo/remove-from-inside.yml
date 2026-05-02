@@ -1,0 +1,50 @@
+name: Remove repo from inside a worktree
+description: >
+  When daft repo remove runs from a cwd inside the repo being removed, it must
+  write a safe directory path into $DAFT_CD_FILE so the user's shell wrapper can
+  cd out before the cwd disappears. Asserts the cd file is written and points to
+  a path outside the deleted project_root.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Remove from inside the main worktree — must write DAFT_CD_FILE
+    run: |
+      cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd-test.XXXXXX")
+      DAFT_CD_FILE="$cd_file" daft repo remove --force 2>&1
+      rc=$?
+      echo "---"
+      echo "cd_file_size=$(wc -c < "$cd_file")"
+      # Tag the value so the assertion can match a non-empty target without
+      # tripping on the trailing newline. `target_present=yes` only appears
+      # when the file is non-empty AND its content (the redirect path) is
+      # not empty — i.e. `maybe_redirect_cwd` actually computed a fallback.
+      cd_target_value=$(cat "$cd_file")
+      if [[ -n "$cd_target_value" ]]; then
+        echo "target_present=yes"
+      else
+        echo "target_present=no"
+      fi
+      rm -f "$cd_file"
+      exit $rc
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.git"
+        - "$WORK_DIR/test-repo/main"
+      output_contains:
+        - "target_present=yes"
+      output_not_contains:
+        - "cd_file_size=0"
+        - "target_present=no"

@@ -1,0 +1,111 @@
+name: Remove repo with worktree-pre-remove hooks
+description: >
+  When a daft-trusted repo has a worktree-pre-remove hook, daft repo remove
+  fires it for every worktree before tearing the worktree down. The marker files
+  written by the hook prove the hook ran. After removal the bare git directory
+  and all worktrees are gone but the marker files survive in a sibling location.
+  Note: the abort/exit-code-propagation variant called out in the plan is not
+  testable from YAML for worktree-pre-remove (HookDef has no fail_mode key and
+  pre-remove defaults to FailMode::Warn — see src/hooks/mod.rs:184). The
+  abort-mode-from-config path is also not exposed through user-facing YAML for
+  this hook type. Bundle G's bash integration test covers the marker side; the
+  abort-exit-code path is deferred until the YAML config exposes fail_mode for
+  pre-remove or until the bash test grows that case.
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Hooks remove test"
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-pre-remove:
+          jobs:
+            - name: marker
+              run: |
+                echo "pre-remove ran for ${DAFT_BRANCH_NAME}" >> "${WORK_DIR}/hook-markers.txt"
+                # Snapshot the hook env vars so the scenario can assert that
+                # they're populated correctly. PR review caught two bugs here:
+                # remote was hardcoded to "origin" (broken for users with a
+                # custom `daft.remote`), and source_worktree pointed at the
+                # project_root directory rather than a real working tree.
+                echo "DAFT_REMOTE=${DAFT_REMOTE}" >> "${WORK_DIR}/hook-env.txt"
+                echo "DAFT_SOURCE_WORKTREE=${DAFT_SOURCE_WORKTREE}" >> "${WORK_DIR}/hook-env.txt"
+                # Probe whether $DAFT_SOURCE_WORKTREE is actually a git
+                # working tree at hook-fire time, not a bare-parent dir.
+                # `git -C "$DAFT_SOURCE_WORKTREE" rev-parse --is-inside-work-tree`
+                # prints "true" only when we're inside a real working copy.
+                if [ -d "${DAFT_SOURCE_WORKTREE}" ]; then
+                  inside=$(git -C "${DAFT_SOURCE_WORKTREE}" rev-parse --is-inside-work-tree 2>/dev/null || echo no)
+                  echo "DAFT_SOURCE_WORKTREE_IS_WORKING_TREE=${inside}" >> "${WORK_DIR}/hook-env.txt"
+                fi
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+      files_exist:
+        - "$WORK_DIR/test-repo/main/daft.yml"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Add a develop worktree (inherits hooks from main)
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+      files_exist:
+        - "$WORK_DIR/test-repo/develop/daft.yml"
+
+  - name: Remove the repo — pre-remove hook fires per worktree
+    run: daft repo remove --force "$WORK_DIR/test-repo" 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/main"
+        - "$WORK_DIR/test-repo/develop"
+        - "$WORK_DIR/test-repo/.git"
+      files_exist:
+        - "$WORK_DIR/hook-markers.txt"
+        - "$WORK_DIR/hook-env.txt"
+      file_contains:
+        - path: "$WORK_DIR/hook-markers.txt"
+          content: "main"
+        - path: "$WORK_DIR/hook-markers.txt"
+          content: "develop"
+        # PR-review regression: $DAFT_REMOTE must reflect daft.remote
+        # (defaults to "origin" — when a user sets daft.remote=upstream, this
+        # would change accordingly). Previously hardcoded.
+        - path: "$WORK_DIR/hook-env.txt"
+          content: "DAFT_REMOTE=origin"
+        # The source-worktree path during the pre-remove hook must point at
+        # an actual git working tree, not the bare-parent `project_root`
+        # directory. Probed by running `git rev-parse --is-inside-work-tree`
+        # from $DAFT_SOURCE_WORKTREE.
+        - path: "$WORK_DIR/hook-env.txt"
+          content: "DAFT_SOURCE_WORKTREE_IS_WORKING_TREE=true"
+      file_not_contains:
+        # Negative assertion: the source worktree env var must NOT be the
+        # project_root directory (the parent of .git/ siblings) since that's
+        # the previous-buggy value and `cd $DAFT_SOURCE_WORKTREE && git ...`
+        # there fails. The path should end in `/main`, not `/test-repo`.
+        - path: "$WORK_DIR/hook-env.txt"
+          content: "DAFT_SOURCE_WORKTREE_IS_WORKING_TREE=no"

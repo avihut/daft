@@ -49,6 +49,7 @@ pub struct PruneResult {
 }
 
 /// Parsed worktree entry from `git worktree list --porcelain`.
+#[derive(Clone, Debug)]
 pub struct WorktreeEntry {
     pub path: PathBuf,
     pub branch: Option<String>,

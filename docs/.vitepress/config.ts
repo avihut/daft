@@ -285,6 +285,7 @@ export default defineConfig({
               { text: "carry", link: "/cli/daft-carry" },
               { text: "exec", link: "/cli/daft-exec" },
               { text: "eject", link: "/cli/daft-eject" },
+              { text: "repo remove", link: "/cli/daft-repo-remove" },
             ],
           },
           {

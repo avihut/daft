@@ -193,10 +193,51 @@ pub fn handle_post_tui_deferred(
 }
 
 /// Check if any TUI tasks failed and bail if so.
+///
+/// This variant is intentionally tolerant of hook failures: a row whose
+/// filesystem-side task succeeded but whose hook aborted is still considered
+/// a success. `prune` relies on this — it deliberately keeps going past hook
+/// failures and reports them via the post-TUI summary without flipping the
+/// process exit code.
 pub fn check_tui_failures(rows: &[WorktreeRow]) -> anyhow::Result<()> {
     let failed_count = rows
         .iter()
         .filter(|w| matches!(&w.status, WorktreeStatus::Done(FinalStatus::Failed)))
+        .count();
+
+    if failed_count > 0 {
+        anyhow::bail!("{failed_count} task(s) failed");
+    }
+
+    Ok(())
+}
+
+/// Strict variant of [`check_tui_failures`] used by `daft repo remove`.
+///
+/// repo-remove enforces stricter exit-code semantics than prune: per
+/// `docs/superpowers/specs/2026-04-28-remove-repo-design.md` line 178, the
+/// process exits non-zero if at least one hook failed in a non-warned mode,
+/// even though the filesystem-side worktree removal proceeded (which leaves
+/// the row at `WorktreeStatus::Done(FinalStatus::Pruned)`). The TUI marks
+/// such a row with `hook_failed = true` (see
+/// `src/output/tui/state.rs` — `HookCompleted` handler), so we treat that
+/// flag as a run failure here.
+///
+/// The sequential path enforces the same rule directly in
+/// `commands/repo/remove.rs::run_sequential` via `any_failed`. Without this
+/// helper the TUI path would silently exit 0 in the same scenario.
+///
+/// Note: a row may be both `Done(Failed)` and `hook_failed`; we count it
+/// once via a single OR-filter to keep the error message accurate.
+///
+/// Coverage: the strict-vs-tolerant asymmetry is unit-tested below. The
+/// abort-mode end-to-end YAML scenario is deferred until the YAML config
+/// surface exposes `fail_mode` for `worktree-pre-remove` (documented in
+/// `tests/manual/scenarios/repo/remove-with-hooks.yml`).
+pub fn check_tui_failures_strict(rows: &[WorktreeRow]) -> anyhow::Result<()> {
+    let failed_count = rows
+        .iter()
+        .filter(|w| matches!(&w.status, WorktreeStatus::Done(FinalStatus::Failed)) || w.hook_failed)
         .count();
 
     if failed_count > 0 {
@@ -330,5 +371,216 @@ pub fn render_prune_result(result: &prune::PruneResult, output: &mut dyn Output)
         output.warning(
             "Some prunable worktree data may exist. Run 'git worktree prune' to clean up.",
         );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// `daft repo remove` task execution
+// ─────────────────────────────────────────────────────────────────────
+
+use crate::core::worktree::remove_repo::{self, RepoTarget, WorktreeEntry};
+use crate::hooks::{HookContext, HookType, RemovalReason};
+use crate::output::tui::TuiPresenter;
+use crate::output::BufferingOutput;
+
+/// Execute one `RemoveWorktree` task.
+///
+/// Runs `worktree-pre-remove`, removes the worktree from disk via
+/// [`remove_repo::remove_worktree_filesystem`], then runs
+/// `worktree-post-remove`. Hook failures never abort the removal — they are
+/// surfaced via `DagEvent::HookCompleted` events for the renderer to summarize.
+///
+/// `remote_name` is exposed to hooks as `$DAFT_REMOTE_NAME` (e.g. `origin`,
+/// or whatever the user configured via `daft.remote`). `main_worktree_path`
+/// is exposed as `$DAFT_SOURCE_WORKTREE` and should point at a directory
+/// that is a real git working tree (typically the main worktree). When the
+/// caller has no main worktree to offer (e.g. bare-only repo), pass `None`
+/// and we fall back to `target.project_root`.
+pub fn execute_remove_worktree_task(
+    target: &RepoTarget,
+    entry: &WorktreeEntry,
+    hooks_config: &crate::hooks::HooksConfig,
+    remote_name: &str,
+    main_worktree_path: Option<&std::path::Path>,
+    tx: &mpsc::Sender<DagEvent>,
+) -> (TaskStatus, TaskMessage) {
+    let label = entry.branch.clone().unwrap_or_else(|| "(detached)".into());
+    let source_worktree = main_worktree_path.unwrap_or(&target.project_root);
+
+    run_remove_hook_best_effort(
+        target,
+        entry,
+        HookType::PreRemove,
+        hooks_config,
+        remote_name,
+        source_worktree,
+        tx,
+        &label,
+    );
+
+    let outcome = remove_repo::remove_worktree_filesystem(target, &entry.path);
+    if let Err(e) = outcome {
+        return (
+            TaskStatus::Failed,
+            TaskMessage::Failed(format!("remove failed: {e}")),
+        );
+    }
+
+    run_remove_hook_best_effort(
+        target,
+        entry,
+        HookType::PostRemove,
+        hooks_config,
+        remote_name,
+        source_worktree,
+        tx,
+        &label,
+    );
+
+    (TaskStatus::Succeeded, TaskMessage::Removed)
+}
+
+/// Execute the terminal `RemoveBare` task.
+pub fn execute_remove_bare_task(target: &RepoTarget) -> (TaskStatus, TaskMessage) {
+    match remove_repo::remove_bare_directory(target) {
+        Ok(()) => (TaskStatus::Succeeded, TaskMessage::Removed),
+        Err(e) => (
+            TaskStatus::Failed,
+            TaskMessage::Failed(format!("bare removal failed: {e}")),
+        ),
+    }
+}
+
+/// Run a remove hook for `entry` and forward lifecycle events to `tx`.
+///
+/// Uses [`TuiPresenter`] to send `HookStarted`/`HookCompleted` events through
+/// the channel — the same machinery `TuiBridge` uses for sync/prune. If the
+/// executor cannot be constructed (e.g. trust DB load fails), the call is a
+/// silent no-op so the removal still proceeds. If `executor.execute()`
+/// short-circuits with `Err` (FailMode::Abort), we still send a synthetic
+/// `HookCompleted` so the renderer sees the failure — mirrors `TuiBridge`.
+#[allow(clippy::too_many_arguments)]
+fn run_remove_hook_best_effort(
+    target: &RepoTarget,
+    entry: &WorktreeEntry,
+    hook_type: HookType,
+    hooks_config: &crate::hooks::HooksConfig,
+    remote_name: &str,
+    source_worktree: &std::path::Path,
+    tx: &mpsc::Sender<DagEvent>,
+    label: &str,
+) {
+    let executor = match HookExecutor::new(hooks_config.clone()) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let ctx = HookContext::new(
+        hook_type,
+        "repo-remove",
+        &target.project_root,
+        &target.bare_git_dir,
+        remote_name,
+        source_worktree,
+        &entry.path,
+        entry.branch.clone().unwrap_or_default(),
+    )
+    .with_removal_reason(RemovalReason::Manual);
+
+    let presenter = TuiPresenter::new(tx.clone(), label.to_string(), hook_type);
+    let mut output = BufferingOutput::new();
+
+    if let Err(e) = executor.execute(&ctx, &mut output, presenter) {
+        // FailMode::Abort path — execute() bailed before on_phase_complete
+        // ran, so HookStarted may be the only event the presenter sent.
+        // Synthesize a HookCompleted with the bail message so the renderer
+        // can surface it. Mirrors `TuiBridge::run_hook`.
+        let _ = tx.send(DagEvent::HookCompleted {
+            branch_name: label.to_string(),
+            hook_type,
+            success: false,
+            warned: false,
+            duration: std::time::Duration::ZERO,
+            exit_code: None,
+            output: Some(format!("{e:#}")),
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::worktree::list::WorktreeInfo;
+    use crate::output::tui::WorktreeRow;
+
+    fn pruned_row(branch: &str) -> WorktreeRow {
+        let mut row = WorktreeRow::idle(WorktreeInfo::local_branch_stub(branch, None));
+        row.status = WorktreeStatus::Done(FinalStatus::Pruned);
+        row
+    }
+
+    fn failed_row(branch: &str) -> WorktreeRow {
+        let mut row = WorktreeRow::idle(WorktreeInfo::local_branch_stub(branch, None));
+        row.status = WorktreeStatus::Done(FinalStatus::Failed);
+        row
+    }
+
+    /// Regression test for the asymmetry fixed by `check_tui_failures_strict`:
+    /// a non-warned hook failure leaves the row at `Done(Pruned)` because the
+    /// filesystem-side worktree removal still succeeds. The tolerant variant
+    /// (used by prune) returns Ok; the strict variant (used by repo-remove)
+    /// must bail. See spec line 178 of the remove-repo design doc.
+    #[test]
+    fn strict_variant_bails_on_hook_failed_only() {
+        let mut row = pruned_row("main");
+        row.hook_failed = true;
+
+        let strict_rows = [row];
+        assert!(
+            check_tui_failures_strict(&strict_rows).is_err(),
+            "strict variant must bail on hook_failed even with Done(Pruned) status"
+        );
+
+        // Build a fresh equivalent row for the tolerant variant — WorktreeRow
+        // isn't Clone, so we re-construct rather than try to share state.
+        let mut tolerant_row = pruned_row("main");
+        tolerant_row.hook_failed = true;
+        let tolerant_rows = [tolerant_row];
+        assert!(
+            check_tui_failures(&tolerant_rows).is_ok(),
+            "tolerant variant (used by prune) must NOT bail on hook_failed alone"
+        );
+    }
+
+    /// Both variants agree when the row's task itself failed.
+    #[test]
+    fn both_variants_bail_on_done_failed() {
+        let strict_rows = [failed_row("main")];
+        assert!(check_tui_failures_strict(&strict_rows).is_err());
+        let tolerant_rows = [failed_row("main")];
+        assert!(check_tui_failures(&tolerant_rows).is_err());
+    }
+
+    /// A row marked both `Done(Failed)` AND `hook_failed` counts only once
+    /// in the strict variant — no double-counting in the error message.
+    #[test]
+    fn strict_variant_counts_combined_failure_once() {
+        let mut row = failed_row("main");
+        row.hook_failed = true;
+        let rows = [row];
+        let err = check_tui_failures_strict(&rows).unwrap_err();
+        assert!(
+            err.to_string().starts_with("1 task(s) failed"),
+            "expected single-failure count, got: {err}"
+        );
+    }
+
+    /// A clean run (no hook failures, all rows succeeded) passes both
+    /// variants.
+    #[test]
+    fn neither_variant_bails_on_clean_rows() {
+        let rows = [pruned_row("main"), pruned_row("develop")];
+        assert!(check_tui_failures(&rows).is_ok());
+        assert!(check_tui_failures_strict(&rows).is_ok());
     }
 }

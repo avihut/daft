@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+#MISE description="Run `daft repo remove` on every git repo under the dev sandbox"
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: mise run sandbox:clean-repos [--no-trust-hooks] [--force]
+
+Run `daft repo remove --force` on every git repo found under the per-worktree
+dev sandbox. Each invocation fires the repo's worktree-pre-remove and
+worktree-post-remove hooks (when trusted), then deletes the worktree(s) and
+bare git directory.
+
+By default, hook-defining repos that aren't trusted in the sandbox's trust
+DB get an ephemeral trust grant before cleanup runs, so their teardown
+hooks always fire. The sandbox is 100% user-placed by construction and
+the trust DB lives inside the sandbox (wiped at end), so the security
+blast radius is the duration of this command.
+
+Halts on the first `daft repo remove` failure (which surfaces e.g. a
+worktree-pre-remove hook in fail_mode: abort whose teardown failed).
+
+Options:
+  --no-trust-hooks  Disable the auto-trust default. Halt instead if any
+                    hook-defining repo isn't already trusted. Use when you
+                    want to be sure no hook from an unfamiliar repo gets
+                    to run during cleanup.
+  --force           Continue past `daft repo remove` failures. Meant for
+                    the case where you've decided you don't care about
+                    leaks; otherwise let the halt happen and triage.
+  --trust-hooks     Accepted for muscle-memory; this is now the default.
+  -h, --help        Show this help.
+EOF
+}
+
+trust_hooks=true
+force=false
+for arg in "$@"; do
+    case "$arg" in
+        --no-trust-hooks) trust_hooks=false ;;
+        --trust-hooks)    trust_hooks=true ;;
+        --force)          force=true ;;
+        -h|--help)        usage; exit 0 ;;
+        *)                echo "Unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/_lib.sh"
+sandbox_dir="$(sandbox_dir)"
+
+if [ ! -d "$sandbox_dir" ]; then
+    echo "No sandbox at ${sandbox_dir}"
+    exit 0
+fi
+
+# Without this, `daft repo remove` would operate against the project-level
+# trust DB exported by mise via `shared-env.sh`, leaving stale `repos.json`
+# entries in the sandbox we're trying to clean. See _lib.sh for details.
+sandbox_use_isolated_daft_env
+
+# Find every .git (file or directory), filtered out of the known non-repo
+# subtrees (bin/, config/, data/, state/). Resolve each to its repo root
+# (the parent of .git), dedup.
+mapfile -t repos < <(
+    find "$sandbox_dir" \
+         -path "${sandbox_dir}/bin"    -prune -o \
+         -path "${sandbox_dir}/config" -prune -o \
+         -path "${sandbox_dir}/data"   -prune -o \
+         -path "${sandbox_dir}/state"  -prune -o \
+         -name .git -print 2>/dev/null \
+      | xargs -I{} dirname {} \
+      | sort -u
+)
+
+if [ ${#repos[@]} -eq 0 ]; then
+    echo "No repos found under ${sandbox_dir}"
+    exit 0
+fi
+
+# A "bare-parent" is a path whose .git is a directory (the main / bare repo
+# entry). A "worktree" is a path whose .git is a file (a `gitdir: ...`
+# pointer to the bare's worktrees/<name>/). For pre-flight warnings we
+# care only about bare-parents — the worktree entries are redundant and
+# `daft repo remove` removes everything via the bare in one call.
+bare_repos=()
+for repo in "${repos[@]}"; do
+    [ -d "$repo/.git" ] && bare_repos+=("$repo")
+done
+
+# --- Pre-flight: classify repos by hook-trust state -----------------------
+#
+# A repo is "hook-relevant" if its daft.yml defines worktree-pre-remove or
+# worktree-post-remove. We grep daft.yml directly (cheap, no daft invocation
+# per repo). Trust check uses a short python helper against the sandbox's
+# repos.json (the env we just pointed daft at).
+#
+# We only care about cleanup hooks here — post-create / pre-create are not
+# relevant at wipe time even if defined.
+
+repo_defines_cleanup_hook() {
+    local repo="$1"
+    # Worktree paths live alongside the bare; daft.yml lives in worktrees.
+    # Scan one level deep for any daft.yml referencing remove hooks.
+    find "$repo" -maxdepth 2 -name 'daft.yml' -print0 2>/dev/null \
+        | xargs -0 grep -l -E 'worktree-(pre|post)-remove' 2>/dev/null \
+        | head -1 | grep -q .
+}
+
+trust_level_for() {
+    # Canonicalize via realpath INSIDE python because daft stores trust DB
+    # keys as canonical paths (`/private/tmp/...` on macOS), but `find`
+    # produces whatever form the parent path had (`/tmp/...`). Without
+    # canonicalization here, a trusted repo would look untrusted to us.
+    local repo="$1"
+    DAFT_REPO_PATH="$repo" DAFT_REPOS_JSON="${sandbox_dir}/config/repos.json" \
+        python3 -c '
+import json, os, sys
+path = os.path.realpath(os.environ["DAFT_REPO_PATH"]) + "/.git"
+try:
+    db = json.load(open(os.environ["DAFT_REPOS_JSON"]))
+except FileNotFoundError:
+    print("deny"); sys.exit()
+entry = db.get("repositories", {}).get(path, {})
+print(entry.get("trust", {}).get("level", "deny"))
+'
+}
+
+untrusted_hooked=()
+for repo in "${bare_repos[@]}"; do
+    if repo_defines_cleanup_hook "$repo"; then
+        if [ "$(trust_level_for "$repo")" != "allow" ]; then
+            untrusted_hooked+=("$repo")
+        fi
+    fi
+done
+
+# Force-trust path: grant trust to each untrusted hook-defining repo.
+# Trust DB is the sandbox's, which gets wiped at the end of `clean`, so the
+# grant is ephemeral by construction.
+if $trust_hooks && [ ${#untrusted_hooked[@]} -gt 0 ]; then
+    echo "Granting ephemeral trust to ${#untrusted_hooked[@]} hook-defining repo(s) so cleanup hooks fire:"
+    for repo in "${untrusted_hooked[@]}"; do
+        echo "  trust $repo"
+        # Best-effort: daft hooks trust requires cwd in the worktree, but
+        # `daft hooks trust <path>` accepts an explicit path.
+        daft hooks trust --force "$repo" >/dev/null 2>&1 || \
+            echo "    (failed to grant trust — hook will not fire)"
+    done
+    untrusted_hooked=() # treat as resolved
+fi
+
+# Pre-flight halt: untrusted hook-defining repos would leak external state.
+if [ ${#untrusted_hooked[@]} -gt 0 ] && ! $force; then
+    echo ""
+    echo "WARNING: ${#untrusted_hooked[@]} repo(s) define worktree-(pre|post)-remove hooks but are not trusted:"
+    for repo in "${untrusted_hooked[@]}"; do
+        echo "  - $repo"
+    done
+    echo ""
+    echo "External resources these hooks would have torn down (docker containers,"
+    echo "volumes, databases, direnv allow entries, etc.) WILL leak if you wipe now."
+    echo ""
+    echo "Re-run with one of:"
+    echo "  (no flag)       Auto-trust the hook-defining repos and let cleanup hooks fire (default)."
+    echo "  --force         Wipe anyway, leaking external resources."
+    exit 1
+fi
+
+# --- Per-repo removal ----------------------------------------------------
+#
+# Iterate only over bare-parents. `daft repo remove <bare>` cascades
+# through every worktree of that bare in a single call, so iterating over
+# the redundant worktree-pointer paths from the find above just produces
+# phantom "no such file" failures (the worktree dir is gone after the bare
+# call removed it).
+fail_count=0
+for repo in "${bare_repos[@]}"; do
+    echo "Removing $repo"
+    if ! daft repo remove --force "$repo"; then
+        if $force; then
+            echo "  (failed — continuing because --force)"
+            ((fail_count++)) || true
+        else
+            echo ""
+            echo "FAILED at $repo. A worktree-pre-remove hook in fail_mode: abort"
+            echo "likely failed — sandbox left in place for triage."
+            echo ""
+            echo "Re-run with --force to wipe regardless of failures."
+            exit 1
+        fi
+    fi
+done
+
+if (( fail_count > 0 )); then
+    echo ""
+    echo "$fail_count repo(s) had failures (continued because --force)."
+    exit 1
+fi

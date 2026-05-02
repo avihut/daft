@@ -22,6 +22,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "release-notes",
     "remove",
     "rename",
+    "repo",
     "setup",
     "shared",
     "shell-init",
@@ -42,6 +43,9 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "worktree-shared",
     "worktree-sync",
 ];
+
+/// All subcommands available via `daft repo <verb>`.
+pub const DAFT_REPO_SUBCOMMANDS: &[&str] = &["remove"];
 
 /// Compute Levenshtein edit distance between two strings.
 fn levenshtein_distance(a: &str, b: &str) -> usize {
@@ -266,5 +270,16 @@ mod tests {
         let branches = vec!["main".to_string(), "develop".to_string()];
         let suggestions = find_similar("completely-unrelated-xyzzy", &branches, 5);
         assert!(suggestions.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod repo_subcommands_tests {
+    use super::*;
+    #[test]
+    fn daft_repo_subcommands_sorted() {
+        let mut sorted = DAFT_REPO_SUBCOMMANDS.to_vec();
+        sorted.sort();
+        assert_eq!(sorted, DAFT_REPO_SUBCOMMANDS);
     }
 }

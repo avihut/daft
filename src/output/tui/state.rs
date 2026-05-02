@@ -218,6 +218,7 @@ impl TuiState {
                     OperationPhase::Rebase(_) => "rebasing",
                     OperationPhase::Push => "pushing",
                     OperationPhase::Setup => "setting up",
+                    OperationPhase::RemoveRepo => "removing",
                 };
                 // Auto-create row for newly discovered branches (e.g., gone branches
                 // found after fetch completes while TUI is already running).
@@ -452,6 +453,7 @@ impl TuiState {
             OperationPhase::Rebase(_) => "rebasing",
             OperationPhase::Push => "pushing",
             OperationPhase::Setup => "setting up",
+            OperationPhase::RemoveRepo => "removing",
         };
         let any_active = self.live.rows.iter().any(
             |w| matches!(&w.status, WorktreeStatus::Active(label) if label == phase_active_label),
@@ -509,6 +511,12 @@ impl TuiState {
                     TaskMessage::BaseCreated => FinalStatus::Updated,
                     TaskMessage::NotFound => FinalStatus::Skipped,
                     _ => FinalStatus::Updated,
+                },
+                OperationPhase::RemoveRepo => match message {
+                    TaskMessage::Removed | TaskMessage::Deferred => FinalStatus::Pruned,
+                    TaskMessage::SkippedDirty => FinalStatus::Dirty,
+                    TaskMessage::NoActionNeeded => FinalStatus::UpToDate,
+                    _ => FinalStatus::UpToDate,
                 },
             },
             TaskStatus::PreconditionFailed => FinalStatus::Skipped,
@@ -860,6 +868,90 @@ mod tests {
             .find(|w| w.info.name == "master")
             .unwrap();
         assert_eq!(row.status, WorktreeStatus::Done(FinalStatus::Updated));
+    }
+
+    #[test]
+    fn repo_remove_full_event_flow_keeps_one_row_per_seeded_worktree() {
+        // Reproduces a user-reported scenario: removing a single-worktree
+        // (non-daft layout) repo appeared to show two `master` rows in the
+        // TUI ("waiting" + "pruned"). This test pins the state-machine side:
+        // a row seeded by `build_tui_rows` plus the full event flow (worktree
+        // task + bare task) must leave exactly one data row.
+        let phases = vec![OperationPhase::RemoveRepo];
+        let mut master_info = WorktreeInfo::empty("master");
+        master_info.path = Some(PathBuf::from("/tmp/repo/main"));
+        let mut state = TuiState::new(
+            phases,
+            vec![master_info],
+            PathBuf::from("/tmp/repo"),
+            PathBuf::from("/tmp"),
+            Stat::Summary,
+            0,
+            None,
+            false,
+            None,
+            None,
+            false,
+            false,
+            FieldSet::ALL,
+        );
+
+        // Worktree task: matches the seeded row by name; no auto-create.
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::RemoveRepo,
+            branch_name: "master".into(),
+        });
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::RemoveRepo,
+            branch_name: "master".into(),
+            status: TaskStatus::Succeeded,
+            message: TaskMessage::Removed,
+        });
+
+        // Bare task: empty branch_name suppresses auto-create.
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::RemoveRepo,
+            branch_name: String::new(),
+        });
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::RemoveRepo,
+            branch_name: String::new(),
+            status: TaskStatus::Succeeded,
+            message: TaskMessage::Removed,
+        });
+
+        assert_eq!(
+            state.live.rows.len(),
+            1,
+            "expected exactly 1 row after full repo-remove event flow, got {}",
+            state.live.rows.len()
+        );
+        assert_eq!(state.live.rows[0].info.name, "master");
+        assert!(matches!(
+            state.live.rows[0].status,
+            WorktreeStatus::Done(FinalStatus::Pruned)
+        ));
+    }
+
+    #[test]
+    fn task_started_with_empty_branch_name_does_not_auto_create_row() {
+        // Regression for the `(bare)` row reappearing in `daft repo remove`:
+        // the bare-removal task fires `TaskStarted` with an empty branch_name
+        // (so auto-create is skipped). The phase header still activates;
+        // only the row creation is suppressed.
+        let mut state = make_test_state();
+        let initial_rows = state.live.rows.len();
+
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::RemoveRepo,
+            branch_name: String::new(),
+        });
+
+        assert_eq!(
+            state.live.rows.len(),
+            initial_rows,
+            "TaskStarted with empty branch_name must not auto-create a row",
+        );
     }
 
     #[test]

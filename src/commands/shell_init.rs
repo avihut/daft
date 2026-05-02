@@ -208,9 +208,13 @@ daft() {
             shift; __daft_wrapper git-worktree-flow-eject "$@" ;;
         worktree-sync|sync)
             shift; __daft_wrapper git-worktree-sync "$@" ;;
-        layout)
-            # Layout needs cd support (for transform) but can't use exec -a
-            # since "daft layout" is a subcommand, not a separate binary.
+        layout|repo)
+            # `daft layout` (transform) and `daft repo remove` both need cd
+            # support — repo-remove writes DAFT_CD_FILE when the user invoked
+            # it from inside the worktree being deleted, so the shell can
+            # `cd` to a safe parent before the cwd's inode is gone. Both are
+            # subcommands of `daft` (not separate binaries) so we can't use
+            # `exec -a`; mirror the per-subcommand pattern used for layout.
             local __cd_file
             __cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd.XXXXXX" 2>/dev/null)
             if [ -n "$__cd_file" ]; then
@@ -455,8 +459,13 @@ function daft --wraps daft
             __daft_wrapper git-worktree-flow-eject $argv[2..-1]
         case worktree-sync sync
             __daft_wrapper git-worktree-sync $argv[2..-1]
-        case layout
-            # Layout needs cd support but can't use exec -a
+        case layout repo
+            # `daft layout` (transform) and `daft repo remove` both need cd
+            # support — repo-remove writes DAFT_CD_FILE when the user invoked
+            # it from inside the worktree being deleted, so the shell can
+            # `cd` to a safe parent before the cwd's inode is gone. Both are
+            # subcommands of `daft` (not separate binaries) so we can't use
+            # `exec -a`; mirror the per-subcommand pattern used for layout.
             set -l cd_file (mktemp (set -q TMPDIR; and echo $TMPDIR; or echo /tmp)/daft-cd.XXXXXX 2>/dev/null)
             if test -n "$cd_file"
                 DAFT_CD_FILE=$cd_file command daft $argv

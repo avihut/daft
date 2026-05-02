@@ -1,0 +1,310 @@
+#!/usr/bin/env bash
+#MISE description="Stress-test sandbox cleanup with N randomized hook-defining repos"
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: mise run sandbox:stress-cleanup [--seed N] [--count N] [--setup-only]
+
+Populate the per-worktree sandbox with N hook-defining git repos at random
+paths and depths, then run `sandbox:clean` and verify every hook fired and
+nothing leaked.
+
+Each generated repo is a bare-and-worktrees layout containing a daft.yml
+with a worktree-pre-remove hook that appends a marker line per worktree.
+After cleanup, the marker file is compared to the planned worktree set:
+the test passes only if every (repo, branch) tuple appears exactly once.
+
+The randomization is fully seeded — pass --seed to reproduce a previous
+run. When --seed is omitted, a fresh seed is generated and printed up
+front so you can re-run with the same layout if needed.
+
+This task is NOT part of the regular test suite. It exercises the dev-
+side cleanup machinery, not daft itself.
+
+Options:
+  --seed N        Use this PRNG seed (any integer). Default: random.
+  --count N       Number of repos to generate. Default: 25.
+  --setup-only    Populate the sandbox and stop. Don't clean, don't verify.
+                  Lets you poke at the layout before triggering cleanup
+                  manually.
+  -h, --help      Show this help.
+EOF
+}
+
+seed=""
+count=25
+setup_only=false
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --seed)         shift; seed="$1"; shift ;;
+        --seed=*)       seed="${1#--seed=}"; shift ;;
+        --count)        shift; count="$1"; shift ;;
+        --count=*)      count="${1#--count=}"; shift ;;
+        --setup-only)   setup_only=true; shift ;;
+        -h|--help)      usage; exit 0 ;;
+        *)              echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/_lib.sh"
+sandbox_use_isolated_daft_env
+
+SB="$(sandbox_dir)"
+# Key marker / plan paths off the sandbox hash so concurrent stress runs
+# from different daft worktrees can't collide on /tmp/sandbox-stress-*.
+sb_tag="$(basename "$SB")"
+MARKER="/tmp/${sb_tag}-stress-markers.txt"
+PLAN="/tmp/${sb_tag}-stress-plan.json"
+
+# Seed: caller-supplied or freshly generated. Print up front so the user
+# can re-run with the same layout when investigating a failure.
+if [ -z "$seed" ]; then
+    seed=$(awk 'BEGIN { srand(); print int(rand() * 2147483647) }')
+fi
+
+cat <<HEADER
+============================================================
+Sandbox cleanup stress test
+  seed:    $seed   (re-run with: mise run sandbox:stress-cleanup -- --seed $seed)
+  count:   $count repos
+  sandbox: $SB
+============================================================
+HEADER
+
+# --- Reset starting state ---
+if [ -d "$SB" ]; then
+    echo "[setup] Wiping pre-existing sandbox..."
+    rm -rf "$SB"
+fi
+mkdir -p "$SB"/{config,data,state,test,bin}
+rm -f "$MARKER" "$PLAN"
+
+# --- Plan: deterministic layout from seed ---
+# Python is the path of least resistance for seeded PRNG. We emit JSON,
+# parse it back in bash via python read-loops so jq isn't a dep.
+python3 - "$seed" "$count" <<'PY' > "$PLAN"
+import json, random, sys
+seed, count = int(sys.argv[1]), int(sys.argv[2])
+random.seed(seed)
+
+# Path-component vocabulary. Real-world test layouts tend to have short
+# alphanumeric names with a few common prefixes; mimic that.
+words = [
+    'alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta', 'theta',
+    'foo', 'bar', 'baz', 'quux', 'widget', 'gadget', 'svc', 'app', 'tool',
+    'core', 'util', 'common', 'shared', 'demo', 'sample', 'scratch', 'vendor',
+    'pkg', 'mod', 'lib', 'bin', 'cmd', 'srv',
+]
+
+def parent_path(depth):
+    return '/'.join(random.choice(words) for _ in range(depth))
+
+plans = []
+for i in range(count):
+    # Depth distribution: weighted toward shallow but with a long tail.
+    # 0=top-level, 3=deeply nested. Matches typical test-repo placement.
+    depth = random.choices([0, 1, 2, 3], weights=[3, 4, 2, 1])[0]
+    parent = parent_path(depth)
+    name = f'{random.choice(words)}-{i:02d}'
+    rel = f'{parent}/{name}' if parent else name
+    n_worktrees = random.choices([1, 2, 3], weights=[6, 3, 1])[0]
+    branches = [f'wt-{j}' for j in range(n_worktrees)]
+    plans.append({'rel': rel, 'name': name, 'branches': branches})
+
+print(json.dumps(plans, indent=2))
+PY
+
+total_worktrees=$(PLAN_PATH="$PLAN" python3 -c '
+import json, os
+plan = json.load(open(os.environ["PLAN_PATH"]))
+print(sum(len(r["branches"]) for r in plan))
+')
+
+echo "[setup] Plan: $count repos, $total_worktrees worktrees total"
+
+# --- Create each repo ---
+echo "[setup] Creating repos..."
+i=0
+while IFS=$'\t' read -r rel branches; do
+    i=$((i + 1))
+    repo_dir="$SB/test/$rel"
+    mkdir -p "$(dirname "$repo_dir")"
+
+    # Bare repo
+    git init --bare --initial-branch=main "$repo_dir/.git" >/dev/null
+
+    # Stage initial commit (with daft.yml) via temp clone, then push
+    tmp=$(mktemp -d)
+    git clone "$repo_dir/.git" "$tmp/work" >/dev/null 2>&1
+    (
+        cd "$tmp/work"
+        git config user.email t@t.t
+        git config user.name Test
+        # Hook appends one tab-separated line per worktree-pre-remove fire.
+        # The marker captures (project_root, branch_name) so we can match
+        # back to the plan during verify.
+        cat > daft.yml <<YAML
+hooks:
+  worktree-pre-remove:
+    jobs:
+      - name: marker
+        run: |
+          printf '%s\t%s\n' "\$DAFT_PROJECT_ROOT" "\$DAFT_BRANCH_NAME" >> $MARKER
+YAML
+        git add daft.yml
+        git commit -m "init" >/dev/null
+        git push origin main >/dev/null 2>&1
+    )
+    rm -rf "$tmp"
+
+    # Add worktrees on per-repo branches
+    for branch in $branches; do
+        git -C "$repo_dir/.git" worktree add "$repo_dir/$branch" -b "$branch" main >/dev/null 2>&1
+    done
+
+    # Tiny progress dot every 5 repos so big runs don't look stuck
+    if [ $((i % 5)) -eq 0 ]; then
+        printf '  [%d/%d]\n' "$i" "$count"
+    fi
+done < <(PLAN_PATH="$PLAN" python3 -c '
+import json, os
+for r in json.load(open(os.environ["PLAN_PATH"])):
+    print(r["rel"] + "\t" + " ".join(r["branches"]))
+')
+
+echo "[setup] Done. Created $count repos with $total_worktrees worktrees."
+
+if $setup_only; then
+    cat <<EOF
+
+--setup-only — stopping here.
+
+Inspect with:
+  find $SB/test -name .git | head -20
+  cat $PLAN | python3 -m json.tool
+
+Trigger cleanup yourself with:
+  mise run sandbox:clean
+
+Re-run identical layout with:
+  mise run sandbox:stress-cleanup -- --seed $seed --count $count
+EOF
+    exit 0
+fi
+
+# --- Run the cleanup we are stress-testing ---
+echo ""
+echo "[run] Running sandbox:clean..."
+clean_log=$(mktemp)
+if "${SCRIPT_DIR}/clean" 2>&1 | tee "$clean_log"; then
+    clean_rc=0
+else
+    clean_rc=${PIPESTATUS[0]}
+fi
+
+# --- Verify ---
+echo ""
+echo "[verify] Checking outcomes..."
+fail=0
+
+# 1. Sandbox dir gone
+if [ -d "$SB" ]; then
+    echo "  FAIL: sandbox dir still exists at $SB"
+    fail=1
+else
+    echo "  OK:   sandbox dir wiped"
+fi
+
+# 2. Marker file exists
+if [ ! -f "$MARKER" ]; then
+    echo "  FAIL: marker file $MARKER never created — no hooks fired"
+    fail=1
+else
+    actual_lines=$(wc -l < "$MARKER" | tr -d ' ')
+    if [ "$actual_lines" -ne "$total_worktrees" ]; then
+        echo "  FAIL: marker has $actual_lines lines, expected $total_worktrees"
+        fail=1
+    else
+        echo "  OK:   marker has all $total_worktrees expected lines"
+    fi
+
+    # 3. Per-tuple cross-check: every planned (project_root, branch) appears
+    #    in the marker exactly once. Catches partial fires (e.g., one
+    #    worktree of a repo's hooks ran, the others didn't).
+    miss=$(python3 - "$SB" "$MARKER" "$PLAN" <<'PY'
+import json, sys, os
+sb, marker_path, plan_path = sys.argv[1], sys.argv[2], sys.argv[3]
+plan = json.load(open(plan_path))
+
+# Build expected set: (project_root, branch)
+expected = set()
+for r in plan:
+    project_root = os.path.realpath(os.path.join(sb, 'test', r['rel']))
+    for b in r['branches']:
+        expected.add((project_root, b))
+
+# Read actual markers
+actual = set()
+with open(marker_path) as f:
+    for line in f:
+        line = line.rstrip('\n')
+        if not line:
+            continue
+        parts = line.split('\t')
+        if len(parts) != 2:
+            continue
+        # daft writes paths in canonical form; keep as-is, expected is also realpath'd
+        actual.add((parts[0], parts[1]))
+
+missing = expected - actual
+extra = actual - expected
+if missing:
+    print(f'MISSING_FIRES={len(missing)}')
+    for pr, br in sorted(missing)[:5]:
+        print(f'  - missing: {pr} branch={br}')
+if extra:
+    print(f'UNEXPECTED_FIRES={len(extra)}')
+    for pr, br in sorted(extra)[:5]:
+        print(f'  - extra: {pr} branch={br}')
+if not missing and not extra:
+    print('OK')
+PY
+)
+    if [ "$miss" = "OK" ]; then
+        echo "  OK:   every planned (repo, branch) tuple fired exactly once"
+    else
+        echo "  FAIL: tuple cross-check found discrepancies:"
+        echo "$miss" | sed 's/^/    /'
+        fail=1
+    fi
+fi
+
+# 4. Cleanup exit code
+if [ "$clean_rc" -ne 0 ]; then
+    echo "  FAIL: sandbox:clean exited $clean_rc"
+    fail=1
+else
+    echo "  OK:   sandbox:clean exited 0"
+fi
+
+rm -f "$clean_log"
+
+echo ""
+echo "============================================================"
+if [ "$fail" -eq 0 ]; then
+    echo "PASS — seed $seed, $count repos, $total_worktrees worktrees, zero leaks"
+    rm -f "$MARKER" "$PLAN"
+    exit 0
+else
+    cat <<EOF
+FAIL — seed $seed, $count repos
+Reproduce with:
+  mise run sandbox:stress-cleanup -- --seed $seed --count $count
+
+Marker file kept at $MARKER for inspection.
+Plan kept at        $PLAN for inspection.
+EOF
+    exit 1
+fi

@@ -1,0 +1,38 @@
+name: Remove requires --force in non-interactive mode
+description: >
+  Without a TTY and without --force, daft repo remove must refuse to operate
+  rather than silently destroy data. With --force, the same invocation succeeds.
+  The </dev/null redirection ensures stdin is non-interactive in the first
+  invocation.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Without --force in non-interactive mode, refuses to run
+    run: daft repo remove "$WORK_DIR/test-repo" </dev/null 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "Refusing to run without --force in non-interactive mode"
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/main"
+
+  - name: With --force, succeeds
+    run: daft repo remove --force "$WORK_DIR/test-repo" 2>&1
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.git"
+        - "$WORK_DIR/test-repo/main"

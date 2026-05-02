@@ -336,6 +336,7 @@ complete -c daft -n '__fish_use_subcommand' -a 'list' -d 'List worktrees with st
 complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to traditional layout'
 complete -c daft -n '__fish_use_subcommand' -a 'config' -d 'Configure daft settings'
 complete -c daft -n '__fish_use_subcommand' -a 'shared' -d 'Manage shared files across worktrees'
+complete -c daft -n '__fish_use_subcommand' -a 'repo' -d 'Repository-level operations'
 complete -c daft -n '__fish_seen_subcommand_from go' -f -a "(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
 complete -c daft -n '__fish_seen_subcommand_from start' -f -a "(daft __complete daft-start '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from carry' -f -a "(daft __complete git-worktree-carry (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
@@ -353,6 +354,13 @@ complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcomm
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from default' -f -a "(daft __complete layout-default '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from default' -l reset -d 'Reset to built-in default'
 complete -c daft -n '__fish_seen_subcommand_from multi-remote; and not __fish_seen_subcommand_from enable disable status set-default move' -f -a 'enable disable status set-default move'
+# repo: subcommands
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from remove' -f -a 'remove' -d 'Remove a repository, including all worktrees'
+# repo remove: path completion + flags
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -F
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s y -l force -d 'Skip the confirmation prompt'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l dry-run -d 'Print what would be removed without touching anything'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s v -l verbose -d 'Increase verbosity'
 complete -c daft -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from remote-sync' -f -a 'remote-sync'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and not __fish_seen_subcommand_from trust prompt deny status migrate install validate dump run jobs' -f -a 'trust prompt deny status migrate install validate dump run jobs'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -f -a "(daft __complete hooks-run '' 2>/dev/null)"

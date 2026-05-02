@@ -96,6 +96,14 @@ worktree="$DAFT_WORKTREE"
 SCRIPT
 chmod +x "${bin_dir}/reset-sandbox"
 
+cat > "${bin_dir}/clean-repos" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+worktree="$DAFT_WORKTREE"
+(cd "$worktree" && mise run sandbox:clean-repos)
+SCRIPT
+chmod +x "${bin_dir}/clean-repos"
+
 cat > "${bin_dir}/manual-test" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -597,6 +605,7 @@ Initialize completions and daft shell integration:
     reset-sandbox            Wipe and recreate the sandbox from scratch
     go-to-worktree           Open a shell in the worktree directory
     clean-sandbox            Remove this sandbox and return to the worktree
+    clean-repos              Remove every git repo under the sandbox via `daft repo remove`
 
 ## Tips
 

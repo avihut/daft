@@ -452,6 +452,25 @@ _daft() {
         return 0
     fi
 
+    # repo: complete subcommands and arguments
+    if [[ $cword -ge 2 && "${words[1]}" == "repo" ]]; then
+        if [[ $cword -eq 2 ]]; then
+            COMPREPLY=( $(compgen -W "remove" -- "$cur") )
+            return 0
+        fi
+        case "${words[2]}" in
+            remove)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "-y --force --dry-run -v --verbose -h --help" -- "$cur") )
+                    return 0
+                fi
+                COMPREPLY=( $(compgen -d -- "$cur") )
+                return 0
+                ;;
+        esac
+        return 0
+    fi
+
     # config: complete subcommands
     if [[ $cword -eq 2 && "${words[1]}" == "config" ]]; then
         COMPREPLY=( $(compgen -W "remote-sync" -- "$cur") )
@@ -594,7 +613,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout shared config clone init go start carry exec update list prune rename sync remove adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout shared config repo clone init go start carry exec update list prune rename sync remove adopt eject" -- "$cur") )
         fi
         return 0
     fi

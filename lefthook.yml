@@ -30,7 +30,15 @@ commit-msg:
       run: mise exec -- cog verify "$(head -1 {1})"
 
 pre-push:
+  parallel: true
   commands:
+    # Fast type-check across lib, bins, tests, examples, benches. Catches
+    # post-rebase compile breakage (e.g., upstream struct field additions)
+    # before the slower unit-tests step. Runs unconditionally — a rebase
+    # over master can break the build even when the local diff has no
+    # *.rs changes.
+    build-check:
+      run: cargo check --all-targets --quiet
     unit-tests:
       glob: "*.rs"
       run: mise run test:unit
