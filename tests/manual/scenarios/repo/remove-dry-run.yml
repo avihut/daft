@@ -1,7 +1,7 @@
 name: Remove --dry-run prints plan but touches nothing
 description: >
-  daft repo remove --dry-run reports what would be removed (worktrees, bare git
-  dir, trust DB entry) and exits 0 without modifying the filesystem.
+  daft repo remove --dry-run reports what would be removed (worktrees, git dir,
+  trust marker) and exits 0 without modifying the filesystem.
 
 repos:
   - name: test-repo
@@ -33,7 +33,7 @@ steps:
         - "Would remove"
         - "main"
         - "develop"
-        - "trust DB entry"
+        - "trust marker"
       dirs_exist:
         - "$WORK_DIR/test-repo"
         - "$WORK_DIR/test-repo/.git"

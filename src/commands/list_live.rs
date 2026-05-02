@@ -187,6 +187,17 @@ pub fn run_live(args: Args, settings: DaftSettings) -> Result<()> {
         }
     }
 
+    // Short-circuit when the merged set is empty: skip TUI bringup and
+    // print a static empty-state hint. Avoids ratatui flicker and a
+    // raw-mode bringup just to render three lines of static text.
+    if worktree_infos.is_empty() {
+        crate::commands::list_empty::print(
+            &mut std::io::stdout(),
+            crate::styles::colors_enabled(),
+        )?;
+        return Ok(());
+    }
+
     // Build TUI state — pin_default_branch=false, partition_by_owner=false
     // for `daft list` (per spec).
     let tui_columns: Vec<Column> = selected_columns

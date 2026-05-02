@@ -10,7 +10,7 @@ Remove a Git repository and all its worktrees
 ## Description
 
 Removes a Git repository identified by <path> (or the current directory if no
-path is given), including the bare git directory and every checked-out
+path is given), including the git dir and every checked-out
 worktree. For each worktree, the worktree-pre-remove and worktree-post-remove
 lifecycle hooks are run when the repository is daft-managed and trusted.
 

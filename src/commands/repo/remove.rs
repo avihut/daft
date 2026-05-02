@@ -10,7 +10,7 @@ use std::path::PathBuf;
 #[command(about = "Remove a Git repository and all its worktrees")]
 #[command(long_about = r#"
 Removes a Git repository identified by <path> (or the current directory if no
-path is given), including the bare git directory and every checked-out
+path is given), including the git dir and every checked-out
 worktree. For each worktree, the worktree-pre-remove and worktree-post-remove
 lifecycle hooks are run when the repository is daft-managed and trusted.
 
@@ -188,8 +188,8 @@ fn print_plan(
         let label = w.branch.as_deref().unwrap_or("(detached)");
         println!("  worktree  {}  ({})", w.path.display(), label);
     }
-    println!("  bare      {}", target.bare_git_dir.display());
-    println!("  trust DB entry for {}", target.bare_git_dir.display());
+    println!("  git dir   {}", target.bare_git_dir.display());
+    println!("  trust marker for {}", target.bare_git_dir.display());
 }
 
 fn confirm_prompt(
@@ -198,9 +198,9 @@ fn confirm_prompt(
 ) -> Result<bool> {
     use std::io::{BufRead, Write};
     let suffix = match n {
-        0 => "This will delete the bare git dir (no worktrees to remove).".to_string(),
-        1 => "This will delete 1 worktree and the bare git dir.".to_string(),
-        n => format!("This will delete {n} worktrees and the bare git dir."),
+        0 => "No worktrees to remove — this will delete the repo.".to_string(),
+        1 => "This will delete 1 worktree and the repo.".to_string(),
+        n => format!("This will delete {n} worktrees and the repo."),
     };
     print!(
         "Remove repo at {}? {suffix} [y/N] ",
@@ -298,7 +298,7 @@ fn run_sequential(
         TaskMessage::Failed(e) => e.clone(),
         _ => "removed".to_string(),
     };
-    println!("  (bare): {bare_line}");
+    println!("  (git dir): {bare_line}");
     if matches!(bare_status, TaskStatus::Failed) {
         any_failed = true;
     }

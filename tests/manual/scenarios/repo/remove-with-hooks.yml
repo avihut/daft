@@ -2,11 +2,11 @@ name: Remove repo with worktree-pre-remove hooks
 description: >
   When a daft-trusted repo has a worktree-pre-remove hook, daft repo remove
   fires it for every worktree before tearing the worktree down. The marker files
-  written by the hook prove the hook ran. After removal the bare git directory
-  and all worktrees are gone but the marker files survive in a sibling location.
-  Note: the abort/exit-code-propagation variant called out in the plan is not
-  testable from YAML for worktree-pre-remove (HookDef has no fail_mode key and
-  pre-remove defaults to FailMode::Warn — see src/hooks/mod.rs:184). The
+  written by the hook prove the hook ran. After removal the git dir and all
+  worktrees are gone but the marker files survive in a sibling location. Note:
+  the abort/exit-code-propagation variant called out in the plan is not testable
+  from YAML for worktree-pre-remove (HookDef has no fail_mode key and pre-remove
+  defaults to FailMode::Warn — see src/hooks/mod.rs:184). The
   abort-mode-from-config path is also not exposed through user-facing YAML for
   this hook type. Bundle G's bash integration test covers the marker side; the
   abort-exit-code path is deferred until the YAML config exposes fail_mode for

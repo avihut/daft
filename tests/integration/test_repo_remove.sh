@@ -497,7 +497,7 @@ test_repo_remove_from_inside_worktree() {
 # Test 11: Bare-only repo (no worktrees). The TUI is overkill for a single
 # bare-removal task and previously rendered an empty-table-with-headers that
 # looked like a glitch. The command now uses the sequential path when the
-# worktree list is empty and emits a clear (bare): removed line.
+# worktree list is empty and emits a clear (git dir): removed line.
 test_repo_remove_bare_only_no_worktrees() {
     local remote_repo container
     remote_repo=$(create_test_remote "test-repo-remove-bare-only" "main")
@@ -528,9 +528,9 @@ test_repo_remove_bare_only_no_worktrees() {
         log_error "$out"
         return 1
     fi
-    # Must report bare removal explicitly.
-    if ! echo "$out" | grep -q "(bare): removed"; then
-        log_error "Expected '(bare): removed' line; got:"
+    # Must report git-dir removal explicitly.
+    if ! echo "$out" | grep -q "(git dir): removed"; then
+        log_error "Expected '(git dir): removed' line; got:"
         log_error "$out"
         return 1
     fi
