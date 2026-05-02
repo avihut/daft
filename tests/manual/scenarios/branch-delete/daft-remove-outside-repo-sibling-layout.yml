@@ -1,0 +1,41 @@
+name: Daft remove by path from outside (sibling layout)
+description:
+  daft-remove with an absolute worktree path also works for the sibling layout
+  when invoked outside the main worktree.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with sibling layout and create a feature worktree
+    run: |
+      git-worktree-clone --layout sibling $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/sib-cleanup
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo.feature-sib-cleanup"
+
+  - name: Merge into main and push
+    run: |
+      cd $WORK_DIR/test-repo.feature-sib-cleanup
+      echo "work" > work.txt
+      git add work.txt
+      git commit -m "Add work"
+      git push origin feature/sib-cleanup
+      cd $WORK_DIR/test-repo
+      git merge feature/sib-cleanup
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Delete feature worktree by path from $WORK_DIR (outside any worktree)
+    run: daft-remove "$WORK_DIR/test-repo.feature-sib-cleanup"
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo.feature-sib-cleanup"

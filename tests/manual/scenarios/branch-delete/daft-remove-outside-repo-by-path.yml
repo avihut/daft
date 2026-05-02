@@ -1,0 +1,56 @@
+name: Daft remove by path from outside any repository
+description:
+  daft-remove with an absolute worktree path works when cwd is outside any git
+  repository. The owning repo is discovered from the path argument.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create a feature branch
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/standalone
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/standalone"
+
+  - name: Merge into main and push so safe-delete passes
+    run: |
+      cd $WORK_DIR/test-repo/feature/standalone
+      echo "work" > work.txt
+      git add work.txt
+      git commit -m "Add work"
+      git push origin feature/standalone
+      cd $WORK_DIR/test-repo/main
+      git merge feature/standalone
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Delete worktree by absolute path from outside the repo
+    run: daft-remove "$WORK_DIR/test-repo/feature/standalone"
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/standalone"
+
+  - name: Bare branch name from outside still errors
+    run: daft-remove some-branch 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "Not inside a Git repository"
+
+  - name: Non-existent path from outside reports a usable error
+    run: daft-remove "$WORK_DIR/does-not-exist" 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "is not an existing path"

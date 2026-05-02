@@ -196,12 +196,16 @@ pub struct RemoveArgs {
 pub fn run_remove() -> Result<()> {
     let mut raw = crate::get_clap_args("daft-remove");
     raw[0] = "daft remove".to_string();
-    let remove_args = RemoveArgs::parse_from(raw);
+    let mut remove_args = RemoveArgs::parse_from(raw);
 
     init_logging(remove_args.verbose);
 
+    // When invoked outside a git repository, allow operating on worktree paths
+    // by discovering the owning repo from the first existing path argument and
+    // chdir-ing to its project root. All path arguments are canonicalized first
+    // so the subsequent chdir doesn't break their resolution.
     if !is_git_repository()? {
-        anyhow::bail!("Not inside a Git repository");
+        prepare_out_of_repo_remove(&mut remove_args.branches)?;
     }
 
     let settings = DaftSettings::load()?;
@@ -217,6 +221,74 @@ pub fn run_remove() -> Result<()> {
         &mut output,
         &settings,
     )
+}
+
+/// Prepare `daft remove` to run when the user's current directory is not inside
+/// any git repository. Resolves path arguments to absolute canonical paths,
+/// discovers the owning repository from the first one, ensures all paths share
+/// the same repository, and `chdir`s into the project root so the cwd-based
+/// branch_delete pipeline can take over unchanged.
+fn prepare_out_of_repo_remove(args: &mut Vec<String>) -> Result<()> {
+    // clap enforces `required = true` on `branches`, so an empty `args` here
+    // would have already been rejected before this function runs.
+    let cwd = std::env::current_dir()
+        .map_err(|e| anyhow::anyhow!("failed to read current working directory: {e}"))?;
+    let mut absolute_paths: Vec<std::path::PathBuf> = Vec::with_capacity(args.len());
+    for arg in args.iter() {
+        let raw = std::path::PathBuf::from(arg);
+        let candidate = if raw.is_absolute() {
+            raw
+        } else {
+            cwd.join(&raw)
+        };
+        let canonical = std::fs::canonicalize(&candidate).map_err(|_| {
+            anyhow::anyhow!(
+                "Not inside a Git repository, and '{}' is not an existing path. \
+                 Run `daft remove` inside a repository, or pass an existing worktree path.",
+                arg
+            )
+        })?;
+        absolute_paths.push(canonical);
+    }
+
+    let mut common_dir: Option<std::path::PathBuf> = None;
+    for (path, original) in absolute_paths.iter().zip(args.iter()) {
+        let repo = gix::discover(path).map_err(|_| {
+            anyhow::anyhow!(
+                "'{}' is not inside a Git repository. \
+                 Run `daft remove` inside a repository, or pass a worktree path.",
+                original
+            )
+        })?;
+        let canonical_common = std::fs::canonicalize(repo.common_dir())
+            .unwrap_or_else(|_| repo.common_dir().to_path_buf());
+        match common_dir {
+            None => common_dir = Some(canonical_common),
+            Some(ref existing) if existing == &canonical_common => {}
+            Some(_) => anyhow::bail!(
+                "all paths must belong to the same repository when running outside a worktree"
+            ),
+        }
+    }
+
+    let common_dir = common_dir.expect("at least one path was processed");
+    let project_root = common_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("could not determine project root for repository"))?;
+
+    std::env::set_current_dir(project_root).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to enter project root '{}': {e}",
+            project_root.display()
+        )
+    })?;
+
+    *args = absolute_paths
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+
+    Ok(())
 }
 
 /// Daft-style args for `daft rename`. Separate from `Args` so that `-h`/`--help`
