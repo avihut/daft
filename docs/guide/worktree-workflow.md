@@ -179,9 +179,8 @@ daft prune
 
 ### Removing a Repository
 
-To tear down a daft-managed repository entirely — bare git directory, every
-worktree, trust DB entry, and any `worktree-pre/post-remove` hooks — use
-`daft repo remove`:
+To tear down a daft-managed repository entirely — git dir, every worktree, trust
+marker, and any `worktree-pre/post-remove` hooks — use `daft repo remove`:
 
 ```bash
 # Remove the repo containing the current directory

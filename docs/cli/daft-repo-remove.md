@@ -23,7 +23,7 @@ each worktree when the repo is daft-managed and trusted.
 
 ## Behavior
 
-- Resolves the bare git directory via `git rev-parse --git-common-dir`.
+- Resolves the git dir via `git rev-parse --git-common-dir`.
   Refuses paths that are not inside a Git repository.
 - Enumerates all checked-out worktrees via `git worktree list --porcelain`.
 - For each worktree, runs `worktree-pre-remove` (if configured and trusted),
@@ -36,10 +36,10 @@ each worktree when the repo is daft-managed and trusted.
   `worktree-pre-remove` instead. `$DAFT_SOURCE_WORKTREE` (the main worktree)
   is still present at `post-remove` time unless it itself is the worktree
   being removed.
-- After all worktrees are gone, removes the bare git directory and the
-  project root if it is empty. **Does not** walk further up — the parent
-  directory of the project root is user-owned and is left untouched. Drops
-  the trust DB entry for the bare git path.
+- After all worktrees are gone, removes the git dir and the project root if
+  it is empty. **Does not** walk further up — the parent directory of the
+  project root is user-owned and is left untouched. Drops the trust marker
+  for the git dir.
 - If invoked from inside the removed repo, writes a safe target path to
   `DAFT_CD_FILE` so the shell wrapper `cd`s out of the deleted directory.
 
