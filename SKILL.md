@@ -373,6 +373,11 @@ Key behaviors:
 
 - Background jobs participate in the DAG. If a foreground job depends on a
   background job, the background job is promoted to foreground automatically.
+- `needs:` between background jobs is honored at runtime — the coordinator
+  schedules them in topological wave order. A background job with
+  `needs: [other-bg-job]` does not start until `other-bg-job` has terminated.
+- If a `needs:` dependency fails or is cancelled, the dependent background job
+  does not run; it is recorded as `Skipped` in `daft hooks jobs` listings.
 - `background: true` can be set at the hook level as a default for all jobs.
 - `DAFT_NO_BACKGROUND_JOBS=1` promotes all background jobs to foreground (useful
   in CI or for debugging).

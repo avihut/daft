@@ -156,6 +156,68 @@ The `background` flag is orthogonal to `needs`. It only affects whether a job
 blocks the daft command from returning — it does not change dependency
 resolution.
 
+### Runtime contract for `needs:` (binding)
+
+The background coordinator is bound by the same dependency-ordering contract the
+foreground runner provides. Stating it explicitly so the binary can be audited
+against the spec:
+
+1. A background job whose `needs:` list is non-empty MUST NOT begin executing
+   its command until every listed dependency has reached a terminal state.
+2. A dependency is **satisfied** only when it terminates with
+   `JobStatus::Completed`.
+3. If a dependency terminates `Failed`, `Cancelled`, or `Skipped` (e.g. routed
+   through a `cancel_all` at-start gate), every transitive dependent MUST be
+   marked as not-run (`NodeStatus::DepFailed`) and MUST NOT spawn a child
+   process.
+4. The scheduler MUST detect cycles and missing-dependency references in the
+   background bucket and surface them as errors rather than silently fanning
+   out.
+
+The runtime SHOULD share the foreground scheduler primitive (`DagGraph` in
+`src/executor/dag.rs`) so foreground and background share one source of truth
+for ordering, parallelism, and failure cascading. Coordinator-specific behavior
+(PID registration for `daft hooks jobs cancel`, log streaming to `output.log`,
+`meta.json` lifecycle, silent-mode log deletion) lives in the per-job thread
+body — not in the scheduler itself.
+
+**Constraint — `std::thread::scope` post-`fork()`:** The coordinator runs in a
+forked child (`libc::fork()` in `fork_coordinator`). On macOS, executing
+`std::thread::scope` after `fork()` can deadlock because the malloc arenas
+inherited from the parent are in an inconsistent state — the second
+`format!`/allocation inside a scoped worker can hang. Therefore the bg scheduler
+MUST NOT use `DagGraph::run_parallel` (which is built on `thread::scope`). The
+coordinator instead uses `DagGraph` only for graph queries (`new`, `len`,
+`dependencies_of`, `dependents_of`) and executes each wave with bare
+`std::thread::spawn`/`JoinHandle::join` — the same primitive the pre-fix
+coordinator used. The foreground runner is unaffected because it runs in the
+parent process, not post-fork.
+
+### Status mapping for cascade decisions
+
+The bg per-job closure maps execution outcome to `NodeStatus` for the DAG
+scheduler:
+
+| Outcome                                              | `JobMeta.status` | `NodeStatus` returned to DAG |
+| ---------------------------------------------------- | ---------------- | ---------------------------- |
+| Command exited 0                                     | `Completed`      | `Succeeded`                  |
+| Command exited non-zero                              | `Failed`         | `Failed`                     |
+| Per-job cancel (`daft hooks jobs cancel <name>`)     | `Cancelled`      | `Failed`                     |
+| `cancel_all` flipped before the closure ran          | `Cancelled`      | `Failed`                     |
+| `cancel_all` flipped while the closure was executing | `Cancelled`      | `Failed`                     |
+
+`Cancelled` and `Skipped` are mapped to `NodeStatus::Failed` for cascade
+purposes because the dependency did not produce its work product, and any job
+that declared `needs: [<dep>]` cannot be assumed to be safe to run. The on-disk
+`JobMeta.status` (read by `daft hooks jobs`) preserves the precise distinction
+between `Failed` and `Cancelled`; only the DAG cascade collapses them.
+
+This intentionally diverges from the foreground rule that "skipped deps are
+considered satisfied" (which exists because foreground `Skipped` is normally
+caused by an `if:` condition voluntarily declining to run). In the bg
+coordinator, `Skipped`/`Cancelled` always means "did not actually run" and must
+propagate.
+
 ### Partitioning Algorithm
 
 1. Build the full DAG as today (all jobs, foreground and background).

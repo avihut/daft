@@ -14,6 +14,7 @@ use super::{
     coordinator_pid_path, coordinator_socket_path, CoordinatorRequest, CoordinatorResponse, JobInfo,
 };
 use crate::executor::command::run_command;
+use crate::executor::dag::DagGraph;
 use crate::executor::{JobResult, JobSpec, NodeStatus};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -92,42 +93,166 @@ impl CoordinatorState {
         cancel_all: &Arc<AtomicBool>,
         cancelled_jobs: &CancelledJobs,
     ) -> Result<Vec<JobResult>> {
-        let mut handles = Vec::new();
-        let results = Arc::new(Mutex::new(Vec::new()));
-
-        for job in &self.jobs {
-            let job = job.clone();
-            let inv_id = self.invocation_id.clone();
-            let store_base = store.base_dir.clone();
-            let results = Arc::clone(&results);
-            let child_pids = Arc::clone(child_pids);
-            let cancel_all = Arc::clone(cancel_all);
-            let cancelled_jobs = Arc::clone(cancelled_jobs);
-            let hook_type = self.hook_type.clone();
-            let worktree = self.worktree.clone();
-
-            let handle = std::thread::spawn(move || {
-                let local_store = LogStore::new(store_base);
-                let ctx = JobInvocationContext {
-                    invocation_id: &inv_id,
-                    hook_type: &hook_type,
-                    worktree: &worktree,
-                };
-                run_single_background_job(
-                    &job,
-                    &ctx,
-                    &local_store,
-                    &results,
-                    &child_pids,
-                    &cancel_all,
-                    &cancelled_jobs,
-                );
-            });
-            handles.push(handle);
+        if self.jobs.is_empty() {
+            return Ok(Vec::new());
         }
 
-        for handle in handles {
-            handle.join().ok();
+        // Build the DAG from `needs:`. Reusing the same scheduler the foreground
+        // runner uses so foreground and background share one ordering contract.
+        let nodes: Vec<(String, Vec<String>)> = self
+            .jobs
+            .iter()
+            .map(|j| (j.name.clone(), j.needs.clone()))
+            .collect();
+        let graph =
+            DagGraph::new(nodes).map_err(|e| anyhow::anyhow!("invalid background job DAG: {e}"))?;
+
+        let results = Arc::new(Mutex::new(Vec::<JobResult>::new()));
+
+        // Wave-based scheduler. We use DagGraph for cycle/missing-dep
+        // detection and dependent lookups, but execute each wave with bare
+        // `std::thread::spawn` (matching master's per-job spawn pattern)
+        // rather than `DagGraph::run_parallel`. The reason is platform-
+        // specific: `run_parallel` uses `std::thread::scope`, which can
+        // deadlock post-`libc::fork()` on macOS due to malloc-arena state
+        // inherited from the parent. Bare `thread::spawn` does not exhibit
+        // this — the buggy pre-fix coordinator used the same primitive.
+        let n = graph.len();
+        let mut statuses = vec![NodeStatus::Pending; n];
+        let mut in_degree: Vec<usize> = (0..n).map(|i| graph.dependencies_of(i).len()).collect();
+        let mut ready: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
+
+        // Each iteration of this loop is one wave: every ready node is spawned
+        // in parallel and the loop blocks until ALL of them finish before
+        // computing the next wave. This is intentionally less concurrent than
+        // a free-running scheduler — an independent fast chain can be held up
+        // behind a slow one in the same wave — but it is the simplest shape
+        // that is provably safe across `libc::fork()` on macOS without
+        // touching `std::thread::scope`. Do not "optimize" this into per-node
+        // free-running advancement without re-checking the post-fork
+        // constraint described above.
+        while !ready.is_empty() {
+            // Spawn one worker per ready node. Inputs are cloned per-spawn,
+            // matching the pre-fix per-thread cloning pattern.
+            let mut handles: Vec<(usize, std::thread::JoinHandle<NodeStatus>)> = Vec::new();
+            for &idx in &ready {
+                statuses[idx] = NodeStatus::Running;
+
+                let job = self.jobs[idx].clone();
+                let inv_id = self.invocation_id.clone();
+                let store_base = store.base_dir.clone();
+                let hook_type = self.hook_type.clone();
+                let worktree = self.worktree.clone();
+                let results_clone = Arc::clone(&results);
+                let child_pids_clone = Arc::clone(child_pids);
+                let cancel_all_clone = Arc::clone(cancel_all);
+                let cancelled_jobs_clone = Arc::clone(cancelled_jobs);
+
+                let handle = std::thread::spawn(move || {
+                    let local_store = LogStore::new(store_base);
+                    let ctx = JobInvocationContext {
+                        invocation_id: &inv_id,
+                        hook_type: &hook_type,
+                        worktree: &worktree,
+                    };
+                    run_single_background_job(
+                        &job,
+                        &ctx,
+                        &local_store,
+                        &results_clone,
+                        &child_pids_clone,
+                        &cancel_all_clone,
+                        &cancelled_jobs_clone,
+                    )
+                });
+                handles.push((idx, handle));
+            }
+
+            // Wait for the wave to finish. A panicked worker is treated as a
+            // Failed outcome so the cascade still fires.
+            let wave_outcomes: Vec<(usize, NodeStatus)> = handles
+                .into_iter()
+                .map(|(idx, handle)| (idx, handle.join().unwrap_or(NodeStatus::Failed)))
+                .collect();
+
+            // Apply outcomes and compute the next wave.
+            let mut next_ready: Vec<usize> = Vec::new();
+            for (idx, status) in wave_outcomes {
+                statuses[idx] = status;
+                match status {
+                    // `Skipped` is treated like `Succeeded` for cascade
+                    // purposes — both unblock dependents. Today
+                    // `run_single_background_job` only ever returns
+                    // `Succeeded` or `Failed`, so the `Skipped` arm is
+                    // reserved for future closure variants (e.g. an `if:`
+                    // conditional skip path).
+                    NodeStatus::Succeeded | NodeStatus::Skipped => {
+                        for &dep_idx in graph.dependents_of(idx) {
+                            if statuses[dep_idx] == NodeStatus::Pending {
+                                in_degree[dep_idx] -= 1;
+                                if in_degree[dep_idx] == 0 {
+                                    next_ready.push(dep_idx);
+                                }
+                            }
+                        }
+                    }
+                    NodeStatus::Failed => {
+                        // Cascade DepFailed to all transitive Pending dependents.
+                        let mut stack = vec![idx];
+                        while let Some(i) = stack.pop() {
+                            for &d in graph.dependents_of(i) {
+                                if statuses[d] == NodeStatus::Pending {
+                                    statuses[d] = NodeStatus::DepFailed;
+                                    stack.push(d);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            ready = next_ready;
+        }
+
+        // Synthesize meta + JobResult for jobs the scheduler marked DepFailed
+        // (their closure was not invoked, so they would otherwise be invisible
+        // to `daft hooks jobs`).
+        for (idx, status) in statuses.iter().enumerate() {
+            if *status != NodeStatus::DepFailed {
+                continue;
+            }
+            let Some(job) = self.jobs.get(idx) else {
+                continue;
+            };
+            if let Ok(job_dir) = store.create_job_dir(&self.invocation_id, &job.name) {
+                let meta = JobMeta::skipped(
+                    &job.name,
+                    &self.hook_type,
+                    &self.worktree,
+                    &job.command,
+                    job.background,
+                    job.needs.clone(),
+                );
+                if let Err(e) = store.write_meta(&job_dir, &meta) {
+                    eprintln!(
+                        "daft: failed to write dep-failed meta for '{}': {e}",
+                        job.name
+                    );
+                }
+            } else {
+                eprintln!(
+                    "daft: failed to create dep-failed log dir for '{}'",
+                    job.name
+                );
+            }
+            results.lock().unwrap().push(JobResult {
+                name: job.name.clone(),
+                status: NodeStatus::DepFailed,
+                duration: std::time::Duration::ZERO,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: "Dependency failed; job did not run".to_string(),
+            });
         }
 
         let results = match Arc::try_unwrap(results) {
@@ -157,7 +282,7 @@ fn run_single_background_job(
     child_pids: &ChildPidMap,
     cancel_all: &Arc<AtomicBool>,
     cancelled_jobs: &CancelledJobs,
-) {
+) -> NodeStatus {
     let start = Instant::now();
 
     let is_silent = matches!(
@@ -175,7 +300,12 @@ fn run_single_background_job(
             stdout: String::new(),
             stderr: "Cancelled before start".to_string(),
         });
-        return;
+        // Note the deliberate split: the in-memory `JobResult.status` is
+        // `Skipped` (the user cancelled), but the value returned to the
+        // wave scheduler is `Failed` so dependents cascade to `DepFailed`.
+        // Same rationale as the final-return mapping at the bottom of this
+        // function — the dependency did not produce its work product.
+        return NodeStatus::Failed;
     }
 
     // 1. Create the job log directory.
@@ -191,7 +321,7 @@ fn run_single_background_job(
                 stdout: String::new(),
                 stderr: format!("Failed to create log dir: {e}"),
             });
-            return;
+            return NodeStatus::Failed;
         }
     };
 
@@ -360,6 +490,16 @@ fn run_single_background_job(
         stdout,
         stderr,
     });
+
+    // Map outcome to a DAG-cascade-friendly status. Cancelled and Skipped
+    // collapse to Failed because the dep did not produce its work product,
+    // so dependents must DepFailed via cascade. JobMeta on disk preserves
+    // the Completed/Failed/Cancelled distinction for `daft hooks jobs`.
+    if matches!(node_status, NodeStatus::Succeeded) {
+        NodeStatus::Succeeded
+    } else {
+        NodeStatus::Failed
+    }
 }
 
 /// Start a Unix socket listener that handles IPC requests from CLI clients.
@@ -664,8 +804,27 @@ pub fn fork_coordinator(
             .ok();
 
             // Run all jobs (blocking).
-            let _results =
-                state.run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)?;
+            let _results = match state.run_all_with_cancel(
+                &store,
+                &child_pids,
+                &cancel_all,
+                &cancelled_jobs,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("daft: coordinator error: {e}");
+                    // Best-effort cleanup of the listener and PID file before exiting.
+                    shutdown.store(true, Ordering::Relaxed);
+                    if let Some((handle, socket_path)) = listener_handle {
+                        std::fs::remove_file(&socket_path).ok();
+                        handle.join().ok();
+                    }
+                    if let Some(path) = pid_path {
+                        std::fs::remove_file(&path).ok();
+                    }
+                    process::exit(1);
+                }
+            };
 
             // Signal the listener to stop and wait for it.
             shutdown.store(true, Ordering::Relaxed);
@@ -1076,7 +1235,7 @@ mod tests {
             pids_probe.lock().unwrap().clone()
         });
 
-        run_single_background_job(
+        let _ = run_single_background_job(
             &job,
             &ctx,
             &store,
@@ -1124,7 +1283,7 @@ mod tests {
             })
         };
 
-        run_single_background_job(
+        let _ = run_single_background_job(
             &job,
             &ctx,
             &store,
@@ -1159,7 +1318,7 @@ mod tests {
         let inv_id = "00000000-0000-0000-0000-000000000003".to_string();
         let ctx = make_ctx(&inv_id);
 
-        run_single_background_job(
+        let _ = run_single_background_job(
             &job,
             &ctx,
             &store,
@@ -1192,7 +1351,7 @@ mod tests {
         let inv_id = "00000000-0000-0000-0000-000000000004".to_string();
         let ctx = make_ctx(&inv_id);
 
-        run_single_background_job(
+        let _ = run_single_background_job(
             &job,
             &ctx,
             &store,
@@ -1226,7 +1385,7 @@ mod tests {
         let inv_id = "00000000-0000-0000-0000-000000000005".to_string();
         let ctx = make_ctx(&inv_id);
 
-        run_single_background_job(
+        let _ = run_single_background_job(
             &job,
             &ctx,
             &store,
@@ -1265,7 +1424,7 @@ mod tests {
         let inv_id = "00000000-0000-0000-0000-000000000006".to_string();
         let ctx = make_ctx(&inv_id);
 
-        run_single_background_job(
+        let _ = run_single_background_job(
             &job,
             &ctx,
             &store,
@@ -1287,6 +1446,246 @@ mod tests {
             matches!(meta.status, JobStatus::Cancelled),
             "expected Cancelled, got {:?}",
             meta.status
+        );
+    }
+
+    #[test]
+    fn bg_dependent_waits_for_dep_to_finish() {
+        // Regression test for daft#454: B `needs: [A]` must not start until A
+        // has terminated.
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+
+        let mut state = CoordinatorState::new("test-repo", "inv-needs-1").with_metadata(
+            "worktree-post-create",
+            "worktree-post-create",
+            "feat/x",
+        );
+
+        state.add_job(JobSpec {
+            name: "dep-a".to_string(),
+            command: "sleep 0.2 && echo done".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            ..Default::default()
+        });
+        state.add_job(JobSpec {
+            name: "dep-b".to_string(),
+            command: "echo b".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            needs: vec!["dep-a".to_string()],
+            ..Default::default()
+        });
+
+        state
+            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)
+            .unwrap();
+
+        let dir_a = store.base_dir.join("inv-needs-1").join("dep-a");
+        let dir_b = store.base_dir.join("inv-needs-1").join("dep-b");
+        let meta_a = store.read_meta(&dir_a).expect("meta-a");
+        let meta_b = store.read_meta(&dir_b).expect("meta-b");
+
+        let a_finished = meta_a.finished_at.expect("a finished_at");
+        let b_started = meta_b.started_at;
+
+        assert!(
+            b_started >= a_finished,
+            "dep-b started ({b_started}) before dep-a finished ({a_finished})"
+        );
+        assert!(matches!(meta_a.status, JobStatus::Completed));
+        assert!(matches!(meta_b.status, JobStatus::Completed));
+    }
+
+    #[test]
+    fn bg_dependent_skipped_when_dep_fails() {
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+
+        // Use a marker path scoped to this test's TempDir so parallel test
+        // runs cannot race on a global `/tmp` path.
+        let marker = _tmp.path().join("dep-failed-side-effect");
+
+        let mut state = CoordinatorState::new("test-repo", "inv-needs-fail-1").with_metadata(
+            "worktree-post-create",
+            "worktree-post-create",
+            "feat/x",
+        );
+
+        state.add_job(JobSpec {
+            name: "fails".to_string(),
+            command: "exit 7".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            ..Default::default()
+        });
+        state.add_job(JobSpec {
+            name: "dependent".to_string(),
+            command: format!("touch {}", marker.display()),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            needs: vec!["fails".to_string()],
+            ..Default::default()
+        });
+
+        state
+            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)
+            .unwrap();
+
+        let meta_fails = store
+            .read_meta(&store.base_dir.join("inv-needs-fail-1").join("fails"))
+            .expect("meta fails");
+        assert!(matches!(meta_fails.status, JobStatus::Failed));
+
+        // The dependent's closure was NOT invoked (no spawn) — but the
+        // coordinator synthesizes a `meta.json` after the DAG returns so the
+        // job remains visible to `daft hooks jobs`. Disk status is `Skipped`
+        // (the closest available variant). The job's command must NOT have
+        // produced its side-effect.
+        let dep_dir = store.base_dir.join("inv-needs-fail-1").join("dependent");
+        let meta_dependent = store
+            .read_meta(&dep_dir)
+            .expect("dependent should have a synthesized dep-failed meta");
+        assert!(
+            matches!(meta_dependent.status, JobStatus::Skipped),
+            "dep-failed dependent should be Skipped on disk, got {:?}",
+            meta_dependent.status
+        );
+        assert_eq!(meta_dependent.needs, vec!["fails".to_string()]);
+        assert!(
+            !marker.exists(),
+            "dependent ran its command despite dep failing"
+        );
+    }
+
+    #[test]
+    fn bg_dependent_skipped_when_dep_cancelled() {
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+
+        // Marker path is scoped to this test's TempDir to avoid races with
+        // parallel test runs.
+        let marker = _tmp.path().join("dep-cancelled-side-effect");
+
+        let mut state = CoordinatorState::new("test-repo", "inv-needs-cancel-1").with_metadata(
+            "worktree-post-create",
+            "worktree-post-create",
+            "feat/x",
+        );
+
+        state.add_job(JobSpec {
+            name: "long".to_string(),
+            command: "sleep 5".to_string(),
+            working_dir: std::env::temp_dir(),
+            timeout: std::time::Duration::from_secs(30),
+            background: true,
+            ..Default::default()
+        });
+        state.add_job(JobSpec {
+            name: "after".to_string(),
+            command: format!("touch {}", marker.display()),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            needs: vec!["long".to_string()],
+            ..Default::default()
+        });
+
+        let pids = Arc::clone(&child_pids);
+        let cancelled = Arc::clone(&cancelled_jobs);
+        let store_for_killer = store.clone();
+        let killer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let _ = cancel_single_job("long", &pids, &cancelled, &store_for_killer);
+        });
+
+        state
+            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)
+            .unwrap();
+        killer.join().unwrap();
+
+        let meta_long = store
+            .read_meta(&store.base_dir.join("inv-needs-cancel-1").join("long"))
+            .expect("meta long");
+        assert!(
+            matches!(meta_long.status, JobStatus::Cancelled),
+            "long should be Cancelled, got {:?}",
+            meta_long.status
+        );
+
+        // After the DAG returns, the coordinator synthesizes a meta record
+        // for the dep-failed dependent so it remains visible to
+        // `daft hooks jobs`. Disk status is `Skipped` (no `DepFailed` variant
+        // exists in `JobStatus`). The job's command must NOT have run.
+        let after_dir = store.base_dir.join("inv-needs-cancel-1").join("after");
+        let meta_after = store
+            .read_meta(&after_dir)
+            .expect("after should have a synthesized dep-failed meta");
+        assert!(
+            matches!(meta_after.status, JobStatus::Skipped),
+            "after should be Skipped on disk (dep cancelled), got {:?}",
+            meta_after.status
+        );
+        assert_eq!(meta_after.needs, vec!["long".to_string()]);
+        assert!(
+            !marker.exists(),
+            "after ran its command despite dep being cancelled"
+        );
+    }
+
+    #[test]
+    fn bg_cycle_in_needs_returns_error() {
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+
+        let mut state = CoordinatorState::new("test-repo", "inv-cycle-1").with_metadata(
+            "worktree-post-create",
+            "worktree-post-create",
+            "feat/x",
+        );
+
+        state.add_job(JobSpec {
+            name: "a".to_string(),
+            command: "echo a".to_string(),
+            background: true,
+            needs: vec!["b".to_string()],
+            ..Default::default()
+        });
+        state.add_job(JobSpec {
+            name: "b".to_string(),
+            command: "echo b".to_string(),
+            background: true,
+            needs: vec!["a".to_string()],
+            ..Default::default()
+        });
+
+        let result = state.run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs);
+        assert!(result.is_err(), "cycle should be reported as an error");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid background job DAG"),
+            "error should mention invalid DAG, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn bg_missing_dep_in_needs_returns_error() {
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+
+        let mut state = CoordinatorState::new("test-repo", "inv-missing-1").with_metadata(
+            "worktree-post-create",
+            "worktree-post-create",
+            "feat/x",
+        );
+
+        state.add_job(JobSpec {
+            name: "only".to_string(),
+            command: "echo only".to_string(),
+            background: true,
+            needs: vec!["does-not-exist".to_string()],
+            ..Default::default()
+        });
+
+        let result = state.run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs);
+        assert!(
+            result.is_err(),
+            "missing dep should be reported as an error"
         );
     }
 }
