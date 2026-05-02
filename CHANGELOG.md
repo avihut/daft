@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.11.1](https://github.com/avihut/daft/compare/v1.11.0...v1.11.1) - 2026-05-02
+
+### Bug Fixes
+
+- *(coordinator)* honor needs: between background jobs ([#454](https://github.com/avihut/daft/pull/454)) ([#463](https://github.com/avihut/daft/pull/463))
+- *(list)* render empty-state hint when no worktrees, plus repo remove copy refresh ([#462](https://github.com/avihut/daft/pull/462))
+- *(hooks)* honor user git-config in commands that fire hooks ([#461](https://github.com/avihut/daft/pull/461))
+- *(completions)* offer path completions and out-of-repo path remove ([#459](https://github.com/avihut/daft/pull/459))
+- *(clone)* reject --no-checkout for non-bare layouts and cd into root on success ([#458](https://github.com/avihut/daft/pull/458))
+
 ## [1.11.0](https://github.com/avihut/daft/compare/v1.10.3...v1.11.0) - 2026-05-02
 
 ### Features
