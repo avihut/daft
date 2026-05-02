@@ -1,7 +1,7 @@
 name: Remove repo basic
 description:
   daft clone a fixture, add a worktree, then daft repo remove --force tears down
-  the bare git dir and every worktree.
+  the git dir and every worktree.
 
 repos:
   - name: test-repo

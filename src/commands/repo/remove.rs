@@ -188,8 +188,8 @@ fn print_plan(
         let label = w.branch.as_deref().unwrap_or("(detached)");
         println!("  worktree  {}  ({})", w.path.display(), label);
     }
-    println!("  bare      {}", target.bare_git_dir.display());
-    println!("  trust DB entry for {}", target.bare_git_dir.display());
+    println!("  git dir   {}", target.bare_git_dir.display());
+    println!("  trust marker for {}", target.bare_git_dir.display());
 }
 
 fn confirm_prompt(
@@ -198,9 +198,9 @@ fn confirm_prompt(
 ) -> Result<bool> {
     use std::io::{BufRead, Write};
     let suffix = match n {
-        0 => "This will delete the bare git dir (no worktrees to remove).".to_string(),
-        1 => "This will delete 1 worktree and the bare git dir.".to_string(),
-        n => format!("This will delete {n} worktrees and the bare git dir."),
+        0 => "No worktrees to remove — this will delete the repo.".to_string(),
+        1 => "This will delete 1 worktree and the repo.".to_string(),
+        n => format!("This will delete {n} worktrees and the repo."),
     };
     print!(
         "Remove repo at {}? {suffix} [y/N] ",
