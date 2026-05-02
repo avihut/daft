@@ -17,6 +17,10 @@ pub fn run() -> Result<()> {
             print_help();
             Ok(())
         }
+        "--version" | "-V" => {
+            println!("daft repo {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         other => crate::suggest::handle_unknown_subcommand(
             "daft repo",
             other,

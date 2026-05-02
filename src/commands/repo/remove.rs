@@ -84,6 +84,21 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
         eprintln!("[experimental] Using gitoxide backend for git operations");
     }
 
+    // Honor user-configured hook settings (timeout, output verbosity,
+    // per-hook trust defaults). Loading from global mirrors the
+    // `load_global()` call above — same rationale, same failure-mode
+    // tolerance for cwd-outside-any-repo invocations. Without this, long-
+    // running cleanup hooks (e.g. docker teardown, db dump) silently time
+    // out at the 300s default even when the user configured a larger
+    // budget. See finding #1 in <PR #448 review> for context.
+    //
+    // The codebase-wide pattern is `HooksConfig::default()` for nearly
+    // every command (clone, sync, flow_eject, worktree_branch, ...) —
+    // this site is intentionally inconsistent because the user-visible
+    // impact is sharpest here (long docker-teardown hooks). Tracking
+    // codebase-wide propagation in #456.
+    let hooks_config = crate::core::settings::load_hooks_config_global()?;
+
     let target = resolve_repo(args.path.as_deref(), use_gitoxide)?;
     let worktrees = enumerate_worktrees(&target, use_gitoxide)?;
 
@@ -121,9 +136,9 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     // failure we may have removed the worktree containing the user's cwd, in
     // which case we still need to hand the shell wrapper a safe directory.
     let result = if force_sequential {
-        run_sequential(&target, &worktrees, &settings)
+        run_sequential(&target, &worktrees, &settings, &hooks_config)
     } else {
-        run_tui(&target, &worktrees, args.verbose, &settings)
+        run_tui(&target, &worktrees, args.verbose, &settings, &hooks_config)
     };
     maybe_redirect_cwd(&target, original_cwd.as_deref());
     result
@@ -210,11 +225,11 @@ fn run_sequential(
     target: &crate::core::worktree::remove_repo::RepoTarget,
     worktrees: &[crate::core::worktree::remove_repo::WorktreeEntry],
     settings: &crate::core::settings::DaftSettings,
+    hooks_config: &crate::hooks::HooksConfig,
 ) -> Result<()> {
     use crate::commands::sync_shared::{execute_remove_bare_task, execute_remove_worktree_task};
     use crate::core::worktree::sync_dag::{DagEvent, TaskMessage, TaskStatus};
 
-    let hooks_config = crate::hooks::HooksConfig::default();
     let main_worktree_path = main_worktree_path(worktrees);
     let (tx, rx) = std::sync::mpsc::channel();
 
@@ -222,10 +237,13 @@ fn run_sequential(
     let mut any_failed = false;
     for entry in worktrees {
         let label = entry.branch.clone().unwrap_or_else(|| "(detached)".into());
-        let (status, msg) = execute_remove_worktree_task(
+        // `execute_remove_worktree_task` always emits the pair
+        // `(TaskStatus::Failed, TaskMessage::Failed(_))` together — we set
+        // `any_failed` from the message arm only and discard the status.
+        let (_status, msg) = execute_remove_worktree_task(
             target,
             entry,
-            &hooks_config,
+            hooks_config,
             &settings.remote,
             main_worktree_path,
             &tx,
@@ -239,9 +257,6 @@ fn run_sequential(
             _ => "removed".to_string(),
         };
         println!("  {label}: {line}");
-        if matches!(status, TaskStatus::Failed) {
-            any_failed = true;
-        }
         while let Ok(ev) = rx.try_recv() {
             if let DagEvent::HookCompleted {
                 branch_name,
@@ -267,7 +282,11 @@ fn run_sequential(
                 if !success && !warned {
                     any_failed = true;
                 }
-                if !success || warned {
+                // Only surface hooks that had a problem. A warn-mode hook
+                // that succeeded has nothing to summarize; the "warned"
+                // label exists to distinguish a *failed* warn-mode hook
+                // from a *failed* abort-mode hook in the printed list.
+                if !success {
                     hook_summaries.push(HookSummary {
                         branch_name,
                         hook_type,
@@ -291,6 +310,37 @@ fn run_sequential(
     println!("  (bare): {bare_line}");
     if matches!(bare_status, TaskStatus::Failed) {
         any_failed = true;
+    }
+
+    // Defensive drain: today `execute_remove_bare_task` doesn't fire hooks,
+    // so this is a no-op. If a future repo-level post-remove hook lands
+    // here it would otherwise be silently dropped.
+    while let Ok(ev) = rx.try_recv() {
+        if let DagEvent::HookCompleted {
+            branch_name,
+            hook_type,
+            success,
+            warned,
+            duration,
+            exit_code,
+            output,
+        } = ev
+        {
+            if !success && !warned {
+                any_failed = true;
+            }
+            if !success {
+                hook_summaries.push(HookSummary {
+                    branch_name,
+                    hook_type,
+                    success,
+                    warned,
+                    duration,
+                    exit_code,
+                    output,
+                });
+            }
+        }
     }
 
     print_hook_summary(&hook_summaries);
@@ -394,6 +444,7 @@ fn run_tui(
     worktrees: &[crate::core::worktree::remove_repo::WorktreeEntry],
     verbose: u8,
     settings: &crate::core::settings::DaftSettings,
+    hooks_config: &crate::hooks::HooksConfig,
 ) -> Result<()> {
     use crate::commands::sync_shared::{
         check_tui_failures_strict, execute_remove_bare_task, execute_remove_worktree_task,
@@ -432,7 +483,7 @@ fn run_tui(
     let target_arc = Arc::new(target.clone());
     let entries_arc: Arc<Vec<crate::core::worktree::remove_repo::WorktreeEntry>> =
         Arc::new(worktrees.to_vec());
-    let hooks_arc = Arc::new(crate::hooks::HooksConfig::default());
+    let hooks_arc = Arc::new(hooks_config.clone());
     let remote_name_arc: Arc<String> = Arc::new(settings.remote.clone());
     let main_worktree_path_arc: Arc<Option<PathBuf>> =
         Arc::new(main_worktree_path(worktrees).map(|p| p.to_path_buf()));

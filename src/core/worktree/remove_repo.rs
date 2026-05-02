@@ -142,6 +142,14 @@ fn enumerate_worktrees_gix(target: &RepoTarget) -> Result<Vec<WorktreeEntry>> {
     }
 
     for proxy in repo.worktrees().context("gix repo.worktrees() failed")? {
+        // Skip linked worktrees whose base path can't be resolved (broken
+        // symlinks, manually `rm -rf`'d worktrees that weren't pruned).
+        // The CLI backend (`git worktree list --porcelain`) would still
+        // emit the stale entry, but for removal that's moot: the bare
+        // dir's `worktrees/<name>/` admin entry is destroyed when we
+        // `fs::remove_dir_all` the bare's git_common_dir afterwards, so
+        // skipping the entry here just means we don't attempt a redundant
+        // (and impossible) filesystem removal of a path that's already gone.
         let path = match proxy.base() {
             Ok(p) => std::fs::canonicalize(&p).unwrap_or(p),
             Err(_) => continue,
