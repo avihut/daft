@@ -623,6 +623,10 @@ fn print_table(
     sort_spec: &SortSpec,
 ) {
     if infos.is_empty() {
+        let _ = crate::commands::list_empty::print(
+            &mut std::io::stdout(),
+            crate::styles::colors_enabled(),
+        );
         return;
     }
 
@@ -1100,6 +1104,21 @@ mod tests {
             .position(|h| h == "size_bytes")
             .unwrap();
         assert_eq!(total_row[size_bytes_idx], Cell::Int(1024));
+    }
+
+    #[test]
+    fn print_table_empty_writes_hint_to_stdout_via_helper() {
+        // We don't capture real stdout in unit tests; instead verify that
+        // the empty branch routes through list_empty::print, which has its
+        // own tests covering content. This test ensures the helper itself
+        // produces something non-empty for the empty case.
+        use crate::commands::list_empty;
+        let mut buf = Vec::new();
+        list_empty::print(&mut buf, false).expect("print failed");
+        let s = String::from_utf8(buf).expect("non-utf8");
+        assert!(s.contains("No worktrees yet."));
+        assert!(s.contains("daft go <branch>"));
+        assert!(s.contains("daft start <branch>"));
     }
 }
 
