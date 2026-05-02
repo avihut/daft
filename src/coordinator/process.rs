@@ -1289,4 +1289,52 @@ mod tests {
             meta.status
         );
     }
+
+    #[test]
+    fn bg_dependent_waits_for_dep_to_finish() {
+        // Regression test for daft#454: B `needs: [A]` must not start until A
+        // has terminated.
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+
+        let mut state = CoordinatorState::new("test-repo", "inv-needs-1").with_metadata(
+            "worktree-post-create",
+            "worktree-post-create",
+            "feat/x",
+        );
+
+        state.add_job(JobSpec {
+            name: "dep-a".to_string(),
+            command: "sleep 0.2 && echo done".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            ..Default::default()
+        });
+        state.add_job(JobSpec {
+            name: "dep-b".to_string(),
+            command: "echo b".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            needs: vec!["dep-a".to_string()],
+            ..Default::default()
+        });
+
+        state
+            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)
+            .unwrap();
+
+        let dir_a = store.base_dir.join("inv-needs-1").join("dep-a");
+        let dir_b = store.base_dir.join("inv-needs-1").join("dep-b");
+        let meta_a = store.read_meta(&dir_a).expect("meta-a");
+        let meta_b = store.read_meta(&dir_b).expect("meta-b");
+
+        let a_finished = meta_a.finished_at.expect("a finished_at");
+        let b_started = meta_b.started_at;
+
+        assert!(
+            b_started >= a_finished,
+            "dep-b started ({b_started}) before dep-a finished ({a_finished})"
+        );
+        assert!(matches!(meta_a.status, JobStatus::Completed));
+        assert!(matches!(meta_b.status, JobStatus::Completed));
+    }
 }
