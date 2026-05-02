@@ -1474,4 +1474,75 @@ mod tests {
             "dependent ran its command despite dep failing"
         );
     }
+
+    #[test]
+    fn bg_dependent_skipped_when_dep_cancelled() {
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+
+        let mut state = CoordinatorState::new("test-repo", "inv-needs-cancel-1").with_metadata(
+            "worktree-post-create",
+            "worktree-post-create",
+            "feat/x",
+        );
+
+        state.add_job(JobSpec {
+            name: "long".to_string(),
+            command: "sleep 5".to_string(),
+            working_dir: std::env::temp_dir(),
+            timeout: std::time::Duration::from_secs(30),
+            background: true,
+            ..Default::default()
+        });
+        state.add_job(JobSpec {
+            name: "after".to_string(),
+            command: "touch /tmp/should-never-exist-bg-needs-cancel".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            needs: vec!["long".to_string()],
+            ..Default::default()
+        });
+
+        let _ = std::fs::remove_file("/tmp/should-never-exist-bg-needs-cancel");
+
+        let pids = Arc::clone(&child_pids);
+        let cancelled = Arc::clone(&cancelled_jobs);
+        let store_for_killer = store.clone();
+        let killer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let _ = cancel_single_job("long", &pids, &cancelled, &store_for_killer);
+        });
+
+        state
+            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)
+            .unwrap();
+        killer.join().unwrap();
+
+        let meta_long = store
+            .read_meta(&store.base_dir.join("inv-needs-cancel-1").join("long"))
+            .expect("meta long");
+        assert!(
+            matches!(meta_long.status, JobStatus::Cancelled),
+            "long should be Cancelled, got {:?}",
+            meta_long.status
+        );
+
+        // After the DAG returns, the coordinator synthesizes a meta record
+        // for the dep-failed dependent so it remains visible to
+        // `daft hooks jobs`. Disk status is `Skipped` (no `DepFailed` variant
+        // exists in `JobStatus`). The job's command must NOT have run.
+        let after_dir = store.base_dir.join("inv-needs-cancel-1").join("after");
+        let meta_after = store
+            .read_meta(&after_dir)
+            .expect("after should have a synthesized dep-failed meta");
+        assert!(
+            matches!(meta_after.status, JobStatus::Skipped),
+            "after should be Skipped on disk (dep cancelled), got {:?}",
+            meta_after.status
+        );
+        assert_eq!(meta_after.needs, vec!["long".to_string()]);
+        assert!(
+            !std::path::Path::new("/tmp/should-never-exist-bg-needs-cancel").exists(),
+            "after ran its command despite dep being cancelled"
+        );
+    }
 }
