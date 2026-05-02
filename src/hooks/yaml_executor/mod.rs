@@ -146,7 +146,16 @@ pub fn execute_yaml_hook_with_rc(
 
     // Compute repo hash and invocation ID unconditionally so every hook
     // invocation lands in the log store, even fg-only, empty, and remove hooks.
-    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
+    //
+    // Use the explicit `ctx.git_dir` rather than the cwd-based
+    // `compute_repo_id()`. Hooks fire for a specific repo carried in the
+    // context, but the cwd may be elsewhere — e.g., `daft repo remove <path>`
+    // invoked from a parent directory or `/`. The cwd-based variant runs
+    // `git rev-parse --git-common-dir` in cwd; outside any repo it errors,
+    // the error propagates up through `try_yaml_hook`, the executor catches
+    // it and falls through to legacy script discovery (which finds nothing
+    // for daft.yml-only repos), and the hook silently never fires.
+    let repo_hash = crate::core::repo_identity::compute_repo_id_from_common_dir(&ctx.git_dir)?;
     let invocation_id = crate::coordinator::log_store::generate_invocation_id();
     let store = std::sync::Arc::new(crate::coordinator::log_store::LogStore::for_repo(
         &repo_hash,
@@ -504,18 +513,42 @@ mod tests {
     use crate::hooks::HookType;
     use crate::output::TestOutput;
     use std::collections::HashMap;
+    use tempfile::TempDir;
 
-    fn make_ctx() -> HookContext {
-        HookContext::new(
+    /// Build a `HookContext` whose `git_dir` is a real temp directory.
+    ///
+    /// `execute_yaml_hook_with_rc` writes a `daft-id` file into `ctx.git_dir`
+    /// to compute the repo hash; pre-fix it called `compute_repo_id()`
+    /// (cwd-based) and silently picked up whatever git repo the test runner
+    /// was sitting in. The fix moves that to `ctx.git_dir`, so tests need a
+    /// real directory there or they trip on `try_create_new` failing on
+    /// `/project/.git`.
+    ///
+    /// Tests that need the context together with the keep-alive guard call
+    /// `make_ctx_with_dir`. Tests that only need the context (and don't mind
+    /// leaking the dir for the test process duration) call `make_ctx`.
+    fn make_ctx_with_dir() -> (HookContext, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let git_dir = dir.path().to_path_buf();
+        let ctx = HookContext::new(
             HookType::PostCreate,
             "checkout",
             "/project",
-            "/project/.git",
+            &git_dir,
             "origin",
             "/project/main",
             "/project/feature/new",
             "feature/new",
-        )
+        );
+        (ctx, dir)
+    }
+
+    fn make_ctx() -> HookContext {
+        // Leak the tempdir into the test process so callers that don't need
+        // a guard can still use it. The OS reaps the dir at process exit.
+        let (ctx, dir) = make_ctx_with_dir();
+        std::mem::forget(dir);
+        ctx
     }
 
     #[test]

@@ -1,0 +1,80 @@
+name: Remove repo with hooks — cwd outside the worktree
+description: >
+  Regression for the bug where `daft repo remove <path>` silently dropped YAML
+  hooks when invoked from a cwd outside the target repo. The hook executor's
+  `execute_yaml_hook_with_rc` builds the per-repo log store via
+  `compute_repo_id()`, which ran `git rev-parse --git-common-dir` against the
+  cwd. Outside any repo (e.g. cwd=`/`, or a temp dir), the rev-parse errored and
+  the error propagated up; the executor caught it, warned to a buffered Output
+  the user never sees, and fell through to legacy `.daft/hooks/` script
+  discovery (which finds nothing for daft.yml-only repos) — silently skipping
+  every hook. Fix: use the explicit `ctx.git_dir` via
+  `compute_repo_id_from_common_dir`.
+
+  This scenario mirrors `remove-with-hooks.yml` but invokes `daft repo remove`
+  with `cwd: $WORK_DIR` (outside the repo). The marker file contents must still
+  be populated by the pre-remove hooks.
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Hooks remove cwd-outside test"
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-pre-remove:
+          jobs:
+            - name: marker
+              run: |
+                echo "pre-remove ran for ${DAFT_BRANCH_NAME}" >> "${WORK_DIR}/hook-markers.txt"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+      files_exist:
+        - "$WORK_DIR/test-repo/main/daft.yml"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Add a develop worktree (inherits hooks from main)
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Remove the repo from cwd OUTSIDE the worktree (regression test)
+    run: daft repo remove --force "$WORK_DIR/test-repo" 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/main"
+        - "$WORK_DIR/test-repo/develop"
+        - "$WORK_DIR/test-repo/.git"
+      files_exist:
+        - "$WORK_DIR/hook-markers.txt"
+      file_contains:
+        # Critical: both worktrees must be in the marker file. Pre-fix the
+        # file would not exist at all (hooks silently skipped).
+        - path: "$WORK_DIR/hook-markers.txt"
+          content: "main"
+        - path: "$WORK_DIR/hook-markers.txt"
+          content: "develop"
