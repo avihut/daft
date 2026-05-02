@@ -4,7 +4,7 @@ use crate::{
         CommandBridge,
     },
     git::should_show_gitoxide_notice,
-    hooks::{HookExecutor, HooksConfig},
+    hooks::HookExecutor,
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -464,7 +464,7 @@ fn run_branch_delete(
         prune_cd_target: settings.prune_cd_target,
     };
 
-    let hooks_config = HooksConfig::default();
+    let hooks_config = crate::core::settings::load_hooks_config()?;
     let executor = HookExecutor::new(hooks_config)?;
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {
@@ -558,7 +558,7 @@ fn run_rename_inner(
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
-    let mut hooks_config = HooksConfig::default();
+    let mut hooks_config = crate::core::settings::load_hooks_config()?;
     if verbose {
         hooks_config.output.verbose = true;
     }

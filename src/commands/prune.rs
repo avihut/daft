@@ -16,7 +16,7 @@ use crate::{
     },
     get_git_common_dir, get_project_root,
     git::{should_show_gitoxide_notice, GitCommand},
-    hooks::{HookExecutor, HooksConfig},
+    hooks::HookExecutor,
     is_git_repository,
     logging::init_logging,
     output::{
@@ -142,7 +142,7 @@ fn run_prune_inner(output: &mut dyn Output, settings: &DaftSettings, force: bool
         prune_cd_target: settings.prune_cd_target,
     };
 
-    let hooks_config = HooksConfig::default();
+    let hooks_config = crate::core::settings::load_hooks_config()?;
     let executor = HookExecutor::new(hooks_config)?;
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {
@@ -326,7 +326,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     // Capture count before worktree_infos is moved into OperationTable.
     let worktree_count = worktree_infos.len();
 
-    let hooks_config = HooksConfig::default();
+    let hooks_config = crate::core::settings::load_hooks_config()?;
 
     // ── Create channel and spawn orchestrator ──────────────────────────
     let (tx, rx) = std::sync::mpsc::channel();

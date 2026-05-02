@@ -11,7 +11,7 @@ use crate::{
     get_current_worktree_path, get_git_common_dir, get_project_root,
     git::{should_show_gitoxide_notice, GitCommand},
     hints::maybe_show_shell_hint,
-    hooks::{yaml_config_loader, HookExecutor, HooksConfig, TrustDatabase},
+    hooks::{yaml_config_loader, HookExecutor, TrustDatabase},
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -722,7 +722,7 @@ fn run_checkout(
         at_path: args.at.clone(),
     };
 
-    let hooks_config = HooksConfig::default();
+    let hooks_config = crate::core::settings::load_hooks_config()?;
     let executor = HookExecutor::new(hooks_config)?;
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {
@@ -804,7 +804,7 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
         at_path: args.at.clone(),
     };
 
-    let hooks_config = HooksConfig::default();
+    let hooks_config = crate::core::settings::load_hooks_config()?;
     let executor = HookExecutor::new(hooks_config)?;
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {

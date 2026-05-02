@@ -27,7 +27,7 @@ use crate::{
     },
     get_git_common_dir, get_project_root,
     git::{should_show_gitoxide_notice, GitCommand},
-    hooks::{HookExecutor, HooksConfig},
+    hooks::HookExecutor,
     is_git_repository,
     logging::init_logging,
     output::{
@@ -483,7 +483,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     if args.push {
         phases.push(sync_dag::OperationPhase::Push);
     }
-    let hooks_config = HooksConfig::default();
+    let hooks_config = crate::core::settings::load_hooks_config()?;
     let shared_hooks_config = Arc::new(hooks_config.clone());
 
     use crate::core::columns::{ColumnSelection, CommandKind};
@@ -1296,7 +1296,7 @@ fn run_prune_phase(
         prune_cd_target: settings.prune_cd_target,
     };
 
-    let hooks_config = HooksConfig::default();
+    let hooks_config = crate::core::settings::load_hooks_config()?;
     let executor = HookExecutor::new(hooks_config)?;
 
     output.start_spinner("Pruning stale branches...");

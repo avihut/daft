@@ -22,7 +22,7 @@ use crate::{
     hints::{maybe_prompt_layout_choice, maybe_show_shell_hint, LayoutPromptResult},
     hooks::{
         get_remote_url_for_git_dir, yaml_config_loader, HookContext, HookExecutor, HookType,
-        HooksConfig, TrustDatabase, TrustLevel,
+        TrustDatabase, TrustLevel,
     },
     logging::init_logging,
     output::{
@@ -546,6 +546,15 @@ fn create_satellite_worktrees(
         change_directory(&repo_path)?;
     }
 
+    // Load once, clone per-iteration. Loader hits global git-config files,
+    // which are stable for the life of this command — no need to re-read
+    // per branch.
+    let shared_hooks_config = if !no_hooks {
+        Some(crate::core::settings::load_hooks_config_global()?)
+    } else {
+        None
+    };
+
     let mut created_count = 0;
     for branch in satellites {
         let worktree_path = if layout.needs_bare() {
@@ -579,9 +588,8 @@ fn create_satellite_worktrees(
         };
 
         // Run worktree-pre-create hook
-        if !no_hooks {
-            let hooks_config = HooksConfig::default();
-            if let Ok(mut executor) = HookExecutor::new(hooks_config) {
+        if let Some(ref hooks_config) = shared_hooks_config {
+            if let Ok(mut executor) = HookExecutor::new(hooks_config.clone()) {
                 if trust_hooks {
                     if let Some(fp) = get_remote_url_for_git_dir(&base_result.git_dir) {
                         let _ = executor.trust_repository_with_fingerprint(
@@ -640,7 +648,7 @@ fn create_satellite_worktrees(
                 created_count += 1;
 
                 // Run worktree-post-create hook
-                if !no_hooks {
+                if let Some(ref hooks_config) = shared_hooks_config {
                     // Link shared files before post-create hooks
                     crate::core::shared::link_shared_files_on_create(
                         &abs_worktree_path,
@@ -648,8 +656,7 @@ fn create_satellite_worktrees(
                         &base_result.parent_dir,
                     );
 
-                    let hooks_config = HooksConfig::default();
-                    if let Ok(mut executor) = HookExecutor::new(hooks_config) {
+                    if let Ok(mut executor) = HookExecutor::new(hooks_config.clone()) {
                         if trust_hooks {
                             if let Some(fp) = get_remote_url_for_git_dir(&base_result.git_dir) {
                                 let _ = executor.trust_repository_with_fingerprint(
@@ -859,8 +866,17 @@ fn create_satellite_worktrees_tui(
     let shared_git_dir = Arc::new(base_result.git_dir.clone());
     let shared_parent_dir = Arc::new(base_result.parent_dir.clone());
     let shared_remote_name_for_hooks = Arc::new(base_result.remote_name.clone());
-    let shared_no_hooks = no_hooks;
     let shared_trust_hooks = trust_hooks;
+    // Load once for the orchestrator thread; the base-post-create site and the
+    // per-satellite loop each clone from this. Loader hits global git-config
+    // files which are stable for the life of this command. `Option<None>`
+    // when --no-hooks was passed — the gates below (`if let Some`) replace
+    // the previous `if !no_hooks` checks.
+    let shared_hooks_config = if no_hooks {
+        None
+    } else {
+        Some(crate::core::settings::load_hooks_config_global()?)
+    };
     let shared_base_branch = base_branch.map(|s| s.to_string());
     let shared_base_path: Option<std::path::PathBuf> =
         worktree_infos.first().and_then(|info| info.path.clone());
@@ -887,9 +903,8 @@ fn create_satellite_worktrees_tui(
             });
 
             // Run worktree-post-create hook for the base worktree via TuiBridge
-            if !shared_no_hooks {
-                let hooks_cfg = HooksConfig::default();
-                if let Ok(mut executor) = HookExecutor::new(hooks_cfg) {
+            if let Some(ref hooks_cfg) = shared_hooks_config {
+                if let Ok(mut executor) = HookExecutor::new(hooks_cfg.clone()) {
                     if shared_trust_hooks {
                         if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
                             let _ = executor.trust_repository_with_fingerprint(
@@ -955,11 +970,7 @@ fn create_satellite_worktrees_tui(
         }
 
         // Prepare hooks config for per-satellite executor creation
-        let hooks_config = if !shared_no_hooks {
-            Some(HooksConfig::default())
-        } else {
-            None
-        };
+        let hooks_config = shared_hooks_config.clone();
 
         // Process each satellite branch
         for (branch, worktree_path) in shared_satellite_paths.iter() {
@@ -1304,7 +1315,7 @@ fn run_post_clone_hook(
         return Ok(());
     }
 
-    let hooks_config = HooksConfig::default();
+    let hooks_config = crate::core::settings::load_hooks_config_global()?;
     let mut executor = HookExecutor::new(hooks_config)?;
 
     if args.trust_hooks {
@@ -1355,7 +1366,7 @@ fn run_post_create_hook(
         return Ok(());
     }
 
-    let hooks_config = HooksConfig::default();
+    let hooks_config = crate::core::settings::load_hooks_config_global()?;
     let mut executor = HookExecutor::new(hooks_config)?;
 
     if args.trust_hooks {

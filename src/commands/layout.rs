@@ -10,7 +10,7 @@ use crate::{
     },
     get_current_worktree_path, get_git_common_dir,
     git::GitCommand,
-    hooks::{yaml_config_loader, HookExecutor, HooksConfig, TrustDatabase},
+    hooks::{yaml_config_loader, HookExecutor, TrustDatabase},
     is_git_repository,
     output::{
         emit::{self, Cell, EmitArgs, EmitPayload, Table},
@@ -693,7 +693,7 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         remote: settings.remote.clone(),
         source_worktree: source.project_root.clone(),
     };
-    let mut hooks_config = HooksConfig::default();
+    let mut hooks_config = crate::core::settings::load_hooks_config()?;
     if args.verbose {
         hooks_config.output.verbose = true;
     }

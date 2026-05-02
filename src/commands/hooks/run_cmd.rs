@@ -2,7 +2,7 @@ use super::{styled_trust_level, HooksRunArgs};
 use crate::executor::cli_presenter::CliPresenter;
 use crate::hooks::yaml_executor::JobFilter;
 use crate::hooks::{
-    yaml_config, yaml_config_loader, HookExecutor, HookType, HooksConfig, TrustDatabase, TrustLevel,
+    yaml_config, yaml_config_loader, HookExecutor, HookType, TrustDatabase, TrustLevel,
 };
 use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Section, Table};
 use crate::output::Output;
@@ -214,7 +214,7 @@ pub(super) fn cmd_run(args: &HooksRunArgs, output: &mut dyn Output) -> Result<()
         &branch_name,
     );
 
-    let mut hooks_config = HooksConfig::default();
+    let mut hooks_config = crate::core::settings::load_hooks_config()?;
     if args.verbose {
         hooks_config.output.verbose = true;
     }

@@ -1,7 +1,7 @@
 use crate::{
     core::{worktree::branch_delete, CommandBridge},
     git::should_show_gitoxide_notice,
-    hooks::{HookExecutor, HooksConfig},
+    hooks::HookExecutor,
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -102,7 +102,7 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
         prune_cd_target: settings.prune_cd_target,
     };
 
-    let hooks_config = HooksConfig::default();
+    let hooks_config = crate::core::settings::load_hooks_config()?;
     let executor = HookExecutor::new(hooks_config)?;
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {

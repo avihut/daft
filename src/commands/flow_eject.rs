@@ -2,7 +2,7 @@ use crate::{
     core::{worktree::flow_eject, CommandBridge},
     get_git_common_dir,
     git::should_show_gitoxide_notice,
-    hooks::{HookExecutor, HooksConfig, TrustDatabase},
+    hooks::{HookExecutor, TrustDatabase},
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
@@ -122,7 +122,7 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         remote_name: settings.remote.clone(),
     };
 
-    let hooks_config = HooksConfig::default();
+    let hooks_config = crate::core::settings::load_hooks_config()?;
     let executor = HookExecutor::new(hooks_config)?;
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {
