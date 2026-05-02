@@ -49,52 +49,56 @@ checksum = "sha256:0f729b4b6f5f28d395c641eacc2e9ff68d0096b85aa0eec344aa62425144b
 url = "https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-x86_64-pc-windows-msvc.zip"
 
 [[tools.bun]]
-version = "1.3.11"
+version = "1.3.13"
 backend = "core:bun"
 
 [tools.bun."platforms.linux-arm64"]
-checksum = "sha256:d13944da12a53ecc74bf6a720bd1d04c4555c038dfe422365356a7be47691fdf"
-url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.11/bun-linux-aarch64.zip"
+checksum = "sha256:70bae41b3908b0a120e1e58c5c8af30e74afae3b8d11b0d3fdd8e787ddfb4b22"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-linux-aarch64.zip"
 
 [tools.bun."platforms.linux-arm64-musl"]
-checksum = "sha256:0f5bf5dc3f276053196274bb84f90a44e2fa40c9432bd6757e3247a8d9476a3d"
-url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.11/bun-linux-aarch64-musl.zip"
+checksum = "sha256:5385e978107ce4934298d8d6afe9bfbb898683f6cc23e6753a0da60bc60c5b81"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-linux-aarch64-musl.zip"
 
 [tools.bun."platforms.linux-x64"]
-checksum = "sha256:8611ba935af886f05a6f38740a15160326c15e5d5d07adef966130b4493607ed"
-url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.11/bun-linux-x64.zip"
+checksum = "sha256:79c0771fa8b92c33aae41e15a0e0d307ea99d0e2f00317c71c6c53237a78e25a"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-linux-x64.zip"
 
 [tools.bun."platforms.linux-x64-baseline"]
-checksum = "sha256:abe346f63414547cdf6b35b7a649a490c728b93d006226156923918a84c0e59b"
-url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.11/bun-linux-x64-baseline.zip"
+checksum = "sha256:9d8a24292a7068090205daac0a5a223f5f69736f5287e37bf88d3b4031edc750"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-linux-x64-baseline.zip"
 
 [tools.bun."platforms.linux-x64-musl"]
-checksum = "sha256:b0fce3bc4fab52f26a1e0d8886dc07fd0c0eb2a274cb343b59c83a2d5997b5b1"
-url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.11/bun-linux-x64-musl.zip"
+checksum = "sha256:5b91a48f0b00df9fd2da8bff1a795d2659d842da966432969203f25da19d1c74"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-linux-x64-musl.zip"
 
 [tools.bun."platforms.linux-x64-musl-baseline"]
-checksum = "sha256:2fa2b697f14ada86a28df771d3876ca7606d7453b2339454893b1937aa9c0c7e"
-url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.11/bun-linux-x64-musl-baseline.zip"
+checksum = "sha256:88ca7c7ad235b498f549eea2f770f434e9f0f5e9ba95168a2d3a1f235184c394"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-linux-x64-musl-baseline.zip"
 
 [tools.bun."platforms.macos-arm64"]
-checksum = "sha256:6f5a3467ed9caec4795bf78cd476507d9f870c7d57b86c945fcb338126772ffc"
-url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.11/bun-darwin-aarch64.zip"
+checksum = "sha256:5467e3f65dba526b9fea98f0cce04efafc0c63e169733ec27b876a3ad32da190"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-darwin-aarch64.zip"
 
 [tools.bun."platforms.macos-x64"]
-checksum = "sha256:c4fe2b9247218b0295f24e895aaec8fee62e74452679a9026b67eacbd611a286"
-url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.11/bun-darwin-x64.zip"
+checksum = "sha256:e5a6c8b64f419925232d111ecb13e25f0abf55e54f792341f987623fd0778009"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-darwin-x64.zip"
 
 [tools.bun."platforms.macos-x64-baseline"]
-checksum = "sha256:fb6739b08bf54550edaa7c824cd5b2dca45b6a06afef408443087a63105f6f8d"
-url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.11/bun-darwin-x64-baseline.zip"
+checksum = "sha256:a98ba6a480f22fda9b343626b906a4e26aa53618bf85d2bc5928ecf2ba45f0ed"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-darwin-x64-baseline.zip"
 
 [tools.bun."platforms.windows-x64"]
-checksum = "sha256:066f8694f8b7d8df592452746d18f01710d4053e93030922dbc6e8c34a8c4b9f"
-url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.11/bun-windows-x64.zip"
+checksum = "sha256:85b14f3e0584218e9b63407b3aa6b90c4835ec5c32435c1f12cb6fc13667c7c9"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-windows-x64.zip"
 
 [tools.bun."platforms.windows-x64-baseline"]
-checksum = "sha256:9d0e0f923e9626f3bc6044fc32e0d3ab29039aea753f5678ef8801cf26f75288"
-url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.11/bun-windows-x64-baseline.zip"
+checksum = "sha256:c68c7903c1190101590cc1b2129835f47211b3b37ae87759f2b97d6534aa3ad1"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-windows-x64-baseline.zip"
+
+[[tools."cargo:cargo-cooldown"]]
+version = "0.2.0"
+backend = "cargo:cargo-cooldown"
 
 [[tools.cocogitto]]
 version = "7.0.0"
@@ -145,62 +149,62 @@ checksum = "sha256:074f68f05d270da5c0d69d3e234ec362bec4c6e3189c21d1c948d03860365
 url = "https://github.com/cocogitto/cocogitto/releases/download/7.0.0/cocogitto-7.0.0-x86_64-pc-windows-msvc.tar.gz"
 
 [[tools.lefthook]]
-version = "2.1.5"
+version = "2.1.6"
 backend = "aqua:evilmartians/lefthook"
 
 [tools.lefthook."platforms.linux-arm64"]
-checksum = "sha256:0823d67541e34d4530d678a9492dba8e1edcfc19cbdbc6d28014cb97a8522c36"
-url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.5/lefthook_2.1.5_Linux_aarch64.gz"
+checksum = "sha256:f85cc031da8e3571418170ab53f1e6e184a086b58683e13660bd5248974159a4"
+url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.6/lefthook_2.1.6_Linux_aarch64.gz"
 provenance = "github-attestations"
 
 [tools.lefthook."platforms.linux-arm64-musl"]
-checksum = "sha256:0823d67541e34d4530d678a9492dba8e1edcfc19cbdbc6d28014cb97a8522c36"
-url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.5/lefthook_2.1.5_Linux_aarch64.gz"
+checksum = "sha256:f85cc031da8e3571418170ab53f1e6e184a086b58683e13660bd5248974159a4"
+url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.6/lefthook_2.1.6_Linux_aarch64.gz"
 provenance = "github-attestations"
 
 [tools.lefthook."platforms.linux-x64"]
-checksum = "sha256:0faf5a547afbcedc3f2e9bef46053a73bcbfc2478e47d39bde30784e08f97190"
-url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.5/lefthook_2.1.5_Linux_x86_64.gz"
+checksum = "sha256:fab3d2715a922d9625c9024e6ffb6e1271edd613aa9b213c2049482cde8ae183"
+url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.6/lefthook_2.1.6_Linux_x86_64.gz"
 provenance = "github-attestations"
 
 [tools.lefthook."platforms.linux-x64-baseline"]
-checksum = "sha256:0faf5a547afbcedc3f2e9bef46053a73bcbfc2478e47d39bde30784e08f97190"
-url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.5/lefthook_2.1.5_Linux_x86_64.gz"
+checksum = "sha256:fab3d2715a922d9625c9024e6ffb6e1271edd613aa9b213c2049482cde8ae183"
+url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.6/lefthook_2.1.6_Linux_x86_64.gz"
 provenance = "github-attestations"
 
 [tools.lefthook."platforms.linux-x64-musl"]
-checksum = "sha256:0faf5a547afbcedc3f2e9bef46053a73bcbfc2478e47d39bde30784e08f97190"
-url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.5/lefthook_2.1.5_Linux_x86_64.gz"
+checksum = "sha256:fab3d2715a922d9625c9024e6ffb6e1271edd613aa9b213c2049482cde8ae183"
+url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.6/lefthook_2.1.6_Linux_x86_64.gz"
 provenance = "github-attestations"
 
 [tools.lefthook."platforms.linux-x64-musl-baseline"]
-checksum = "sha256:0faf5a547afbcedc3f2e9bef46053a73bcbfc2478e47d39bde30784e08f97190"
-url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.5/lefthook_2.1.5_Linux_x86_64.gz"
+checksum = "sha256:fab3d2715a922d9625c9024e6ffb6e1271edd613aa9b213c2049482cde8ae183"
+url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.6/lefthook_2.1.6_Linux_x86_64.gz"
 provenance = "github-attestations"
 
 [tools.lefthook."platforms.macos-arm64"]
-checksum = "sha256:f3aeef5fc287c6619a2f043ce3199e514bfc0639739be393a3759dd4470ee292"
-url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.5/lefthook_2.1.5_MacOS_arm64.gz"
+checksum = "sha256:f07c97c32376749edb5b34179c16c6d87dd3e7ca0040aee911f38c821de0daab"
+url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.6/lefthook_2.1.6_MacOS_arm64.gz"
 provenance = "github-attestations"
 
 [tools.lefthook."platforms.macos-x64"]
-checksum = "sha256:27e48734de8f632e64fff07e8ae9f82514713b9f77e7bf91d8925ef1ea59a901"
-url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.5/lefthook_2.1.5_MacOS_x86_64.gz"
+checksum = "sha256:93c6d51823f94a7f26a2bbb84f59504378b178f55d6c90744169693ed3e89013"
+url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.6/lefthook_2.1.6_MacOS_x86_64.gz"
 provenance = "github-attestations"
 
 [tools.lefthook."platforms.macos-x64-baseline"]
-checksum = "sha256:27e48734de8f632e64fff07e8ae9f82514713b9f77e7bf91d8925ef1ea59a901"
-url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.5/lefthook_2.1.5_MacOS_x86_64.gz"
+checksum = "sha256:93c6d51823f94a7f26a2bbb84f59504378b178f55d6c90744169693ed3e89013"
+url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.6/lefthook_2.1.6_MacOS_x86_64.gz"
 provenance = "github-attestations"
 
 [tools.lefthook."platforms.windows-x64"]
-checksum = "sha256:bf14d028984d24a72887f4f73d8899f5879c11786f4ba79a81c676fb3cefce1e"
-url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.5/lefthook_2.1.5_Windows_x86_64.gz"
+checksum = "sha256:6704b01a72414affcc921740a7d6c621fe60c3082b291c9730900a2c6a352516"
+url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.6/lefthook_2.1.6_Windows_x86_64.gz"
 provenance = "github-attestations"
 
 [tools.lefthook."platforms.windows-x64-baseline"]
-checksum = "sha256:bf14d028984d24a72887f4f73d8899f5879c11786f4ba79a81c676fb3cefce1e"
-url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.5/lefthook_2.1.5_Windows_x86_64.gz"
+checksum = "sha256:6704b01a72414affcc921740a7d6c621fe60c3082b291c9730900a2c6a352516"
+url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.6/lefthook_2.1.6_Windows_x86_64.gz"
 provenance = "github-attestations"
 
 [[tools.neovim]]
