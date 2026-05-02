@@ -1107,11 +1107,11 @@ mod tests {
     }
 
     #[test]
-    fn print_table_empty_writes_hint_to_stdout_via_helper() {
-        // We don't capture real stdout in unit tests; instead verify that
-        // the empty branch routes through list_empty::print, which has its
-        // own tests covering content. This test ensures the helper itself
-        // produces something non-empty for the empty case.
+    fn list_empty_print_produces_expected_content() {
+        // Direct smoke test of the helper used by `print_table`'s empty branch.
+        // (Capturing real stdout from `print_table` itself isn't worth the
+        // refactor — `tests/manual/scenarios/list/empty-bare.yml` covers the
+        // end-to-end dispatch.)
         use crate::commands::list_empty;
         let mut buf = Vec::new();
         list_empty::print(&mut buf, false).expect("print failed");
