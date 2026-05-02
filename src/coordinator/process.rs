@@ -157,7 +157,7 @@ fn run_single_background_job(
     child_pids: &ChildPidMap,
     cancel_all: &Arc<AtomicBool>,
     cancelled_jobs: &CancelledJobs,
-) {
+) -> NodeStatus {
     let start = Instant::now();
 
     let is_silent = matches!(
@@ -175,7 +175,7 @@ fn run_single_background_job(
             stdout: String::new(),
             stderr: "Cancelled before start".to_string(),
         });
-        return;
+        return NodeStatus::Failed;
     }
 
     // 1. Create the job log directory.
@@ -191,7 +191,7 @@ fn run_single_background_job(
                 stdout: String::new(),
                 stderr: format!("Failed to create log dir: {e}"),
             });
-            return;
+            return NodeStatus::Failed;
         }
     };
 
@@ -360,6 +360,16 @@ fn run_single_background_job(
         stdout,
         stderr,
     });
+
+    // Map outcome to a DAG-cascade-friendly status. Cancelled and Skipped
+    // collapse to Failed because the dep did not produce its work product,
+    // so dependents must DepFailed via cascade. JobMeta on disk preserves
+    // the Completed/Failed/Cancelled distinction for `daft hooks jobs`.
+    if matches!(node_status, NodeStatus::Succeeded) {
+        NodeStatus::Succeeded
+    } else {
+        NodeStatus::Failed
+    }
 }
 
 /// Start a Unix socket listener that handles IPC requests from CLI clients.
@@ -1076,7 +1086,7 @@ mod tests {
             pids_probe.lock().unwrap().clone()
         });
 
-        run_single_background_job(
+        let _ = run_single_background_job(
             &job,
             &ctx,
             &store,
@@ -1124,7 +1134,7 @@ mod tests {
             })
         };
 
-        run_single_background_job(
+        let _ = run_single_background_job(
             &job,
             &ctx,
             &store,
@@ -1159,7 +1169,7 @@ mod tests {
         let inv_id = "00000000-0000-0000-0000-000000000003".to_string();
         let ctx = make_ctx(&inv_id);
 
-        run_single_background_job(
+        let _ = run_single_background_job(
             &job,
             &ctx,
             &store,
@@ -1192,7 +1202,7 @@ mod tests {
         let inv_id = "00000000-0000-0000-0000-000000000004".to_string();
         let ctx = make_ctx(&inv_id);
 
-        run_single_background_job(
+        let _ = run_single_background_job(
             &job,
             &ctx,
             &store,
@@ -1226,7 +1236,7 @@ mod tests {
         let inv_id = "00000000-0000-0000-0000-000000000005".to_string();
         let ctx = make_ctx(&inv_id);
 
-        run_single_background_job(
+        let _ = run_single_background_job(
             &job,
             &ctx,
             &store,
@@ -1265,7 +1275,7 @@ mod tests {
         let inv_id = "00000000-0000-0000-0000-000000000006".to_string();
         let ctx = make_ctx(&inv_id);
 
-        run_single_background_job(
+        let _ = run_single_background_job(
             &job,
             &ctx,
             &store,
