@@ -1505,6 +1505,12 @@ mod tests {
         };
         assert!(!layout.needs_bare());
         let err = check_no_checkout_compat(true, &layout).unwrap_err();
-        assert!(err.to_string().contains("'my-custom'"));
+        let msg = err.to_string();
+        assert!(msg.contains("'my-custom'"), "got: {msg}");
+        assert!(msg.contains("--no-checkout"), "got: {msg}");
+        assert!(
+            msg.contains("contained") && msg.contains("contained-flat"),
+            "got: {msg}"
+        );
     }
 }

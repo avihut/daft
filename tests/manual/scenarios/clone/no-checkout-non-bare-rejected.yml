@@ -43,6 +43,13 @@ steps:
         - "--no-checkout requires a bare layout"
         - "'nested'"
 
+  - name: Verify no orphan directory left after nested rejection
+    run: "test ! -e $WORK_DIR/test-repo-no-co-nested && echo CLEAN"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "CLEAN"
+
   - name: Reject --no-checkout with centralized layout
     run:
       git-worktree-clone --no-checkout --layout centralized
@@ -53,6 +60,13 @@ steps:
         - "--no-checkout requires a bare layout"
         - "'centralized'"
 
+  - name: Verify no orphan directory left after centralized rejection
+    run: "test ! -e $WORK_DIR/test-repo-no-co-centralized && echo CLEAN"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "CLEAN"
+
   - name: Reject --no-checkout with contained-classic layout
     run:
       git-worktree-clone --no-checkout --layout contained-classic
@@ -62,3 +76,10 @@ steps:
       output_contains:
         - "--no-checkout requires a bare layout"
         - "'contained-classic'"
+
+  - name: Verify no orphan directory left after contained-classic rejection
+    run: "test ! -e $WORK_DIR/test-repo-no-co-classic && echo CLEAN"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "CLEAN"
