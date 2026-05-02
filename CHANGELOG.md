@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.3](https://github.com/avihut/daft/compare/v1.10.2...v1.10.3) - 2026-05-02
+
+### Bug Fixes
+
+- do not create default-branch worktree for multi-branch bare clones ([#453](https://github.com/avihut/daft/pull/453))
+- *(ci)* scope claude-pr-review concurrency to the job ([#440](https://github.com/avihut/daft/pull/440))
+
 ## [1.10.2](https://github.com/avihut/daft/compare/v1.10.1...v1.10.2) - 2026-05-01
 
 ### Bug Fixes
