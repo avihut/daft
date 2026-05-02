@@ -1415,4 +1415,63 @@ mod tests {
         assert!(matches!(meta_a.status, JobStatus::Completed));
         assert!(matches!(meta_b.status, JobStatus::Completed));
     }
+
+    #[test]
+    fn bg_dependent_skipped_when_dep_fails() {
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+
+        let mut state = CoordinatorState::new("test-repo", "inv-needs-fail-1").with_metadata(
+            "worktree-post-create",
+            "worktree-post-create",
+            "feat/x",
+        );
+
+        state.add_job(JobSpec {
+            name: "fails".to_string(),
+            command: "exit 7".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            ..Default::default()
+        });
+        state.add_job(JobSpec {
+            name: "dependent".to_string(),
+            command: "touch /tmp/should-never-exist-bg-needs-fail".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            needs: vec!["fails".to_string()],
+            ..Default::default()
+        });
+
+        // Make sure the marker file isn't lying around from a prior run.
+        let _ = std::fs::remove_file("/tmp/should-never-exist-bg-needs-fail");
+
+        state
+            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)
+            .unwrap();
+
+        let meta_fails = store
+            .read_meta(&store.base_dir.join("inv-needs-fail-1").join("fails"))
+            .expect("meta fails");
+        assert!(matches!(meta_fails.status, JobStatus::Failed));
+
+        // The dependent's closure was NOT invoked (no spawn) — but the
+        // coordinator synthesizes a `meta.json` after the DAG returns so the
+        // job remains visible to `daft hooks jobs`. Disk status is `Skipped`
+        // (the closest available variant). The job's command must NOT have
+        // produced its side-effect.
+        let dep_dir = store.base_dir.join("inv-needs-fail-1").join("dependent");
+        let meta_dependent = store
+            .read_meta(&dep_dir)
+            .expect("dependent should have a synthesized dep-failed meta");
+        assert!(
+            matches!(meta_dependent.status, JobStatus::Skipped),
+            "dep-failed dependent should be Skipped on disk, got {:?}",
+            meta_dependent.status
+        );
+        assert_eq!(meta_dependent.needs, vec!["fails".to_string()]);
+        assert!(
+            !std::path::Path::new("/tmp/should-never-exist-bg-needs-fail").exists(),
+            "dependent ran its command despite dep failing"
+        );
+    }
 }
