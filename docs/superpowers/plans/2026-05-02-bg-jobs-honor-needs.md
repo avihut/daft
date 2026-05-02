@@ -10,11 +10,15 @@ jobs, so that bg→bg dependencies are scheduled in topological order with
 parallel waves, matching the contract foreground jobs already enjoy.
 
 **Architecture:** Replace the coordinator's unconditional fan-out loop in
-`src/coordinator/process.rs::run_all_with_cancel` with a
-`DagGraph::run_parallel` call (the same scheduler primitive
-`runner.rs::run_dag_execution` uses). The existing per-job logic
-(`run_single_background_job`) becomes the closure body; its only required change
-is to return `NodeStatus` so the DAG can cascade failures and cancellations to
+`src/coordinator/process.rs::run_all_with_cancel` with a wave-based scheduler
+that uses `DagGraph` (in `src/executor/dag.rs`) for graph queries (cycle and
+missing-dep detection, dependent lookups) but executes each wave with bare
+`std::thread::spawn`/`JoinHandle::join` rather than `DagGraph::run_parallel`.
+`run_parallel` uses `std::thread::scope` internally, which can deadlock
+post-`libc::fork()` on macOS due to malloc-arena state inherited from the
+parent. The bare-spawn pattern matches what the pre-fix coordinator used and is
+known to work post-fork. The per-job logic (`run_single_background_job`) returns
+`NodeStatus` so the wave scheduler can cascade failures and cancellations to
 dependents.
 
 **Tech Stack:** Rust, existing `DagGraph` primitive (`src/executor/dag.rs`),

@@ -107,39 +107,100 @@ impl CoordinatorState {
         let graph =
             DagGraph::new(nodes).map_err(|e| anyhow::anyhow!("invalid background job DAG: {e}"))?;
 
-        let job_map: HashMap<&str, &JobSpec> =
-            self.jobs.iter().map(|j| (j.name.as_str(), j)).collect();
-
         let results = Arc::new(Mutex::new(Vec::<JobResult>::new()));
-        let max_workers = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
 
-        let statuses = graph.run_parallel(
-            |_idx, name| {
-                let Some(job) = job_map.get(name).copied() else {
-                    return NodeStatus::Failed;
-                };
-                let ctx = JobInvocationContext {
-                    invocation_id: &self.invocation_id,
-                    hook_type: &self.hook_type,
-                    worktree: &self.worktree,
-                };
-                run_single_background_job(
-                    job,
-                    &ctx,
-                    store,
-                    &results,
-                    child_pids,
-                    cancel_all,
-                    cancelled_jobs,
-                )
-            },
-            max_workers,
-        );
+        // Wave-based scheduler. We use DagGraph for cycle/missing-dep
+        // detection and dependent lookups, but execute each wave with bare
+        // `std::thread::spawn` (matching master's per-job spawn pattern)
+        // rather than `DagGraph::run_parallel`. The reason is platform-
+        // specific: `run_parallel` uses `std::thread::scope`, which can
+        // deadlock post-`libc::fork()` on macOS due to malloc-arena state
+        // inherited from the parent. Bare `thread::spawn` does not exhibit
+        // this — the buggy pre-fix coordinator used the same primitive.
+        let n = graph.len();
+        let mut statuses = vec![NodeStatus::Pending; n];
+        let mut in_degree: Vec<usize> = (0..n).map(|i| graph.dependencies_of(i).len()).collect();
+        let mut ready: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
 
-        // Synthesize meta + JobResult for jobs the DAG marked DepFailed (the
-        // closure is not invoked for them, so they would otherwise be invisible
+        while !ready.is_empty() {
+            // Spawn one worker per ready node. Inputs are cloned per-spawn,
+            // matching the pre-fix per-thread cloning pattern.
+            let mut handles: Vec<(usize, std::thread::JoinHandle<NodeStatus>)> = Vec::new();
+            for &idx in &ready {
+                statuses[idx] = NodeStatus::Running;
+
+                let job = self.jobs[idx].clone();
+                let inv_id = self.invocation_id.clone();
+                let store_base = store.base_dir.clone();
+                let hook_type = self.hook_type.clone();
+                let worktree = self.worktree.clone();
+                let results_clone = Arc::clone(&results);
+                let child_pids_clone = Arc::clone(child_pids);
+                let cancel_all_clone = Arc::clone(cancel_all);
+                let cancelled_jobs_clone = Arc::clone(cancelled_jobs);
+
+                let handle = std::thread::spawn(move || {
+                    let local_store = LogStore::new(store_base);
+                    let ctx = JobInvocationContext {
+                        invocation_id: &inv_id,
+                        hook_type: &hook_type,
+                        worktree: &worktree,
+                    };
+                    run_single_background_job(
+                        &job,
+                        &ctx,
+                        &local_store,
+                        &results_clone,
+                        &child_pids_clone,
+                        &cancel_all_clone,
+                        &cancelled_jobs_clone,
+                    )
+                });
+                handles.push((idx, handle));
+            }
+
+            // Wait for the wave to finish. A panicked worker is treated as a
+            // Failed outcome so the cascade still fires.
+            let wave_outcomes: Vec<(usize, NodeStatus)> = handles
+                .into_iter()
+                .map(|(idx, handle)| (idx, handle.join().unwrap_or(NodeStatus::Failed)))
+                .collect();
+
+            // Apply outcomes and compute the next wave.
+            let mut next_ready: Vec<usize> = Vec::new();
+            for (idx, status) in wave_outcomes {
+                statuses[idx] = status;
+                match status {
+                    NodeStatus::Succeeded | NodeStatus::Skipped => {
+                        for &dep_idx in graph.dependents_of(idx) {
+                            if statuses[dep_idx] == NodeStatus::Pending {
+                                in_degree[dep_idx] -= 1;
+                                if in_degree[dep_idx] == 0 {
+                                    next_ready.push(dep_idx);
+                                }
+                            }
+                        }
+                    }
+                    NodeStatus::Failed => {
+                        // Cascade DepFailed to all transitive Pending dependents.
+                        let mut stack = vec![idx];
+                        while let Some(i) = stack.pop() {
+                            for &d in graph.dependents_of(i) {
+                                if statuses[d] == NodeStatus::Pending {
+                                    statuses[d] = NodeStatus::DepFailed;
+                                    stack.push(d);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            ready = next_ready;
+        }
+
+        // Synthesize meta + JobResult for jobs the scheduler marked DepFailed
+        // (their closure was not invoked, so they would otherwise be invisible
         // to `daft hooks jobs`).
         for (idx, status) in statuses.iter().enumerate() {
             if *status != NodeStatus::DepFailed {

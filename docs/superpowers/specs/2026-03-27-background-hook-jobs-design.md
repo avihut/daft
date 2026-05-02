@@ -178,8 +178,20 @@ The runtime SHOULD share the foreground scheduler primitive (`DagGraph` in
 `src/executor/dag.rs`) so foreground and background share one source of truth
 for ordering, parallelism, and failure cascading. Coordinator-specific behavior
 (PID registration for `daft hooks jobs cancel`, log streaming to `output.log`,
-`meta.json` lifecycle, silent-mode log deletion) lives in the per-job closure
-passed to the scheduler — not in the scheduler itself.
+`meta.json` lifecycle, silent-mode log deletion) lives in the per-job thread
+body — not in the scheduler itself.
+
+**Constraint — `std::thread::scope` post-`fork()`:** The coordinator runs in a
+forked child (`libc::fork()` in `fork_coordinator`). On macOS, executing
+`std::thread::scope` after `fork()` can deadlock because the malloc arenas
+inherited from the parent are in an inconsistent state — the second
+`format!`/allocation inside a scoped worker can hang. Therefore the bg scheduler
+MUST NOT use `DagGraph::run_parallel` (which is built on `thread::scope`). The
+coordinator instead uses `DagGraph` only for graph queries (`new`, `len`,
+`dependencies_of`, `dependents_of`) and executes each wave with bare
+`std::thread::spawn`/`JoinHandle::join` — the same primitive the pre-fix
+coordinator used. The foreground runner is unaffected because it runs in the
+parent process, not post-fork.
 
 ### Status mapping for cascade decisions
 
