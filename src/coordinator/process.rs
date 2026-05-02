@@ -113,7 +113,9 @@ impl CoordinatorState {
                     hook_type: &hook_type,
                     worktree: &worktree,
                 };
-                run_single_background_job(
+                // TODO(daft#454, Task 4): plug this into DagGraph::run_parallel and
+                // propagate the NodeStatus instead of discarding it.
+                let _ = run_single_background_job(
                     &job,
                     &ctx,
                     &local_store,
