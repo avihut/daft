@@ -74,7 +74,7 @@ pub struct Args {
     #[arg(
         short = 'n',
         long = "no-checkout",
-        help = "Perform a bare clone only; do not create any worktree"
+        help = "Perform a bare clone only; do not create any worktree (requires a bare layout: contained or contained-flat)"
     )]
     no_checkout: bool,
 
@@ -183,6 +183,21 @@ fn validate_arg_combinations(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// Reject `--no-checkout` for layouts where the resolved `repo_path` is also
+/// the working tree. Without a separate bare directory, `-n` cannot leave an
+/// "empty bare" state — it would silently degrade to a non-bare clone with no
+/// working files, which is not what the user asked for.
+fn check_no_checkout_compat(no_checkout: bool, layout: &Layout) -> Result<()> {
+    if no_checkout && !layout.needs_bare() {
+        anyhow::bail!(
+            "--no-checkout requires a bare layout. The '{}' layout uses a non-bare repository.\n\
+             Pick one of the bare-using layouts: contained or contained-flat.",
+            layout.name
+        );
+    }
+    Ok(())
+}
+
 fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
     check_dependencies()?;
 
@@ -265,6 +280,14 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         global_config: &global_config,
         detection: None,
     });
+
+    if let Err(e) = check_no_checkout_compat(args.no_checkout, &layout) {
+        // The bare clone already landed on disk — remove it so a rejected
+        // clone leaves no orphan directory behind.
+        change_directory(&original_dir).ok();
+        remove_directory(&bare_result.parent_dir).ok();
+        return Err(e);
+    }
 
     // Report layout decision
     if layout.needs_bare() {
@@ -1410,4 +1433,72 @@ fn spawn_post_clone_refresh(
         tx.clone(),
     );
     handle.join();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::layout::BuiltinLayout;
+
+    #[test]
+    fn no_checkout_disabled_is_always_ok() {
+        for builtin in BuiltinLayout::all() {
+            let layout = builtin.to_layout();
+            assert!(check_no_checkout_compat(false, &layout).is_ok());
+        }
+    }
+
+    #[test]
+    fn no_checkout_accepts_bare_layouts() {
+        for builtin in [BuiltinLayout::Contained, BuiltinLayout::ContainedFlat] {
+            let layout = builtin.to_layout();
+            assert!(layout.needs_bare(), "{} should be bare", layout.name);
+            assert!(
+                check_no_checkout_compat(true, &layout).is_ok(),
+                "{} should accept --no-checkout",
+                layout.name
+            );
+        }
+    }
+
+    #[test]
+    fn no_checkout_rejects_non_bare_layouts() {
+        for builtin in [
+            BuiltinLayout::ContainedClassic,
+            BuiltinLayout::Sibling,
+            BuiltinLayout::Nested,
+            BuiltinLayout::Centralized,
+        ] {
+            let layout = builtin.to_layout();
+            assert!(!layout.needs_bare(), "{} should be non-bare", layout.name);
+            let err = check_no_checkout_compat(true, &layout)
+                .expect_err(&format!("{} should reject --no-checkout", layout.name));
+            let msg = err.to_string();
+            assert!(
+                msg.contains(&layout.name),
+                "error message should name the layout '{}', got: {msg}",
+                layout.name
+            );
+            assert!(
+                msg.contains("--no-checkout"),
+                "error message should mention --no-checkout, got: {msg}"
+            );
+            assert!(
+                msg.contains("contained") && msg.contains("contained-flat"),
+                "error message should suggest bare-using layouts, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_checkout_rejects_custom_non_bare_layout() {
+        let layout = Layout {
+            name: "my-custom".into(),
+            template: "{{ repo }}/{{ branch | sanitize }}".into(),
+            bare: None,
+        };
+        assert!(!layout.needs_bare());
+        let err = check_no_checkout_compat(true, &layout).unwrap_err();
+        assert!(err.to_string().contains("'my-custom'"));
+    }
 }
