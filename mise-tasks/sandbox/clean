@@ -3,8 +3,8 @@
 set -euo pipefail
 
 usage() {
-    cat <<EOF
-Usage: mise run sandbox:clean [--no-hooks]
+    cat <<'EOF'
+Usage: mise run sandbox:clean [--trust-hooks] [--force] [--no-hooks]
 
 Remove the sandbox for the current worktree.
 
@@ -12,27 +12,40 @@ By default, runs sandbox:clean-repos first so daft fires
 worktree-pre-remove and worktree-post-remove hooks for every test repo.
 Hooks let trusted repos tear down external state (docker containers,
 databases, direnv allow lists, background jobs) before the sandbox dir is
-wiped — bare \`rm -rf \$sandbox\` cannot. Hook failures are tolerated; the
-\`rm -rf\` runs regardless so a broken hook can never leave a sandbox
-behind.
+wiped — bare `rm -rf $sandbox` cannot.
+
+Halts before `rm -rf` if clean-repos detects a problem (untrusted hook-
+defining repo, or a hook failure). The sandbox is left in place for
+triage. Use the override flags below to proceed anyway.
 
 Options:
-  --no-hooks   Skip clean-repos and go straight to rm -rf. Use when
-               clean-repos itself is broken or the sandbox is already in
-               an unrecoverable state.
+  --trust-hooks   Pre-grant trust to any hook-defining repos that aren't
+                  trusted, so their cleanup hooks fire. Trust grants live
+                  in the per-worktree sandbox trust DB and disappear with
+                  the sandbox itself, so the security blast radius is
+                  exactly the duration of this command.
+  --force         Continue past clean-repos failures and wipe the sandbox
+                  regardless. External resources may leak.
+  --no-hooks      Skip clean-repos entirely. Use when clean-repos itself
+                  is broken or the sandbox is already in an unrecoverable
+                  state.
+  -h, --help      Show this help.
 EOF
 }
 
+trust_hooks=false
+force=false
 run_hooks=true
 for arg in "$@"; do
     case "$arg" in
-        --no-hooks) run_hooks=false ;;
-        -h|--help) usage; exit 0 ;;
-        *) echo "Unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+        --trust-hooks)  trust_hooks=true ;;
+        --force)        force=true ;;
+        --no-hooks)     run_hooks=false ;;
+        -h|--help)      usage; exit 0 ;;
+        *)              echo "Unknown argument: $arg" >&2; usage >&2; exit 2 ;;
     esac
 done
 
-# --- Compute deterministic sandbox path ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_lib.sh"
 
@@ -45,12 +58,27 @@ fi
 
 # --- Graceful per-repo cleanup so hooks fire ---
 if $run_hooks; then
+    clean_repos_args=()
+    $trust_hooks && clean_repos_args+=("--trust-hooks")
+    $force       && clean_repos_args+=("--force")
+
     echo "Running clean-repos so worktree-pre/post-remove hooks fire..."
-    if ! "${SCRIPT_DIR}/clean-repos"; then
-        # Don't bail — we'd rather wipe the sandbox than leave it in a half-cleaned
-        # state because of a broken hook. The user can re-run with --no-hooks if
-        # they hit this and want to silence the warning.
-        echo "  (clean-repos had failures — proceeding with rm -rf anyway)"
+    if ! "${SCRIPT_DIR}/clean-repos" "${clean_repos_args[@]}"; then
+        if $force; then
+            # User explicitly asked to wipe regardless. clean-repos already
+            # printed which repo(s) failed and why; we just acknowledge and
+            # proceed to the rm -rf below.
+            echo ""
+            echo "clean-repos had failures — wiping anyway because --force."
+        else
+            # clean-repos already explained why and printed override hints.
+            # Silently wiping after a halt would defeat the whole point of
+            # running clean-repos first.
+            echo ""
+            echo "clean-repos exited non-zero — sandbox NOT wiped. See message above."
+            echo "Re-run with --force to wipe anyway, or --no-hooks to skip clean-repos."
+            exit 1
+        fi
     fi
 fi
 
