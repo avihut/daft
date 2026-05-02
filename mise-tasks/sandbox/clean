@@ -1,6 +1,36 @@
 #!/usr/bin/env bash
-#MISE description="Remove the sandbox for this worktree"
+#MISE description="Remove the sandbox for this worktree (graceful — runs clean-repos first)"
 set -euo pipefail
+
+usage() {
+    cat <<EOF
+Usage: mise run sandbox:clean [--no-hooks]
+
+Remove the sandbox for the current worktree.
+
+By default, runs sandbox:clean-repos first so daft fires
+worktree-pre-remove and worktree-post-remove hooks for every test repo.
+Hooks let trusted repos tear down external state (docker containers,
+databases, direnv allow lists, background jobs) before the sandbox dir is
+wiped — bare \`rm -rf \$sandbox\` cannot. Hook failures are tolerated; the
+\`rm -rf\` runs regardless so a broken hook can never leave a sandbox
+behind.
+
+Options:
+  --no-hooks   Skip clean-repos and go straight to rm -rf. Use when
+               clean-repos itself is broken or the sandbox is already in
+               an unrecoverable state.
+EOF
+}
+
+run_hooks=true
+for arg in "$@"; do
+    case "$arg" in
+        --no-hooks) run_hooks=false ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+    esac
+done
 
 # --- Compute deterministic sandbox path ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,10 +38,22 @@ source "${SCRIPT_DIR}/_lib.sh"
 
 sandbox_dir="$(sandbox_dir)"
 
-# --- Remove if exists ---
-if [ -d "$sandbox_dir" ]; then
-    rm -rf "$sandbox_dir"
-    echo "Removed sandbox at ${sandbox_dir}"
-else
+if [ ! -d "$sandbox_dir" ]; then
     echo "No sandbox found for this worktree"
+    exit 0
 fi
+
+# --- Graceful per-repo cleanup so hooks fire ---
+if $run_hooks; then
+    echo "Running clean-repos so worktree-pre/post-remove hooks fire..."
+    if ! "${SCRIPT_DIR}/clean-repos"; then
+        # Don't bail — we'd rather wipe the sandbox than leave it in a half-cleaned
+        # state because of a broken hook. The user can re-run with --no-hooks if
+        # they hit this and want to silence the warning.
+        echo "  (clean-repos had failures — proceeding with rm -rf anyway)"
+    fi
+fi
+
+# --- Remove the sandbox dir ---
+rm -rf "$sandbox_dir"
+echo "Removed sandbox at ${sandbox_dir}"
