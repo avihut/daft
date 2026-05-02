@@ -1,6 +1,6 @@
 use super::{
-    emit_formats_for, extract_flags, get_command_for_name, uses_fetch_on_miss,
-    uses_rich_completions,
+    allows_path_completion, emit_formats_for, extract_flags, get_command_for_name,
+    uses_fetch_on_miss, uses_rich_completions,
 };
 use anyhow::{Context, Result};
 
@@ -251,6 +251,26 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
     } else {
         ""
     };
+    // Path-accepting commands (daft-remove, daft-rename) also offer directory
+    // completion. A path-like prefix (./, ../, /, ~/) skips the dynamic branch
+    // source entirely; otherwise directories are appended after the branch
+    // groups so a single Tab works in both inside-repo and outside-repo cases.
+    let path_pre = if allows_path_completion(command_name) {
+        r#"    case "$curword" in
+        /*|./*|../*|~/*|~)
+            _files -/
+            return
+            ;;
+    esac
+"#
+    } else {
+        ""
+    };
+    let path_post = if allows_path_completion(command_name) {
+        "    _files -/\n"
+    } else {
+        ""
+    };
 
     let mut output = format!(
         r#"#compdef {command_name}
@@ -267,7 +287,7 @@ __{func_name}_impl() {{
         return
     fi
 
-    local -a raw
+{path_pre}    local -a raw
     local -a wt_names wt_raw_names wt_ages wt_authors wt_paths
     local -a local_names local_ages local_authors
     local -a remote_names remote_ages remote_authors
@@ -357,7 +377,7 @@ __{func_name}_impl() {{
     (( ${{#wt_names}} ))     && compadd -V worktree -l -d wt_display -a wt_names
     (( ${{#local_names}} ))  && compadd -V local -l -d local_display -a local_names
     (( ${{#remote_names}} )) && compadd -V remote -l -d remote_display -a remote_names
-}}
+{path_post}}}
 
 _{func_name}() {{
     __{func_name}_impl

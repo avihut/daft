@@ -1,0 +1,39 @@
+name: Daft rename by path from outside any repository
+description:
+  daft-rename with an absolute worktree path works when cwd is outside any git
+  repository. Mirrors the daft-remove behaviour so completion-suggested paths
+  are usable from any cwd.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create a feature worktree
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/old-name
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/old-name"
+
+  - name: Rename worktree by absolute path from $WORK_DIR (outside the repo)
+    run:
+      daft-rename "$WORK_DIR/test-repo/feature/old-name" feature/new-name 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/new-name"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feature/old-name"
+
+  - name: Bare branch name from outside still errors
+    run: daft-rename feature/missing feature/whatever 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "Not inside a Git repository"

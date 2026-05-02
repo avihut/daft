@@ -1,6 +1,6 @@
 use super::{
-    emit_formats_for, get_command_for_name, get_flag_descriptions, uses_fetch_on_miss,
-    uses_rich_completions, VERB_ALIAS_GROUPS,
+    allows_path_completion, emit_formats_for, get_command_for_name, get_flag_descriptions,
+    uses_fetch_on_miss, uses_rich_completions, VERB_ALIAS_GROUPS,
 };
 use anyhow::{Context, Result};
 
@@ -271,6 +271,18 @@ fn generate_fish_rich_completion(command_name: &str) -> Result<String> {
             "complete -c git -n '__fish_seen_subcommand_from {git_subcommand}' -f -a \"(daft __complete {command_name} (commandline -ct) --position 1{fetch_flag} 2>/dev/null | awk -F'\\t' '{awk_body}')\"\n",
         ));
     }
+    // Path-accepting commands (daft-remove, daft-rename) also offer directory
+    // completion so worktrees can be removed by path inside or outside a repo.
+    if allows_path_completion(command_name) {
+        output.push_str(&format!(
+            "complete -c {command_name} -a \"(__fish_complete_directories (commandline -ct))\"\n",
+        ));
+        if is_git_command {
+            output.push_str(&format!(
+                "complete -c git -n '__fish_seen_subcommand_from {git_subcommand}' -a \"(__fish_complete_directories (commandline -ct))\"\n",
+            ));
+        }
+    }
     output.push('\n');
     output.push_str("# Static flag completions (extracted from clap)\n");
 
@@ -343,7 +355,9 @@ complete -c daft -n '__fish_seen_subcommand_from carry' -f -a "(daft __complete 
 complete -c daft -n '__fish_seen_subcommand_from exec' -f -a "(daft __complete git-worktree-exec (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
 complete -c daft -n '__fish_seen_subcommand_from update' -f -a "(daft __complete git-worktree-fetch (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
 complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
+complete -c daft -n '__fish_seen_subcommand_from remove' -a "(__fish_complete_directories (commandline -ct))"
 complete -c daft -n '__fish_seen_subcommand_from rename' -f -a "(daft __complete daft-rename (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
+complete -c daft -n '__fish_seen_subcommand_from rename' -a "(__fish_complete_directories (commandline -ct))"
 complete -c daft -n '__fish_seen_subcommand_from layout; and not __fish_seen_subcommand_from default list show transform' -f -a 'default list show transform'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from show' -F
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from transform' -f -a "(daft __complete layout-transform '' 2>/dev/null)"

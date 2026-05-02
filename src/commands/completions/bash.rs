@@ -1,6 +1,6 @@
 use super::{
-    emit_formats_for, extract_flags, get_command_for_name, uses_fetch_on_miss,
-    uses_rich_completions,
+    allows_path_completion, emit_formats_for, extract_flags, get_command_for_name,
+    uses_fetch_on_miss, uses_rich_completions,
 };
 use anyhow::{Context, Result};
 
@@ -163,6 +163,39 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     } else {
         ""
     };
+    // Path-accepting commands (daft-remove, daft-rename) also offer directory
+    // completion. When the user types a path-like prefix (./, ../, /, ~/) we
+    // skip the dynamic branch source entirely; otherwise paths are appended
+    // alongside any branch matches so both worlds work in one keystroke.
+    //
+    // Both branches use `mapfile -t` (bash 4+, already required by
+    // `_init_completion`) so directory names containing spaces/tabs/newlines
+    // arrive as a single COMPREPLY entry rather than being word-split on $IFS.
+    let path_pre = if allows_path_completion(command_name) {
+        r#"    case "$cur" in
+        /*|./*|../*|~/*|~)
+            mapfile -t COMPREPLY < <(compgen -d -- "$cur")
+            compopt -o filenames 2>/dev/null || true
+            return 0
+            ;;
+    esac
+"#
+    } else {
+        ""
+    };
+    let path_post = if allows_path_completion(command_name) {
+        r#"    local dirs
+    dirs=$(compgen -d -- "$cur")
+    if [[ -n "$dirs" ]]; then
+        while IFS=$'\n' read -r d; do
+            COMPREPLY+=("$d")
+        done <<< "$dirs"
+        compopt -o filenames 2>/dev/null || true
+    fi
+"#
+    } else {
+        ""
+    };
 
     let mut output = format!(
         r#"_{func_name}() {{
@@ -175,11 +208,13 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
         return 0
     fi
 
-    local raw
+{path_pre}    local raw
     raw=$(daft __complete {command_name} "$cur" --position "$cword"{fetch_flag} 2>/dev/null | cut -f1)
     if [[ -n "$raw" ]]; then
         COMPREPLY=( $(compgen -W "$raw" -- "$cur") )
         compopt -o nosort 2>/dev/null || true
+    fi
+{path_post}    if [[ ${{#COMPREPLY[@]}} -gt 0 ]]; then
         return 0
     fi
 }}

@@ -104,6 +104,16 @@ pub(super) fn uses_fetch_on_miss(command_name: &str) -> bool {
     matches!(command_name, "daft-go")
 }
 
+/// Whether a command accepts worktree paths as positional arguments and should
+/// fall back to filesystem directory completion when the dynamic source has
+/// nothing to offer (or as an additional candidate set). This keeps the
+/// "remove this worktree by path" UX usable both inside a repo (where the user
+/// might type `./` or `../`) and outside any repo (where the dynamic source
+/// can't return branches at all).
+pub(super) fn allows_path_completion(command_name: &str) -> bool {
+    matches!(command_name, "daft-remove" | "daft-rename")
+}
+
 /// Extract flag strings from a clap Command for shell completions
 /// Returns a tuple of (short_and_long_flags, short_flags, long_flags)
 pub(super) fn extract_flags(cmd: &Command) -> (Vec<String>, Vec<String>, Vec<String>) {
@@ -912,5 +922,111 @@ before adding flags (zsh flag-leak regression)"
             script.contains("release-notes|\"multi-remote status\"|\"hooks run\""),
             "bash umbrella must dispatch document/sectioned paths to 4-format list"
         );
+    }
+
+    // ── Path completions for daft-remove and daft-rename ─────────────────
+    //
+    // Both commands document that positional args may be branch names OR
+    // worktree paths. Without path completion in the stubs, Tab on `./` or
+    // an absolute prefix produces nothing — and outside a repo the dynamic
+    // source returns empty so Tab is dead. These tests pin the stubs that
+    // restore directory completion for both inside-repo and outside-repo use.
+
+    #[test]
+    fn bash_path_accepting_commands_offer_directory_completion() {
+        for cmd in ["daft-remove", "daft-rename"] {
+            let script = bash::generate_bash_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("bash generator must succeed for {cmd}: {e}"));
+            assert!(
+                script.contains("compgen -d"),
+                "{cmd} bash must offer directory completion via `compgen -d`"
+            );
+            assert!(
+                script.contains("/*|./*|../*|~/*|~"),
+                "{cmd} bash must short-circuit to dir completion when prefix is path-like"
+            );
+            // Both the path-prefix short-circuit and the post-branch fallback
+            // must avoid unquoted command substitution into COMPREPLY, which
+            // would word-split directory names on $IFS (e.g. `my worktree/`
+            // would produce two entries `my` and `worktree/`).
+            assert!(
+                script.contains("mapfile -t COMPREPLY < <(compgen -d"),
+                "{cmd} bash path-prefix branch must use `mapfile -t` to preserve \
+                 directory names with whitespace"
+            );
+            assert!(
+                !script.contains("COMPREPLY=( $(compgen -d"),
+                "{cmd} bash must NOT assign `COMPREPLY=( $(compgen -d ...) )` \
+                 directly — that word-splits dirs containing whitespace"
+            );
+        }
+    }
+
+    #[test]
+    fn zsh_path_accepting_commands_offer_directory_completion() {
+        for cmd in ["daft-remove", "daft-rename"] {
+            let script = zsh::generate_zsh_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("zsh generator must succeed for {cmd}: {e}"));
+            assert!(
+                script.contains("_files -/"),
+                "{cmd} zsh must offer directory completion via `_files -/`"
+            );
+            assert!(
+                script.contains("/*|./*|../*|~/*|~"),
+                "{cmd} zsh must short-circuit to dir completion when prefix is path-like"
+            );
+        }
+    }
+
+    #[test]
+    fn fish_path_accepting_commands_offer_directory_completion() {
+        for cmd in ["daft-remove", "daft-rename"] {
+            let script = fish::generate_fish_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("fish generator must succeed for {cmd}: {e}"));
+            assert!(
+                script.contains("__fish_complete_directories"),
+                "{cmd} fish must offer directory completion via __fish_complete_directories"
+            );
+        }
+    }
+
+    #[test]
+    fn fish_daft_umbrella_offers_directory_completion_for_remove_and_rename() {
+        let script = fish::generate_daft_fish_completions();
+        for verb in ["remove", "rename"] {
+            let needle =
+                format!("__fish_seen_subcommand_from {verb}' -a \"(__fish_complete_directories");
+            assert!(
+                script.contains(&needle),
+                "fish umbrella must offer dir completion for `daft {verb}`\n\
+                 expected to contain: {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_path_commands_do_not_offer_directory_completion() {
+        // Sanity: only the path-accepting commands enable filesystem
+        // completion; other rich commands stay branch-only.
+        for cmd in [
+            "git-worktree-checkout",
+            "git-worktree-carry",
+            "git-worktree-fetch",
+            "daft-go",
+            "git-worktree-exec",
+        ] {
+            let zsh = zsh::generate_zsh_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("zsh generator must succeed for {cmd}: {e}"));
+            assert!(
+                !zsh.contains("_files -/"),
+                "{cmd} zsh must NOT offer directory completion (branches only)"
+            );
+            let bash = bash::generate_bash_completion_string(cmd)
+                .unwrap_or_else(|e| panic!("bash generator must succeed for {cmd}: {e}"));
+            assert!(
+                !bash.contains("compgen -d"),
+                "{cmd} bash must NOT offer directory completion (branches only)"
+            );
+        }
     }
 }
