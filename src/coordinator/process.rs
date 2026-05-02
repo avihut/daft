@@ -122,6 +122,15 @@ impl CoordinatorState {
         let mut in_degree: Vec<usize> = (0..n).map(|i| graph.dependencies_of(i).len()).collect();
         let mut ready: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
 
+        // Each iteration of this loop is one wave: every ready node is spawned
+        // in parallel and the loop blocks until ALL of them finish before
+        // computing the next wave. This is intentionally less concurrent than
+        // a free-running scheduler — an independent fast chain can be held up
+        // behind a slow one in the same wave — but it is the simplest shape
+        // that is provably safe across `libc::fork()` on macOS without
+        // touching `std::thread::scope`. Do not "optimize" this into per-node
+        // free-running advancement without re-checking the post-fork
+        // constraint described above.
         while !ready.is_empty() {
             // Spawn one worker per ready node. Inputs are cloned per-spawn,
             // matching the pre-fix per-thread cloning pattern.
@@ -171,6 +180,12 @@ impl CoordinatorState {
             for (idx, status) in wave_outcomes {
                 statuses[idx] = status;
                 match status {
+                    // `Skipped` is treated like `Succeeded` for cascade
+                    // purposes — both unblock dependents. Today
+                    // `run_single_background_job` only ever returns
+                    // `Succeeded` or `Failed`, so the `Skipped` arm is
+                    // reserved for future closure variants (e.g. an `if:`
+                    // conditional skip path).
                     NodeStatus::Succeeded | NodeStatus::Skipped => {
                         for &dep_idx in graph.dependents_of(idx) {
                             if statuses[dep_idx] == NodeStatus::Pending {
@@ -285,6 +300,11 @@ fn run_single_background_job(
             stdout: String::new(),
             stderr: "Cancelled before start".to_string(),
         });
+        // Note the deliberate split: the in-memory `JobResult.status` is
+        // `Skipped` (the user cancelled), but the value returned to the
+        // wave scheduler is `Failed` so dependents cascade to `DepFailed`.
+        // Same rationale as the final-return mapping at the bottom of this
+        // function — the dependency did not produce its work product.
         return NodeStatus::Failed;
     }
 
@@ -1481,6 +1501,10 @@ mod tests {
     fn bg_dependent_skipped_when_dep_fails() {
         let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
 
+        // Use a marker path scoped to this test's TempDir so parallel test
+        // runs cannot race on a global `/tmp` path.
+        let marker = _tmp.path().join("dep-failed-side-effect");
+
         let mut state = CoordinatorState::new("test-repo", "inv-needs-fail-1").with_metadata(
             "worktree-post-create",
             "worktree-post-create",
@@ -1496,15 +1520,12 @@ mod tests {
         });
         state.add_job(JobSpec {
             name: "dependent".to_string(),
-            command: "touch /tmp/should-never-exist-bg-needs-fail".to_string(),
+            command: format!("touch {}", marker.display()),
             working_dir: std::env::temp_dir(),
             background: true,
             needs: vec!["fails".to_string()],
             ..Default::default()
         });
-
-        // Make sure the marker file isn't lying around from a prior run.
-        let _ = std::fs::remove_file("/tmp/should-never-exist-bg-needs-fail");
 
         state
             .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)
@@ -1531,7 +1552,7 @@ mod tests {
         );
         assert_eq!(meta_dependent.needs, vec!["fails".to_string()]);
         assert!(
-            !std::path::Path::new("/tmp/should-never-exist-bg-needs-fail").exists(),
+            !marker.exists(),
             "dependent ran its command despite dep failing"
         );
     }
@@ -1539,6 +1560,10 @@ mod tests {
     #[test]
     fn bg_dependent_skipped_when_dep_cancelled() {
         let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+
+        // Marker path is scoped to this test's TempDir to avoid races with
+        // parallel test runs.
+        let marker = _tmp.path().join("dep-cancelled-side-effect");
 
         let mut state = CoordinatorState::new("test-repo", "inv-needs-cancel-1").with_metadata(
             "worktree-post-create",
@@ -1556,14 +1581,12 @@ mod tests {
         });
         state.add_job(JobSpec {
             name: "after".to_string(),
-            command: "touch /tmp/should-never-exist-bg-needs-cancel".to_string(),
+            command: format!("touch {}", marker.display()),
             working_dir: std::env::temp_dir(),
             background: true,
             needs: vec!["long".to_string()],
             ..Default::default()
         });
-
-        let _ = std::fs::remove_file("/tmp/should-never-exist-bg-needs-cancel");
 
         let pids = Arc::clone(&child_pids);
         let cancelled = Arc::clone(&cancelled_jobs);
@@ -1602,7 +1625,7 @@ mod tests {
         );
         assert_eq!(meta_after.needs, vec!["long".to_string()]);
         assert!(
-            !std::path::Path::new("/tmp/should-never-exist-bg-needs-cancel").exists(),
+            !marker.exists(),
             "after ran its command despite dep being cancelled"
         );
     }
