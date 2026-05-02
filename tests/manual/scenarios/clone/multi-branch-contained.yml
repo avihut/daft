@@ -18,6 +18,11 @@ steps:
         - "$WORK_DIR/test-repo/.git"
         - "$WORK_DIR/test-repo/develop"
         - "$WORK_DIR/test-repo/feature/test-feature"
+      # Regression for #451: only the explicitly requested branches should
+      # get worktrees. The default branch (`main`) was previously created
+      # for free.
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main"
       is_git_worktree:
         - dir: "$WORK_DIR/test-repo/develop"
           branch: develop
