@@ -4,8 +4,7 @@ use crate::{
     get_git_common_dir,
     git::should_show_gitoxide_notice,
     hooks::{
-        get_remote_url_for_git_dir, HookContext, HookExecutor, HookType, HooksConfig,
-        TrustDatabase, TrustLevel,
+        get_remote_url_for_git_dir, HookContext, HookExecutor, HookType, TrustDatabase, TrustLevel,
     },
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -152,7 +151,7 @@ fn run_adopt(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     if !params.dry_run {
         output.start_spinner("Converting to worktree layout...");
     }
-    let hooks_config = HooksConfig::default();
+    let hooks_config = crate::core::settings::load_hooks_config()?;
     let executor = HookExecutor::new(hooks_config)?;
     let exec_result = {
         let mut bridge = CommandBridge::new(output, executor);
@@ -205,7 +204,7 @@ fn run_post_adopt_hook(
         return Ok(());
     }
 
-    let hooks_config = HooksConfig::default();
+    let hooks_config = crate::core::settings::load_hooks_config()?;
     let mut executor = HookExecutor::new(hooks_config)?;
 
     if args.trust_hooks {

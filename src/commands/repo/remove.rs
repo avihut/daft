@@ -87,16 +87,7 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     // Honor user-configured hook settings (timeout, output verbosity,
     // per-hook trust defaults). Loading from global mirrors the
     // `load_global()` call above — same rationale, same failure-mode
-    // tolerance for cwd-outside-any-repo invocations. Without this, long-
-    // running cleanup hooks (e.g. docker teardown, db dump) silently time
-    // out at the 300s default even when the user configured a larger
-    // budget. See finding #1 in <PR #448 review> for context.
-    //
-    // The codebase-wide pattern is `HooksConfig::default()` for nearly
-    // every command (clone, sync, flow_eject, worktree_branch, ...) —
-    // this site is intentionally inconsistent because the user-visible
-    // impact is sharpest here (long docker-teardown hooks). Tracking
-    // codebase-wide propagation in #456.
+    // tolerance for cwd-outside-any-repo invocations.
     let hooks_config = crate::core::settings::load_hooks_config_global()?;
 
     let target = resolve_repo(args.path.as_deref(), use_gitoxide)?;

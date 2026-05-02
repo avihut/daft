@@ -1,0 +1,62 @@
+name: daft.hooks.enabled=false in git config disables hook execution
+description: >
+  Regression test for #456 — every hook-firing command used to construct a
+  `HooksConfig::default()` (enabled=true) instead of calling the loader, so
+  `daft.hooks.enabled=false` in user git config was silently ignored. With the
+  loader wired up, setting that key locally must skip hook execution. We
+  exercise the checkout path (worktree_branch.rs) as a representative site —
+  same loader call shape as every other command this PR touches.
+
+repos:
+  - name: test-hooks-config-disabled
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Hook config test"
+        commits:
+          - message: "Initial commit"
+      - name: feature/skipped-hook
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: marker
+              run: |
+                touch "$DAFT_WORKTREE_PATH/.hook-fired"
+
+steps:
+  - name: Clone the repository
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_HOOKS_CONFIG_DISABLED
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-hooks-config-disabled/main/daft.yml"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-hooks-config-disabled/main"
+    expect:
+      exit_code: 0
+
+  - name: Set daft.hooks.enabled=false in repo-local config
+    run: git config --local daft.hooks.enabled false
+    cwd: "$WORK_DIR/test-hooks-config-disabled/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch — hooks must be skipped per config
+    run: git-worktree-checkout feature/skipped-hook 2>&1
+    cwd: "$WORK_DIR/test-hooks-config-disabled/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-hooks-config-disabled/feature/skipped-hook"
+      # The marker file would exist if `daft.hooks.enabled=false` was
+      # ignored (the pre-fix behavior). Its absence proves the loader
+      # wired the user-set value through to the executor.
+      files_not_exist:
+        - "$WORK_DIR/test-hooks-config-disabled/feature/skipped-hook/.hook-fired"
