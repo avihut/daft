@@ -11,6 +11,11 @@ if [ ! -d "$sandbox_dir" ]; then
     exit 0
 fi
 
+# Without this, `daft repo remove` would operate against the project-level
+# trust DB exported by mise via `shared-env.sh`, leaving stale `repos.json`
+# entries in the sandbox we're trying to clean. See _lib.sh for details.
+sandbox_use_isolated_daft_env
+
 # Find every .git (file or directory), filtered out of the known non-repo
 # subtrees (bin/, config/, data/, state/). Resolve each to its repo root
 # (the parent of .git), dedup, then run `daft repo remove --force` per repo.
