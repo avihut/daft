@@ -1,0 +1,86 @@
+name: Background bg→bg ordering honors needs
+description:
+  "Two background jobs where the second `needs:` the first. The second job's
+  meta.json must record started_at >= the first's finished_at — i.e., the
+  coordinator must not race them. Regression test for daft#454."
+
+repos:
+  - name: test-bg-needs
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# bg needs ordering"
+        commits:
+          - message: "Initial commit"
+      - name: feature/bg-needs
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: dep-a
+              background: true
+              run: |
+                sleep 0.5
+                python3 -c 'import time; print(time.time_ns())' > "$DAFT_WORKTREE_PATH/.a-finished-ns"
+            - name: dep-b
+              background: true
+              needs: [dep-a]
+              run: |
+                python3 -c 'import time; print(time.time_ns())' > "$DAFT_WORKTREE_PATH/.b-started-ns"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_BG_NEEDS
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-bg-needs/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-bg-needs/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch (triggers worktree-post-create hooks)
+    run: git-worktree-checkout feature/bg-needs 2>&1
+    cwd: "$WORK_DIR/test-bg-needs/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-bg-needs/feature/bg-needs"
+
+  - name: Wait for both background jobs to finish (poll for B's marker)
+    run: |
+      for i in $(seq 1 40); do
+        if [ -f "$WORK_DIR/test-bg-needs/feature/bg-needs/.b-started-ns" ]; then
+          echo "BOTH_MARKERS_PRESENT"
+          exit 0
+        fi
+        sleep 0.5
+      done
+      echo "BG_NEEDS_TIMEOUT"
+      exit 1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "BOTH_MARKERS_PRESENT"
+
+  - name: Assert dep-b started AFTER dep-a finished
+    run: |
+      A_FINISHED=$(cat "$WORK_DIR/test-bg-needs/feature/bg-needs/.a-finished-ns")
+      B_STARTED=$(cat "$WORK_DIR/test-bg-needs/feature/bg-needs/.b-started-ns")
+      echo "a_finished_ns=$A_FINISHED"
+      echo "b_started_ns=$B_STARTED"
+      if [ "$B_STARTED" -lt "$A_FINISHED" ]; then
+        echo "ORDERING_VIOLATION: dep-b started before dep-a finished"
+        exit 1
+      fi
+      echo "ORDERING_OK"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "ORDERING_OK"
