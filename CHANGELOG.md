@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.11.0](https://github.com/avihut/daft/compare/v1.10.3...v1.11.0) - 2026-05-02
+
+### Features
+
+- add `daft repo remove` and `daft repo` subcommand category ([#448](https://github.com/avihut/daft/pull/448))
+
 ## [1.10.3](https://github.com/avihut/daft/compare/v1.10.2...v1.10.3) - 2026-05-02
 
 ### Bug Fixes
