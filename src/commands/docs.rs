@@ -11,8 +11,7 @@ use std::path::Path;
 use crate::commands::{
     carry, checkout, clone, config, doctor, exec, fetch, flow_adopt, flow_eject, hooks, init,
     layout, list, merge, multi_remote, prune, release_notes, repo, shared, shell_init, shortcuts,
-    sync,
-    worktree_branch,
+    sync, worktree_branch,
 };
 use crate::styles;
 

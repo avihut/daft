@@ -591,7 +591,6 @@ or fast-forward advance, depending on the fixture's topology).
 
 - [ ] **Step 3: If it fails**, read the output carefully. Most likely failure
       modes are:
-
   - Fixture branch name differs — adjust `feature/test-feature`.
   - CWD directory naming — `$WORK_DIR/test-repo/main` differs in this fixture;
     inspect `tests/manual/scenarios/list/basic.yml` for the conventional path

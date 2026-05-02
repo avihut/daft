@@ -347,7 +347,6 @@ git commit -m "feat(merge): always commit on --squash unless --no-commit"
   Run: `grep -l "Merge complete\." tests/manual/scenarios/merge/*.yml`
 
   For each, decide whether the new line is one of:
-
   - `Merge complete.` (true merge with merge commit) — keep
   - `Fast-forwarded <target> to <sha>.` — already exists in pure-FF path; verify
   - `Squash merged <source> into <target> as <sha>.` — new for squash
