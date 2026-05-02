@@ -501,6 +501,12 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             output.cd_path(cd_target);
         }
         maybe_show_shell_hint(output)?;
+    } else if result.no_checkout {
+        // No worktree exists for --no-checkout, but the user still ran a
+        // clone — drop them into the project root (the directory holding
+        // the bare .git) so they can immediately operate on the new repo.
+        output.cd_path(&result.parent_dir);
+        maybe_show_shell_hint(output)?;
     }
 
     Ok(())
