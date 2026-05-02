@@ -1,0 +1,85 @@
+name: Clone rejects --no-checkout for non-bare layouts
+description:
+  --no-checkout requires a layout that uses a bare repository. Non-bare layouts
+  (sibling, nested, centralized, contained-classic) must be rejected so the user
+  does not end up with an empty working tree they did not ask for.
+
+repos:
+  - name: test-repo-no-co-sibling
+    use_fixture: standard-remote
+  - name: test-repo-no-co-nested
+    use_fixture: standard-remote
+  - name: test-repo-no-co-centralized
+    use_fixture: standard-remote
+  - name: test-repo-no-co-classic
+    use_fixture: standard-remote
+
+steps:
+  - name: Reject --no-checkout with sibling layout
+    run:
+      git-worktree-clone --no-checkout --layout sibling
+      $REMOTE_TEST_REPO_NO_CO_SIBLING 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "--no-checkout requires a bare layout"
+        - "'sibling'"
+        - "contained or contained-flat"
+
+  - name: Verify no orphan directory left after sibling rejection
+    run: "test ! -e $WORK_DIR/test-repo-no-co-sibling && echo CLEAN"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "CLEAN"
+
+  - name: Reject --no-checkout with nested layout
+    run:
+      git-worktree-clone --no-checkout --layout nested
+      $REMOTE_TEST_REPO_NO_CO_NESTED 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "--no-checkout requires a bare layout"
+        - "'nested'"
+
+  - name: Verify no orphan directory left after nested rejection
+    run: "test ! -e $WORK_DIR/test-repo-no-co-nested && echo CLEAN"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "CLEAN"
+
+  - name: Reject --no-checkout with centralized layout
+    run:
+      git-worktree-clone --no-checkout --layout centralized
+      $REMOTE_TEST_REPO_NO_CO_CENTRALIZED 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "--no-checkout requires a bare layout"
+        - "'centralized'"
+
+  - name: Verify no orphan directory left after centralized rejection
+    run: "test ! -e $WORK_DIR/test-repo-no-co-centralized && echo CLEAN"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "CLEAN"
+
+  - name: Reject --no-checkout with contained-classic layout
+    run:
+      git-worktree-clone --no-checkout --layout contained-classic
+      $REMOTE_TEST_REPO_NO_CO_CLASSIC 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "--no-checkout requires a bare layout"
+        - "'contained-classic'"
+
+  - name: Verify no orphan directory left after contained-classic rejection
+    run: "test ! -e $WORK_DIR/test-repo-no-co-classic && echo CLEAN"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "CLEAN"

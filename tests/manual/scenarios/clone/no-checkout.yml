@@ -6,6 +6,8 @@ description:
 repos:
   - name: test-repo-no-checkout
     use_fixture: standard-remote
+  - name: test-repo-no-checkout-cd
+    use_fixture: standard-remote
 
 steps:
   - name: "Clone with --no-checkout flag"
@@ -22,3 +24,15 @@ steps:
     run: "test ! -d test-repo-no-checkout/main"
     expect:
       exit_code: 0
+
+  - name: "Cd to project root for --no-checkout success"
+    run: |
+      cd_file=$(mktemp)
+      DAFT_CD_FILE="$cd_file" git-worktree-clone --no-checkout --layout contained $REMOTE_TEST_REPO_NO_CHECKOUT_CD 2>&1
+      cat "$cd_file" > $WORK_DIR/cd_target.txt
+      rm -f "$cd_file"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/cd_target.txt"
+          content: "test-repo-no-checkout-cd"

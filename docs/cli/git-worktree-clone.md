@@ -44,7 +44,7 @@ git worktree-clone [OPTIONS] <REPOSITORY_URL>
 | Option | Description | Default |
 |--------|-------------|----------|
 | `-b, --branch <BRANCH>` | Branch to check out (repeatable; use HEAD or @ for default branch) |  |
-| `-n, --no-checkout` | Perform a bare clone only; do not create any worktree |  |
+| `-n, --no-checkout` | Perform a bare clone only; do not create any worktree (requires a bare layout: contained or contained-flat) |  |
 | `-q, --quiet` | Operate quietly; suppress progress reporting |  |
 | `-v, --verbose` | Increase verbosity (-v for hook details, -vv for full sequential output) |  |
 | `-a, --all-branches` | Create a worktree for each remote branch, not just the default |  |
