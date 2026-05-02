@@ -1,0 +1,29 @@
+name: Clone with multiple -b flags where all branches are missing
+description: Regression for #451 when every -b branch is absent from the remote.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with two missing branches
+    run:
+      git-worktree-clone --layout contained -b nope-one -b nope-two
+      $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Branch 'nope-one' not found on remote"
+        - "Branch 'nope-two' not found on remote"
+      dirs_exist:
+        - "$WORK_DIR/test-repo"
+        - "$WORK_DIR/test-repo/.git"
+      # Regression for #451: the load-bearing assertion is that
+      # `$WORK_DIR/test-repo/main` does NOT exist - before the fix, Phase 4
+      # would still create a default-branch worktree even though every
+      # requested -b branch was missing. The nope-* paths are belt-and-
+      # suspenders to verify nothing else slipped through.
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main"
+        - "$WORK_DIR/test-repo/nope-one"
+        - "$WORK_DIR/test-repo/nope-two"

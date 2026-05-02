@@ -17,6 +17,10 @@ steps:
         - "not found on remote"
       dirs_exist:
         - "$WORK_DIR/test-repo/develop"
+      # Regression for #451: the default branch must NOT get an unwanted
+      # worktree when at least one requested -b branch is missing.
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main"
       is_git_worktree:
         - dir: "$WORK_DIR/test-repo/develop"
           branch: develop

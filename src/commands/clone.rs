@@ -295,11 +295,25 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     // satellites to create beyond what Phase 4 handles).
     let is_multi_branch = matches!(branch_source, BranchSource::Multiple(_));
 
-    // For multi-branch, override bare_result's target_branch to the base branch
-    // so that Phase 4 creates the correct base worktree.
+    // For multi-branch, override bare_result's target_branch so that Phase 4
+    // creates the correct worktree. For non-bare layouts, this is the base
+    // branch (`branch_plan.base`). For bare layouts, `branch_plan.base` is
+    // None — Phase 4 must instead target the first valid requested branch
+    // (`branch_plan.cd_target`), or skip worktree creation entirely when no
+    // requested branch was found on the remote. Without this, Phase 4 keeps
+    // the default-branch target set by `detect_branches` and creates an
+    // unwanted worktree for the default branch (#451).
     let mut bare_result = bare_result;
     if is_multi_branch {
-        if let Some(ref base) = branch_plan.base {
+        if layout.needs_bare() {
+            if let Some(ref first_valid) = branch_plan.cd_target {
+                bare_result.target_branch = first_valid.clone();
+                bare_result.branch_exists = true;
+            } else if let Some(first_missing) = branch_plan.not_found.first() {
+                bare_result.target_branch = first_missing.clone();
+                bare_result.branch_exists = false;
+            }
+        } else if let Some(ref base) = branch_plan.base {
             bare_result.target_branch = base.clone();
             bare_result.branch_exists = remote_branches.contains(base);
         }
