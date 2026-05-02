@@ -4,41 +4,44 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: mise run sandbox:clean-repos [--trust-hooks] [--force]
+Usage: mise run sandbox:clean-repos [--no-trust-hooks] [--force]
 
 Run `daft repo remove --force` on every git repo found under the per-worktree
 dev sandbox. Each invocation fires the repo's worktree-pre-remove and
 worktree-post-remove hooks (when trusted), then deletes the worktree(s) and
 bare git directory.
 
-Pre-flight: scans for hook-defining repos that aren't trusted. External
-state these hooks would have torn down (docker containers, volumes, DBs,
-direnv allow lists, etc.) leaks if you wipe without firing them. Default
-behavior is to halt with a list and instructions.
+By default, hook-defining repos that aren't trusted in the sandbox's trust
+DB get an ephemeral trust grant before cleanup runs, so their teardown
+hooks always fire. The sandbox is 100% user-placed by construction and
+the trust DB lives inside the sandbox (wiped at end), so the security
+blast radius is the duration of this command.
 
 Halts on the first `daft repo remove` failure (which surfaces e.g. a
 worktree-pre-remove hook in fail_mode: abort whose teardown failed).
 
 Options:
-  --trust-hooks   Pre-grant trust to any hook-defining repos that aren't
-                  trusted, so their cleanup hooks fire. Trust grants land
-                  in the per-worktree sandbox trust DB and disappear with
-                  the sandbox itself.
-  --force         Continue past untrusted-hook warnings AND past `daft repo
-                  remove` failures. Maximally tolerant; meant for the case
-                  where you've decided you don't care about leaks.
-  -h, --help      Show this help.
+  --no-trust-hooks  Disable the auto-trust default. Halt instead if any
+                    hook-defining repo isn't already trusted. Use when you
+                    want to be sure no hook from an unfamiliar repo gets
+                    to run during cleanup.
+  --force           Continue past `daft repo remove` failures. Meant for
+                    the case where you've decided you don't care about
+                    leaks; otherwise let the halt happen and triage.
+  --trust-hooks     Accepted for muscle-memory; this is now the default.
+  -h, --help        Show this help.
 EOF
 }
 
-trust_hooks=false
+trust_hooks=true
 force=false
 for arg in "$@"; do
     case "$arg" in
-        --trust-hooks)  trust_hooks=true ;;
-        --force)        force=true ;;
-        -h|--help)      usage; exit 0 ;;
-        *)              echo "Unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+        --no-trust-hooks) trust_hooks=false ;;
+        --trust-hooks)    trust_hooks=true ;;
+        --force)          force=true ;;
+        -h|--help)        usage; exit 0 ;;
+        *)                echo "Unknown argument: $arg" >&2; usage >&2; exit 2 ;;
     esac
 done
 
@@ -136,7 +139,7 @@ done
 # Trust DB is the sandbox's, which gets wiped at the end of `clean`, so the
 # grant is ephemeral by construction.
 if $trust_hooks && [ ${#untrusted_hooked[@]} -gt 0 ]; then
-    echo "Granting trust to ${#untrusted_hooked[@]} hook-defining repo(s) (--trust-hooks):"
+    echo "Granting ephemeral trust to ${#untrusted_hooked[@]} hook-defining repo(s) so cleanup hooks fire:"
     for repo in "${untrusted_hooked[@]}"; do
         echo "  trust $repo"
         # Best-effort: daft hooks trust requires cwd in the worktree, but
@@ -159,8 +162,8 @@ if [ ${#untrusted_hooked[@]} -gt 0 ] && ! $force; then
     echo "volumes, databases, direnv allow entries, etc.) WILL leak if you wipe now."
     echo ""
     echo "Re-run with one of:"
-    echo "  --trust-hooks   Grant temporary trust and let the cleanup hooks fire."
-    echo "  --force         Wipe anyway (accept the leak)."
+    echo "  (no flag)       Auto-trust the hook-defining repos and let cleanup hooks fire (default)."
+    echo "  --force         Wipe anyway, leaking external resources."
     exit 1
 fi
 

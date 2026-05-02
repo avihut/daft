@@ -4,45 +4,51 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: mise run sandbox:clean [--trust-hooks] [--force] [--no-hooks]
+Usage: mise run sandbox:clean [--no-trust-hooks] [--force] [--no-hooks]
 
 Remove the sandbox for the current worktree.
 
 By default, runs sandbox:clean-repos first so daft fires
 worktree-pre-remove and worktree-post-remove hooks for every test repo.
-Hooks let trusted repos tear down external state (docker containers,
-databases, direnv allow lists, background jobs) before the sandbox dir is
-wiped — bare `rm -rf $sandbox` cannot.
+Hooks let repos tear down external state (docker containers, databases,
+direnv allow lists, background jobs) before the sandbox dir is wiped —
+bare `rm -rf $sandbox` cannot.
 
-Halts before `rm -rf` if clean-repos detects a problem (untrusted hook-
-defining repo, or a hook failure). The sandbox is left in place for
-triage. Use the override flags below to proceed anyway.
+Hook-defining repos that aren't already trusted get an ephemeral trust
+grant inside the sandbox's trust DB so their cleanup hooks fire. The
+trust DB is wiped along with the sandbox, so the grant lasts only for
+the duration of this command. The sandbox is 100% user-placed by
+construction so there's no real attack surface to protect against here.
+
+Halts before `rm -rf` if clean-repos detects a hook failure. The sandbox
+is left in place for triage. Use --force to wipe anyway.
 
 Options:
-  --trust-hooks   Pre-grant trust to any hook-defining repos that aren't
-                  trusted, so their cleanup hooks fire. Trust grants live
-                  in the per-worktree sandbox trust DB and disappear with
-                  the sandbox itself, so the security blast radius is
-                  exactly the duration of this command.
-  --force         Continue past clean-repos failures and wipe the sandbox
-                  regardless. External resources may leak.
-  --no-hooks      Skip clean-repos entirely. Use when clean-repos itself
-                  is broken or the sandbox is already in an unrecoverable
-                  state.
-  -h, --help      Show this help.
+  --no-trust-hooks  Disable the auto-trust default. Halt if any hook-
+                    defining repo isn't already trusted. Use when you
+                    want to be sure no hook from an unfamiliar repo runs
+                    during cleanup.
+  --force           Continue past clean-repos failures and wipe the
+                    sandbox regardless. External resources may leak.
+  --no-hooks        Skip clean-repos entirely. Use when clean-repos
+                    itself is broken or the sandbox is already in an
+                    unrecoverable state.
+  --trust-hooks     Accepted for muscle-memory; this is now the default.
+  -h, --help        Show this help.
 EOF
 }
 
-trust_hooks=false
+trust_hooks=true
 force=false
 run_hooks=true
 for arg in "$@"; do
     case "$arg" in
-        --trust-hooks)  trust_hooks=true ;;
-        --force)        force=true ;;
-        --no-hooks)     run_hooks=false ;;
-        -h|--help)      usage; exit 0 ;;
-        *)              echo "Unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+        --no-trust-hooks) trust_hooks=false ;;
+        --trust-hooks)    trust_hooks=true ;;
+        --force)          force=true ;;
+        --no-hooks)       run_hooks=false ;;
+        -h|--help)        usage; exit 0 ;;
+        *)                echo "Unknown argument: $arg" >&2; usage >&2; exit 2 ;;
     esac
 done
 
@@ -58,8 +64,10 @@ fi
 
 # --- Graceful per-repo cleanup so hooks fire ---
 if $run_hooks; then
+    # Trust default flipped: clean-repos auto-trusts. Forward only the
+    # opt-out so the inner script's flag matches our flag.
     clean_repos_args=()
-    $trust_hooks && clean_repos_args+=("--trust-hooks")
+    $trust_hooks || clean_repos_args+=("--no-trust-hooks")
     $force       && clean_repos_args+=("--force")
 
     echo "Running clean-repos so worktree-pre/post-remove hooks fire..."
