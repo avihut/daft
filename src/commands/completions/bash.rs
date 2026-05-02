@@ -167,10 +167,14 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     // completion. When the user types a path-like prefix (./, ../, /, ~/) we
     // skip the dynamic branch source entirely; otherwise paths are appended
     // alongside any branch matches so both worlds work in one keystroke.
+    //
+    // Both branches use `mapfile -t` (bash 4+, already required by
+    // `_init_completion`) so directory names containing spaces/tabs/newlines
+    // arrive as a single COMPREPLY entry rather than being word-split on $IFS.
     let path_pre = if allows_path_completion(command_name) {
         r#"    case "$cur" in
         /*|./*|../*|~/*|~)
-            COMPREPLY=( $(compgen -d -- "$cur") )
+            mapfile -t COMPREPLY < <(compgen -d -- "$cur")
             compopt -o filenames 2>/dev/null || true
             return 0
             ;;

@@ -205,7 +205,7 @@ pub fn run_remove() -> Result<()> {
     // chdir-ing to its project root. All path arguments are canonicalized first
     // so the subsequent chdir doesn't break their resolution.
     if !is_git_repository()? {
-        prepare_out_of_repo_remove(&mut remove_args.branches)?;
+        prepare_out_of_repo_paths(&mut remove_args.branches, "daft remove")?;
     }
 
     let settings = DaftSettings::load()?;
@@ -223,14 +223,19 @@ pub fn run_remove() -> Result<()> {
     )
 }
 
-/// Prepare `daft remove` to run when the user's current directory is not inside
-/// any git repository. Resolves path arguments to absolute canonical paths,
-/// discovers the owning repository from the first one, ensures all paths share
-/// the same repository, and `chdir`s into the project root so the cwd-based
-/// branch_delete pipeline can take over unchanged.
-fn prepare_out_of_repo_remove(args: &mut Vec<String>) -> Result<()> {
-    // clap enforces `required = true` on `branches`, so an empty `args` here
-    // would have already been rejected before this function runs.
+/// Prepare a path-accepting daft command (currently `daft remove` and `daft
+/// rename`) to run when the user's current directory is not inside any git
+/// repository. Resolves path arguments to absolute canonical paths, discovers
+/// the owning repository from the first one, ensures all paths share the same
+/// repository, and `chdir`s into the project root so the cwd-based pipeline
+/// can take over unchanged.
+///
+/// `command_name` is used only in user-facing error messages (e.g. "Run
+/// `daft remove` inside a repository"); the resolution logic is identical
+/// across commands.
+fn prepare_out_of_repo_paths(args: &mut Vec<String>, command_name: &str) -> Result<()> {
+    // clap enforces `required = true` on the positional args of every caller,
+    // so an empty `args` here would have already been rejected.
     let cwd = std::env::current_dir()
         .map_err(|e| anyhow::anyhow!("failed to read current working directory: {e}"))?;
     let mut absolute_paths: Vec<std::path::PathBuf> = Vec::with_capacity(args.len());
@@ -244,8 +249,9 @@ fn prepare_out_of_repo_remove(args: &mut Vec<String>) -> Result<()> {
         let canonical = std::fs::canonicalize(&candidate).map_err(|_| {
             anyhow::anyhow!(
                 "Not inside a Git repository, and '{}' is not an existing path. \
-                 Run `daft remove` inside a repository, or pass an existing worktree path.",
-                arg
+                 Run `{}` inside a repository, or pass an existing worktree path.",
+                arg,
+                command_name
             )
         })?;
         absolute_paths.push(canonical);
@@ -256,8 +262,9 @@ fn prepare_out_of_repo_remove(args: &mut Vec<String>) -> Result<()> {
         let repo = gix::discover(path).map_err(|_| {
             anyhow::anyhow!(
                 "'{}' is not inside a Git repository. \
-                 Run `daft remove` inside a repository, or pass a worktree path.",
-                original
+                 Run `{}` inside a repository, or pass a worktree path.",
+                original,
+                command_name
             )
         })?;
         let canonical_common = std::fs::canonicalize(repo.common_dir())
@@ -335,12 +342,22 @@ pub struct RenameArgs {
 pub fn run_rename() -> Result<()> {
     let mut raw = crate::get_clap_args("daft-rename");
     raw[0] = "daft rename".to_string();
-    let rename_args = RenameArgs::parse_from(raw);
+    let mut rename_args = RenameArgs::parse_from(raw);
 
     init_logging(rename_args.verbose);
 
+    // When invoked outside a git repository, allow renaming a worktree by
+    // path: discover the owning repo from the source argument and chdir into
+    // its project root so the cwd-based rename pipeline runs unchanged. Only
+    // the `source` arg is treated as a path; `new_branch` is always a branch
+    // name, never a path.
     if !is_git_repository()? {
-        anyhow::bail!("Not inside a Git repository");
+        let mut source_arg = vec![rename_args.source.clone()];
+        prepare_out_of_repo_paths(&mut source_arg, "daft rename")?;
+        rename_args.source = source_arg
+            .into_iter()
+            .next()
+            .expect("one arg in, one arg out");
     }
 
     let settings = DaftSettings::load()?;

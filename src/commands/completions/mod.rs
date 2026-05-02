@@ -945,6 +945,20 @@ before adding flags (zsh flag-leak regression)"
                 script.contains("/*|./*|../*|~/*|~"),
                 "{cmd} bash must short-circuit to dir completion when prefix is path-like"
             );
+            // Both the path-prefix short-circuit and the post-branch fallback
+            // must avoid unquoted command substitution into COMPREPLY, which
+            // would word-split directory names on $IFS (e.g. `my worktree/`
+            // would produce two entries `my` and `worktree/`).
+            assert!(
+                script.contains("mapfile -t COMPREPLY < <(compgen -d"),
+                "{cmd} bash path-prefix branch must use `mapfile -t` to preserve \
+                 directory names with whitespace"
+            );
+            assert!(
+                !script.contains("COMPREPLY=( $(compgen -d"),
+                "{cmd} bash must NOT assign `COMPREPLY=( $(compgen -d ...) )` \
+                 directly — that word-splits dirs containing whitespace"
+            );
         }
     }
 
