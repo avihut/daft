@@ -1545,4 +1545,63 @@ mod tests {
             "after ran its command despite dep being cancelled"
         );
     }
+
+    #[test]
+    fn bg_cycle_in_needs_returns_error() {
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+
+        let mut state = CoordinatorState::new("test-repo", "inv-cycle-1").with_metadata(
+            "worktree-post-create",
+            "worktree-post-create",
+            "feat/x",
+        );
+
+        state.add_job(JobSpec {
+            name: "a".to_string(),
+            command: "echo a".to_string(),
+            background: true,
+            needs: vec!["b".to_string()],
+            ..Default::default()
+        });
+        state.add_job(JobSpec {
+            name: "b".to_string(),
+            command: "echo b".to_string(),
+            background: true,
+            needs: vec!["a".to_string()],
+            ..Default::default()
+        });
+
+        let result = state.run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs);
+        assert!(result.is_err(), "cycle should be reported as an error");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid background job DAG"),
+            "error should mention invalid DAG, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn bg_missing_dep_in_needs_returns_error() {
+        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+
+        let mut state = CoordinatorState::new("test-repo", "inv-missing-1").with_metadata(
+            "worktree-post-create",
+            "worktree-post-create",
+            "feat/x",
+        );
+
+        state.add_job(JobSpec {
+            name: "only".to_string(),
+            command: "echo only".to_string(),
+            background: true,
+            needs: vec!["does-not-exist".to_string()],
+            ..Default::default()
+        });
+
+        let result = state.run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs);
+        assert!(
+            result.is_err(),
+            "missing dep should be reported as an error"
+        );
+    }
 }
