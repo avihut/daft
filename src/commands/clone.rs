@@ -546,9 +546,12 @@ fn create_satellite_worktrees(
         change_directory(&repo_path)?;
     }
 
-    // Load once, clone per-iteration. Loader hits global git-config files,
-    // which are stable for the life of this command — no need to re-read
-    // per branch.
+    // Load once, clone per-iteration — loader is stable for the life of
+    // this command, no need to re-read per branch. `_global` rather than
+    // local even though `change_directory(&repo_path)` above puts us inside
+    // the new repo: a freshly-cloned repo's `.git/config` is unlikely to
+    // hold daft-specific keys yet, and `_global` keeps this consistent
+    // with the orchestrator-thread site below — both pre-clone paths.
     let shared_hooks_config = if !no_hooks {
         Some(crate::core::settings::load_hooks_config_global()?)
     } else {
@@ -1315,6 +1318,13 @@ fn run_post_clone_hook(
         return Ok(());
     }
 
+    // `_global` rather than `load_hooks_config()`: cwd at this point is
+    // path-dependent (single-branch clone leaves cwd at the user's invocation
+    // dir; multi-branch sequential leaves it inside the new repo via
+    // `create_satellite_worktrees`). The local loader requires being inside a
+    // repo and would error in the former case. Repo-local overrides on a
+    // freshly-cloned repo are vanishingly rare in practice — a deliberate
+    // tradeoff for cwd-tolerance.
     let hooks_config = crate::core::settings::load_hooks_config_global()?;
     let mut executor = HookExecutor::new(hooks_config)?;
 
@@ -1366,6 +1376,8 @@ fn run_post_create_hook(
         return Ok(());
     }
 
+    // `_global` for the same cwd-tolerance reason as `run_post_clone_hook` —
+    // see the comment there.
     let hooks_config = crate::core::settings::load_hooks_config_global()?;
     let mut executor = HookExecutor::new(hooks_config)?;
 
