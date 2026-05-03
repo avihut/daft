@@ -288,3 +288,8 @@ prompts you to choose. The chosen layout is applied as if you had passed
   options
 - [Adopting Existing Repos](/guide/adopting-existing-repos) — Convert an
   existing repository
+
+## Where to next
+
+- **CLI reference:** [`daft layout`](/reference/cli/daft-layout)
+- **Real-world usage:** [Cookbook → Monorepo](/cookbook/by-scenario/monorepo)

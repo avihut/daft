@@ -223,7 +223,8 @@ These deferred pages get tombstone links from the relevant Roadmap pages.
 ## URL redirects
 
 Bookmarks, search engine results, and external links pointing at the current
-URLs (`/guide/hooks`, `/guide/layouts`, etc.) must keep working. Implementation:
+URLs (`/guide/hooks`, `/worktrees/layouts`, etc.) must keep working.
+Implementation:
 
 - Use VitePress `transformPageData` to emit `<meta http-equiv="refresh">` on
   legacy pages, OR emit a small set of stub pages at the old paths that redirect

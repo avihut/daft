@@ -26,8 +26,8 @@ my-project/
 You're automatically placed in `my-project/main/`.
 
 ::: tip This shows the **contained** layout. daft supports other layouts that
-organize worktrees differently — see [Layouts](/guide/layouts) to explore your
-options. :::
+organize worktrees differently — see [Layouts](/worktrees/layouts) to explore
+your options. :::
 
 ## 2. Create a Feature Branch
 
@@ -140,7 +140,8 @@ preserved.
 
 - [Shell Integration](./shell-integration.md) - Enable auto-cd into new
   worktrees
-- [Layouts](../guide/layouts.md) - Choose how worktrees are organized on disk
+- [Layouts](../worktrees/layouts.md) - Choose how worktrees are organized on
+  disk
 - [Worktrees](../worktrees/) - Deep dive into the worktree-centric approach
 - [Hooks](../guide/hooks.md) - Automate worktree lifecycle events
 - [Shortcuts](../guide/shortcuts.md) - Enable short command aliases
