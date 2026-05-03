@@ -143,6 +143,6 @@ preserved.
 - [Layouts](../worktrees/layouts.md) - Choose how worktrees are organized on
   disk
 - [Worktrees](../worktrees/) - Deep dive into the worktree-centric approach
-- [Hooks](../guide/hooks.md) - Automate worktree lifecycle events
+- [Hooks](../hooks/index.md) - Automate worktree lifecycle events
 - [Shortcuts](../worktrees/shortcuts.md) - Enable short command aliases
 - [Configuration](../guide/configuration.md) - Customize daft's behavior
