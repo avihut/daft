@@ -1,14 +1,17 @@
 ---
 title: Quick Start
-description: Get up and running with daft in minutes
+description:
+  Get up and running with daft in minutes — covers the worktree adoption arc.
 ---
 
 # Quick Start
 
-This guide walks you through the core daft workflow: cloning a repo, creating
-branches, and cleaning up.
+This guide walks you through the **worktree adoption arc** — three stages of
+daft adoption depth. You can stop at any stage and still get value.
 
-## 1. Clone a Repository
+## Stage 1: Code isolation
+
+Clone a repository into the worktree layout:
 
 ```bash
 daft clone git@github.com:user/my-project.git
@@ -29,7 +32,7 @@ You're automatically placed in `my-project/main/`.
 organize worktrees differently — see [Layouts](/worktrees/layouts) to explore
 your options. :::
 
-## 2. Create a Feature Branch
+### Create a Feature Branch
 
 From anywhere inside the repository:
 
@@ -50,7 +53,7 @@ my-project/
 You're now in `my-project/feature/auth/`. Your `main/` directory is completely
 untouched.
 
-## 3. Switch Between Branches
+### Switch Between Branches
 
 Each branch is just a directory. Open different terminals:
 
@@ -70,7 +73,7 @@ To check out an existing branch:
 daft go bugfix/login-issue
 ```
 
-## 4. Branch From Default
+### Branch From Default
 
 When you need a fresh branch from `main` (regardless of where you are), use the
 `gwtcbm` shortcut from shell integration:
@@ -93,7 +96,7 @@ my-project/
 └── hotfix/critical-fix/    # Branched from main, not current branch
 ```
 
-## 5. Carry Changes Between Worktrees
+### Carry Changes Between Worktrees
 
 Move uncommitted work to another worktree:
 
@@ -105,7 +108,7 @@ daft carry feature/auth
 daft carry --copy feature/auth main
 ```
 
-## 6. Clean Up Merged Branches
+### Clean Up Merged Branches
 
 After branches are merged and deleted on the remote:
 
@@ -120,7 +123,7 @@ This automatically:
 - Removes associated worktrees
 - Deletes local branches
 
-## 7. Adopt an Existing Repository
+### Adopt an Existing Repository
 
 Already have a traditional repository? Convert it:
 
@@ -134,15 +137,48 @@ preserved.
 
 ::: tip Git-native commands Every daft command has a git-native equivalent
 (e.g., `daft clone` = `git worktree-clone`). See the
-[CLI Reference](/cli/git-worktree-clone) for the full list. :::
+[CLI Reference](/reference/cli/git-worktree-clone) for the full list. :::
 
-## What's Next
+That's stage 1: every branch in its own directory, no stashing, no swapping.
 
-- [Shell Integration](./shell-integration.md) - Enable auto-cd into new
-  worktrees
-- [Layouts](../worktrees/layouts.md) - Choose how worktrees are organized on
-  disk
-- [Worktrees](../worktrees/) - Deep dive into the worktree-centric approach
-- [Hooks](../hooks/index.md) - Automate worktree lifecycle events
-- [Shortcuts](../worktrees/shortcuts.md) - Enable short command aliases
-- [Configuration](../reference/configuration.md) - Customize daft's behavior
+## Stage 2: Environment isolation
+
+Worktrees give you code isolation. Real-world branches usually need different
+runtime versions, env vars, or running services. Add a tool to handle that:
+
+- **Tool versions**: see the [mise recipe](/cookbook/by-tooling/mise).
+- **Env vars / secrets**: see the [direnv recipe](/cookbook/by-tooling/direnv).
+- **Both**: combine the two recipes.
+
+Each worktree boots with the right env on `cd`.
+
+## Stage 3: Automation
+
+Setting up the env per worktree gets repetitive — a great fit for
+[daft hooks](/hooks/). Hooks fire on worktree create/remove (plus other
+code-evolution boundaries; see the [boundaries thesis](/hooks/)). Two examples:
+
+```yaml
+# daft.yml
+worktree-post-create:
+  jobs:
+    - name: install deps
+      run: pnpm install --frozen-lockfile
+    - name: copy envrc
+      run:
+        "[ ! -f .envrc ] && cp .envrc.example .envrc && direnv allow . || true"
+```
+
+Trust the new `daft.yml`:
+
+```bash
+git daft-hooks trust
+```
+
+Now every new worktree boots with deps installed and `.envrc` ready.
+
+## Where to next
+
+- **Pillar overview:** [Worktrees](/worktrees/), [Hooks](/hooks/)
+- **Recipes:** [Cookbook](/cookbook/)
+- **Why daft:** [About → Why daft](/about/why-daft)
