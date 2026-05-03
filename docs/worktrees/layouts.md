@@ -286,7 +286,7 @@ prompts you to choose. The chosen layout is applied as if you had passed
 - [daft layout](/cli/daft-layout) — CLI reference for layout commands
 - [Configuration](/guide/configuration#layout-settings) — Layout configuration
   options
-- [Adopting Existing Repos](/guide/adopting-existing-repos) — Convert an
+- [Adopting Existing Repos](/worktrees/adopting-existing-repos) — Convert an
   existing repository
 
 ## Where to next
