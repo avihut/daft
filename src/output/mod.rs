@@ -208,4 +208,26 @@ pub trait Output {
 
     /// Check if verbose mode is enabled.
     fn is_verbose(&self) -> bool;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Domain-specific notice lines
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Render the "Updated repository defaults" notice that follows a
+    /// successful `daft merge --set-default` invocation. Shown in cyan to
+    /// distinguish it from the primary result line.
+    ///
+    /// The default implementation delegates to `info`, which is suppressed in
+    /// quiet mode. Concrete implementations may apply cyan styling.
+    fn defaults_updated(
+        &mut self,
+        style: crate::core::worktree::merge::MergeStyle,
+        cleanup: crate::core::worktree::merge::CleanupKind,
+    ) {
+        let line = format!(
+            "Updated repository defaults: merge.style={}, merge.cleanup={}",
+            style, cleanup
+        );
+        self.info(&line);
+    }
 }

@@ -293,6 +293,24 @@ impl Output for CliOutput {
     fn is_verbose(&self) -> bool {
         self.config.verbose
     }
+
+    fn defaults_updated(
+        &mut self,
+        style: crate::core::worktree::merge::MergeStyle,
+        cleanup: crate::core::worktree::merge::CleanupKind,
+    ) {
+        if !self.config.quiet {
+            let line = format!(
+                "Updated repository defaults: merge.style={}, merge.cleanup={}",
+                style, cleanup
+            );
+            if colors_enabled() {
+                self.stdout_line(&format!("{}{line}{}", styles::CYAN, styles::RESET));
+            } else {
+                self.stdout_line(&line);
+            }
+        }
+    }
 }
 
 impl Drop for CliOutput {

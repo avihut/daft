@@ -535,4 +535,32 @@ mod tests {
         output.clear();
         assert!(output.entries().is_empty());
     }
+
+    #[test]
+    fn defaults_updated_emits_info_with_both_keys() {
+        use crate::core::worktree::merge::{CleanupKind, MergeStyle};
+        let mut output = TestOutput::new();
+        output.defaults_updated(MergeStyle::RebaseMerge, CleanupKind::RemoveBranch);
+        assert!(
+            output.has_info("merge.style=rebase-merge"),
+            "expected merge.style in info line, got: {:?}",
+            output.infos()
+        );
+        assert!(
+            output.has_info("merge.cleanup=remove-branch"),
+            "expected merge.cleanup in info line, got: {:?}",
+            output.infos()
+        );
+    }
+
+    #[test]
+    fn defaults_updated_suppressed_in_quiet_mode() {
+        use crate::core::worktree::merge::{CleanupKind, MergeStyle};
+        let mut output = TestOutput::quiet();
+        output.defaults_updated(MergeStyle::Squash, CleanupKind::Keep);
+        assert!(
+            output.infos().is_empty(),
+            "defaults_updated must be suppressed in quiet mode"
+        );
+    }
 }
