@@ -60,6 +60,6 @@ daft release-notes 1.2.0 --format markdown
 daft release-notes --format json | jq '.[0].version'
 ```
 
-See the [Output Formats guide](../guide/output-formats.md) for format details
+See the [Output Formats guide](../reference/output-formats.md) for format details
 and Tera syntax.
 

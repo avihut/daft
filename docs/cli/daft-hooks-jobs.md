@@ -100,7 +100,7 @@ daft hooks jobs --template '{% for j in items %}{{ j.name }}: {{ j.status }}
 {% endfor %}'
 ```
 
-See the [Output Formats guide](../guide/output-formats.md) for format details
+See the [Output Formats guide](../reference/output-formats.md) for format details
 and Tera syntax.
 
 ## Examples
@@ -161,5 +161,5 @@ Last log cleanup 4h ago: removed 23 job log(s) (4.2 MB freed)
 ## See Also
 
 - [Hooks guide](../hooks/index.md#background-jobs)
-- [Output Formats guide](../guide/output-formats.md)
+- [Output Formats guide](../reference/output-formats.md)
 - [git-daft-hooks](./git-daft-hooks.md)
