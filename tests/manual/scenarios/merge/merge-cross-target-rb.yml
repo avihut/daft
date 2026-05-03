@@ -59,13 +59,14 @@ steps:
       exit_code: 0
       output_contains: ["not_ancestor_of_main"]
 
-  - name: Merge feature --into develop -rb
-    run: git-worktree-merge feature/cross-target --into develop -rb 2>&1
+  - name: Merge feature --into develop -r
+    run:
+      git-worktree-merge feature/cross-target --into develop -r --no-edit 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       output_contains:
-        - "Fast-forwarded develop to "
+        - "Merged feature/cross-target into develop (commit "
         - "Deleted feature/cross-target (worktree, local branch)"
 
   - name: Verify feature worktree is gone

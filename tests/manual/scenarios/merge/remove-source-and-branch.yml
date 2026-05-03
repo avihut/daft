@@ -1,7 +1,7 @@
-name: Merge with -rb removes source worktree and branch
+name: Merge with -r removes source worktree and branch
 description:
-  "daft merge -rb removes the source worktree AND deletes the source branch (via
-  `git branch -d`) after a successful merge. -b requires -r at clap parse time."
+  "daft merge -r removes the source worktree AND deletes the source branch (via
+  `git branch -d`) after a successful merge."
 
 repos:
   - name: test-repo
@@ -17,13 +17,13 @@ steps:
     cwd: "$WORK_DIR/test-repo"
     expect: { exit_code: 0 }
 
-  - name: Merge with -rb
-    run: git-worktree-merge feature/test-feature -rb 2>&1
+  - name: Merge with -r
+    run: git-worktree-merge feature/test-feature -r --no-edit 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       output_contains:
-        - "Fast-forwarded main to "
+        - "Merged feature/test-feature into main (commit "
         - "Deleted feature/test-feature (worktree, local branch)"
 
   - name: Verify feature worktree was removed

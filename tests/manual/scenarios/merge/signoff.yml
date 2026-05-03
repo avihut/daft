@@ -15,9 +15,9 @@ steps:
     cwd: "$WORK_DIR/test-repo"
     expect: { exit_code: 0 }
 
-  - name: --signoff --no-ff merge to force a merge commit
+  - name: --signoff --merge to force a merge commit
     run:
-      git-worktree-merge feature/test-feature --no-ff --signoff -m "merged with
+      git-worktree-merge feature/test-feature --merge --signoff -m "merged with
       signoff" 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:

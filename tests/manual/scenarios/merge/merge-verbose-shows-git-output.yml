@@ -23,6 +23,5 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Updating "
-        - "Fast-forward"
-        - "Fast-forwarded main to "
+        - "Merge made by"
+        - "Merged feature/test-feature into main (commit "

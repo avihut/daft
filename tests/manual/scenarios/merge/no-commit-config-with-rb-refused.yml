@@ -1,6 +1,6 @@
-name: daft.merge.commit=false config + -rb refused at runtime
+name: daft.merge.commit=false config + -r refused at runtime
 description:
-  "Setting daft.merge.commit=false in config and passing -rb on the CLI is the
+  "Setting daft.merge.commit=false in config and passing -r on the CLI is the
   diagonal case the static guards miss; runtime check refuses before merge."
 repos:
   - name: test-repo
@@ -17,8 +17,8 @@ steps:
     run: git config daft.merge.commit false
     cwd: "$WORK_DIR/test-repo/main"
     expect: { exit_code: 0 }
-  - name: --squash -rb under daft.merge.commit=false should refuse
-    run: git-worktree-merge feature/test-feature --squash -rb 2>&1
+  - name: --squash -r under daft.merge.commit=false should refuse
+    run: git-worktree-merge feature/test-feature --squash -r 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 1

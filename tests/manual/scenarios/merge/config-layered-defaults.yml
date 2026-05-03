@@ -1,7 +1,7 @@
-name: Merge respects daft.merge.* config
+name: Merge respects daft.merge.style config
 description:
-  "daft.merge.ff=never turns plain `daft merge <src>` into a merge commit, with
-  no CLI flag"
+  "daft.merge.style=squash turns plain `daft merge <src>` into a squash merge,
+  with no CLI flag"
 
 repos:
   - name: test-repo
@@ -17,20 +17,20 @@ steps:
     cwd: "$WORK_DIR/test-repo"
     expect: { exit_code: 0 }
 
-  - name: Set local daft.merge.ff=never
-    run: git config daft.merge.ff never
+  - name: Set local daft.merge.style=squash
+    run: git config daft.merge.style squash
     cwd: "$WORK_DIR/test-repo/main"
     expect: { exit_code: 0 }
 
-  - name: Merge feature (config should force --no-ff)
-    run: git-worktree-merge feature/test-feature -m "merge via config" 2>&1
+  - name: Merge feature (config should squash)
+    run: git-worktree-merge feature/test-feature --no-edit 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       output_contains:
-        - "Merged feature/test-feature into main (commit "
+        - "Squashed feature/test-feature into main (commit "
 
-  - name: Verify main HEAD has two parents (merge commit, not FF)
+  - name: Verify main HEAD has one parent (squash commit)
     run: |
       parents=$(git rev-list --parents -n 1 HEAD | awk '{print NF-1}')
       echo "parent_count=$parents"
@@ -38,9 +38,9 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "parent_count=2"
+        - "parent_count=1"
 
   - name: Clear config
-    run: git config --unset daft.merge.ff
+    run: git config --unset daft.merge.style
     cwd: "$WORK_DIR/test-repo/main"
     expect: { exit_code: 0 }

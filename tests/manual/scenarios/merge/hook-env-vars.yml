@@ -56,7 +56,7 @@ steps:
       exit_code: 0
 
   - name: Cross-worktree merge — hooks fire with CROSS_WORKTREE=true
-    run: git-worktree-merge feature/test-feature --into main
+    run: git-worktree-merge feature/test-feature --into main --no-edit
     cwd: "$WORK_DIR/test-repo/feature/test-feature"
     expect:
       exit_code: 0

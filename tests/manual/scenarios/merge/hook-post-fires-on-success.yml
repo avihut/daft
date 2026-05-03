@@ -45,7 +45,7 @@ steps:
       exit_code: 0
 
   - name: Merge feature into main — should succeed and fire post-merge
-    run: git-worktree-merge feature/test-feature
+    run: git-worktree-merge feature/test-feature --no-edit
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

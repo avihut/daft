@@ -1,5 +1,7 @@
 name: Merge basic
-description: "daft merge <source> in CWD performs git merge <source>"
+description:
+  "daft merge <source> --no-edit in CWD performs git merge <source> with merge
+  commit"
 
 repos:
   - name: test-repo
@@ -18,12 +20,12 @@ steps:
       exit_code: 0
 
   - name: Merge feature into main (from main worktree)
-    run: git-worktree-merge feature/test-feature
+    run: git-worktree-merge feature/test-feature --no-edit
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       output_contains:
-        - "Fast-forwarded main to "
+        - "Merged feature/test-feature into main (commit "
 
   - name: Verify main contains feature commits
     run: git log --oneline main

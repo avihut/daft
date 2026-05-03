@@ -15,16 +15,16 @@ steps:
     cwd: "$WORK_DIR/test-repo"
     expect: { exit_code: 0 }
 
-  - name: First merge — advances main to feature's tip
-    run: git-worktree-merge feature/test-feature 2>&1
+  - name: First merge — merges feature into main with merge commit
+    run: git-worktree-merge feature/test-feature --no-edit 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       output_contains:
-        - "Fast-forwarded main to "
+        - "Merged feature/test-feature into main (commit "
 
   - name: Second merge of the same branch is a no-op
-    run: git-worktree-merge feature/test-feature 2>&1
+    run: git-worktree-merge feature/test-feature --no-edit 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

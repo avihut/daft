@@ -1,4 +1,4 @@
-name: --squash -rb refuses cleanup when source ref moved
+name: --squash -r refuses cleanup when source ref moved
 description:
   "Source branch tip moved between merge start and cleanup; cleanup refuses to
   avoid losing work; commit stays on target."
@@ -42,8 +42,8 @@ steps:
     cwd: "$WORK_DIR/test-repo"
     expect: { exit_code: 0 }
 
-  - name: --squash --no-edit -rb should refuse cleanup but keep commit
-    run: git-worktree-merge feature/test-feature --squash --no-edit -rb 2>&1
+  - name: --squash --no-edit -r should refuse cleanup but keep commit
+    run: git-worktree-merge feature/test-feature --squash --no-edit -r 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 1

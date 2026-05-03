@@ -1,4 +1,4 @@
-name: --squash --no-commit -rb refused at parse time
+name: --squash --no-commit -r refused at parse time
 description: "--no-commit conflicts with cleanup; cleanup needs a commit"
 repos:
   - name: test-repo
@@ -7,8 +7,8 @@ steps:
   - name: Clone
     run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
     expect: { exit_code: 0 }
-  - name: Attempt --squash --no-commit -rb
-    run: git-worktree-merge feature/test-feature --squash --no-commit -rb 2>&1
+  - name: Attempt --squash --no-commit -r
+    run: git-worktree-merge feature/test-feature --squash --no-commit -r 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 2

@@ -45,12 +45,12 @@ steps:
       exit_code: 0
 
   - name: Merge with -r — pre-remove hook exits 1, command still exits 0
-    run: git-worktree-merge feature/test-feature -r 2>&1
+    run: git-worktree-merge feature/test-feature -r --no-edit 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       output_contains:
-        - "Fast-forwarded main to "
+        - "Merged feature/test-feature into main (commit "
         - "worktree-pre-remove hook failed with exit code 1"
 
   - name: Verify feature content landed on target (merge succeeded)

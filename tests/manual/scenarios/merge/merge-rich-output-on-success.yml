@@ -23,7 +23,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Fast-forwarded main to "
+        - "Merged feature/test-feature into main (commit "
       output_not_contains:
         - "Updating "
         - "Squash commit -- not updating HEAD"

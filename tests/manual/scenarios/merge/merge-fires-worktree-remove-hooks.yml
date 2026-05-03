@@ -1,10 +1,10 @@
 name: Merge -r fires worktree-pre-remove hook
 description:
   "daft merge -r delegates cleanup to branch_delete::execute, which fires the
-  worktree-pre-remove hook before removing the source worktree. The hooks config
-  is committed to the source branch so the hook can be discovered in its
-  worktree. Pre-remove executes while the worktree still exists, so the job's
-  working directory is valid."
+  worktree-pre-remove hook before removing the source worktree AND deleting the
+  source branch. The hooks config is committed to the source branch so the hook
+  can be discovered in its worktree. Pre-remove executes while the worktree
+  still exists, so the job's working directory is valid."
 
 repos:
   - name: test-repo
@@ -44,13 +44,13 @@ steps:
       exit_code: 0
 
   - name: Merge with -r — pre-remove hook should fire during cleanup
-    run: git-worktree-merge feature/test-feature -r 2>&1
+    run: git-worktree-merge feature/test-feature -r --no-edit 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       output_contains:
-        - "Fast-forwarded main to "
-        - "Deleted feature/test-feature (worktree)"
+        - "Merged feature/test-feature into main (commit "
+        - "Deleted feature/test-feature (worktree, local branch)"
 
   - name: Verify pre-remove hook ran (sentinel written to project root)
     run: test -f "$WORK_DIR/test-repo/.pre-remove-ran" && echo "pre_ran"
@@ -67,11 +67,11 @@ steps:
       exit_code: 0
       output_contains: ["wt_removed"]
 
-  - name: Verify source branch still exists (-r without -b keeps the branch)
+  - name: Verify source branch was deleted (-r removes both worktree and branch)
     run: |
-      git -C $WORK_DIR/test-repo/main show-ref --verify --quiet \
-        refs/heads/feature/test-feature && echo "branch_exists"
+      if git -C $WORK_DIR/test-repo/main show-ref --verify --quiet \
+        refs/heads/feature/test-feature; then echo "branch_still_exists"; else echo "branch_deleted"; fi
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
-      output_contains: ["branch_exists"]
+      output_contains: ["branch_deleted"]

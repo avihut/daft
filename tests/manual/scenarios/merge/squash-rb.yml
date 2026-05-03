@@ -1,7 +1,7 @@
-name: --squash -rb cleanly removes worktree and branch
+name: --squash -r cleanly removes worktree and branch
 description:
   "After a daft-driven squash + commit, branch -D is justified by content
-  equivalence; -rb completes end to end."
+  equivalence; -r completes end to end."
 
 repos:
   - name: test-repo
@@ -23,8 +23,8 @@ steps:
     cwd: "$WORK_DIR/test-repo"
     expect: { exit_code: 0 }
 
-  - name: --squash --no-edit -rb
-    run: git-worktree-merge feature/test-feature --squash --no-edit -rb 2>&1
+  - name: --squash --no-edit -r
+    run: git-worktree-merge feature/test-feature --squash --no-edit -r 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

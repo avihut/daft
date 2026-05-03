@@ -32,8 +32,9 @@ steps:
       exit_code: 0
       output_contains: ["no_wt_dir"]
 
-  - name: FF-advance feat-no-wt to main via plumbing (no worktree)
-    run: git-worktree-merge main --into feat-no-wt 2>&1
+  - name:
+      FF-advance feat-no-wt to main via plumbing (no worktree, --rebase style)
+    run: git-worktree-merge main --into feat-no-wt --rebase 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

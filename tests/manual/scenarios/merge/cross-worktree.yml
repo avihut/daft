@@ -18,12 +18,12 @@ steps:
       exit_code: 0
 
   - name: Merge feature into main *from the feature worktree*
-    run: git-worktree-merge --into main feature/test-feature
+    run: git-worktree-merge --into main feature/test-feature --no-edit
     cwd: "$WORK_DIR/test-repo/feature/test-feature"
     expect:
       exit_code: 0
       output_contains:
-        - "Fast-forwarded main to "
+        - "Merged feature/test-feature into main (commit "
 
   - name: Verify main contains feature commits without being CWD
     run: git -C $WORK_DIR/test-repo/main log --oneline

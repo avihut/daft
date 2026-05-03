@@ -1,5 +1,5 @@
-name: Merge multi-source -rb fires worktree-pre-remove hook once per source
-description: "When daft merge <feat-a> <feat-b> -rb is run, cleanup delegates to
+name: Merge multi-source -r fires worktree-pre-remove hook once per source
+description: "When daft merge <feat-a> <feat-b> -r is run, cleanup delegates to
   branch_delete::execute for each source independently. The worktree-pre-remove
   hook must fire once per source — once for feat-a and once for feat-b. Verified
   by sentinel files keyed on DAFT_BRANCH_NAME.
@@ -66,8 +66,8 @@ steps:
     expect:
       exit_code: 0
 
-  - name: Octopus merge with -rb — pre-remove hook fires once per source
-    run: git-worktree-merge feat-a feat-b -rb 2>&1
+  - name: Octopus merge with -r — pre-remove hook fires once per source
+    run: git-worktree-merge feat-a feat-b -r --no-edit 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

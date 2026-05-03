@@ -26,8 +26,8 @@ steps:
     cwd: "$WORK_DIR/test-repo/feature/test-feature"
     expect: { exit_code: 0 }
 
-  - name: Merge with -rb — cleanup should refuse due to dirty source
-    run: git-worktree-merge feature/test-feature -rb 2>&1
+  - name: Merge with -r — cleanup should refuse due to dirty source
+    run: git-worktree-merge feature/test-feature -r --no-edit 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 1
@@ -52,7 +52,7 @@ steps:
       output_contains: ["branch_present"]
 
   - name: Verify merge DID land on main (merge succeeded; only cleanup refused)
-    run: git -C $WORK_DIR/test-repo/main log --oneline -1 main
+    run: git -C $WORK_DIR/test-repo/main log --oneline main
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
