@@ -152,13 +152,6 @@ pub mod defaults {
     pub const MERGE_CLEANUP: crate::core::worktree::merge::CleanupKind =
         crate::core::worktree::merge::CleanupKind::Keep;
 
-    /// Default value for merge.ff setting.
-    pub const MERGE_FF: crate::core::worktree::merge::FfMode =
-        crate::core::worktree::merge::FfMode::Auto;
-
-    /// Default value for merge.squash setting.
-    pub const MERGE_SQUASH: bool = false;
-
     /// Default value for merge.commit setting.
     pub const MERGE_COMMIT: bool = true;
 
@@ -177,12 +170,6 @@ pub mod defaults {
 
     /// Default value for merge.requireCleanTarget setting.
     pub const MERGE_REQUIRE_CLEAN_TARGET: bool = true;
-
-    /// Default value for merge.postMerge.removeSourceWorktree setting.
-    pub const MERGE_POST_MERGE_REMOVE_SOURCE_WORKTREE: bool = false;
-
-    /// Default value for merge.postMerge.alsoRemoveSourceBranch setting.
-    pub const MERGE_POST_MERGE_ALSO_REMOVE_SOURCE_BRANCH: bool = false;
 }
 
 /// Git config keys for daft settings.
@@ -274,12 +261,6 @@ pub mod keys {
     /// Config key for merge.cleanup setting.
     pub const MERGE_CLEANUP: &str = "daft.merge.cleanup";
 
-    /// Config key for merge.ff setting.
-    pub const MERGE_FF: &str = "daft.merge.ff";
-
-    /// Config key for merge.squash setting.
-    pub const MERGE_SQUASH: &str = "daft.merge.squash";
-
     /// Config key for merge.commit setting.
     pub const MERGE_COMMIT: &str = "daft.merge.commit";
 
@@ -309,14 +290,6 @@ pub mod keys {
 
     /// Config key for merge.requireCleanTarget setting.
     pub const MERGE_REQUIRE_CLEAN_TARGET: &str = "daft.merge.requireCleanTarget";
-
-    /// Config key for merge.postMerge.removeSourceWorktree setting.
-    pub const MERGE_POST_MERGE_REMOVE_SOURCE_WORKTREE: &str =
-        "daft.merge.postMerge.removeSourceWorktree";
-
-    /// Config key for merge.postMerge.alsoRemoveSourceBranch setting.
-    pub const MERGE_POST_MERGE_ALSO_REMOVE_SOURCE_BRANCH: &str =
-        "daft.merge.postMerge.alsoRemoveSourceBranch";
 
     /// Experimental config keys.
     pub mod experimental {
@@ -457,12 +430,6 @@ pub struct DaftSettings {
     /// Selected post-merge cleanup outcome. See [`CleanupKind`] for variants.
     pub merge_cleanup: crate::core::worktree::merge::CleanupKind,
 
-    /// Default fast-forward mode for merge command. Set via `daft.merge.ff`.
-    pub merge_ff: crate::core::worktree::merge::FfMode,
-
-    /// Default squash behavior for merge command. Set via `daft.merge.squash`.
-    pub merge_squash: bool,
-
     /// Default commit behavior for merge command. Set via `daft.merge.commit`.
     pub merge_commit: bool,
 
@@ -500,15 +467,6 @@ pub struct DaftSettings {
     /// Require the target worktree to be clean before starting a merge. Set
     /// via `daft.merge.requireCleanTarget`.
     pub merge_require_clean_target: bool,
-
-    /// Remove the source worktree after a successful merge. Set via
-    /// `daft.merge.postMerge.removeSourceWorktree`.
-    pub merge_post_merge_remove_source_worktree: bool,
-
-    /// Also remove the source branch after a successful merge (requires
-    /// `merge_post_merge_remove_source_worktree` in effect). Set via
-    /// `daft.merge.postMerge.alsoRemoveSourceBranch`.
-    pub merge_post_merge_also_remove_source_branch: bool,
 }
 
 impl Default for DaftSettings {
@@ -541,8 +499,6 @@ impl Default for DaftSettings {
             ownership_strategy: defaults::OWNERSHIP_STRATEGY,
             merge_style: defaults::MERGE_STYLE,
             merge_cleanup: defaults::MERGE_CLEANUP,
-            merge_ff: defaults::MERGE_FF,
-            merge_squash: defaults::MERGE_SQUASH,
             merge_commit: defaults::MERGE_COMMIT,
             merge_edit: None,
             merge_signoff: defaults::MERGE_SIGNOFF,
@@ -553,10 +509,6 @@ impl Default for DaftSettings {
             merge_strategy_options: Vec::new(),
             merge_adopt_target_on_demand: defaults::MERGE_ADOPT_TARGET_ON_DEMAND,
             merge_require_clean_target: defaults::MERGE_REQUIRE_CLEAN_TARGET,
-            merge_post_merge_remove_source_worktree:
-                defaults::MERGE_POST_MERGE_REMOVE_SOURCE_WORKTREE,
-            merge_post_merge_also_remove_source_branch:
-                defaults::MERGE_POST_MERGE_ALSO_REMOVE_SOURCE_BRANCH,
         }
     }
 }
@@ -711,10 +663,7 @@ impl DaftSettings {
         }
 
         load_merge_settings(&git, &mut settings)?;
-        validate_merge_settings(
-            settings.merge_commit,
-            settings.merge_post_merge_also_remove_source_branch,
-        )?;
+        validate_merge_settings(settings.merge_commit, settings.merge_cleanup)?;
 
         Ok(settings)
     }
@@ -877,7 +826,7 @@ impl DaftSettings {
 /// keys (`ff`, `adoptTargetOnDemand`) silently fall back to the built-in
 /// default, matching the existing pattern for `list.stat` etc.
 fn load_merge_settings(git: &GitCommand, settings: &mut DaftSettings) -> Result<()> {
-    use crate::core::worktree::merge::{AdoptPreset, CleanupKind, FfMode, MergeStyle};
+    use crate::core::worktree::merge::{AdoptPreset, CleanupKind, MergeStyle};
 
     if let Some(value) = git.config_get(keys::MERGE_STYLE)? {
         settings.merge_style = match value.as_str() {
@@ -894,19 +843,6 @@ fn load_merge_settings(git: &GitCommand, settings: &mut DaftSettings) -> Result<
             "remove-branch" => CleanupKind::RemoveBranch,
             _ => defaults::MERGE_CLEANUP,
         };
-    }
-
-    if let Some(value) = git.config_get(keys::MERGE_FF)? {
-        settings.merge_ff = match value.as_str() {
-            "auto" => FfMode::Auto,
-            "only" => FfMode::Only,
-            "never" => FfMode::Never,
-            _ => defaults::MERGE_FF,
-        };
-    }
-
-    if let Some(value) = git.config_get(keys::MERGE_SQUASH)? {
-        settings.merge_squash = parse_bool(&value, defaults::MERGE_SQUASH);
     }
 
     if let Some(value) = git.config_get(keys::MERGE_COMMIT)? {
@@ -970,32 +906,22 @@ fn load_merge_settings(git: &GitCommand, settings: &mut DaftSettings) -> Result<
             parse_bool(&value, defaults::MERGE_REQUIRE_CLEAN_TARGET);
     }
 
-    if let Some(value) = git.config_get(keys::MERGE_POST_MERGE_REMOVE_SOURCE_WORKTREE)? {
-        settings.merge_post_merge_remove_source_worktree =
-            parse_bool(&value, defaults::MERGE_POST_MERGE_REMOVE_SOURCE_WORKTREE);
-    }
-
-    if let Some(value) = git.config_get(keys::MERGE_POST_MERGE_ALSO_REMOVE_SOURCE_BRANCH)? {
-        settings.merge_post_merge_also_remove_source_branch =
-            parse_bool(&value, defaults::MERGE_POST_MERGE_ALSO_REMOVE_SOURCE_BRANCH);
-    }
-
     Ok(())
 }
 
 /// Validate that merge settings are internally consistent.
 ///
 /// Returns an error if `daft.merge.commit = false` is combined with
-/// `daft.merge.postMerge.alsoRemoveSourceBranch = true` — cleanup after
-/// `--squash` requires a real commit to justify deleting the source branch.
+/// `daft.merge.cleanup = remove-branch` — cleanup requires a committed merge.
 pub(crate) fn validate_merge_settings(
     merge_commit: bool,
-    also_remove_source_branch: bool,
+    cleanup: crate::core::worktree::merge::CleanupKind,
 ) -> Result<()> {
-    if !merge_commit && also_remove_source_branch {
+    use crate::core::worktree::merge::CleanupKind;
+    if !merge_commit && cleanup == CleanupKind::RemoveBranch {
         anyhow::bail!(
             "daft.merge.commit = false is incompatible with \
-             daft.merge.postMerge.alsoRemoveSourceBranch = true: \
+             daft.merge.cleanup = remove-branch: \
              branch cleanup requires a committed merge to justify deletion"
         );
     }
@@ -1379,16 +1305,20 @@ mod tests {
     #[test]
     fn defaults_for_merge() {
         let s = DaftSettings::default();
-        assert_eq!(s.merge_ff, crate::core::worktree::merge::FfMode::Auto);
-        assert!(!s.merge_squash);
+        assert_eq!(
+            s.merge_style,
+            crate::core::worktree::merge::MergeStyle::Merge
+        );
+        assert_eq!(
+            s.merge_cleanup,
+            crate::core::worktree::merge::CleanupKind::Keep
+        );
         assert!(s.merge_commit);
         assert!(s.merge_require_clean_target);
         assert_eq!(
             s.merge_adopt_target_on_demand,
             crate::core::worktree::merge::AdoptPreset::Prompt
         );
-        assert!(!s.merge_post_merge_remove_source_worktree);
-        assert!(!s.merge_post_merge_also_remove_source_branch);
         assert!(s.merge_strategy.is_none());
         assert!(s.merge_strategy_options.is_empty());
         assert!(s.merge_edit.is_none());
@@ -1399,19 +1329,21 @@ mod tests {
     }
 
     #[test]
-    fn refuses_no_commit_with_also_remove_branch() {
-        let result = validate_merge_settings(false, true);
+    fn refuses_no_commit_with_remove_branch_cleanup() {
+        use crate::core::worktree::merge::CleanupKind;
+        let result = validate_merge_settings(false, CleanupKind::RemoveBranch);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("daft.merge.commit"));
-        assert!(msg.contains("alsoRemoveSourceBranch"));
+        assert!(msg.contains("remove-branch"));
     }
 
     #[test]
     fn allows_compatible_merge_settings() {
-        assert!(validate_merge_settings(true, true).is_ok());
-        assert!(validate_merge_settings(false, false).is_ok());
-        assert!(validate_merge_settings(true, false).is_ok());
+        use crate::core::worktree::merge::CleanupKind;
+        assert!(validate_merge_settings(true, CleanupKind::RemoveBranch).is_ok());
+        assert!(validate_merge_settings(false, CleanupKind::Keep).is_ok());
+        assert!(validate_merge_settings(true, CleanupKind::Keep).is_ok());
     }
 
     #[test]

@@ -210,19 +210,6 @@ pub fn ask_adopt_user(target_branch: &str) -> Result<bool> {
     ))
 }
 
-/// Fast-forward mode explicitly requested on the CLI.
-///
-/// `Auto` corresponds to `--ff` (git's default behavior), `Only` to `--ff-only`
-/// (refuse if FF is not possible), and `Never` to `--no-ff` (always create a
-/// merge commit). `None` on [`EffectiveFlags::ff`] means the user didn't
-/// specify and git's own default (effectively `Auto`) applies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FfMode {
-    Auto,
-    Only,
-    Never,
-}
-
 /// GPG signing request for the merge commit.
 ///
 /// * `Default` — `-S` with no value; git uses `user.signingKey` or the
@@ -329,17 +316,13 @@ impl std::fmt::Display for CleanupKind {
 /// `None` means "user didn't specify — let git use its default". This keeps
 /// [`render_flags`] output minimal: we only emit a flag when the user asked
 /// for one, and we never stamp a redundant default onto git's argv.
-///
-/// Slice-13 will layer repo/global config defaults in; for now these values
-/// come strictly from the CLI.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct EffectiveFlags {
     pub message: Option<String>,
     pub file: Option<PathBuf>,
     pub edit: Option<bool>,
     pub cleanup: Option<String>,
-    pub ff: Option<FfMode>,
-    pub squash: Option<bool>,
+    pub style: MergeStyle,
     pub commit: Option<bool>,
     pub signoff: Option<bool>,
     pub strategy: Option<String>,
@@ -350,12 +333,32 @@ pub struct EffectiveFlags {
     pub stat: Option<bool>,
 }
 
+impl Default for EffectiveFlags {
+    fn default() -> Self {
+        Self {
+            message: None,
+            file: None,
+            edit: None,
+            cleanup: None,
+            style: MergeStyle::Merge,
+            commit: None,
+            signoff: None,
+            strategy: None,
+            strategy_options: Vec::new(),
+            gpg_sign: None,
+            verify_signatures: None,
+            allow_unrelated_histories: false,
+            stat: None,
+        }
+    }
+}
+
 impl EffectiveFlags {
-    /// Returns `true` when a `--squash` merge would need to open an editor
+    /// Returns `true` when this merge style would need to open an editor
     /// to compose a commit message.
     ///
     /// This is the case when:
-    /// - `--squash` is enabled (`squash == Some(true)`)
+    /// - style produces a merge commit message
     /// - `--no-commit` / `commit == false` is NOT set (i.e. we will commit)
     /// - no commit message is supplied via `-m` / `--message`
     /// - no message file is supplied via `-F` / `--file`
@@ -363,8 +366,8 @@ impl EffectiveFlags {
     ///
     /// The pre-flight TTY guard calls this to refuse before any merge work
     /// runs when stdin is not a terminal.
-    pub fn squash_would_open_editor(&self) -> bool {
-        matches!(self.squash, Some(true))
+    pub fn would_open_editor(&self) -> bool {
+        self.style.produces_merge_commit_message()
             && !matches!(self.commit, Some(false))
             && self.message.is_none()
             && self.file.is_none()
@@ -378,12 +381,12 @@ impl EffectiveFlags {
 /// source refs, producing e.g. `git merge --no-ff -m "msg" feature/x`.
 ///
 /// Order of emitted flags follows the struct's field order, which mirrors
-/// git's own reference grouping (message/editor, ff, squash, commit, signoff,
+/// git's own reference grouping (message/editor, style, commit, signoff,
 /// strategy, gpg, verify, allow-unrelated, stat). Order isn't semantically
 /// meaningful for git — none of these flags interact positionally — but a
 /// stable order makes test assertions deterministic and diffs readable.
 ///
-/// When `squash == Some(true)`, message-composing flags (`-m`, `-F`,
+/// When `style == MergeStyle::Squash`, message-composing flags (`-m`, `-F`,
 /// `--edit`/`--no-edit`, `--cleanup`, `--signoff`, `-S`/`--no-gpg-sign`) are
 /// **omitted** from the merge argv. They are commit-time concerns and are
 /// forwarded to the subsequent `git commit` step via [`render_commit_flags`].
@@ -391,10 +394,9 @@ impl EffectiveFlags {
 /// effect. The non-squash path keeps emitting them so existing regular-merge
 /// behavior is unchanged.
 pub fn render_flags(flags: &EffectiveFlags) -> Vec<String> {
-    let is_squash = flags.squash == Some(true);
+    let is_squash = matches!(flags.style, MergeStyle::Squash);
     let mut out: Vec<String> = Vec::new();
-    // Message-composing flags: emit only for non-squash paths. For squash
-    // merges these are forwarded to `git commit` via render_commit_flags.
+
     if !is_squash {
         if let Some(m) = &flags.message {
             out.extend(["-m".into(), m.clone()]);
@@ -407,31 +409,24 @@ pub fn render_flags(flags: &EffectiveFlags) -> Vec<String> {
             Some(false) => out.push("--no-edit".into()),
             None => {}
         }
-    }
-    // cleanup: emit only for non-squash paths. For squash merges this is
-    // forwarded to `git commit` via render_commit_flags.
-    if !is_squash {
         if let Some(c) = &flags.cleanup {
             out.extend(["--cleanup".into(), c.clone()]);
         }
     }
-    match flags.ff {
-        Some(FfMode::Auto) => out.push("--ff".into()),
-        Some(FfMode::Only) => out.push("--ff-only".into()),
-        Some(FfMode::Never) => out.push("--no-ff".into()),
-        None => {}
+
+    match flags.style {
+        MergeStyle::Merge => out.push("--no-ff".into()),
+        MergeStyle::Squash => out.push("--squash".into()),
+        MergeStyle::Rebase => out.push("--ff-only".into()),
+        MergeStyle::RebaseMerge => out.push("--no-ff".into()),
     }
-    match flags.squash {
-        Some(true) => out.push("--squash".into()),
-        Some(false) => out.push("--no-squash".into()),
-        None => {}
-    }
+
     match flags.commit {
         Some(true) => out.push("--commit".into()),
         Some(false) => out.push("--no-commit".into()),
         None => {}
     }
-    // signoff: emit only for non-squash paths.
+
     if !is_squash {
         match flags.signoff {
             Some(true) => out.push("--signoff".into()),
@@ -439,13 +434,14 @@ pub fn render_flags(flags: &EffectiveFlags) -> Vec<String> {
             None => {}
         }
     }
+
     if let Some(s) = &flags.strategy {
         out.extend(["-s".into(), s.clone()]);
     }
     for x in &flags.strategy_options {
         out.extend(["-X".into(), x.clone()]);
     }
-    // gpg-sign: emit only for non-squash paths.
+
     if !is_squash {
         match &flags.gpg_sign {
             Some(GpgSign::Default) => out.push("-S".into()),
@@ -454,19 +450,23 @@ pub fn render_flags(flags: &EffectiveFlags) -> Vec<String> {
             None => {}
         }
     }
+
     match flags.verify_signatures {
         Some(true) => out.push("--verify-signatures".into()),
         Some(false) => out.push("--no-verify-signatures".into()),
         None => {}
     }
+
     if flags.allow_unrelated_histories {
         out.push("--allow-unrelated-histories".into());
     }
+
     match flags.stat {
         Some(true) => out.push("--stat".into()),
         Some(false) => out.push("--no-stat".into()),
         None => {}
     }
+
     out
 }
 
@@ -629,12 +629,8 @@ impl MergeHookContext {
     ) -> Self {
         let mode = if sources.len() >= 2 {
             "octopus"
-        } else if flags.squash == Some(true) {
-            "squash"
-        } else if flags.ff == Some(FfMode::Only) {
-            "ff"
         } else {
-            "merge"
+            flags.style.as_str()
         };
         let mut env = BTreeMap::new();
         env.insert("DAFT_MERGE_SOURCES".into(), sources.join(" "));
@@ -1413,7 +1409,7 @@ fn execute_start_in_worktree(
     }
 
     // `git merge --squash` succeeded. Determine whether to commit or stage-only.
-    let is_squash = params.flags.squash == Some(true);
+    let is_squash = matches!(params.flags.style, MergeStyle::Squash);
     let no_commit = params.flags.commit == Some(false);
 
     if is_squash && !no_commit {
@@ -1453,7 +1449,7 @@ fn execute_start_in_worktree(
         // Editor-opening commit: inherit stdio so $EDITOR gets the terminal.
         // Pause the spinner so the editor attaches to a clean terminal.
         // Non-editor commit (--no-edit, -m, or -F supplied): capture output.
-        let (commit_status, commit_captured) = if params.flags.squash_would_open_editor() {
+        let (commit_status, commit_captured) = if params.flags.would_open_editor() {
             hooks.pause_spinner();
             let status_result = Command::new("git")
                 .args(&commit_argv)
@@ -1865,7 +1861,7 @@ fn execute_ephemeral_merge(
 
     if merge_result.status.success() {
         // `git merge --squash` succeeded: run commit step if needed.
-        let is_squash = params.flags.squash == Some(true);
+        let is_squash = matches!(params.flags.style, MergeStyle::Squash);
         let no_commit = params.flags.commit == Some(false);
 
         if is_squash && !no_commit {
@@ -1876,7 +1872,7 @@ fn execute_ephemeral_merge(
             // Editor-opening commit: inherit stdio so $EDITOR gets the terminal.
             // Pause the spinner so the editor attaches to a clean terminal.
             // Non-editor commit (--no-edit, -m, or -F supplied): capture output.
-            let (commit_status, commit_captured) = if params.flags.squash_would_open_editor() {
+            let (commit_status, commit_captured) = if params.flags.would_open_editor() {
                 hooks.pause_spinner();
                 let status_result = Command::new("git")
                     .args(&commit_argv)
@@ -2213,10 +2209,11 @@ pub fn is_pure_ff_eligible(
     if sources_len != 1 {
         return false;
     }
-    if flags.squash == Some(true) {
+    if matches!(flags.style, MergeStyle::Squash) {
         return false;
     }
-    if flags.ff == Some(FfMode::Never) {
+    if matches!(flags.style, MergeStyle::Merge) {
+        // Merge style always creates a merge commit — no FF.
         return false;
     }
     is_ancestor == Some(true)
@@ -3066,9 +3063,10 @@ mod tests {
     }
 
     #[test]
-    fn render_flags_empty_returns_empty_vec() {
+    fn render_flags_default_emits_no_ff() {
+        // Default style is Merge, which always emits --no-ff.
         let flags = EffectiveFlags::default();
-        assert!(render_flags(&flags).is_empty());
+        assert_eq!(render_flags(&flags), vec!["--no-ff"]);
     }
 
     #[test]
@@ -3078,37 +3076,53 @@ mod tests {
             file: Some(PathBuf::from("/tmp/msg.txt")),
             ..EffectiveFlags::default()
         };
+        // Default style is Merge → --no-ff is appended after message flags.
         assert_eq!(
             render_flags(&flags),
-            vec!["-m", "hello", "-F", "/tmp/msg.txt"]
+            vec!["-m", "hello", "-F", "/tmp/msg.txt", "--no-ff"]
         );
     }
 
     #[test]
-    fn render_flags_ff_auto() {
+    fn render_flags_merge_emits_no_ff() {
         let flags = EffectiveFlags {
-            ff: Some(FfMode::Auto),
+            style: MergeStyle::Merge,
             ..EffectiveFlags::default()
         };
-        assert_eq!(render_flags(&flags), vec!["--ff"]);
+        let argv = render_flags(&flags);
+        assert!(argv.contains(&"--no-ff".to_string()));
+        assert!(!argv.contains(&"--squash".to_string()));
     }
 
     #[test]
-    fn render_flags_ff_only() {
+    fn render_flags_squash_emits_squash() {
         let flags = EffectiveFlags {
-            ff: Some(FfMode::Only),
+            style: MergeStyle::Squash,
             ..EffectiveFlags::default()
         };
-        assert_eq!(render_flags(&flags), vec!["--ff-only"]);
+        let argv = render_flags(&flags);
+        assert!(argv.contains(&"--squash".to_string()));
+        assert!(!argv.contains(&"--no-ff".to_string()));
     }
 
     #[test]
-    fn render_flags_ff_never() {
+    fn render_flags_rebase_emits_ff_only() {
         let flags = EffectiveFlags {
-            ff: Some(FfMode::Never),
+            style: MergeStyle::Rebase,
             ..EffectiveFlags::default()
         };
-        assert_eq!(render_flags(&flags), vec!["--no-ff"]);
+        let argv = render_flags(&flags);
+        assert!(argv.contains(&"--ff-only".to_string()));
+    }
+
+    #[test]
+    fn render_flags_rebase_merge_emits_no_ff() {
+        let flags = EffectiveFlags {
+            style: MergeStyle::RebaseMerge,
+            ..EffectiveFlags::default()
+        };
+        let argv = render_flags(&flags);
+        assert!(argv.contains(&"--no-ff".to_string()));
     }
 
     #[test]
@@ -3117,9 +3131,10 @@ mod tests {
             strategy_options: vec!["ours".into(), "ignore-space-at-eol".into()],
             ..EffectiveFlags::default()
         };
+        // Default style is Merge → --no-ff before strategy options.
         assert_eq!(
             render_flags(&flags),
-            vec!["-X", "ours", "-X", "ignore-space-at-eol"]
+            vec!["--no-ff", "-X", "ours", "-X", "ignore-space-at-eol"]
         );
     }
 
@@ -3129,7 +3144,8 @@ mod tests {
             gpg_sign: Some(GpgSign::Default),
             ..EffectiveFlags::default()
         };
-        assert_eq!(render_flags(&flags), vec!["-S"]);
+        // Default style is Merge → --no-ff before gpg sign.
+        assert_eq!(render_flags(&flags), vec!["--no-ff", "-S"]);
     }
 
     #[test]
@@ -3138,7 +3154,7 @@ mod tests {
             gpg_sign: Some(GpgSign::KeyId("ABC123".into())),
             ..EffectiveFlags::default()
         };
-        assert_eq!(render_flags(&flags), vec!["-SABC123"]);
+        assert_eq!(render_flags(&flags), vec!["--no-ff", "-SABC123"]);
     }
 
     #[test]
@@ -3147,7 +3163,7 @@ mod tests {
             gpg_sign: Some(GpgSign::Disabled),
             ..EffectiveFlags::default()
         };
-        assert_eq!(render_flags(&flags), vec!["--no-gpg-sign"]);
+        assert_eq!(render_flags(&flags), vec!["--no-ff", "--no-gpg-sign"]);
     }
 
     #[test]
@@ -3160,21 +3176,21 @@ mod tests {
             edit: Some(false),
             ..EffectiveFlags::default()
         };
-        assert_eq!(render_flags(&yes), vec!["--edit"]);
-        assert_eq!(render_flags(&no), vec!["--no-edit"]);
+        // Default style is Merge → --no-ff appended.
+        assert_eq!(render_flags(&yes), vec!["--edit", "--no-ff"]);
+        assert_eq!(render_flags(&no), vec!["--no-edit", "--no-ff"]);
     }
 
     #[test]
     fn render_flags_combination_preserves_declared_order_non_squash() {
-        // Non-squash: all flags emitted as before. Lock down the canonical
-        // emission order (message, edit, cleanup, ff, commit, signoff,
+        // Non-squash (Merge): all flags emitted. Lock down the canonical
+        // emission order (message, edit, cleanup, style, commit, signoff,
         // strategy, strategy-options, gpg, verify, allow-unrelated, stat).
         let flags = EffectiveFlags {
             message: Some("m".into()),
             edit: Some(false),
             cleanup: Some("strip".into()),
-            ff: Some(FfMode::Never),
-            squash: None,
+            style: MergeStyle::Merge,
             commit: None,
             signoff: Some(true),
             strategy: Some("recursive".into()),
@@ -3217,8 +3233,7 @@ mod tests {
             message: Some("m".into()),
             edit: Some(false),
             cleanup: Some("strip".into()),
-            ff: Some(FfMode::Never),
-            squash: Some(true),
+            style: MergeStyle::Squash,
             commit: Some(false),
             signoff: Some(true),
             strategy: Some("recursive".into()),
@@ -3232,7 +3247,6 @@ mod tests {
         assert_eq!(
             render_flags(&flags),
             vec![
-                "--no-ff",
                 "--squash",
                 "--no-commit",
                 "-s",
@@ -3248,11 +3262,11 @@ mod tests {
 
     #[test]
     fn render_flags_squash_suppresses_cleanup() {
-        // --cleanup must NOT be emitted by render_flags when squash is true.
+        // --cleanup must NOT be emitted by render_flags when squash style is used.
         // git merge --squash ignores cleanup; it must go to render_commit_flags.
         let flags = EffectiveFlags {
             cleanup: Some("strip".into()),
-            squash: Some(true),
+            style: MergeStyle::Squash,
             ..EffectiveFlags::default()
         };
         let result = render_flags(&flags);
@@ -3265,22 +3279,24 @@ mod tests {
     #[test]
     fn render_flags_non_squash_emits_cleanup() {
         // --cleanup IS emitted by render_flags on the regular (non-squash) path.
+        // Default style is Merge, so --no-ff is also emitted.
         let flags = EffectiveFlags {
             cleanup: Some("strip".into()),
             ..EffectiveFlags::default()
         };
-        assert_eq!(render_flags(&flags), vec!["--cleanup", "strip"]);
+        assert_eq!(render_flags(&flags), vec!["--cleanup", "strip", "--no-ff"]);
     }
 
     #[test]
     fn render_flags_allow_unrelated_histories_only_when_true() {
         let off = EffectiveFlags::default();
-        assert!(render_flags(&off).is_empty());
+        // Default is Merge style, so --no-ff is always emitted.
+        assert!(!render_flags(&off).contains(&"--allow-unrelated-histories".to_string()));
         let on = EffectiveFlags {
             allow_unrelated_histories: true,
             ..EffectiveFlags::default()
         };
-        assert_eq!(render_flags(&on), vec!["--allow-unrelated-histories"]);
+        assert!(render_flags(&on).contains(&"--allow-unrelated-histories".to_string()));
     }
 
     #[test]
@@ -3597,47 +3613,49 @@ mod tests {
     // ── end squash-staged detection tests ──────────────────────────────────
 
     #[test]
-    fn ff_eligible_for_single_ancestor_default_flags() {
-        assert!(is_pure_ff_eligible(
-            1,
-            &EffectiveFlags::default(),
-            Some(true)
-        ));
-    }
-
-    #[test]
-    fn ff_not_eligible_for_multi_source() {
-        // Octopus merges always create a merge commit — never a pure FF.
-        assert!(!is_pure_ff_eligible(
-            2,
-            &EffectiveFlags::default(),
-            Some(true)
-        ));
-    }
-
-    #[test]
-    fn ff_not_eligible_when_not_ancestor() {
-        // Divergent histories: target is NOT an ancestor of source.
-        assert!(!is_pure_ff_eligible(
-            1,
-            &EffectiveFlags::default(),
-            Some(false)
-        ));
-    }
-
-    #[test]
-    fn ff_not_eligible_when_squash() {
+    fn ff_eligible_for_single_ancestor_rebase_style() {
+        // Rebase style allows FF when target is ancestor of source.
         let flags = EffectiveFlags {
-            squash: Some(true),
+            style: MergeStyle::Rebase,
+            ..EffectiveFlags::default()
+        };
+        assert!(is_pure_ff_eligible(1, &flags, Some(true)));
+    }
+
+    #[test]
+    fn ff_not_eligible_for_merge_style() {
+        // Merge style always creates a merge commit — never a pure FF.
+        let flags = EffectiveFlags {
+            style: MergeStyle::Merge,
             ..EffectiveFlags::default()
         };
         assert!(!is_pure_ff_eligible(1, &flags, Some(true)));
     }
 
     #[test]
-    fn ff_not_eligible_when_no_ff() {
+    fn ff_not_eligible_for_multi_source() {
+        // Octopus merges always create a merge commit — never a pure FF.
         let flags = EffectiveFlags {
-            ff: Some(FfMode::Never),
+            style: MergeStyle::Rebase,
+            ..EffectiveFlags::default()
+        };
+        assert!(!is_pure_ff_eligible(2, &flags, Some(true)));
+    }
+
+    #[test]
+    fn ff_not_eligible_when_not_ancestor() {
+        // Divergent histories: target is NOT an ancestor of source.
+        let flags = EffectiveFlags {
+            style: MergeStyle::Rebase,
+            ..EffectiveFlags::default()
+        };
+        assert!(!is_pure_ff_eligible(1, &flags, Some(false)));
+    }
+
+    #[test]
+    fn ff_not_eligible_when_squash() {
+        let flags = EffectiveFlags {
+            style: MergeStyle::Squash,
             ..EffectiveFlags::default()
         };
         assert!(!is_pure_ff_eligible(1, &flags, Some(true)));
@@ -3646,22 +3664,21 @@ mod tests {
     #[test]
     fn ff_not_eligible_when_is_ancestor_unknown() {
         // Conservative: without proof, never advance a ref.
-        assert!(!is_pure_ff_eligible(1, &EffectiveFlags::default(), None));
+        let flags = EffectiveFlags {
+            style: MergeStyle::Rebase,
+            ..EffectiveFlags::default()
+        };
+        assert!(!is_pure_ff_eligible(1, &flags, None));
     }
 
     #[test]
-    fn ff_eligible_allows_explicit_ff_auto_and_only() {
-        // --ff (Auto) and --ff-only (Only) do not forbid FF — they require it.
-        let auto = EffectiveFlags {
-            ff: Some(FfMode::Auto),
+    fn ff_eligible_for_rebase_merge_style() {
+        // RebaseMerge style also allows FF when target is ancestor of source.
+        let flags = EffectiveFlags {
+            style: MergeStyle::RebaseMerge,
             ..EffectiveFlags::default()
         };
-        let only = EffectiveFlags {
-            ff: Some(FfMode::Only),
-            ..EffectiveFlags::default()
-        };
-        assert!(is_pure_ff_eligible(1, &auto, Some(true)));
-        assert!(is_pure_ff_eligible(1, &only, Some(true)));
+        assert!(is_pure_ff_eligible(1, &flags, Some(true)));
     }
 
     // --- decide_adopt -------------------------------------------------------
@@ -3866,7 +3883,7 @@ mod tests {
     #[test]
     fn pre_context_squash_mode() {
         let flags = EffectiveFlags {
-            squash: Some(true),
+            style: MergeStyle::Squash,
             ..EffectiveFlags::default()
         };
         let target = target_with_worktree("main", "/p/main");
@@ -3878,22 +3895,22 @@ mod tests {
     }
 
     #[test]
-    fn pre_context_ff_mode() {
+    fn pre_context_rebase_mode() {
         let flags = EffectiveFlags {
-            ff: Some(FfMode::Only),
+            style: MergeStyle::Rebase,
             ..EffectiveFlags::default()
         };
         let target = target_with_worktree("main", "/p/main");
         let ctx = MergeHookContext::for_pre(&["feat".into()], &target, &flags, false, false);
         assert_eq!(
             ctx.env.get("DAFT_MERGE_MODE").map(String::as_str),
-            Some("ff")
+            Some("rebase")
         );
     }
 
     #[test]
     fn pre_context_merge_mode_default() {
-        // Single source, no squash, no ff-only → plain "merge".
+        // Single source, default Merge style → "merge".
         let flags = EffectiveFlags::default();
         let target = target_with_worktree("main", "/p/main");
         let ctx = MergeHookContext::for_pre(&["feat".into()], &target, &flags, false, false);
@@ -4064,61 +4081,75 @@ mod tests {
         );
     }
 
-    // ── squash_would_open_editor ──────────────────────────────────────────
+    // ── would_open_editor ──────────────────────────────────────────────────
 
     #[test]
-    fn squash_would_open_editor_true_when_no_message_flags() {
+    fn would_open_editor_true_for_squash_with_no_message_flags() {
         let flags = EffectiveFlags {
-            squash: Some(true),
+            style: MergeStyle::Squash,
             ..EffectiveFlags::default()
         };
-        assert!(flags.squash_would_open_editor());
+        assert!(flags.would_open_editor());
     }
 
     #[test]
-    fn squash_would_open_editor_false_when_no_squash() {
-        let flags = EffectiveFlags::default(); // squash is None
-        assert!(!flags.squash_would_open_editor());
-    }
-
-    #[test]
-    fn squash_would_open_editor_false_when_no_commit() {
+    fn would_open_editor_true_for_merge_style_with_no_message_flags() {
+        // Merge style also produces a commit message and may open the editor.
         let flags = EffectiveFlags {
-            squash: Some(true),
+            style: MergeStyle::Merge,
+            ..EffectiveFlags::default()
+        };
+        assert!(flags.would_open_editor());
+    }
+
+    #[test]
+    fn would_open_editor_false_for_rebase_style() {
+        // Rebase style does not produce a merge commit message.
+        let flags = EffectiveFlags {
+            style: MergeStyle::Rebase,
+            ..EffectiveFlags::default()
+        };
+        assert!(!flags.would_open_editor());
+    }
+
+    #[test]
+    fn would_open_editor_false_when_no_commit() {
+        let flags = EffectiveFlags {
+            style: MergeStyle::Squash,
             commit: Some(false), // --no-commit
             ..EffectiveFlags::default()
         };
-        assert!(!flags.squash_would_open_editor());
+        assert!(!flags.would_open_editor());
     }
 
     #[test]
-    fn squash_would_open_editor_false_when_message_set() {
+    fn would_open_editor_false_when_message_set() {
         let flags = EffectiveFlags {
-            squash: Some(true),
+            style: MergeStyle::Squash,
             message: Some("my message".into()),
             ..EffectiveFlags::default()
         };
-        assert!(!flags.squash_would_open_editor());
+        assert!(!flags.would_open_editor());
     }
 
     #[test]
-    fn squash_would_open_editor_false_when_no_edit() {
+    fn would_open_editor_false_when_no_edit() {
         let flags = EffectiveFlags {
-            squash: Some(true),
+            style: MergeStyle::Squash,
             edit: Some(false), // --no-edit
             ..EffectiveFlags::default()
         };
-        assert!(!flags.squash_would_open_editor());
+        assert!(!flags.would_open_editor());
     }
 
     #[test]
-    fn squash_would_open_editor_false_when_file_set() {
+    fn would_open_editor_false_when_file_set() {
         let flags = EffectiveFlags {
-            squash: Some(true),
+            style: MergeStyle::Squash,
             file: Some(std::path::PathBuf::from("/tmp/msg.txt")),
             ..EffectiveFlags::default()
         };
-        assert!(!flags.squash_would_open_editor());
+        assert!(!flags.would_open_editor());
     }
 
     // ── render_commit_flags ──────────────────────────────────────────────────
@@ -4233,12 +4264,12 @@ mod tests {
         );
     }
 
-    // ── render_flags squash-aware: message-flags stripped when squash=true ──
+    // ── render_flags squash-aware: message-flags stripped when squash style ──
 
     #[test]
     fn render_flags_squash_excludes_message_flag() {
         let flags = EffectiveFlags {
-            squash: Some(true),
+            style: MergeStyle::Squash,
             message: Some("my msg".into()),
             ..EffectiveFlags::default()
         };
@@ -4251,7 +4282,7 @@ mod tests {
     #[test]
     fn render_flags_squash_excludes_file_flag() {
         let flags = EffectiveFlags {
-            squash: Some(true),
+            style: MergeStyle::Squash,
             file: Some(PathBuf::from("/tmp/f.txt")),
             ..EffectiveFlags::default()
         };
@@ -4263,7 +4294,7 @@ mod tests {
     #[test]
     fn render_flags_squash_excludes_edit_flag() {
         let flags = EffectiveFlags {
-            squash: Some(true),
+            style: MergeStyle::Squash,
             edit: Some(false),
             ..EffectiveFlags::default()
         };
@@ -4275,7 +4306,7 @@ mod tests {
     #[test]
     fn render_flags_squash_excludes_signoff() {
         let flags = EffectiveFlags {
-            squash: Some(true),
+            style: MergeStyle::Squash,
             signoff: Some(true),
             ..EffectiveFlags::default()
         };
@@ -4287,7 +4318,7 @@ mod tests {
     #[test]
     fn render_flags_squash_excludes_gpg_sign() {
         let flags = EffectiveFlags {
-            squash: Some(true),
+            style: MergeStyle::Squash,
             gpg_sign: Some(GpgSign::Default),
             ..EffectiveFlags::default()
         };
@@ -4757,10 +4788,14 @@ mod tests {
 
         let git = GitCommand::new(false);
         let mut runner = NullHookRunner;
+        // Use Rebase style to allow fast-forward when source is an ancestor.
         let params = StartParams {
             sources: vec!["feature".to_string()],
             target: None,
-            flags: EffectiveFlags::default(),
+            flags: EffectiveFlags {
+                style: MergeStyle::Rebase,
+                ..EffectiveFlags::default()
+            },
             adopt: AdoptChoice::default(),
             require_clean_target: false,
             cleanup_intent: None,
@@ -4774,7 +4809,7 @@ mod tests {
             !outcome.captured_git_output.is_empty(),
             "captured_git_output must be populated on FF success path"
         );
-        // Single-commit feature branch → FF.
+        // Single-commit feature branch → FF with rebase style.
         assert!(
             outcome.was_fast_forward,
             "single-commit feature branch should fast-forward"
@@ -4836,9 +4871,9 @@ mod tests {
 
         let git = GitCommand::new(false);
         let mut runner = PauseTrackingRunner::default();
-        // squash=Some(true) with no message flags → squash_would_open_editor() == true
+        // Squash style with no message flags → would_open_editor() == true
         let flags = EffectiveFlags {
-            squash: Some(true),
+            style: MergeStyle::Squash,
             ..EffectiveFlags::default()
         };
         let params = StartParams {

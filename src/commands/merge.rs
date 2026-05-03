@@ -62,8 +62,7 @@ pub struct Args {
         conflicts_with_all = [
             "continue_merge", "quit",
             "message", "file", "edit", "no_edit", "cleanup",
-            "ff", "no_ff", "ff_only",
-            "squash", "no_squash",
+            "style_merge", "squash", "rebase", "rebase_merge",
             "commit", "no_commit",
             "signoff", "no_signoff",
             "strategy", "strategy_options",
@@ -72,7 +71,7 @@ pub struct Args {
             "allow_unrelated_histories",
             "stat", "no_stat",
             "adopt_target", "no_adopt_target", "yes",
-            "remove", "and_branch",
+            "remove_branch", "keep_branch", "set_default",
         ],
     )]
     pub abort: bool,
@@ -87,15 +86,14 @@ pub struct Args {
         long = "continue",
         conflicts_with_all = [
             "abort", "quit",
-            "ff", "no_ff", "ff_only",
-            "squash", "no_squash",
+            "style_merge", "squash", "rebase", "rebase_merge",
             "commit", "no_commit",
             "strategy", "strategy_options",
             "verify_signatures", "no_verify_signatures",
             "allow_unrelated_histories",
             "stat", "no_stat",
             "adopt_target", "no_adopt_target", "yes",
-            "remove", "and_branch",
+            "remove_branch", "keep_branch", "set_default",
         ],
     )]
     pub continue_merge: bool,
@@ -106,8 +104,7 @@ pub struct Args {
         conflicts_with_all = [
             "abort", "continue_merge",
             "message", "file", "edit", "no_edit", "cleanup",
-            "ff", "no_ff", "ff_only",
-            "squash", "no_squash",
+            "style_merge", "squash", "rebase", "rebase_merge",
             "commit", "no_commit",
             "signoff", "no_signoff",
             "strategy", "strategy_options",
@@ -116,53 +113,69 @@ pub struct Args {
             "allow_unrelated_histories",
             "stat", "no_stat",
             "adopt_target", "no_adopt_target", "yes",
-            "remove", "and_branch",
+            "remove_branch", "keep_branch", "set_default",
         ],
     )]
     pub quit: bool,
 
     // --- Commit message and editor ---
     /// Commit message for the merge commit (mirrors `git merge -m`).
-    #[arg(short = 'm', value_name = "MSG")]
+    #[arg(short = 'm', value_name = "MSG", conflicts_with = "rebase")]
     pub message: Option<String>,
     /// Read the commit message from FILE (mirrors `git merge -F`).
-    #[arg(short = 'F', long = "file", value_name = "FILE")]
+    #[arg(
+        short = 'F',
+        long = "file",
+        value_name = "FILE",
+        conflicts_with = "rebase"
+    )]
     pub file: Option<std::path::PathBuf>,
     /// Launch the editor to edit the merge commit message.
-    #[arg(long = "edit", conflicts_with = "no_edit")]
+    #[arg(long = "edit", conflicts_with_all = ["no_edit", "rebase"])]
     pub edit: bool,
     /// Accept the auto-generated merge commit message without editing.
-    #[arg(long = "no-edit", conflicts_with = "edit")]
+    #[arg(long = "no-edit", conflicts_with_all = ["edit", "rebase"])]
     pub no_edit: bool,
     /// Message cleanup mode (mirrors `git merge --cleanup`).
-    #[arg(long = "cleanup", value_name = "MODE")]
+    #[arg(long = "cleanup", value_name = "MODE", conflicts_with = "rebase")]
     pub cleanup: Option<String>,
 
-    // --- Fast-forward control ---
-    /// Allow fast-forward merges (git's default behavior).
-    #[arg(long = "ff", conflicts_with_all = ["no_ff", "ff_only"])]
-    pub ff: bool,
-    /// Always create a merge commit, even when fast-forward is possible.
-    #[arg(long = "no-ff", conflicts_with_all = ["ff", "ff_only"])]
-    pub no_ff: bool,
-    /// Refuse to merge if fast-forward is not possible.
-    #[arg(long = "ff-only", conflicts_with_all = ["ff", "no_ff"])]
-    pub ff_only: bool,
+    // --- Merge style (mutually exclusive; default = merge) ---
+    /// Explicit merge style — always create a merge commit. This is the default;
+    /// the flag exists for canceling a config-set default style.
+    #[arg(
+        long = "merge",
+        conflicts_with_all = ["squash", "rebase", "rebase_merge"],
+    )]
+    pub style_merge: bool,
 
-    // --- Squash ---
-    /// Squash the source's changes into a single staged diff, without creating a merge commit.
-    #[arg(long = "squash", conflicts_with = "no_squash")]
+    /// Squash style — collapse source's commits into one squashed commit on target.
+    #[arg(
+        long = "squash",
+        conflicts_with_all = ["style_merge", "rebase", "rebase_merge"],
+    )]
     pub squash: bool,
-    /// Explicitly disable squash (cancel a config default of `merge.squash`).
-    #[arg(long = "no-squash", conflicts_with = "squash")]
-    pub no_squash: bool,
+
+    /// Rebase style — rebase source onto target, then fast-forward (linear, preserves commits).
+    #[arg(
+        long = "rebase",
+        conflicts_with_all = ["style_merge", "squash", "rebase_merge"],
+    )]
+    pub rebase: bool,
+
+    /// Rebase-merge style — rebase source onto target, then create a merge commit.
+    #[arg(
+        long = "rebase-merge",
+        conflicts_with_all = ["style_merge", "squash", "rebase"],
+    )]
+    pub rebase_merge: bool,
 
     // --- Commit control ---
     /// Automatically create the merge commit after a successful merge.
     #[arg(long = "commit", conflicts_with = "no_commit")]
     pub commit: bool,
     /// Leave the merge staged without committing.
-    #[arg(long = "no-commit", conflicts_with_all = ["commit", "remove", "and_branch"])]
+    #[arg(long = "no-commit", conflicts_with_all = ["commit", "remove_branch"])]
     pub no_commit: bool,
 
     // --- Signoff ---
@@ -205,7 +218,7 @@ pub struct Args {
 
     // --- History ---
     /// Allow merging histories that share no common ancestor.
-    #[arg(long = "allow-unrelated-histories")]
+    #[arg(long = "allow-unrelated-histories", conflicts_with_all = ["rebase", "rebase_merge"])]
     pub allow_unrelated_histories: bool,
 
     // --- Diffstat ---
@@ -234,14 +247,20 @@ pub struct Args {
     pub yes: bool,
 
     // --- Post-merge cleanup (start-mode only) ---
-    /// Remove the source worktree after a successful merge.
-    #[arg(short = 'r', long = "remove")]
-    pub remove: bool,
+    /// Remove the source worktree and delete the source branch. The local/remote
+    /// behavior follows `branch.deleteRemote` (defaults to local-only).
+    #[arg(short = 'r', long = "remove-branch", conflicts_with = "keep_branch")]
+    pub remove_branch: bool,
 
-    /// Also delete the source branch (requires --remove). Uses `git branch -d`
-    /// semantics; refuses to delete if the branch is not fully merged.
-    #[arg(short = 'b', long = "and-branch", requires = "remove")]
-    pub and_branch: bool,
+    /// Explicit keep — for canceling a config-set `merge.cleanup = remove-branch`.
+    #[arg(long = "keep-branch", conflicts_with = "remove_branch")]
+    pub keep_branch: bool,
+
+    // --- Defaults persistence ---
+    /// Write the resolved style/cleanup choices to `git config --local` after
+    /// the merge succeeds.
+    #[arg(long = "set-default")]
+    pub set_default: bool,
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     pub verbose: bool,
@@ -253,10 +272,7 @@ pub struct Args {
 /// that each paired bool (e.g. `edit`/`no_edit`) has at most one side true,
 /// so `else if` chains below are exhaustive in practice.
 ///
-/// Precedence: CLI flags > `daft.merge.*` config > built-in defaults. A
-/// paired negation flag (e.g. `--no-ff`, `--no-signoff`) always wins over the
-/// config-provided default; that's why each chain checks both the positive
-/// and negative CLI flag before consulting settings.
+/// Precedence: CLI flags > `daft.merge.*` config > built-in defaults.
 ///
 /// `-S` has dual semantics in git: bare `-S` means "use the default key",
 /// and `-S<KEYID>` binds a specific key. Clap exposes this via
@@ -268,39 +284,21 @@ fn effective_flags_from_args_and_settings(
     args: &Args,
     settings: &DaftSettings,
 ) -> crate::core::worktree::merge::EffectiveFlags {
-    use crate::core::worktree::merge::{EffectiveFlags, FfMode, GpgSign};
+    use crate::core::worktree::merge::{EffectiveFlags, GpgSign, MergeStyle};
 
-    // ff: CLI wins; else always emit the setting's preference so git sees
-    // a concrete flag. Emitting `Some(Auto)` even for the default is
-    // deliberate: `render_flags` turns it into `--ff`, which is a no-op for
-    // git but makes the invocation self-describing in verbose logs.
-    let ff = if args.ff_only {
-        Some(FfMode::Only)
-    } else if args.no_ff {
-        Some(FfMode::Never)
-    } else if args.ff {
-        Some(FfMode::Auto)
+    // style: CLI wins; default = settings.merge_style.
+    let style = if args.style_merge {
+        MergeStyle::Merge
+    } else if args.squash {
+        MergeStyle::Squash
+    } else if args.rebase {
+        MergeStyle::Rebase
+    } else if args.rebase_merge {
+        MergeStyle::RebaseMerge
     } else {
-        Some(settings.merge_ff)
+        settings.merge_style
     };
 
-    // squash: CLI wins; else only emit when settings enables it (the default
-    // `merge_squash = false` matches `None = git's default`, so stay `None`
-    // to keep the argv minimal).
-    let squash = if args.squash {
-        Some(true)
-    } else if args.no_squash {
-        Some(false)
-    } else if settings.merge_squash {
-        Some(true)
-    } else {
-        None
-    };
-
-    // commit: CLI wins; else only emit when settings overrides to `false`
-    // (`merge_commit = true` is git's default, so stay `None`). `--no-commit`
-    // and a false config value collapse into the same `Some(false)` outcome —
-    // there's no observable difference to git.
     let commit = if args.commit {
         Some(true)
     } else if args.no_commit || !settings.merge_commit {
@@ -309,9 +307,6 @@ fn effective_flags_from_args_and_settings(
         None
     };
 
-    // edit: CLI wins; -y/--yes implies --no-edit for the squash commit step
-    // (avoids opening an editor in non-interactive contexts); settings
-    // provides `Option<bool>` directly (None = let git decide from TTY).
     let edit = if args.edit {
         Some(true)
     } else if args.no_edit || args.yes {
@@ -358,8 +353,6 @@ fn effective_flags_from_args_and_settings(
         None
     };
 
-    // stat has no settings key (deliberately — it's a visual-output flag, not
-    // a semantic default worth persisting). Preserve the original behavior.
     let stat = if args.stat {
         Some(true)
     } else if args.no_stat {
@@ -368,20 +361,14 @@ fn effective_flags_from_args_and_settings(
         None
     };
 
-    // strategy: CLI wins over config; either may be `None`.
     let strategy = args
         .strategy
         .clone()
         .or_else(|| settings.merge_strategy.clone());
 
-    // strategy_options accumulate: config first, then CLI appended. Duplicate
-    // `-X` entries are harmless to git (last wins) and mirror the way
-    // strategy options stack on the CLI itself.
     let mut strategy_options = settings.merge_strategy_options.clone();
     strategy_options.extend(args.strategy_options.iter().cloned());
 
-    // allow_unrelated_histories: either side can enable; there is no
-    // negating CLI flag, so CLI-false + config-true yields `true`.
     let allow_unrelated_histories =
         args.allow_unrelated_histories || settings.merge_allow_unrelated_histories;
 
@@ -390,8 +377,7 @@ fn effective_flags_from_args_and_settings(
         file: args.file.clone(),
         edit,
         cleanup: args.cleanup.clone(),
-        ff,
-        squash,
+        style,
         commit,
         signoff,
         strategy,
@@ -400,6 +386,23 @@ fn effective_flags_from_args_and_settings(
         verify_signatures,
         allow_unrelated_histories,
         stat,
+    }
+}
+
+/// Resolve the effective cleanup kind from CLI args and settings.
+///
+/// CLI flags (`--remove-branch`, `--keep-branch`) win over settings.
+fn effective_cleanup_from_args_and_settings(
+    args: &Args,
+    settings: &DaftSettings,
+) -> crate::core::worktree::merge::CleanupKind {
+    use crate::core::worktree::merge::CleanupKind;
+    if args.remove_branch {
+        CleanupKind::RemoveBranch
+    } else if args.keep_branch {
+        CleanupKind::Keep
+    } else {
+        settings.merge_cleanup
     }
 }
 
@@ -509,7 +512,7 @@ pub fn run() -> Result<()> {
     // or receive EOF and abort, leaving the worktree in a half-merged state.
     // Callers in non-TTY contexts (CI, piped scripts) should supply
     // --no-edit, -m <msg>, or -F <file> instead.
-    if flags.squash_would_open_editor() && !std::io::stdin().is_terminal() {
+    if flags.would_open_editor() && !std::io::stdin().is_terminal() {
         anyhow::bail!(
             "No TTY available for the commit-message editor.\n\
              Pass --no-edit to use the auto-generated message, \
@@ -517,31 +520,24 @@ pub fn run() -> Result<()> {
         );
     }
 
+    // Resolve cleanup kind from CLI + settings.
+    let cleanup_kind = effective_cleanup_from_args_and_settings(&args, &settings);
+
     // Pre-flight cleanup-vs-no-commit guard: catch the diagonal case where
     // `daft.merge.commit=false` is set in git config (captured as
     // `flags.commit == Some(false)`) while cleanup is requested via CLI flags
-    // or config (`-r`, `-rb`, `daft.merge.postMerge.removeSourceWorktree=true`,
-    // `daft.merge.postMerge.alsoRemoveSourceBranch=true`).
-    //
-    // Clap's `conflicts_with_all` on `--no-commit` catches the pure-CLI case
-    // at parse time (exit 2). `validate_merge_settings` in `DaftSettings::load`
-    // catches the pure-config case. Neither catches this diagonal: config
-    // disables commit while CLI adds cleanup. We check it here, after
-    // `effective_flags_from_args_and_settings` has merged both sources, so
-    // we see the true effective intent.
-    //
-    // Compute the effective cleanup flags here for the guard; they are also
-    // consumed in the success branch below. `args` and `settings` are still
-    // in scope at both sites.
-    let effective_remove = args.remove || settings.merge_post_merge_remove_source_worktree;
-    let effective_and_branch = effective_remove
-        && (args.and_branch || settings.merge_post_merge_also_remove_source_branch);
-    if matches!(flags.commit, Some(false)) && (effective_remove || effective_and_branch) {
+    // or config. Clap's `conflicts_with_all` on `--no-commit` catches the
+    // pure-CLI case at parse time (exit 2). `validate_merge_settings` in
+    // `DaftSettings::load` catches the pure-config case. Neither catches this
+    // diagonal: config disables commit while CLI adds cleanup. We check it
+    // here, after `effective_flags_from_args_and_settings` has merged both
+    // sources, so we see the true effective intent.
+    if matches!(flags.commit, Some(false))
+        && cleanup_kind == crate::core::worktree::merge::CleanupKind::RemoveBranch
+    {
         anyhow::bail!(
             "--no-commit / daft.merge.commit=false is incompatible with cleanup \
-             (-r / -rb / daft.merge.postMerge.removeSourceWorktree=true / \
-             daft.merge.postMerge.alsoRemoveSourceBranch=true): \
-             cleanup requires a committed merge."
+             (--remove-branch / daft.merge.cleanup=remove-branch); cleanup requires a committed merge."
         );
     }
 
@@ -565,11 +561,13 @@ pub fn run() -> Result<()> {
     // This is passed to the core so it can write the daft-merge-intent.json
     // marker BEFORE git commit, enabling --continue to resume cleanup after
     // an editor abort.
-    let squash_requested = flags.squash == Some(true);
-    let cleanup_intent = if squash_requested && effective_remove {
+    use crate::core::worktree::merge::{CleanupKind, MergeStyle};
+    let squash_requested = matches!(flags.style, MergeStyle::Squash);
+    let cleanup_requested = cleanup_kind == CleanupKind::RemoveBranch;
+    let cleanup_intent = if squash_requested && cleanup_requested {
         Some(crate::core::worktree::merge::MergeIntentTemplate {
-            remove_worktree: effective_remove,
-            also_branch: effective_and_branch,
+            remove_worktree: true,
+            also_branch: true,
         })
     } else {
         None
@@ -702,7 +700,7 @@ pub fn run() -> Result<()> {
         // This check ONLY fires on the squash-committed + cleanup path.
         // Regular merges use git's safe `branch -d` reachability check
         // (already in execute_cleanup Phase 1 when squash_committed=false).
-        let squash_cleanup_stable = if outcome.squash_commit_sha.is_some() && effective_remove {
+        let squash_cleanup_stable = if outcome.squash_commit_sha.is_some() && cleanup_requested {
             let mut moved_sources: Vec<String> = Vec::new();
             for (src, captured_sha) in params.sources.iter().zip(outcome.source_shas.iter()) {
                 match git.rev_parse(src) {
@@ -796,19 +794,18 @@ pub fn run() -> Result<()> {
         // — the `already_up_to_date` and `failed` arms above have already
         // returned or exited.
         //
-        // `effective_remove` and `effective_and_branch` were computed
-        // pre-flight above (before `execute_start`) to allow the
-        // no-commit + cleanup guard to fire early. Reuse them here.
+        // `cleanup_kind` was resolved pre-flight above to allow the
+        // no-commit + cleanup guard to fire early. Reuse here.
         //
         // `squash_cleanup_stable` is true when the squash-committed path
         // passed the stability check — in that case we use `branch -D`
         // (justified by content equivalence proof). Otherwise `squash_committed`
         // stays false and plan_cleanup uses the standard reachability check
         // (delegated to branch_delete::execute's keep_local_branch=false path).
-        if effective_remove {
+        if cleanup_kind == CleanupKind::RemoveBranch {
             let cleanup_opts = crate::core::worktree::merge::CleanupOptions {
-                remove_worktree: effective_remove,
-                also_branch: effective_and_branch,
+                remove_worktree: true,
+                also_branch: true,
                 squash_committed: squash_cleanup_stable,
             };
             let cleanup_result: Result<()> = (|| {
@@ -856,15 +853,15 @@ pub fn run() -> Result<()> {
                         // default branch). Setting force=true here bypasses
                         // branch_delete's redundant default-branch reachability
                         // check, which would incorrectly reject cross-target
-                        // merges (e.g. `--into develop -rb` when feature is not
-                        // yet reachable from main). For squash-committed items,
-                        // item.force_delete is already true, so this is a no-op
-                        // for that path.
+                        // merges (e.g. `--into develop --remove-branch` when
+                        // feature is not yet reachable from main). For
+                        // squash-committed items, item.force_delete is already
+                        // true, so this is a no-op for that path.
                         force: true,
                         use_gitoxide: settings.use_gitoxide,
                         is_quiet: false,
                         remote_name: settings.remote.clone(),
-                        delete_remote: false,
+                        delete_remote: settings.branch_delete_remote,
                         remote_only: false,
                         keep_local_branch,
                         prune_cd_target: settings.prune_cd_target,

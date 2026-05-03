@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-merge \- Merge branches across worktrees
 .SH SYNOPSIS
-\fBgit\-worktree\-merge\fR [\fB\-\-into\fR] [\fB\-\-abort\fR] [\fB\-\-continue\fR] [\fB\-\-quit\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-ff\fR] [\fB\-\-no\-ff\fR] [\fB\-\-ff\-only\fR] [\fB\-\-squash\fR] [\fB\-\-no\-squash\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-\-adopt\-target\fR] [\fB\-\-no\-adopt\-target\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-r\fR|\fB\-\-remove\fR] [\fB\-b\fR|\fB\-\-and\-branch\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE_OR_TARGET\fR] 
+\fBgit\-worktree\-merge\fR [\fB\-\-into\fR] [\fB\-\-abort\fR] [\fB\-\-continue\fR] [\fB\-\-quit\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-merge\fR] [\fB\-\-squash\fR] [\fB\-\-rebase\fR] [\fB\-\-rebase\-merge\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-\-adopt\-target\fR] [\fB\-\-no\-adopt\-target\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-r\fR|\fB\-\-remove\-branch\fR] [\fB\-\-keep\-branch\fR] [\fB\-\-set\-default\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE_OR_TARGET\fR] 
 .SH DESCRIPTION
 .PP
 Merges one or more source branches into a target worktree\*(Aqs branch.
@@ -48,20 +48,17 @@ Accept the auto\-generated merge commit message without editing
 \fB\-\-cleanup\fR \fI<MODE>\fR
 Message cleanup mode (mirrors `git merge \-\-cleanup`)
 .TP
-\fB\-\-ff\fR
-Allow fast\-forward merges (git\*(Aqs default behavior)
-.TP
-\fB\-\-no\-ff\fR
-Always create a merge commit, even when fast\-forward is possible
-.TP
-\fB\-\-ff\-only\fR
-Refuse to merge if fast\-forward is not possible
+\fB\-\-merge\fR
+Explicit merge style — always create a merge commit. This is the default; the flag exists for canceling a config\-set default style
 .TP
 \fB\-\-squash\fR
-Squash the source\*(Aqs changes into a single staged diff, without creating a merge commit
+Squash style — collapse source\*(Aqs commits into one squashed commit on target
 .TP
-\fB\-\-no\-squash\fR
-Explicitly disable squash (cancel a config default of `merge.squash`)
+\fB\-\-rebase\fR
+Rebase style — rebase source onto target, then fast\-forward (linear, preserves commits)
+.TP
+\fB\-\-rebase\-merge\fR
+Rebase\-merge style — rebase source onto target, then create a merge commit
 .TP
 \fB\-\-commit\fR
 Automatically create the merge commit after a successful merge
@@ -111,11 +108,14 @@ When the target has no worktree and the merge is not a pure fast\-forward, refus
 \fB\-y\fR, \fB\-\-yes\fR
 Auto\-accept interactive prompts. Implies \-\-adopt\-target when neither \-\-adopt\-target nor \-\-no\-adopt\-target is supplied. Future\-proofs any new prompts we add
 .TP
-\fB\-r\fR, \fB\-\-remove\fR
-Remove the source worktree after a successful merge
+\fB\-r\fR, \fB\-\-remove\-branch\fR
+Remove the source worktree and delete the source branch. The local/remote behavior follows `branch.deleteRemote` (defaults to local\-only)
 .TP
-\fB\-b\fR, \fB\-\-and\-branch\fR
-Also delete the source branch (requires \-\-remove). Uses `git branch \-d` semantics; refuses to delete if the branch is not fully merged
+\fB\-\-keep\-branch\fR
+Explicit keep — for canceling a config\-set `merge.cleanup = remove\-branch`
+.TP
+\fB\-\-set\-default\fR
+Write the resolved style/cleanup choices to `git config \-\-local` after the merge succeeds
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Be verbose; show detailed progress

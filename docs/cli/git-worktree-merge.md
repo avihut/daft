@@ -49,11 +49,10 @@ git worktree-merge [OPTIONS] [SOURCE_OR_TARGET]
 | `--edit` | Launch the editor to edit the merge commit message |  |
 | `--no-edit` | Accept the auto-generated merge commit message without editing |  |
 | `--cleanup <MODE>` | Message cleanup mode (mirrors `git merge --cleanup`) |  |
-| `--ff` | Allow fast-forward merges (git's default behavior) |  |
-| `--no-ff` | Always create a merge commit, even when fast-forward is possible |  |
-| `--ff-only` | Refuse to merge if fast-forward is not possible |  |
-| `--squash` | Squash the source's changes into a single staged diff, without creating a merge commit |  |
-| `--no-squash` | Explicitly disable squash (cancel a config default of `merge.squash`) |  |
+| `--merge` | Explicit merge style — always create a merge commit. This is the default; the flag exists for canceling a config-set default style |  |
+| `--squash` | Squash style — collapse source's commits into one squashed commit on target |  |
+| `--rebase` | Rebase style — rebase source onto target, then fast-forward (linear, preserves commits) |  |
+| `--rebase-merge` | Rebase-merge style — rebase source onto target, then create a merge commit |  |
 | `--commit` | Automatically create the merge commit after a successful merge |  |
 | `--no-commit` | Leave the merge staged without committing |  |
 | `--signoff` | Add a Signed-off-by trailer to the merge commit |  |
@@ -70,8 +69,9 @@ git worktree-merge [OPTIONS] [SOURCE_OR_TARGET]
 | `--adopt-target` | When the target has no worktree and the merge is not a pure fast-forward, create an ephemeral worktree to perform the merge without prompting |  |
 | `--no-adopt-target` | When the target has no worktree and the merge is not a pure fast-forward, refuse without prompting |  |
 | `-y, --yes` | Auto-accept interactive prompts. Implies --adopt-target when neither --adopt-target nor --no-adopt-target is supplied. Future-proofs any new prompts we add |  |
-| `-r, --remove` | Remove the source worktree after a successful merge |  |
-| `-b, --and-branch` | Also delete the source branch (requires --remove). Uses `git branch -d` semantics; refuses to delete if the branch is not fully merged |  |
+| `-r, --remove-branch` | Remove the source worktree and delete the source branch. The local/remote behavior follows `branch.deleteRemote` (defaults to local-only) |  |
+| `--keep-branch` | Explicit keep — for canceling a config-set `merge.cleanup = remove-branch` |  |
+| `--set-default` | Write the resolved style/cleanup choices to `git config --local` after the merge succeeds |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
 
 ## Global Options
