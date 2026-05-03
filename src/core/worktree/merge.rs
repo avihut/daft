@@ -983,7 +983,7 @@ pub enum InProgressState {
 /// This is a coarser variant of [`detect_in_progress`]: that one returns rich
 /// descriptions for bail messages; this one classifies for dispatch.
 pub fn detect_in_progress_state(path: &Path) -> Option<InProgressState> {
-    let git_dir = path.join(".git");
+    let git_dir = resolve_worktree_git_dir(path).ok()?;
     if git_dir.join("MERGE_HEAD").exists() {
         return Some(InProgressState::Merge);
     }
@@ -5516,6 +5516,33 @@ mod tests {
         assert_eq!(
             detect_in_progress_state(tmp.path()),
             Some(InProgressState::Rebase)
+        );
+    }
+
+    #[test]
+    fn detect_state_handles_linked_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main_git_dir = tmp.path().join(".git");
+        let linked_worktree = tmp.path().join("linked");
+        let linked_git_dir = main_git_dir.join("worktrees").join("linked");
+
+        std::fs::create_dir_all(&linked_git_dir).unwrap();
+        std::fs::create_dir_all(&linked_worktree).unwrap();
+
+        // .git in the linked worktree is a FILE pointing at the real git dir.
+        std::fs::write(
+            linked_worktree.join(".git"),
+            format!("gitdir: {}\n", linked_git_dir.display()),
+        )
+        .unwrap();
+
+        // Create rebase-merge state in the LINKED git dir (where git would put it).
+        std::fs::create_dir_all(linked_git_dir.join("rebase-merge")).unwrap();
+
+        assert_eq!(
+            detect_in_progress_state(&linked_worktree),
+            Some(InProgressState::Rebase),
+            "detect_in_progress_state must follow gitdir indirection"
         );
     }
 }
