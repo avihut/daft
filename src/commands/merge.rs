@@ -172,10 +172,10 @@ pub struct Args {
 
     // --- Commit control ---
     /// Automatically create the merge commit after a successful merge.
-    #[arg(long = "commit", conflicts_with = "no_commit")]
+    #[arg(long = "commit", conflicts_with_all = ["no_commit", "rebase", "rebase_merge"])]
     pub commit: bool,
     /// Leave the merge staged without committing.
-    #[arg(long = "no-commit", conflicts_with_all = ["commit", "remove_branch"])]
+    #[arg(long = "no-commit", conflicts_with_all = ["commit", "remove_branch", "rebase", "rebase_merge"])]
     pub no_commit: bool,
 
     // --- Signoff ---

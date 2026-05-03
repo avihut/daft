@@ -1,0 +1,43 @@
+name: --commit and --no-commit conflict with --rebase flags
+description:
+  "--commit and --no-commit must be rejected at parse time when combined with
+  --rebase or --rebase-merge"
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+  - name: --rebase --no-commit is rejected at parse time
+    run: git-worktree-merge --rebase --no-commit feature/test-feature 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "--no-commit"
+        - "cannot be used"
+  - name: --rebase-merge --no-commit is rejected at parse time
+    run: git-worktree-merge --rebase-merge --no-commit feature/test-feature 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "--no-commit"
+        - "cannot be used"
+  - name: --rebase --commit is rejected at parse time
+    run: git-worktree-merge --rebase --commit feature/test-feature 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "--commit"
+        - "cannot be used"
+  - name: --rebase-merge --commit is rejected at parse time
+    run: git-worktree-merge --rebase-merge --commit feature/test-feature 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "--commit"
+        - "cannot be used"
