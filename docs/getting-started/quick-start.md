@@ -144,5 +144,5 @@ preserved.
   disk
 - [Worktrees](../worktrees/) - Deep dive into the worktree-centric approach
 - [Hooks](../guide/hooks.md) - Automate worktree lifecycle events
-- [Shortcuts](../guide/shortcuts.md) - Enable short command aliases
+- [Shortcuts](../worktrees/shortcuts.md) - Enable short command aliases
 - [Configuration](../guide/configuration.md) - Customize daft's behavior
