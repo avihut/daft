@@ -160,6 +160,6 @@ Last log cleanup 4h ago: removed 23 job log(s) (4.2 MB freed)
 
 ## See Also
 
-- [Hooks guide](../hooks/index.md#background-jobs)
+- [Hooks guide](../hooks/yaml-reference.md#background-jobs)
 - [Output Formats guide](../reference/output-formats.md)
 - [git-daft-hooks](./git-daft-hooks.md)

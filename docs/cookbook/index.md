@@ -64,8 +64,6 @@ Spot a missing recipe? See [Contributing](/about/contributing).
 
 ## Filtered recipes
 
-<RecipeFilter />
-
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { data as recipes } from '../.vitepress/data/recipes.data.ts'
