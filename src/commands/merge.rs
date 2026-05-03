@@ -14,7 +14,7 @@ use crate::{
     executor::cli_presenter::CliPresenter,
     get_current_worktree_path, get_git_common_dir, get_project_root,
     git::GitCommand,
-    hooks::{HookContext, HookExecutor, HookType, HooksConfig},
+    hooks::{HookContext, HookExecutor, HookType},
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -837,7 +837,7 @@ pub fn run() -> Result<()> {
                 // resolved once, not N times for N sources. HookExecutor is
                 // constructed per-item because CommandBridge takes ownership
                 // and HookExecutor is not Clone.
-                let hooks_config = HooksConfig::default();
+                let hooks_config = load_hooks_config()?;
 
                 output.start_spinner(if plan.len() == 1 {
                     "Cleaning up source..."
@@ -962,7 +962,7 @@ fn fire_worktree_post_create_hook(
     project_root: &Path,
     settings: &DaftSettings,
 ) -> Result<()> {
-    let hooks_config = HooksConfig::default();
+    let hooks_config = load_hooks_config()?;
     let executor = HookExecutor::new(hooks_config)?;
 
     let git_dir = get_git_common_dir()?;
