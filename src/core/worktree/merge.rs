@@ -290,6 +290,39 @@ impl std::fmt::Display for MergeStyle {
     }
 }
 
+/// What happens to the source after a successful merge.
+///
+/// `Keep`         — Source worktree and branch survive untouched (default).
+/// `RemoveBranch` — Source worktree is removed AND source branch is deleted
+///                  locally; the local/remote sync follows the existing
+///                  `branch.deleteRemote` config (so `--remove-branch`
+///                  with `branch.deleteRemote=true` also pushes
+///                  `git push origin --delete <branch>`).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, clap::ValueEnum, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+#[clap(rename_all = "kebab-case")]
+pub enum CleanupKind {
+    Keep,
+    RemoveBranch,
+}
+
+impl CleanupKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CleanupKind::Keep => "keep",
+            CleanupKind::RemoveBranch => "remove-branch",
+        }
+    }
+}
+
+impl std::fmt::Display for CleanupKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// All git-merge passthrough flags resolved to their effective values.
 ///
 /// Each field is `Option<_>` (or a bool for truly additive flags) so that
@@ -4917,5 +4950,18 @@ mod tests {
     fn merge_style_display_matches_as_str() {
         assert_eq!(format!("{}", MergeStyle::Merge), "merge");
         assert_eq!(format!("{}", MergeStyle::RebaseMerge), "rebase-merge");
+    }
+
+    #[test]
+    fn cleanup_kind_as_str_round_trips_value_enum() {
+        use clap::ValueEnum;
+        assert_eq!(CleanupKind::Keep.as_str(), "keep");
+        assert_eq!(CleanupKind::RemoveBranch.as_str(), "remove-branch");
+
+        assert_eq!(
+            CleanupKind::from_str("remove-branch", true).unwrap(),
+            CleanupKind::RemoveBranch
+        );
+        assert!(CleanupKind::from_str("bogus", true).is_err());
     }
 }
