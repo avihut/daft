@@ -18,7 +18,7 @@ use crate::{
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
-    settings::{DaftSettings, HookOutputConfig},
+    settings::{load_hooks_config, DaftSettings, HookOutputConfig},
 };
 use anyhow::Result;
 use clap::Parser;
@@ -1015,7 +1015,7 @@ impl<'a> MergeHookRunner<'a> {
         remote: String,
         source_worktree: PathBuf,
     ) -> Result<Self> {
-        let hooks_config = HooksConfig::default();
+        let hooks_config = load_hooks_config()?;
         let executor = HookExecutor::new(hooks_config)?;
         Ok(Self {
             executor,
