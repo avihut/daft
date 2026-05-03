@@ -3003,6 +3003,31 @@ mod tests {
             .unwrap();
     }
 
+    /// Checkout `branch`, write `content` to `file`, stage and commit it.
+    /// Identity is supplied via env vars to avoid global git config dependency.
+    fn add_commit(path: &Path, branch: &str, file: &str, content: &str) {
+        ShellCommand::new("git")
+            .args(["checkout", branch])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        std::fs::write(path.join(file), content).unwrap();
+        ShellCommand::new("git")
+            .args(["add", file])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        ShellCommand::new("git")
+            .args(["commit", "-q", "-m", &format!("add {file}")])
+            .current_dir(path)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+    }
+
     #[test]
     fn branch_at_path_reads_current_branch() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4998,5 +5023,128 @@ mod tests {
             CleanupKind::RemoveBranch
         );
         assert!(CleanupKind::from_str("bogus", true).is_err());
+    }
+
+    // -------------------------------------------------------------------------
+    // Slice 4 regression tests: mechanics dispatch verification
+    // -------------------------------------------------------------------------
+
+    /// Verifies that `MergeStyle::Merge` (the default style, rendered as
+    /// `--no-ff`) always produces a two-parent merge commit, even when a
+    /// fast-forward would have been possible.  We force divergence by adding a
+    /// commit on `main` after branching `feat`, which ensures that a standard
+    /// `git merge` would also require a merge commit here; the *intent* of this
+    /// test is that the style flag reaches git as `--no-ff` rather than the old
+    /// default (fast-forward when possible).
+    #[test]
+    #[serial_test::serial]
+    fn default_merge_style_creates_merge_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = CwdGuard::new();
+        init_repo(tmp.path());
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        // Lay down a commit on main, branch feat, add a commit on feat,
+        // then return to main and add another commit so both branches diverge.
+        add_commit(tmp.path(), "main", "before.txt", "before");
+        ShellCommand::new("git")
+            .args(["checkout", "-b", "feat"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        add_commit(tmp.path(), "feat", "feat.txt", "feat content");
+        ShellCommand::new("git")
+            .args(["checkout", "main"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        add_commit(tmp.path(), "main", "main.txt", "main content");
+
+        let flags = EffectiveFlags {
+            style: MergeStyle::Merge,
+            edit: Some(false),
+            message: Some("Merged feat".into()),
+            ..EffectiveFlags::default()
+        };
+        let params = StartParams {
+            sources: vec!["feat".to_string()],
+            flags,
+            ..StartParams::default()
+        };
+
+        let git = GitCommand::new(true);
+        let outcome = execute_start(&params, &git, tmp.path(), &mut NullHookRunner).unwrap();
+        assert!(!outcome.failed, "merge should succeed: {outcome:?}");
+        assert!(!outcome.already_up_to_date);
+
+        // HEAD must have exactly 2 parents: the prior main tip and the feat tip.
+        let out = ShellCommand::new("git")
+            .args(["rev-list", "--parents", "-n", "1", "HEAD"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let parents = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        // Format: "<HEAD-sha> <parent1-sha> [<parent2-sha> ...]"
+        let parent_count = parents.split_whitespace().count() - 1;
+        assert_eq!(
+            parent_count, 2,
+            "default style should produce a merge commit"
+        );
+    }
+
+    /// Verifies that `MergeStyle::Squash` collapses all source commits into a
+    /// single staged change that is committed with one parent (no merge commit).
+    #[test]
+    #[serial_test::serial]
+    fn squash_style_produces_single_commit_on_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = CwdGuard::new();
+        init_repo(tmp.path());
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        // Give main a base commit, branch feat, add two commits there, then
+        // return to main to merge with squash.
+        add_commit(tmp.path(), "main", "before.txt", "before");
+        ShellCommand::new("git")
+            .args(["checkout", "-b", "feat"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        add_commit(tmp.path(), "feat", "a.txt", "a");
+        add_commit(tmp.path(), "feat", "b.txt", "b");
+        ShellCommand::new("git")
+            .args(["checkout", "main"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+
+        let flags = EffectiveFlags {
+            style: MergeStyle::Squash,
+            edit: Some(false),
+            message: Some("Squashed feat".to_string()),
+            ..EffectiveFlags::default()
+        };
+        let params = StartParams {
+            sources: vec!["feat".to_string()],
+            flags,
+            ..StartParams::default()
+        };
+
+        let git = GitCommand::new(true);
+        let outcome = execute_start(&params, &git, tmp.path(), &mut NullHookRunner).unwrap();
+        assert!(!outcome.failed);
+
+        // Squash must produce a single-parent (linear) commit.
+        let out = ShellCommand::new("git")
+            .args(["rev-list", "--parents", "-n", "1", "HEAD"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let parents = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let parent_count = parents.split_whitespace().count() - 1;
+        assert_eq!(
+            parent_count, 1,
+            "squash should produce a single-parent commit"
+        );
     }
 }
