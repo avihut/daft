@@ -1,0 +1,65 @@
+name: pre-merge warn-mode lets merge proceed despite hook failure
+description:
+  "When daft.hooks.preMerge.failMode=warn, a failing pre-merge hook emits a
+  warning but does NOT abort the merge. Exit code is 0 and the merge completes."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test-feature
+        from: main
+        files:
+          - path: feature.txt
+            content: "feature content"
+        commits:
+          - message: "Add feature branch"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: always-fail
+              run: |
+                touch "$DAFT_MERGE_TARGET_PATH/.pre-merge-ran"
+                exit 1
+
+steps:
+  - name: Clone with trust so the pre-merge hook is allowed to run
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Configure pre-merge fail-mode to warn (overrides abort default)
+    run:
+      git -C $WORK_DIR/test-repo/main config daft.hooks.preMerge.failMode warn
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Materialize feature branch as a sibling worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Merge — pre-merge fails with warn mode, merge still proceeds
+    run: git-worktree-merge feature/test-feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "pre-merge hook failed with exit code 1 (continuing anyway)"
+        - "Merged feature/test-feature into main (commit "
+
+  - name: Verify pre-merge sentinel was written (hook ran)
+    run: test -f "$WORK_DIR/test-repo/main/.pre-merge-ran" && echo "pre_ran"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["pre_ran"]
