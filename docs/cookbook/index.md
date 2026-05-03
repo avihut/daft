@@ -61,3 +61,34 @@ Every recipe lists the **pillar(s)** it touches in its frontmatter:
 ## Contributing a recipe
 
 Spot a missing recipe? See [Contributing](/about/contributing).
+
+## Filtered recipes
+
+<RecipeFilter />
+
+<script setup>
+import { ref, computed, onMounted } from 'vue'
+import { data as recipes } from '../.vitepress/data/recipes.data.ts'
+
+const pillar = ref(null)
+
+onMounted(() => {
+  const params = new URLSearchParams(window.location.search)
+  pillar.value = params.get('pillar')
+})
+
+const filtered = computed(() => {
+  if (!pillar.value) return []
+  return recipes.filter(r => r.pillars.includes(pillar.value))
+})
+</script>
+
+<template v-if="pillar">
+  <p>Showing recipes tagged <code>{{ pillar }}</code>:</p>
+  <ul>
+    <li v-for="r in filtered" :key="r.link">
+      <a :href="r.link">{{ r.title }}</a> — {{ r.description }}
+    </li>
+  </ul>
+  <p v-if="filtered.length === 0">No recipes yet for this pillar.</p>
+</template>
