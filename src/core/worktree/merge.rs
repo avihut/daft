@@ -2476,11 +2476,12 @@ fn list_worktrees_with_in_progress_merges(git: &GitCommand) -> Result<Vec<PathBu
 /// Execute a finish command (abort/continue/quit) against the resolved target.
 ///
 /// Resolves the target via [`resolve_target`] (same logic as
-/// [`execute_start`]), then verifies the target has an in-progress merge. If
-/// it doesn't, enumerates sibling worktrees with in-progress merges so the
-/// error message points the user at where the state actually lives.
+/// [`execute_start`]), then verifies the target has an in-progress merge or
+/// rebase. If it doesn't, enumerates sibling worktrees with in-progress merges
+/// so the error message points the user at where the state actually lives.
 ///
 /// On the happy path, dispatches the appropriate operation:
+/// * `Rebase` state → `git rebase --abort|--continue|--quit`.
 /// * Regular `Merge` state → `git merge --abort|--continue|--quit`.
 /// * `SquashStaged` state:
 ///   - `Abort` / `Quit` → `git reset --merge` to undo staged changes and
@@ -2497,6 +2498,24 @@ pub fn execute_finish(
     project_root: &Path,
     runner: &mut dyn HookRunner,
 ) -> Result<()> {
+    // Rebase-state early dispatch: when a rebase is in progress, HEAD is
+    // detached, so resolve_target (which calls branch_at_path) would fail.
+    // Instead, resolve the worktree path directly and dispatch to the rebase
+    // finish path before any merge-oriented resolve logic runs.
+    //
+    // When target is specified, try to find the worktree path for it; when
+    // target is None, use the current worktree path directly.
+    let rebase_path = if let Some(t) = params.worktree.as_deref() {
+        git.resolve_worktree_path(t, project_root).ok()
+    } else {
+        git.get_current_worktree_path().ok()
+    };
+    if let Some(ref p) = rebase_path {
+        if let Some(InProgressState::Rebase) = detect_in_progress_state(p) {
+            return execute_finish_rebase(params.mode, p);
+        }
+    }
+
     let resolved = resolve_target(params.worktree.as_deref(), git, project_root)?;
 
     // Finish commands require an on-disk worktree: --abort/--continue/--quit
@@ -2589,6 +2608,26 @@ pub fn execute_finish(
         // Other states (Rebase, CherryPick, Bisect) are filtered out above;
         // this branch is unreachable but required for exhaustiveness.
         _ => unreachable!("non-merge op passed detect filter"),
+    }
+    Ok(())
+}
+
+/// Handle a finish command (abort/continue/quit) for an in-progress rebase.
+///
+/// Dispatches `git rebase --continue|--abort|--quit` in `path`.
+fn execute_finish_rebase(mode: FinishMode, path: &Path) -> Result<()> {
+    let subcommand = match mode {
+        FinishMode::Continue => "--continue",
+        FinishMode::Abort => "--abort",
+        FinishMode::Quit => "--quit",
+    };
+    let status = Command::new("git")
+        .args(["rebase", subcommand])
+        .current_dir(path)
+        .status()
+        .with_context(|| format!("failed to invoke `git rebase {subcommand}`"))?;
+    if !status.success() {
+        anyhow::bail!("git rebase {subcommand} failed");
     }
     Ok(())
 }
@@ -5244,6 +5283,103 @@ mod tests {
             parent_count, 1,
             "squash should produce a single-parent commit"
         );
+    }
+
+    // ── finish-mode rebase dispatch tests (Task 5.3) ──────────────────────
+
+    #[test]
+    #[serial_test::serial]
+    fn finish_mode_continue_resumes_rebase() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = CwdGuard::new();
+        init_repo(tmp.path());
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        // Set up a conflicting rebase.
+        add_commit(tmp.path(), "main", "x.txt", "from main");
+        ShellCommand::new("git")
+            .args(["checkout", "-b", "feat"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        // Modify the same file on feat (will conflict during rebase).
+        std::fs::write(tmp.path().join("x.txt"), "from feat").unwrap();
+        ShellCommand::new("git")
+            .args(["add", "x.txt"])
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+        ShellCommand::new("git")
+            .args(["commit", "-q", "-m", "feat: x"])
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+        ShellCommand::new("git")
+            .args(["checkout", "main"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        std::fs::write(tmp.path().join("x.txt"), "from main again").unwrap();
+        ShellCommand::new("git")
+            .args(["add", "x.txt"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        ShellCommand::new("git")
+            .args(["commit", "-q", "-m", "main: x again"])
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+
+        // Begin a rebase that will conflict.
+        let _ = ShellCommand::new("git")
+            .args(["rebase", "main", "feat"])
+            .current_dir(tmp.path())
+            .status();
+
+        // The rebase should be in progress now.
+        assert_eq!(
+            detect_in_progress_state(tmp.path()),
+            Some(InProgressState::Rebase),
+            "rebase should be in progress"
+        );
+
+        // Resolve the conflict.
+        std::fs::write(tmp.path().join("x.txt"), "resolved").unwrap();
+        ShellCommand::new("git")
+            .args(["add", "x.txt"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+
+        // Invoke daft's finish-mode --continue with rebase-aware dispatch.
+        let git = GitCommand::new(true);
+        let finish_params = FinishParams {
+            worktree: None,
+            mode: FinishMode::Continue,
+            commit_flags: EffectiveFlags::default(),
+        };
+        let result = execute_finish(&finish_params, &git, tmp.path(), &mut NullHookRunner);
+        assert!(
+            result.is_ok(),
+            "finish --continue should resume rebase: {result:?}"
+        );
+
+        // After successful resumption, no rebase state should remain.
+        assert!(!tmp.path().join(".git/rebase-merge").exists());
+        assert!(!tmp.path().join(".git/rebase-apply").exists());
     }
 
     // ── rebase phase tests (Task 5.2) ─────────────────────────────────────
