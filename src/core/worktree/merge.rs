@@ -237,6 +237,59 @@ pub enum GpgSign {
     Disabled,
 }
 
+/// Named merge style. Selected via CLI flag (`--merge` / `--squash` /
+/// `--rebase` / `--rebase-merge`) or `daft.merge.style` config key.
+///
+/// Maps to git mechanics:
+/// * `Merge`       — `git merge --no-ff` (always creates a merge commit).
+/// * `Squash`      — `git merge --squash` followed by `git commit`.
+/// * `Rebase`      — `git rebase <target> <source>` followed by `git merge --ff-only`.
+/// * `RebaseMerge` — `git rebase <target> <source>` followed by `git merge --no-ff`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, clap::ValueEnum, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+#[clap(rename_all = "kebab-case")]
+pub enum MergeStyle {
+    Merge,
+    Squash,
+    Rebase,
+    RebaseMerge,
+}
+
+impl MergeStyle {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MergeStyle::Merge => "merge",
+            MergeStyle::Squash => "squash",
+            MergeStyle::Rebase => "rebase",
+            MergeStyle::RebaseMerge => "rebase-merge",
+        }
+    }
+
+    /// Returns true if this style produces a merge commit message and may
+    /// invoke `$EDITOR`. Used for editor pause/resume gating.
+    pub fn produces_merge_commit_message(&self) -> bool {
+        matches!(
+            self,
+            MergeStyle::Merge | MergeStyle::Squash | MergeStyle::RebaseMerge
+        )
+    }
+
+    /// Returns true if this style invokes the rebase phase (whether or not
+    /// a merge commit follows). Used for finish-mode dispatch and source
+    /// worktree adoption.
+    pub fn uses_rebase(&self) -> bool {
+        matches!(self, MergeStyle::Rebase | MergeStyle::RebaseMerge)
+    }
+}
+
+impl std::fmt::Display for MergeStyle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// All git-merge passthrough flags resolved to their effective values.
 ///
 /// Each field is `Option<_>` (or a bool for truly additive flags) so that
@@ -4839,5 +4892,30 @@ mod tests {
             runner.resume_count, 1,
             "resume must fire exactly once around the --continue editor invocation"
         );
+    }
+
+    #[test]
+    fn merge_style_as_str_round_trips_value_enum() {
+        use clap::ValueEnum;
+        assert_eq!(MergeStyle::Merge.as_str(), "merge");
+        assert_eq!(MergeStyle::Squash.as_str(), "squash");
+        assert_eq!(MergeStyle::Rebase.as_str(), "rebase");
+        assert_eq!(MergeStyle::RebaseMerge.as_str(), "rebase-merge");
+
+        assert_eq!(
+            MergeStyle::from_str("rebase-merge", true).unwrap(),
+            MergeStyle::RebaseMerge
+        );
+        assert_eq!(
+            MergeStyle::from_str("merge", true).unwrap(),
+            MergeStyle::Merge
+        );
+        assert!(MergeStyle::from_str("bogus", true).is_err());
+    }
+
+    #[test]
+    fn merge_style_display_matches_as_str() {
+        assert_eq!(format!("{}", MergeStyle::Merge), "merge");
+        assert_eq!(format!("{}", MergeStyle::RebaseMerge), "rebase-merge");
     }
 }
