@@ -1,0 +1,57 @@
+name: post-merge hook does not fire on squash --no-commit
+description:
+  "Spec line 222: post-merge must NOT fire when squash is staged but not
+  committed. The hook would receive an empty commit SHA, violating the 'merge
+  happened' trigger contract."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test-feature
+        from: main
+        files:
+          - path: feature.txt
+            content: "feature"
+        commits:
+          - message: "Add feature branch"
+    daft_yml: |
+      hooks:
+        post-merge:
+          jobs:
+            - name: record-post
+              run: touch "$DAFT_MERGE_TARGET_PATH/.post-merge-ran"
+
+steps:
+  - name: Clone with trust
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Materialize feature branch
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: Squash --no-commit — stages only, no commit
+    run: git-worktree-merge feature/test-feature --squash --no-commit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Squash staged on main"
+
+  - name: Verify post-merge hook did NOT run
+    run:
+      test -f "$WORK_DIR/test-repo/main/.post-merge-ran" && echo "post_ran" ||
+      echo "post_not_ran"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "post_not_ran"

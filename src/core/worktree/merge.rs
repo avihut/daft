@@ -1630,14 +1630,8 @@ fn execute_start_in_worktree(
 
     if is_squash && no_commit {
         // Stage-only path: --squash --no-commit. Changes staged, no commit made.
-        // Post-merge fires as Success with empty SHA (consistent with how
-        // a staged-but-uncommitted squash is observable from hook scripts).
-        let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
-            commit_sha: String::new(),
-        });
-        if let Err(e) = hooks.fire_post_merge(&post_ctx) {
-            eprintln!("warning: post-merge hook failed: {e}");
-        }
+        // post-merge must NOT fire here: no commit landed, so the "merge
+        // happened" trigger contract is not satisfied (spec line 222).
         return Ok(StartOutcome {
             already_up_to_date: false,
             failed: false,
@@ -2059,12 +2053,8 @@ fn execute_ephemeral_merge(
 
         if is_squash && no_commit {
             // Stage-only path in ephemeral worktree (--squash --no-commit).
-            let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
-                commit_sha: String::new(),
-            });
-            if let Err(e) = hooks.fire_post_merge(&post_ctx) {
-                eprintln!("warning: post-merge hook failed: {e}");
-            }
+            // post-merge must NOT fire here: no commit landed, so the "merge
+            // happened" trigger contract is not satisfied (spec line 222).
             crate::core::worktree::temp_worktree::remove(&temp_path).with_context(|| {
                 format!(
                     "failed to remove ephemeral worktree at '{}'",
