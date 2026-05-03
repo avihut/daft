@@ -485,7 +485,7 @@ Cloudflare Pages reads `_redirects` from the build root.
 
 # Guide pages → pillar pages
 /guide/worktree-workflow                  /worktrees/                            301
-/worktrees/layouts                            /worktrees/layouts                     301
+/guide/layouts                            /worktrees/layouts                     301
 /guide/adopting-existing-repos            /worktrees/adopting-existing-repos     301
 /guide/multi-remote                       /worktrees/multi-remote                301
 /guide/running-commands-across-worktrees  /worktrees/running-commands            301
@@ -654,7 +654,7 @@ Task 1.3."
 **Files:**
 
 - Create: `docs/worktrees/layouts.md`
-- Delete: `docs/worktrees/layouts.md`
+- Delete: `docs/guide/layouts.md`
 
 `guide/layouts.md` is a mixed Explanation+Reference page. The split: keep the
 page as Explanation primary, but inline the small reference table of layout
@@ -663,12 +663,12 @@ names. The deep `daft layout list` reference lives at
 
 - [ ] **Step 1: Read the source**
 
-Read `docs/worktrees/layouts.md` in full. Identify the "What is a layout"
-sections (Explanation) vs the per-layout reference details (Reference).
+Read `docs/guide/layouts.md` in full. Identify the "What is a layout" sections
+(Explanation) vs the per-layout reference details (Reference).
 
 - [ ] **Step 2: Write the new file**
 
-Move the entire content of `docs/worktrees/layouts.md` to
+Move the entire content of `docs/guide/layouts.md` to
 `docs/worktrees/layouts.md`. Then:
 
 - Add a `## Where to next` section at the bottom linking to
@@ -680,8 +680,8 @@ Move the entire content of `docs/worktrees/layouts.md` to
 - [ ] **Step 3: Delete the legacy file and update cross-links**
 
 ```bash
-git rm docs/worktrees/layouts.md
-grep -rln '/worktrees/layouts' docs/ | xargs sed -i.bak 's|/worktrees/layouts|/worktrees/layouts|g'
+git rm docs/guide/layouts.md
+grep -rln '/guide/layouts' docs/ | xargs sed -i.bak 's|/guide/layouts|/worktrees/layouts|g'
 find docs/ -name '*.bak' -delete
 ```
 
@@ -692,7 +692,7 @@ Run: `mise run docs:site:build`
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs/worktrees/layouts.md docs/worktrees/layouts.md docs/
+git add docs/worktrees/layouts.md docs/guide/layouts.md docs/
 git commit -m "docs(worktrees): migrate layouts page to pillar"
 ```
 
@@ -3142,7 +3142,7 @@ optional.)
 In production, after this branch ships:
 
 - `https://daft.avihu.dev/guide/hooks` → `/hooks/`
-- `https://daft.avihu.dev/worktrees/layouts` → `/worktrees/layouts`
+- `https://daft.avihu.dev/guide/layouts` → `/worktrees/layouts`
 - `https://daft.avihu.dev/cli/daft-clone` → `/reference/cli/daft-clone`
 - `https://daft.avihu.dev/contributing` → `/about/contributing`
 
