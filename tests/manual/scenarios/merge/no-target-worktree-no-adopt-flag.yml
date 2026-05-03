@@ -29,7 +29,9 @@ steps:
     expect: { exit_code: 0 }
 
   - name: Merge with --no-adopt-target — refuses without prompting
-    run: git-worktree-merge main --into target-no-wt --no-adopt-target 2>&1
+    run:
+      git-worktree-merge main --into target-no-wt --no-adopt-target --no-edit
+      2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 1

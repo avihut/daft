@@ -41,7 +41,7 @@ steps:
       exit_code: 0
 
   - name: Attempt the merge — pre-merge exit 1 aborts the merge
-    run: git-worktree-merge feature/test-feature 2>&1
+    run: git-worktree-merge feature/test-feature --no-edit 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       # Non-zero exit propagated from the aborted merge.

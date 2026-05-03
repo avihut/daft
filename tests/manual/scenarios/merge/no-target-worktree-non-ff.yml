@@ -42,7 +42,9 @@ steps:
     # Pass --no-adopt-target explicitly so this scenario stays deterministic
     # regardless of TTY state (Slice 10 added a TTY-gated adopt prompt;
     # without this flag the command would prompt in an interactive shell).
-    run: git-worktree-merge main --into diverged-no-wt --no-adopt-target 2>&1
+    run:
+      git-worktree-merge main --into diverged-no-wt --no-adopt-target --no-edit
+      2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 1

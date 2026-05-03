@@ -53,7 +53,7 @@ steps:
       exit_code: 0
 
   - name: Merge conflict-src into main — conflicts but post-merge still fires
-    run: git-worktree-merge conflict-src --into main 2>&1
+    run: git-worktree-merge conflict-src --into main --no-edit 2>&1
     cwd: "$WORK_DIR/test-repo/conflict-src"
     expect:
       exit_code: 1

@@ -36,7 +36,7 @@ steps:
       exit_code: 0
 
   - name: Trigger conflict in main (from main)
-    run: git-worktree-merge conflict-src 2>&1
+    run: git-worktree-merge conflict-src --no-edit 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 1

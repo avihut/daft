@@ -35,7 +35,9 @@ steps:
     # `sh -c '... </dev/null'` forces stdin to be non-TTY. With the default
     # Prompt preset and no --adopt-target, the decision collapses to No
     # without ever emitting the prompt text.
-    run: sh -c 'git-worktree-merge main --into target-no-wt </dev/null 2>&1'
+    run:
+      sh -c 'git-worktree-merge main --into target-no-wt --no-edit </dev/null
+      2>&1'
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 1

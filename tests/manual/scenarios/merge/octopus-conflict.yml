@@ -31,7 +31,7 @@ steps:
       exit_code: 0
 
   - name: Attempt octopus of conflicting branches
-    run: git-worktree-merge feat-a feat-b 2>&1
+    run: git-worktree-merge feat-a feat-b --no-edit 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 1

@@ -24,7 +24,7 @@ steps:
       exit_code: 0
 
   - name: Attempt merge into main — must refuse
-    run: git-worktree-merge feature/test-feature --into main
+    run: git-worktree-merge feature/test-feature --into main --no-edit
     cwd: "$WORK_DIR/test-repo/feature/test-feature"
     expect:
       exit_code: 1

@@ -12,7 +12,7 @@ steps:
       exit_code: 0
 
   - name: Attempt same-branch merge
-    run: git-worktree-merge main --into main
+    run: git-worktree-merge main --into main --no-edit
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 1
