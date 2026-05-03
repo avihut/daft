@@ -968,6 +968,31 @@ pub fn detect_in_progress(worktree: &Path) -> Result<Option<InProgressOp>> {
     Ok(None)
 }
 
+/// On-disk state of an in-progress merge or rebase, used to dispatch
+/// finish-mode commands (`--continue` / `--abort` / `--quit`) to the right
+/// git subcommand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InProgressState {
+    Merge,
+    Rebase,
+}
+
+/// Detect whether a merge or rebase is in progress in the worktree at `path`.
+///
+/// Looks for git's standard state files. Returns `None` if neither is found.
+/// This is a coarser variant of [`detect_in_progress`]: that one returns rich
+/// descriptions for bail messages; this one classifies for dispatch.
+pub fn detect_in_progress_state(path: &Path) -> Option<InProgressState> {
+    let git_dir = path.join(".git");
+    if git_dir.join("MERGE_HEAD").exists() {
+        return Some(InProgressState::Merge);
+    }
+    if git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir() {
+        return Some(InProgressState::Rebase);
+    }
+    None
+}
+
 /// Resolve each source ref to its full commit SHA via `git rev-parse`.
 ///
 /// Called early in [`execute_start`], after pre-flight checks pass but before
@@ -5145,6 +5170,46 @@ mod tests {
         assert_eq!(
             parent_count, 1,
             "squash should produce a single-parent commit"
+        );
+    }
+
+    // ── detect_in_progress_state tests (Task 5.1) ─────────────────────────
+
+    #[test]
+    fn detect_state_returns_none_for_clean_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        assert!(detect_in_progress_state(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn detect_state_returns_merge_for_merge_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".git/MERGE_HEAD"), "deadbeef").unwrap();
+        assert_eq!(
+            detect_in_progress_state(tmp.path()),
+            Some(InProgressState::Merge)
+        );
+    }
+
+    #[test]
+    fn detect_state_returns_rebase_for_rebase_merge_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git/rebase-merge")).unwrap();
+        assert_eq!(
+            detect_in_progress_state(tmp.path()),
+            Some(InProgressState::Rebase)
+        );
+    }
+
+    #[test]
+    fn detect_state_returns_rebase_for_rebase_apply_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git/rebase-apply")).unwrap();
+        assert_eq!(
+            detect_in_progress_state(tmp.path()),
+            Some(InProgressState::Rebase)
         );
     }
 }
