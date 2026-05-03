@@ -1351,6 +1351,59 @@ pub fn execute_start(
     }
 }
 
+/// Run `git rebase <target> <source>` in `target_path`. The source branch's
+/// ref is updated in-place (its tip points at the rebased commits after
+/// success). Conflicts leave the rebase in progress; the caller's finish-mode
+/// path resumes via `detect_in_progress_state`.
+///
+/// Skips the rebase when target is already an ancestor of source (pure
+/// fast-forward case): the source is already rebased onto target, so the
+/// subsequent `git merge --ff-only` / `--no-ff` step is sufficient.
+fn run_rebase_phase(source: &str, target: &str, target_path: &Path) -> Result<()> {
+    // Check if target is already an ancestor of source (fast-forward eligible).
+    // If so, skip the rebase — source commits are already on top of target.
+    let ancestor_check = Command::new("git")
+        .args(["merge-base", "--is-ancestor", target, source])
+        .current_dir(target_path)
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to invoke `git merge-base --is-ancestor {} {}`",
+                target, source
+            )
+        })?;
+    if ancestor_check.success() {
+        // Target is an ancestor of source; no rebase needed.
+        return Ok(());
+    }
+
+    // `git rebase <upstream> <branch>` checks out <branch>, replays its commits
+    // on top of <upstream>, and updates the branch ref. The current HEAD shifts
+    // during rebase; we restore target's HEAD afterward so the subsequent
+    // `git merge` runs from the right ref.
+    let status = Command::new("git")
+        .args(["rebase", target, source])
+        .current_dir(target_path)
+        .status()
+        .with_context(|| format!("failed to invoke `git rebase {} {}`", target, source))?;
+    if !status.success() {
+        anyhow::bail!(
+            "git rebase {} {} failed; resolve conflicts then run `daft merge --continue`",
+            target,
+            source
+        );
+    }
+    let restore = Command::new("git")
+        .args(["checkout", target])
+        .current_dir(target_path)
+        .status()
+        .with_context(|| format!("failed to checkout target '{}' after rebase", target))?;
+    if !restore.success() {
+        anyhow::bail!("failed to checkout target '{}' after rebase phase", target);
+    }
+    Ok(())
+}
+
 /// Worktree-backed merge: shell out to `git merge` with the target worktree as CWD.
 ///
 /// Stdio is inherited so `$EDITOR` works for non-FF merges without `-m`. On
@@ -1387,6 +1440,26 @@ fn execute_start_in_worktree(
     );
     // `fire_pre_merge` failure aborts the merge before any state is touched.
     hooks.fire_pre_merge(&pre_ctx)?;
+
+    // Rebase phase: for Rebase / RebaseMerge styles, replay source's commits
+    // onto target's tip before invoking the merge phase. Single-source only;
+    // multi-source rebase is rejected up front.
+    if params.flags.style.uses_rebase() {
+        if params.sources.len() != 1 {
+            anyhow::bail!(
+                "rebase styles ({}) require exactly one source; got {}",
+                params.flags.style,
+                params.sources.len()
+            );
+        }
+        let source = &params.sources[0];
+        run_rebase_phase(source, &resolved.branch, &path).with_context(|| {
+            format!(
+                "rebase phase failed for source '{}' onto target '{}'",
+                source, resolved.branch
+            )
+        })?;
+    }
 
     let mut argv: Vec<String> = vec!["merge".to_string()];
     argv.extend(render_flags(&params.flags));
@@ -5171,6 +5244,103 @@ mod tests {
             parent_count, 1,
             "squash should produce a single-parent commit"
         );
+    }
+
+    // ── rebase phase tests (Task 5.2) ─────────────────────────────────────
+
+    #[test]
+    #[serial_test::serial]
+    fn rebase_style_produces_linear_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = CwdGuard::new();
+        init_repo(tmp.path());
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        add_commit(tmp.path(), "main", "before.txt", "before");
+        ShellCommand::new("git")
+            .args(["checkout", "-b", "feat"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        add_commit(tmp.path(), "feat", "feat.txt", "feat content");
+        ShellCommand::new("git")
+            .args(["checkout", "main"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        add_commit(tmp.path(), "main", "main.txt", "main content");
+
+        let flags = EffectiveFlags {
+            style: MergeStyle::Rebase,
+            ..EffectiveFlags::default()
+        };
+        let params = StartParams {
+            sources: vec!["feat".to_string()],
+            flags,
+            ..StartParams::default()
+        };
+
+        let git = GitCommand::new(true);
+        let outcome = execute_start(&params, &git, tmp.path(), &mut NullHookRunner).unwrap();
+        assert!(!outcome.failed, "rebase merge should succeed: {outcome:?}");
+
+        // Linear history: HEAD has one parent.
+        let out = ShellCommand::new("git")
+            .args(["rev-list", "--parents", "-n", "1", "HEAD"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let parents = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let parent_count = parents.split_whitespace().count() - 1;
+        assert_eq!(parent_count, 1, "rebase should produce linear history");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn rebase_merge_style_produces_merge_commit_after_rebase() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = CwdGuard::new();
+        init_repo(tmp.path());
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        add_commit(tmp.path(), "main", "before.txt", "before");
+        ShellCommand::new("git")
+            .args(["checkout", "-b", "feat"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        add_commit(tmp.path(), "feat", "feat.txt", "feat content");
+        ShellCommand::new("git")
+            .args(["checkout", "main"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        add_commit(tmp.path(), "main", "main.txt", "main content");
+
+        let flags = EffectiveFlags {
+            style: MergeStyle::RebaseMerge,
+            edit: Some(false),
+            message: Some("Merged after rebase".into()),
+            ..EffectiveFlags::default()
+        };
+        let params = StartParams {
+            sources: vec!["feat".to_string()],
+            flags,
+            ..StartParams::default()
+        };
+
+        let git = GitCommand::new(true);
+        let outcome = execute_start(&params, &git, tmp.path(), &mut NullHookRunner).unwrap();
+        assert!(!outcome.failed, "rebase-merge should succeed: {outcome:?}");
+
+        let out = ShellCommand::new("git")
+            .args(["rev-list", "--parents", "-n", "1", "HEAD"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let parents = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let parent_count = parents.split_whitespace().count() - 1;
+        assert_eq!(parent_count, 2, "rebase-merge produces a merge commit");
     }
 
     // ── detect_in_progress_state tests (Task 5.1) ─────────────────────────
