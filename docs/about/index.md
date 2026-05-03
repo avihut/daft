@@ -1,9 +1,16 @@
 ---
 title: About
-description: About overview (under construction)
+description: Background, FAQ, troubleshooting, comparison, and project meta.
 ---
 
 # About
 
-This page is being built. See
-[issue #398](https://github.com/avihut/daft/issues/398) for status.
+- **[Why daft](/about/why-daft)** — the thesis
+- **[Glossary](/about/glossary)** — daft-specific terminology
+- **[FAQ](/about/faq)** — common questions
+- **[Troubleshooting](/about/troubleshooting)** — symptom → fix
+- **[Comparison](/about/comparison)** — daft vs nearby tools
+- **[Networking roadmap](/about/networking-roadmap)** — the third pillar, in
+  design
+- **[Contributing](/about/contributing)** — how to help
+- **[Changelog](/about/changelog)** — release notes
