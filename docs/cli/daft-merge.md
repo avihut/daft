@@ -1,6 +1,6 @@
 ---
 title: daft merge
-description: Merge branches across worktrees (cross-worktree, octopus, squash, cleanup)
+description: Merge branches across worktrees (cross-worktree, squash, rebase, cleanup)
 ---
 
 # daft merge
@@ -52,21 +52,25 @@ The full flag surface mirrors `git merge` and is documented in
 [git worktree-merge](./git-worktree-merge.md). The flags below are the ones
 that are unique to daft merge or that shape the cross-worktree workflow.
 
-| Option                  | Description                                                                                                                                 |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--into <TARGET>`       | Target worktree/branch; omit to merge into the current worktree.                                                                            |
-| `--abort`               | Abort an in-progress merge (or squash-staged state) in the named worktree (default: CWD).                                                   |
-| `--continue`            | Continue after resolving conflicts, or resume a squash-staged commit.                                                                       |
-| `--quit`                | Quit a merge without resetting the index.                                                                                                   |
-| `--adopt-target`        | When the target has no worktree, create an ephemeral worktree and run the merge there — no prompt.                                          |
-| `--no-adopt-target`     | Refuse instead of prompting when the target has no worktree.                                                                                |
-| `-y, --yes`             | Auto-accept interactive prompts; implies `--adopt-target` unless overridden.                                                                |
-| `-r, --remove`          | Remove the source worktree after a successful merge.                                                                                        |
-| `-b, --and-branch`      | Also delete the source branch (requires `-r`). Regular merges use `git branch -d` safety semantics; squash + commit uses `branch -D` (see [Cleanup](#cleanup-r-and--rb)). |
-| `--squash`              | Squash all source commits into a single commit on the target. The commit is created automatically by default (editor opens for the message); use `--no-commit` to stage without committing. |
-| `--no-commit`           | After `--squash`, stage the changes without creating a commit. Incompatible with `-r`/`-rb`.                                                |
-| `-s, --strategy <STRAT>`| Merge strategy (`recursive`, `ours`, `octopus`, etc.).                                                                                      |
-| `-X, --strategy-option` | Strategy-specific option (repeatable).                                                                                                      |
+| Option                    | Description                                                                                                                                                        |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--into <TARGET>`         | Target worktree/branch; omit to merge into the current worktree.                                                                                                   |
+| `--abort`                 | Abort an in-progress merge (or squash-staged state) in the named worktree (default: CWD).                                                                          |
+| `--continue`              | Continue after resolving conflicts, or resume a squash-staged commit.                                                                                              |
+| `--quit`                  | Quit a merge without resetting the index.                                                                                                                          |
+| `--merge`                 | Merge style: always create a merge commit (the default). Use to cancel a config-set style.                                                                         |
+| `--squash`                | Squash style: collapse source commits into one commit on the target. Editor opens for the message; use `--no-edit` or `-m` to skip it.                             |
+| `--rebase`                | Rebase style: rebase source onto target, then fast-forward. Produces linear history.                                                                               |
+| `--rebase-merge`          | Rebase-merge style: rebase source onto target, then create a merge commit.                                                                                         |
+| `-r, --remove-branch`     | Remove the source worktree **and** delete the source branch after a successful merge. Local/remote behavior follows `branch.deleteRemote` (default: local-only).   |
+| `--keep-branch`           | Explicit keep — cancels a config-set `merge.cleanup = remove-branch`.                                                                                              |
+| `--set-default`           | Write the resolved style/cleanup choices to `git config --local` after the merge succeeds.                                                                         |
+| `--adopt-target`          | When the target has no worktree, create an ephemeral worktree and run the merge there — no prompt.                                                                  |
+| `--no-adopt-target`       | Refuse instead of prompting when the target has no worktree.                                                                                                       |
+| `-y, --yes`               | Auto-accept interactive prompts; implies `--adopt-target` unless overridden.                                                                                       |
+| `--no-commit`             | After `--squash`, stage the changes without creating a commit. Incompatible with `-r`.                                                                             |
+| `-s, --strategy <STRAT>`  | Merge strategy (`recursive`, `ours`, `octopus`, etc.).                                                                                                             |
+| `-X, --strategy-option`   | Strategy-specific option (repeatable).                                                                                                                             |
 
 ## Examples
 
@@ -121,10 +125,38 @@ By default `--squash` creates a real commit on the target after staging the
 squashed changes. The editor opens pre-populated from `.git/SQUASH_MSG` so
 you can review and adjust the message before committing. Pass `--no-edit` or
 `-m <msg>` to skip the editor. Pass `--no-commit` to restore git's historical
-"stage only" behavior (incompatible with `-r`/`-rb`; see [Cleanup](#cleanup-r-and--rb)).
+"stage only" behavior (incompatible with `-r`; see [Cleanup](#cleanup-r)).
 
 When no TTY is available (e.g. piped in CI), daft refuses to open an editor
 and exits with a clear hint to pass `--no-edit` or `-m`.
+
+### Rebase merge (linear history)
+
+```bash
+# Rebase feature/api onto the current branch, then fast-forward.
+# HEAD ends up with 1 parent — no merge commit.
+daft merge --rebase feature/api
+
+# Rebase onto another branch:
+daft merge --rebase feature/api --into main
+```
+
+The source branch is rebased onto the target, then the target fast-forwards
+to the rebased tip. This produces linear history equivalent to
+`git rebase && git merge --ff-only`. Conflicts stop the rebase mid-flight;
+resolve them, `git rebase --continue`, then re-run without `--rebase` to
+finish.
+
+### Rebase-merge (rebase + merge commit)
+
+```bash
+# Rebase feature/api onto the current branch, then create a merge commit.
+# HEAD ends up with 2 parents.
+daft merge --rebase-merge feature/api
+```
+
+Like `--rebase` but appends a merge commit on top, preserving the rebase in
+the reflog while still recording an explicit merge in history.
 
 ### Abort a conflicted merge or squash-staged state
 
@@ -165,25 +197,26 @@ daft merge --continue -m "feat: squash feature" main
 - **Squash staged, commit pending** — re-opens the editor on the preserved
   `SQUASH_MSG` (same as running `git commit`). Pass `--no-edit`, `-m`, or
   `-F` on the `--continue` invocation to skip the editor. If cleanup was
-  originally requested (`-r`/`-rb`), it runs after the commit succeeds.
+  originally requested (`-r`), it runs after the commit succeeds.
 
-### Cleanup after a successful merge {#cleanup-r-and--rb}
+### Cleanup after a successful merge {#cleanup-r}
 
 ```bash
-# Merge and delete the source worktree afterwards
+# Merge and remove the source worktree + branch afterwards
 daft merge feature/done --into main -r
 
-# Also delete the source branch (safe -d semantics for regular merges)
-daft merge feature/done --into main -rb
-
 # Squash + commit + full cleanup in one step (editor opens for message)
-daft merge feature/done --into main --squash -rb
+daft merge feature/done --into main --squash -r
 
 # Same, but skip the editor (auto-generated message)
-daft merge feature/done --into main --squash --no-edit -rb
+daft merge feature/done --into main --squash --no-edit -r
+
+# Set -r as your default for future merges in this repo
+daft merge feature/done --into main -r --set-default
 ```
 
-`-b` requires `-r`. For regular merges, `-b` uses `git branch -d` (safe)
+`-r` / `--remove-branch` removes **both** the source worktree and the source
+branch. For regular and rebase-style merges, daft uses `git branch -d` (safe)
 semantics — it refuses to delete a branch that isn't fully merged into the
 target. For squash merges, daft uses `branch -D` because the squash commit
 captures the source's content; git's reachability check would always refuse
@@ -192,7 +225,21 @@ branch tip hasn't moved since the merge started. If it has (e.g. a concurrent
 push happened during the editor session), cleanup is refused and a recovery
 hint is shown; the squash commit already landed on the target.
 
-`--no-commit` is incompatible with `-r`/`-rb` because cleanup requires a commit.
+`--no-commit` is incompatible with `-r` because cleanup requires a commit.
+
+### Persist style and cleanup defaults with --set-default
+
+```bash
+# Run a squash + remove-branch merge and save those choices as repo defaults
+daft merge feature/api -r --squash --set-default
+
+# Now future merges in this repo default to squash + remove-branch
+daft merge feature/next
+```
+
+`--set-default` writes `daft.merge.style` and `daft.merge.cleanup` to
+`git config --local`. The config keys are only written after a successful
+merge, so a failed or conflicted merge never changes your defaults.
 
 ### Ephemeral target worktree
 
@@ -212,26 +259,41 @@ conflict it stays behind for you to resolve.
 `daft.merge.*` config keys let you set defaults for frequently used flags so
 you don't have to pass them every time. The most relevant keys:
 
-| Key                                            | Effect                                                                                                   |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `daft.merge.ff`                                | Default fast-forward mode (`true`, `false`, or `only`).                                                  |
-| `daft.merge.squash`                            | Default squash behavior.                                                                                 |
-| `daft.merge.commit`                            | Default commit-after-merge behavior.                                                                     |
-| `daft.merge.edit`                              | Default message-edit behavior on a TTY.                                                                  |
-| `daft.merge.signoff`                           | Default signoff behavior.                                                                                |
-| `daft.merge.gpgSign`                           | Default GPG-sign behavior (`true`, `false`, or `<keyid>`).                                               |
-| `daft.merge.verifySignatures`                  | Default signature verification.                                                                          |
-| `daft.merge.allowUnrelatedHistories`           | Default for merges across unrelated histories.                                                           |
-| `daft.merge.strategy`                          | Default merge strategy.                                                                                  |
-| `daft.merge.strategyOption`                    | Default strategy options (repeatable).                                                                   |
-| `daft.merge.adoptTargetOnDemand`               | How to handle target worktree adoption: `prompt` (default), `yes`, or `no`.                              |
-| `daft.merge.requireCleanTarget`                | Refuse to merge when the target worktree has uncommitted changes (default: `true`).                      |
-| `daft.merge.postMerge.removeSourceWorktree`    | Default for `-r`: remove the source worktree on success.                                                 |
-| `daft.merge.postMerge.alsoRemoveSourceBranch`  | Default for `-b`: also delete the source branch (requires removal).                                      |
+| Key                                   | Values                                      | Effect                                                                              |
+| ------------------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `daft.merge.style`                    | `merge` (default), `squash`, `rebase`, `rebase-merge` | Default merge style. Overridden by `--merge`, `--squash`, `--rebase`, `--rebase-merge`. |
+| `daft.merge.cleanup`                  | `keep` (default), `remove-branch`           | Default cleanup behavior. Overridden by `-r` / `--keep-branch`.                    |
+| `daft.merge.edit`                     | `true`, `false`                             | Default message-edit behavior on a TTY.                                             |
+| `daft.merge.commit`                   | `true`, `false`                             | Default commit-after-squash behavior.                                               |
+| `daft.merge.signoff`                  | `true`, `false`                             | Default signoff behavior.                                                           |
+| `daft.merge.gpgSign`                  | `true`, `false`, `<keyid>`                  | Default GPG-sign behavior.                                                          |
+| `daft.merge.verifySignatures`         | `true`, `false`                             | Default signature verification.                                                     |
+| `daft.merge.allowUnrelatedHistories`  | `true`, `false`                             | Default for merges across unrelated histories.                                      |
+| `daft.merge.strategy`                 | strategy name                               | Default merge strategy.                                                             |
+| `daft.merge.strategyOption`           | option string                               | Default strategy options (repeatable).                                              |
+| `daft.merge.adoptTargetOnDemand`      | `prompt` (default), `yes`, `no`             | How to handle target worktree adoption when no worktree exists.                     |
+| `daft.merge.requireCleanTarget`       | `true` (default), `false`                   | Refuse to merge when the target worktree has uncommitted changes.                   |
 
 All keys can be set locally, globally, or system-wide through `git config`;
-flag arguments always override config defaults. See the
-[configuration guide](../guide/configuration.md) for precedence details.
+flag arguments always override config defaults. The easiest way to persist
+your choices is to pass `--set-default` on a merge and let daft write them
+for you. See the [configuration guide](../guide/configuration.md) for
+precedence details.
+
+### Migration from the old flag set
+
+If you have scripts or habits using the v1.9 flag names, here is the mapping:
+
+| Old (v1.9)             | New (v1.10+)            | Notes                                                           |
+| ---------------------- | ----------------------- | --------------------------------------------------------------- |
+| (default, no flag)     | `--merge`               | Old default was FF-when-possible; new default is always-merge-commit. |
+| `--no-ff`              | `--merge`               | Explicit `--no-ff` is now the default behavior.                 |
+| `--ff` / `--ff-only`   | `--rebase`              | Use `--rebase` for linear (fast-forward) history.               |
+| `--squash`             | `--squash`              | Unchanged; now auto-commits by default (use `--no-commit` to opt out). |
+| `-r`                   | _(removed)_             | Worktree-only removal is no longer a first-class operation.     |
+| `-rb`                  | `-r`                    | New `-r` removes both worktree and branch.                      |
+| `daft.merge.ff`        | `daft.merge.style`      | Set to `merge`, `squash`, `rebase`, or `rebase-merge`.          |
+| `daft.merge.postMerge.removeSourceWorktree` + `daft.merge.postMerge.alsoRemoveSourceBranch` | `daft.merge.cleanup` | Set to `keep` or `remove-branch`. |
 
 ## Hooks
 
@@ -279,10 +341,10 @@ lines. Useful for diagnosing unexpected merge behavior.
 
 ## Cleanup hooks
 
-When `-r` or `-rb` is passed and the merge succeeds, daft removes the source
-worktree (and optionally its branch) by delegating to the same cleanup path as
-`daft remove`. As part of that cleanup, `worktree-pre-remove` and
-`worktree-post-remove` hooks fire for each source worktree that is removed.
+When `-r` is passed and the merge succeeds, daft removes the source worktree
+and its branch by delegating to the same cleanup path as `daft remove`. As
+part of that cleanup, `worktree-pre-remove` and `worktree-post-remove` hooks
+fire for each source worktree that is removed.
 
 The hooks receive the standard removal env vars (`DAFT_WORKTREE_PATH`,
 `DAFT_BRANCH_NAME`, `DAFT_REMOVAL_REASON=manual`) plus `DAFT_COMMAND=merge`.
@@ -302,8 +364,8 @@ fi
 **Limitation:** When cleanup is resumed via `daft merge --continue` after a
 squash-staged abort, `worktree-pre-remove` and `worktree-post-remove` hooks are
 NOT fired and the output reverts to plain text. This affects only the
-`--continue` resume path; cleanup triggered directly by `-r`/`-rb` fires hooks
-as normal. This limitation will be addressed in a future release.
+`--continue` resume path; cleanup triggered directly by `-r` fires hooks as
+normal. This limitation will be addressed in a future release.
 
 ## See Also
 

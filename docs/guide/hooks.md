@@ -49,11 +49,11 @@ the outcome (post-merge) without forking the merge command.
 - `pre-merge` runs after all pre-flight safety rails (distinct-source check,
   clean-target check, in-progress-merge detection, already-up-to-date
   short-circuit) pass, but before any merge operation touches state. It fires
-  uniformly for all three merge paths: worktree-backed merges, ref-only
-  fast-forward via `git update-ref`, and ephemeral worktree merges.
+  uniformly for all merge styles and paths: worktree-backed merges, ref-only
+  merges, rebase-style merges, and ephemeral worktree merges.
 - `post-merge` runs after the merge operation completes, whether it succeeded,
-  hit a conflict, or ended via `--ff-only` refusal. Both hooks read their config
-  from the target worktree (the branch being merged into).
+  hit a conflict, or resolved without changes. Both hooks read their config from
+  the target worktree (the branch being merged into).
 
 Neither hook fires when the merge is a no-op because the target is already up to
 date.
@@ -62,11 +62,27 @@ date.
 
 - A `pre-merge` hook that exits non-zero **aborts the merge** with that exit
   code. No merge operation runs; no state is touched. The default fail mode is
-  `abort` (same as `worktree-pre-create`).
+  `abort`.
 - A `post-merge` hook that exits non-zero is **logged as a warning** but does
-  not roll back the merge. The default fail mode is `warn`. Override via
-  `fail_mode: abort` in `daft.yml` if you want post-merge failures to bubble up
-  as errors.
+  not roll back the merge. The default fail mode is `warn`.
+
+The pre-merge fail mode can be overridden per-repo via `git config`:
+
+```bash
+# Downgrade to a warning — the merge proceeds even when pre-merge fails
+git config daft.hooks.preMerge.failMode warn
+```
+
+With `failMode=warn`, a failing pre-merge hook prints
+`pre-merge hook failed with exit code N (continuing anyway)` and the merge
+continues normally. This is useful for informational PR-check hooks that should
+never block a merge, while still surfacing failures.
+
+To restore the default abort behavior, remove the config key:
+
+```bash
+git config --unset daft.hooks.preMerge.failMode
+```
 
 **Env vars provided to both hooks:**
 
@@ -75,7 +91,7 @@ date.
 | `DAFT_MERGE_SOURCES`        | Space-separated list of source refs (branches/commits being merged)  |
 | `DAFT_MERGE_TARGET_BRANCH`  | Name of the branch being merged into                                 |
 | `DAFT_MERGE_TARGET_PATH`    | Filesystem path of the target worktree (empty on ref-only FF)        |
-| `DAFT_MERGE_MODE`           | `merge` / `ff` / `squash` / `octopus`                                |
+| `DAFT_MERGE_MODE`           | `merge` / `ff` / `squash` / `rebase` / `rebase-merge` / `octopus`    |
 | `DAFT_MERGE_STRATEGY`       | Value of `-s`/`--strategy` (empty when not set)                      |
 | `DAFT_MERGE_EPHEMERAL`      | `true` if the merge runs in an ephemeral worktree; otherwise `false` |
 | `DAFT_MERGE_CROSS_WORKTREE` | `true` if the target worktree is not the current worktree            |
@@ -119,19 +135,19 @@ hooks:
           fi
 ```
 
-### Cleanup hooks during merge (`-r` / `-rb`)
+### Cleanup hooks during merge (`-r`)
 
-When `-r` or `-rb` is passed and the merge succeeds, daft removes the source
-worktree (and optionally its branch). As part of that removal,
-`worktree-pre-remove` and `worktree-post-remove` hooks fire for each source
-worktree that is removed, with `DAFT_COMMAND=merge` set so scripts can
-distinguish merge cleanup from a standalone `daft remove`.
+When `-r` / `--remove-branch` is passed and the merge succeeds, daft removes the
+source worktree and its branch. As part of that removal, `worktree-pre-remove`
+and `worktree-post-remove` hooks fire for each source worktree that is removed,
+with `DAFT_COMMAND=merge` set so scripts can distinguish merge cleanup from a
+standalone `daft remove`.
 
 **Limitation:** When cleanup is resumed via `daft merge --continue` after a
 squash-staged abort, `worktree-pre-remove` and `worktree-post-remove` hooks are
 NOT fired and the output reverts to plain text. This affects only the
-`--continue` resume path; cleanup triggered directly by `-r`/`-rb` fires hooks
-as normal. This limitation will be addressed in a future release.
+`--continue` resume path; cleanup triggered directly by `-r` fires hooks as
+normal. This limitation will be addressed in a future release.
 
 ## Trust Model
 
