@@ -1,0 +1,23 @@
+# Legacy URLs from pre-IA-restructure (#398)
+# Format: source dest [status]
+
+# Guide pages → pillar pages
+/guide/worktree-workflow                  /worktrees/                            301
+/guide/layouts                            /worktrees/layouts                     301
+/guide/adopting-existing-repos            /worktrees/adopting-existing-repos     301
+/guide/multi-remote                       /worktrees/multi-remote                301
+/guide/running-commands-across-worktrees  /worktrees/running-commands            301
+/guide/shortcuts                          /worktrees/shortcuts                   301
+/guide/hooks                              /hooks/                                301
+
+# Guide pages → reference pages
+/guide/configuration                      /reference/configuration               301
+/guide/output-formats                     /reference/output-formats              301
+/guide/claude-skill                       /reference/agent-skill                 301
+
+# CLI ref → reference/cli (also handled by vitepress rewrites; this catches direct hits)
+/cli/*                                    /reference/cli/:splat                  301
+
+# Root meta → about
+/contributing                             /about/contributing                    301
+/changelog                                /about/changelog                       301
