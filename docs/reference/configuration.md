@@ -34,7 +34,8 @@ git config --global daft.autocd false
 Layout configuration uses `~/.config/daft/config.toml` (TOML format), not
 `git config`. This is different from the other settings on this page.
 
-See the [Layouts guide](./layouts.md) for detailed explanations of each layout.
+See the [Layouts guide](/worktrees/layouts) for detailed explanations of each
+layout.
 
 | Key                | File                 | Description                                 |
 | ------------------ | -------------------- | ------------------------------------------- |
@@ -275,7 +276,7 @@ Hooks can also be configured through a `daft.yml` file for richer features
 including multiple jobs, execution modes, job dependencies, and conditional
 execution.
 
-See the [Hooks guide](./hooks.md#yaml-configuration) for the complete `daft.yml`
+See the [Hooks guide](/hooks/yaml-reference) for the complete `daft.yml`
 reference.
 
 ## Examples
@@ -347,6 +348,5 @@ warning is shown with the manual recovery command.
 Use `--local` on any worktree command to skip all remote operations for that
 invocation, regardless of config.
 
-::: tip This only applies to git's own hooks. daft's
-[lifecycle hooks](./hooks.md) (configured in `daft.yml` or `.daft/hooks/`) are
-always executed normally. :::
+::: tip This only applies to git's own hooks. daft's [lifecycle hooks](/hooks/)
+(configured in `daft.yml` or `.daft/hooks/`) are always executed normally. :::

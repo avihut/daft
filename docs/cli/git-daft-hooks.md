@@ -285,6 +285,6 @@ git daft hooks run worktree-post-create --tag setup
 
 ## See Also
 
-- [Hooks Guide](../hooks/index.md) — Full hooks documentation including YAML
+- [Hooks Guide](/hooks/) — Full hooks documentation including YAML
   configuration
-- [Configuration](../reference/configuration.md) — Git config settings for hooks
+- [Configuration](/reference/configuration) — Git config settings for hooks

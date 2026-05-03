@@ -18,7 +18,7 @@ export default defineConfig({
   title: "daft",
   description: "Git Extensions Toolkit",
   srcExclude: ["WEBSITE-BOOTSTRAP.md", "HISTORY.md", "superpowers/**"],
-  ignoreDeadLinks: true, // TODO: revert to false in Task 8.4 once migration is complete
+  ignoreDeadLinks: false,
   cleanUrls: true,
   rewrites: {
     'cli/:command.md': 'reference/cli/:command.md',

@@ -148,6 +148,6 @@ daft layout list --format tsv | cut -f1,3
 daft layout list --format json
 ```
 
-See the [Output Formats guide](../reference/output-formats.md) for format details
+See the [Output Formats guide](/reference/output-formats) for format details
 and Tera syntax.
 
