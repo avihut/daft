@@ -82,3 +82,8 @@ daft clone git@github.com:user/project.git --remote origin
 | -------------------------------- | -------- | ------------------------------- |
 | `daft.multiRemote.enabled`       | `false`  | Enable multi-remote mode        |
 | `daft.multiRemote.defaultRemote` | `origin` | Default remote for new branches |
+
+## Where to next
+
+- **CLI reference:** [`daft multi-remote`](/reference/cli/daft-multi-remote)
+- **Recipe:** [Fork workflow cookbook](/cookbook/by-scenario/fork-workflow)
