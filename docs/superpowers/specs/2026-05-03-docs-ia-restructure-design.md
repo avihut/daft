@@ -283,18 +283,62 @@ Full classification table (input to the migration plan above):
   by-scenario taxonomy is a guess. Initial recipes may surface a better cut.
   This is fine — the structure is a starting taxonomy, not a contract.
 
-## Out of scope (follow-up issues)
+## Out of scope — feature-coupled
 
-The following work is captured in dedicated GitHub issues created from this
-branch, with cross-links from the relevant Roadmap pages:
+Per "docs and features must enter together," the docs work for each pillar's
+expansion is tracked **on the same issue as the feature**. Each of these PRs
+lands the feature plus its IA-aware docs in one shot, on top of this branch's IA
+foundation:
 
-- **Issue:** Full git hooks drop-in (lefthook-style) — pillar pages, commit hook
-  reference, migration guide from lefthook, comparison page
-- **Issue:** Merge hooks — pillar pages, merge-stage hook reference, PR-check
-  parity story
-- **Issue:** Networking pillar content — overview, concepts, cross-repo
-  coordination story, recipes
-- **Issue:** Visual rebrand (deferred until the IA lands and is stable)
+- **#330 — Merge Branch.** Merge feature + merge-hooks pillar pages
+  (`hooks/merge-hooks.md`, Hooks Overview update, roadmap update, PR-check
+  cookbook recipes, comparison page update). Already in flight, written under
+  the old IA — see "Coordination with #330" below.
+- **#357 — Repo Catalog.** Networking feature + full Networking pillar
+  (`networking/index.md`, concepts, repo catalog reference, coordinated-changes
+  how-to, top-nav update, sidebar update, landing-page marquee, comparison page
+  update, cross-repo cookbook recipes).
+- **#468 — Full git-hooks drop-in.** Lefthook-replacement feature + commit-stage
+  hook docs (`hooks/commit-hooks.md`, lefthook migration how-to, Hooks Overview
+  update, roadmap update, comparison page update, lefthook cookbook recipes,
+  agent skill update).
+
+## Out of scope — independent
+
+- **#467 — Visual rebrand of the docs site.** Polish that comes after IA
+  stabilizes. Will introduce custom theme components, palette, fonts, logo.
+- **#386 — Landing page revamp as a pitch.** Separate, complementary. This
+  branch does only a _light_ hero copy update to reflect the pillar IA + the
+  parallel-dev thesis; the full marquee-features pitch is #386's scope.
+
+## Coordination with #330 (merge feature, in flight)
+
+The merge feature has been built under the old IA — its docs additions sit under
+`guide/hooks.md` and similar legacy paths. When this branch lands first, #330
+must convert its docs to the new IA paths during its rebase prep. That
+conversion is finite and well-scoped: move merge-hook content into the new
+`hooks/` pillar, update the Hooks Overview to mark merge as shipped, strike
+merge from the roadmap, add cookbook recipes.
+
+**Recommended sequence:** land #398 first, then #330 absorbs the IA conversion
+during its rebase prep.
+
+Rationale:
+
+- This branch (#398) is foundational — it changes the _structure_ docs live in.
+  The longer it stays open, the more master diverges and the more new docs get
+  written under the old IA that must later be reconverted.
+- The conversion work is one-time mechanical for #330. Holding #398 open until
+  #330 ships means we'd have to absorb in-flight merge docs into our restructure
+  anyway, which is the same conversion done by the wrong branch.
+- "Docs and features enter together" is satisfied because #330's PR includes the
+  IA-aware docs in the same merge.
+
+If the merge work in #330 is far enough along that converting its docs is
+trivial, this strategy is strictly better. If conversion is heavy, the
+alternative is to hold this branch open and have #330 rebase onto it pre-merge,
+then both ship as a single combined PR — but that conflates two unrelated
+changes and is harder to review.
 
 ## Implementation sequencing
 
