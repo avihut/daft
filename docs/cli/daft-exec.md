@@ -26,4 +26,4 @@ daft exec feat/auth -- claude
 ## See Also
 
 - [git worktree-exec](./git-worktree-exec.md) for full options reference
-- [Running commands across worktrees](../guide/running-commands-across-worktrees.md) for the narrative guide
+- [Running commands across worktrees](../worktrees/running-commands.md) for the narrative guide

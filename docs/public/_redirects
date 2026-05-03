@@ -6,7 +6,7 @@
 /guide/layouts                            /worktrees/layouts                     301
 /worktrees/adopting-existing-repos            /worktrees/adopting-existing-repos     301
 /guide/multi-remote                       /worktrees/multi-remote                301
-/guide/running-commands-across-worktrees  /worktrees/running-commands            301
+/worktrees/running-commands  /worktrees/running-commands            301
 /guide/shortcuts                          /worktrees/shortcuts                   301
 /guide/hooks                              /hooks/                                301
 
