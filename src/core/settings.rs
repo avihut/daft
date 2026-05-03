@@ -144,6 +144,14 @@ pub mod defaults {
     pub const OWNERSHIP_STRATEGY: crate::core::ownership::OwnershipStrategy =
         crate::core::ownership::OwnershipStrategy::RecencyPlurality;
 
+    /// Default value for merge.style setting.
+    pub const MERGE_STYLE: crate::core::worktree::merge::MergeStyle =
+        crate::core::worktree::merge::MergeStyle::Merge;
+
+    /// Default value for merge.cleanup setting.
+    pub const MERGE_CLEANUP: crate::core::worktree::merge::CleanupKind =
+        crate::core::worktree::merge::CleanupKind::Keep;
+
     /// Default value for merge.ff setting.
     pub const MERGE_FF: crate::core::worktree::merge::FfMode =
         crate::core::worktree::merge::FfMode::Auto;
@@ -259,6 +267,12 @@ pub mod keys {
 
     /// Config key for ownership.strategy setting.
     pub const OWNERSHIP_STRATEGY: &str = "daft.ownership.strategy";
+
+    /// Config key for merge.style setting.
+    pub const MERGE_STYLE: &str = "daft.merge.style";
+
+    /// Config key for merge.cleanup setting.
+    pub const MERGE_CLEANUP: &str = "daft.merge.cleanup";
 
     /// Config key for merge.ff setting.
     pub const MERGE_FF: &str = "daft.merge.ff";
@@ -437,6 +451,12 @@ pub struct DaftSettings {
     /// `base..branch`. Set via `daft.ownership.strategy`.
     pub ownership_strategy: crate::core::ownership::OwnershipStrategy,
 
+    /// Selected merge style — replaces the legacy `merge_ff` + `merge_squash`
+    /// combination. See [`MergeStyle`] for variants.
+    pub merge_style: crate::core::worktree::merge::MergeStyle,
+    /// Selected post-merge cleanup outcome. See [`CleanupKind`] for variants.
+    pub merge_cleanup: crate::core::worktree::merge::CleanupKind,
+
     /// Default fast-forward mode for merge command. Set via `daft.merge.ff`.
     pub merge_ff: crate::core::worktree::merge::FfMode,
 
@@ -519,6 +539,8 @@ impl Default for DaftSettings {
             prune_sort: None,
             branch_delete_remote: defaults::BRANCH_DELETE_REMOTE,
             ownership_strategy: defaults::OWNERSHIP_STRATEGY,
+            merge_style: defaults::MERGE_STYLE,
+            merge_cleanup: defaults::MERGE_CLEANUP,
             merge_ff: defaults::MERGE_FF,
             merge_squash: defaults::MERGE_SQUASH,
             merge_commit: defaults::MERGE_COMMIT,
@@ -855,7 +877,24 @@ impl DaftSettings {
 /// keys (`ff`, `adoptTargetOnDemand`) silently fall back to the built-in
 /// default, matching the existing pattern for `list.stat` etc.
 fn load_merge_settings(git: &GitCommand, settings: &mut DaftSettings) -> Result<()> {
-    use crate::core::worktree::merge::{AdoptPreset, FfMode};
+    use crate::core::worktree::merge::{AdoptPreset, CleanupKind, FfMode, MergeStyle};
+
+    if let Some(value) = git.config_get(keys::MERGE_STYLE)? {
+        settings.merge_style = match value.as_str() {
+            "merge" => MergeStyle::Merge,
+            "squash" => MergeStyle::Squash,
+            "rebase" => MergeStyle::Rebase,
+            "rebase-merge" => MergeStyle::RebaseMerge,
+            _ => defaults::MERGE_STYLE,
+        };
+    }
+    if let Some(value) = git.config_get(keys::MERGE_CLEANUP)? {
+        settings.merge_cleanup = match value.as_str() {
+            "keep" => CleanupKind::Keep,
+            "remove-branch" => CleanupKind::RemoveBranch,
+            _ => defaults::MERGE_CLEANUP,
+        };
+    }
 
     if let Some(value) = git.config_get(keys::MERGE_FF)? {
         settings.merge_ff = match value.as_str() {
@@ -1373,5 +1412,23 @@ mod tests {
         assert!(validate_merge_settings(true, true).is_ok());
         assert!(validate_merge_settings(false, false).is_ok());
         assert!(validate_merge_settings(true, false).is_ok());
+    }
+
+    #[test]
+    fn merge_style_default_is_merge() {
+        let s = DaftSettings::default();
+        assert_eq!(
+            s.merge_style,
+            crate::core::worktree::merge::MergeStyle::Merge
+        );
+    }
+
+    #[test]
+    fn merge_cleanup_default_is_keep() {
+        let s = DaftSettings::default();
+        assert_eq!(
+            s.merge_cleanup,
+            crate::core::worktree::merge::CleanupKind::Keep
+        );
     }
 }
