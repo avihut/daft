@@ -564,6 +564,9 @@ pub fn run() -> Result<()> {
     use crate::core::worktree::merge::{CleanupKind, MergeStyle};
     let squash_requested = matches!(flags.style, MergeStyle::Squash);
     let cleanup_requested = cleanup_kind == CleanupKind::RemoveBranch;
+    // Capture merge_style before flags is moved into params (below). Used by
+    // --set-default to write the invocation's style as a repo default.
+    let merge_style = flags.style;
     let cleanup_intent = if squash_requested && cleanup_requested {
         Some(crate::core::worktree::merge::MergeIntentTemplate {
             remove_worktree: true,
@@ -788,6 +791,19 @@ pub fn run() -> Result<()> {
                 ));
             }
             // else: unreachable in practice; let existing downstream lines render.
+        }
+
+        // --set-default: persist the invocation's style + cleanup as repo defaults.
+        // Best-effort; failure to write surfaces a warning, doesn't fail the merge.
+        if args.set_default {
+            match crate::core::worktree::merge_set_default::write_default_settings(
+                &project_root,
+                merge_style,
+                cleanup_kind,
+            ) {
+                Ok(()) => output.defaults_updated(merge_style, cleanup_kind),
+                Err(e) => output.warning(&format!("failed to update repository defaults: {e}")),
+            }
         }
 
         // Post-merge cleanup. Only runs on successful, non-up-to-date merges
