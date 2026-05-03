@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "diataxis-organize-docs": {
+      "source": "trogonstack/agentskills",
+      "sourceType": "github",
+      "skillPath": "plugins/trogonstack-diataxis/skills/diataxis-organize-docs/SKILL.md",
+      "computedHash": "e4d547682a2f4a4964bb8f29626cd99743c43ec4660c53204978ea3a286be24e"
+    },
+    "writing-documentation-with-diataxis": {
+      "source": "sammcj/agentic-coding",
+      "sourceType": "github",
+      "skillPath": "skills/diataxis-documentation/SKILL.md",
+      "computedHash": "80b05e3bf8a65e2d22b2861e6d39d7d47b643a17f27a7c6c91aa76b99a84cd8c"
+    }
+  }
+}
