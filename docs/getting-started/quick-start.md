@@ -141,8 +141,7 @@ preserved.
 - [Shell Integration](./shell-integration.md) - Enable auto-cd into new
   worktrees
 - [Layouts](../guide/layouts.md) - Choose how worktrees are organized on disk
-- [Worktree Workflow](../guide/worktree-workflow.md) - Deep dive into the
-  worktree-centric approach
+- [Worktrees](../worktrees/) - Deep dive into the worktree-centric approach
 - [Hooks](../guide/hooks.md) - Automate worktree lifecycle events
 - [Shortcuts](../guide/shortcuts.md) - Enable short command aliases
 - [Configuration](../guide/configuration.md) - Customize daft's behavior

@@ -109,5 +109,4 @@ Terminal 1 (feature-a/)     Terminal 2 (feature-b/)
   minutes
 - [Shell Integration](./getting-started/shell-integration.md) - Enable auto-cd
   into worktrees
-- [Worktree Workflow Guide](./guide/worktree-workflow.md) - Understand the
-  worktree-centric approach
+- [Worktrees](./worktrees/index.md) - Understand the worktree-centric approach
