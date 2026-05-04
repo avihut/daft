@@ -699,13 +699,18 @@ fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
             args: None,
         },
         FigOption {
-            name: FigName::Multiple(vec!["-r".into(), "--remove".into()]),
-            description: "Remove the source worktree after a successful merge".into(),
+            name: FigName::Multiple(vec!["-r".into(), "--remove-branch".into()]),
+            description: "Remove the source worktree and delete the source branch".into(),
             args: None,
         },
         FigOption {
-            name: FigName::Multiple(vec!["-b".into(), "--and-branch".into()]),
-            description: "Also delete the source branch (requires --remove)".into(),
+            name: FigName::Single("--keep-branch".into()),
+            description: "Explicit keep — for canceling a config-set cleanup default".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--set-default".into()),
+            description: "Persist the invocation's style + cleanup as repo defaults".into(),
             args: None,
         },
         FigOption {
@@ -734,28 +739,23 @@ fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
             args: cleanup_suggestions,
         },
         FigOption {
-            name: FigName::Single("--ff".into()),
-            description: "Allow fast-forward merges".into(),
-            args: None,
-        },
-        FigOption {
-            name: FigName::Single("--no-ff".into()),
-            description: "Always create a merge commit".into(),
-            args: None,
-        },
-        FigOption {
-            name: FigName::Single("--ff-only".into()),
-            description: "Refuse merge if fast-forward is not possible".into(),
+            name: FigName::Single("--merge".into()),
+            description: "Explicit merge style — always create a merge commit (default)".into(),
             args: None,
         },
         FigOption {
             name: FigName::Single("--squash".into()),
-            description: "Squash source changes into a single staged diff".into(),
+            description: "Squash style — collapse source commits into one squash commit".into(),
             args: None,
         },
         FigOption {
-            name: FigName::Single("--no-squash".into()),
-            description: "Explicitly disable squash".into(),
+            name: FigName::Single("--rebase".into()),
+            description: "Rebase style — replay source onto target, fast-forward".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--rebase-merge".into()),
+            description: "Rebase-merge style — rebase source onto target, then merge commit".into(),
             args: None,
         },
         FigOption {
