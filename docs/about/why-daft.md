@@ -72,5 +72,5 @@ the [full git-hooks drop-in](https://github.com/avihut/daft/issues/468) ships).
 - **[Quick Start](/getting-started/quick-start)** — a Tutorial that walks the
   worktree adoption arc
 - **[Worktrees](/worktrees/)** — the foundation pillar
-- **[Cookbook](/cookbook/)** — recipes for adopting daft alongside your existing
+- **[Recipes](/recipes/)** — recipes for adopting daft alongside your existing
   tooling

@@ -49,6 +49,6 @@ With those, daft can:
 
 This page goes away. Its content migrates to `networking/index.md` as the third
 pillar's Overview, and the top nav adds a "Networking" entry between "Hooks" and
-"Cookbook." See
+"Recipes." See
 [#398's coordination notes](https://github.com/avihut/daft/issues/398) for how
 docs land alongside the feature.

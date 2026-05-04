@@ -21,7 +21,7 @@ export default defineConfig({
   ignoreDeadLinks: false,
   cleanUrls: true,
   rewrites: {
-    'cli/:command.md': 'reference/cli/:command.md',
+    "cli/:command.md": "reference/cli/:command.md",
   },
   lastUpdated: true,
   sitemap: {
@@ -217,7 +217,7 @@ export default defineConfig({
     nav: [
       { text: "Worktrees", link: "/worktrees/" },
       { text: "Hooks", link: "/hooks/" },
-      { text: "Cookbook", link: "/cookbook/" },
+      { text: "Recipes", link: "/recipes/" },
       { text: `v${version}`, link: "/about/changelog" },
       { text: "GitHub", link: "https://github.com/avihut/daft" },
     ],
@@ -253,10 +253,6 @@ export default defineConfig({
             link: "/worktrees/running-commands",
           },
           { text: "Shortcuts", link: "/worktrees/shortcuts" },
-          {
-            text: "Recipes",
-            link: "/cookbook/?pillar=worktrees",
-          },
         ],
       },
       {
@@ -268,44 +264,46 @@ export default defineConfig({
           { text: "YAML reference", link: "/hooks/yaml-reference" },
           { text: "Trust & security", link: "/hooks/trust-and-security" },
           { text: "Roadmap", link: "/hooks/roadmap" },
-          {
-            text: "Recipes",
-            link: "/cookbook/?pillar=hooks",
-          },
         ],
       },
       {
-        text: "Cookbook",
+        text: "Recipes",
         items: [
-          { text: "Overview", link: "/cookbook/" },
+          { text: "Overview", link: "/recipes/" },
           {
             text: "By tooling",
             collapsed: false,
             items: [
-              { text: "mise", link: "/cookbook/by-tooling/mise" },
-              { text: "direnv", link: "/cookbook/by-tooling/direnv" },
-              { text: "nvm", link: "/cookbook/by-tooling/nvm" },
-              { text: "pyenv", link: "/cookbook/by-tooling/pyenv" },
-              { text: "asdf", link: "/cookbook/by-tooling/asdf" },
+              { text: "mise", link: "/recipes/by-tooling/mise" },
+              { text: "direnv", link: "/recipes/by-tooling/direnv" },
+              { text: "nvm", link: "/recipes/by-tooling/nvm" },
+              { text: "pyenv", link: "/recipes/by-tooling/pyenv" },
+              { text: "asdf", link: "/recipes/by-tooling/asdf" },
             ],
           },
           {
             text: "By language",
             collapsed: false,
             items: [
-              { text: "Node.js", link: "/cookbook/by-language/node" },
-              { text: "Python", link: "/cookbook/by-language/python" },
-              { text: "Rust", link: "/cookbook/by-language/rust" },
-              { text: "Go", link: "/cookbook/by-language/go" },
+              { text: "Node.js", link: "/recipes/by-language/node" },
+              { text: "Python", link: "/recipes/by-language/python" },
+              { text: "Rust", link: "/recipes/by-language/rust" },
+              { text: "Go", link: "/recipes/by-language/go" },
             ],
           },
           {
             text: "By scenario",
             collapsed: false,
             items: [
-              { text: "Monorepo", link: "/cookbook/by-scenario/monorepo" },
-              { text: "Fork workflow", link: "/cookbook/by-scenario/fork-workflow" },
-              { text: "CI integration", link: "/cookbook/by-scenario/ci-integration" },
+              { text: "Monorepo", link: "/recipes/by-scenario/monorepo" },
+              {
+                text: "Fork workflow",
+                link: "/recipes/by-scenario/fork-workflow",
+              },
+              {
+                text: "CI integration",
+                link: "/recipes/by-scenario/ci-integration",
+              },
             ],
           },
         ],
@@ -347,7 +345,10 @@ export default defineConfig({
                   { text: "carry", link: "/reference/cli/daft-carry" },
                   { text: "exec", link: "/reference/cli/daft-exec" },
                   { text: "eject", link: "/reference/cli/daft-eject" },
-                  { text: "repo remove", link: "/reference/cli/daft-repo-remove" },
+                  {
+                    text: "repo remove",
+                    link: "/reference/cli/daft-repo-remove",
+                  },
                 ],
               },
               {
@@ -355,9 +356,18 @@ export default defineConfig({
                 items: [
                   { text: "list", link: "/reference/cli/daft-list" },
                   { text: "doctor", link: "/reference/cli/daft-doctor" },
-                  { text: "release-notes", link: "/reference/cli/daft-release-notes" },
-                  { text: "shell-init", link: "/reference/cli/daft-shell-init" },
-                  { text: "completions", link: "/reference/cli/daft-completions" },
+                  {
+                    text: "release-notes",
+                    link: "/reference/cli/daft-release-notes",
+                  },
+                  {
+                    text: "shell-init",
+                    link: "/reference/cli/daft-shell-init",
+                  },
+                  {
+                    text: "completions",
+                    link: "/reference/cli/daft-completions",
+                  },
                   { text: "setup", link: "/reference/cli/daft-setup" },
                 ],
               },
@@ -367,7 +377,10 @@ export default defineConfig({
                   { text: "config", link: "/reference/cli/daft-config" },
                   { text: "hooks", link: "/reference/cli/git-daft-hooks" },
                   { text: "layout", link: "/reference/cli/daft-layout" },
-                  { text: "multi-remote", link: "/reference/cli/daft-multi-remote" },
+                  {
+                    text: "multi-remote",
+                    link: "/reference/cli/daft-multi-remote",
+                  },
                 ],
               },
               {
@@ -377,16 +390,31 @@ export default defineConfig({
                   {
                     text: "Setup",
                     items: [
-                      { text: "worktree-clone", link: "/reference/cli/git-worktree-clone" },
-                      { text: "worktree-init", link: "/reference/cli/git-worktree-init" },
-                      { text: "flow-adopt", link: "/reference/cli/git-worktree-flow-adopt" },
+                      {
+                        text: "worktree-clone",
+                        link: "/reference/cli/git-worktree-clone",
+                      },
+                      {
+                        text: "worktree-init",
+                        link: "/reference/cli/git-worktree-init",
+                      },
+                      {
+                        text: "flow-adopt",
+                        link: "/reference/cli/git-worktree-flow-adopt",
+                      },
                     ],
                   },
                   {
                     text: "Branching",
                     items: [
-                      { text: "worktree-checkout", link: "/reference/cli/git-worktree-checkout" },
-                      { text: "worktree-branch", link: "/reference/cli/git-worktree-branch" },
+                      {
+                        text: "worktree-checkout",
+                        link: "/reference/cli/git-worktree-checkout",
+                      },
+                      {
+                        text: "worktree-branch",
+                        link: "/reference/cli/git-worktree-branch",
+                      },
                       {
                         text: "worktree-branch-delete (deprecated)",
                         link: "/reference/cli/git-worktree-branch-delete",
@@ -396,13 +424,34 @@ export default defineConfig({
                   {
                     text: "Maintenance",
                     items: [
-                      { text: "worktree-sync", link: "/reference/cli/git-worktree-sync" },
-                      { text: "worktree-list", link: "/reference/cli/git-worktree-list" },
-                      { text: "worktree-prune", link: "/reference/cli/git-worktree-prune" },
-                      { text: "worktree-fetch", link: "/reference/cli/git-worktree-fetch" },
-                      { text: "worktree-carry", link: "/reference/cli/git-worktree-carry" },
-                      { text: "worktree-exec", link: "/reference/cli/git-worktree-exec" },
-                      { text: "flow-eject", link: "/reference/cli/git-worktree-flow-eject" },
+                      {
+                        text: "worktree-sync",
+                        link: "/reference/cli/git-worktree-sync",
+                      },
+                      {
+                        text: "worktree-list",
+                        link: "/reference/cli/git-worktree-list",
+                      },
+                      {
+                        text: "worktree-prune",
+                        link: "/reference/cli/git-worktree-prune",
+                      },
+                      {
+                        text: "worktree-fetch",
+                        link: "/reference/cli/git-worktree-fetch",
+                      },
+                      {
+                        text: "worktree-carry",
+                        link: "/reference/cli/git-worktree-carry",
+                      },
+                      {
+                        text: "worktree-exec",
+                        link: "/reference/cli/git-worktree-exec",
+                      },
+                      {
+                        text: "flow-eject",
+                        link: "/reference/cli/git-worktree-flow-eject",
+                      },
                     ],
                   },
                 ],

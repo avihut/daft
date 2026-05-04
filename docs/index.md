@@ -30,12 +30,12 @@ features:
       surface. Today, worktree lifecycle. Soon, the full git-hooks lifecycle.
     link: /hooks/
     linkText: Hooks pillar
-  - title: Cookbook
+  - title: Recipes
     details:
-      Recipes for adopting daft alongside your existing tooling — mise, direnv,
+      Patterns for adopting daft alongside your existing tooling — mise, direnv,
       asdf, monorepos, fork workflows, CI integration.
-    link: /cookbook/
-    linkText: Cookbook
+    link: /recipes/
+    linkText: Recipes
 ---
 
 # daft - Git Extensions Toolkit

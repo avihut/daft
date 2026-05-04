@@ -19,9 +19,9 @@ declare const data: Data[];
 export { data };
 
 export default defineLoader({
-  watch: ["../../cookbook/**/*.md"],
+  watch: ["../../recipes/**/*.md"],
   load() {
-    const cookbookDir = resolve(__dirname, "../../cookbook");
-    return loadRecipes(cookbookDir);
+    const recipesDir = resolve(__dirname, "../../recipes");
+    return loadRecipes(recipesDir);
   },
 });

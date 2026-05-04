@@ -11,10 +11,10 @@ export type Recipe = {
   languages: string[];
 };
 
-export function loadRecipes(cookbookDir: string): Recipe[] {
+export function loadRecipes(recipesDir: string): Recipe[] {
   const recipes: Recipe[] = [];
   for (const category of ["by-tooling", "by-language", "by-scenario"]) {
-    const dir = join(cookbookDir, category);
+    const dir = join(recipesDir, category);
     if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) continue;
     for (const file of readdirSync(dir)) {
       if (!file.endsWith(".md")) continue;
@@ -24,7 +24,7 @@ export function loadRecipes(cookbookDir: string): Recipe[] {
       recipes.push({
         title: data.title ?? file.replace(/\.md$/, ""),
         description: data.description ?? "",
-        link: `/cookbook/${category}/${file.replace(/\.md$/, "")}`,
+        link: `/recipes/${category}/${file.replace(/\.md$/, "")}`,
         pillars: Array.isArray(data.pillars) ? data.pillars : [],
         tooling: Array.isArray(data.tooling) ? data.tooling : [],
         languages: Array.isArray(data.languages) ? data.languages : [],

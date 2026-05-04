@@ -112,7 +112,7 @@ Replace the static seed with a vault lookup in the post-create job. Example with
 
 ## Where to next
 
-- **[mise](/cookbook/by-tooling/mise)** — tool versions per worktree (mise
+- **[mise](/recipes/by-tooling/mise)** — tool versions per worktree (mise
   handles tools; direnv handles env vars)
 - **[Hooks](/hooks/)** — what else can fire on worktree create
 - **[copy_paths](https://github.com/avihut/daft/issues/387)** (planned) —

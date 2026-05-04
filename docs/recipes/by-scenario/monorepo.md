@@ -129,7 +129,7 @@ includes.
 
 ## Where to next
 
-- **[mise](/cookbook/by-tooling/mise)** — pin Node/pnpm versions in `mise.toml`
+- **[mise](/recipes/by-tooling/mise)** — pin Node/pnpm versions in `mise.toml`
 - **[Layouts](/worktrees/layouts)** — the contained layout in detail
 - **Sparse checkout** — [#336](https://github.com/avihut/daft/issues/336)
   (planned)

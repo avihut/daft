@@ -12,7 +12,7 @@ git operation. You can mix `git` and `daft` commands freely in the same repo.
 
 ## Does daft work with monorepos?
 
-Yes. See [Cookbook → By scenario → Monorepo](/cookbook/by-scenario/monorepo) for
+Yes. See [Recipes → By scenario → Monorepo](/recipes/by-scenario/monorepo) for
 the recommended pattern.
 
 ## Does daft work on Windows?

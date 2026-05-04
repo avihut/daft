@@ -169,4 +169,4 @@ state.
 
 - **Schema:** [YAML reference](/hooks/yaml-reference) — every field
 - **Trust:** [Trust & security](/hooks/trust-and-security)
-- **Recipes:** [Cookbook recipes for Hooks](/cookbook/?pillar=hooks)
+- **Recipes:** [Recipes for Hooks](/recipes/?pillar=hooks)

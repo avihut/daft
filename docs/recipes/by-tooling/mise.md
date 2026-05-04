@@ -100,8 +100,8 @@ configuration needed.
 
 ## Where to next
 
-- **[direnv](/cookbook/by-tooling/direnv)** — env vars per worktree (mise
-  handles tool versions; direnv handles secrets)
+- **[direnv](/recipes/by-tooling/direnv)** — env vars per worktree (mise handles
+  tool versions; direnv handles secrets)
 - **[Hooks](/hooks/)** — what else can fire on worktree create
 - **[Job orchestration](/hooks/job-orchestration)** — run `mise install` in
   parallel with other setup jobs

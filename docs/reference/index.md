@@ -7,7 +7,7 @@ description:
 # Reference
 
 Authoritative descriptions of daft's machinery. For task-oriented guidance, see
-the [Cookbook](/cookbook/) or the per-pillar pages.
+the [Recipes](/recipes/) or the per-pillar pages.
 
 - **[Configuration](/reference/configuration)** — every `git config daft.*` key
 - **[Output formats](/reference/output-formats)** — `--format` and `--template`

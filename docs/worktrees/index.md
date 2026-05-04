@@ -21,8 +21,8 @@ value; each stage stands on its own.
    swapping.
 2. **Environment isolation.** Different branches often need different runtime
    versions, env vars, or secrets. With per-worktree env management
-   ([mise](/cookbook/by-tooling/mise), [direnv](/cookbook/by-tooling/direnv),
-   nvm, pyenv), each worktree boots with the right environment.
+   ([mise](/recipes/by-tooling/mise), [direnv](/recipes/by-tooling/direnv), nvm,
+   pyenv), each worktree boots with the right environment.
 3. **Automation.** Setting up env per worktree gets repetitive. The
    [Hooks pillar](/hooks/) automates it: declarative jobs that run when
    worktrees are created, removed, or merged.
@@ -270,6 +270,6 @@ root and place new worktrees according to the active layout.
 - **Run commands across worktrees:**
   [Running commands across worktrees](/worktrees/running-commands) — `daft exec`
 - **Faster typing:** [Shortcuts](/worktrees/shortcuts) — `gwt*` symlink aliases
-- **Recipes:** [Cookbook recipes for Worktrees](/cookbook/?pillar=worktrees)
+- **Recipes:** [Recipes for Worktrees](/recipes/?pillar=worktrees)
 - **Next pillar:** [Hooks](/hooks/) — automate the env-setup-per-worktree
   problem

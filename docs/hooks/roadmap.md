@@ -18,7 +18,7 @@ Lefthook-style drop-in: `pre-commit`, `commit-msg`, `prepare-commit-msg`,
 boundary" — format, lint, fast tests gate every commit.
 
 When this ships, daft becomes a viable lefthook replacement. Recipes for the
-migration will live under [Cookbook → By tooling → lefthook → daft](/cookbook/)
+migration will live under [Recipes → By tooling → lefthook → daft](/recipes/)
 once written.
 
 ## Merge hooks

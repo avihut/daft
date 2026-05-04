@@ -28,7 +28,7 @@ ensures the interpreter is present before the developer writes a line of code.
 
 ## Where to next
 
-- [Cookbook home](/cookbook/)
-- [Anchor recipe: mise](/cookbook/by-tooling/mise)
-- [Anchor recipe: direnv](/cookbook/by-tooling/direnv)
-- [Anchor recipe: monorepo](/cookbook/by-scenario/monorepo)
+- [Recipes home](/recipes/)
+- [Anchor recipe: mise](/recipes/by-tooling/mise)
+- [Anchor recipe: direnv](/recipes/by-tooling/direnv)
+- [Anchor recipe: monorepo](/recipes/by-scenario/monorepo)

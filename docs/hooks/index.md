@@ -57,4 +57,4 @@ Two distinctions:
   trust and how the model works
 - **Status:** [Roadmap](/hooks/roadmap) — what's coming for commit and merge
   stages
-- **Recipes:** [Cookbook recipes for Hooks](/cookbook/?pillar=hooks)
+- **Recipes:** [Recipes for Hooks](/recipes/?pillar=hooks)
