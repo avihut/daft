@@ -230,4 +230,46 @@ pub trait Output {
         );
         self.info(&line);
     }
+
+    /// Render the "I heard you" header line at the very start of `daft merge`.
+    ///
+    /// Two complaints from field testing motivated this: users couldn't tell
+    /// whether daft had understood their flags at all (the only signal was a
+    /// transient spinner that often vanished before they read it), and the
+    /// hook box for cleanup left them unsure which worktree was being touched.
+    /// This line names the operation, the style, the cleanup outcome, and
+    /// whether `--set-default` is going to persist the choices — so the rest
+    /// of the output is read in context.
+    ///
+    /// Default impl delegates to `info`. Concrete implementations may apply
+    /// dim styling so the line reads as a header rather than a result.
+    fn merge_intent(
+        &mut self,
+        sources: &[String],
+        target: &str,
+        style: crate::core::worktree::merge::MergeStyle,
+        cleanup: crate::core::worktree::merge::CleanupKind,
+        set_default: bool,
+    ) {
+        let sources_display = sources.join(", ");
+        let mut bits = vec![style.to_string(), cleanup.to_string()];
+        if set_default {
+            bits.push("saving as default".to_string());
+        }
+        let line = format!(
+            "Merging {sources_display} \u{2192} {target} ({})",
+            bits.join(" \u{00b7} ")
+        );
+        self.info(&line);
+    }
+
+    /// Render a per-source section heading right before `worktree-pre-remove`
+    /// hooks fire during cleanup. The hook-box title also names the target
+    /// now, but the heading lands in the user's main output stream (stdout)
+    /// — it survives even when stderr is redirected, and it labels the scope
+    /// before the box appears so the user reads the box knowing what to
+    /// expect. Suppressed in quiet mode via the default `info` delegation.
+    fn cleanup_target(&mut self, name: &str) {
+        self.info(&format!("Cleaning up {name} (worktree, local branch)"));
+    }
 }

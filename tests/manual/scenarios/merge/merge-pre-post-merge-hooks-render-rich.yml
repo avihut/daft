@@ -2,10 +2,12 @@ name: Merge pre/post-merge hooks render through rich hook-box presenter
 description:
   "pre-merge and post-merge hooks are rendered via MergeHookRunner +
   HookExecutor + CliPresenter::auto. With DAFT_TESTING unset the
-  PlainHookRenderer is active (no TTY) and prints the hook-box header lines
-  containing 'hook: pre-merge' / 'hook: post-merge' to stderr. This scenario
-  pins that rendering path so a regression (e.g. hooks silently swallowed) would
-  be caught."
+  PlainHookRenderer is active (no TTY) and prints the hook-box header lines to
+  stderr — 'daft hooks v<version>  pre-merge' for pre-merge and 'daft hooks
+  v<version>  post-merge' for post-merge. This scenario pins that rendering path
+  so a regression (e.g. hooks silently swallowed) would be caught. Both hooks
+  are project-scoped (no worktree target), so the title carries no ' on: <name>'
+  segment."
 
 repos:
   - name: test-repo
@@ -59,9 +61,12 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        # Hook-box header lines — presence confirms the rich presenter path fired
-        - "hook: pre-merge"
-        - "hook: post-merge"
+        # Hook-box header lines — presence confirms the rich presenter path
+        # fired. The title format is `daft hooks v<v>  <hook-name>` (no
+        # `hook:` prefix; no `on:` segment for project-scoped phases).
+        - "daft hooks"
+        - "pre-merge"
+        - "post-merge"
         # Hook job stdout — confirms jobs actually executed and their output was streamed
         - "PRE_MERGE_OK"
         - "POST_MERGE_OK"
@@ -69,3 +74,12 @@ steps:
         # feature/test-feature diverges from main (main has daft.yml commit added
         # after branching), so this is a 3-way merge, not a fast-forward.
         - "Merged feature/test-feature into main (commit "
+        # Persistent intent line — present even on fast merges where the
+        # spinner clears too quickly to read.
+        - "Merging feature/test-feature → current branch"
+      output_not_contains:
+        # Pre-1.0 cleanup: the legacy `hook:` label was removed because the
+        # box border itself signals "this is a hook". Catch any regression
+        # that re-introduces it.
+        - "hook: pre-merge"
+        - "hook: post-merge"

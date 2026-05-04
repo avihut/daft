@@ -14,7 +14,12 @@ use std::time::Duration;
 /// use interior mutability (e.g., `Mutex`) when state updates are needed.
 pub trait JobPresenter: Send + Sync {
     /// A new execution phase is starting (e.g., "post-clone", "sync").
-    fn on_phase_start(&self, phase_name: &str);
+    ///
+    /// `target` names the entity the phase is acting on (e.g. the worktree
+    /// being removed for `worktree-pre-remove`). Implementations may surface
+    /// it in the phase header to disambiguate multi-source operations. `None`
+    /// for project-scoped phases (`pre-merge`, `post-merge`, `post-clone`).
+    fn on_phase_start(&self, phase_name: &str, target: Option<&str>);
 
     /// A job has started running.
     ///
@@ -74,7 +79,7 @@ impl NullPresenter {
 }
 
 impl JobPresenter for NullPresenter {
-    fn on_phase_start(&self, _phase_name: &str) {}
+    fn on_phase_start(&self, _phase_name: &str, _target: Option<&str>) {}
     fn on_job_start(
         &self,
         _name: &str,
@@ -123,7 +128,7 @@ mod tests {
     #[test]
     fn null_presenter_methods_are_no_ops() {
         let p = NullPresenter;
-        p.on_phase_start("test");
+        p.on_phase_start("test", None);
         p.on_job_start("job", Some("desc"), None);
         p.on_job_start("job", None, None);
         p.on_job_output("job", "line");
@@ -145,14 +150,14 @@ mod tests {
     #[test]
     fn null_presenter_arc_constructor() {
         let p = NullPresenter::arc();
-        p.on_phase_start("test");
+        p.on_phase_start("test", None);
         assert!(p.take_results().is_empty());
     }
 
     #[test]
     fn trait_object_from_null_presenter() {
         let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
-        presenter.on_phase_start("phase");
+        presenter.on_phase_start("phase", None);
         presenter.on_job_start("job", None, None);
         presenter.on_job_output("job", "output");
         presenter.on_job_success("job", Duration::from_secs(1));

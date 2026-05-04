@@ -144,6 +144,22 @@ pub(crate) fn get_hook_source_worktree(ctx: &HookContext) -> PathBuf {
     }
 }
 
+/// Pick the display target shown alongside the hook name in the rich
+/// hook-box title (e.g. `worktree-pre-remove  on: feature`).
+///
+/// Worktree-scoped phases get the branch they're acting on so multi-source
+/// flows make it obvious which worktree the hooks are touching. Project-
+/// scoped phases (`pre-merge` / `post-merge` / `post-clone`) return `None`
+/// because the title isn't tied to a single worktree.
+pub(crate) fn header_target_for_ctx(ctx: &HookContext) -> Option<&str> {
+    match ctx.hook_type {
+        HookType::PreCreate | HookType::PostCreate | HookType::PreRemove | HookType::PostRemove => {
+            Some(ctx.branch_name.as_str())
+        }
+        HookType::PreMerge | HookType::PostMerge | HookType::PostClone => None,
+    }
+}
+
 /// Hook executor that manages hook discovery and execution.
 pub struct HookExecutor {
     config: HooksConfig,
@@ -452,7 +468,8 @@ impl HookExecutor {
 
         // Use presenter for header and execution
         let hook_type_name = ctx.hook_type.yaml_name();
-        presenter.on_phase_start(hook_type_name);
+        let header_target = header_target_for_ctx(ctx);
+        presenter.on_phase_start(hook_type_name, header_target);
         let hook_start = std::time::Instant::now();
 
         // Execute via the generic runner (Piped mode = stop on first failure)

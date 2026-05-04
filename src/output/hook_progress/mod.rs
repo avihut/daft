@@ -65,10 +65,10 @@ impl HookRenderer {
         HookRenderer::Progress(Box::new(HookProgressRenderer::new_hidden(config)))
     }
 
-    pub fn print_header(&self, hook_name: &str) {
+    pub fn print_header(&self, hook_name: &str, target: Option<&str>) {
         match self {
-            HookRenderer::Progress(r) => r.print_header(hook_name),
-            HookRenderer::Plain(r) => r.print_header(hook_name),
+            HookRenderer::Progress(r) => r.print_header(hook_name, target),
+            HookRenderer::Plain(r) => r.print_header(hook_name, target),
         }
     }
 
@@ -401,7 +401,8 @@ mod tests {
         let config = HookOutputConfig::default();
         let renderer = HookProgressRenderer::new_hidden(&config);
         // Just verify it doesn't panic
-        renderer.print_header("post-clone");
+        renderer.print_header("post-clone", None);
+        renderer.print_header("worktree-pre-remove", Some("feature"));
     }
 
     #[test]
@@ -416,12 +417,42 @@ mod tests {
 
     #[test]
     fn test_format_header_lines_plain() {
-        let lines = formatting::format_header_lines("post-create", false);
+        let lines = formatting::format_header_lines("worktree-post-create", None, false);
         assert_eq!(lines.len(), 3);
         assert!(lines[0].starts_with('\u{250c}'));
         assert!(lines[1].contains("daft hooks"));
-        assert!(lines[1].contains("post-create"));
+        assert!(lines[1].contains("worktree-post-create"));
+        // No target → no "on:" segment.
+        assert!(!lines[1].contains("on:"));
         assert!(lines[2].starts_with('\u{2514}'));
+    }
+
+    #[test]
+    fn format_header_lines_includes_target_segment_when_provided() {
+        let lines = formatting::format_header_lines("worktree-pre-remove", Some("test"), false);
+        assert_eq!(lines.len(), 3);
+        assert!(
+            lines[1].contains("worktree-pre-remove  on: test"),
+            "expected 'on: test' segment in title, got: {:?}",
+            lines[1]
+        );
+        // Border length must match title content; the closing right edge is
+        // the same width as the opening left edge.
+        let top_dashes = lines[0].chars().filter(|c| *c == '\u{2500}').count();
+        let bottom_dashes = lines[2].chars().filter(|c| *c == '\u{2500}').count();
+        assert_eq!(top_dashes, bottom_dashes);
+    }
+
+    #[test]
+    fn format_header_lines_drops_redundant_hook_label() {
+        let lines = formatting::format_header_lines("post-clone", None, false);
+        // The legacy title carried a "hook:" prefix; the new title drops it
+        // because the box border itself signals "this is a hook".
+        assert!(
+            !lines[1].contains("hook:"),
+            "title must not carry the redundant 'hook:' label, got: {:?}",
+            lines[1]
+        );
     }
 
     #[test]

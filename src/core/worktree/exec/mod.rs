@@ -1430,7 +1430,7 @@ mod streaming_skip_emission_tests {
     }
 
     impl crate::executor::presenter::JobPresenter for EventRecorder {
-        fn on_phase_start(&self, _: &str) {}
+        fn on_phase_start(&self, _: &str, _: Option<&str>) {}
         fn on_job_start(&self, name: &str, _: Option<&str>, preview: Option<&str>) {
             self.log(&format!("start:{name}:{}", preview.unwrap_or("")));
         }

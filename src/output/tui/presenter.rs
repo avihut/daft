@@ -72,7 +72,9 @@ impl TuiPresenter {
 }
 
 impl JobPresenter for TuiPresenter {
-    fn on_phase_start(&self, _phase_name: &str) {
+    fn on_phase_start(&self, _phase_name: &str, _target: Option<&str>) {
+        // The TUI already knows which branch a phase is acting on
+        // (`self.branch_name`); the target hint is redundant here.
         *self.start.lock().expect("TuiPresenter start poisoned") = Some(Instant::now());
 
         let _ = self.sender.send(DagEvent::HookStarted {
@@ -218,7 +220,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let presenter = TuiPresenter::new(tx, "feat/login", HookType::PostCreate);
 
-        presenter.on_phase_start("worktree-post-create");
+        presenter.on_phase_start("worktree-post-create", None);
 
         let event = rx.try_recv().expect("should receive HookStarted");
         match event {
@@ -241,7 +243,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let presenter = TuiPresenter::new(tx, "main", HookType::PostClone);
 
-        presenter.on_phase_start("post-clone");
+        presenter.on_phase_start("post-clone", None);
         // Drain the HookStarted event.
         let _ = rx.recv().unwrap();
 
@@ -276,7 +278,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let presenter = TuiPresenter::new(tx, "feat/broken", HookType::PreCreate);
 
-        presenter.on_phase_start("worktree-pre-create");
+        presenter.on_phase_start("worktree-pre-create", None);
 
         // Simulate a job failure.
         presenter.on_job_start("build", Some("Build project"), None);
@@ -312,7 +314,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let presenter = TuiPresenter::new(tx, "feat/x", HookType::PostCreate);
 
-        presenter.on_phase_start("worktree-post-create");
+        presenter.on_phase_start("worktree-post-create", None);
 
         presenter.on_job_start("install", None, None);
         presenter.on_job_output("install", "fetching packages...");
@@ -463,7 +465,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let presenter = TuiPresenter::new(tx, "main", HookType::PostCreate);
 
-        presenter.on_phase_start("worktree-post-create");
+        presenter.on_phase_start("worktree-post-create", None);
 
         // Job produces output but succeeds.
         presenter.on_job_start("build", None, None);

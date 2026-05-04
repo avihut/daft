@@ -321,7 +321,8 @@ pub fn execute_yaml_hook_with_rc(
         ));
 
     // Use presenter for header and execution
-    presenter.on_phase_start(hook_name);
+    let header_target = super::executor::header_target_for_ctx(ctx);
+    presenter.on_phase_start(hook_name, header_target);
     let hook_start = std::time::Instant::now();
 
     // Execute foreground jobs via the generic runner

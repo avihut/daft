@@ -596,6 +596,17 @@ pub fn run() -> Result<()> {
         .as_deref()
         .unwrap_or("current branch")
         .to_string();
+    // Persistent intent line — ack the operation before any transient spinner
+    // or low-level git output appears. Field testing showed users couldn't tell
+    // whether daft had understood the flags; the spinner alone vanishes too
+    // fast on a quick merge.
+    output.merge_intent(
+        &sources_for_message,
+        &target_label,
+        merge_style,
+        cleanup_kind,
+        args.set_default,
+    );
     let spinner_label = if squash_requested {
         format!(
             "Squashing {} into {}...",
@@ -795,16 +806,26 @@ pub fn run() -> Result<()> {
 
         // --set-default: persist the invocation's style + cleanup as repo defaults.
         // Best-effort; failure to write surfaces a warning, doesn't fail the merge.
-        if args.set_default {
+        //
+        // Persist the values now (so a later cleanup failure doesn't lose them),
+        // but defer the user-facing "Updated repository defaults" notice until
+        // after cleanup — that way it lands as a footnote to the operation
+        // rather than interleaved between the merge step and the cleanup hooks.
+        let defaults_to_announce = if args.set_default {
             match crate::core::worktree::merge_set_default::write_default_settings(
                 &project_root,
                 merge_style,
                 cleanup_kind,
             ) {
-                Ok(()) => output.defaults_updated(merge_style, cleanup_kind),
-                Err(e) => output.warning(&format!("failed to update repository defaults: {e}")),
+                Ok(()) => Some((merge_style, cleanup_kind)),
+                Err(e) => {
+                    output.warning(&format!("failed to update repository defaults: {e}"));
+                    None
+                }
             }
-        }
+        } else {
+            None
+        };
 
         // Post-merge cleanup. Only runs on successful, non-up-to-date merges
         // — the `already_up_to_date` and `failed` arms above have already
@@ -849,6 +870,11 @@ pub fn run() -> Result<()> {
                     if item.worktree_path.is_none() && item.branch_name.is_none() {
                         continue;
                     }
+
+                    // Per-source heading so the user reads the worktree-pre-remove
+                    // hook box knowing which worktree it's acting on (the box's
+                    // `on:` segment confirms it; this line announces it).
+                    output.cleanup_target(&item.source);
 
                     // keep_local_branch=true when -r was given without -b: the
                     // worktree is removed but the local branch ref is preserved.
@@ -938,9 +964,21 @@ pub fn run() -> Result<()> {
                         let short = short_sha(sha);
                         println!("Squash merged {sources_display} into {target} as {short}.");
                     }
+                    // Defaults already persisted in git config; surface the
+                    // notice now so the user knows it took even though
+                    // cleanup is about to fail.
+                    if let Some((style, cleanup)) = defaults_to_announce {
+                        output.defaults_updated(style, cleanup);
+                    }
                     return Err(e);
                 }
             }
+        }
+        // Trailing footnote — fires for both the no-cleanup path and the
+        // cleanup-success path. The cleanup-failure path emits before bailing
+        // (above) since the values were persisted regardless of cleanup.
+        if let Some((style, cleanup)) = defaults_to_announce {
+            output.defaults_updated(style, cleanup);
         }
         Ok(())
     }

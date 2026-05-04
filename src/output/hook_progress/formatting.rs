@@ -29,16 +29,34 @@ pub(super) fn output_suppressed() -> bool {
 }
 
 /// Generate the hook header lines (dark-grey framed box).
-pub(super) fn format_header_lines(hook_name: &str, use_color: bool) -> Vec<String> {
-    let content_width =
-        " daft hooks v".len() + VERSION.len() + "  hook: ".len() + hook_name.len() + " ".len();
+///
+/// `target` names the entity the hook is acting on (e.g. the worktree/branch
+/// being removed for `worktree-pre-remove`). When provided, the title gains an
+/// ` on: <target>` segment so multi-source operations don't leave the user
+/// guessing which worktree the hooks are touching. `None` for project-scoped
+/// hooks (`pre-merge`, `post-merge`, `post-clone`).
+pub(super) fn format_header_lines(
+    hook_name: &str,
+    target: Option<&str>,
+    use_color: bool,
+) -> Vec<String> {
+    let target_segment = target.map(|t| format!("  on: {t}")).unwrap_or_default();
+    let content_width = " daft hooks v".len()
+        + VERSION.len()
+        + "  ".len()
+        + hook_name.len()
+        + target_segment.len()
+        + " ".len();
     let border_h = "\u{2500}".repeat(content_width);
 
     if use_color {
+        let target_part = target
+            .map(|t| format!("  {GREY}on: {BRIGHT_WHITE}{t}{}", styles::RESET))
+            .unwrap_or_default();
         vec![
             format!("{GREY}\u{250c}{border_h}\u{2510}{}", styles::RESET),
             format!(
-                "{GREY}\u{2502} {ORANGE}daft hooks {GREY}v{VERSION}  hook: {}{BRIGHT_WHITE}{hook_name}{}{GREY} \u{2502}{}",
+                "{GREY}\u{2502} {ORANGE}daft hooks {GREY}v{VERSION}  {}{BRIGHT_WHITE}{hook_name}{}{target_part}{GREY} \u{2502}{}",
                 styles::BOLD, styles::RESET, styles::RESET
             ),
             format!("{GREY}\u{2514}{border_h}\u{2518}{}", styles::RESET),
@@ -46,7 +64,7 @@ pub(super) fn format_header_lines(hook_name: &str, use_color: bool) -> Vec<Strin
     } else {
         vec![
             format!("\u{250c}{border_h}\u{2510}"),
-            format!("\u{2502} daft hooks v{VERSION}  hook: {hook_name} \u{2502}"),
+            format!("\u{2502} daft hooks v{VERSION}  {hook_name}{target_segment} \u{2502}"),
             format!("\u{2514}{border_h}\u{2518}"),
         ]
     }

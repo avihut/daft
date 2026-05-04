@@ -317,6 +317,16 @@ configuration.
 
 ## Output
 
+`daft merge` opens with a persistent intent line that names the operation,
+the resolved style, the cleanup outcome, and whether `--set-default` is going
+to persist the choices. The line lands once and stays in the scrollback so the
+rest of the output can be read in context — useful on fast merges where the
+spinner clears too quickly to read.
+
+```
+Merging X → Y (squash · remove-branch · saving as default)
+```
+
 By default, `daft merge` suppresses git's raw stdout on the success path.
 Styled step lines render in its place:
 
@@ -328,10 +338,26 @@ Styled step lines render in its place:
 | Squash staged, no commit yet  | `Squash staged on Y`                                    |
 | Already up to date            | `Already up to date.` (emitted directly, no styled box) |
 
-When cleanup runs (`-r`/`-rb`) and succeeds, a summary line follows:
+When cleanup runs (`--remove-branch`) it prints a per-source heading right
+before the `worktree-pre-remove` hook box, so the user reads the box knowing
+which worktree it's acting on:
+
+```
+Cleaning up X (worktree, local branch)
+```
+
+The hook box title itself names the target on worktree-scoped phases (e.g.
+`worktree-pre-remove  on: X`). On a successful run, a summary line follows:
 
 ```
 Squash merged and cleaned up X.
+```
+
+When `--set-default` is passed, a footnote prints last (after the success
+line) confirming what was persisted:
+
+```
+Updated repository defaults: merge.style=squash, merge.cleanup=remove-branch
 ```
 
 ### Verbose mode

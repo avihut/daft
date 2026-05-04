@@ -1524,7 +1524,10 @@ fn retry_command(
                 effective_worktree.clone(),
             ));
 
-        presenter.on_phase_start(&trigger_command);
+        // `daft hooks jobs run` retries a previously-recorded invocation; the
+        // hook-box title here shows the trigger command, not a worktree, so
+        // no `on:` segment is needed.
+        presenter.on_phase_start(&trigger_command, None);
         let fg_start = std::time::Instant::now();
         let _fg_results = crate::executor::runner::run_jobs(
             &fg_specs,

@@ -311,6 +311,47 @@ impl Output for CliOutput {
             }
         }
     }
+
+    fn merge_intent(
+        &mut self,
+        sources: &[String],
+        target: &str,
+        style: crate::core::worktree::merge::MergeStyle,
+        cleanup: crate::core::worktree::merge::CleanupKind,
+        set_default: bool,
+    ) {
+        if self.config.quiet {
+            return;
+        }
+        let sources_display = sources.join(", ");
+        let mut bits = vec![style.to_string(), cleanup.to_string()];
+        if set_default {
+            bits.push("saving as default".to_string());
+        }
+        let line = format!(
+            "Merging {sources_display} \u{2192} {target} ({})",
+            bits.join(" \u{00b7} ")
+        );
+        // Dim styling so the line reads as a quiet "intent" header, distinct
+        // from operational result lines which use the default foreground.
+        if colors_enabled() {
+            self.stdout_line(&format!("{}{line}{}", styles::DIM, styles::RESET));
+        } else {
+            self.stdout_line(&line);
+        }
+    }
+
+    fn cleanup_target(&mut self, name: &str) {
+        if self.config.quiet {
+            return;
+        }
+        let line = format!("Cleaning up {name} (worktree, local branch)");
+        if colors_enabled() {
+            self.stdout_line(&format!("{}{line}{}", styles::DIM, styles::RESET));
+        } else {
+            self.stdout_line(&line);
+        }
+    }
 }
 
 impl Drop for CliOutput {
