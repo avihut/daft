@@ -97,7 +97,7 @@ checksum = "sha256:c68c7903c1190101590cc1b2129835f47211b3b37ae87759f2b97d6534aa3
 url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-windows-x64-baseline.zip"
 
 [[tools."cargo:cargo-cooldown"]]
-version = "0.2.0"
+version = "0.3.0"
 backend = "cargo:cargo-cooldown"
 
 [[tools.cocogitto]]
