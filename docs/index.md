@@ -22,12 +22,14 @@ features:
     details:
       Every branch gets its own directory. Run feature-A and feature-B in
       different terminals at the same time — no stashing, no context switching.
+      Merge across worktrees from anywhere with `daft merge`.
     link: /worktrees/
     linkText: Worktrees pillar
   - title: Hooks
     details:
       Boundaries at every code-evolution stage — the local-parallel-to-CI
-      surface. Today, worktree lifecycle. Soon, the full git-hooks lifecycle.
+      surface. Worktree lifecycle and PR-style merge gates today; the full
+      git-hooks lifecycle is on the roadmap.
     link: /hooks/
     linkText: Hooks pillar
   - title: Recipes

@@ -29,7 +29,7 @@ one trust model, one job orchestrator.
 | End of clone setup                | `post-clone`                                   | One-shot bootstrap of a fresh repo                                                             | Shipped                                                     |
 | Start of isolated dev             | Worktree hooks (`worktree-pre/post-create`)    | Set up local dev env (deps, services)                                                          | Shipped                                                     |
 | Sealing a unit of change          | Commit hooks                                   | Progressive code-replication boundary — format, lint, fast tests before the change is recorded | Roadmap ([#468](https://github.com/avihut/daft/issues/468)) |
-| Letting a change escape isolation | Merge hooks (`pre-merge`, `post-merge`)        | PR-check parity — full tests, integration, security gates before code leaves the branch        | Roadmap ([#330](https://github.com/avihut/daft/issues/330)) |
+| Letting a change escape isolation | Merge hooks (`pre-merge`, `post-merge`)        | PR-check parity — full tests, integration, security gates before code leaves the branch        | Shipped                                                     |
 | Reclaiming an isolated env        | Worktree teardown (`worktree-pre/post-remove`) | Teardown, persist artifacts, sync state                                                        | Shipped                                                     |
 
 ## How daft hooks differ from lefthook
@@ -55,6 +55,5 @@ Two distinctions:
   dependencies, conditions, OS/arch gating
 - **Concept:** [Trust & security](/hooks/trust-and-security) — why hooks need
   trust and how the model works
-- **Status:** [Roadmap](/hooks/roadmap) — what's coming for commit and merge
-  stages
+- **Status:** [Roadmap](/hooks/roadmap) — what's coming for commit-stage hooks
 - **Recipes:** [Recipes for Hooks](/recipes/?pillar=hooks)

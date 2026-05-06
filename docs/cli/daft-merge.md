@@ -277,8 +277,8 @@ you don't have to pass them every time. The most relevant keys:
 All keys can be set locally, globally, or system-wide through `git config`;
 flag arguments always override config defaults. The easiest way to persist
 your choices is to pass `--set-default` on a merge and let daft write them
-for you. See the [configuration guide](../guide/configuration.md) for
-precedence details.
+for you. See the [Configuration reference](/reference/configuration#merge-settings)
+for precedence details.
 
 ### Migration from the old flag set
 
@@ -312,8 +312,8 @@ cross-worktree flag. `post-merge` additionally gets `RESULT`, `COMMIT_SHA`,
 `CONFLICTED_FILES`, and `PROMOTED_FROM_EPHEMERAL`. Neither hook fires when
 the merge is a pure no-op.
 
-See the [hooks guide](../guide/hooks.md) for full env-var reference and
-configuration.
+See the [Lifecycle hooks reference](/hooks/lifecycle#merge-hooks) for full
+env-var reference and configuration.
 
 ## Output
 

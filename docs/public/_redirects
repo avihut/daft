@@ -8,7 +8,7 @@
 /guide/multi-remote                       /worktrees/multi-remote                301
 /guide/running-commands-across-worktrees  /worktrees/running-commands            301
 /guide/shortcuts                          /worktrees/shortcuts                   301
-/guide/hooks                              /hooks/                                301
+/guide/hooks                              /hooks/lifecycle                       301
 
 # Guide pages → reference pages
 /guide/configuration                      /reference/configuration               301

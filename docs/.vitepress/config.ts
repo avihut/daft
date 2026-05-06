@@ -252,6 +252,7 @@ export default defineConfig({
             text: "Running commands across worktrees",
             link: "/worktrees/running-commands",
           },
+          { text: "Merging across worktrees", link: "/worktrees/merging" },
           { text: "Shortcuts", link: "/worktrees/shortcuts" },
         ],
       },
@@ -340,6 +341,7 @@ export default defineConfig({
                 text: "Maintenance",
                 items: [
                   { text: "sync", link: "/reference/cli/daft-sync" },
+                  { text: "merge", link: "/reference/cli/daft-merge" },
                   { text: "prune", link: "/reference/cli/daft-prune" },
                   { text: "update", link: "/reference/cli/daft-update" },
                   { text: "carry", link: "/reference/cli/daft-carry" },
@@ -427,6 +429,10 @@ export default defineConfig({
                       {
                         text: "worktree-sync",
                         link: "/reference/cli/git-worktree-sync",
+                      },
+                      {
+                        text: "worktree-merge",
+                        link: "/reference/cli/git-worktree-merge",
                       },
                       {
                         text: "worktree-list",

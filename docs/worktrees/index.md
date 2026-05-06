@@ -269,6 +269,8 @@ root and place new worktrees according to the active layout.
   worktrees by remote
 - **Run commands across worktrees:**
   [Running commands across worktrees](/worktrees/running-commands) — `daft exec`
+- **Merge across worktrees:** [Merging across worktrees](/worktrees/merging) —
+  `daft merge` from anywhere, octopus, ephemeral targets, PR-style hook gates
 - **Faster typing:** [Shortcuts](/worktrees/shortcuts) — `gwt*` symlink aliases
 - **Recipes:** [Recipes for Worktrees](/recipes/?pillar=worktrees)
 - **Next pillar:** [Hooks](/hooks/) — automate the env-setup-per-worktree
