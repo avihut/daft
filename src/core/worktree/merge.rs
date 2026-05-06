@@ -3118,20 +3118,27 @@ mod tests {
             .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
-        // Identity via env avoids any global config dependency.
+        // Local config so production code paths (git merge, git rebase) running
+        // in this repo also have an identity, without touching global config.
+        ShellCommand::new("git")
+            .args(["config", "--local", "user.name", "Test"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        ShellCommand::new("git")
+            .args(["config", "--local", "user.email", "test@test.com"])
+            .current_dir(path)
+            .status()
+            .unwrap();
         ShellCommand::new("git")
             .args(["commit", "--allow-empty", "-q", "-m", "init"])
             .current_dir(path)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@test.com")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@test.com")
             .status()
             .unwrap();
     }
 
     /// Checkout `branch`, write `content` to `file`, stage and commit it.
-    /// Identity is supplied via env vars to avoid global git config dependency.
+    /// Identity comes from `init_repo`'s local user.name/user.email config.
     fn add_commit(path: &Path, branch: &str, file: &str, content: &str) {
         ShellCommand::new("git")
             .args(["checkout", branch])
@@ -3147,10 +3154,6 @@ mod tests {
         ShellCommand::new("git")
             .args(["commit", "-q", "-m", &format!("add {file}")])
             .current_dir(path)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@test.com")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@test.com")
             .status()
             .unwrap();
     }
