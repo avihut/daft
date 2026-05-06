@@ -565,6 +565,37 @@ _daft() {
         esac
     fi
 
+    # merge: flag + branch completion (inline; not auto-generated from COMMANDS)
+    if [[ $cword -ge 2 && ( "${words[1]}" == "merge" || "${words[1]}" == "worktree-merge" ) ]]; then
+        # --into takes a branch value
+        if [[ "$prev" == "--into" ]]; then
+            local branches
+            branches=$(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null)
+            COMPREPLY=( $(compgen -W "$branches" -- "$cur") )
+            return 0
+        fi
+        # --cleanup mode values
+        if [[ "$prev" == "--cleanup" ]]; then
+            COMPREPLY=( $(compgen -W "default scissors strip verbatim whitespace" -- "$cur") )
+            return 0
+        fi
+        # --strategy / -s values
+        if [[ "$prev" == "--strategy" || "$prev" == "-s" ]]; then
+            COMPREPLY=( $(compgen -W "ours recursive resolve octopus subtree" -- "$cur") )
+            return 0
+        fi
+        if [[ "$cur" == -* ]]; then
+            local flags="--into --abort --continue --quit --adopt-target --no-adopt-target -y --yes --merge --squash --rebase --rebase-merge -r --remove-branch --keep-branch --set-default -m -F --file --edit --no-edit --cleanup --commit --no-commit --signoff --no-signoff -s --strategy -X --strategy-option -S --gpg-sign --no-gpg-sign --verify-signatures --no-verify-signatures --allow-unrelated-histories --stat -n --no-stat -v --verbose -h --help -V --version"
+            COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
+            return 0
+        fi
+        # Positional source/target: branch names
+        local branches
+        branches=$(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null)
+        COMPREPLY=( $(compgen -W "$branches" -- "$cur") )
+        return 0
+    fi
+
     # verb aliases: delegate to underlying command completions
     if [[ $cword -ge 2 ]]; then
         case "${words[1]}" in
@@ -648,7 +679,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout shared config repo clone init go start carry exec update list prune rename sync remove adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout shared config repo clone init go start carry exec update list prune rename sync remove merge worktree-merge adopt eject" -- "$cur") )
         fi
         return 0
     fi

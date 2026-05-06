@@ -1,0 +1,39 @@
+name: Merge octopus conflict
+description: "daft merge of multiple conflicting sources fails cleanly"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create two conflicting feature branches from main
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git checkout -b feat-a
+      echo "a" > shared.txt
+      git add shared.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "feat a writes shared"
+      git checkout main
+      git checkout -b feat-b
+      echo "b" > shared.txt
+      git add shared.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "feat b writes shared"
+      git checkout main
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Attempt octopus of conflicting branches
+    run: git-worktree-merge feat-a feat-b --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "octopus"

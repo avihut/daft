@@ -16,13 +16,15 @@ and more. For simple cases, you can also use **executable shell scripts** in
 
 ## Hook Types
 
-| Hook                   | Trigger                       | Runs From                            |
-| ---------------------- | ----------------------------- | ------------------------------------ |
-| `post-clone`           | After `daft clone` completes  | New default branch worktree          |
-| `worktree-pre-create`  | Before new worktree is added  | Source worktree (where command runs) |
-| `worktree-post-create` | After new worktree is created | New worktree                         |
-| `worktree-pre-remove`  | Before worktree is removed    | Worktree being removed               |
-| `worktree-post-remove` | After worktree is removed     | Current worktree (where prune runs)  |
+| Hook                   | Trigger                                                        | Runs From                            |
+| ---------------------- | -------------------------------------------------------------- | ------------------------------------ |
+| `post-clone`           | After `daft clone` completes                                   | New default branch worktree          |
+| `worktree-pre-create`  | Before new worktree is added                                   | Source worktree (where command runs) |
+| `worktree-post-create` | After new worktree is created                                  | New worktree                         |
+| `worktree-pre-remove`  | Before worktree is removed                                     | Worktree being removed               |
+| `worktree-post-remove` | After worktree is removed                                      | Current worktree (where prune runs)  |
+| `pre-merge`            | After pre-flight checks pass, before the merge runs            | Target worktree                      |
+| `post-merge`           | After the merge operation completes (success/conflict/aborted) | Target worktree                      |
 
 ### Execution Order During Clone
 
@@ -35,6 +37,117 @@ When running `daft clone`, hooks fire in this order:
 
 This lets `post-clone` install foundational tools (pnpm, bun, uv, etc.) that
 `worktree-post-create` may depend on.
+
+### Merge Hooks
+
+`daft merge` fires two lifecycle hooks around the merge operation, giving
+scripts a chance to gate merges on custom preconditions (pre-merge) or react to
+the outcome (post-merge) without forking the merge command.
+
+**When they fire:**
+
+- `pre-merge` runs after all pre-flight safety rails (distinct-source check,
+  clean-target check, in-progress-merge detection, already-up-to-date
+  short-circuit) pass, but before any merge operation touches state. It fires
+  uniformly for all merge styles and paths: worktree-backed merges, ref-only
+  merges, rebase-style merges, and ephemeral worktree merges.
+- `post-merge` runs after the merge operation completes, whether it succeeded,
+  hit a conflict, or resolved without changes. Both hooks read their config from
+  the target worktree (the branch being merged into).
+
+Neither hook fires when the merge is a no-op because the target is already up to
+date.
+
+**Failure semantics:**
+
+- A `pre-merge` hook that exits non-zero **aborts the merge** with that exit
+  code. No merge operation runs; no state is touched. The default fail mode is
+  `abort`.
+- A `post-merge` hook that exits non-zero is **logged as a warning** but does
+  not roll back the merge. The default fail mode is `warn`.
+
+The pre-merge fail mode can be overridden per-repo via `git config`:
+
+```bash
+# Downgrade to a warning — the merge proceeds even when pre-merge fails
+git config daft.hooks.preMerge.failMode warn
+```
+
+With `failMode=warn`, a failing pre-merge hook prints
+`pre-merge hook failed with exit code N (continuing anyway)` and the merge
+continues normally. This is useful for informational PR-check hooks that should
+never block a merge, while still surfacing failures.
+
+To restore the default abort behavior, remove the config key:
+
+```bash
+git config --unset daft.hooks.preMerge.failMode
+```
+
+**Env vars provided to both hooks:**
+
+| Variable                    | Value                                                                |
+| --------------------------- | -------------------------------------------------------------------- |
+| `DAFT_MERGE_SOURCES`        | Space-separated list of source refs (branches/commits being merged)  |
+| `DAFT_MERGE_TARGET_BRANCH`  | Name of the branch being merged into                                 |
+| `DAFT_MERGE_TARGET_PATH`    | Filesystem path of the target worktree (empty on ref-only FF)        |
+| `DAFT_MERGE_MODE`           | `merge` / `ff` / `squash` / `rebase` / `rebase-merge` / `octopus`    |
+| `DAFT_MERGE_STRATEGY`       | Value of `-s`/`--strategy` (empty when not set)                      |
+| `DAFT_MERGE_EPHEMERAL`      | `true` if the merge runs in an ephemeral worktree; otherwise `false` |
+| `DAFT_MERGE_CROSS_WORKTREE` | `true` if the target worktree is not the current worktree            |
+
+**Additional env vars for `post-merge`:**
+
+| Variable                             | Value                                                                                                                |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `DAFT_MERGE_RESULT`                  | `success` / `conflict` / `already-up-to-date` / `aborted`                                                            |
+| `DAFT_MERGE_COMMIT_SHA`              | SHA of the new tip on success (empty otherwise, including when `aborted`)                                            |
+| `DAFT_MERGE_CONFLICTED_FILES`        | Newline-separated list of conflicted files (empty when not conflicted)                                               |
+| `DAFT_MERGE_PROMOTED_FROM_EPHEMERAL` | `true` when a ref-only ephemeral merge was promoted to a sibling path                                                |
+| `DAFT_MERGE_SOURCE_SHAS`             | Space-separated SHA list of source branch tips captured before the merge ran (one per source; empty for ref-only FF) |
+
+`RESULT=aborted` fires when a squash-commit step is abandoned — the editor was
+closed without saving, a pre-commit hook exited non-zero, or GPG signing failed.
+The squash changes remain staged on the target; `COMMIT_SHA` is empty. Use
+`daft merge --continue` or `git commit` to resume, or `daft merge --abort` to
+undo the staged changes.
+
+All the universal `DAFT_*` variables (`DAFT_PROJECT_ROOT`, `DAFT_GIT_DIR`,
+`DAFT_WORKTREE_PATH`, `DAFT_BRANCH_NAME`, etc.) are also set.
+
+**Example:** branch on `DAFT_MERGE_RESULT` in `post-merge` to notify on
+conflicts or aborted squash commits:
+
+```yaml
+hooks:
+  post-merge:
+    jobs:
+      - name: notify-on-conflict
+        run: |
+          if [ "$DAFT_MERGE_RESULT" = "conflict" ]; then
+            echo "Merge of $DAFT_MERGE_SOURCES into $DAFT_MERGE_TARGET_BRANCH \
+                  conflicted; files: $DAFT_MERGE_CONFLICTED_FILES" \
+              | mail -s "daft merge conflict" "$USER"
+          elif [ "$DAFT_MERGE_RESULT" = "aborted" ]; then
+            echo "Squash commit for $DAFT_MERGE_SOURCES was aborted; \
+                  staged changes remain on $DAFT_MERGE_TARGET_BRANCH" \
+              | mail -s "daft merge aborted" "$USER"
+          fi
+```
+
+### Cleanup hooks during merge (`-r`)
+
+When `-r` / `--remove-branch` is passed and the merge succeeds, daft removes the
+source worktree and its branch. As part of that removal, `worktree-pre-remove`
+and `worktree-post-remove` hooks fire for each source worktree that is removed,
+with `DAFT_COMMAND=merge` set so scripts can distinguish merge cleanup from a
+standalone `daft remove`.
+
+**Limitation:** When cleanup is resumed via `daft merge --continue` after a
+squash-staged abort, `worktree-pre-remove` and `worktree-post-remove` hooks are
+NOT fired and the output reverts to plain text. This affects only the
+`--continue` resume path; cleanup triggered directly by `-r` fires hooks as
+normal. This limitation will be addressed in a future release.
 
 ## Trust Model
 
@@ -932,6 +1045,13 @@ YAML jobs and shell script hooks.
 | Variable              | Description                                                                  |
 | --------------------- | ---------------------------------------------------------------------------- |
 | `DAFT_REMOVAL_REASON` | Why the worktree is being removed: `remote-deleted`, `manual`, or `ejecting` |
+
+`worktree-pre-remove` and `worktree-post-remove` also fire when `daft merge -r`
+or `daft merge -rb` cleans up the source worktree after a successful merge. In
+that context `DAFT_REMOVAL_REASON` is `manual` and `DAFT_COMMAND` is `merge`.
+Hook scripts can use `DAFT_COMMAND` to distinguish merge cleanup (`"merge"`)
+from a standalone `daft remove` / `daft worktree-branch -d` invocation
+(`"branch-delete"`).
 
 ### Move (move hooks only)
 

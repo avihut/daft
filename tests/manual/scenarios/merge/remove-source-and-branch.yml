@@ -1,0 +1,54 @@
+name: Merge with -r removes source worktree and branch
+description:
+  "daft merge -r removes the source worktree AND deletes the source branch (via
+  `git branch -d`) after a successful merge."
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Create feature worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: Merge with -r
+    run: git-worktree-merge feature/test-feature -r --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Merged feature/test-feature into main (commit "
+        - "Deleted feature/test-feature (worktree, local branch)"
+
+  - name: Verify feature worktree was removed
+    run: test ! -d $WORK_DIR/test-repo/feature/test-feature && echo "wt_removed"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["wt_removed"]
+
+  - name: Verify source branch was deleted (no refs/heads/feature/test-feature)
+    run: |
+      if git -C $WORK_DIR/test-repo/main show-ref --verify --quiet refs/heads/feature/test-feature; then
+        echo "branch_still_exists"
+      else
+        echo "branch_deleted"
+      fi
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["branch_deleted"]
+
+  - name: Verify main still has the merged commits
+    run: git -C $WORK_DIR/test-repo/main log --oneline main
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Add feature branch"

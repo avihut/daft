@@ -143,6 +143,33 @@ pub mod defaults {
     /// Default value for ownership.strategy setting.
     pub const OWNERSHIP_STRATEGY: crate::core::ownership::OwnershipStrategy =
         crate::core::ownership::OwnershipStrategy::RecencyPlurality;
+
+    /// Default value for merge.style setting.
+    pub const MERGE_STYLE: crate::core::worktree::merge::MergeStyle =
+        crate::core::worktree::merge::MergeStyle::Merge;
+
+    /// Default value for merge.cleanup setting.
+    pub const MERGE_CLEANUP: crate::core::worktree::merge::CleanupKind =
+        crate::core::worktree::merge::CleanupKind::Keep;
+
+    /// Default value for merge.commit setting.
+    pub const MERGE_COMMIT: bool = true;
+
+    /// Default value for merge.signoff setting.
+    pub const MERGE_SIGNOFF: bool = false;
+
+    /// Default value for merge.verifySignatures setting.
+    pub const MERGE_VERIFY_SIGNATURES: bool = false;
+
+    /// Default value for merge.allowUnrelatedHistories setting.
+    pub const MERGE_ALLOW_UNRELATED_HISTORIES: bool = false;
+
+    /// Default value for merge.adoptTargetOnDemand setting.
+    pub const MERGE_ADOPT_TARGET_ON_DEMAND: crate::core::worktree::merge::AdoptPreset =
+        crate::core::worktree::merge::AdoptPreset::Prompt;
+
+    /// Default value for merge.requireCleanTarget setting.
+    pub const MERGE_REQUIRE_CLEAN_TARGET: bool = true;
 }
 
 /// Git config keys for daft settings.
@@ -227,6 +254,42 @@ pub mod keys {
 
     /// Config key for ownership.strategy setting.
     pub const OWNERSHIP_STRATEGY: &str = "daft.ownership.strategy";
+
+    /// Config key for merge.style setting.
+    pub const MERGE_STYLE: &str = "daft.merge.style";
+
+    /// Config key for merge.cleanup setting.
+    pub const MERGE_CLEANUP: &str = "daft.merge.cleanup";
+
+    /// Config key for merge.commit setting.
+    pub const MERGE_COMMIT: &str = "daft.merge.commit";
+
+    /// Config key for merge.edit setting.
+    pub const MERGE_EDIT: &str = "daft.merge.edit";
+
+    /// Config key for merge.signoff setting.
+    pub const MERGE_SIGNOFF: &str = "daft.merge.signoff";
+
+    /// Config key for merge.gpgSign setting.
+    pub const MERGE_GPG_SIGN: &str = "daft.merge.gpgSign";
+
+    /// Config key for merge.verifySignatures setting.
+    pub const MERGE_VERIFY_SIGNATURES: &str = "daft.merge.verifySignatures";
+
+    /// Config key for merge.allowUnrelatedHistories setting.
+    pub const MERGE_ALLOW_UNRELATED_HISTORIES: &str = "daft.merge.allowUnrelatedHistories";
+
+    /// Config key for merge.strategy setting.
+    pub const MERGE_STRATEGY: &str = "daft.merge.strategy";
+
+    /// Config key for merge.strategyOption setting (comma-separated list).
+    pub const MERGE_STRATEGY_OPTION: &str = "daft.merge.strategyOption";
+
+    /// Config key for merge.adoptTargetOnDemand setting.
+    pub const MERGE_ADOPT_TARGET_ON_DEMAND: &str = "daft.merge.adoptTargetOnDemand";
+
+    /// Config key for merge.requireCleanTarget setting.
+    pub const MERGE_REQUIRE_CLEAN_TARGET: &str = "daft.merge.requireCleanTarget";
 
     /// Experimental config keys.
     pub mod experimental {
@@ -360,6 +423,50 @@ pub struct DaftSettings {
     /// Strategy for deducing branch ownership from the commit range
     /// `base..branch`. Set via `daft.ownership.strategy`.
     pub ownership_strategy: crate::core::ownership::OwnershipStrategy,
+
+    /// Selected merge style — replaces the legacy `merge_ff` + `merge_squash`
+    /// combination. See [`MergeStyle`] for variants.
+    pub merge_style: crate::core::worktree::merge::MergeStyle,
+    /// Selected post-merge cleanup outcome. See [`CleanupKind`] for variants.
+    pub merge_cleanup: crate::core::worktree::merge::CleanupKind,
+
+    /// Default commit behavior for merge command. Set via `daft.merge.commit`.
+    pub merge_commit: bool,
+
+    /// Default edit behavior for merge command. `None` = let git decide based
+    /// on TTY. Set via `daft.merge.edit`.
+    pub merge_edit: Option<bool>,
+
+    /// Default signoff behavior for merge command. Set via `daft.merge.signoff`.
+    pub merge_signoff: bool,
+
+    /// Default GPG signing key for merge command. `None` = unset;
+    /// `Some("")` = default key; `Some("KEYID")` = specific key. Set via
+    /// `daft.merge.gpgSign` (values `true`/`false`/`<keyid>`).
+    pub merge_gpg_sign: Option<String>,
+
+    /// Default verify-signatures behavior for merge command. Set via
+    /// `daft.merge.verifySignatures`.
+    pub merge_verify_signatures: bool,
+
+    /// Default allow-unrelated-histories behavior for merge command. Set via
+    /// `daft.merge.allowUnrelatedHistories`.
+    pub merge_allow_unrelated_histories: bool,
+
+    /// Default merge strategy for merge command. Set via `daft.merge.strategy`.
+    pub merge_strategy: Option<String>,
+
+    /// Default strategy options for merge command. Comma-separated in config;
+    /// stored here as a `Vec<String>`. Set via `daft.merge.strategyOption`.
+    pub merge_strategy_options: Vec<String>,
+
+    /// Default adopt-target-on-demand behavior for merge command. Set via
+    /// `daft.merge.adoptTargetOnDemand` (`prompt` | `yes` | `no`).
+    pub merge_adopt_target_on_demand: crate::core::worktree::merge::AdoptPreset,
+
+    /// Require the target worktree to be clean before starting a merge. Set
+    /// via `daft.merge.requireCleanTarget`.
+    pub merge_require_clean_target: bool,
 }
 
 impl Default for DaftSettings {
@@ -390,6 +497,18 @@ impl Default for DaftSettings {
             prune_sort: None,
             branch_delete_remote: defaults::BRANCH_DELETE_REMOTE,
             ownership_strategy: defaults::OWNERSHIP_STRATEGY,
+            merge_style: defaults::MERGE_STYLE,
+            merge_cleanup: defaults::MERGE_CLEANUP,
+            merge_commit: defaults::MERGE_COMMIT,
+            merge_edit: None,
+            merge_signoff: defaults::MERGE_SIGNOFF,
+            merge_gpg_sign: None,
+            merge_verify_signatures: defaults::MERGE_VERIFY_SIGNATURES,
+            merge_allow_unrelated_histories: defaults::MERGE_ALLOW_UNRELATED_HISTORIES,
+            merge_strategy: None,
+            merge_strategy_options: Vec::new(),
+            merge_adopt_target_on_demand: defaults::MERGE_ADOPT_TARGET_ON_DEMAND,
+            merge_require_clean_target: defaults::MERGE_REQUIRE_CLEAN_TARGET,
         }
     }
 }
@@ -543,6 +662,9 @@ impl DaftSettings {
             }
         }
 
+        load_merge_settings(&git, &mut settings)?;
+        validate_merge_settings(settings.merge_commit, settings.merge_cleanup)?;
+
         Ok(settings)
     }
 
@@ -695,6 +817,115 @@ impl DaftSettings {
 
         Ok(settings)
     }
+}
+
+/// Load all `daft.merge.*` keys from the given [`GitCommand`] into `settings`.
+///
+/// Extracted from [`DaftSettings::load`] for readability and to keep the load
+/// path cohesive for Slice 13's fourteen merge keys. Invalid values for enum
+/// keys (`ff`, `adoptTargetOnDemand`) silently fall back to the built-in
+/// default, matching the existing pattern for `list.stat` etc.
+fn load_merge_settings(git: &GitCommand, settings: &mut DaftSettings) -> Result<()> {
+    use crate::core::worktree::merge::{AdoptPreset, CleanupKind, MergeStyle};
+
+    if let Some(value) = git.config_get(keys::MERGE_STYLE)? {
+        settings.merge_style = match value.as_str() {
+            "merge" => MergeStyle::Merge,
+            "squash" => MergeStyle::Squash,
+            "rebase" => MergeStyle::Rebase,
+            "rebase-merge" => MergeStyle::RebaseMerge,
+            _ => defaults::MERGE_STYLE,
+        };
+    }
+    if let Some(value) = git.config_get(keys::MERGE_CLEANUP)? {
+        settings.merge_cleanup = match value.as_str() {
+            "keep" => CleanupKind::Keep,
+            "remove-branch" => CleanupKind::RemoveBranch,
+            _ => defaults::MERGE_CLEANUP,
+        };
+    }
+
+    if let Some(value) = git.config_get(keys::MERGE_COMMIT)? {
+        settings.merge_commit = parse_bool(&value, defaults::MERGE_COMMIT);
+    }
+
+    if let Some(value) = git.config_get(keys::MERGE_EDIT)? {
+        // `Some(bool)`: user expressed a preference either way.
+        settings.merge_edit = Some(parse_bool(&value, true));
+    }
+
+    if let Some(value) = git.config_get(keys::MERGE_SIGNOFF)? {
+        settings.merge_signoff = parse_bool(&value, defaults::MERGE_SIGNOFF);
+    }
+
+    if let Some(value) = git.config_get(keys::MERGE_GPG_SIGN)? {
+        // Tri-state: "true" = default key, "false" = unset, anything else = KEYID.
+        settings.merge_gpg_sign = match value.to_lowercase().as_str() {
+            "true" | "yes" | "on" | "1" => Some(String::new()),
+            "false" | "no" | "off" | "0" => None,
+            _ => Some(value),
+        };
+    }
+
+    if let Some(value) = git.config_get(keys::MERGE_VERIFY_SIGNATURES)? {
+        settings.merge_verify_signatures = parse_bool(&value, defaults::MERGE_VERIFY_SIGNATURES);
+    }
+
+    if let Some(value) = git.config_get(keys::MERGE_ALLOW_UNRELATED_HISTORIES)? {
+        settings.merge_allow_unrelated_histories =
+            parse_bool(&value, defaults::MERGE_ALLOW_UNRELATED_HISTORIES);
+    }
+
+    if let Some(value) = git.config_get(keys::MERGE_STRATEGY)? {
+        if !value.is_empty() {
+            settings.merge_strategy = Some(value);
+        }
+    }
+
+    if let Some(value) = git.config_get(keys::MERGE_STRATEGY_OPTION)? {
+        // Comma-separated list; empty/whitespace entries dropped so configuring
+        // a trailing comma doesn't inject an empty `-X` token at render time.
+        settings.merge_strategy_options = value
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+
+    if let Some(value) = git.config_get(keys::MERGE_ADOPT_TARGET_ON_DEMAND)? {
+        settings.merge_adopt_target_on_demand = match value.as_str() {
+            "prompt" => AdoptPreset::Prompt,
+            "yes" => AdoptPreset::Yes,
+            "no" => AdoptPreset::No,
+            _ => defaults::MERGE_ADOPT_TARGET_ON_DEMAND,
+        };
+    }
+
+    if let Some(value) = git.config_get(keys::MERGE_REQUIRE_CLEAN_TARGET)? {
+        settings.merge_require_clean_target =
+            parse_bool(&value, defaults::MERGE_REQUIRE_CLEAN_TARGET);
+    }
+
+    Ok(())
+}
+
+/// Validate that merge settings are internally consistent.
+///
+/// Returns an error if `daft.merge.commit = false` is combined with
+/// `daft.merge.cleanup = remove-branch` — cleanup requires a committed merge.
+pub(crate) fn validate_merge_settings(
+    merge_commit: bool,
+    cleanup: crate::core::worktree::merge::CleanupKind,
+) -> Result<()> {
+    use crate::core::worktree::merge::CleanupKind;
+    if !merge_commit && cleanup == CleanupKind::RemoveBranch {
+        anyhow::bail!(
+            "daft.merge.commit = false is incompatible with \
+             daft.merge.cleanup = remove-branch: \
+             branch cleanup requires a committed merge to justify deletion"
+        );
+    }
+    Ok(())
 }
 
 /// Parse a git config boolean value.
@@ -1068,6 +1299,68 @@ mod tests {
         assert_eq!(
             settings.ownership_strategy,
             crate::core::ownership::OwnershipStrategy::RecencyPlurality
+        );
+    }
+
+    #[test]
+    fn defaults_for_merge() {
+        let s = DaftSettings::default();
+        assert_eq!(
+            s.merge_style,
+            crate::core::worktree::merge::MergeStyle::Merge
+        );
+        assert_eq!(
+            s.merge_cleanup,
+            crate::core::worktree::merge::CleanupKind::Keep
+        );
+        assert!(s.merge_commit);
+        assert!(s.merge_require_clean_target);
+        assert_eq!(
+            s.merge_adopt_target_on_demand,
+            crate::core::worktree::merge::AdoptPreset::Prompt
+        );
+        assert!(s.merge_strategy.is_none());
+        assert!(s.merge_strategy_options.is_empty());
+        assert!(s.merge_edit.is_none());
+        assert!(s.merge_gpg_sign.is_none());
+        assert!(!s.merge_signoff);
+        assert!(!s.merge_verify_signatures);
+        assert!(!s.merge_allow_unrelated_histories);
+    }
+
+    #[test]
+    fn refuses_no_commit_with_remove_branch_cleanup() {
+        use crate::core::worktree::merge::CleanupKind;
+        let result = validate_merge_settings(false, CleanupKind::RemoveBranch);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("daft.merge.commit"));
+        assert!(msg.contains("remove-branch"));
+    }
+
+    #[test]
+    fn allows_compatible_merge_settings() {
+        use crate::core::worktree::merge::CleanupKind;
+        assert!(validate_merge_settings(true, CleanupKind::RemoveBranch).is_ok());
+        assert!(validate_merge_settings(false, CleanupKind::Keep).is_ok());
+        assert!(validate_merge_settings(true, CleanupKind::Keep).is_ok());
+    }
+
+    #[test]
+    fn merge_style_default_is_merge() {
+        let s = DaftSettings::default();
+        assert_eq!(
+            s.merge_style,
+            crate::core::worktree::merge::MergeStyle::Merge
+        );
+    }
+
+    #[test]
+    fn merge_cleanup_default_is_keep() {
+        let s = DaftSettings::default();
+        assert_eq!(
+            s.merge_cleanup,
+            crate::core::worktree::merge::CleanupKind::Keep
         );
     }
 }

@@ -1,0 +1,119 @@
+name: Ephemeral merge conflict promotes to layout path
+description:
+  "When an ephemeral merge conflicts, the temp worktree is moved to its
+  layout-resolved sibling path, registered with git, and surfaced to the user as
+  the conflict target (not the .daft-tmp path)."
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  # Set up divergent histories that will CONFLICT on the same file.
+  # `target-no-wt` is ref-only (no worktree materialized) and carries a
+  # change on conflict.txt; main carries a different change on the same
+  # file. A merge must either conflict or refuse to fast-forward.
+  - name: Create ref-only target with conflicting content on conflict.txt
+    run: |
+      # Build the target's side via plumbing so no worktree is ever
+      # materialized for target-no-wt.
+      BLOB=$(echo "target-side value" | git hash-object -w --stdin)
+      PARENT=$(git rev-parse HEAD)
+      git read-tree HEAD
+      git update-index --add --cacheinfo 100644,$BLOB,conflict.txt
+      NEW_TREE=$(git write-tree)
+      COMMIT=$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t \
+               GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+               git commit-tree "$NEW_TREE" -p "$PARENT" \
+                 -m "target adds conflict.txt")
+      git update-ref refs/heads/target-no-wt "$COMMIT"
+      # Restore main's index so we can author the main-side commit.
+      git read-tree HEAD
+      echo "main-side value" > conflict.txt
+      git add conflict.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t \
+        GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "main adds conflict.txt (different content)"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Attempt merge with --adopt-target — expect conflict report
+    # `</dev/null` forces non-TTY; --adopt-target bypasses the prompt.
+    # The merge runs inside an ephemeral worktree, conflicts, then the
+    # core promotes that worktree to its layout-resolved sibling path.
+    # The conflict report must name the PROMOTED path, not .daft-tmp.
+    run:
+      sh -c 'git-worktree-merge main --into target-no-wt --adopt-target -m
+      "merge" </dev/null 2>&1'
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "merge conflicted in"
+        - "conflict.txt"
+      output_not_contains:
+        # The ephemeral area must NOT appear in the conflict report — if it
+        # does, promotion silently fell back to leaving the temp worktree
+        # in place, which is exactly the Slice-10 behaviour Slice 11 fixes.
+        - ".daft-tmp"
+
+  - name: Verify no ephemeral worktree leaked in .daft-tmp
+    # After promotion, the temp slot must be gone — `git worktree move`
+    # relocates the gitdir, and a successful move leaves no directory
+    # behind in `.daft-tmp/<branch>`.
+    run: |
+      bare=$(git rev-parse --git-common-dir)
+      test ! -e "$bare/.daft-tmp/target-no-wt" && echo "no_ephemeral"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["no_ephemeral"]
+
+  - name: Verify promoted worktree is registered and outside .daft-tmp
+    # Robust to layout specifics: instead of pattern-matching the exact
+    # layout-resolved path, grep `git worktree list --porcelain` for a
+    # worktree entry that names target-no-wt but is NOT the temp slot.
+    run: |
+      PORCELAIN=$(git worktree list --porcelain)
+      echo "$PORCELAIN" | grep "target-no-wt" | grep -v ".daft-tmp" && echo "promoted_ok"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["promoted_ok"]
+
+  - name: Verify the promoted worktree actually carries the conflict state
+    # `git status --porcelain` inside the promoted worktree must show an
+    # unmerged entry for conflict.txt so the user can resolve there.
+    # MERGE_HEAD additionally confirms a merge is in progress at the
+    # promoted path — this is the real load-bearing assertion.
+    run: |
+      WT_PATH="$WORK_DIR/test-repo/target-no-wt"
+      test -f "$WT_PATH/.git" || test -d "$WT_PATH/.git"
+      # `.git` in a linked worktree is a file pointing at the gitdir; resolve it.
+      GITDIR=$(git -C "$WT_PATH" rev-parse --git-dir)
+      # `git rev-parse` returns a relative path from inside the worktree.
+      case "$GITDIR" in
+        /*) ;;
+        *) GITDIR="$WT_PATH/$GITDIR" ;;
+      esac
+      test -f "$GITDIR/MERGE_HEAD" && echo "merge_in_progress"
+      git -C "$WT_PATH" status --porcelain | grep conflict.txt && echo "has_conflict_entry"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "merge_in_progress"
+        - "has_conflict_entry"
+
+  - name: Clean up the in-progress merge in the promoted worktree
+    run: |
+      WT_PATH="$WORK_DIR/test-repo/target-no-wt"
+      git -C "$WT_PATH" merge --abort 2>/dev/null || true
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0

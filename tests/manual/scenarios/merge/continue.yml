@@ -1,0 +1,69 @@
+name: Merge continue after resolving conflict
+description:
+  "daft merge --continue finalizes a merge after the user resolves conflicts"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create a conflicting branch
+    run: |
+      git checkout -b conflict-src
+      echo "a" > c.txt
+      git add c.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "a"
+      git checkout main
+      echo "b" > c.txt
+      git add c.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "b"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Trigger conflict via daft merge
+    run: git-worktree-merge conflict-src --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+
+  - name: Resolve the conflict
+    run: |
+      echo "both" > c.txt
+      git add c.txt
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Continue the merge (non-interactive; keep git's canned message)
+    run: |
+      GIT_EDITOR=: GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t \
+      GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git-worktree-merge --continue 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify merge completed (no MERGE_HEAD, HEAD has two parents)
+    run: |
+      GITDIR=$(git -C $WORK_DIR/test-repo/main rev-parse --absolute-git-dir)
+      if [ -e "$GITDIR/MERGE_HEAD" ]; then
+        echo "still_merging"
+      else
+        echo "clean"
+      fi
+      parents=$(git -C $WORK_DIR/test-repo/main rev-list --parents -n 1 HEAD | awk '{print NF-1}')
+      echo "parent_count=$parents"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "clean"
+        - "parent_count=2"

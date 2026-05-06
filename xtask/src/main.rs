@@ -28,6 +28,7 @@ const COMMANDS: &[&str] = &[
     "git-worktree-flow-adopt",
     "git-worktree-flow-eject",
     "git-worktree-list",
+    "git-worktree-merge",
     "git-worktree-sync",
     "git-daft-repo-remove",
     "daft-config",
@@ -124,6 +125,11 @@ const DAFT_VERBS: &[DaftVerbEntry] = &[
         source_command: "git-worktree-exec",
         about_override: None,
     },
+    DaftVerbEntry {
+        daft_name: "daft-merge",
+        source_command: "git-worktree-merge",
+        about_override: None,
+    },
 ];
 
 /// A matrix entry defines a configuration variant for integration tests
@@ -160,6 +166,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-worktree-flow-adopt" => Some(daft::commands::flow_adopt::Args::command()),
         "git-worktree-flow-eject" => Some(daft::commands::flow_eject::Args::command()),
         "git-worktree-list" => Some(daft::commands::list::Args::command()),
+        "git-worktree-merge" => Some(daft::commands::merge::Args::command()),
         "git-worktree-sync" => Some(daft::commands::sync::Args::command()),
         "git-daft-repo-remove" => Some(daft::commands::repo::remove::Args::command()),
         "daft-config" => Some(daft::commands::config::remote_sync::Args::command()),
@@ -222,6 +229,9 @@ fn daft_verb_tip(command_name: &str) -> Option<&'static str> {
         "git-worktree-exec" => Some(
             "::: tip\nThis command is also available as `daft exec`. See [daft exec](./daft-exec.md).\n:::\n",
         ),
+        "git-worktree-merge" => Some(
+            "::: tip\nThis command is also available as `daft merge`. See [daft merge](./daft-merge.md).\n:::\n",
+        ),
         _ => None,
     }
 }
@@ -281,6 +291,12 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
             "git-worktree-sync",
             "git-worktree-list",
             "git-worktree-carry",
+        ],
+        "git-worktree-merge" => vec![
+            "git-worktree-list",
+            "git-worktree-carry",
+            "git-worktree-sync",
+            "git-worktree-flow-adopt",
         ],
         // Config cluster
         "daft-doctor" => vec!["git-worktree-clone", "git-worktree-init"],

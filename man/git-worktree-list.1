@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-list \- List all worktrees with status information
 .SH SYNOPSIS
-\fBgit\-worktree\-list\fR [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-\-sort\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBgit\-worktree\-list\fR [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-merging\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-\-sort\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Lists all worktrees in the current project with enriched status information
@@ -101,6 +101,9 @@ Also show remote tracking branches
 .TP
 \fB\-a\fR, \fB\-\-all\fR
 Show all branches (equivalent to \-b \-r)
+.TP
+\fB\-\-merging\fR
+Only show worktrees with an in\-progress merge
 .TP
 \fB\-\-stat\fR \fI<STAT>\fR
 Statistics mode: summary or lines (default: from git config daft.list.stat, or summary)

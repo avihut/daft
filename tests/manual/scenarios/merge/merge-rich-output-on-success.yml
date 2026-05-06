@@ -1,0 +1,29 @@
+name: Merge suppresses raw git output on success
+description:
+  "On a successful merge, raw git stdout (Updating ..., Fast-forward, etc.) is
+  suppressed; only daft's own status line appears."
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Checkout feature
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: Merge (no --verbose) — raw git output must be suppressed
+    run: git-worktree-merge feature/test-feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Merged feature/test-feature into main (commit "
+      output_not_contains:
+        - "Updating "
+        - "Squash commit -- not updating HEAD"

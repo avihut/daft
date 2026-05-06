@@ -1,0 +1,77 @@
+name: Hook box for cleanup hooks names the worktree being touched
+description:
+  "Field testing showed the cleanup hook box was alarming — users couldn't tell
+  which worktree it was acting on, and at first glance feared their current
+  worktree was being removed. The fix threads an `on: <target>` segment into the
+  hook-box title for worktree-scoped phases. This scenario pins that contract:
+  with DAFT_TESTING unset and a worktree-pre-remove hook configured, the box
+  title for the cleanup phase must include `worktree-pre-remove  on:
+  feature/test-feature`. It also checks the persistent intent line and the
+  per-source cleanup section heading the user reads before the box appears."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+          - path: daft.yml
+            content: |
+              hooks:
+                worktree-pre-remove:
+                  jobs:
+                    - name: announce
+                      run: echo "PRE_REMOVE_RAN"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test-feature
+        from: main
+        files:
+          - path: feature.txt
+            content: "feature content"
+        commits:
+          - message: "Add feature branch"
+
+steps:
+  - name: Clone with trust so worktree-pre-remove is allowed
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Materialize feature branch as a sibling worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  # env -u DAFT_TESTING: unset so HookRenderer::auto picks PlainHookRenderer
+  # and actually emits the box header lines.
+  - name: Merge with --remove-branch and DAFT_TESTING unset
+    run:
+      env -u DAFT_TESTING git-worktree-merge feature/test-feature
+      --remove-branch --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        # Persistent intent line — confirms daft heard the flags before the
+        # transient spinner runs.
+        - "Merging feature/test-feature → current branch (merge · remove-branch)"
+        # Per-source cleanup section heading — labels the worktree before
+        # the box appears, so the user reads the box knowing what it acts on.
+        - "Cleaning up feature/test-feature (worktree, local branch)"
+        # The hook box title gets an `on: <branch>` segment for worktree-
+        # scoped phases. This is the load-bearing assertion.
+        - "worktree-pre-remove  on: feature/test-feature"
+        # Box border — confirms the rich renderer fired (not the hidden one).
+        - "daft hooks"
+        # Hook ran — confirms the box wasn't just a header without execution.
+        - "PRE_REMOVE_RAN"
+        # Operation completed.
+        - "Deleted feature/test-feature (worktree, local branch)"
+      output_not_contains:
+        # The legacy `hook:` label was removed; catch any regression that
+        # re-introduces it on this title.
+        - "hook: worktree-pre-remove"

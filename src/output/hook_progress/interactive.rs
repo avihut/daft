@@ -117,8 +117,8 @@ impl HookProgressRenderer {
         self.name_column_width = width;
     }
 
-    pub fn print_header(&self, hook_name: &str) {
-        for line in super::formatting::format_header_lines(hook_name, self.use_color) {
+    pub fn print_header(&self, hook_name: &str, target: Option<&str>) {
+        for line in super::formatting::format_header_lines(hook_name, target, self.use_color) {
             self.mp.println(line).ok();
         }
     }

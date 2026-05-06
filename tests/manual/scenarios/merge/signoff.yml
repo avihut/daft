@@ -1,0 +1,34 @@
+name: Merge signoff adds trailer
+description: "daft merge --signoff produces a merge commit with Signed-off-by"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Checkout feature
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: --signoff --merge to force a merge commit
+    run:
+      git-worktree-merge feature/test-feature --merge --signoff -m "merged with
+      signoff" 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Merged feature/test-feature into main (commit "
+
+  - name: Verify Signed-off-by trailer present on HEAD
+    run: git log -1 --format=%B HEAD
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Signed-off-by:"

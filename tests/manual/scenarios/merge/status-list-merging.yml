@@ -1,0 +1,65 @@
+name: daft list --merging shows in-progress merges
+description: "list --merging filters to worktrees with MERGE_HEAD present"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Set up a conflict in main
+    run: |
+      git checkout -b conflict-src
+      echo "a" > c.txt
+      git add c.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "a"
+      git checkout main
+      echo "b" > c.txt
+      git add c.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "b"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Trigger conflict in main (non-zero expected)
+    run: git-worktree-merge conflict-src --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+
+  - name: Check out conflict-src as a separate worktree (no conflict state)
+    run: git-worktree-checkout conflict-src
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Verify list without --merging shows both worktrees
+    run: NO_COLOR=1 git-worktree-list 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"
+        - "conflict-src"
+
+  - name: Verify list --merging shows only main (which has MERGE_HEAD)
+    run: NO_COLOR=1 git-worktree-list --merging 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"
+      output_not_contains:
+        - "conflict-src"
+
+  - name: Clean up the in-progress merge in main
+    run: git -C $WORK_DIR/test-repo/main merge --abort 2>/dev/null || true
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0

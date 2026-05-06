@@ -12,6 +12,8 @@
 //! | `worktree-post-create` | After worktree created | New worktree |
 //! | `worktree-pre-remove` | Before `git worktree remove` | Worktree being removed |
 //! | `worktree-post-remove` | After worktree removed | Current worktree |
+//! | `pre-merge` | Before a merge operation, after pre-flight checks | Target worktree |
+//! | `post-merge` | After a merge operation completes | Target worktree |
 //!
 //! # Security
 //!
@@ -83,6 +85,16 @@ pub enum HookType {
     /// Runs after worktree is removed.
     /// Hook file is read from the current worktree (where prune runs).
     PostRemove,
+
+    /// Runs after pre-flight checks pass, before any merge operation.
+    /// Failure aborts the merge with the hook's exit code.
+    /// Hook file is read from the target worktree.
+    PreMerge,
+
+    /// Runs after the merge operation completes (success or conflict).
+    /// Failure is logged but does not roll back the merge.
+    /// Hook file is read from the target worktree.
+    PostMerge,
 }
 
 impl HookType {
@@ -94,6 +106,8 @@ impl HookType {
             HookType::PostCreate => "worktree-post-create",
             HookType::PreRemove => "worktree-pre-remove",
             HookType::PostRemove => "worktree-post-remove",
+            HookType::PreMerge => "pre-merge",
+            HookType::PostMerge => "post-merge",
         }
     }
 
@@ -107,6 +121,8 @@ impl HookType {
             HookType::PostCreate => "worktree-post-create",
             HookType::PreRemove => "worktree-pre-remove",
             HookType::PostRemove => "worktree-post-remove",
+            HookType::PreMerge => "pre-merge",
+            HookType::PostMerge => "post-merge",
         }
     }
 
@@ -120,20 +136,23 @@ impl HookType {
             "worktree-post-create" => Some(HookType::PostCreate),
             "worktree-pre-remove" => Some(HookType::PreRemove),
             "worktree-post-remove" => Some(HookType::PostRemove),
+            "pre-merge" => Some(HookType::PreMerge),
+            "post-merge" => Some(HookType::PostMerge),
             _ => None,
         }
     }
 
     /// Returns the deprecated filename for this hook type, if it was renamed.
     ///
-    /// Returns `None` for hooks that were not renamed (`post-clone`).
+    /// Returns `None` for hooks that were not renamed (`post-clone`,
+    /// `pre-merge`, `post-merge`).
     pub fn deprecated_filename(&self) -> Option<&'static str> {
         match self {
             HookType::PreCreate => Some("pre-create"),
             HookType::PostCreate => Some("post-create"),
             HookType::PreRemove => Some("pre-remove"),
             HookType::PostRemove => Some("post-remove"),
-            HookType::PostClone => None,
+            HookType::PostClone | HookType::PreMerge | HookType::PostMerge => None,
         }
     }
 
@@ -147,6 +166,8 @@ impl HookType {
             "worktree-post-create" | "post-create" => Some(HookType::PostCreate),
             "worktree-pre-remove" | "pre-remove" => Some(HookType::PreRemove),
             "worktree-post-remove" | "post-remove" => Some(HookType::PostRemove),
+            "pre-merge" => Some(HookType::PreMerge),
+            "post-merge" => Some(HookType::PostMerge),
             _ => None,
         }
     }
@@ -159,27 +180,31 @@ impl HookType {
             HookType::PostCreate => "worktreePostCreate",
             HookType::PreRemove => "worktreePreRemove",
             HookType::PostRemove => "worktreePostRemove",
+            HookType::PreMerge => "preMerge",
+            HookType::PostMerge => "postMerge",
         }
     }
 
     /// Returns the deprecated config key for this hook type, if it was renamed.
     ///
-    /// Returns `None` for hooks that were not renamed (`postClone`).
+    /// Returns `None` for hooks that were not renamed (`postClone`,
+    /// `preMerge`, `postMerge`).
     pub fn deprecated_config_key(&self) -> Option<&'static str> {
         match self {
             HookType::PreCreate => Some("preCreate"),
             HookType::PostCreate => Some("postCreate"),
             HookType::PreRemove => Some("preRemove"),
             HookType::PostRemove => Some("postRemove"),
-            HookType::PostClone => None,
+            HookType::PostClone | HookType::PreMerge | HookType::PostMerge => None,
         }
     }
 
     /// Returns the default fail mode for this hook type.
     pub fn default_fail_mode(&self) -> FailMode {
         match self {
-            // Pre-create hooks should abort by default (setup must succeed)
-            HookType::PreCreate => FailMode::Abort,
+            // Pre-create and pre-merge hooks should abort by default
+            // (setup / safety rails must succeed before the operation).
+            HookType::PreCreate | HookType::PreMerge => FailMode::Abort,
             // All other hooks warn by default (don't block operations)
             _ => FailMode::Warn,
         }
@@ -187,7 +212,10 @@ impl HookType {
 
     /// Returns whether this is a "pre" hook (runs before the operation).
     pub fn is_pre_hook(&self) -> bool {
-        matches!(self, HookType::PreCreate | HookType::PreRemove)
+        matches!(
+            self,
+            HookType::PreCreate | HookType::PreRemove | HookType::PreMerge
+        )
     }
 
     /// Returns all hook types.
@@ -198,6 +226,8 @@ impl HookType {
             HookType::PostCreate,
             HookType::PreRemove,
             HookType::PostRemove,
+            HookType::PreMerge,
+            HookType::PostMerge,
         ]
     }
 }
@@ -276,6 +306,8 @@ pub struct HooksConfig {
     pub worktree_post_create: HookConfig,
     pub worktree_pre_remove: HookConfig,
     pub worktree_post_remove: HookConfig,
+    pub pre_merge: HookConfig,
+    pub post_merge: HookConfig,
 }
 
 impl Default for HooksConfig {
@@ -291,6 +323,8 @@ impl Default for HooksConfig {
             worktree_post_create: HookConfig::new(HookType::PostCreate),
             worktree_pre_remove: HookConfig::new(HookType::PreRemove),
             worktree_post_remove: HookConfig::new(HookType::PostRemove),
+            pre_merge: HookConfig::new(HookType::PreMerge),
+            post_merge: HookConfig::new(HookType::PostMerge),
         }
     }
 }
@@ -304,6 +338,8 @@ impl HooksConfig {
             HookType::PostCreate => &self.worktree_post_create,
             HookType::PreRemove => &self.worktree_pre_remove,
             HookType::PostRemove => &self.worktree_post_remove,
+            HookType::PreMerge => &self.pre_merge,
+            HookType::PostMerge => &self.post_merge,
         }
     }
 
@@ -315,6 +351,8 @@ impl HooksConfig {
             HookType::PostCreate => &mut self.worktree_post_create,
             HookType::PreRemove => &mut self.worktree_pre_remove,
             HookType::PostRemove => &mut self.worktree_post_remove,
+            HookType::PreMerge => &mut self.pre_merge,
+            HookType::PostMerge => &mut self.post_merge,
         }
     }
 }
@@ -507,6 +545,54 @@ mod tests {
         assert_eq!(HookType::PostCreate.filename(), "worktree-post-create");
         assert_eq!(HookType::PreRemove.filename(), "worktree-pre-remove");
         assert_eq!(HookType::PostRemove.filename(), "worktree-post-remove");
+        assert_eq!(HookType::PreMerge.filename(), "pre-merge");
+        assert_eq!(HookType::PostMerge.filename(), "post-merge");
+    }
+
+    #[test]
+    fn test_merge_hook_yaml_name_round_trip() {
+        // pre-merge / post-merge go through from_yaml_name/yaml_name the
+        // same way other daft-lifecycle hooks do.
+        assert_eq!(
+            HookType::from_yaml_name("pre-merge"),
+            Some(HookType::PreMerge)
+        );
+        assert_eq!(
+            HookType::from_yaml_name("post-merge"),
+            Some(HookType::PostMerge)
+        );
+        assert_eq!(HookType::PreMerge.yaml_name(), "pre-merge");
+        assert_eq!(HookType::PostMerge.yaml_name(), "post-merge");
+    }
+
+    #[test]
+    fn test_merge_hook_filename_round_trip() {
+        assert_eq!(
+            HookType::from_filename("pre-merge"),
+            Some(HookType::PreMerge)
+        );
+        assert_eq!(
+            HookType::from_filename("post-merge"),
+            Some(HookType::PostMerge)
+        );
+        // No deprecated names for merge hooks — they were introduced together
+        // with the canonical naming scheme.
+        assert_eq!(HookType::PreMerge.deprecated_filename(), None);
+        assert_eq!(HookType::PostMerge.deprecated_filename(), None);
+    }
+
+    #[test]
+    fn test_merge_hook_fail_modes() {
+        // pre-merge aborts the merge on failure (like pre-create).
+        assert_eq!(HookType::PreMerge.default_fail_mode(), FailMode::Abort);
+        // post-merge never rolls back the merge; warn only.
+        assert_eq!(HookType::PostMerge.default_fail_mode(), FailMode::Warn);
+    }
+
+    #[test]
+    fn test_pre_merge_is_pre_hook() {
+        assert!(HookType::PreMerge.is_pre_hook());
+        assert!(!HookType::PostMerge.is_pre_hook());
     }
 
     #[test]
@@ -645,12 +731,14 @@ mod tests {
     #[test]
     fn test_hook_type_all() {
         let all = HookType::all();
-        assert_eq!(all.len(), 5);
+        assert_eq!(all.len(), 7);
         assert!(all.contains(&HookType::PostClone));
         assert!(all.contains(&HookType::PreCreate));
         assert!(all.contains(&HookType::PostCreate));
         assert!(all.contains(&HookType::PreRemove));
         assert!(all.contains(&HookType::PostRemove));
+        assert!(all.contains(&HookType::PreMerge));
+        assert!(all.contains(&HookType::PostMerge));
     }
 
     #[test]

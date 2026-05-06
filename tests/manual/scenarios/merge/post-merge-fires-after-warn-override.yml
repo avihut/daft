@@ -1,0 +1,68 @@
+name: post-merge fires when pre-merge was warn-overridden and failed
+description:
+  "When pre-merge is configured with failMode=warn and fails, the merge still
+  proceeds. If the merge succeeds, post-merge fires as normal. This verifies
+  orthogonal post-merge use cases (e.g. notifications) fire regardless of
+  pre-merge outcome under warn mode."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test-feature
+        from: main
+        files:
+          - path: feature.txt
+            content: "feature content"
+        commits:
+          - message: "Add feature branch"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: always-fail
+              run: exit 1
+        post-merge:
+          jobs:
+            - name: write-marker
+              run: touch "$DAFT_MERGE_TARGET_PATH/.post-merge-ran"
+
+steps:
+  - name: Clone with trust
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Configure pre-merge fail-mode to warn
+    run: git config daft.hooks.preMerge.failMode warn
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Materialize feature branch as a sibling worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Merge — pre-merge warns, merge succeeds, post-merge fires
+    run: git-worktree-merge feature/test-feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "pre-merge hook failed with exit code 1 (continuing anyway)"
+        - "Merged feature/test-feature into main (commit "
+
+  - name: Verify post-merge marker file exists (post-merge ran)
+    run: test -f "$WORK_DIR/test-repo/main/.post-merge-ran" && echo "post_ran"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["post_ran"]

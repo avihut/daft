@@ -1,0 +1,31 @@
+name: --squash -y bypasses TTY guard and editor
+description:
+  "-y implies --no-edit for the squash commit step, so piping stdin (no TTY)
+  while passing -y succeeds instead of hitting the TTY guard."
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone + materialize feature
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout feature/test-feature
+    expect: { exit_code: 0 }
+
+  - name: --squash -y via piped stdin should succeed (not hit TTY guard)
+    run: echo "" | git-worktree-merge feature/test-feature --squash -y 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "No TTY available"
+
+  - name: Verify squash commit landed on main
+    run: git -C $WORK_DIR/test-repo/main log --oneline -1 HEAD
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["Squashed commit"]

@@ -1,0 +1,85 @@
+name: Merge hooks observe DAFT_MERGE_* env vars
+description:
+  "pre-merge and post-merge see the full set of DAFT_MERGE_* env vars. Exercised
+  over a cross-worktree merge so DAFT_MERGE_CROSS_WORKTREE=true is verified
+  end-to-end."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test-feature
+        from: main
+        files:
+          - path: feature.txt
+            content: "feature"
+        commits:
+          - message: "Add feature branch"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: record-pre
+              run: |
+                {
+                  echo "sources=$DAFT_MERGE_SOURCES"
+                  echo "target=$DAFT_MERGE_TARGET_BRANCH"
+                  echo "mode=$DAFT_MERGE_MODE"
+                  echo "cross=$DAFT_MERGE_CROSS_WORKTREE"
+                  echo "ephemeral=$DAFT_MERGE_EPHEMERAL"
+                } > "$DAFT_MERGE_TARGET_PATH/.pre-merge-env"
+        post-merge:
+          jobs:
+            - name: record-post
+              run: |
+                {
+                  echo "result=$DAFT_MERGE_RESULT"
+                  echo "promoted=$DAFT_MERGE_PROMOTED_FROM_EPHEMERAL"
+                } > "$DAFT_MERGE_TARGET_PATH/.post-merge-env"
+
+steps:
+  - name: Clone with trust
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Materialize feature branch as a sibling worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Cross-worktree merge — hooks fire with CROSS_WORKTREE=true
+    run: git-worktree-merge feature/test-feature --into main --no-edit
+    cwd: "$WORK_DIR/test-repo/feature/test-feature"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Merged feature/test-feature into main (commit "
+
+  - name: Verify pre-merge env-var sentinel
+    run: cat "$WORK_DIR/test-repo/main/.pre-merge-env"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "sources=feature/test-feature"
+        - "target=main"
+        - "mode=merge"
+        - "cross=true"
+        - "ephemeral=false"
+
+  - name: Verify post-merge env-var sentinel
+    run: cat "$WORK_DIR/test-repo/main/.post-merge-env"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "result=success"
+        - "promoted=false"

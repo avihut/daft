@@ -1,0 +1,64 @@
+name: Merge post-merge hook fires on success
+description:
+  "post-merge runs after a successful merge and sees DAFT_MERGE_RESULT=success."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test-feature
+        from: main
+        files:
+          - path: feature.txt
+            content: "feature content"
+        commits:
+          - message: "Add feature branch"
+    daft_yml: |
+      hooks:
+        post-merge:
+          jobs:
+            - name: record-outcome
+              run: |
+                {
+                  echo "result=$DAFT_MERGE_RESULT"
+                  echo "sources=$DAFT_MERGE_SOURCES"
+                  echo "mode=$DAFT_MERGE_MODE"
+                  echo "target=$DAFT_MERGE_TARGET_BRANCH"
+                } > "$DAFT_WORKTREE_PATH/.post-merge-ran"
+
+steps:
+  - name: Clone with trust
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Materialize feature branch as a sibling worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Merge feature into main — should succeed and fire post-merge
+    run: git-worktree-merge feature/test-feature --no-edit
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Merged feature/test-feature into main (commit "
+
+  - name: Verify post-merge wrote its sentinel with the expected env vars
+    run: cat "$WORK_DIR/test-repo/main/.post-merge-ran"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "result=success"
+        - "sources=feature/test-feature"
+        - "mode=merge"
+        - "target=main"

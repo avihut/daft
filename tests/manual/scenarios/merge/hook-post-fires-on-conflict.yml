@@ -1,0 +1,77 @@
+name: Merge post-merge hook fires on conflict
+description:
+  "post-merge runs even when the merge conflicts — the sentinel captures
+  DAFT_MERGE_RESULT=conflict and the list of conflicted files."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        post-merge:
+          jobs:
+            - name: record-conflict
+              run: |
+                {
+                  echo "result=$DAFT_MERGE_RESULT"
+                  echo "files=$DAFT_MERGE_CONFLICTED_FILES"
+                } > "$DAFT_WORKTREE_PATH/.post-merge-ran"
+
+steps:
+  - name: Clone with trust
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Create a conflicting branch and diverge main
+    run: |
+      git checkout -b conflict-src
+      echo "a" > c.txt
+      git add c.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "a"
+      git checkout main
+      echo "b" > c.txt
+      git add c.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "b"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Materialize conflict-src as a sibling worktree
+    run: git-worktree-checkout conflict-src
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Merge conflict-src into main — conflicts but post-merge still fires
+    run: git-worktree-merge conflict-src --into main --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/conflict-src"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "merge conflicted in"
+        - "c.txt"
+
+  - name: Verify post-merge ran with conflict outcome and captured c.txt
+    run: cat "$WORK_DIR/test-repo/main/.post-merge-ran"
+    cwd: "$WORK_DIR/test-repo/conflict-src"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "result=conflict"
+        - "files=c.txt"
+
+  - name: Clean up the in-progress merge in main
+    run: git -C $WORK_DIR/test-repo/main merge --abort 2>/dev/null || true
+    cwd: "$WORK_DIR/test-repo/conflict-src"
+    expect:
+      exit_code: 0

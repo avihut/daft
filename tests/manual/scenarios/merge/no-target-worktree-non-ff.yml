@@ -1,0 +1,53 @@
+name: Merge non-FF against ref-only target refuses
+description:
+  "Merging into a ref-only target with divergent history bails with guidance"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Create diverged-no-wt branch with a commit that main doesn't have
+    run: |
+      # Author a commit on top of main via plumbing so no worktree is needed.
+      # `commit-tree` builds a commit object from the current tree; the parent
+      # is main's HEAD. Then point diverged-no-wt at that commit with
+      # `update-ref`. No working tree touched, no worktree directory created.
+      base=$(git rev-parse main)
+      tree=$(git rev-parse main^{tree})
+      side_sha=$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t \
+                 GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+                 git commit-tree $tree -p $base -m "diverged side")
+      git update-ref refs/heads/diverged-no-wt $side_sha
+      # Now put a different commit on main so histories actually diverge.
+      echo b > main-ahead.txt
+      git add main-ahead.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "main ahead"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Verify diverged-no-wt has no sibling worktree directory
+    run: test ! -d $WORK_DIR/test-repo/diverged-no-wt && echo "no_wt_dir"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["no_wt_dir"]
+
+  - name: Attempt merge main into diverged-no-wt — should refuse
+    # Pass --no-adopt-target explicitly so this scenario stays deterministic
+    # regardless of TTY state (Slice 10 added a TTY-gated adopt prompt;
+    # without this flag the command would prompt in an interactive shell).
+    run:
+      git-worktree-merge main --into diverged-no-wt --no-adopt-target --no-edit
+      2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no worktree"
+        - "fast-forward"

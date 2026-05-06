@@ -1,0 +1,36 @@
+name: Merge already up to date
+description: "daft merge of an ancestor exits 0 with 'Already up to date.'"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Checkout feature
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: First merge — merges feature into main with merge commit
+    run: git-worktree-merge feature/test-feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Merged feature/test-feature into main (commit "
+
+  - name: Second merge of the same branch is a no-op
+    run: git-worktree-merge feature/test-feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Already up to date"
+      # git itself prints "Already up to date." — daft must not double-print
+      # "Merge complete." on top of it.
+      output_not_contains:
+        - "Merge complete."

@@ -1,0 +1,68 @@
+name: Merge pre-merge hook aborts
+description:
+  "A failing pre-merge hook aborts the merge before any git merge runs."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test-feature
+        from: main
+        files:
+          - path: feature.txt
+            content: "feature content"
+        commits:
+          - message: "Add feature branch"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: always-abort
+              run: |
+                touch "$DAFT_MERGE_TARGET_PATH/.pre-merge-ran"
+                exit 1
+
+steps:
+  - name: Clone with trust so the pre-merge hook is allowed to run
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Materialize feature branch as a sibling worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Attempt the merge — pre-merge exit 1 aborts the merge
+    run: git-worktree-merge feature/test-feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      # Non-zero exit propagated from the aborted merge.
+      exit_code: 1
+      output_contains:
+        # pre-merge's Abort fail mode prints this translation line.
+        - "pre-merge hook failed"
+      output_not_contains:
+        # Aborted: no "Merge complete." was emitted.
+        - "Merge complete."
+
+  - name: Verify pre-merge ran (sentinel from the failing hook exists)
+    run: test -f "$WORK_DIR/test-repo/main/.pre-merge-ran"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verify main was not advanced (merge was aborted pre-flight)
+    # `feature.txt` is only on feature. If the merge had partially applied
+    # we'd see feature.txt in main's worktree.
+    run: test ! -f "$WORK_DIR/test-repo/main/feature.txt"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0

@@ -1,0 +1,85 @@
+name: Merge pre/post-merge hooks render through rich hook-box presenter
+description:
+  "pre-merge and post-merge hooks are rendered via MergeHookRunner +
+  HookExecutor + CliPresenter::auto. With DAFT_TESTING unset the
+  PlainHookRenderer is active (no TTY) and prints the hook-box header lines to
+  stderr — 'daft hooks v<version>  pre-merge' for pre-merge and 'daft hooks
+  v<version>  post-merge' for post-merge. This scenario pins that rendering path
+  so a regression (e.g. hooks silently swallowed) would be caught. Both hooks
+  are project-scoped (no worktree target), so the title carries no ' on: <name>'
+  segment."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: feature/test-feature
+        from: main
+        files:
+          - path: feature.txt
+            content: "feature content"
+        commits:
+          - message: "Add feature branch"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: pre-check
+              run: echo "PRE_MERGE_OK"
+        post-merge:
+          jobs:
+            - name: post-record
+              run: echo "POST_MERGE_OK"
+
+steps:
+  - name: Clone with trust so pre/post-merge hooks are allowed to run
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Materialize feature branch as a sibling worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  # env -u DAFT_TESTING: unsets the test-harness flag so HookRenderer::auto
+  # selects PlainHookRenderer (non-TTY stderr) instead of the hidden renderer.
+  # PlainHookRenderer prints the hook-box header lines (containing "hook: pre-merge"
+  # / "hook: post-merge") and job output lines to stderr; the 2>&1 redirect
+  # captures them alongside stdout for the output_contains assertions.
+  - name: Merge with DAFT_TESTING unset to exercise PlainHookRenderer
+    run:
+      env -u DAFT_TESTING git-worktree-merge feature/test-feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        # Hook-box header lines — presence confirms the rich presenter path
+        # fired. The title format is `daft hooks v<v>  <hook-name>` (no
+        # `hook:` prefix; no `on:` segment for project-scoped phases).
+        - "daft hooks"
+        - "pre-merge"
+        - "post-merge"
+        # Hook job stdout — confirms jobs actually executed and their output was streamed
+        - "PRE_MERGE_OK"
+        - "POST_MERGE_OK"
+        # Daft merge step message — confirms the merge itself completed.
+        # feature/test-feature diverges from main (main has daft.yml commit added
+        # after branching), so this is a 3-way merge, not a fast-forward.
+        - "Merged feature/test-feature into main (commit "
+        # Persistent intent line — present even on fast merges where the
+        # spinner clears too quickly to read.
+        - "Merging feature/test-feature → current branch"
+      output_not_contains:
+        # Pre-1.0 cleanup: the legacy `hook:` label was removed because the
+        # box border itself signals "this is a hook". Catch any regression
+        # that re-introduces it.
+        - "hook: pre-merge"
+        - "hook: post-merge"

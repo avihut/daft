@@ -47,8 +47,8 @@ impl PlainHookRenderer {
         self.compact_finalization = on;
     }
 
-    pub fn print_header(&self, hook_name: &str) {
-        for line in super::formatting::format_header_lines(hook_name, false) {
+    pub fn print_header(&self, hook_name: &str, target: Option<&str>) {
+        for line in super::formatting::format_header_lines(hook_name, target, false) {
             eprintln!("{line}");
         }
     }

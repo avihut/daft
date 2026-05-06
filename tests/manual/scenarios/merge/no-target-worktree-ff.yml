@@ -1,0 +1,61 @@
+name: Merge FF when target has no worktree
+description:
+  "Pure FF advances the target ref via plumbing without requiring a worktree"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name:
+      Create feat-no-wt as a branch ref without a worktree, then advance main
+    run: |
+      # Anchor the branch at main's current HEAD, then put new commits on main
+      # so feat-no-wt stays strictly behind. `git branch` creates the ref only;
+      # no worktree is materialized.
+      git branch feat-no-wt
+      echo x > advance.txt
+      git add advance.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "advance main"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Verify feat-no-wt has no sibling worktree directory
+    run: test ! -d $WORK_DIR/test-repo/feat-no-wt && echo "no_wt_dir"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["no_wt_dir"]
+
+  - name:
+      FF-advance feat-no-wt to main via plumbing (no worktree, --rebase style)
+    run: git-worktree-merge main --into feat-no-wt --rebase 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Fast-forwarded feat-no-wt"
+      # Core already printed the terminal status line; command layer must not
+      # double-print "Merge complete." on top of it.
+      output_not_contains:
+        - "Merge complete."
+
+  - name: Verify feat-no-wt now points at main's tip
+    run: |
+      test "$(git rev-parse main)" = "$(git rev-parse feat-no-wt)" && echo "same"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["same"]
+
+  - name: Verify feat-no-wt still has no worktree directory after the merge
+    run: test ! -d $WORK_DIR/test-repo/feat-no-wt && echo "no_wt_dir"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["no_wt_dir"]

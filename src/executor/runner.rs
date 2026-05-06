@@ -502,7 +502,7 @@ mod tests {
     }
 
     impl JobPresenter for RecordingPresenter {
-        fn on_phase_start(&self, phase_name: &str) {
+        fn on_phase_start(&self, phase_name: &str, _target: Option<&str>) {
             self.events
                 .lock()
                 .unwrap()

@@ -1,0 +1,43 @@
+name: Merge -s ours keeps target
+description: "daft merge -s ours records a merge but keeps target's tree"
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Create conflicting branches on a shared file
+    run: |
+      cd $WORK_DIR/test-repo/main
+      echo "main-version" > shared.txt
+      git add shared.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "main writes shared"
+      git checkout -b feat-ours main~1
+      echo "feat-version" > shared.txt
+      git add shared.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "feat writes shared"
+      git checkout main
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Merge with -s ours
+    run: git-worktree-merge feat-ours -s ours -m "resolve via ours" 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Merged feat-ours into main (commit "
+
+  - name: Verify tree still contains main's version
+    run: cat shared.txt
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main-version"

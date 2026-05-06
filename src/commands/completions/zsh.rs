@@ -734,6 +734,55 @@ _daft() {
         esac
     fi
 
+    # merge: flag + branch completion (inline; not auto-generated from COMMANDS)
+    if (( CURRENT >= 3 )) && { [[ "$words[2]" == "merge" ]] || [[ "$words[2]" == "worktree-merge" ]] }; then
+        local prev_word="${words[$((CURRENT-1))]}"
+        # --into takes a branch value
+        if [[ "$prev_word" == "--into" ]]; then
+            local -a branches
+            branches=(${(f)"$(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null)"})
+            compadd -a branches
+            return
+        fi
+        # --cleanup values
+        if [[ "$prev_word" == "--cleanup" ]]; then
+            compadd default scissors strip verbatim whitespace
+            return
+        fi
+        # --strategy / -s values
+        if [[ "$prev_word" == "--strategy" || "$prev_word" == "-s" ]]; then
+            compadd ours recursive resolve octopus subtree
+            return
+        fi
+        if [[ "$curword" == -* ]]; then
+            local -a merge_flags
+            merge_flags=(
+                '--into' '--abort' '--continue' '--quit'
+                '--adopt-target' '--no-adopt-target'
+                '-y' '--yes'
+                '--merge' '--squash' '--rebase' '--rebase-merge'
+                '-r' '--remove-branch' '--keep-branch'
+                '--set-default'
+                '-m' '-F' '--file' '--edit' '--no-edit' '--cleanup'
+                '--commit' '--no-commit'
+                '--signoff' '--no-signoff'
+                '-s' '--strategy' '-X' '--strategy-option'
+                '-S' '--gpg-sign' '--no-gpg-sign'
+                '--verify-signatures' '--no-verify-signatures'
+                '--allow-unrelated-histories'
+                '--stat' '-n' '--no-stat'
+                '-v' '--verbose' '-h' '--help' '-V' '--version'
+            )
+            compadd -a merge_flags
+            return
+        fi
+        # Positional source/target: branch names
+        local -a branches
+        branches=(${(f)"$(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null)"})
+        compadd -a branches
+        return
+    fi
+
     # verb aliases: delegate to underlying command completions
     if (( CURRENT >= 3 )); then
         case "$words[2]" in
@@ -818,7 +867,8 @@ _daft() {
             compadd -- --version -V --help -h
         else
             compadd hooks shell-init setup multi-remote release-notes doctor layout shared \
-                    config repo clone init go start carry exec update list prune rename sync remove adopt eject
+                    config repo clone init go start carry exec update list prune rename sync remove \
+                    merge worktree-merge adopt eject
         fi
         return
     fi

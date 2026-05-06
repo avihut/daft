@@ -1,0 +1,60 @@
+name: Cleanup pre-validates before mutating
+description:
+  "When the source worktree has uncommitted changes, -rb refuses cleanup before
+  touching any state. The merge itself succeeds (target is clean); only the
+  post-merge cleanup step is rejected. Both the source worktree and source
+  branch survive intact."
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Create feature worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: Make the source worktree dirty (staged uncommitted change)
+    run: |
+      echo "dirty" > dirty.txt
+      git add dirty.txt
+    cwd: "$WORK_DIR/test-repo/feature/test-feature"
+    expect: { exit_code: 0 }
+
+  - name: Merge with -r — cleanup should refuse due to dirty source
+    run: git-worktree-merge feature/test-feature -r --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "cleanup pre-validation failed"
+        - "uncommitted changes"
+
+  - name: Verify source worktree still exists (cleanup did not run)
+    run: test -d $WORK_DIR/test-repo/feature/test-feature && echo "wt_present"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["wt_present"]
+
+  - name: Verify source branch still exists
+    run: |
+      git -C $WORK_DIR/test-repo/main show-ref --verify --quiet \
+        refs/heads/feature/test-feature && echo "branch_present"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["branch_present"]
+
+  - name: Verify merge DID land on main (merge succeeded; only cleanup refused)
+    run: git -C $WORK_DIR/test-repo/main log --oneline main
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Add feature branch"

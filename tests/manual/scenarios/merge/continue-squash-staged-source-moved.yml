@@ -1,0 +1,70 @@
+name: --continue exits 1 when source moved during squash-staged
+description:
+  "When the source branch tip moves between the original squash merge and
+  --continue, the stability check must exit 1 (not 0) and skip cleanup. The
+  squash commit stays on the target."
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone + materialize feature
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout feature/test-feature
+    expect: { exit_code: 0 }
+
+  - name: Stage squash without committing (sets up SQUASH_MSG)
+    run: git-worktree-merge feature/test-feature --squash --no-commit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["Squash staged on main"]
+
+  - name: Capture feature SHA and write intent marker with that SHA
+    run: |
+      real=$(git -C $WORK_DIR/test-repo/main rev-parse --absolute-git-dir)
+      feat_sha=$(git -C $WORK_DIR/test-repo/main rev-parse feature/test-feature)
+      cat > "$real/daft-merge-intent.json" << EOF
+      {"sources":["feature/test-feature"],"source_shas":["$feat_sha"],"remove_worktree":true,"also_branch":true}
+      EOF
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Advance feature branch (simulates concurrent push)
+    run: |
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t \
+        GIT_COMMITTER_EMAIL=t@t \
+        git -C $WORK_DIR/test-repo/feature/test-feature \
+          commit --allow-empty -m "concurrent advance after squash"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: --continue should exit 1 due to moved source SHA
+    run: git-worktree-merge --continue --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "moved during merge"
+
+  - name: Verify squash commit landed on main (commit not rolled back)
+    run: git -C $WORK_DIR/test-repo/main log --oneline -1 HEAD
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["Squashed commit"]
+
+  - name: Verify source worktree NOT removed (cleanup skipped)
+    run: test -d $WORK_DIR/test-repo/feature/test-feature && echo "wt_present"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0, output_contains: ["wt_present"] }
+
+  - name: Verify source branch NOT deleted
+    run: |
+      git -C $WORK_DIR/test-repo/main show-ref --verify --quiet \
+        refs/heads/feature/test-feature && echo "branch_present"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0, output_contains: ["branch_present"] }

@@ -62,9 +62,9 @@ impl CliPresenter {
 }
 
 impl JobPresenter for CliPresenter {
-    fn on_phase_start(&self, phase_name: &str) {
+    fn on_phase_start(&self, phase_name: &str, target: Option<&str>) {
         let r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.print_header(phase_name);
+        r.print_header(phase_name, target);
     }
 
     fn on_job_start(&self, name: &str, description: Option<&str>, command_preview: Option<&str>) {
@@ -161,7 +161,7 @@ mod tests {
         let renderer = HookRenderer::new_hidden(&config);
         let presenter: Arc<dyn JobPresenter> = CliPresenter::from_renderer(renderer);
 
-        presenter.on_phase_start("post-clone");
+        presenter.on_phase_start("post-clone", None);
         presenter.on_job_start("install", Some("Install dependencies"), None);
         presenter.on_job_output("install", "fetching packages...");
         presenter.on_job_success("install", Duration::from_secs(2));

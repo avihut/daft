@@ -1,0 +1,42 @@
+name: --squash with --no-edit creates a real commit
+description:
+  "daft merge --squash --no-edit produces a commit on the target; no stale
+  MERGE_HEAD/MERGE_MSG; no staged changes left over."
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect: { exit_code: 0 }
+
+  - name: Materialize feature
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect: { exit_code: 0 }
+
+  - name: Squash + commit
+    run: git-worktree-merge feature/test-feature --squash --no-edit 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Squashed feature/test-feature into main (commit "
+
+  - name: Verify a real commit landed (no MERGE_HEAD/MERGE_MSG, no staged)
+    run: |
+      real=$(git -C $WORK_DIR/test-repo/main rev-parse --absolute-git-dir)
+      [ ! -e "$real/MERGE_HEAD" ] && echo "no_merge_head"
+      [ ! -e "$real/MERGE_MSG" ] && echo "no_merge_msg"
+      git -C $WORK_DIR/test-repo/main diff --cached --quiet && echo "no_staged"
+      git -C $WORK_DIR/test-repo/main log --oneline -1 main
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "no_merge_head"
+        - "no_merge_msg"
+        - "no_staged"
+        - "Squashed commit"

@@ -1,0 +1,33 @@
+name: --abort clears squash-staged state
+description:
+  "After --squash --no-commit (or interrupted squash commit), --abort resets the
+  index, clears MERGE_MSG, and exits cleanly."
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+steps:
+  - name: Clone + checkout
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout feature/test-feature
+    expect: { exit_code: 0 }
+  - name: Stage a squash without committing
+    run: git-worktree-merge feature/test-feature --squash --no-commit
+    cwd: "$WORK_DIR/test-repo/main"
+    expect: { exit_code: 0 }
+  - name: --abort
+    run: git-worktree-merge --abort 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["Aborted"]
+  - name: Verify clean state
+    run: |
+      real=$(git -C $WORK_DIR/test-repo/main rev-parse --absolute-git-dir)
+      [ ! -e "$real/SQUASH_MSG" ] && echo "no_squash_msg"
+      git -C $WORK_DIR/test-repo/main diff --cached --quiet && echo "no_staged"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["no_squash_msg", "no_staged"]
