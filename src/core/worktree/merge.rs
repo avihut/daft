@@ -3130,6 +3130,16 @@ mod tests {
             .current_dir(path)
             .status()
             .unwrap();
+        // `core.editor=true` makes any implicit editor invocation
+        // (e.g. `git rebase --continue` after a conflict resolution) a no-op
+        // success, preserving the existing commit message. CI runners run
+        // headless without GIT_EDITOR/EDITOR set, so without this the commit
+        // step inside `rebase --continue` fails with "Terminal is dumb".
+        ShellCommand::new("git")
+            .args(["config", "--local", "core.editor", "true"])
+            .current_dir(path)
+            .status()
+            .unwrap();
         ShellCommand::new("git")
             .args(["commit", "--allow-empty", "-q", "-m", "init"])
             .current_dir(path)
